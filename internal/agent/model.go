@@ -74,7 +74,11 @@ type Agent struct {
 	SkillExecutionMode      string    `json:"skillExecutionMode,omitempty"`
 	ResolvedSkillSourceHash string    `json:"resolvedSkillSourceHash,omitempty"`
 	SkillConformance        string    `json:"skillConformance,omitempty"`
-	Prompt                  string    `json:"prompt,omitempty"`
+	// OutputSchema mirrors RunConfig.OutputSchema. Non-empty means completion
+	// must not require a skill-receipt marker: a schema-constrained final
+	// response has no room for one.
+	OutputSchema string `json:"outputSchema,omitempty"`
+	Prompt       string `json:"prompt,omitempty"`
 	// skillRecoveryAttempt marks the automatic receipt-recovery rerun for a
 	// mandatory workflow skill. Completion upgrades a verified retry to
 	// ConformanceRecovered so stats do not conflate it with a first-pass exact
@@ -469,6 +473,7 @@ func (a *Agent) toRecord() Record {
 		SkillExecutionMode:      a.SkillExecutionMode,
 		ResolvedSkillSourceHash: a.ResolvedSkillSourceHash,
 		SkillConformance:        a.SkillConformance,
+		OutputSchema:            a.OutputSchema,
 		SkillRecoveryAttempt:    a.skillRecoveryAttempt,
 		HasOutputSchema:         a.hasOutputSchema,
 		PostResultWaitReason:    a.postResultWaitReason,
@@ -513,6 +518,7 @@ func fromRecord(r Record) *Agent {
 		SkillExecutionMode:      r.SkillExecutionMode,
 		ResolvedSkillSourceHash: r.ResolvedSkillSourceHash,
 		SkillConformance:        r.SkillConformance,
+		OutputSchema:            r.OutputSchema,
 		skillRecoveryAttempt:    r.SkillRecoveryAttempt,
 		hasOutputSchema:         r.HasOutputSchema,
 		postResultWaitReason:    r.PostResultWaitReason,

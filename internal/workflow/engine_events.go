@@ -328,7 +328,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		out.TerminalStatus = "human-required"
 		out.TerminalReason = "checkpoint_failed: checkpoint commit failed — no durable checkpoint state created"
 	}
-	if def, ok := defs.get(); ok && e.maybeRecoverUnverifiedSkillRun(taskID, c.AgentID, spawnedStep, def, def.StepByID(t.Workflow.CurrentStep)) {
+	if def, ok := defs.get(); ok && e.maybeRecoverUnverifiedSkillRun(taskID, c.AgentID, spawnedStep, c.Result, def, def.StepByID(t.Workflow.CurrentStep)) {
 		e.clearAgentStep(c.AgentID)
 		return
 	}
@@ -931,9 +931,9 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 // resumeSkipReasonForStatus reports whether ResumeStalled must not resume a
 // task in the given status, and why.
 //
-// human-required: the task was halted by a competing path (e.g. the inline
-// review triage deciding the PR is too small). Resuming would override the
-// triage verdict and re-dispatch an agent the operator already suppressed.
+// human-required: the task was halted by a competing path or parked for a
+// human. Resuming would override the triage verdict and re-dispatch an agent
+// the operator already suppressed.
 //
 // done/cancelled: the task reached a terminal status (e.g. its PR merged)
 // while its Workflow record was still Running/Waiting from before that

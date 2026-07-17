@@ -44,6 +44,12 @@ type Provider interface {
 	// silently ignored and the agent runs with the provider's own default
 	// reach — see warnUnenforceableAllowedTools.
 	HonorsAllowedTools() bool
+	// SupportsOutputSchema reports whether this provider actually applies
+	// RunConfig.OutputSchema to the spawned CLI. False means the schema is
+	// silently ignored and the run falls back to whatever plain-text contract
+	// the step's own prompt anticipates — see resolveWorkflowSkillPrompt's
+	// schemaEnforced check.
+	SupportsOutputSchema() bool
 }
 
 type baseProvider struct{}
@@ -57,9 +63,13 @@ func (baseProvider) SandboxArgs(bool, bool) []string { return nil }
 // boundary that does not hold, which is worse than an honest gap.
 func (baseProvider) HonorsAllowedTools() bool { return false }
 
-func (baseProvider) OutputSchemaAsFile() bool { return false }
+// SupportsOutputSchema defaults to false for the same reason
+// HonorsAllowedTools does — a provider only claims to enforce the schema by
+// saying so, rather than assuming support and finding out via a silently
+// unverifiable run.
+func (baseProvider) SupportsOutputSchema() bool { return false }
 
-func (baseProvider) EnforcesOutputSchema() bool { return false }
+func (baseProvider) OutputSchemaAsFile() bool { return false }
 
 func (baseProvider) UsesPerTurnConvo() bool { return false }
 

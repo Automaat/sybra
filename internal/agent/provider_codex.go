@@ -22,6 +22,10 @@ func (codexProvider) Name() string { return "codex" }
 // which tools the model may call, so allowed_tools cannot be mapped onto it.
 func (codexProvider) HonorsAllowedTools() bool { return false }
 
+// SupportsOutputSchema is true: codex receives OutputSchema as a temp file via
+// --output-schema (OutputSchemaAsFile), forcing schema-valid JSON output.
+func (codexProvider) SupportsOutputSchema() bool { return true }
+
 func (codexProvider) NormalizeModel(model string) string {
 	// Codex models come from `codex debug models` and never carry a [1m]
 	// suffix — a stray suffix stays untouched and is rejected by safeArgRe.
@@ -107,10 +111,6 @@ func (codexProvider) SandboxArgs(requirePerms, headless bool) []string {
 }
 
 func (codexProvider) OutputSchemaAsFile() bool { return true }
-
-// EnforcesOutputSchema is true: codex receives OutputSchema as a temp file via
-// --output-schema (OutputSchemaAsFile), forcing schema-valid JSON output.
-func (codexProvider) EnforcesOutputSchema() bool { return true }
 
 func (codexProvider) UsesPerTurnConvo() bool { return true }
 

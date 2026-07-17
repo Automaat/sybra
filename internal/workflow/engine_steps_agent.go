@@ -211,12 +211,22 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// parked/failed step state takes over.
 	//
 	// A completion for this very start can also beat the agentRoutes write a
+<<<<<<< HEAD
 	// few lines down. e.mu is not held across the StartAgent call here on
 	// purpose: this is the hot path and worktree prep can be slow.
 	// HandleAgentComplete buffers a completion that arrives in that window
 	// instead of dropping it (#2176's hang was exactly that silent drop). The
 	// deferred replay hands it back once this function's outcome — route
 	// registered, or parked/failed — is settled.
+=======
+	// few lines down. Unlike spawnParallelChild and startBestOfNAttempt,
+	// e.mu is not held across the StartAgent call here on purpose: this is
+	// the hot path and worktree prep can be slow. HandleAgentComplete
+	// buffers a completion that arrives in that window instead of dropping
+	// it (#2176's hang was exactly that silent drop). The deferred replay
+	// hands it back once this function's outcome — route registered, or
+	// parked/failed — is settled.
+>>>>>>> refs/remotes/origin/main
 	e.markStepStarting(taskID, step.ID)
 	defer func() {
 		for _, buffered := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {

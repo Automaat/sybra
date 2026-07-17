@@ -144,6 +144,26 @@ func (a *App) initHumanReview() {
 	a.logger.Info("human-review.enabled", "dir", dir, "repo", a.cfg.HumanReviewRepo(), "model", a.cfg.HumanReviewModel())
 }
 
+// humanReviewDispatchDir resolves the human-review agent's working directory.
+// Prefers the task's own project worktree — matching how every other
+// dispatched role (test-runner, implementation, review, ...) resolves its
+// Dir via resolveWorktreeDir — so the agent's UNBLOCK actions (fix + commit +
+// push in the task's own repo, per writeAutonomyMandate phase 2) land
+// somewhere the OS process sandbox actually allows writes, instead of being
+// silently confined to the configured Sybra source checkout regardless of
+// which project the task belongs to. Falls back to the Sybra source tree
+// when the task has no worktree yet (e.g. it never made it past triage), or
+// when the recorded worktree no longer exists on disk (e.g. cleaned up) —
+// diagnosing Sybra's own source is still this agent's primary mission.
+func humanReviewDispatchDir(t task.Task, sybraRepoDir string) string {
+	if dir := strings.TrimSpace(t.WorktreeDir); dir != "" {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+	}
+	return sybraRepoDir
+}
+
 // maybeSpawn is called from the status hook when a task lands in
 // human-required. Returns immediately if the feature is disabled, the task
 // already has an in-flight review, or the rolling rate limit is exceeded.
@@ -205,14 +225,15 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 	h.perTask[taskID] = append(h.perTask[taskID], now)
 	h.mu.Unlock()
 
-	prompt := h.buildPrompt(t, wctx)
+	dir := humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
+	prompt := h.buildPrompt(t, dir, wctx)
 	cfg := h.agents.ApplyABVariant(agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RoleHumanReview.AgentName(t.Title),
 		Mode:                   "headless",
 		Model:                  h.cfg.HumanReviewModel(),
 		Prompt:                 prompt,
-		Dir:                    h.reviewRunDir(t),
+		Dir:                    dir,
 		RequirePermissions:     false,
 		OneShot:                true,
 		OutputSchema:           verdict.Schema,
@@ -983,35 +1004,6 @@ func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[stri
 	}
 }
 
-// reviewRunDir picks the agent's working directory. When the task has a live
-// worktree the agent runs there, so its UNBLOCK phase (fix/verify/commit/push
-// the task's own code) lands in the task checkout and the enforce OS sandbox
-// opens that write root — running in the Sybra repo instead would target the
-// wrong checkout and be blocked from writing the worktree. Pure-diagnosis
-// tasks with no worktree fall back to the Sybra source tree (reads there stay
-// unrestricted regardless of the working directory).
-func (h *humanReviewHandler) reviewRunDir(t task.Task) string {
-	if wd := strings.TrimSpace(t.WorktreeDir); wd != "" {
-		if info, err := os.Stat(wd); err == nil && info.IsDir() {
-			return wd
-		}
-	}
-	return h.cfg.HumanReview.SybraRepoDir
-}
-
-// writeWorkingDirHint tells the agent where its process actually starts so it
-// cd's correctly: the task worktree when one exists (fix/verify/push land in
-// the task repo), else the Sybra source tree. Either way the Sybra source is
-// readable — reads are unrestricted regardless of the working directory.
-func (h *humanReviewHandler) writeWorkingDirHint(b *strings.Builder, t task.Task) {
-	sybraSrc := strings.TrimSpace(h.cfg.HumanReview.SybraRepoDir)
-	if runDir := h.reviewRunDir(t); strings.TrimSpace(runDir) != "" && runDir != sybraSrc {
-		fmt.Fprintf(b, "- Working directory is the task's worktree (%s) — cd here to fix/verify/commit/push the task's code. The Sybra source tree is at %s; Grep/Read there when a stack trace or error message points into internal/.\n", runDir, sybraSrc)
-		return
-	}
-	b.WriteString("- Working directory is the Sybra source tree. Use Grep/Read/Glob to inspect Go code under internal/ when a stack trace or error message points there.\n")
-}
-
 // buildPrompt assembles the review agent's instructions and context. The
 // agent runs in the task's worktree when one exists (so it can fix/verify/
 // push the task's code), otherwise in the Sybra source tree; either way it
@@ -1034,7 +1026,29 @@ func writeAutonomyMandate(b *strings.Builder) {
 	b.WriteString("3. AUTONOMY — for anything that needed a human, OR that you had to do by hand here, ask: 'how should Sybra have handled this itself?' If there is a real gap, prepare an issue (issue_* fields) describing the gap and the fix so the next occurrence is automatic. Every human-required transition is a bug in Sybra's autonomy until proven otherwise; this issue is often your most valuable output. Do NOT run `gh issue create` yourself — return the payload so the host files it (and scrubs it for work-typed projects).\n\n")
 }
 
-func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) string {
+func (h *humanReviewHandler) writePromptTaskDetails(b *strings.Builder, t task.Task, dir string) {
+	fmt.Fprintf(b, "- ID: %s\n- Title: %s\n- Status: %s\n", t.ID, t.Title, t.Status)
+	if t.StatusReason != "" {
+		fmt.Fprintf(b, "- Status reason: %s\n", t.StatusReason)
+	}
+	if t.ProjectID != "" {
+		fmt.Fprintf(b, "- Project: %s\n", t.ProjectID)
+	}
+	if t.PRNumber > 0 {
+		fmt.Fprintf(b, "- PR: #%d\n", t.PRNumber)
+	}
+	if t.WorktreeDir != "" {
+		fmt.Fprintf(b, "- Worktree (this is your working directory — fix/verify/push the task's code here): %s\n", t.WorktreeDir)
+	}
+	if t.Branch != "" {
+		fmt.Fprintf(b, "- Branch: %s\n", t.Branch)
+	}
+	if sybraDir := strings.TrimSpace(h.cfg.HumanReview.SybraRepoDir); sybraDir != "" && sybraDir != dir {
+		fmt.Fprintf(b, "- Sybra's own source tree (cd here to grep/read internal/ when diagnosing a Sybra bug, then cd back to fix the task): %s\n", sybraDir)
+	}
+}
+
+func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScrubContext) string {
 	var b strings.Builder
 	b.WriteString("# Sybra auto-review of human-required transition\n\n")
 	if wctx != nil {
@@ -1047,22 +1061,7 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 	}
 	writeAutonomyMandate(&b)
 	b.WriteString("## Task\n")
-	fmt.Fprintf(&b, "- ID: %s\n- Title: %s\n- Status: %s\n", t.ID, t.Title, t.Status)
-	if t.StatusReason != "" {
-		fmt.Fprintf(&b, "- Status reason: %s\n", t.StatusReason)
-	}
-	if t.ProjectID != "" {
-		fmt.Fprintf(&b, "- Project: %s\n", t.ProjectID)
-	}
-	if t.PRNumber > 0 {
-		fmt.Fprintf(&b, "- PR: #%d\n", t.PRNumber)
-	}
-	if t.WorktreeDir != "" {
-		fmt.Fprintf(&b, "- Worktree (cd here to fix/verify/push the task's code): %s\n", t.WorktreeDir)
-	}
-	if t.Branch != "" {
-		fmt.Fprintf(&b, "- Branch: %s\n", t.Branch)
-	}
+	h.writePromptTaskDetails(&b, t, dir)
 	b.WriteString("\n### Task body\n")
 	b.WriteString(strings.TrimSpace(t.Body))
 	b.WriteString("\n\n")
@@ -1114,7 +1113,7 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 	}
 
 	b.WriteString("## Investigation hints\n")
-	h.writeWorkingDirHint(&b, t)
+	fmt.Fprintf(&b, "- Your working directory is %s. Use Grep/Read/Glob there directly; cd to the Sybra source tree path above (if listed) when a stack trace or error message points into Sybra's own internal/ instead of the task's repo.\n", dir)
 	fmt.Fprintf(&b, "- Audit events live under %s (newest file is today's). Run `gh issue list --repo %s --label %s` first to avoid duplicate filings.\n",
 		filepath.Join(h.homeDir, "audit"), h.cfg.HumanReviewRepo(), h.cfg.HumanReviewIssueLabel())
 	b.WriteString("- Trust deterministic workflow signals before inferring from weak provider metadata: status history, exit state, parsed verdict, protocol_violation, test_outcome, failure fingerprint, task body delta, and log tail. Do NOT classify a Codex run as crashed solely because cost=0 or session is empty; confirm from log contents or exit failure.\n")

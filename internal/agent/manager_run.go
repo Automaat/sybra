@@ -671,6 +671,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		SkillExecutionMode:      cfg.SkillExecutionMode,
 		ResolvedSkillSourceHash: cfg.ResolvedSkillSourceHash,
 		SkillConformance:        cfg.SkillConformance,
+		OutputSchema:            cfg.OutputSchema,
 		skillRecoveryAttempt:    cfg.SkillRecoveryAttempt,
 		// Only a provider that actually forwards OutputSchema to its CLI makes
 		// the conformance receipt unsatisfiable; copilot/opencode ignore it, so

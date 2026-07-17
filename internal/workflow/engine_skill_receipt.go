@@ -2,9 +2,11 @@ package workflow
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/skillattr"
 )
@@ -38,7 +40,7 @@ func agentRunInfoByID(runs []AgentRunInfo, agentID string) (AgentRunInfo, bool) 
 	return AgentRunInfo{}, false
 }
 
-func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep string, def *Definition, currentStep *Step) bool {
+func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, output string, def *Definition, currentStep *Step) bool {
 	if e.tasks == nil || def == nil || currentStep == nil {
 		return false
 	}
@@ -66,19 +68,43 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep str
 	}
 	if retries >= maxSkillReceiptRecoveryAttempts {
 		delete(fresh.Workflow.Variables, retryKey)
+<<<<<<< HEAD
 		// Mark the execution terminal before parking on a human. Otherwise
 		// TaskService.DispatchFromHumanRequired rejects the redispatch with
 		// "task has active workflow", stranding the task until the workflow is
 		// cleared by hand.
 		fresh.Workflow.State = ExecFailed
+=======
+		// Finalize the Execution like finishTerminalStepOutput does for every
+		// other human-required escalation (e.g. checkpoint_failed). Left
+		// non-terminal, StartWorkflow/DispatchEvent's active-workflow guard
+		// rejects the fresh "testing" trigger a human-review recovery issues,
+		// so only ResumeStalled's accidental re-dispatch against this same
+		// stale Execution can move the task — racing a concurrent recovery
+		// attempt and letting a later genuine PASS still land on a task
+		// re-parked at human-required by an unrelated stale completion.
+		now := time.Now()
+		fresh.Workflow.CurrentStep = ""
+		fresh.Workflow.State = ExecCompleted
+		fresh.Workflow.CompletedAt = &now
+>>>>>>> refs/remotes/origin/main
 		if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
 			e.logger.Warn("workflow.skill-receipt.clear", "task_id", taskID, "step", spawnedStep, "err", err)
 		}
+		summary := skillReceiptExhaustionSummary(output)
 		reason := fmt.Sprintf("mandatory workflow skill %q produced no conformance receipt after automatic recovery retry", run.RequestedSkill)
+		if summary != "" {
+			reason += ": " + summary
+		}
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 			e.logger.Error("workflow.skill-receipt.human-required", "task_id", taskID, "step", spawnedStep, "err", statusErr)
 		}
-		e.logger.Warn("workflow.skill-receipt.exhausted", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill)
+		e.logger.Warn("workflow.skill-receipt.exhausted", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill, "summary", summary)
+		e.fireComplete(&CompletionInfo{
+			TaskID:     taskID,
+			WorkflowID: fresh.Workflow.WorkflowID,
+			Variables:  maps.Clone(fresh.Workflow.Variables),
+		})
 		return true
 	}
 	e.captureSkillReceiptDiagnostics(taskID, spawnedStep, currentStep, fresh)

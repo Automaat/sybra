@@ -246,27 +246,72 @@ func TestBuildRunPatchDowngradesConformanceWhenReceiptMissing(t *testing.T) {
 	}
 }
 
-// TestBuildRunPatchSkipsReceiptForSchemaEnforcedRun pins the schema exemption:
-// a run enforcing a provider output schema returns schema-valid JSON and can
-// never carry the trailing receipt comment, so its pre-execution
-// ConformanceExact must survive unchanged (not downgrade to Unverified) — the
-// downgrade would self-escalate every real schema+skill run to human-required.
-func TestBuildRunPatchSkipsReceiptForSchemaEnforcedRun(t *testing.T) {
+// TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema is the regression
+// guard for #2235: a step enforcing OutputSchema constrains the agent's
+// final response to a structured payload with no room for a trailing
+// receipt line, so resolveWorkflowSkillPrompt never asks for one there. A
+// result with no receipt marker must not be downgraded to
+// ConformanceUnverified in that case — the schema enforcement itself stands
+// in as the conformance signal. Provider is pinned to "claude" explicitly
+// (rather than left empty) so this asserts the real provider-capability
+// gate rather than incidentally passing via lookupProvider's unrelated
+// empty-defaults-to-claude fallback — see
+// TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema for the
+// sibling case that would catch a provider actually ignoring the schema.
+func TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		conformance string
+	}{
+		{"exact_without_receipt", skillattr.ConformanceExact},
+		{"fallback_without_receipt", skillattr.ConformanceFallback},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ag := &agent.Agent{
+				ID:                      "ag-1",
+				TaskID:                  "task-1",
+				Name:                    agent.RoleTestRunner.AgentName("Test"),
+				Provider:                "claude",
+				RequestedSkill:          "sybra-test",
+				ResolvedSkillSourceHash: "deadbeefcafebabe",
+				SkillConformance:        tc.conformance,
+				OutputSchema:            `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+			}
+			patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS"}`, nil)
+			if patch.SkillConformance == nil || *patch.SkillConformance != tc.conformance {
+				t.Fatalf("SkillConformance = %v, want unchanged %q", patch.SkillConformance, tc.conformance)
+			}
+		})
+	}
+}
+
+// TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema guards the
+// adversarial-review follow-up to #2235: copilot never applies
+// RunConfig.OutputSchema, so a run routed to it under cross-provider
+// failover still got the receipt instruction (resolveWorkflowSkillPrompt)
+// and must still be verified here. Gating on OutputSchema's mere presence
+// instead of the real provider would wrongly skip the downgrade and record a
+// copilot run that ignored the skill as falsely conformant.
+func TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema(t *testing.T) {
 	t.Parallel()
 
 	ag := &agent.Agent{
 		ID:                      "ag-1",
 		TaskID:                  "task-1",
 		Name:                    agent.RoleTestRunner.AgentName("Test"),
+		Provider:                "copilot",
 		RequestedSkill:          "sybra-test",
 		ResolvedSkillSourceHash: "deadbeefcafebabe",
-		SkillConformance:        skillattr.ConformanceExact,
+		SkillConformance:        skillattr.ConformanceFallback,
+		OutputSchema:            `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
 	}
-	ag.SetHasOutputSchema(true)
-
-	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS","outcome":"pass"}`, nil)
-	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceExact {
-		t.Fatalf("SkillConformance = %v, want %q (schema-enforced run is receipt-exempt)", patch.SkillConformance, skillattr.ConformanceExact)
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "TEST_VERDICT: PASS", nil)
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceUnverified {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceUnverified)
 	}
 }
 

@@ -132,6 +132,41 @@ func TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch(t *testing.T) {
 	}
 }
 
+// TestStartAgentWithAssignment_PropagatesOutputSchema is the regression guard
+// for #2235's second finding: outputSchema used to be silently dropped on
+// this path (the common implementation-role, no-pre-staged-worktree
+// dispatch that agentAdapter.StartAgent delegates to), so a future
+// implementation-role step declaring output_schema would hit the exact
+// receipt-vs-schema conflict this issue fixed, with none of that fix's
+// protection engaging since Agent.OutputSchema would stay empty.
+func TestStartAgentWithAssignment_PropagatesOutputSchema(t *testing.T) {
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+	am := newFakeClaudeManager(t, 1)
+
+	noPermissions := false
+	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+		Agent: config.AgentDefaults{
+			ResearchMachineDir: t.TempDir(),
+			RequirePermissions: &noPermissions,
+		},
+	})
+
+	tk := newResearchTask(t, tm, "schema-enforced dispatch")
+	schema := `{"type":"object","properties":{"verdict":{"type":"string"}}}`
+	ag, _, err := o.StartAgentWithAssignment(tk.ID, "headless", "go", false, false, "", schema, workflow.AgentAssignment{})
+	if err != nil {
+		t.Fatalf("StartAgentWithAssignment: %v", err)
+	}
+	t.Cleanup(func() { am.KillAgentsForTask(tk.ID, 5*time.Second) })
+	if ag.OutputSchema != schema {
+		t.Fatalf("Agent.OutputSchema = %q, want %q", ag.OutputSchema, schema)
+	}
+}
+
 func TestStartPRFixAgent_TaskCostExceededBlocksDispatch(t *testing.T) {
 	t.Parallel()
 

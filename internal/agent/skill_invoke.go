@@ -91,6 +91,7 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, prov Provider) erro
 	cfg.SkillExecutionMode = resolution.mode
 	cfg.ResolvedSkillSourceHash = resolution.sourceHash
 	cfg.SkillConformance = resolution.conformance
+<<<<<<< HEAD
 	// A trailing conformance receipt is unsatisfiable when the provider is
 	// forced to emit schema-valid JSON (--json-schema / --output-schema): the
 	// LAST line cannot be an HTML comment. Skip the receipt only for runs the
@@ -108,17 +109,58 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, prov Provider) erro
 		// verify conformance from the transcript rather than trusting
 		// delivery mode alone.
 		if wantReceipt {
+=======
+	// A step that also enforces OutputSchema constrains the model's final
+	// response to a structured tool-call payload with no room for a trailing
+	// comment line, so the receipt instruction below can never be satisfied.
+	// The schema itself, enforced via structured output, is already a
+	// stronger conformance signal than a string match — skip the receipt.
+	// Gated on the resolved provider actually applying the schema (see
+	// Provider.SupportsOutputSchema): a provider that silently drops it (e.g.
+	// copilot) falls back to the step's own plain-text contract, which has
+	// room for a receipt line same as any other unschemed run.
+	schemaEnforced := cfg.OutputSchema != "" && ProviderSupportsOutputSchema(providerName)
+	switch resolution.mode {
+	case skillattr.ExecutionModeNative:
+		// Native invocation alone doesn't prove the model actually followed
+		// it — append the same deterministic receipt instruction
+		// injected/fallback runs get, so completion can verify conformance
+		// from the transcript rather than trusting delivery mode alone.
+		if !schemaEnforced {
+>>>>>>> refs/remotes/origin/main
 			cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
 		}
 	case skillattr.ExecutionModeInjected, skillattr.ExecutionModeFallback:
 		cfg.Prompt = injectWorkflowSkillPrompt(cfg.Prompt, providerName, resolution)
+<<<<<<< HEAD
 		if wantReceipt {
+=======
+		if !schemaEnforced {
+>>>>>>> refs/remotes/origin/main
 			cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
 		}
 	default:
 		cfg.Prompt = unavailableWorkflowSkillPrompt(cfg.Prompt, providerName, resolution.name)
 	}
 	return nil
+}
+
+// ProviderSupportsOutputSchema reports whether providerName's resolved
+// Provider actually applies RunConfig.OutputSchema. An empty or unresolvable
+// name falls back to false — the same fail-closed default baseProvider
+// uses. Checked explicitly rather than delegating an empty name to
+// lookupProvider, whose own empty-defaults-to-claude fallback exists for a
+// different purpose (a legacy caller that never set Provider) and would
+// otherwise silently resolve to true here.
+func ProviderSupportsOutputSchema(providerName string) bool {
+	if strings.TrimSpace(providerName) == "" {
+		return false
+	}
+	prov, err := lookupProvider(providerName)
+	if err != nil {
+		return false
+	}
+	return prov.SupportsOutputSchema()
 }
 
 // appendSkillReceiptInstruction appends the deterministic conformance-receipt

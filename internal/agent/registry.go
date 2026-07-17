@@ -64,6 +64,9 @@ type Record struct {
 	// SkillConformance preserves whether the resolved source exactly matched,
 	// fell back, or was unavailable.
 	SkillConformance string `yaml:"skill_conformance,omitempty"`
+	// OutputSchema preserves whether this run enforces structured output, so a
+	// reattached completion still knows to skip the skill-receipt requirement.
+	OutputSchema string `yaml:"output_schema,omitempty"`
 	// SkillRecoveryAttempt preserves whether this live run is the workflow
 	// engine's automatic second-chance retry after a missing conformance
 	// receipt.
