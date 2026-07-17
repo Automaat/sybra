@@ -240,8 +240,11 @@ func TestResolveWorkflowSkillPrompt_NativeCodexSkill(t *testing.T) {
 	if cfg.ResolvedSkillSourceHash != "" {
 		t.Fatalf("ResolvedSkillSourceHash = %q, want empty for native skill", cfg.ResolvedSkillSourceHash)
 	}
-	if cfg.Prompt != "Run /sybra-test now." {
-		t.Fatalf("Prompt = %q, want unchanged native invocation", cfg.Prompt)
+	if !strings.HasPrefix(cfg.Prompt, "Run /sybra-test now.") {
+		t.Fatalf("Prompt = %q, want native invocation preserved as a prefix", cfg.Prompt)
+	}
+	if !strings.Contains(cfg.Prompt, skillattr.ReceiptMarker("sybra-test", "")) {
+		t.Fatalf("Prompt missing skill-conformance receipt instruction:\n%s", cfg.Prompt)
 	}
 }
 
@@ -277,6 +280,9 @@ func TestResolveWorkflowSkillPrompt_InjectedFromCrossProviderPath(t *testing.T) 
 	if strings.Contains(cfg.Prompt, "\nRun /sybra-test now.") {
 		t.Fatalf("Prompt still contains raw slash invocation:\n%s", cfg.Prompt)
 	}
+	if !strings.Contains(cfg.Prompt, skillattr.ReceiptMarker("sybra-test", cfg.ResolvedSkillSourceHash)) {
+		t.Fatalf("Prompt missing skill-conformance receipt instruction:\n%s", cfg.Prompt)
+	}
 }
 
 func TestResolveWorkflowSkillPrompt_UsesBundledFallback(t *testing.T) {
@@ -303,6 +309,9 @@ func TestResolveWorkflowSkillPrompt_UsesBundledFallback(t *testing.T) {
 	}
 	if !strings.Contains(cfg.Prompt, "bundled skill fallback") {
 		t.Fatalf("Prompt missing bundled fallback marker:\n%s", cfg.Prompt)
+	}
+	if !strings.Contains(cfg.Prompt, skillattr.ReceiptMarker("sybra-test", cfg.ResolvedSkillSourceHash)) {
+		t.Fatalf("Prompt missing skill-conformance receipt instruction:\n%s", cfg.Prompt)
 	}
 }
 
@@ -333,6 +342,9 @@ func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
 	}
 	if strings.Contains(cfg.Prompt, "\nRun /missing-skill now.") {
 		t.Fatalf("Prompt still contains raw slash invocation:\n%s", cfg.Prompt)
+	}
+	if strings.Contains(cfg.Prompt, skillattr.ReceiptTag) {
+		t.Fatalf("Prompt must not request a conformance receipt when the skill is unavailable:\n%s", cfg.Prompt)
 	}
 }
 
