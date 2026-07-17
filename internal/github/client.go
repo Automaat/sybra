@@ -377,7 +377,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 	}
 
 	var ciStatus string
-	var hasPendingChecks bool
+	var hasPendingChecks, ciFlaky bool
 	var headSHA string
 	if len(n.Commits.Nodes) > 0 {
 		headSHA = n.Commits.Nodes[0].Commit.OID
@@ -399,6 +399,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 					}
 				}
 			}
+			ciFlaky = ciStatus == "FAILURE" && flakyOnlyFailure(rollup.Contexts.Nodes)
 		}
 	}
 
@@ -460,6 +461,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		Labels:            labels,
 		CIStatus:          ciStatus,
 		HasPendingChecks:  hasPendingChecks,
+		CIFlaky:           ciFlaky,
 		ReviewDecision:    n.ReviewDecision,
 		UnresolvedCount:   unresolved,
 		ActionableCount:   actionable,

@@ -97,7 +97,7 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		return PullRequest{}, false, nil
 	}
 
-	ci, pending, ciFetchOK := fetchCIStatusViaREST(e, owner, name, pr.Head.SHA)
+	ci, pending, flaky, ciFetchOK := fetchCIStatusViaREST(e, owner, name, pr.Head.SHA)
 
 	out := PullRequest{
 		Number:             pr.Number,
@@ -113,6 +113,7 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		Mergeable:          restMergeable(pr.MergeableState),
 		CIStatus:           ci,
 		HasPendingChecks:   pending,
+		CIFlaky:            flaky,
 		AutoMergeEnabled:   pr.AutoMerge != nil,
 		CreatedAt:          pr.CreatedAt,
 		UpdatedAt:          pr.UpdatedAt,
@@ -189,10 +190,11 @@ func restMergeable(state string) string {
 // cancelled-check handling stay identical across both paths. ok reports
 // whether both legs were fetched and parsed successfully — false distinguishes
 // a failed fetch from a genuinely check-free commit, so callers never read an
-// empty CIStatus caused by a failed fetch as green.
-func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pending, ok bool) {
+// empty CIStatus caused by a failed fetch as green. flaky mirrors CIFlaky: set
+// only when status == "FAILURE" (see flakyOnlyFailure).
+func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pending, flaky, ok bool) {
 	if sha == "" {
-		return "", false, false
+		return "", false, false, false
 	}
 	contexts := make([]gqlCheckContext, 0)
 	ok = true
@@ -235,5 +237,6 @@ func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pen
 	}
 
 	st, pend := rollupFromContexts(contexts)
-	return st, pend, ok
+	flaky = st == "FAILURE" && flakyOnlyFailure(contexts)
+	return st, pend, flaky, ok
 }

@@ -388,6 +388,79 @@ func TestConvertPRs_emptyContextsFallsBackToRollupState(t *testing.T) {
 	}
 }
 
+func TestFlakyOnlyFailure(t *testing.T) {
+	t.Parallel()
+	checkRun := func(name, status, conclusion string) gqlCheckContext {
+		return gqlCheckContext{Typename: "CheckRun", Name: name, Status: status, Conclusion: conclusion}
+	}
+
+	tests := []struct {
+		name     string
+		contexts []gqlCheckContext
+		want     bool
+	}{
+		{
+			name: "mixed outcome for one name -> flaky",
+			contexts: []gqlCheckContext{
+				checkRun("e2e", "COMPLETED", "FAILURE"),
+				checkRun("e2e", "COMPLETED", "SUCCESS"),
+			},
+			want: true,
+		},
+		{
+			name: "all-failure name -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRun("e2e", "COMPLETED", "FAILURE"),
+			},
+			want: false,
+		},
+		{
+			name: "failure plus pending (no success) -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRun("e2e", "COMPLETED", "FAILURE"),
+				checkRun("e2e", "IN_PROGRESS", ""),
+			},
+			want: false,
+		},
+		{
+			name: "non-gating-only failure -> not flaky (no gating failure at all)",
+			contexts: []gqlCheckContext{
+				checkRun("codecov/patch", "COMPLETED", "FAILURE"),
+			},
+			want: false,
+		},
+		{
+			name: "one flaky name, one consistently-broken name -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRun("e2e", "COMPLETED", "FAILURE"),
+				checkRun("e2e", "COMPLETED", "SUCCESS"),
+				checkRun("build", "COMPLETED", "FAILURE"),
+			},
+			want: false,
+		},
+		{
+			name: "no failure at all -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRun("build", "COMPLETED", "SUCCESS"),
+			},
+			want: false,
+		},
+		{
+			name:     "empty -> not flaky",
+			contexts: nil,
+			want:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := flakyOnlyFailure(tt.contexts); got != tt.want {
+				t.Errorf("flakyOnlyFailure() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsStabilityCheck(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
