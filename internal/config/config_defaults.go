@@ -852,29 +852,32 @@ func load(opts loadOptions) (*Config, error) {
 	applyHarnessEvolveDefaults(cfg)
 	applyPromptLabDefaults(cfg)
 	applyExperienceDefaults(cfg)
-	abTestingReconciled := applyABTestingDefaults(cfg, opts.persistLoadReconciles)
+	applyABTestingDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 	applyReviewHoldDefaults(cfg)
 	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
 
-	persistLoadReconciles(cfg, opts, existingFile, abTestingReconciled, serverTokenGenerated)
+	persistLoadReconciles(cfg, opts, serverTokenGenerated)
 
 	return cfg, nil
 }
 
-// persistLoadReconciles writes back in-memory-only changes made during load()
-// that must survive a restart: the ab_testing builtin reconcile (existing
-// files only) and a freshly generated server auth token (even for a
-// brand-new install — sybra-server reads Server.AuthToken once at startup,
-// so an unsaved token would silently rotate on every restart and lock
-// operators out).
-func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestingReconciled, serverTokenGenerated bool) {
-	if opts.persistLoadReconciles && existingFile && abTestingReconciled {
-		if saveErr := cfg.Save(); saveErr != nil {
-			slog.Warn("config: failed to persist ab_testing builtin reconcile", "err", saveErr)
-		}
-	}
+// persistLoadReconciles writes back the one in-memory-only change made during
+// load() that must survive a restart: a freshly generated server auth token
+// (even for a brand-new install — sybra-server reads Server.AuthToken once at
+// startup, so an unsaved token would silently rotate on every restart and
+// lock operators out).
+//
+// The ab_testing builtin reconcile deliberately does NOT persist here: unlike
+// a generated secret, reconciled builtin experiments are fully derived from
+// code (abtest.DefaultConfig) and cheap to recompute, so applyABTestingDefaults
+// re-merges them into the in-memory config on every load instead of writing
+// them back. Writing the whole document on every stale-builtin_version load
+// fought any external tool that renders config.yaml declaratively (Ansible,
+// Nix, Chezmoi): Sybra would expand the operator's file on every restart, the
+// tool would see drift and re-render it, Sybra would expand it again.
+func persistLoadReconciles(cfg *Config, opts loadOptions, serverTokenGenerated bool) {
 	if opts.persistLoadReconciles && serverTokenGenerated {
 		if saveErr := cfg.Save(); saveErr != nil {
 			slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
@@ -1044,12 +1047,14 @@ func hasYAMLPath(data []byte, path ...string) bool {
 }
 
 // applyABTestingDefaults fills zero-value A/B testing config and reconciles
-// built-in experiments against the current code defaults. Returns true when
-// a builtin experiment reconcile actually rewrote cfg.ABTesting.Experiments,
-// so the caller knows whether the change needs persisting.
-func applyABTestingDefaults(cfg *Config, persist bool) bool {
+// built-in experiments against the current code defaults. The reconcile is
+// in-memory only and re-runs on every load — it never writes config.yaml, so
+// a config file that pins a stale builtin_version keeps reconciling (and thus
+// keeps taking effect) on every restart instead of drifting until someone
+// bumps the file by hand.
+func applyABTestingDefaults(cfg *Config) {
 	if cfg == nil {
-		return false
+		return
 	}
 	def := abtest.DefaultConfig()
 	if cfg.ABTesting.Enabled == nil {
@@ -1061,27 +1066,22 @@ func applyABTestingDefaults(cfg *Config, persist bool) bool {
 	if len(cfg.ABTesting.Experiments) == 0 {
 		cfg.ABTesting.Experiments = def.Experiments
 		cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
-		return false
+		return
 	}
-	return reconcileBuiltinExperiments(cfg, def, persist)
+	reconcileBuiltinExperiments(cfg, def)
 }
 
 // reconcileBuiltinExperiments refreshes a persisted config's built-in A/B
 // experiments (see abtest.BuiltinExperimentIDs) when they lag the code's
 // current defaults. Experiments outside that ID set — i.e. user-authored —
-// are left untouched. A one-generation backup of the prior experiment list is
-// written before the built-ins are replaced, so a same-ID hand-tuned built-in
-// is recoverable even though reconcile treats the ID as Sybra-owned.
-func reconcileBuiltinExperiments(cfg *Config, def abtest.Config, persist bool) bool {
+// are left untouched. The result lives only in cfg (never written back to
+// config.yaml — see applyABTestingDefaults), so a same-ID hand-tuned built-in
+// stays fully recoverable simply by reading the operator's own file; no
+// separate backup is needed.
+func reconcileBuiltinExperiments(cfg *Config, def abtest.Config) {
 	priorVersion := cfg.ABTesting.BuiltinVersionValue()
 	if priorVersion >= def.BuiltinVersionValue() {
-		return false
-	}
-	if persist {
-		if err := backupABTestingExperiments(cfg.ABTesting.Experiments, priorVersion); err != nil {
-			slog.Warn("config: ab_testing builtin reconcile backup failed; skipping refresh", "err", err)
-			return false
-		}
+		return
 	}
 	builtin := make(map[string]bool, len(abtest.BuiltinExperimentIDs))
 	for _, id := range abtest.BuiltinExperimentIDs {
@@ -1097,32 +1097,6 @@ func reconcileBuiltinExperiments(cfg *Config, def abtest.Config, persist bool) b
 	cfg.ABTesting.Experiments = kept
 	cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
 	slog.Info("config: ab_testing builtin experiments reconciled", "builtin_version", def.BuiltinVersionValue())
-	return true
-}
-
-// abTestingBackupPath returns the version-stamped backup path written before a
-// builtin reconcile overwrites persisted experiments. Each prior builtin
-// version keeps its own snapshot so successive builtin-version bumps do not
-// destroy the true pre-migration original.
-func abTestingBackupPath(priorVersion int) string {
-	return filepath.Join(HomeDir(), fmt.Sprintf("config.ab_testing.backup.v%d.yaml", priorVersion))
-}
-
-type abTestingBackup struct {
-	PriorBuiltinVersion int                 `yaml:"prior_builtin_version"`
-	Experiments         []abtest.Experiment `yaml:"experiments"`
-}
-
-func backupABTestingExperiments(experiments []abtest.Experiment, priorVersion int) error {
-	data, err := yaml.Marshal(abTestingBackup{PriorBuiltinVersion: priorVersion, Experiments: experiments})
-	if err != nil {
-		return err
-	}
-	path := abTestingBackupPath(priorVersion)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
 }
 
 // applyWatchdogDefaults fills the Watchdog model default. Enabled and
