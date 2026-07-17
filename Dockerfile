@@ -92,7 +92,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 # --- Layer C: node CLIs (claude code + codex + opencode), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.204
+ARG CLAUDE_CODE_VERSION=2.1.210
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.142.5
 # renovate: datasource=npm depName=opencode-ai
@@ -115,7 +115,7 @@ RUN npm install -g \
 # own tool (npm ci, uv sync, cargo build, ./.sybra/bootstrap.sh …).
 #
 # renovate: datasource=github-releases depName=jdx/mise
-ARG MISE_VERSION=v2026.7.5
+ARG MISE_VERSION=v2026.7.7
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64) MISE_ARCH=x64 ;; \
