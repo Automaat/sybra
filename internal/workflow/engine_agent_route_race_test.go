@@ -87,11 +87,11 @@ func TestExecRunAgent_CompletionRacingRouteRegistrationIsNotDropped(t *testing.T
 	}
 }
 
-// TestCheckOrBufferForTaskStep_BufferedBeforeUnmarkIsDelivered is the happy
+// TestResolveCompletionRoute_BufferedBeforeUnmarkIsDelivered is the happy
 // path underlying the test above, isolated at the bookkeeping level: a
 // completion that arrives while a start is pending is captured, and the
 // matching unmark call pops exactly it back out.
-func TestCheckOrBufferForTaskStep_BufferedBeforeUnmarkIsDelivered(t *testing.T) {
+func TestResolveCompletionRoute_BufferedBeforeUnmarkIsDelivered(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -99,7 +99,7 @@ func TestCheckOrBufferForTaskStep_BufferedBeforeUnmarkIsDelivered(t *testing.T) 
 
 	engine.markStepStarting("t1", "s1")
 	c := AgentCompletion{AgentID: "agent-1", Success: true}
-	if status := engine.checkOrBufferForTaskStep("t1", "s1", c); status != taskStepBuffered {
+	if _, status := engine.resolveCompletionRoute("t1", "s1", c); status != taskStepBuffered {
 		t.Fatalf("status = %v, want taskStepBuffered", status)
 	}
 
@@ -109,20 +109,20 @@ func TestCheckOrBufferForTaskStep_BufferedBeforeUnmarkIsDelivered(t *testing.T) 
 	}
 }
 
-// TestCheckOrBufferForTaskStep_NeverStrandsAcrossUnmarkRace is the adversarial
-// review's finding: a prior version checked pendingStepStart and appended to
-// pendingCompletions as two separate locked operations, so an unmark that won
-// the race against the buffer write would pop an empty list, and the
-// completion would then land in a pendingCompletions entry nothing would ever
-// pop again — a silent, permanent stall reproducing #2176 through the fix
-// meant to close it.
+// TestResolveCompletionRoute_NeverStrandsAcrossUnmarkRace is the first
+// adversarial review's finding: a prior version checked pendingStepStart and
+// appended to pendingCompletions as two separate locked operations, so an
+// unmark that won the race against the buffer write would pop an empty list,
+// and the completion would then land in a pendingCompletions entry nothing
+// would ever pop again — a silent, permanent stall reproducing #2176 through
+// the fix meant to close it.
 //
-// checkOrBufferForTaskStep and unmarkStepStartingAndTakePending now share one
+// resolveCompletionRoute and unmarkStepStartingAndTakePending now share one
 // lock acquisition each, so the two operations can't interleave — this test
 // drives them in the exact bad order (unmark first, buffer attempt second)
 // and asserts the completion is reported taskStepFree, not silently
 // swallowed into taskStepBuffered.
-func TestCheckOrBufferForTaskStep_NeverStrandsAcrossUnmarkRace(t *testing.T) {
+func TestResolveCompletionRoute_NeverStrandsAcrossUnmarkRace(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -136,15 +136,46 @@ func TestCheckOrBufferForTaskStep_NeverStrandsAcrossUnmarkRace(t *testing.T) {
 	}
 
 	c := AgentCompletion{AgentID: "agent-1", Success: true}
-	if status := engine.checkOrBufferForTaskStep("t1", "s1", c); status == taskStepBuffered {
+	if _, status := engine.resolveCompletionRoute("t1", "s1", c); status == taskStepBuffered {
 		t.Fatal("completion was buffered after its start's unmark already ran — nothing will ever pop it, reproducing #2176")
 	}
 }
 
-// TestClearAgentStepsForTask_DropsBufferedCompletions covers the adversarial
-// review's third finding: a completion buffered for a superseded dispatch
-// attempt must not survive the (re)dispatch that stops and supersedes it,
-// the same way its agentRoutes entry does not.
+// TestResolveCompletionRoute_OwnRouteOverridesRoutedPhantomCheck is the
+// second adversarial review's finding: HandleAgentComplete used to look up
+// c.AgentID's own route (lookupAgentStep) and then, if that missed, run the
+// untracked-fallback check (then checkOrBufferForTaskStep) as a *separate*
+// critical section. A route for c.AgentID registering in the gap between the
+// two made the second call see its own agent's brand-new route as "some
+// other agent already owns this step" and delete it via clearAgentStep —
+// dropping the completion permanently. resolveCompletionRoute checks
+// agentRoutes[c.AgentID] directly, inside the same critical section as the
+// task+step scan, so an agent with its own registered route is always
+// reported taskStepTracked, never taskStepRouted.
+func TestResolveCompletionRoute_OwnRouteOverridesRoutedPhantomCheck(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	engine.mu.Lock()
+	engine.agentRoutes["agent-1"] = agentRoute{taskID: "t1", stepID: "s1"}
+	engine.mu.Unlock()
+
+	c := AgentCompletion{AgentID: "agent-1", Success: true}
+	spawnedStep, status := engine.resolveCompletionRoute("t1", "s1", c)
+	if status != taskStepTracked {
+		t.Fatalf("status = %v, want taskStepTracked: the completion's own agent owns this exact route", status)
+	}
+	if spawnedStep != "s1" {
+		t.Fatalf("spawnedStep = %q, want s1", spawnedStep)
+	}
+}
+
+// TestClearAgentStepsForTask_DropsBufferedCompletions covers the first
+// adversarial review's third finding: a completion buffered for a superseded
+// dispatch attempt must not survive the (re)dispatch that stops and
+// supersedes it, the same way its agentRoutes entry does not.
 func TestClearAgentStepsForTask_DropsBufferedCompletions(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -153,7 +184,7 @@ func TestClearAgentStepsForTask_DropsBufferedCompletions(t *testing.T) {
 
 	engine.markStepStarting("t1", "s1")
 	c := AgentCompletion{AgentID: "agent-1", Success: true}
-	if status := engine.checkOrBufferForTaskStep("t1", "s1", c); status != taskStepBuffered {
+	if _, status := engine.resolveCompletionRoute("t1", "s1", c); status != taskStepBuffered {
 		t.Fatalf("status = %v, want taskStepBuffered", status)
 	}
 

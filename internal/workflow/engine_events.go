@@ -255,33 +255,42 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	// flight for that task+step. If one is, this is a phantom completion (e.g.
 	// a manual implementation agent completing during a code_review step) and
 	// must be dropped to prevent it from advancing the wrong step.
-	spawnedStep, tracked := e.lookupAgentStep(c.AgentID)
+	//
+	// This used to be two separate e.mu critical sections: lookupAgentStep,
+	// then (if untracked) checkOrBufferForTaskStep. execRunAgent could write
+	// c.AgentID's route into the gap between them, and the second call would
+	// then see its own agent's brand-new route as "some other agent already
+	// owns this step" — clearAgentStep deleted the route that call had just
+	// written, recreating the #2176 hang through a different pair of critical
+	// sections than the ones the first fix closed (an adversarial review's
+	// second pass). resolveCompletionRoute folds both checks into one.
+	spawnedStep, routeStatus := e.resolveCompletionRoute(taskID, t.Workflow.CurrentStep, c)
 	defs := completionDefinitionCache{engine: e, task: t}
-	if !tracked {
-		spawnedStep = t.Workflow.CurrentStep
-		switch e.checkOrBufferForTaskStep(taskID, spawnedStep, c) {
-		case taskStepRouted:
-			e.logger.Info("workflow.agent-complete.bail",
-				"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-ignored", "current_step", spawnedStep)
-			e.clearAgentStep(c.AgentID)
-			return
-		case taskStepBuffered:
-			// The step's own execRunAgent call is still registering its route
-			// (StartAgent returned but agentRoutes isn't written yet) — this is
-			// almost certainly that agent's own completion beating the
-			// bookkeeping, not a stale phantom. Dropping it here is the #2176
-			// hang: the workflow never gets another completion for this step.
-			// The buffer write and its eventual pop in
-			// unmarkStepStartingAndTakePending are a single e.mu-guarded step
-			// each, so a completion can never land in the gap between them and
-			// be left with nothing to deliver it.
-			e.logger.Info("workflow.agent-complete.buffered",
-				"task_id", taskID, "agent_id", c.AgentID, "reason", "start-in-flight", "current_step", spawnedStep)
-			return
-		case taskStepFree:
-			// Neither a route nor a pending start for this task+step — the
-			// role/current-step fallback below decides.
-		}
+	switch routeStatus {
+	case taskStepTracked:
+		// c.AgentID owns spawnedStep. Falls through to the advancement logic
+		// below exactly as the pre-#2176 tracked path always did.
+	case taskStepRouted:
+		e.logger.Info("workflow.agent-complete.bail",
+			"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-ignored", "current_step", spawnedStep)
+		e.clearAgentStep(c.AgentID)
+		return
+	case taskStepBuffered:
+		// The step's own execRunAgent call is still registering its route
+		// (StartAgent returned but agentRoutes isn't written yet) — this is
+		// almost certainly that agent's own completion beating the
+		// bookkeeping, not a stale phantom. Dropping it here is the #2176
+		// hang: the workflow never gets another completion for this step.
+		// unmarkStepStartingAndTakePending pops this same buffer while
+		// still holding the mutex it used to clear the pending-start
+		// marker, so a completion can never land in the gap between the
+		// two and be left with nothing to deliver it.
+		e.logger.Info("workflow.agent-complete.buffered",
+			"task_id", taskID, "agent_id", c.AgentID, "reason", "start-in-flight", "current_step", spawnedStep)
+		return
+	case taskStepFree:
+		// Neither a route nor a pending start exists for this task+step, so
+		// the role match below is what decides.
 		if runRole := agentRunRole(t.AgentRuns, c.AgentID); runRole != "" {
 			if def, ok := defs.get(); ok && !untrackedCompletionMatchesCurrentStep(def, spawnedStep, runRole) {
 				e.logger.Info("workflow.agent-complete.bail",
@@ -426,16 +435,19 @@ func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
 	return e.pendingStepStart[pendingStepStartKey(taskID, stepID)] > 0
 }
 
-// taskStepStatus is checkOrBufferForTaskStep's verdict for an untracked
-// completion against a task+step pair.
+// taskStepStatus is resolveCompletionRoute's verdict for an agent completion.
 type taskStepStatus int
 
 const (
 	// taskStepFree means no route and no pending start — HandleAgentComplete
 	// falls through to its other untracked-completion handling.
 	taskStepFree taskStepStatus = iota
-	// taskStepRouted means an agentRoutes entry already exists — some other
-	// agent legitimately owns this step, so the completion is a phantom.
+	// taskStepTracked means c.AgentID itself has a registered route — the
+	// normal, common case: deliver as a tracked completion.
+	taskStepTracked
+	// taskStepRouted means some other agent's agentRoutes entry already
+	// exists for this task+step — that agent legitimately owns it, so the
+	// completion is a phantom.
 	taskStepRouted
 	// taskStepBuffered means a run_agent start is in flight — StartAgent came
 	// back but its route isn't registered yet — and the completion was
@@ -443,36 +455,39 @@ const (
 	taskStepBuffered
 )
 
-// checkOrBufferForTaskStep resolves an untracked completion against
-// taskID+stepID and, for the in-flight-start case, buffers it in the same
-// critical section as the check. A prior version of this logic checked
-// pendingStepStart and appended to pendingCompletions as two separate
-// e.mu-guarded operations; a completion could then land in the gap between
-// them, right as the matching execRunAgent's deferred cleanup (see
-// unmarkStepStartingAndTakePending) ran through and found nothing to
-// deliver — stranding the completion in a pendingCompletions entry nothing
-// would ever pop again, reproducing the #2176 hang the buffering was meant
-// to close (caught by adversarial review, not exercised by
-// TestExecRunAgent_CompletionRacingRouteRegistrationIsNotDropped, whose
-// gated StartAgent only forces the earlier agentRoutes-registration race).
-// One lock acquisition for both the check and the buffer write closes that
-// gap: whichever of this call or unmarkStepStartingAndTakePending's own
-// atomic pop runs second for a given key is guaranteed to see the other's
-// effect.
-func (e *Engine) checkOrBufferForTaskStep(taskID, stepID string, c AgentCompletion) taskStepStatus {
+// resolveCompletionRoute is HandleAgentComplete's single atomic resolution of
+// an agent completion against the engine's route and pending-start state.
+//
+// This used to be three separate e.mu critical sections across two functions
+// (an agentRoutes[c.AgentID] lookup, then — if that missed — a checkOrBuffer
+// pass combining an agentRoutes scan with a pendingStepStart/pendingCompletions
+// check). Two rounds of adversarial review each found a real stranding path
+// through a different pair of those sections: a completion could land in the
+// gap between the pendingStepStart check and the pendingCompletions write and
+// never be popped, or c.AgentID's own route could register in the gap between
+// the first lookup and the second section's scan, making that scan see the
+// agent's own brand-new route as "someone else owns this step" and delete it
+// via clearAgentStep. One critical section for the whole decision closes both
+// gaps: nothing else can observe or mutate agentRoutes/pendingStepStart/
+// pendingCompletions partway through.
+func (e *Engine) resolveCompletionRoute(taskID, currentStep string, c AgentCompletion) (spawnedStep string, status taskStepStatus) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if entry, ok := e.agentRoutes[c.AgentID]; ok {
+		return entry.stepID, taskStepTracked
+	}
+	spawnedStep = currentStep
 	for _, entry := range e.agentRoutes {
-		if entry.taskID == taskID && entry.stepID == stepID {
-			return taskStepRouted
+		if entry.taskID == taskID && entry.stepID == spawnedStep {
+			return spawnedStep, taskStepRouted
 		}
 	}
-	key := pendingStepStartKey(taskID, stepID)
+	key := pendingStepStartKey(taskID, spawnedStep)
 	if e.pendingStepStart[key] <= 0 {
-		return taskStepFree
+		return spawnedStep, taskStepFree
 	}
 	e.pendingCompletions[key] = append(e.pendingCompletions[key], c)
-	return taskStepBuffered
+	return spawnedStep, taskStepBuffered
 }
 
 func pendingStepStartKey(taskID, stepID string) string {
@@ -535,11 +550,11 @@ func (e *Engine) markStepStarting(taskID, stepID string) {
 }
 
 // unmarkStepStartingAndTakePending clears one markStepStarting mark and, in
-// the same critical section, pops any completions checkOrBufferForTaskStep
-// buffered for this key. Splitting the unmark from the pop into two separate
-// lock acquisitions was the #2176-review-caught bug: a completion could be
-// buffered in the gap between them and never be popped by anything again.
-// The caller (execRunAgent's deferred cleanup) redelivers what this returns.
+// the same critical section, pops any completions resolveCompletionRoute
+// buffered for this key. A #2176 review found that two separate critical
+// sections for the unmark and the pop let a completion get buffered in the
+// gap between them, with nothing ever popping it again. The caller
+// (execRunAgent's deferred cleanup) redelivers what this returns.
 func (e *Engine) unmarkStepStartingAndTakePending(taskID, stepID string) []AgentCompletion {
 	e.mu.Lock()
 	key := pendingStepStartKey(taskID, stepID)
@@ -574,7 +589,7 @@ func (e *Engine) clearAgentStep(agentID string) {
 // provider-error completion lands on the still-current run_test step and burns
 // the retry budget before the retry agent has produced a verdict.
 //
-// Also drops any completion checkOrBufferForTaskStep buffered for this task
+// Also drops any completion resolveCompletionRoute buffered for this task
 // under the same supersession: a buffered completion is exactly as stale as
 // an agentRoutes entry once the agent that would have owned it is stopped,
 // and the new dispatch's own unmarkStepStartingAndTakePending call has no way
