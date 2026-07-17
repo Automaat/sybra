@@ -97,13 +97,22 @@ func isolateHTTPCLITestHome(t *testing.T, home string) {
 	t.Setenv(serverTargetEnv, "")
 }
 
+func useDefaultHTTPCLIHome(t *testing.T, home string) string {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("SYBRA_HOME", "")
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+	return filepath.Join(config.HomeDir(), "tasks")
+}
+
 func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 	home := t.TempDir()
-	tasksDir := filepath.Join(home, "tasks")
+	tasksDir := useDefaultHTTPCLIHome(t, home)
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	isolateHTTPCLITestHome(t, home)
 
 	code, out := runCLI(t, "--json", "create", "--title", "http mode target")
 	if code != 0 {
@@ -158,11 +167,10 @@ func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 
 func TestUpdate_FailsClosedWhenNoServerAndFilesystemReadOnly(t *testing.T) {
 	home := t.TempDir()
-	tasksDir := filepath.Join(home, "tasks")
+	tasksDir := useDefaultHTTPCLIHome(t, home)
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	isolateHTTPCLITestHome(t, home)
 
 	code, out := runCLI(t, "--json", "create", "--title", "no server target")
 	if code != 0 {
@@ -189,11 +197,10 @@ func TestUpdate_FailsClosedWhenNoServerAndFilesystemReadOnly(t *testing.T) {
 
 func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 	home := t.TempDir()
-	tasksDir := filepath.Join(home, "tasks")
+	tasksDir := useDefaultHTTPCLIHome(t, home)
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	isolateHTTPCLITestHome(t, home)
 
 	code, out := runCLI(t, "--json", "create", "--title", "server error target")
 	if code != 0 {
