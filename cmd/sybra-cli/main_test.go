@@ -605,9 +605,39 @@ func TestConfigDoctorJSONReportsIncompleteK8sSecretEnv(t *testing.T) {
 	var report configDoctorReport
 	mustUnmarshal(t, out, &report)
 	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
-		return f.Severity == "error" && strings.Contains(f.Message, "secret_env[0]") && strings.Contains(f.Message, "secret_key is empty")
+		return f.Severity == "error" && strings.Contains(f.Message, "secret_env[0]") && strings.Contains(f.Message, "missing secret_key")
 	}) {
-		t.Fatalf("expected secret_env[0] secret_key error in report: %+v", report.Findings)
+		t.Fatalf("expected secret_env[0] missing secret_key error in report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONReportsAllMissingK8sSecretEnvFields(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.Mode = "provider"
+	cfg.Agent.K8sJobs.SecretEnv = []config.K8sJobSecretEnvVar{
+		{Name: "", SecretName: "", SecretKey: ""},
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for an empty secret_env entry, output:\n%s", out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "error" &&
+			strings.Contains(f.Message, "secret_env[0]") &&
+			strings.Contains(f.Message, "name") &&
+			strings.Contains(f.Message, "secret_name") &&
+			strings.Contains(f.Message, "secret_key")
+	}) {
+		t.Fatalf("expected a single secret_env[0] finding listing all three missing fields: %+v", report.Findings)
 	}
 }
 
@@ -637,7 +667,12 @@ func TestConfigDoctorJSONAcceptsCompleteK8sSecretEnv(t *testing.T) {
 	}
 }
 
-func TestConfigDoctorJSONIgnoresK8sSecretEnvWhenModeNotProvider(t *testing.T) {
+func TestConfigDoctorJSONValidatesK8sSecretEnvRegardlessOfMode(t *testing.T) {
+	// baseEnv (internal/agent/k8s_job_runner.go) injects secret_env into the
+	// Job container regardless of agent.k8s_jobs.mode, so an incomplete entry
+	// must be caught even outside mode: provider — a bare mode: fake config
+	// with a stray secret_env entry silently dropped the credential at
+	// runtime before this check existed.
 	setupStore(t)
 
 	cfg := config.DefaultConfig()
@@ -650,8 +685,8 @@ func TestConfigDoctorJSONIgnoresK8sSecretEnvWhenModeNotProvider(t *testing.T) {
 	code, out := captureStdout(t, func() int {
 		return cmdConfigDoctor(cfg, true)
 	})
-	if code != 0 {
-		t.Fatalf("expected fake mode to skip secret_env validation, got %d:\n%s", code, out)
+	if code == 0 {
+		t.Fatalf("expected mode: fake to still validate secret_env, output:\n%s", out)
 	}
 }
 
