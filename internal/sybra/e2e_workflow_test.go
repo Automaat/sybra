@@ -3933,9 +3933,9 @@ func TestE2E_WorkflowMandatorySkill_MissingReceiptRetriesInjectedAndPreservesDia
 	env := setupE2EMultiProvider(t, "codex", []string{"write_sidecar_success_no_receipt", "write_sidecar_success"})
 	writeWorkflowFixture(t, env, "test-mandatory-skill-sidecar", testMandatorySkillSidecarWorkflowYAML)
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 		Artifacts:      env.artifacts,
 	})
