@@ -151,7 +151,7 @@ func TestOnComplete_EmitsPromptRenderedAuditEvent(t *testing.T) {
 
 	h := New(Config{Audit: al, Logger: discardLogger(), Tasks: taskMgr})
 
-	ag := &agent.Agent{TaskID: tk.ID, ID: "agent-rendered", Provider: "codex"}
+	ag := &agent.Agent{TaskID: tk.ID, ID: "agent-rendered", Provider: "codex", Mode: "headless"}
 	ag.SetPromptHash("deadbeef01234567")
 	ag.SetPromptRender("slash-to-dollar", []string{"plan-critic"}, []string{"some-unknown-skill"})
 
@@ -190,6 +190,50 @@ func TestOnComplete_EmitsPromptRenderedAuditEvent(t *testing.T) {
 	for key, val := range ev.Data {
 		if !allowedKeys[key] {
 			t.Errorf("unexpected data key %q = %v — possible prompt-text leak", key, val)
+		}
+	}
+}
+
+func TestOnComplete_SkipsPromptRenderedForInteractiveMode(t *testing.T) {
+	t.Parallel()
+
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = al.Close() })
+
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("interactive task", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "agent-interactive",
+		Role:    "implementation",
+		Mode:    "interactive",
+		State:   "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(Config{Audit: al, Logger: discardLogger(), Tasks: taskMgr})
+
+	// Interactive conversational sessions re-render per turn while prompt_hash
+	// stays pinned to turn 1 — emitting would join turn 1's hash to a later
+	// turn's render (false audit data), so no prompt_rendered must be emitted.
+	ag := &agent.Agent{TaskID: tk.ID, ID: "agent-interactive", Provider: "codex", Mode: "interactive"}
+	ag.SetPromptHash("deadbeef01234567")
+	ag.SetPromptRender("slash-to-dollar", []string{"plan-critic"}, nil)
+
+	h.OnComplete(ag)
+	_ = al.Close()
+
+	events := readAuditEvents(t, auditDir)
+	for _, ev := range events {
+		if ev.Type == audit.EventAgentPromptRendered {
+			t.Errorf("unexpected prompt_rendered event for interactive mode: %+v", ev)
 		}
 	}
 }

@@ -325,12 +325,20 @@ func (h *Handler) emitPermissionDenialAudits(ag *agent.Agent) {
 
 // emitPromptRenderedAudit emits agent.prompt_rendered, correlating this run's
 // provider-specific skill render summary with its dispatch record via
-// prompt_hash. The hash is stamped centrally for every run in newRunningAgent,
-// so this fires for all roles/providers/modes (review, fix-review, pr-fix,
-// human-review, workflow) — not just implementation dispatches. No-ops only for
-// agents constructed outside that path with no hash stamped. Never carries
-// prompt text — only the render summary.
+// prompt_hash. The hash is stamped centrally for every headless run in
+// newRunningAgent, so this fires for every headless role/provider (review,
+// fix-review, pr-fix, human-review, workflow) — not just implementation
+// dispatches. Never carries prompt text — only the render summary.
+//
+// Headless-only by design: a headless run is one-shot, so its (prompt_hash,
+// render) pair is stamped once and stays immutable. Interactive conversational
+// sessions re-render per turn via SetPromptRender while prompt_hash stays
+// pinned to the initial prompt, so emitting here would join turn 1's hash to a
+// later turn's render — false audit data rather than a harmless omission.
 func (h *Handler) emitPromptRenderedAudit(ag *agent.Agent) {
+	if ag.Mode != "headless" {
+		return
+	}
 	hash := ag.GetPromptHash()
 	if hash == "" {
 		return

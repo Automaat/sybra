@@ -285,19 +285,7 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 	}
 
 	if parseErr != nil {
-		if ag.GetErrorKind() == "rate_limit" {
-			h.logger.Warn("human-review.verdict.deferred",
-				"task_id", taskID, "agent_id", ag.ID, "reason", "provider_rate_limited")
-			h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": "provider_rate_limited"})
-			return
-		}
-		h.logger.Warn("human-review.verdict.parse", "task_id", taskID, "agent_id", ag.ID, "err", parseErr)
-		if h.appendNote(taskID, "Auto-review (unparseable verdict)", h.scrubForTask(current.ProjectID, final)) {
-			h.markVerdictRendered(taskID, ag.ID)
-		}
-		h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
-			"decision": "unparseable", "verdict_source": "unparseable", "reason": parseErr.Error(),
-		})
+		h.handleUnparseableVerdict(ag, current, final, parseErr)
 		return
 	}
 	h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
@@ -349,6 +337,43 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 			h.markVerdictRendered(taskID, ag.ID)
 		}
 	}
+}
+
+// handleUnparseableVerdict applies the completion side-effects for a run whose
+// output did not parse into a verdict. It distinguishes retryable failures
+// (rate limit, execution crash) — which defer without latching VerdictRendered
+// so the per-task review budget can re-dispatch — from a clean run that emitted
+// genuinely unparseable/placeholder output, which is latched as a non-retryable
+// failure. The task is known to be in human-required (caller-guarded).
+func (h *humanReviewHandler) handleUnparseableVerdict(ag *agent.Agent, current task.Task, final string, parseErr error) {
+	taskID := ag.TaskID
+	if ag.GetErrorKind() == "rate_limit" {
+		h.logger.Warn("human-review.verdict.deferred",
+			"task_id", taskID, "agent_id", ag.ID, "reason", "provider_rate_limited")
+		h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": "provider_rate_limited"})
+		return
+	}
+	// A run that crashed before emitting a terminal verdict (transient
+	// error_during_execution, provider error) records an exit error and produces
+	// no diagnosis. Marking VerdictRendered here would strand the task in
+	// human-required behind the idempotency gate with no review ever completed.
+	// Defer instead — like the rate_limit branch — so the per-task review budget
+	// can retry. A run that exits cleanly (no exit error) but emits an
+	// unparseable/placeholder verdict is a genuine, non-retryable failure worth
+	// latching, so it falls through to the note below.
+	if ag.GetExitErr() != nil {
+		h.logger.Warn("human-review.verdict.deferred",
+			"task_id", taskID, "agent_id", ag.ID, "reason", "execution_error", "err", parseErr)
+		h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": "execution_error"})
+		return
+	}
+	h.logger.Warn("human-review.verdict.parse", "task_id", taskID, "agent_id", ag.ID, "err", parseErr)
+	if h.appendNote(taskID, "Auto-review (unparseable verdict)", h.scrubForTask(current.ProjectID, final)) {
+		h.markVerdictRendered(taskID, ag.ID)
+	}
+	h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
+		"decision": "unparseable", "verdict_source": "unparseable", "reason": parseErr.Error(),
+	})
 }
 
 // scrubForTask redacts text through the work-project blocklist for

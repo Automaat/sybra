@@ -1123,6 +1123,54 @@ func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
 	}
 }
 
+// TestOnComplete_ExecutionCrashDefersForRetry pins the retry contract: a
+// human-review run that crashes (error_during_execution → exit error) before
+// emitting any verdict must NOT append an unparseable note or latch
+// VerdictRendered, so the per-task review budget can re-dispatch. Latching here
+// would strand the task in human-required with no diagnosis ever completed.
+func TestOnComplete_ExecutionCrashDefersForRetry(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Crashed review", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{AgentID: "hr-crash", Role: string(agent.RoleHumanReview)}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: "hr-crash", TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	// Transient crash before any verdict: error result event + recorded exit
+	// error, no parseable verdict text.
+	ag.SetExitErr(errors.New("provider result error error_during_execution"))
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Subtype: "error_during_execution"})
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if strings.Contains(got.Body, "unparseable verdict") {
+		t.Errorf("crashed human-review must not append unparseable verdict noise; got:\n%s", got.Body)
+	}
+	for _, run := range got.AgentRuns {
+		if run.AgentID == "hr-crash" && run.VerdictRendered {
+			t.Fatal("crashed human-review must not latch verdict_rendered — retry would be blocked")
+		}
+	}
+	if verdictAlreadyRendered(got) {
+		t.Fatal("verdictAlreadyRendered must stay false so the per-task budget can retry")
+	}
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called on execution crash; calls=%d", sink.calls)
+	}
+}
+
 func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	t.Parallel()
 	// h.agents is nil in newReviewTestEnv — if maybeSpawn tries to spawn an
