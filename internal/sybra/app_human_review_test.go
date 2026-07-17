@@ -397,7 +397,7 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 		ID: "t1", Title: "x", Status: task.StatusHumanRequired,
 		Branch: "feat/queue", WorktreeDir: "/data/worktrees/queue",
 	}
-	p := h.buildPrompt(tk, nil)
+	p := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
 	for _, want := range []string{
 		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
 		"never fabricate", "/data/worktrees/queue", "feat/queue",

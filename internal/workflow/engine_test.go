@@ -4487,6 +4487,10 @@ steps:
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) {
+		completed = append(completed, info)
+	})
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -4533,6 +4537,15 @@ steps:
 	}
 	if ti.Workflow.CurrentStep != "" {
 		t.Fatalf("Workflow.CurrentStep = %q, want empty", ti.Workflow.CurrentStep)
+	}
+	if len(completed) != 1 {
+		t.Fatalf("workflow completion callbacks = %d, want 1 exhausted completion for downstream recovery", len(completed))
+	}
+	if completed[0].TaskID != "t1" || completed[0].WorkflowID != "skill-receipt" {
+		t.Fatalf("completion = %+v, want task/workflow ids for exhausted run", completed[0])
+	}
+	if got := completed[0].Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("completion retry var = %q, want cleared before downstream recovery sees completion", got)
 	}
 }
 

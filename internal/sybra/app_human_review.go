@@ -993,6 +993,28 @@ func writeAutonomyMandate(b *strings.Builder) {
 	b.WriteString("3. AUTONOMY — for anything that needed a human, OR that you had to do by hand here, ask: 'how should Sybra have handled this itself?' If there is a real gap, prepare an issue (issue_* fields) describing the gap and the fix so the next occurrence is automatic. Every human-required transition is a bug in Sybra's autonomy until proven otherwise; this issue is often your most valuable output. Do NOT run `gh issue create` yourself — return the payload so the host files it (and scrubs it for work-typed projects).\n\n")
 }
 
+func (h *humanReviewHandler) writePromptTaskDetails(b *strings.Builder, t task.Task, dir string) {
+	fmt.Fprintf(b, "- ID: %s\n- Title: %s\n- Status: %s\n", t.ID, t.Title, t.Status)
+	if t.StatusReason != "" {
+		fmt.Fprintf(b, "- Status reason: %s\n", t.StatusReason)
+	}
+	if t.ProjectID != "" {
+		fmt.Fprintf(b, "- Project: %s\n", t.ProjectID)
+	}
+	if t.PRNumber > 0 {
+		fmt.Fprintf(b, "- PR: #%d\n", t.PRNumber)
+	}
+	if t.WorktreeDir != "" {
+		fmt.Fprintf(b, "- Worktree (this is your working directory — fix/verify/push the task's code here): %s\n", t.WorktreeDir)
+	}
+	if t.Branch != "" {
+		fmt.Fprintf(b, "- Branch: %s\n", t.Branch)
+	}
+	if sybraDir := strings.TrimSpace(h.cfg.HumanReview.SybraRepoDir); sybraDir != "" && sybraDir != dir {
+		fmt.Fprintf(b, "- Sybra's own source tree (cd here to grep/read internal/ when diagnosing a Sybra bug, then cd back to fix the task): %s\n", sybraDir)
+	}
+}
+
 func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScrubContext) string {
 	var b strings.Builder
 	b.WriteString("# Sybra auto-review of human-required transition\n\n")
@@ -1006,25 +1028,7 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScru
 	}
 	writeAutonomyMandate(&b)
 	b.WriteString("## Task\n")
-	fmt.Fprintf(&b, "- ID: %s\n- Title: %s\n- Status: %s\n", t.ID, t.Title, t.Status)
-	if t.StatusReason != "" {
-		fmt.Fprintf(&b, "- Status reason: %s\n", t.StatusReason)
-	}
-	if t.ProjectID != "" {
-		fmt.Fprintf(&b, "- Project: %s\n", t.ProjectID)
-	}
-	if t.PRNumber > 0 {
-		fmt.Fprintf(&b, "- PR: #%d\n", t.PRNumber)
-	}
-	if t.WorktreeDir != "" {
-		fmt.Fprintf(&b, "- Worktree (this is your working directory — fix/verify/push the task's code here): %s\n", t.WorktreeDir)
-	}
-	if t.Branch != "" {
-		fmt.Fprintf(&b, "- Branch: %s\n", t.Branch)
-	}
-	if sybraDir := strings.TrimSpace(h.cfg.HumanReview.SybraRepoDir); sybraDir != "" && sybraDir != dir {
-		fmt.Fprintf(&b, "- Sybra's own source tree (cd here to grep/read internal/ when diagnosing a Sybra bug, then cd back to fix the task): %s\n", sybraDir)
-	}
+	h.writePromptTaskDetails(&b, t, dir)
 	b.WriteString("\n### Task body\n")
 	b.WriteString(strings.TrimSpace(t.Body))
 	b.WriteString("\n\n")
