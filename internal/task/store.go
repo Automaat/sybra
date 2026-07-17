@@ -585,10 +585,21 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 // it here, and the follower's file watcher then dispatches it through the
 // normal workflow. Marshal persists frontmatter + body; sidecars are not
 // written by this path.
+// Put is a blind, verbatim upsert used by the cluster leader/follower mirror
+// — most fields are trusted from the caller with no merge logic. Its #2203
+// stale-status guard reads the existing on-disk task before deciding whether
+// to write, so concurrent Puts for the same ID need external serialization;
+// callers should go through Manager.Put, which holds a per-ID lock around
+// this call, rather than calling Store.Put directly.
 func (s *Store) Put(t Task) (Task, error) {
 	if err := ValidateID(t.ID); err != nil {
 		return Task{}, err
 	}
+	unlock, err := s.lockTask(t.ID)
+	if err != nil {
+		return Task{}, err
+	}
+	defer unlock()
 	now := time.Now().UTC()
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
