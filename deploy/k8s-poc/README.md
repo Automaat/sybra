@@ -422,6 +422,75 @@ cd your-production-overlay
 kustomize edit set image sybra-server:poc=ghcr.io/automaat/sybra-server@sha256:<digest>
 ```
 
+## Job cleanup and log retention
+
+Every agent Job runs with `backoffLimit: 0` and `restartPolicy: Never`
+(`deploy/k8s-poc/deployment.yaml` config, applied in
+`internal/agent/k8s_job_runner.go`), so it reaches a terminal Kubernetes Job
+condition — Complete or Failed — on its first pod exit, success or failure
+alike. Kubernetes' [TTL-after-finished
+controller](https://kubernetes.io/docs/concepts/workloads/controllers/ttlafterfinished/)
+then deletes the Job (and, via its pod's ownerReference, the Pod) once
+`spec.ttlSecondsAfterFinished` elapses from that terminal condition — deleting
+the Pod is also what makes `kubectl logs` on it stop working, so this number
+is really "how long do I have to pull a Job's logs before they're gone."
+
+**Two separate defaults, not one**, because a five-minute window is fine for
+a Job that worked but far too short to debug one that didn't:
+
+- `agent.k8s_jobs.ttl_seconds_after_finished` — applied at Job creation,
+  covers the **successful** case. Default **300s** if unset.
+- `agent.k8s_jobs.failed_ttl_seconds_after_finished` — Kubernetes has no
+  native way to set a different TTL for Failed vs Complete at creation time
+  (`ttlSecondsAfterFinished` is one scalar), so the runner instead PATCHes it
+  onto the Job the moment it observes `status.failed > 0`, before finalizing
+  the agent run. Default **86400s (24h)** if unset — long enough that an
+  operator investigating a page the next morning still has the evidence.
+  Requires the `patch` verb on `batch/jobs` in the Role bound to
+  `sybra-server`'s ServiceAccount (already granted in
+  `deploy/k8s-poc/rbac.yaml`); without it the patch attempt is logged as a
+  warning (`agent.k8s.failed_ttl_patch`) and the Job silently falls back to
+  the success TTL.
+
+Both are configurable per-deployment via the `agent.k8s_jobs` ConfigMap key —
+see `deploy/k8s-poc/config-provider-example.yaml` for the surrounding block.
+
+**Inspecting a failed run before it's cleaned up:**
+
+```bash
+# Sybra's own parsed view — cost, tokens, session id, exit state
+kubectl -n sybra-poc exec deploy/sybra-server -- \
+  curl -sS -X POST 'http://127.0.0.1:8080/api/AgentService/ListAgents' \
+    -H 'Authorization: Bearer poc-token' -H 'Content-Type: application/json' --data '[]' \
+  | jq '.[] | select(.taskId == "<task-id>")'
+
+# Raw provider stdout/stderr for the pod (works until failedTTL elapses)
+kubectl -n sybra-poc logs job/sybra-agent-<agent-id>
+
+# Why the pod itself failed (OOMKilled, image pull error, etc. — not just
+# a nonzero exit from the provider CLI)
+kubectl -n sybra-poc describe pod -l sybra.agent/id=<agent-id>
+```
+
+**Stale Jobs** — a Job that exists in the cluster but no longer maps to an
+agent Sybra is actively tracking, typically after a server crash/restart
+during a run. Every agent Job carries `app.kubernetes.io/name=sybra-agent`,
+`sybra.agent/id=<id>`, and `sybra.task/id=<id>` labels
+(`internal/agent/k8s_job_runner.go`), so today an operator can find candidates
+manually by listing Jobs with that selector and cross-referencing the ids
+against `ListAgents`/`sybra-cli list`:
+
+```bash
+kubectl -n sybra-poc get jobs -l app.kubernetes.io/name=sybra-agent \
+  -o jsonpath='{range .items[*]}{.metadata.labels.sybra\.agent/id}{"\n"}{end}'
+```
+
+Automatically *detecting and pruning* stale Jobs — not just finding them by
+hand — is out of scope here; it's tracked in #2111. Automatically
+*reattaching* to a Job that outlived a server restart, so it stops looking
+stale in the first place, is #2112. This section defines the retention
+policy and the manual inspection path; those two issues own the automation.
+
 ## Real OpenCode testbed e2e
 
 This is the end-to-end path used to prove the PoC with a real model. It uses

@@ -43,6 +43,7 @@ type K8sJobRunnerConfig struct {
 	Image     string
 	Command   []string
 	TTL       int
+	FailedTTL int
 	Mode      string
 	CreatePR  bool
 	Env       []K8sJobEnvVar
@@ -74,6 +75,7 @@ type k8sJobRunner struct {
 	image     string
 	command   []string
 	ttl       int
+	failedTTL int
 	mode      string
 	createPR  bool
 	env       []K8sJobEnvVar
@@ -104,12 +106,17 @@ func newK8sJobRunner(logger *slog.Logger, cfg K8sJobRunnerConfig) *k8sJobRunner 
 	if ttl == 0 {
 		ttl = 300
 	}
+	failedTTL := cfg.FailedTTL
+	if failedTTL == 0 {
+		failedTTL = 86400
+	}
 	return &k8sJobRunner{
 		logger:    logger,
 		namespace: ns,
 		image:     image,
 		command:   append([]string(nil), cfg.Command...),
 		ttl:       ttl,
+		failedTTL: failedTTL,
 		mode:      normalizeK8sRunnerMode(cfg.Mode),
 		createPR:  cfg.CreatePR,
 		env:       append([]K8sJobEnvVar(nil), cfg.Env...),
@@ -188,6 +195,11 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 		}
 		if failed {
 			a.SetExitErr(fmt.Errorf("kubernetes job %s failed", jobName))
+			if r.failedTTL != r.ttl {
+				if perr := r.patchJobTTL(ctx, jobName, r.failedTTL); perr != nil {
+					r.logger.Warn("agent.k8s.failed_ttl_patch", "job", jobName, "err", perr)
+				}
+			}
 		} else {
 			if err := syncK8sGitWorkspace(ctx, cfg.Dir); err != nil {
 				a.SetExitErr(err)
@@ -638,6 +650,34 @@ func (r *k8sJobRunner) jobDone(ctx context.Context, jobName string) (done, faile
 		return true, true, nil
 	}
 	return false, false, nil
+}
+
+// patchJobTTL overrides a Job's ttlSecondsAfterFinished after the fact. The
+// Kubernetes API only accepts a patch content type here (application/json on
+// a Job PATCH 415s), so this bypasses doJSON's fixed Content-Type rather than
+// complicating it for one caller.
+func (r *k8sJobRunner) patchJobTTL(ctx context.Context, jobName string, ttlSeconds int) error {
+	data, err := json.Marshal(map[string]any{"spec": map[string]any{"ttlSecondsAfterFinished": ttlSeconds}})
+	if err != nil {
+		return err
+	}
+	endpoint := "/apis/batch/v1/namespaces/" + url.PathEscape(r.namespace) + "/jobs/" + url.PathEscape(jobName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, r.apiURL+endpoint, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+r.token)
+	req.Header.Set("Content-Type", "application/merge-patch+json")
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("kubernetes PATCH %s: %s: %s", endpoint, resp.Status, strings.TrimSpace(string(b)))
+	}
+	return nil
 }
 
 func (r *k8sJobRunner) doJSON(ctx context.Context, method, endpoint string, body, out any) error {

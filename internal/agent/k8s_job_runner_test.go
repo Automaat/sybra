@@ -1,7 +1,11 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -232,4 +236,70 @@ func TestAppendK8sPRRepoEnv(t *testing.T) {
 
 func discardK8sLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
+}
+
+func TestK8sRunnerFailedTTLDefaultsWhenUnset(t *testing.T) {
+	r := newK8sJobRunner(nil, K8sJobRunnerConfig{})
+	if r.failedTTL != 86400 {
+		t.Fatalf("failedTTL = %d, want 86400", r.failedTTL)
+	}
+}
+
+func TestK8sRunnerFailedTTLHonorsConfiguredValue(t *testing.T) {
+	r := newK8sJobRunner(nil, K8sJobRunnerConfig{FailedTTL: 3600})
+	if r.failedTTL != 3600 {
+		t.Fatalf("failedTTL = %d, want 3600", r.failedTTL)
+	}
+}
+
+func TestPatchJobTTLSendsMergePatch(t *testing.T) {
+	var gotMethod, gotContentType, gotPath string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		gotMethod = req.Method
+		gotContentType = req.Header.Get("Content-Type")
+		gotPath = req.URL.Path
+		_ = json.NewDecoder(req.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc"})
+	r.apiURL = srv.URL
+	r.client = srv.Client()
+	r.token = "test-token"
+
+	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", 86400); err != nil {
+		t.Fatalf("patchJobTTL: %v", err)
+	}
+	if gotMethod != http.MethodPatch {
+		t.Fatalf("method = %s, want PATCH", gotMethod)
+	}
+	if gotContentType != "application/merge-patch+json" {
+		t.Fatalf("content-type = %s, want application/merge-patch+json", gotContentType)
+	}
+	if want := "/apis/batch/v1/namespaces/sybra-poc/jobs/sybra-agent-abc"; gotPath != want {
+		t.Fatalf("path = %s, want %s", gotPath, want)
+	}
+	spec, _ := gotBody["spec"].(map[string]any)
+	if got, want := spec["ttlSecondsAfterFinished"], float64(86400); got != want {
+		t.Fatalf("ttlSecondsAfterFinished = %v, want %v", got, want)
+	}
+}
+
+func TestPatchJobTTLReturnsErrorOnNonSuccessStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+		_, _ = w.Write([]byte("boom"))
+	}))
+	defer srv.Close()
+
+	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc"})
+	r.apiURL = srv.URL
+	r.client = srv.Client()
+	r.token = "test-token"
+
+	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", 86400); err == nil {
+		t.Fatal("expected error for non-2xx response")
+	}
 }
