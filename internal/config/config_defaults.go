@@ -390,6 +390,7 @@ const (
 	DefaultReviewsFastSeconds           = 120 // was 60
 	DefaultReviewsSlowSeconds           = 600 // was 300
 	DefaultReviewsMaxPRsPerTick         = 25
+	DefaultReviewRoundsPerHour          = 3
 	DefaultReviewsStableBackoffMaxTicks = 8
 	DefaultIssuesSeconds                = 600 // was 300
 	DefaultRenovateFastSeconds          = 120 // was 60
@@ -413,6 +414,15 @@ func (c GitHubConfig) RunsIssuesFetcher() bool {
 // the top-level kill-switch AND the reviews-specific sub-toggle.
 func (c GitHubConfig) RunsReviewer() bool {
 	return c.Enabled && c.ReviewsEnabled
+}
+
+// ReviewRoundsPerHourLimit resolves the per-PR review rate cap. 0 means unset
+// (use the default); a negative value disables the cap entirely.
+func (c GitHubConfig) ReviewRoundsPerHourLimit() int {
+	if c.ReviewRoundsPerHour == 0 {
+		return DefaultReviewRoundsPerHour
+	}
+	return c.ReviewRoundsPerHour
 }
 
 func (c GitHubConfig) reviewsFast() time.Duration {

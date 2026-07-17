@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
@@ -25,12 +28,26 @@ import (
 type fakeAgentLauncher struct {
 	startErr   error
 	startCalls int
+	// tasks mirrors production's agentAdapter, which records an AgentRun for
+	// every start (recordSystemAgentStart). Guards that count runs — the review
+	// rate cap — read that list, so a fake that skips it would let a cap that is
+	// dead in production pass every test.
+	tasks *task.Manager
 }
 
-func (f *fakeAgentLauncher) StartAgent(_, _, _, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+func (f *fakeAgentLauncher) StartAgent(taskID, role, mode, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	f.startCalls++
 	if f.startErr != nil {
 		return "", "", "", f.startErr
+	}
+	if f.tasks != nil {
+		id := fmt.Sprintf("fake-agent-%d", f.startCalls)
+		if aerr := f.tasks.AddRun(taskID, task.AgentRun{
+			AgentID: id, Role: role, Mode: mode, StartedAt: time.Now(),
+		}); aerr != nil {
+			return "", "", "", aerr
+		}
+		return id, "", "", nil
 	}
 	return "fake-agent-id", "", "", nil
 }
@@ -60,6 +77,7 @@ func (f *fakeAgentLauncher) AdmitDispatch(string, string, string) (admit bool, r
 func setupDispatchTestService(t *testing.T, launcher *fakeAgentLauncher) (*TaskService, *App) {
 	t.Helper()
 	svc, a := setupTaskService(t)
+	launcher.tasks = a.tasks
 	ta := &taskAdapter{tasks: a.tasks}
 	svc.workflowEngine = workflow.NewEngine(mustWorkflowStore(t), ta, launcher, a.logger)
 	return svc, a
@@ -1072,4 +1090,312 @@ func TestDispatchInboundReview_EmptyHeadIsLoggedNotSilent(t *testing.T) {
 	if !strings.Contains(buf.String(), "head-empty") {
 		t.Errorf("declined silently; logs = %q", buf.String())
 	}
+}
+
+func reviewRun(started time.Time) task.AgentRun {
+	return task.AgentRun{AgentID: "a", Role: string(agent.RoleReview), StartedAt: started}
+}
+
+// The blast-radius cap. Every other gate assumes something: the per-head budget
+// assumes the head is a meaningful key, the phase gates assume the phase machine
+// is sane. This one only assumes the clock, so it is what bounds a loop nobody
+// has thought of yet.
+func TestReviewRateLimitExceeded(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		runs  []task.AgentRun
+		limit int
+		want  bool
+	}{
+		{"no runs", nil, 3, false},
+		{"under the limit", []task.AgentRun{reviewRun(now.Add(-5 * time.Minute))}, 3, false},
+		{
+			name: "at the limit",
+			runs: []task.AgentRun{
+				reviewRun(now.Add(-5 * time.Minute)),
+				reviewRun(now.Add(-20 * time.Minute)),
+				reviewRun(now.Add(-50 * time.Minute)),
+			},
+			limit: 3, want: true,
+		},
+		{
+			// The incident sustained ~5/hour for 23 hours.
+			name: "the #2164 rate trips it",
+			runs: []task.AgentRun{
+				reviewRun(now.Add(-2 * time.Minute)), reviewRun(now.Add(-14 * time.Minute)),
+				reviewRun(now.Add(-26 * time.Minute)), reviewRun(now.Add(-38 * time.Minute)),
+				reviewRun(now.Add(-50 * time.Minute)),
+			},
+			limit: 3, want: true,
+		},
+		{
+			// A long-lived PR re-reviewed after each push over weeks is legitimate
+			// and must never be blocked — this is why the cap is a rate, not a total.
+			name: "many rounds, all outside the window",
+			runs: []task.AgentRun{
+				reviewRun(now.Add(-2 * time.Hour)), reviewRun(now.Add(-30 * time.Hour)),
+				reviewRun(now.Add(-72 * time.Hour)), reviewRun(now.Add(-200 * time.Hour)),
+				reviewRun(now.Add(-400 * time.Hour)),
+			},
+			limit: 3, want: false,
+		},
+		{
+			name: "non-review runs never count",
+			runs: []task.AgentRun{
+				{Role: string(agent.RoleImplementation), StartedAt: now.Add(-time.Minute)},
+				{Role: string(agent.RolePRFix), StartedAt: now.Add(-time.Minute)},
+				{Role: string(agent.RoleTestRunner), StartedAt: now.Add(-time.Minute)},
+			},
+			limit: 1, want: false,
+		},
+		{"negative limit disables the cap", []task.AgentRun{
+			reviewRun(now), reviewRun(now), reviewRun(now), reviewRun(now),
+		}, -1, false},
+		{"zero limit disables the cap", []task.AgentRun{reviewRun(now), reviewRun(now)}, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := reviewRateLimitExceeded(task.Task{AgentRuns: tt.runs}, now, tt.limit)
+			if got != tt.want {
+				t.Errorf("reviewRateLimitExceeded(%d runs, limit=%d) = %v, want %v",
+					len(tt.runs), tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
+// Tripping the breaker parks the task for a human rather than silently
+// declining: a task posting reviews this fast is misbehaving, and the operator
+// needs to learn that the automation blew its budget.
+func TestDispatchInboundReview_RateLimitParksForHuman(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range config.DefaultReviewRoundsPerHour {
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i*5)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launcher.startCalls != 0 {
+		t.Errorf("startCalls = %d, want 0 — dispatched past the rate cap", launcher.startCalls)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q — a blown budget must reach a human", got.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(got.StatusReason, "rate limit") {
+		t.Errorf("StatusReason = %q, want it to name the rate limit", got.StatusReason)
+	}
+}
+
+// The cap must not block a healthy PR: a fresh head under the rate still gets
+// reviewed.
+func TestDispatchInboundReview_UnderRateLimitStillReviews(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	if err := a.tasks.AddRun(tk.ID, reviewRun(time.Now().Add(-30*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("parked a task well under the rate cap: %q", got.StatusReason)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-review" {
+		t.Fatalf("workflow = %+v, want pr-review", got.Workflow)
+	}
+}
+
+// #2167 hit a re-park loop in the review handler: human-required is not
+// terminal, so the poller kept re-escalating and overwriting the operator's
+// note. The dispatcher is structurally different — it gates on
+// status == in-review before ever reaching the rate check — but that is worth
+// pinning rather than assuming.
+func TestDispatchInboundReview_ParkedTaskIsNotReParked(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range config.DefaultReviewRoundsPerHour {
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i*5)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+	parked, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Status != task.StatusHumanRequired {
+		t.Fatalf("precondition: want parked, got %q", parked.Status)
+	}
+
+	const note = "OPERATOR: investigating, do not touch"
+	if _, uerr := a.tasks.Update(tk.ID, task.Update{StatusReason: task.Ptr(note)}); uerr != nil {
+		t.Fatal(uerr)
+	}
+	before, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 3 {
+		a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+	}
+
+	after, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.StatusReason != note {
+		t.Errorf("StatusReason = %q, want the operator's note %q — re-parked and clobbered it", after.StatusReason, note)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("updated_at rewritten (%v -> %v) on an already-parked task", before.UpdatedAt, after.UpdatedAt)
+	}
+}
+
+// Every other dispatch test runs with a nil cfg, which takes the one branch of
+// reviewRoundsPerHourLimit that never executes in production (App always sets
+// cfg). Without this, a resolver that ignores config entirely — or that reads
+// an omitted key as 0 and disables the cap fleet-wide — passes the whole suite.
+func TestDispatchInboundReview_RateLimitReadsRealConfig(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	cfg := config.DefaultConfig()
+	cfg.GitHub.ReviewRoundsPerHour = 1 // deliberately not the default
+	a.cfg = cfg
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	// One round: under the default of 3, over the configured 1.
+	if err := a.tasks.AddRun(tk.ID, reviewRun(time.Now().Add(-2*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q — the configured limit of 1 was ignored in favour of the default",
+			got.Status, task.StatusHumanRequired)
+	}
+	if launcher.startCalls != 0 {
+		t.Errorf("startCalls = %d, want 0", launcher.startCalls)
+	}
+}
+
+// A negative limit must genuinely disable the cap on the production path.
+func TestDispatchInboundReview_RateLimitDisabledByConfig(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	cfg := config.DefaultConfig()
+	cfg.GitHub.ReviewRoundsPerHour = -1
+	a.cfg = cfg
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range 10 {
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("parked despite the cap being disabled: %q", got.StatusReason)
+	}
+}
+
+// How the cap is actually reachable in production. On a frozen head the
+// per-head budget (#2166) stops at 2, below this cap — so the rate limit only
+// engages when distinct heads churn inside the hour, which is the loop shape
+// the per-head guard cannot see. Fabricating runs with AddRun would hide that.
+func TestDispatchInboundReview_RateLimitReachedByHeadChurn(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	head := "head-0"
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return head, nil }
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+
+	// Each new head buys a fresh per-head budget; only the rate cap counts across them.
+	dispatched := 0
+	for i := range 6 {
+		head = fmt.Sprintf("head-%d", i)
+		completedAt := time.Now().Add(-inboundReviewRedispatchCooldown - time.Minute)
+		if _, err := a.tasks.UpdateMap(tk.ID, map[string]any{
+			"status":       string(task.StatusInReview),
+			"review_phase": "needs-approval",
+			"workflow": &workflow.Execution{
+				WorkflowID: "pr-review", State: workflow.ExecCompleted,
+				CompletedAt: &completedAt, Variables: map[string]string{},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		before := launcher.startCalls
+		a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+		if launcher.startCalls > before {
+			dispatched++
+		}
+		cur, err := a.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cur.Status == task.StatusHumanRequired {
+			break
+		}
+	}
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("6 distinct heads in an hour never tripped the cap: status=%q dispatched=%d", got.Status, dispatched)
+	}
+	if dispatched > config.DefaultReviewRoundsPerHour {
+		t.Errorf("dispatched %d reviews before the cap tripped, want <= %d", dispatched, config.DefaultReviewRoundsPerHour)
+	}
+	t.Logf("head churn: %d reviews dispatched before the breaker tripped", dispatched)
 }

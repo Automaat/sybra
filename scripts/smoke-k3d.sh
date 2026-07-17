@@ -30,9 +30,15 @@
 #   SMOKE_KEEP=1 scripts/smoke-k3d.sh # leave the cluster up for debugging
 #   SMOKE_SKIP_BUILD=1 ...            # reuse an existing sybra-server:poc
 #   SMOKE_PROVIDER=opencode ...       # real OpenRouter run (costs money)
+#   SMOKE_GITHUB=1 ...                # push to the real GitHub testbed + open a PR
 set -euo pipefail
 
 PROVIDER="${SMOKE_PROVIDER:-fake}"
+# GitHub mode swaps the PVC-backed bare clone for the real testbed remote, which
+# is the only way to prove the Job pushes to GitHub and opens a PR. Still runs
+# fake-claude, so it costs nothing but GitHub API calls.
+GITHUB_MODE="${SMOKE_GITHUB:-0}"
+TESTBED="${SMOKE_TESTBED:-Automaat/sybra-testbed}"
 CLUSTER="${SMOKE_CLUSTER:-sybra-smoke}"
 NS=sybra-poc
 IMAGE=sybra-server:poc
@@ -84,6 +90,10 @@ for bin in docker k3d kubectl jq python3; do
   command -v "$bin" >/dev/null 2>&1 || fail "$bin is required but not on PATH"
 done
 
+if [ "$GITHUB_MODE" = "1" ]; then
+  command -v gh >/dev/null 2>&1 || fail "SMOKE_GITHUB=1 needs gh on PATH to assert the branch and PR"
+fi
+
 if [ "${SMOKE_SKIP_BUILD:-0}" != "1" ]; then
   log "Building $IMAGE"
   docker build -t "$IMAGE" "$REPO_ROOT"
@@ -105,11 +115,11 @@ k3d image import "$IMAGE" -c "$CLUSTER"
 
 # Resolve the config BEFORE anything is applied. The old order applied the
 # kustomization (starting a pod on the default config), swapped the ConfigMap,
-# then rollout-restarted — needed because the config is a subPath mount, which
-# never updates in place. That restart raced itself: strategy Recreate plus a
+# then rollout-restarted — because the config is a subPath mount, which never
+# updates in place. That restart raced itself: strategy Recreate plus a
 # ReadWriteOnce PVC means the new pod cannot schedule until the old one releases
-# the volume, and the old one was still coming up, so the rollout hung Pending
-# until it timed out. Giving the pod the right config at birth removes the
+# the volume, and the old one was still coming up. It hung Pending until the
+# rollout timed out. Giving the pod the right config at birth removes the
 # restart, and with it the race.
 case "$PROVIDER" in
   fake) CONFIG=config-fake-repo.yaml ;;
@@ -119,19 +129,23 @@ case "$PROVIDER" in
     ;;
   *) fail "unknown SMOKE_PROVIDER '$PROVIDER' (want: fake, opencode)" ;;
 esac
+if [ "$GITHUB_MODE" = "1" ]; then
+  CONFIG=config-github-testbed.yaml
+  [ -n "${GITHUB_TOKEN:-}" ] || fail "SMOKE_GITHUB=1 needs GITHUB_TOKEN (contents+pull-requests write on $TESTBED)"
+fi
 
 log "Applying manifests ($PROVIDER, config=$CONFIG)"
 kubectl --context "k3d-$CLUSTER" apply -f "$REPO_ROOT/deploy/k8s-poc/namespace.yaml"
 
-if [ "$PROVIDER" = "opencode" ]; then
+if [ "$GITHUB_MODE" = "1" ] || [ "$PROVIDER" = "opencode" ]; then
   kc create secret generic sybra-provider-api-keys \
-    --from-literal=openrouter_api_key="$OPENROUTER_API_KEY" \
+    --from-literal=openrouter_api_key="${OPENROUTER_API_KEY:-}" \
     --from-literal=github_token="${GITHUB_TOKEN:-}" \
     --dry-run=client -o yaml | kubectl --context "k3d-$CLUSTER" apply -f -
 fi
 
 # The chosen ConfigMap goes in first, then everything else except the default
-# one it would otherwise be clobbered by (both declare the same name).
+# one it would otherwise be clobbered by (all three declare the same name).
 kubectl --context "k3d-$CLUSTER" apply -f "$REPO_ROOT/deploy/k8s-poc/$CONFIG"
 kubectl kustomize "$REPO_ROOT/deploy/k8s-poc" \
   | python3 -c '
@@ -143,8 +157,14 @@ sys.stdout.write("\n---\n".join(kept))
 
 kc rollout status deployment/sybra-server --timeout=180s
 
-log "Seeding fake repo project"
-in_pod sh -ceu '
+if [ "$GITHUB_MODE" = "1" ]; then
+  log "Registering the real testbed project ($TESTBED)"
+  PROJECT="$TESTBED"
+  in_pod sybra-cli project create --url "https://github.com/$TESTBED.git" >/dev/null
+else
+  PROJECT=FakeOrg/k8s-testbed
+  log "Seeding fake repo project"
+  in_pod sh -ceu '
 HOME_DIR=/home/sybra/.sybra
 OWNER=FakeOrg
 REPO=k8s-testbed
@@ -178,6 +198,7 @@ created_at: "2026-07-14T00:00:00Z"
 updated_at: "2026-07-14T00:00:00Z"
 YAML
 '
+fi
 
 # A real model needs the literal spelled out; fake-claude ignores the prompt and
 # writes the same marker either way, so both providers land on one assertion set.
@@ -187,7 +208,7 @@ log "Creating task"
 TASK_ID=$(in_pod sybra-cli --json create \
   --title "k3d smoke: fake repo agent job" \
   --body "$PROMPT" \
-  --mode headless --project FakeOrg/k8s-testbed \
+  --mode headless --project "$PROJECT" \
   --tags handoff-manual,k8s-smoke --allow-dup | jq -r .id)
 [ -n "$TASK_ID" ] && [ "$TASK_ID" != "null" ] || fail "could not create task"
 echo "task: $TASK_ID"
@@ -285,17 +306,57 @@ fi
 WT=$(in_pod sh -ceu "ls -d /home/sybra/.sybra/worktrees/*$TASK_ID 2>/dev/null | head -1" | tr -d '\r')
 [ -n "$WT" ] || fail "no worktree found for task $TASK_ID under ~/.sybra/worktrees"
 
-# 3/4/5. The marker file reaches the server-side worktree only if the in-pod
-# wrapper committed it, pushed the branch to the PVC-backed origin, and the
-# server fast-forwarded from it.
-in_pod sh -ceu "test -f '$WT/k8s-agent-output.txt'" \
-  || fail "k8s-agent-output.txt missing from the server worktree — push-back or fast-forward failed"
-in_pod grep -q 'changed by k8s fake agent' "$WT/k8s-agent-output.txt" \
-  || fail "k8s-agent-output.txt has unexpected content"
-printf '  ok  marker file fast-forwarded into %s\n' "$WT"
+if [ "$GITHUB_MODE" = "0" ]; then
+  # 3/4/5. On the PVC path the server owns the worktree, so the marker file
+  # reaching it proves the wrapper committed, pushed to the bare origin, and the
+  # server fast-forwarded. GitHub mode asserts against GitHub instead: there the
+  # Job owns the repo work and the server-side fast-forward is the very coupling
+  # being removed, so the branch on the remote is the honest evidence.
+  in_pod sh -ceu "test -f '$WT/k8s-agent-output.txt'" \
+    || fail "k8s-agent-output.txt missing from the server worktree — push-back or fast-forward failed"
+  in_pod grep -q 'changed by k8s fake agent' "$WT/k8s-agent-output.txt" \
+    || fail "k8s-agent-output.txt has unexpected content"
+  printf '  ok  marker file fast-forwarded into %s\n' "$WT"
 
-in_pod git -C "$WT" log --oneline -3 | grep -q 'persist k8s agent changes' \
-  || fail "no 'chore: persist k8s agent changes' commit in the worktree — the wrapper did not commit"
-printf '  ok  agent commit present\n'
+  # Capture first, then match. Piping straight into grep conflates "git log
+  # failed" (a flaky kubectl exec — this is a remote command) with "the commit is
+  # missing", and blames the wrapper for a commit that is actually there.
+  if ! WT_LOG=$(in_pod git -C "$WT" log --oneline -3 2>&1); then
+    fail "could not read the worktree log: $WT_LOG"
+  fi
+  printf '%s' "$WT_LOG" | grep -q 'persist k8s agent changes' \
+    || fail "no 'chore: persist k8s agent changes' commit in the worktree — the wrapper did not commit. log: $WT_LOG"
+  printf '  ok  agent commit present\n'
+fi
+
+if [ "$GITHUB_MODE" = "1" ]; then
+  BRANCH=$(in_pod git -C "$WT" rev-parse --abbrev-ref HEAD | tr -d '\r')
+  [ -n "$BRANCH" ] || fail "could not read the task branch"
+
+  # 6. The branch reached GitHub itself, not just the PVC. This is the whole
+  #    point of the mode: the PoC only ever proved push-back to a bare clone.
+  gh api "repos/$TESTBED/branches/$BRANCH" >/dev/null 2>&1 \
+    || fail "branch $BRANCH is not on $TESTBED — the Job did not push to GitHub"
+  printf '  ok  branch %s pushed to %s\n' "$BRANCH" "$TESTBED"
+
+  # The agent's actual work is on that branch, not just an empty ref.
+  gh api "repos/$TESTBED/contents/k8s-agent-output.txt?ref=$BRANCH" --jq '.content' 2>/dev/null \
+    | base64 -d 2>/dev/null | grep -q 'changed by k8s fake agent' \
+    || fail "k8s-agent-output.txt is not on $BRANCH at $TESTBED — the Job pushed an empty branch"
+  printf '  ok  agent work is on the pushed branch\n' 
+
+  # 7. The Job opened the PR itself and recorded it, so the server never needed
+  #    a GitHub credential.
+  PR=$(in_pod sybra-cli --json get "$TASK_ID" | jq -r '.prNumber // 0')
+  [ "${PR:-0}" -gt 0 ] 2>/dev/null \
+    || fail "task has no pr_number — the Job did not open a PR (or could not report it back)"
+  gh api "repos/$TESTBED/pulls/$PR" --jq '.state' 2>/dev/null | grep -q open \
+    || fail "PR #$PR is not open on $TESTBED"
+  printf '  ok  Job opened PR #%s and recorded it on the task\n' "$PR"
+
+  log "Cleaning up the testbed"
+  gh pr close "$PR" --repo "$TESTBED" --delete-branch --comment "k3d smoke run; closing automatically." >/dev/null 2>&1 \
+    || printf '::warning::could not close PR #%s on %s — close it by hand\n' "$PR" "$TESTBED"
+fi
 
 log "PASS — k3d agent-Job smoke green"

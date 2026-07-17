@@ -167,6 +167,7 @@ in-cluster service account.
 | `agent.k8s_jobs.command` | `[]string` |  |  |
 | `agent.k8s_jobs.ttl_seconds_after_finished` | `int` |  |  |
 | `agent.k8s_jobs.mode` | `string` |  |  |
+| `agent.k8s_jobs.create_pr` | `bool` |  | CreatePR lets the agent Job open its own pull request once it has pushed its branch, instead of the server shelling gh in the task worktree. Only fires when the task's remote is a GitHub URL — a PVC-backed bare clone has no PR to open. Default false: the server-side create_pr workflow step still owns the normal path, and this would otherwise open a PR after every agent run rather than at the pr stage. |
 | `agent.k8s_jobs.env` | `[]K8sJobEnvVar` | _(see below)_ |  |
 | `agent.k8s_jobs.secret_env` | `[]K8sJobSecretEnvVar` | _(see below)_ |  |
 | `agent.k8s_jobs.volumes` | `[]K8sJobVolume` | _(see below)_ |  |
@@ -285,6 +286,7 @@ requires a restart to take effect (see diffConfig's
 | `github.reviews_enabled` | `bool` | `true` | ReviewsEnabled gates PR reviewer poll registration specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this field directly. |
 | `github.poller_role` | `string` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |
 | `github.reviews_fast_seconds` | `int` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. |
+| `github.review_rounds_per_hour` | `int` |  | ReviewRoundsPerHour caps automated review runs one PR may receive in a rolling hour before the task is parked for a human. 0 uses the default; negative disables the cap. Rate-based rather than a lifetime total so a long-lived PR that is legitimately re-reviewed after each push is never blocked, while a runaway loop is stopped within the hour (#2164 sustained ~5/hour for 23 hours). |
 | `github.reviews_slow_seconds` | `int` |  |  |
 | `github.reviews_max_prs_per_tick` | `int` |  | ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR poller fetches in one tick. Zero falls back to the built-in default; resolved non-positive values mean "unlimited". |
 | `github.reviews_stable_backoff_max_ticks` | `int` |  | ReviewsStableBackoffMaxTicks caps the exponential skip window for linked PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls back to the built-in default; resolved non-positive values disable the backoff entirely. |

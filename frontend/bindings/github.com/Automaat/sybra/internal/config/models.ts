@@ -529,6 +529,16 @@ export class GitHubConfig {
      * volume; lower them only on a high-limit (App-token) instance.
      */
     "reviewsFastSeconds": number;
+
+    /**
+     * ReviewRoundsPerHour caps automated review runs one PR may receive in a
+     * rolling hour before the task is parked for a human. 0 uses the default;
+     * negative disables the cap. Rate-based rather than a lifetime total so a
+     * long-lived PR that is legitimately re-reviewed after each push is never
+     * blocked, while a runaway loop is stopped within the hour (#2164 sustained
+     * ~5/hour for 23 hours).
+     */
+    "reviewRoundsPerHour": number;
     "reviewsSlowSeconds": number;
 
     /**
@@ -594,6 +604,9 @@ export class GitHubConfig {
         if (!("reviewsFastSeconds" in $$source)) {
             this["reviewsFastSeconds"] = 0;
         }
+        if (!("reviewRoundsPerHour" in $$source)) {
+            this["reviewRoundsPerHour"] = 0;
+        }
         if (!("reviewsSlowSeconds" in $$source)) {
             this["reviewsSlowSeconds"] = 0;
         }
@@ -629,10 +642,10 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField11_0 = $$createType4;
+        const $$createField12_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField11_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField12_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
     }
@@ -734,6 +747,16 @@ export class K8sJobsConfig {
     "command": string[];
     "ttlSecondsAfterFinished": number;
     "mode": string;
+
+    /**
+     * CreatePR lets the agent Job open its own pull request once it has pushed
+     * its branch, instead of the server shelling gh in the task worktree. Only
+     * fires when the task's remote is a GitHub URL — a PVC-backed bare clone
+     * has no PR to open. Default false: the server-side create_pr workflow step
+     * still owns the normal path, and this would otherwise open a PR after
+     * every agent run rather than at the pr stage.
+     */
+    "createPr": boolean;
     "env": K8sJobEnvVar[];
     "secretEnv": K8sJobSecretEnvVar[];
     "volumes": K8sJobVolume[];
@@ -758,6 +781,9 @@ export class K8sJobsConfig {
         if (!("mode" in $$source)) {
             this["mode"] = "";
         }
+        if (!("createPr" in $$source)) {
+            this["createPr"] = false;
+        }
         if (!("env" in $$source)) {
             this["env"] = [];
         }
@@ -776,21 +802,21 @@ export class K8sJobsConfig {
      */
     static createFrom($$source: any = {}): K8sJobsConfig {
         const $$createField3_0 = $$createType5;
-        const $$createField6_0 = $$createType7;
-        const $$createField7_0 = $$createType9;
-        const $$createField8_0 = $$createType11;
+        const $$createField7_0 = $$createType7;
+        const $$createField8_0 = $$createType9;
+        const $$createField9_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("command" in $$parsedSource) {
             $$parsedSource["command"] = $$createField3_0($$parsedSource["command"]);
         }
         if ("env" in $$parsedSource) {
-            $$parsedSource["env"] = $$createField6_0($$parsedSource["env"]);
+            $$parsedSource["env"] = $$createField7_0($$parsedSource["env"]);
         }
         if ("secretEnv" in $$parsedSource) {
-            $$parsedSource["secretEnv"] = $$createField7_0($$parsedSource["secretEnv"]);
+            $$parsedSource["secretEnv"] = $$createField8_0($$parsedSource["secretEnv"]);
         }
         if ("volumes" in $$parsedSource) {
-            $$parsedSource["volumes"] = $$createField8_0($$parsedSource["volumes"]);
+            $$parsedSource["volumes"] = $$createField9_0($$parsedSource["volumes"]);
         }
         return new K8sJobsConfig($$parsedSource as Partial<K8sJobsConfig>);
     }

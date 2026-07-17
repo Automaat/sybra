@@ -3571,6 +3571,32 @@ steps:
       - goto: ""
 `
 
+const testMandatorySkillSidecarWorkflowYAML = `id: test-mandatory-skill-sidecar
+name: Test Mandatory Skill Sidecar
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /sybra-test now and write .sybra-plan-{{.Task.ID}}.md."
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-plan-{{.Task.ID}}.md'
+        kind: plan
+        required: true
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Set Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
 const testUnavailableSkillWorkflowYAML = `id: test-unavailable-skill
 name: Test Unavailable Skill
 steps:
@@ -3719,6 +3745,99 @@ func TestE2E_WorkflowMandatorySkill_CodexInjected(t *testing.T) {
 	}
 	if len(tk.AgentRuns) != 1 || tk.AgentRuns[0].SkillExecutionMode != "injected" {
 		t.Fatalf("AgentRuns = %+v, want one injected skill run", tk.AgentRuns)
+	}
+}
+
+func TestE2E_WorkflowMandatorySkill_MissingReceiptRetriesInjectedAndPreservesDiagnostic(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSkillFixture(t, home, ".codex", "sybra-test")
+	argsLog := filepath.Join(t.TempDir(), "codex-recovery-args.log")
+	t.Setenv("FAKE_CODEX_ARGS_LOG", argsLog)
+
+	env := setupE2EMultiProvider(t, "codex", []string{"write_sidecar_success_no_receipt", "write_sidecar_success"})
+	writeWorkflowFixture(t, env, "test-mandatory-skill-sidecar", testMandatorySkillSidecarWorkflowYAML)
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+		Artifacts:      env.artifacts,
+	})
+	env.onAgentComplete = h.OnComplete
+	env.engine.SetArtifactRecorder(&artifactRecorderAdapter{store: env.artifacts})
+
+	created, err := env.tasks.Create("codex receipt recovery", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-mandatory-skill-sidecar"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow settles after receipt recovery", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil &&
+			tk.Workflow != nil &&
+			tk.Workflow.State == workflow.ExecCompleted &&
+			!env.agents.HasRunningAgentForTask(created.ID) &&
+			env.pendingCompletions.Load() == 0
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read codex args log: %v", err)
+	}
+	if !strings.Contains(string(args), "BEGIN INJECTED SKILL: sybra-test") {
+		t.Fatalf("recovery retry prompt missing injected skill block:\n%s", args)
+	}
+	if strings.Contains(string(args), "Run $sybra-test now and write") {
+		t.Fatalf("recovery retry prompt still used native invocation:\n%s", args)
+	}
+
+	if len(tk.AgentRuns) != 2 {
+		t.Fatalf("AgentRuns len = %d, want 2", len(tk.AgentRuns))
+	}
+	if tk.AgentRuns[0].SkillConformance != "unverified" {
+		t.Fatalf("first run SkillConformance = %q, want unverified", tk.AgentRuns[0].SkillConformance)
+	}
+	if tk.AgentRuns[0].SkillExecutionMode != "native" {
+		t.Fatalf("first run SkillExecutionMode = %q, want native", tk.AgentRuns[0].SkillExecutionMode)
+	}
+	if tk.AgentRuns[1].SkillConformance != "recovered" {
+		t.Fatalf("second run SkillConformance = %q, want recovered", tk.AgentRuns[1].SkillConformance)
+	}
+	if tk.AgentRuns[1].SkillExecutionMode != "injected" {
+		t.Fatalf("second run SkillExecutionMode = %q, want injected", tk.AgentRuns[1].SkillExecutionMode)
+	}
+	if strings.TrimSpace(tk.Plan) == "" {
+		t.Fatal("Plan sidecar empty after recovered retry")
+	}
+
+	artifacts, err := env.artifacts.List(created.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	foundDiag := false
+	for _, meta := range artifacts {
+		if meta.Name == "skill-receipt-first-run-plan.md" {
+			foundDiag = true
+			data, _, readErr := env.artifacts.Read(created.ID, meta.Name)
+			if readErr != nil {
+				t.Fatalf("read diagnostic artifact: %v", readErr)
+			}
+			if !strings.Contains(string(data), "# Execution Plan") {
+				t.Fatalf("diagnostic artifact content = %q, want preserved first-pass sidecar", string(data))
+			}
+		}
+	}
+	if !foundDiag {
+		t.Fatal("missing preserved first-pass diagnostic artifact")
 	}
 }
 

@@ -51,6 +51,9 @@ steps:
         goto: review_simple
       - goto: review_staff
 
+  # Orchestration owner: /adversarial-review (internal/skills/data/
+  # adversarial-review.md). Below is a thin posting contract (no approvals,
+  # attribution footer) — the review methodology lives solely in the skill.
   - id: review_simple
     name: Review PR (adversarial)
     type: run_agent
@@ -83,6 +86,9 @@ steps:
     next:
       - goto: set_in_review
 
+  # Orchestration owner: /staff-code-review (marketplace plugin skill — no
+  # bundled fallback in this repo). Thin posting contract only, mirroring
+  # review_simple above.
   - id: review_staff
     name: Review PR (staff)
     type: run_agent

@@ -156,7 +156,7 @@ func run(args []string) int {
 func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager, projStore *project.Store, allowHTTP, jsonOut bool) int {
 	var api *apiClient
 	switch cmd {
-	case "create", "update", "link-pr", "delete":
+	case "create", "update", "link-pr", "delete", "pr":
 		if allowHTTP {
 			if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
 				api = c
@@ -178,6 +178,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdUpdate(store, api, rest, jsonOut)
 	case "link-pr":
 		return cmdLinkPR(store, api, rest, jsonOut)
+	case "pr":
+		return cmdPR(store, api, rest, jsonOut)
 	case "delete":
 		return cmdDelete(store, api, rest, jsonOut)
 	case "reopen":
@@ -2029,6 +2031,10 @@ Commands:
            Link a PR number to a task and advance it to in-review. Use when a PR
            was opened outside of Sybra; the PR monitor will then auto-merge or
            advance the task to done once the PR lands.
+  pr create <id> --repo owner/name --head branch [--title T] [--body B] [--draft] [--dir D]
+           Open a PR for an already-pushed branch and link it, in one step. Runs
+           gh in --dir (default cwd), so it must sit inside the repo clone. Lets
+           a Kubernetes agent Job open its own PR instead of the server doing it.
   delete   <id>
            Soft-deletes: moves the task file and its sidecars into the trash
            dir instead of unlinking them. See trash list / trash restore.
@@ -2048,7 +2054,15 @@ Commands:
            internal/tasksnapshot). Recovery is a plain git checkout against
            that repo — see docs/tasks-snapshots.md.
 
-  project list
+`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList())
+	usageProjectAndOps()
+}
+
+// usageProjectAndOps prints the non-task half of the command list. Split out of
+// usage() only to keep each function under the funlen cap — the list grows every
+// time a subcommand lands.
+func usageProjectAndOps() {
+	fmt.Fprintf(os.Stderr, `  project list
   project get <id>
   project create --url <github-url> [--type pet|work]
   project update <id> --type pet|work
@@ -2094,7 +2108,7 @@ Commands:
 
 Global flags:
   --json   Output as JSON
-`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList(), doctorUsageBlock())
+`, doctorUsageBlock())
 }
 
 func doctorUsageBlock() string {
