@@ -485,6 +485,7 @@ func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerCo
 		Command:   cfg.Command,
 		TTL:       cfg.TTL,
 		Mode:      cfg.Mode,
+		CreatePR:  cfg.CreatePR,
 	}
 	for _, e := range cfg.Env {
 		out.Env = append(out.Env, agent.K8sJobEnvVar{Name: e.Name, Value: e.Value})
