@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,7 +21,6 @@ type focusedChecksReport struct {
 	ChangedFiles []string               `json:"changedFiles,omitempty"`
 	Selected     []focusedCheckArtifact `json:"selected,omitempty"`
 	Commands     []string               `json:"commands,omitempty"`
-	Fallback     string                 `json:"fallback,omitempty"`
 	FailedCmd    string                 `json:"failedCmd,omitempty"`
 	OutputTail   string                 `json:"outputTail,omitempty"`
 }
@@ -103,12 +103,9 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 		return e.flagFocusedChecks(taskID, step, reason, "setup")
 	}
 	if failedCmd == "" {
-		if report.Fallback != "" {
-			return stepDone(step, "fallback verify clean")
-		}
 		return stepDone(step, "clean")
 	}
-	return e.reaskFocusedChecks(taskID, step, wfExec, t, selected, changedFiles, report.Fallback, failedCmd, output)
+	return e.reaskFocusedChecks(taskID, step, wfExec, t, selected, changedFiles, failedCmd, output)
 }
 
 type worktreeBaseRefGetter interface {
@@ -366,12 +363,23 @@ func (e *Engine) flagFocusedChecks(taskID string, step *Step, reason, detail str
 	return stepDone(step, "flagged")
 }
 
-func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo, selected []selectedFocusedCheck, changedFiles []string, fallback, failedCmd, output string) (StepOutput, error) {
+func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo, selected []selectedFocusedCheck, changedFiles []string, failedCmd, output string) (StepOutput, error) {
+	reason := "focused checks failed"
+	if surfaces := focusedSurfaceSummary(selected); surfaces != "" {
+		reason += " for " + surfaces
+	}
+	reason += ": " + trimDiffLine(failedCmd)
 	if wfExec == nil {
-		reason := "focused checks failed without workflow state to re-enter implementation: " + trimDiffLine(failedCmd)
 		return e.flagFocusedChecks(taskID, step, reason, failedCmd)
 	}
-	wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, fallback, failedCmd, output))
+	key := "step." + step.ID + ".auto_fix"
+	attempts := parseWorkflowInt(wfExec.Variables[key])
+	if attempts >= verifyChecksAutoFixCap || wfExec.CountStep(verifyChecksImplStepID) == 0 {
+		return e.flagFocusedChecks(taskID, step, reason, failedCmd)
+	}
+
+	wfExec.SetVar(key, strconv.Itoa(attempts+1))
+	wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
 	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
 	wfExec.ClearStepRecords(verifyChecksImplStepID)
 	wfExec.CurrentStep = verifyChecksImplStepID
@@ -379,26 +387,19 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 		return StepOutput{}, fmt.Errorf("focused-checks: rewind to implement: %w", err)
 	}
-	reason := "focused checks failed"
-	if surfaces := focusedSurfaceSummary(selected, fallback); surfaces != "" {
-		reason += " for " + surfaces
-	}
-	reason += ": " + trimDiffLine(failedCmd)
 	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, reason); err != nil {
 		return StepOutput{}, err
 	}
-	e.logger.Info("workflow.focused-checks.reask", "task_id", taskID, "cmd", trimDiffLine(failedCmd))
+	e.logger.Info("workflow.focused-checks.reask",
+		"task_id", taskID, "attempt", attempts+1, "cap", verifyChecksAutoFixCap, "cmd", trimDiffLine(failedCmd))
 	return StepOutput{}, errStepParked
 }
 
-func buildFocusedChecksReaskNote(selected []selectedFocusedCheck, changedFiles []string, fallback, failedCmd, output string) string {
+func buildFocusedChecksReaskNote(selected []selectedFocusedCheck, changedFiles []string, failedCmd, output string) string {
 	var b strings.Builder
 	b.WriteString("A prior implementation FAILED Sybra's focused checks. Fix the ROOT CAUSE so the failing command passes on a clean run")
-	if fallback != "" {
-		b.WriteString("; no safe focused mapping matched, so Sybra fell back to the full verify suite for this diff")
-	}
 	b.WriteString(" — do NOT weaken, skip, or edit the check to make it pass.\n\n")
-	if surfaces := focusedSurfaceSummary(selected, fallback); surfaces != "" {
+	if surfaces := focusedSurfaceSummary(selected); surfaces != "" {
 		b.WriteString("## Focused surface\n\n")
 		b.WriteString(surfaces)
 		b.WriteString("\n\n")
@@ -420,10 +421,7 @@ func buildFocusedChecksReaskNote(selected []selectedFocusedCheck, changedFiles [
 	return b.String()
 }
 
-func focusedSurfaceSummary(selected []selectedFocusedCheck, fallback string) string {
-	if fallback != "" {
-		return "fallback verify"
-	}
+func focusedSurfaceSummary(selected []selectedFocusedCheck) string {
 	var labels []string
 	for _, s := range selected {
 		label := strings.TrimSpace(s.FocusedCheck.Name)
