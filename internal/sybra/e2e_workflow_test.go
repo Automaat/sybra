@@ -137,8 +137,55 @@ func buildTestBinaries(t *testing.T) string {
 	return testBinDir
 }
 
-func e2eLogger() *slog.Logger {
-	return slog.New(slog.DiscardHandler)
+// e2eLogTailBytes caps what a failing test prints. A hung run's last few
+// hundred lines carry the agent/workflow transitions that explain it; the
+// megabytes before that are startup noise.
+const e2eLogTailBytes = 64 << 10
+
+// e2eLogBuffer is a concurrency-safe ring buffer over the tail of a log stream.
+// The app writes from many goroutines (runners, engine, pollers) while the test
+// body reads on failure, so every access is locked.
+type e2eLogBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (b *e2eLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p...)
+	if excess := len(b.buf) - e2eLogTailBytes; excess > 0 {
+		n := copy(b.buf, b.buf[excess:])
+		b.buf = b.buf[:n]
+	}
+	return len(p), nil
+}
+
+func (b *e2eLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
+// e2eLogger returns the app logger for an e2e test, capturing its output and
+// printing the tail only when the test fails.
+//
+// This used to be slog.DiscardHandler, which is why the CI-only e2e hangs have
+// never been root-caused: each occurrence destroyed its own evidence, leaving a
+// bare "timeout waiting for X" and a goroutine dump full of parked tests. The
+// tail is printed on failure only — on success it would bury the suite.
+func e2eLogger(tb testing.TB) *slog.Logger {
+	tb.Helper()
+	buf := &e2eLogBuffer{}
+	tb.Cleanup(func() {
+		if !tb.Failed() {
+			return
+		}
+		if s := buf.String(); s != "" {
+			tb.Logf("--- app log tail (what the app was doing) ---\n%s", s)
+		}
+	})
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 // setupE2E wires up real task store, workflow engine, agent manager with fake claude.
@@ -246,7 +293,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	taskMgr := task.NewManager(store, nil)
 	artifactStore := artifact.New(config.ArtifactsDir())
 
-	logger := e2eLogger()
+	logger := e2eLogger(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 
@@ -400,10 +447,40 @@ func e2eGoroutineDump() string {
 	for {
 		n := runtime.Stack(buf, true)
 		if n < len(buf) {
-			return "--- goroutine dump at e2e timeout (what was blocked) ---\n" + string(buf[:n])
+			return "--- goroutine dump at e2e timeout (what was blocked) ---\n" + dropParkedTestGoroutines(string(buf[:n]))
 		}
 		buf = make([]byte, 2*len(buf))
 	}
+}
+
+// dropParkedTestGoroutines removes goroutines parked in testing.(*T).Parallel
+// from a dump, keeping a count of what it dropped.
+//
+// A parallel test parks until the sequential phase finishes and does nothing
+// while parked, so it can never be what a sequential test is blocked on. This
+// package compiles its unit tests into the e2e binary, and they contribute ~165
+// such goroutines: a real dump ran 197 entries of which every single one was
+// parked or the dumper itself, burying the handful that mattered. The header
+// says "what was blocked" — this is what makes that true.
+func dropParkedTestGoroutines(dump string) string {
+	blocks := strings.Split(dump, "\n\n")
+	kept := make([]string, 0, len(blocks))
+	parked := 0
+	for _, b := range blocks {
+		if strings.TrimSpace(b) == "" {
+			continue
+		}
+		if strings.Contains(b, "testing.(*T).Parallel(") {
+			parked++
+			continue
+		}
+		kept = append(kept, b)
+	}
+	out := strings.Join(kept, "\n\n")
+	if parked > 0 {
+		out += fmt.Sprintf("\n\n(%d goroutines parked in t.Parallel omitted — they hold nothing)\n", parked)
+	}
+	return out
 }
 
 func e2eTimeoutScale() int64 {
@@ -639,9 +716,9 @@ func TestE2E_HeadlessAgent_SignalKill_DoesNotAdvanceWorkflow(t *testing.T) {
 
 	// Wire production completion.Handler so the signal kill guard fires.
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -698,9 +775,9 @@ func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
 
 	// Wire production completion.Handler so the signal kill guard fires.
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -756,9 +833,9 @@ func TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath(t *testing.T) {
 	env.agents.SetGuardrails(agent.Guardrails{MaxCostUSD: 10.0})
 
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -793,9 +870,9 @@ func TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow(t *testing.T) {
 	env := setupE2EMulti(t, []string{"success_then_hang", "triage"})
 
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -928,9 +1005,9 @@ func TestE2E_MalformedToolCall_RecoversInSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -971,9 +1048,9 @@ func TestE2E_MalformedToolCall_RepeatedFailsOverProvider(t *testing.T) {
 	}
 	env.agents.SetHealthGate(newCooldownGate())
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -2794,7 +2871,7 @@ func TestE2E_TestingTaskWorkflow_RefusedWhenWorkflowActive(t *testing.T) {
 		tasks:          env.tasks,
 		workflowEngine: env.engine,
 		wg:             &sync.WaitGroup{},
-		logger:         e2eLogger(),
+		logger:         e2eLogger(t),
 	}
 
 	_, err = svc.UpdateTask(created.ID, map[string]any{"status": string(task.StatusTesting)})
@@ -4008,7 +4085,7 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 
 	logDir := t.TempDir()
 	var engine *workflow.Engine
-	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, e2eLogger(), logDir, agent.ManagerConfig{
+	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, e2eLogger(t), logDir, agent.ManagerConfig{
 		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: env.provider},
 		Artifacts:   env.artifacts,
 		ControlHome: env.taskDir,
@@ -4032,14 +4109,14 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: env.worktreesDir,
 		Tasks:        taskMgr,
-		Logger:       e2eLogger(),
+		Logger:       e2eLogger(t),
 		AgentChecker: agentMgr.HasRunningAgentForTask,
 	})
-	agentOrch := agentorch.New(taskMgr, nil, agentMgr, nil, e2eLogger(), wm, nil)
+	agentOrch := agentorch.New(taskMgr, nil, agentMgr, nil, e2eLogger(t), wm, nil)
 
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
-	engine = workflow.NewEngine(env.wfStore, ta, aa, e2eLogger())
+	engine = workflow.NewEngine(env.wfStore, ta, aa, e2eLogger(t))
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 	engine.SetPRLinker(nil)
 	if env.classifier != nil {

@@ -154,7 +154,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 
-	logger := e2eLogger()
+	logger := e2eLogger(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	logDir, err := os.MkdirTemp("", "sybra-e2e-bestofn-logs-*")
