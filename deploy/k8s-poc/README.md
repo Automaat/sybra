@@ -605,10 +605,22 @@ stronger guarantee for a particular backup run.
 `VolumeSnapshot` replaces this entirely):
 
 ```bash
-kubectl -n sybra-poc exec deploy/sybra-server -- \
-  tar czf - -C /home/sybra/.sybra tasks projects config.yaml agents learning experience agentqueue logs artifacts \
-  > sybra-home-backup-$(date +%Y%m%d-%H%M%S).tar.gz
+kubectl -n sybra-poc exec deploy/sybra-server -- sh -c '
+  cd /home/sybra/.sybra
+  existing=""
+  for p in tasks projects config.yaml agents learning experience agentqueue logs artifacts; do
+    [ -e "$p" ] && existing="$existing $p"
+  done
+  tar czf - $existing
+' > sybra-home-backup-$(date +%Y%m%d-%H%M%S).tar.gz
 ```
+
+Not every entry always exists: `agents/` is only created when
+`agent.survive_restart` is enabled, and `artifacts/` is created lazily on
+first write — a plain `tar ... agents artifacts` fails outright
+(`Cannot stat: No such file or directory`, exit 2) against a fresh or
+survive-restart-disabled deployment, silently breaking any cron/automation
+that checks the exit code. The loop above only tars what's actually present.
 
 **Restore** into a fresh (or wiped) `sybra-home` PVC — scale down and wait for
 the old pod to actually release the volume first (on `local-path` this
