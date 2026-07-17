@@ -215,6 +215,11 @@ var (
 	// name a path-like token can bless a whole-file verification deletion.
 	tamperDeletionVerbRe = regexp.MustCompile(
 		`(?i)\b(delete|deletes|deleted|deleting|remove|removes|removed|removing|drop|drops|dropped|dropping|rm)\b`)
+	tamperNonDeletionVerbRe = regexp.MustCompile(
+		`(?i)\b(add|adds|added|adding|adjust|adjusts|adjusted|adjusting|change|changes|changed|changing|` +
+			`create|creates|created|creating|edit|edits|edited|editing|fix|fixes|fixed|fixing|implement|implements|implemented|implementing|` +
+			`modify|modifies|modified|modifying|move|moves|moved|moving|refactor|refactors|refactored|refactoring|` +
+			`rename|renames|renamed|renaming|update|updates|updated|updating)\b`)
 	tamperBacktickTokenRe = regexp.MustCompile("`([^`]+)`")
 	tamperBarePathTokenRe = regexp.MustCompile(
 		`(^|[\s([{"'])((?:\.?[\w-]+/)*\.?[\w-]+\.[\w.-]+)([\s)\]},"':;]|$)`)
@@ -980,7 +985,7 @@ func deletionPathFromSegment(segment string) (string, bool) {
 	if len(verbs) == 0 {
 		return "", false
 	}
-	tokens := pathTokensFromSegment(segment)
+	tokens := deletionPathTokensFromSegment(segment, verbs)
 	if len(tokens) == 0 {
 		return "", false
 	}
@@ -993,6 +998,42 @@ func deletionPathFromSegment(segment string) (string, bool) {
 		}
 	}
 	return best.path, true
+}
+
+func deletionPathTokensFromSegment(segment string, deletionVerbs [][]int) []documentedPathToken {
+	actionVerbs := append([][]int{}, deletionVerbs...)
+	actionVerbs = append(actionVerbs, tamperNonDeletionVerbRe.FindAllStringIndex(segment, -1)...)
+	slices.SortFunc(actionVerbs, func(a, b []int) int { return a[0] - b[0] })
+
+	tokens := pathTokensFromSegment(segment)
+	out := tokens[:0]
+	for _, token := range tokens {
+		if pathTokenIsAfterNonDeletionVerb(token, actionVerbs, deletionVerbs) {
+			continue
+		}
+		out = append(out, token)
+	}
+	return out
+}
+
+func pathTokenIsAfterNonDeletionVerb(token documentedPathToken, actionVerbs, deletionVerbs [][]int) bool {
+	var previous []int
+	for _, verb := range actionVerbs {
+		if verb[1] > token.start {
+			break
+		}
+		previous = verb
+	}
+	return previous != nil && !verbRangeInList(previous, deletionVerbs)
+}
+
+func verbRangeInList(needle []int, haystack [][]int) bool {
+	for _, candidate := range haystack {
+		if candidate[0] == needle[0] && candidate[1] == needle[1] {
+			return true
+		}
+	}
+	return false
 }
 
 func pathTokenVerbDistance(token documentedPathToken, verbs [][]int) int {
