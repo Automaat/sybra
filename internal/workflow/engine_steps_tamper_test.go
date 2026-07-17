@@ -399,6 +399,25 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("documented_multiple_deleted_test_files_are_downgraded", func(t *testing.T) {
+		body := "## Files\n- delete `internal/foo/a_test.go` and `internal/foo/b_test.go`\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/foo/a_test.go"},
+			{Status: "D", Path: "internal/foo/b_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 0 {
+			t.Fatalf("highCount = %d, want 0 (%v)", r.highCount(), r.Findings)
+		}
+		if len(r.Findings) != 2 {
+			t.Fatalf("Findings = %v, want 2 downgraded deletion findings", r.Findings)
+		}
+		for _, finding := range r.Findings {
+			if finding.Rule != "deleted-verification-file" || finding.Severity != tamperMedium {
+				t.Fatalf("finding = %+v, want deleted-verification-file downgraded to medium", finding)
+			}
+		}
+	})
+
 	t.Run("documented_exact_path_does_not_bless_same_basename", func(t *testing.T) {
 		body := "## Files\n- delete `internal/ui/helpers_test.go`\n"
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
@@ -461,6 +480,24 @@ func TestDocumentedDeletionAllowlist(t *testing.T) {
 			t.Fatalf("Basenames = %v, want extracted basename-only token", got.Basenames)
 		}
 		if got.Basenames["legacy_test.go"] {
+			t.Fatalf("Basenames = %v, did not want basename from exact path", got.Basenames)
+		}
+	})
+
+	t.Run("extracts_multiple_paths_from_one_deletion_segment", func(t *testing.T) {
+		body := "## Files\n- delete `a_test.go` and `b_test.go`, plus internal/foo/c_test.go\n"
+		got := documentedDeletionAllowlist(body)
+		for _, path := range []string{"a_test.go", "b_test.go", "internal/foo/c_test.go"} {
+			if !got.ExactPaths[path] {
+				t.Fatalf("ExactPaths = %v, want %s", got.ExactPaths, path)
+			}
+		}
+		for _, base := range []string{"a_test.go", "b_test.go"} {
+			if !got.Basenames[base] {
+				t.Fatalf("Basenames = %v, want %s", got.Basenames, base)
+			}
+		}
+		if got.Basenames["c_test.go"] {
 			t.Fatalf("Basenames = %v, did not want basename from exact path", got.Basenames)
 		}
 	})
