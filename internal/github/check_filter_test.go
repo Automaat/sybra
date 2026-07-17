@@ -402,6 +402,13 @@ func TestFlakyOnlyFailure(t *testing.T) {
 		c.CompletedAt = completedAt
 		return c
 	}
+	checkRunAttemptAt := func(name, status, conclusion, startedAt, completedAt string, runAttempt int) gqlCheckContext {
+		c := checkRunAt(name, status, conclusion, startedAt, completedAt)
+		c.CheckSuite.WorkflowRun = &struct {
+			RunAttempt int `json:"runAttempt"`
+		}{RunAttempt: runAttempt}
+		return c
+	}
 
 	tests := []struct {
 		name     string
@@ -411,8 +418,8 @@ func TestFlakyOnlyFailure(t *testing.T) {
 		{
 			name: "rerun succeeded after failure finished -> flaky",
 			contexts: []gqlCheckContext{
-				checkRunAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
-				checkRunAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z"),
+				checkRunAttemptAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", 1),
+				checkRunAttemptAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z", 2),
 			},
 			want: true,
 		},
@@ -421,6 +428,22 @@ func TestFlakyOnlyFailure(t *testing.T) {
 			contexts: []gqlCheckContext{
 				checkRunAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
 				checkRunAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:01Z", "2026-01-01T00:06:00Z"),
+			},
+			want: false,
+		},
+		{
+			name: "queued same-name matrix leg starts after failure -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRunAttemptAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", 1),
+				checkRunAttemptAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:06:00Z", "2026-01-01T00:12:00Z", 1),
+			},
+			want: false,
+		},
+		{
+			name: "later success without attempt metadata -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRunAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
+				checkRunAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z"),
 			},
 			want: false,
 		},
@@ -457,8 +480,8 @@ func TestFlakyOnlyFailure(t *testing.T) {
 		{
 			name: "one flaky name, one consistently-broken name -> not flaky",
 			contexts: []gqlCheckContext{
-				checkRunAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
-				checkRunAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z"),
+				checkRunAttemptAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", 1),
+				checkRunAttemptAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z", 2),
 				checkRun("build", "COMPLETED", "FAILURE"),
 			},
 			want: false,

@@ -437,7 +437,7 @@ func TestFetchCIStatusViaREST_EmptySHA(t *testing.T) {
 	}
 }
 
-func TestFetchCIStatusViaREST_FlakyMixedOutcome(t *testing.T) {
+func TestFetchCIStatusViaREST_MixedOutcomeWithoutAttemptIsNotFlaky(t *testing.T) {
 	t.Parallel()
 	e := &pathExecer{responses: map[string]string{
 		"repos/o/r/commits/sha/check-runs": `{"check_runs":[
@@ -450,8 +450,8 @@ func TestFetchCIStatusViaREST_FlakyMixedOutcome(t *testing.T) {
 	if !ok {
 		t.Fatal("ok must be true when both legs fetch cleanly")
 	}
-	if status != "FAILURE" || !flaky {
-		t.Errorf("status=%q flaky=%v, want FAILURE/true", status, flaky)
+	if status != "FAILURE" || flaky {
+		t.Errorf("status=%q flaky=%v, want FAILURE/false", status, flaky)
 	}
 }
 
@@ -464,6 +464,24 @@ func TestFetchCIStatusViaREST_ConcurrentMatrixLegs(t *testing.T) {
 		"repos/o/r/commits/sha/check-runs": `{"check_runs":[
 			{"name":"e2e","status":"completed","conclusion":"success","started_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-01T00:05:00Z"},
 			{"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-01-01T00:00:01Z","completed_at":"2026-01-01T00:06:00Z"}
+		]}`,
+		"repos/o/r/commits/sha/status": `{"statuses":[]}`,
+	}}
+	status, _, flaky, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if !ok {
+		t.Fatal("ok must be true when both legs fetch cleanly")
+	}
+	if status != "FAILURE" || flaky {
+		t.Errorf("status=%q flaky=%v, want FAILURE/false", status, flaky)
+	}
+}
+
+func TestFetchCIStatusViaREST_QueuedSameNameMatrixLegs(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/sha/check-runs": `{"check_runs":[
+			{"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-01T00:05:00Z"},
+			{"name":"e2e","status":"completed","conclusion":"success","started_at":"2026-01-01T00:06:00Z","completed_at":"2026-01-01T00:12:00Z"}
 		]}`,
 		"repos/o/r/commits/sha/status": `{"statuses":[]}`,
 	}}
