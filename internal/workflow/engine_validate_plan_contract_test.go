@@ -203,6 +203,18 @@ func TestValidatePlanContractForTask_AcceptsCopiedSourceAcceptanceCriteria(t *te
 	}
 }
 
+func TestValidatePlanContractForTask_AcceptsCriterionWithoutSourceBackticks(t *testing.T) {
+	taskBody := "## Acceptance Criteria\n\n" +
+		"- [ ] Diagnostics clearly show `/skill` becoming `$skill` or injected instructions.\n"
+	contract := strings.Replace(validPlanContract("fa6919fc"),
+		`"acceptance_criteria": ["implementation prompt includes the contract"]`,
+		`"acceptance_criteria": ["Diagnostics clearly show /skill becoming $skill or injected instructions."]`, 1)
+
+	if problems := ValidatePlanContractForTask(contract, "fa6919fc", taskBody); len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+}
+
 func TestValidatePlanContractForTask_AcceptsTaskCheckboxCriteria(t *testing.T) {
 	taskBody := "## Acceptance Criteria\n\n" +
 		"- [ ] Stats can group cost, duration, failures, and outcomes by actual skill execution mode.\n" +

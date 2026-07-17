@@ -267,7 +267,11 @@ func normalizeCriterionText(s string) string {
 	return normalizeCriterionWhitespace(normalizeListItemText(s))
 }
 
+// normalizeCriterionWhitespace collapses whitespace and strips markdown
+// inline-code backticks so a plan agent transcribing a criterion in plain
+// prose (e.g. /skill instead of `/skill`) still matches its source.
 func normalizeCriterionWhitespace(s string) string {
+	s = strings.ReplaceAll(s, "`", "")
 	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
 }
 
