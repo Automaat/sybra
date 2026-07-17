@@ -394,9 +394,12 @@ Change visibility). Decide deliberately rather than by default:
 
 For a production deploy, pin by digest rather than a mutable tag — a tag can
 be re-pointed (accidentally or via `docker-publish.yml` re-running the same
-version), a digest cannot:
+version), a digest cannot. If the package is still private, log in first
+(a token with `read:packages` is enough — no need for `write:packages` just
+to pull):
 
 ```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <user> --password-stdin
 docker pull ghcr.io/automaat/sybra-server:vX.Y.Z
 docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/automaat/sybra-server:vX.Y.Z
 # ghcr.io/automaat/sybra-server@sha256:<digest>
