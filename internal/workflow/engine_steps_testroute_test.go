@@ -358,6 +358,32 @@ func TestSkillReceiptExhaustionSummary_DoesNotPairMismatchedOutcomeDetail(t *tes
 	}
 }
 
+func TestSkillReceiptExhaustionSummary_UsesFallbackAfterMismatchedOutcomeDetail(t *testing.T) {
+	t.Parallel()
+
+	output := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\n### ambiguous_requirement: unrelated minor nit\n\nObserved output: the actual crash trace that matters"}`
+
+	got := skillReceiptExhaustionSummary(output)
+	want := "product_bug: the actual crash trace that matters"
+	if got != want {
+		t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, want)
+	}
+}
+
+func TestSkillReceiptExhaustionSummary_IgnoresLabelsInFencedOutput(t *testing.T) {
+	t.Parallel()
+
+	output := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\n` +
+		"```text\noutput: quoted setup noise\n```\n\n" +
+		`Observed output: real failure surfaced"}`
+
+	got := skillReceiptExhaustionSummary(output)
+	want := "product_bug: real failure surfaced"
+	if got != want {
+		t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, want)
+	}
+}
+
 func TestSkillReceiptExhaustionSummary_DoesNotClassifyOutcomePrefixesInsideWords(t *testing.T) {
 	t.Parallel()
 

@@ -10,16 +10,16 @@ import (
 // short verdict string for human-required receipt-exhaustion reasons.
 func skillReceiptExhaustionSummary(output string) string {
 	report := currentTestFailureReport(output, "", nil, "")
-	outcome, detail, suppressFallbackDetail := receiptSummaryOutcomeAndDetail(output, report)
-	if detail == "" && !suppressFallbackDetail {
+	outcome, detail := receiptSummaryOutcomeAndDetail(output, report)
+	if detail == "" {
 		detail = firstReceiptSummaryDetail(report,
 			"observed output", "actual output", "verbatim output", "actual behaviour",
 			"actual behavior", "observed behaviour", "observed behavior", "output")
 	}
-	if detail == "" && !suppressFallbackDetail {
+	if detail == "" {
 		detail = firstReceiptSummaryDetail(report, "code evidence")
 	}
-	if detail == "" && !suppressFallbackDetail {
+	if detail == "" {
 		detail = firstReceiptSummaryDetail(report, "expected", "requirement tested")
 	}
 	switch {
@@ -32,7 +32,7 @@ func skillReceiptExhaustionSummary(output string) string {
 	}
 }
 
-func receiptSummaryOutcomeAndDetail(output, report string) (outcome, detail string, suppressFallbackDetail bool) {
+func receiptSummaryOutcomeAndDetail(output, report string) (outcome, detail string) {
 	if parsed, ok := parseStructuredTestOutput(output); ok {
 		outcome = normalizeTestOutcome(parsed.Outcome)
 	}
@@ -55,16 +55,13 @@ func receiptSummaryOutcomeAndDetail(output, report string) (outcome, detail stri
 				}
 				reportDetail := trimReceiptSummary(trimOutcomePrefix(value, reportOutcome))
 				if reportOutcome != outcome {
-					if reportDetail != "" {
-						suppressFallbackDetail = true
-					}
 					continue
 				}
 				if detail == "" {
 					detail = reportDetail
 				}
 				if outcome != "" && detail != "" {
-					return outcome, detail, suppressFallbackDetail
+					return outcome, detail
 				}
 			}
 		}
@@ -73,20 +70,17 @@ func receiptSummaryOutcomeAndDetail(output, report string) (outcome, detail stri
 				outcome = reportOutcome
 			}
 			if reportOutcome != outcome {
-				if reportDetail != "" {
-					suppressFallbackDetail = true
-				}
 				continue
 			}
 			if detail == "" {
 				detail = reportDetail
 			}
 			if outcome != "" && detail != "" {
-				return outcome, detail, suppressFallbackDetail
+				return outcome, detail
 			}
 		}
 	}
-	return outcome, detail, suppressFallbackDetail
+	return outcome, detail
 }
 
 func firstReceiptSummaryDetail(report string, labels ...string) string {
@@ -98,7 +92,16 @@ func firstReceiptSummaryDetail(report string, labels ...string) string {
 		labelSet[strings.ToLower(label)] = struct{}{}
 	}
 	lines := strings.Split(report, "\n")
+	inFence := false
 	for i := range lines {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || trimmed == "" || strings.HasPrefix(lines[i], "    ") || strings.HasPrefix(lines[i], "\t") {
+			continue
+		}
 		field, value, ok := receiptSummaryLabelLine(lines[i])
 		if !ok {
 			continue
@@ -231,8 +234,20 @@ func trimReceiptSummary(s string) string {
 		return ""
 	}
 	s = strings.Join(strings.Fields(s), " ")
+	if !isUsefulReceiptDetail(s) {
+		return ""
+	}
 	if len(s) > 160 {
 		return strings.TrimSpace(trimUTF8ToBytes(s, 157)) + "..."
 	}
 	return s
+}
+
+func isUsefulReceiptDetail(s string) bool {
+	switch strings.ToLower(strings.Trim(s, " .;:-")) {
+	case "", "n/a", "na", "none", "nothing", "unknown":
+		return false
+	default:
+		return true
+	}
 }
