@@ -65,6 +65,15 @@ func newTestManager(t *testing.T, cfgs ...ManagerConfig) (mgr *Manager, emitted 
 	return m, emitted
 }
 
+// newTestManagerWithLogger is newTestManager for tests that assert on what the
+// manager logged rather than on what it did.
+func newTestManagerWithLogger(t *testing.T, logger *slog.Logger, cfgs ...ManagerConfig) (mgr *Manager, emitted *eventRecorder) {
+	t.Helper()
+	emitted = &eventRecorder{}
+	emit := func(event string, _ any) { emitted.add(event) }
+	return mustNewManager(t, t.Context(), emit, logger, t.TempDir(), cfgs...), emitted
+}
+
 // startTestAgent starts an agent in a fresh working directory, satisfying the
 // Run guard that requires a valid, existing working dir. Uses os.MkdirTemp
 // with a best-effort cleanup (not t.TempDir) because background goroutines

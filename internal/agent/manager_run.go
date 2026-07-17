@@ -102,6 +102,31 @@ func (m *Manager) jitterDispatchContext(ctx context.Context) error {
 	}
 }
 
+// warnUnenforceableAllowedTools reports a step whose allowed_tools list the
+// resolved provider cannot enforce.
+//
+// The check lives here rather than in Definition.Validate because `ab` and
+// `cross` pick the provider at dispatch: the same step is enforced on a claude
+// spawn and unenforced on the copilot spawn beside it, so which guarantee you
+// get depends on where the run landed. Nothing surfaced that before.
+//
+// It warns rather than refusing or re-routing. Excluding providers that cannot
+// enforce would silently narrow failover and strand a step whenever claude is
+// capped — the stranding shape that produced #2150's spin loop — and refusing
+// outright would break every step that has always used the list as an allowance
+// rather than a fence. The OS-level process sandbox (procsandbox_*.go) is the
+// boundary that actually binds every provider; allowed_tools is advisory
+// wherever this warns.
+func (m *Manager) warnUnenforceableAllowedTools(cfg RunConfig, prov Provider) {
+	if len(cfg.AllowedTools) == 0 || prov.HonorsAllowedTools() {
+		return
+	}
+	m.logger.Warn("agent.run.allowed_tools.unenforced",
+		"task_id", cfg.TaskID, "name", cfg.Name, "provider", prov.Name(),
+		"allowed_tools", strings.Join(cfg.AllowedTools, ","),
+		"detail", "provider ignores allowed_tools; the agent runs with its default tool reach and only the prompt and the process sandbox constrain it")
+}
+
 func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := validateRunDir(cfg.Dir); err != nil {
 		return cfg, nil, err
@@ -122,6 +147,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 	cfg.provider = prov
+	m.warnUnenforceableAllowedTools(cfg, prov)
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 	if cfg.Mode == "headless" {
 		m.mu.RLock()

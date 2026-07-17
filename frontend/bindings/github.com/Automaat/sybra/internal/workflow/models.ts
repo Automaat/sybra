@@ -529,10 +529,21 @@ export class StepConfig {
     "model": string;
 
     /**
-     * "", "claude", "codex", "copilot", "cross"
+     * "", "claude", "codex", "copilot", "opencode", "cross", "ab"
      */
     "provider": string;
     "prompt": string;
+
+    /**
+     * AllowedTools is advisory, not a capability boundary. Only claude enforces
+     * it (as --allowedTools); codex has no per-tool allowlist at all, and
+     * copilot spawns with --allow-all-tools. Since provider: ab / cross pick the
+     * provider at dispatch, the same step is enforced on a claude spawn and
+     * unenforced on the copilot spawn beside it — dispatch logs
+     * agent.run.allowed_tools.unenforced whenever that happens. For containment
+     * that binds every provider, rely on the OS-level sandbox instead (see
+     * internal/agent/procsandbox_*.go).
+     */
     "allowedTools": string[];
     "needsWorktree": boolean;
 
