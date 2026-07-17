@@ -358,6 +358,42 @@ func TestSkillReceiptExhaustionSummary_DoesNotPairMismatchedOutcomeDetail(t *tes
 	}
 }
 
+func TestSkillReceiptExhaustionSummary_DoesNotClassifyOutcomePrefixesInsideWords(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name: "password bullet is not pass",
+			output: "## Test Failures\n\n" +
+				"- Password reset fails silently after profile update\n\n" +
+				"Observed output: HTTP 500 returned",
+			want: "HTTP 500 returned",
+		},
+		{
+			name: "buggy bullet is not bug alias",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\n` +
+				`- Buggy workflow keeps showing the stale receipt\n\n` +
+				`Observed output: stale receipt remains visible"}`,
+			want: "product_bug: stale receipt remains visible",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := skillReceiptExhaustionSummary(tt.output)
+			if got != tt.want {
+				t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTrimReceiptSummary_PreservesUTF8WhenTruncating(t *testing.T) {
 	t.Parallel()
 

@@ -1,6 +1,10 @@
 package workflow
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // skillReceiptExhaustionSummary condenses the last failed skill output into a
 // short verdict string for human-required receipt-exhaustion reasons.
@@ -32,9 +36,10 @@ func receiptSummaryOutcomeAndDetail(output, report string) (outcome, detail stri
 	if parsed, ok := parseStructuredTestOutput(output); ok {
 		outcome = normalizeTestOutcome(parsed.Outcome)
 	}
+	testFailuresSummaryHeading := receiptSummaryLine(testFailuresHeading)
 	for _, line := range reportScanLines(report) {
 		clean := receiptSummaryLine(line)
-		if clean == "" || strings.EqualFold(clean, testFailuresHeading) {
+		if clean == "" || strings.EqualFold(clean, testFailuresSummaryHeading) {
 			continue
 		}
 		if field, value, ok := strings.Cut(clean, ":"); ok {
@@ -178,7 +183,7 @@ func trimOutcomePrefix(text, outcome string) string {
 	}
 	lower := strings.ToLower(clean)
 	for _, prefix := range receiptSummaryOutcomePrefixes(outcome) {
-		if !strings.HasPrefix(lower, prefix) {
+		if !strings.HasPrefix(lower, prefix) || !hasReceiptOutcomePrefixBoundary(lower, len(prefix)) {
 			continue
 		}
 		rest := strings.TrimSpace(clean[len(prefix):])
@@ -186,6 +191,14 @@ func trimOutcomePrefix(text, outcome string) string {
 		return rest
 	}
 	return ""
+}
+
+func hasReceiptOutcomePrefixBoundary(s string, prefixLen int) bool {
+	if len(s) == prefixLen {
+		return true
+	}
+	next, _ := utf8.DecodeRuneInString(s[prefixLen:])
+	return !unicode.IsLetter(next) && !unicode.IsDigit(next)
 }
 
 func receiptSummaryOutcomePrefixes(outcome string) []string {
