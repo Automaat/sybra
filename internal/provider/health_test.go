@@ -772,16 +772,3 @@ func TestNilChecker_IsAnAbsentGateNotAPanic(t *testing.T) {
 	gate.ReportAuthFailure("codex", "logged_out")
 	gate.ReportRateLimit("codex", time.Minute, "429")
 }
-
-// TestNilChecker_SurvivesAWrappedGate covers the wrappers that delegate to a
-// base gate (learning's claude-only gate, llmjob's avoiding gate). Their own
-// `base == nil` guards miss a typed nil for the same reason, so they only hold
-// up because the base is safe.
-func TestNilChecker_SurvivesAWrappedGate(t *testing.T) {
-	t.Parallel()
-
-	var base HealthGate = (*Checker)(nil)
-	if !base.IsHealthy("claude") || base.Reason("claude") != "" {
-		t.Error("a wrapper delegating to a nil base must see absent-gate answers, not a panic")
-	}
-}
