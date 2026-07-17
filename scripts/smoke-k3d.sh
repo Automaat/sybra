@@ -79,7 +79,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for bin in docker k3d kubectl jq; do
+# python3 filters the default ConfigMap out of the kustomize output below.
+for bin in docker k3d kubectl jq python3; do
   command -v "$bin" >/dev/null 2>&1 || fail "$bin is required but not on PATH"
 done
 
