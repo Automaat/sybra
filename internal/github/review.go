@@ -47,6 +47,7 @@ const reviewSummaryQuery = `query($q: String!) {
                       conclusion
                       startedAt
                       completedAt
+                      checkSuite { workflowRun { runAttempt } }
                     }
                     ... on StatusContext {
                       name: context
@@ -106,6 +107,7 @@ const monitorPRFields = `
                     conclusion
                     startedAt
                     completedAt
+                    checkSuite { workflowRun { runAttempt } }
                   }
                   ... on StatusContext {
                     name: context
