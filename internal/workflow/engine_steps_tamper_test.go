@@ -438,6 +438,27 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("mixed_action_line_does_not_bless_touched_test_file", func(t *testing.T) {
+		body := "## Files\n- remove old helper and touch `internal/foo/helpers_test.go`\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/foo/helpers_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 1 {
+			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
+		}
+	})
+
+	t.Run("earlier_unverbed_path_is_not_blessed_by_later_delete", func(t *testing.T) {
+		body := "## Files\n- This task touches `internal/config/loader_test.go` and also needs us to delete `internal/foo/old_test.go`.\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/config/loader_test.go"},
+			{Status: "D", Path: "internal/foo/old_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 1 {
+			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
+		}
+	})
+
 	t.Run("mixed_action_line_still_blesses_deleted_path", func(t *testing.T) {
 		body := "## Files\n- delete `internal/foo/legacy_test.go` and update `internal/foo/helpers_test.go`\n"
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
@@ -499,6 +520,25 @@ func TestDocumentedDeletionAllowlist(t *testing.T) {
 		}
 		if got.Basenames["c_test.go"] {
 			t.Fatalf("Basenames = %v, did not want basename from exact path", got.Basenames)
+		}
+	})
+
+	t.Run("ignores_unverbed_path_before_later_delete", func(t *testing.T) {
+		body := "## Files\n- This task touches `internal/config/loader.go` and also needs us to delete `internal/foo/old_test.go`.\n"
+		got := documentedDeletionAllowlist(body)
+		if got.ExactPaths["internal/config/loader.go"] {
+			t.Fatalf("ExactPaths = %v, did not want unrelated earlier path", got.ExactPaths)
+		}
+		if !got.ExactPaths["internal/foo/old_test.go"] {
+			t.Fatalf("ExactPaths = %v, want explicitly deleted path", got.ExactPaths)
+		}
+	})
+
+	t.Run("allows_same_path_when_later_explicitly_deleted", func(t *testing.T) {
+		body := "## Files\n- Touch `internal/config/loader.go` first, then delete `internal/config/loader.go`.\n"
+		got := documentedDeletionAllowlist(body)
+		if !got.ExactPaths["internal/config/loader.go"] {
+			t.Fatalf("ExactPaths = %v, want later explicit delete of same path", got.ExactPaths)
 		}
 	})
 
