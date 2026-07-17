@@ -130,12 +130,17 @@ func (e *Engine) clearWorktreeGlob(taskID string, step *Step, t TaskInfo, glob s
 		if filepath.Dir(m) != filepath.Clean(dir) {
 			return removed, fmt.Errorf("worktree glob %q matched %s outside %s", glob, m, dir)
 		}
-		if rmErr := os.Remove(m); rmErr != nil && !os.IsNotExist(rmErr) {
+		rmErr := os.Remove(m)
+		switch {
+		case rmErr == nil:
+			removed++
+		case os.IsNotExist(rmErr):
+			// Gone between Glob and Remove: nothing this call unlinked, so it
+			// must not inflate the count callers log and report as cleared.
+		default:
 			e.logger.Error("workflow.clear-plan-artifacts.remove", "task_id", taskID, "path", m, "err", rmErr)
 			stuck = append(stuck, filepath.Base(m))
-			continue
 		}
-		removed++
 	}
 	if len(stuck) > 0 {
 		return removed, fmt.Errorf("worktree files %s", strings.Join(stuck, ", "))
