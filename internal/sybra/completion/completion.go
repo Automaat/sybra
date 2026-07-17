@@ -377,7 +377,13 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	// receipt so the workflow engine's skill-conformance gate (see
 	// workflow.HandleAgentComplete) can retry instead of trusting a fake or
 	// incomplete artifact.
-	if ag.RequestedSkill != "" {
+	//
+	// Skip only when the resolved provider actually enforces OutputSchema —
+	// resolveWorkflowSkillPrompt requested no receipt in that case. Gating on
+	// OutputSchema alone would wrongly skip verification for a provider like
+	// copilot that silently drops the schema but still got the receipt ask.
+	schemaEnforced := ag.OutputSchema != "" && agent.ProviderSupportsOutputSchema(ag.Provider)
+	if ag.RequestedSkill != "" && !schemaEnforced {
 		transcript := skillReceiptTranscript(ag, resultContent)
 		ag.SkillConformance = skillattr.VerifyReceipt(ag.SkillConformance, transcript, ag.RequestedSkill, ag.ResolvedSkillSourceHash)
 		if ag.IsSkillRecoveryAttempt() && (ag.SkillConformance == skillattr.ConformanceExact || ag.SkillConformance == skillattr.ConformanceFallback) {

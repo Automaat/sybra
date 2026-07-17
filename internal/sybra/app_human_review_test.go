@@ -102,7 +102,7 @@ func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, nil)
+	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
 	if strings.Contains(prompt, "sybra-verdict") {
 		t.Errorf("prompt still instructs a fenced sybra-verdict block:\n%s", prompt)
 	}
@@ -125,9 +125,43 @@ func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, nil)
+	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
 	if !strings.Contains(prompt, "actually re-run the exact failing command") {
 		t.Errorf("prompt does not require re-running the failing command before calling it transient:\n%s", prompt)
+	}
+}
+
+func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Review draft task", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	reason := "Draft review ready — verify & submit on GitHub"
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: &reason,
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		PRNumber:     task.Ptr(42),
+	})
+	if err != nil {
+		t.Fatalf("seed draft-review task: %v", err)
+	}
+
+	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	for _, want := range []string{
+		"pre-flight the draft before submitting anything",
+		"APPROVE drafts must NEVER be auto-submitted",
+		"If you cannot prove the draft is COMMENT or REQUEST_CHANGES, do not submit it.",
+		"Review APPROVE verdict ready for human submission (approval authority required)",
+		"surface that exact rejection",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
@@ -146,7 +180,7 @@ func TestBuildPrompt_RequiresRecheckingSupersededFailures(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, nil)
+	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
 	if !strings.Contains(prompt, "supersedes the wording the failure quotes") {
 		t.Errorf("prompt does not require rechecking superseded test-runner FAILs:\n%s", prompt)
 	}
@@ -397,7 +431,7 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 		ID: "t1", Title: "x", Status: task.StatusHumanRequired,
 		Branch: "feat/queue", WorktreeDir: "/data/worktrees/queue",
 	}
-	p := h.buildPrompt(tk, nil)
+	p := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
 	for _, want := range []string{
 		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
 		"never fabricate", "/data/worktrees/queue", "feat/queue",

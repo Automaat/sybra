@@ -2945,9 +2945,9 @@ func TestResumeStalled_SkipWaitHuman(t *testing.T) {
 }
 
 // TestResumeStalled_SkipsHumanRequired reproduces the post-restart dispatch bug
-// where a review task was set to human-required by inline triage (small PR)
-// but ResumeStalled re-dispatched its workflow's run_agent step after restart,
-// overriding the triage verdict.
+// where a review task was parked on human-required but ResumeStalled
+// re-dispatched its workflow's run_agent step after restart, overriding the
+// triage verdict.
 func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -2955,8 +2955,8 @@ func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
 	// Simulate a review task whose pr-review workflow is at the implement
-	// (run_agent) step but whose status was flipped to human-required by the
-	// inline triage path before the restart.
+	// (run_agent) step but whose status was flipped to human-required before
+	// the restart.
 	tasks.Put(TaskInfo{
 		ID:        "t1",
 		Status:    "human-required",
@@ -4279,7 +4279,7 @@ func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) 
 	// Once the pending start clears (StartAgent returned and registered the real
 	// agent), a genuinely untracked completion for THIS step still falls back
 	// to crediting the current step, as designed for manual/recovery agents.
-	engine.unmarkStepStarting("t1", "implement")
+	engine.unmarkStepStartingAndTakePending("t1", "implement")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
 
 	tiFinal, _ := tasks.GetTask("t1")
@@ -4351,7 +4351,7 @@ func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 	// must not clear the winner's in-flight claim.
 	engine.markStepStarting("t1", "implement")
 	engine.markStepStarting("t1", "implement")
-	engine.unmarkStepStarting("t1", "implement")
+	engine.unmarkStepStartingAndTakePending("t1", "implement")
 
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
 
@@ -4361,7 +4361,7 @@ func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 			tiAfter.Workflow.CurrentStep)
 	}
 
-	engine.unmarkStepStarting("t1", "implement")
+	engine.unmarkStepStartingAndTakePending("t1", "implement")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
 
 	tiFinal, _ := tasks.GetTask("t1")
@@ -4487,6 +4487,109 @@ steps:
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) {
+		completed = append(completed, info)
+	})
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				skillReceiptRecoveryKey("run"): "1",
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-2",
+			Role:               "plan-critic",
+			Provider:           "codex",
+			RequestedSkill:     "sybra-test",
+			SkillExecutionMode: "injected",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "agent-2",
+		Result: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\nClassification: product_bug: repo does not compile\n\nObserved output:\n` +
+			"```text\npkg/api-server/resource_inspect_endpoints.go:14: dangling import\n```" +
+			`"}`,
+		Success: true,
+	})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "no conformance receipt after automatic recovery retry") {
+		t.Fatalf("StatusReason = %q, want receipt-retry exhaustion", ti.StatusReason)
+	}
+	if !strings.Contains(ti.StatusReason, "product_bug: repo does not compile") {
+		t.Fatalf("StatusReason = %q, want parsed verdict summary", ti.StatusReason)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("skill receipt retry var = %q, want cleared after exhaustion", got)
+	}
+	if len(agents.calls) != 0 {
+		t.Fatalf("StartAgent calls = %d, want no third attempt", len(agents.calls))
+	}
+	if ti.Workflow.State != ExecCompleted {
+		t.Fatalf("Workflow.State = %q, want %q so a later recovery trigger is not blocked by ErrWorkflowAlreadyActive", ti.Workflow.State, ExecCompleted)
+	}
+	if ti.Workflow.CurrentStep != "" {
+		t.Fatalf("Workflow.CurrentStep = %q, want empty", ti.Workflow.CurrentStep)
+	}
+	if len(completed) != 1 {
+		t.Fatalf("workflow completion callbacks = %d, want 1 exhausted completion for downstream recovery", len(completed))
+	}
+	if completed[0].TaskID != "t1" || completed[0].WorkflowID != "skill-receipt" {
+		t.Fatalf("completion = %+v, want task/workflow ids for exhausted run", completed[0])
+	}
+	if got := completed[0].Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("completion retry var = %q, want cleared before downstream recovery sees completion", got)
+	}
+}
+
+// TestHandleAgentComplete_UnverifiedSkillExhaustionAllowsFreshWorkflowStart
+// covers the human-review recovery handoff: once skill-receipt exhaustion
+// marks a task human-required, a subsequent recovery attempt must be able to
+// start a fresh workflow instance rather than fail with
+// ErrWorkflowAlreadyActive against the exhausted, never-finalized Execution
+// (the bug in #5ba88ecc — a later genuinely passing run stayed parked at
+// human-required because the stale Execution was still "active").
+func TestHandleAgentComplete_UnverifiedSkillExhaustionAllowsFreshWorkflowStart(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /sybra-test now."
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -4512,21 +4615,19 @@ steps:
 
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-2", Result: "still no receipt", Success: true})
 
+	if err := engine.StartWorkflow("t1", "skill-receipt"); err != nil {
+		t.Fatalf("StartWorkflow after exhaustion = %v, want nil (fresh recovery trigger must not be rejected as already active)", err)
+	}
+
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ti.Status != "human-required" {
-		t.Fatalf("Status = %q, want human-required", ti.Status)
-	}
-	if !strings.Contains(ti.StatusReason, "no conformance receipt after automatic recovery retry") {
-		t.Fatalf("StatusReason = %q, want receipt-retry exhaustion", ti.StatusReason)
-	}
 	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
-		t.Fatalf("skill receipt retry var = %q, want cleared after exhaustion", got)
+		t.Fatalf("skill receipt retry var = %q, want a fresh budget on the new Execution", got)
 	}
-	if len(agents.calls) != 0 {
-		t.Fatalf("StartAgent calls = %d, want no third attempt", len(agents.calls))
+	if ti.Workflow.State == ExecCompleted {
+		t.Fatalf("Workflow.State = %q, want the fresh restart to be running/waiting again", ti.Workflow.State)
 	}
 }
 

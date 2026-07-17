@@ -6,6 +6,7 @@
     num,
     rateCell,
     sampleClasses,
+    sampleLabel,
     seconds,
     verdictClasses,
     type ComparisonRowLike,
@@ -32,16 +33,28 @@
   }
 
   function rowState(row: ComparisonRowLike): string {
-    if (row.baseline) return 'baseline'
+    if (row.baseline) {
+      // Surface the caveat on the baseline row too — a parity-unknown/low-sample
+      // baseline is an untrustworthy comparison basis and must not read as clean.
+      if (row.sampleStatus && row.sampleStatus !== 'actionable') {
+        return `baseline · ${sampleLabel(row.sampleStatus)}`
+      }
+      return 'baseline'
+    }
     if (row.baselineVariantId && !row.failureEstimate?.hasDelta) return 'no baseline'
-    return row.sampleStatus ?? ''
+    return sampleLabel(row.sampleStatus)
   }
 
   // Applied to the sample-size badge and any breached guardrail chip so the
   // caveat visually outweighs the metric it qualifies, per AC3 — a low-N or
   // guardrail-breach row should never read as quietly as a healthy one.
   function isDominantSample(row: ComparisonRowLike): boolean {
-    return row.sampleStatus === 'low-sample'
+    return row.sampleStatus === 'low-sample' || row.sampleStatus === 'parity-unknown' || row.sampleStatus === 'low-sample+parity-unknown'
+  }
+
+  function parityUnknownVariants(exp: { variants?: { sampleStatus?: string }[] }): number {
+    return (exp.variants ?? []).filter((variant) =>
+      variant.sampleStatus === 'parity-unknown' || variant.sampleStatus === 'low-sample+parity-unknown').length
   }
 </script>
 
@@ -87,6 +100,11 @@
                   <div class="text-surface-400">
                     {exp.readyVariants}/{exp.variants.length} ready · {exp.totalRuns} runs · min {exp.minSamplesPerVariant}
                   </div>
+                  {#if parityUnknownVariants(exp) > 0}
+                    <div class="mt-1 text-warning-700 dark:text-warning-300">
+                      {parityUnknownVariants(exp)} parity-unknown variant{parityUnknownVariants(exp) === 1 ? '' : 's'}
+                    </div>
+                  {/if}
                   {#if exp.baselineVariantId}
                     <div class="mt-1 text-surface-400">baseline {exp.baselineVariantId}</div>
                   {/if}
@@ -144,8 +162,6 @@
                       {/if}
                       {#if rowState(row)}
                         <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(row.sampleStatus)} {isDominantSample(row) ? 'experiment-caveat--dominant' : ''}">{rowState(row)}</span>
-                      {:else if row.insufficientData}
-                        <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
                       {/if}
                     </td>
                     <td class="py-1.5 text-right text-xs">
@@ -203,8 +219,6 @@
                         {/if}
                         {#if rowState(child)}
                           <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(child.sampleStatus)} {isDominantSample(child) ? 'experiment-caveat--dominant' : ''}">{rowState(child)}</span>
-                        {:else if child.insufficientData}
-                          <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
                         {/if}
                       </td>
                       <td class="py-1.5 text-right text-xs">

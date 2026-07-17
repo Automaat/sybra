@@ -186,7 +186,7 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 		return false
 	})
 
-	_, _, err = o.StartAgentWithAssignment(tk.ID, "headless", "prompt", false, false, "", workflow.AgentAssignment{})
+	_, _, err = o.StartAgentWithAssignment(tk.ID, "headless", "prompt", false, false, "", "", workflow.AgentAssignment{})
 	if err == nil {
 		t.Fatal("StartAgentWithAssignment err = nil, want an error (worktree required for project task)")
 	}
