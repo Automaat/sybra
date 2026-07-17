@@ -238,6 +238,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 
 	h.emitPermissionDenialAudits(ag)
 	h.emitMalformedToolCallAudits(ag)
+	h.emitPromptRenderedAudit(ag)
 
 	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent, exitErr)
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
@@ -320,6 +321,30 @@ func (h *Handler) emitPermissionDenialAudits(ag *agent.Agent) {
 			"posture": posture,
 		})
 	}
+}
+
+// emitPromptRenderedAudit emits agent.prompt_rendered, correlating this run's
+// provider-specific skill render summary with its agent.started event via
+// prompt_hash. No-ops when no hash was stamped (recordImplAgentStart only
+// stamps implementation dispatches). Never carries prompt text — only the
+// render summary.
+func (h *Handler) emitPromptRenderedAudit(ag *agent.Agent) {
+	hash := ag.GetPromptHash()
+	if hash == "" {
+		return
+	}
+	syntax, rendered, unrendered := ag.GetPromptRender()
+	requested := make([]string, 0, len(rendered)+len(unrendered))
+	requested = append(requested, rendered...)
+	requested = append(requested, unrendered...)
+	h.logAudit(audit.EventAgentPromptRendered, ag.TaskID, ag.ID, map[string]any{
+		"prompt_hash":       hash,
+		"provider":          ag.Provider,
+		"rendered_syntax":   syntax,
+		"rendered_skills":   rendered,
+		"unrendered_skills": unrendered,
+		"requested_skills":  requested,
+	})
 }
 
 func (h *Handler) emitMalformedToolCallAudits(ag *agent.Agent) {
