@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -908,5 +909,42 @@ func TestSanitizeGHOutput(t *testing.T) {
 				t.Errorf("sanitizeGHOutput = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// IsTransientError decides whether a caller escalates. These errors hit every
+// in-flight request at once, so a gap here turns a brief network wobble into a
+// board-wide escalation storm (#2167).
+func TestIsTransientError_CoversRealNetworkAndRateLimitFailures(t *testing.T) {
+	t.Parallel()
+	transient := []string{
+		"gh: HTTP 502 Bad Gateway",
+		"gh: HTTP 503",
+		`Post "https://api.github.com/graphql": dial tcp 140.82.121.6:443: connect: no route to host`,
+		"read tcp 10.0.0.2:52134->140.82.121.6:443: read: connection reset by peer",
+		"dial tcp 140.82.121.6:443: connect: connection refused",
+		"net/http: TLS handshake timeout",
+		"i/o timeout",
+		"context deadline exceeded",
+		"You have exceeded a secondary rate limit (HTTP 403)",
+		"API rate limit exceeded for user ID 1 (HTTP 403)",
+	}
+	for _, msg := range transient {
+		if !IsTransientError(errors.New(msg)) {
+			t.Errorf("IsTransientError(%q) = false, want true — a caller would escalate on a blip", msg)
+		}
+	}
+
+	permanent := []string{
+		// A parse-level EOF is our decoder failing, not a network blip.
+		"parse graphql response: unexpected EOF",
+		"resolve viewer login for owner/repo#151: gh api user: HTTP 403: Resource not accessible by integration",
+		"gh: Not Found (HTTP 404)",
+		"gh: Bad credentials (HTTP 401)",
+	}
+	for _, msg := range permanent {
+		if IsTransientError(errors.New(msg)) {
+			t.Errorf("IsTransientError(%q) = true, want false — a real defect would never escalate", msg)
+		}
 	}
 }

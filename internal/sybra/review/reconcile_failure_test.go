@@ -243,3 +243,82 @@ func TestReconcileReviewTask_SuccessClearsTheCircuit(t *testing.T) {
 		t.Error("escalated on the first failure after a success; the counter did not reset")
 	}
 }
+
+// Escalation must be idempotent. human-required is not terminal, so the poller
+// keeps feeding the escalated task back in — re-escalating would overwrite the
+// operator's own triage note and rewrite updated_at forever on a task nobody is
+// working on (also defeating any dwell detector keyed on it).
+func TestRecordReconcileFailure_DoesNotClobberOperatorNote(t *testing.T) {
+	r, tasks := newReconcileFailureHandler(t)
+	tk := newReviewTaskInPhase(t, tasks, "needs-approval")
+
+	err := errors.New("resolve viewer login: HTTP 403")
+	for range reconcileFailureLimit {
+		got, _ := tasks.Get(tk.ID)
+		r.recordReconcileFailure(&got, err)
+	}
+	escalated, _ := tasks.Get(tk.ID)
+	if escalated.Status != task.StatusHumanRequired {
+		t.Fatalf("precondition: want escalated, got %q", escalated.Status)
+	}
+
+	const note = "OPERATOR: investigating, do not touch"
+	if _, uerr := tasks.Update(tk.ID, task.Update{StatusReason: task.Ptr(note)}); uerr != nil {
+		t.Fatal(uerr)
+	}
+	before, _ := tasks.Get(tk.ID)
+
+	// Keep polling with the same failing read.
+	for range reconcileFailureLimit * 2 {
+		got, _ := tasks.Get(tk.ID)
+		r.recordReconcileFailure(&got, err)
+	}
+
+	after, _ := tasks.Get(tk.ID)
+	if after.StatusReason != note {
+		t.Errorf("StatusReason = %q, want the operator's note %q — re-escalation clobbered it",
+			after.StatusReason, note)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("updated_at was rewritten (%v -> %v) on an already-escalated task",
+			before.UpdatedAt, after.UpdatedAt)
+	}
+}
+
+// The count must decay when a cycle proves the task is healthy. Otherwise stale
+// failures accumulate across hours of a perfectly healthy PR and a single fresh
+// blip trips a circuit meant to catch a *persistent* failure.
+func TestReconcileReviewTask_HealthyCycleClearsStaleFailures(t *testing.T) {
+	r, tasks := newReconcileFailureHandler(t)
+	tk := newReviewTaskInPhase(t, tasks, "needs-approval")
+
+	err := errors.New("resolve viewer login: HTTP 403")
+	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
+		return github.MyReviewState{}, err
+	}
+	key := reviewPRKey(tk.ProjectID, tk.PRNumber)
+	mergeableReq := map[string]github.PullRequest{
+		key: {Number: tk.PRNumber, Repository: tk.ProjectID, Mergeable: "MERGEABLE", HeadSHA: "e57e4b5"},
+	}
+
+	// Accumulate failures just short of the limit.
+	for range reconcileFailureLimit - 1 {
+		got, _ := tasks.Get(tk.ID)
+		r.reconcileReviewTask(&got, mergeableReq, map[string]github.PullRequest{})
+	}
+
+	// The PR goes CONFLICTING: a decided phase proves GitHub is readable, so the
+	// stale failures must not survive it.
+	conflicting := map[string]github.PullRequest{
+		key: {Number: tk.PRNumber, Repository: tk.ProjectID, Mergeable: "CONFLICTING", HeadSHA: "e57e4b5"},
+	}
+	got, _ := tasks.Get(tk.ID)
+	r.reconcileReviewTask(&got, conflicting, map[string]github.PullRequest{})
+
+	r.failureMu.Lock()
+	n := r.reconcileFailures[tk.ID]
+	r.failureMu.Unlock()
+	if n != 0 {
+		t.Fatalf("failure count = %d after a healthy cycle, want 0 — one later blip would escalate a healthy task", n)
+	}
+}

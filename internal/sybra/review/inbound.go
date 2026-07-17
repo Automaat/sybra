@@ -312,12 +312,26 @@ func reviewPRKey(projectID string, prNumber int) string {
 // a stranger's PR 112 times. A warn-log is not an alarm.
 const reconcileFailureLimit = 5
 
+// reconcileEscalationReason prefixes the StatusReason this circuit writes, so a
+// re-escalation can recognise its own note and leave an operator's alone.
+const reconcileEscalationReason = "review reconcile failed"
+
 // recordReconcileFailure counts consecutive reconcile failures and escalates
 // once they look permanent. Transient blips (5xx, timeouts, budget backoff) are
 // expected and never count; only a read that keeps failing is a defect.
 func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 	if github.IsTransientError(err) {
 		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "transient", true)
+		return
+	}
+
+	// Already parked on a human: escalating again achieves nothing and actively
+	// harms — human-required is not terminal, so the poller keeps feeding this
+	// task back, and each pass would overwrite the operator's own triage note
+	// and rewrite updated_at on work nobody is doing. Deliberately keyed on
+	// status alone, not on our own reason string: an operator who replaces the
+	// note must not thereby re-arm the clobber.
+	if t.Status == task.StatusHumanRequired {
 		return
 	}
 
@@ -332,7 +346,6 @@ func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "attempts", attempts)
 		return
 	}
-	delete(r.reconcileFailures, t.ID)
 	r.failureMu.Unlock()
 
 	r.logger.Error("review.reconcile.circuit-open",
@@ -341,7 +354,7 @@ func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 	// and starves the re-review a frozen phase would keep feeding.
 	if _, uerr := r.tasks.Update(t.ID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(fmt.Sprintf("review reconcile failed %d times: %v", reconcileFailureLimit, err)),
+		StatusReason: task.Ptr(fmt.Sprintf("%s %d times: %v", reconcileEscalationReason, reconcileFailureLimit, err)),
 	}); uerr != nil {
 		r.logger.Error("review.reconcile.escalate", "task_id", t.ID, "err", uerr)
 	}
@@ -378,6 +391,10 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	// An agent owning the PR short-circuits: surface "reviewing" without the
 	// extra GitHub round-trips.
 	if r.agents.HasRunningAgentForTask(t.ID) {
+		// Reaching this proves the task is healthy, so any earlier failures are
+		// stale. Without clearing here the count never decays and a single fresh
+		// failure hours later can trip a circuit meant to catch a persistent one.
+		r.clearReconcileFailure(t.ID)
 		r.applyReviewPhase(t, computeReviewPhase(reviewSignals{AgentRunning: true}))
 		return
 	}
@@ -407,6 +424,7 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		}
 	}
 	if res, decided := stickyConflictPhase(mergeable, t.ReviewPhase); decided {
+		r.clearReconcileFailure(t.ID)
 		r.applyReviewPhase(t, res)
 		return
 	}
