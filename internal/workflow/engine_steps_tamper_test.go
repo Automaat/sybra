@@ -399,6 +399,16 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("documented_exact_path_does_not_bless_same_basename", func(t *testing.T) {
+		body := "## Files\n- delete `internal/ui/helpers_test.go`\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/api/helpers_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 1 {
+			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
+		}
+	})
+
 	t.Run("non_deletion_mentions_do_not_bless_deleted_test_file", func(t *testing.T) {
 		body := "## Scope\n- inspect mesh_helpers_test.go while fixing runtime logic\n"
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
@@ -426,8 +436,11 @@ func TestDocumentedDeletionAllowlist(t *testing.T) {
 		if !got.ExactPaths["internal/mesh/legacy_test.go"] {
 			t.Fatalf("ExactPaths = %v, want internal/mesh/legacy_test.go", got.ExactPaths)
 		}
-		if !got.Basenames["legacy_test.go"] || !got.Basenames["mesh_helpers_test.go"] {
-			t.Fatalf("Basenames = %v, want extracted basenames", got.Basenames)
+		if !got.Basenames["mesh_helpers_test.go"] {
+			t.Fatalf("Basenames = %v, want extracted basename-only token", got.Basenames)
+		}
+		if got.Basenames["legacy_test.go"] {
+			t.Fatalf("Basenames = %v, did not want basename from exact path", got.Basenames)
 		}
 	})
 
