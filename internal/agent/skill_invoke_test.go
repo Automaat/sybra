@@ -445,6 +445,18 @@ func TestResolveWorkflowSkillPrompt_OutputSchemaIgnoredByProviderStillReceipts(t
 	}
 }
 
+// TestProviderSupportsOutputSchema_EmptyNameFailsClosed pins that an empty
+// providerName is treated as unresolvable, not as lookupProvider's unrelated
+// empty-defaults-to-claude fallback (a different mechanism, for a legacy
+// caller that never set Provider) — otherwise ProviderSupportsOutputSchema
+// would silently answer true for a call site that hasn't resolved a
+// provider yet, defeating the fail-closed contract its own doc promises.
+func TestProviderSupportsOutputSchema_EmptyNameFailsClosed(t *testing.T) {
+	if got := ProviderSupportsOutputSchema(""); got {
+		t.Fatal("ProviderSupportsOutputSchema(\"\") = true, want false")
+	}
+}
+
 func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

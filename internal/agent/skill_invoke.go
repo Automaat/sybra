@@ -93,9 +93,16 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string
 }
 
 // ProviderSupportsOutputSchema reports whether providerName's resolved
-// Provider actually applies RunConfig.OutputSchema. An unresolvable name
-// falls back to false — the same fail-closed default baseProvider uses.
+// Provider actually applies RunConfig.OutputSchema. An empty or unresolvable
+// name falls back to false — the same fail-closed default baseProvider
+// uses. Checked explicitly rather than delegating an empty name to
+// lookupProvider, whose own empty-defaults-to-claude fallback exists for a
+// different purpose (a legacy caller that never set Provider) and would
+// otherwise silently resolve to true here.
 func ProviderSupportsOutputSchema(providerName string) bool {
+	if strings.TrimSpace(providerName) == "" {
+		return false
+	}
 	prov, err := lookupProvider(providerName)
 	if err != nil {
 		return false

@@ -252,7 +252,12 @@ func TestBuildRunPatchDowngradesConformanceWhenReceiptMissing(t *testing.T) {
 // receipt line, so resolveWorkflowSkillPrompt never asks for one there. A
 // result with no receipt marker must not be downgraded to
 // ConformanceUnverified in that case — the schema enforcement itself stands
-// in as the conformance signal.
+// in as the conformance signal. Provider is pinned to "claude" explicitly
+// (rather than left empty) so this asserts the real provider-capability
+// gate rather than incidentally passing via lookupProvider's unrelated
+// empty-defaults-to-claude fallback — see
+// TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema for the
+// sibling case that would catch a provider actually ignoring the schema.
 func TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema(t *testing.T) {
 	t.Parallel()
 
@@ -270,6 +275,7 @@ func TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema(t *testing.T) {
 				ID:                      "ag-1",
 				TaskID:                  "task-1",
 				Name:                    agent.RoleTestRunner.AgentName("Test"),
+				Provider:                "claude",
 				RequestedSkill:          "sybra-test",
 				ResolvedSkillSourceHash: "deadbeefcafebabe",
 				SkillConformance:        tc.conformance,
