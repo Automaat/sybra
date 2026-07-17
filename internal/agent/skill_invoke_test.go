@@ -590,7 +590,7 @@ func TestResolveWorkflowSkillPrompt_OutputSchemaSkipsReceipt(t *testing.T) {
 				RequestedSkill: "sybra-test",
 				OutputSchema:   `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
 			}
-			if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+			if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 				t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 			}
 			if cfg.SkillExecutionMode != tc.wantMode {
@@ -626,7 +626,7 @@ func TestResolveWorkflowSkillPrompt_OutputSchemaIgnoredByProviderStillReceipts(t
 		RequestedSkill: "sybra-test",
 		OutputSchema:   `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "copilot"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, copilotProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeFallback {

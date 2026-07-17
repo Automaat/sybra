@@ -69,6 +69,11 @@ func (baseProvider) HonorsAllowedTools() bool { return false }
 // unverifiable run.
 func (baseProvider) SupportsOutputSchema() bool { return false }
 
+// EnforcesOutputSchema defaults to false for the same reason
+// SupportsOutputSchema does — only a provider that actually forwards the
+// schema flag to its CLI overrides this to true.
+func (baseProvider) EnforcesOutputSchema() bool { return false }
+
 func (baseProvider) OutputSchemaAsFile() bool { return false }
 
 func (baseProvider) UsesPerTurnConvo() bool { return false }

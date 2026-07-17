@@ -26,6 +26,10 @@ func (codexProvider) HonorsAllowedTools() bool { return false }
 // --output-schema (OutputSchemaAsFile), forcing schema-valid JSON output.
 func (codexProvider) SupportsOutputSchema() bool { return true }
 
+// EnforcesOutputSchema mirrors SupportsOutputSchema: codex forwards
+// OutputSchema to the CLI, forcing schema-valid JSON output.
+func (codexProvider) EnforcesOutputSchema() bool { return true }
+
 func (codexProvider) NormalizeModel(model string) string {
 	// Codex models come from `codex debug models` and never carry a [1m]
 	// suffix — a stray suffix stays untouched and is rejected by safeArgRe.

@@ -68,13 +68,6 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 	}
 	if retries >= maxSkillReceiptRecoveryAttempts {
 		delete(fresh.Workflow.Variables, retryKey)
-<<<<<<< HEAD
-		// Mark the execution terminal before parking on a human. Otherwise
-		// TaskService.DispatchFromHumanRequired rejects the redispatch with
-		// "task has active workflow", stranding the task until the workflow is
-		// cleared by hand.
-		fresh.Workflow.State = ExecFailed
-=======
 		// Finalize the Execution like finishTerminalStepOutput does for every
 		// other human-required escalation (e.g. checkpoint_failed). Left
 		// non-terminal, StartWorkflow/DispatchEvent's active-workflow guard
@@ -87,7 +80,6 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		fresh.Workflow.CurrentStep = ""
 		fresh.Workflow.State = ExecCompleted
 		fresh.Workflow.CompletedAt = &now
->>>>>>> refs/remotes/origin/main
 		if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
 			e.logger.Warn("workflow.skill-receipt.clear", "task_id", taskID, "step", spawnedStep, "err", err)
 		}
