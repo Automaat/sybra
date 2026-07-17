@@ -14,12 +14,15 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 type fakeCheckGetter struct {
-	cmds    []string
-	codegen []string
-	setup   []string
+	cmds            []string
+	codegen         []string
+	setup           []string
+	focused         []project.FocusedCheck
+	worktreeBaseRef string
 }
 
 func (f *fakeCheckGetter) CodegenCommands(context.Context, string) []string { return f.codegen }
@@ -27,6 +30,12 @@ func (f *fakeCheckGetter) CodegenCommands(context.Context, string) []string { re
 func (f *fakeCheckGetter) VerifyCommands(context.Context, string) []string { return f.cmds }
 
 func (f *fakeCheckGetter) SetupCommands(context.Context, string) []string { return f.setup }
+
+func (f *fakeCheckGetter) FocusedChecks(context.Context, string) []project.FocusedCheck {
+	return f.focused
+}
+
+func (f *fakeCheckGetter) WorktreeBaseRef(context.Context, string) string { return f.worktreeBaseRef }
 
 func newVerifyChecksStep() *Step { return &Step{ID: "verify_checks", Type: StepVerifyChecks} }
 

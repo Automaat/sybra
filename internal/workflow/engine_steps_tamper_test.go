@@ -432,7 +432,8 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	}
 
 	// verify_commits default (no status condition) must route to codegen_gate,
-	// which then hands off to detect_tampering once generated drift is fixed.
+	// then focused_checks, which hands off to detect_tampering once generated
+	// drift is fixed.
 	vc := impl.StepByID("verify_commits")
 	if vc == nil {
 		t.Fatal("verify_commits step missing")
