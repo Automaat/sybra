@@ -497,7 +497,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return comp, err
 		case StepWaitHuman:
 			return nil, wrapDispatchErr(step.ID, e.execWaitHuman(taskID, step, wfExec))
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR, StepClassifyTask:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepFlagPlanCritique, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR, StepClassifyTask:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
