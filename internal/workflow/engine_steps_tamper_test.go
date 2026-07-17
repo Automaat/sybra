@@ -255,7 +255,7 @@ func TestBuildTamperReport(t *testing.T) {
 	t.Run("deleted_test_file_is_high", func(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "D", Path: "internal/foo/foo_test.go"},
-		})
+		}, tamperDeletionAllowlist{})
 		if r.highCount() != 1 {
 			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
 		}
@@ -267,7 +267,7 @@ func TestBuildTamperReport(t *testing.T) {
 	t.Run("impl_only_change_no_files", func(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "M", Path: "internal/foo/foo.go", Patch: "@@ @@\n+x := 1\n"},
-		})
+		}, tamperDeletionAllowlist{})
 		if len(r.Files) != 0 {
 			t.Errorf("Files = %v, want empty (non-verification change)", r.Files)
 		}
@@ -279,7 +279,7 @@ func TestBuildTamperReport(t *testing.T) {
 	t.Run("benign_test_change_is_medium_not_blocking", func(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "A", Path: "internal/foo/new_test.go", Patch: "@@ @@\n+func TestNew(t *testing.T){ require.NoError(t, err) }\n"},
-		})
+		}, tamperDeletionAllowlist{})
 		if r.highCount() != 0 {
 			t.Fatalf("highCount = %d, want 0 (%v)", r.highCount(), r.Findings)
 		}
@@ -295,7 +295,7 @@ func TestBuildTamperReport(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-\tif err != nil { t.Fatalf(\"bad: %v\", err) }\n"},
 			{Status: "A", Path: "internal/foo/helpers_test.go", Patch: "@@ @@\n+func mustOK(tb testing.TB, err error) {\n+\tif err != nil { tb.Fatalf(\"bad: %v\", err) }\n+}\n"},
-		})
+		}, tamperDeletionAllowlist{})
 		if r.highCount() != 0 {
 			t.Fatalf("highCount = %d, want 0 (%v)", r.highCount(), r.Findings)
 		}
@@ -308,7 +308,7 @@ func TestBuildTamperReport(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-func TestGone(t *testing.T) {\n-\tt.Errorf(\"x\")\n-}\n"},
 			{Status: "A", Path: "internal/foo/new_test.go", Patch: "@@ @@\n+func TestGone(t *testing.T) {\n+\tt.Errorf(\"x\")\n+}\n+func TestExtra(t *testing.T) {\n+\tt.Errorf(\"y\")\n+}\n"},
-		})
+		}, tamperDeletionAllowlist{})
 		if r.highCount() != 0 {
 			t.Fatalf("highCount = %d, want 0 (consolidation is diff-wide net-neutral): %v", r.highCount(), r.Findings)
 		}
@@ -330,7 +330,7 @@ func TestBuildTamperReport(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-func TestGone(t *testing.T) {\n-\tt.Errorf(\"x\")\n-}\n"},
 			{Status: "M", Path: "internal/foo/other_test.go", Patch: "@@ @@\n+\tfoo := 1\n"},
-		})
+		}, tamperDeletionAllowlist{})
 		found := false
 		for _, f := range r.Findings {
 			if f.Rule == "removed-test-cases" {
@@ -349,7 +349,7 @@ func TestBuildTamperReport(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-\tif err != nil { t.Fatalf(\"bad: %v\", err) }\n-\tif y != 2 { t.Fatalf(\"bad y\") }\n"},
 			{Status: "A", Path: "internal/foo/new_feature_test.go", Patch: "@@ @@\n+func TestUnrelated(t *testing.T) {\n+\trequire.NoError(t, err)\n+}\n"},
-		})
+		}, tamperDeletionAllowlist{})
 		found := false
 		for _, f := range r.Findings {
 			if f.Rule == "removed-assertions" {
@@ -368,7 +368,7 @@ func TestBuildTamperReport(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "M", Path: "a_test.go", Patch: "@@ @@\n+\tt.Skip(\"x\")\n"},
 			{Status: "M", Path: "b_test.go", Patch: "@@ @@\n+\tfoo := 1\n"},
-		})
+		}, tamperDeletionAllowlist{})
 		if r.highCount() != 1 {
 			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
 		}
@@ -377,6 +377,69 @@ func TestBuildTamperReport(t *testing.T) {
 			if f.Severity == tamperMedium {
 				t.Errorf("unexpected medium finding alongside high: %v", f)
 			}
+		}
+	})
+
+	t.Run("documented_deleted_test_file_is_downgraded", func(t *testing.T) {
+		body := "## Scope\n- delete mode cases from mesh_helpers_test.go\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/mesh/mesh_helpers_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 0 {
+			t.Fatalf("highCount = %d, want 0 (%v)", r.highCount(), r.Findings)
+		}
+		if len(r.Findings) != 1 {
+			t.Fatalf("Findings = %v, want 1 downgraded deletion finding", r.Findings)
+		}
+		if r.Findings[0].Rule != "deleted-verification-file" || r.Findings[0].Severity != tamperMedium {
+			t.Fatalf("finding = %+v, want deleted-verification-file downgraded to medium", r.Findings[0])
+		}
+		if !strings.Contains(r.Findings[0].Detail, "documented in task spec") {
+			t.Fatalf("detail = %q, want documented marker", r.Findings[0].Detail)
+		}
+	})
+
+	t.Run("non_deletion_mentions_do_not_bless_deleted_test_file", func(t *testing.T) {
+		body := "## Scope\n- inspect mesh_helpers_test.go while fixing runtime logic\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/mesh/mesh_helpers_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 1 {
+			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
+		}
+	})
+}
+
+func TestDocumentedDeletionAllowlist(t *testing.T) {
+	t.Parallel()
+
+	t.Run("extracts_from_scope_and_files_sections", func(t *testing.T) {
+		body := "" +
+			"## Scope\n" +
+			"- delete mode cases from mesh_helpers_test.go\n\n" +
+			"## Files\n" +
+			"- `internal/mesh/legacy_test.go` - remove tests for deleted helper\n"
+		got := documentedDeletionAllowlist(body)
+		if !got.ExactPaths["mesh_helpers_test.go"] {
+			t.Fatalf("ExactPaths = %v, want mesh_helpers_test.go", got.ExactPaths)
+		}
+		if !got.ExactPaths["internal/mesh/legacy_test.go"] {
+			t.Fatalf("ExactPaths = %v, want internal/mesh/legacy_test.go", got.ExactPaths)
+		}
+		if !got.Basenames["legacy_test.go"] || !got.Basenames["mesh_helpers_test.go"] {
+			t.Fatalf("Basenames = %v, want extracted basenames", got.Basenames)
+		}
+	})
+
+	t.Run("ignores_fenced_examples", func(t *testing.T) {
+		body := "" +
+			"## Scope\n" +
+			"```md\n" +
+			"- delete fake_test.go\n" +
+			"```\n"
+		got := documentedDeletionAllowlist(body)
+		if len(got.ExactPaths) != 0 {
+			t.Fatalf("ExactPaths = %v, want empty", got.ExactPaths)
 		}
 	})
 }
@@ -705,6 +768,38 @@ func TestExecDetectTampering_DeletedTestFlags(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_DocumentedDeletedTestDoesNotFlag(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                          "init\n",
+		"internal/mesh/mesh_helpers_test.go": "package mesh\n\nimport \"testing\"\n\nfunc TestMode(t *testing.T) { t.Errorf(\"x\") }\n",
+	})
+	gitRun(t, wt, "rm", "internal/mesh/mesh_helpers_test.go")
+	gitRun(t, wt, "commit", "-m", "chore: drop documented test")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Body:   "## Scope\n- delete mode cases from mesh_helpers_test.go\n",
+	})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Body:   "## Scope\n- delete mode cases from mesh_helpers_test.go\n",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
 	}
 }
 

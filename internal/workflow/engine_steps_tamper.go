@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	pathpkg "path"
 	"regexp"
 	"slices"
 	"strings"
@@ -209,7 +210,20 @@ var (
 	// tamperTautoCmpRe matches a bare `assert`/`if` equality comparison.
 	tamperTautoCmpRe = regexp.MustCompile(
 		`\b(?:assert|if)\s+(.+?)\s*={2,3}\s*(.+?)\s*[:{]?\s*$`)
+	// Task-spec parsing is intentionally conservative: only lines in a few
+	// trusted spec sections that explicitly say delete/remove/drop and also
+	// name a path-like token can bless a whole-file verification deletion.
+	tamperDeletionVerbRe = regexp.MustCompile(
+		`(?i)\b(delete|deletes|deleted|deleting|remove|removes|removed|removing|drop|drops|dropped|dropping|rm)\b`)
+	tamperBacktickTokenRe = regexp.MustCompile("`([^`]+)`")
+	tamperBarePathTokenRe = regexp.MustCompile(
+		`(^|[\s([{"'])((?:\.?[\w-]+/)*\.?[\w-]+\.[\w.-]+)([\s)\]},"':;]|$)`)
 )
+
+type tamperDeletionAllowlist struct {
+	ExactPaths map[string]bool
+	Basenames  map[string]bool
+}
 
 // isEstablishedSkipIdiom reports whether the added skip line is already a
 // repeated, pre-existing idiom in the file rather than a novel tampering
@@ -491,13 +505,23 @@ func (s *tamperScan) finalize() tamperPatchResult {
 
 // buildTamperReport assembles the report from the parsed diff. Pure function:
 // classification + per-file scan + medium fallback. No git access.
-func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport {
+func buildTamperReport(taskID, base string, changes []tamperChange, allow tamperDeletionAllowlist) tamperReport {
 	report := tamperReport{TaskID: taskID, Base: base}
 	scanned := 0
 	totalAddedAssertions := 0
 	totalDeletedAssertions := 0
 	totalAddedDecl := 0
 	totalDeletedDecl := 0
+	deletedBasenames := map[string]int{}
+	for i := range changes {
+		c := changes[i]
+		if !strings.HasPrefix(c.Status, "D") {
+			continue
+		}
+		if cat := classifyTamperPath(c.Path); cat != tamperCatOther {
+			deletedBasenames[pathpkg.Base(c.Path)]++
+		}
+	}
 	for i := range changes {
 		c := changes[i]
 		cat := classifyTamperPath(c.Path)
@@ -508,9 +532,15 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 
 		// Whole-file deletion of a verification file is itself high-severity.
 		if strings.HasPrefix(c.Status, "D") {
+			severity := tamperHigh
+			detail := string(cat) + " file deleted"
+			if documentedDeletionMatches(c.Path, allow, deletedBasenames) {
+				severity = tamperMedium
+				detail += " (documented in task spec)"
+			}
 			report.Findings = append(report.Findings, tamperFinding{
-				File: c.Path, Category: string(cat), Severity: tamperHigh,
-				Rule: "deleted-verification-file", Detail: string(cat) + " file deleted",
+				File: c.Path, Category: string(cat), Severity: severity,
+				Rule: "deleted-verification-file", Detail: detail,
 			})
 			continue
 		}
@@ -727,7 +757,7 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 		}
 		c.UpstreamContent = upstreamContent
 	}
-	report := buildTamperReport(taskID, base, changes)
+	report := buildTamperReport(taskID, base, changes, documentedDeletionAllowlist(t.Body))
 	report.Range = rangeSpec
 	return report, nil
 }
@@ -879,4 +909,104 @@ func trimDiffLine(s string) string {
 		return s[:maxLen] + "…"
 	}
 	return s
+}
+
+// documentedDeletionAllowlist extracts explicitly documented file deletions
+// from trusted task-spec sections. It stays conservative on purpose: only
+// exact repo-relative paths and unambiguous basenames are allowed, and only
+// when the surrounding line itself says delete/remove/drop.
+func documentedDeletionAllowlist(body string) tamperDeletionAllowlist {
+	if strings.TrimSpace(body) == "" {
+		return tamperDeletionAllowlist{}
+	}
+	allow := tamperDeletionAllowlist{
+		ExactPaths: map[string]bool{},
+		Basenames:  map[string]bool{},
+	}
+	for _, heading := range []string{
+		"## Scope",
+		"## Files",
+		"## Steps",
+		"## Deletions",
+		"## File Deletions",
+		"## Removed Files",
+	} {
+		start, end, ok := topLevelSectionRange(body, heading)
+		if !ok {
+			continue
+		}
+		collectDocumentedDeletionTokens(body[start:end], allow)
+	}
+	return allow
+}
+
+func collectDocumentedDeletionTokens(section string, allow tamperDeletionAllowlist) {
+	if allow.ExactPaths == nil || allow.Basenames == nil {
+		return
+	}
+	inFence := false
+	for line := range strings.SplitSeq(section, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || !tamperDeletionVerbRe.MatchString(trimmed) {
+			continue
+		}
+		for _, candidate := range pathTokensFromLine(line) {
+			allow.ExactPaths[candidate] = true
+			allow.Basenames[pathpkg.Base(candidate)] = true
+		}
+	}
+}
+
+func pathTokensFromLine(line string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(raw string) {
+		token, ok := normalizeDocumentedPath(raw)
+		if !ok || seen[token] {
+			return
+		}
+		seen[token] = true
+		out = append(out, token)
+	}
+	for _, m := range tamperBacktickTokenRe.FindAllStringSubmatch(line, -1) {
+		if len(m) == 2 {
+			add(m[1])
+		}
+	}
+	for _, m := range tamperBarePathTokenRe.FindAllStringSubmatch(line, -1) {
+		if len(m) >= 3 {
+			add(m[2])
+		}
+	}
+	return out
+}
+
+func normalizeDocumentedPath(raw string) (string, bool) {
+	token := strings.TrimSpace(raw)
+	token = strings.Trim(token, "`\"'()[]{}<>.,:;")
+	if token == "" || strings.Contains(token, `\`) || strings.HasPrefix(token, "/") {
+		return "", false
+	}
+	token = strings.TrimPrefix(token, "./")
+	token = pathpkg.Clean(token)
+	if token == "." || token == ".." || strings.HasPrefix(token, "../") {
+		return "", false
+	}
+	return token, true
+}
+
+func documentedDeletionMatches(pathname string, allow tamperDeletionAllowlist, deletedBasenames map[string]int) bool {
+	normalized, ok := normalizeDocumentedPath(pathname)
+	if !ok {
+		return false
+	}
+	if allow.ExactPaths[normalized] {
+		return true
+	}
+	base := pathpkg.Base(normalized)
+	return allow.Basenames[base] && deletedBasenames[base] == 1
 }
