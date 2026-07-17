@@ -222,7 +222,7 @@ const prQuery = `query($q: String!) {
                       conclusion
                       startedAt
                       completedAt
-                      checkSuite { workflowRun { runAttempt } }
+                      checkSuite { workflowRun { id runAttempt } }
                     }
                     ... on StatusContext { name: context state }
                   }
@@ -264,7 +264,8 @@ type gqlCheckContext struct {
 	CompletedAt string `json:"completedAt"` // CheckRun only: RFC3339, when the run finished
 	CheckSuite  struct {
 		WorkflowRun *struct {
-			RunAttempt int `json:"runAttempt"`
+			ID         string `json:"id"`
+			RunAttempt int    `json:"runAttempt"`
 		} `json:"workflowRun"`
 	} `json:"checkSuite"` // GitHub Actions only; nil for non-Actions checks
 }
@@ -291,6 +292,13 @@ func (c gqlCheckContext) workflowRunAttempt() int {
 		return 0
 	}
 	return c.CheckSuite.WorkflowRun.RunAttempt
+}
+
+func (c gqlCheckContext) workflowRunID() string {
+	if c.CheckSuite.WorkflowRun == nil {
+		return ""
+	}
+	return c.CheckSuite.WorkflowRun.ID
 }
 
 func parseCheckTime(s string) time.Time {

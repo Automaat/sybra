@@ -156,7 +156,7 @@ func effectiveCheckState(c gqlCheckContext) string {
 	}
 }
 
-// flakyOnlyFailure reports whether every gating check name with a FAILURE
+// flakyOnlyFailure reports whether every gating workflow/check with a FAILURE
 // outcome was superseded by a *later re-run attempt* that succeeded — i.e. the
 // check is intermittently failing, not consistently broken. GitHub's
 // statusCheckRollup carries one context per check *name* per commit, so a
@@ -178,6 +178,10 @@ func effectiveCheckState(c gqlCheckContext) string {
 // test, so the check falls through to the deterministic fix path rather than
 // being wrongly rerun. Returns false when there is no FAILURE at all.
 func flakyOnlyFailure(contexts []gqlCheckContext) bool {
+	type bucketKey struct {
+		name          string
+		workflowRunID string
+	}
 	type success struct {
 		start      time.Time
 		runAttempt int
@@ -187,16 +191,17 @@ func flakyOnlyFailure(contexts []gqlCheckContext) bool {
 		latestFailureDone time.Time
 		successes         []success
 	}
-	byName := make(map[string]*outcome, len(contexts))
+	byWorkflowCheck := make(map[bucketKey]*outcome, len(contexts))
 	for i := range contexts {
 		name := contexts[i].effectiveName()
 		if isNonGatingCheck(name) {
 			continue
 		}
-		o := byName[name]
+		key := bucketKey{name: name, workflowRunID: contexts[i].workflowRunID()}
+		o := byWorkflowCheck[key]
 		if o == nil {
 			o = &outcome{}
-			byName[name] = o
+			byWorkflowCheck[key] = o
 		}
 		switch effectiveCheckState(contexts[i]) {
 		case "FAILURE":
@@ -213,14 +218,14 @@ func flakyOnlyFailure(contexts []gqlCheckContext) bool {
 	}
 
 	sawFailure := false
-	for _, o := range byName {
+	for key, o := range byWorkflowCheck {
 		if !o.hasFailure {
 			continue
 		}
 		sawFailure = true
 		// A consistently-broken check (or one whose timestamps/attempt we
 		// can't read) has no later re-run success after its latest failure.
-		if o.latestFailureDone.IsZero() {
+		if key.workflowRunID == "" || o.latestFailureDone.IsZero() {
 			return false
 		}
 		superseded := false
