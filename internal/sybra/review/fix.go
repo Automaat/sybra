@@ -358,9 +358,13 @@ func (r *Handler) handleFlakyCI(issue github.PRIssue) {
 	}
 
 	if r.prTracker != nil && r.prTracker.AtCap(t.ID, ciInfraRerunKind) {
+		tags := slices.DeleteFunc(slices.Clone(t.Tags), func(tag string) bool {
+			return tag == reconciledLatchTag
+		})
 		if _, err := r.tasks.Update(t.ID, task.Update{
 			Status:       task.Ptr(task.StatusHumanRequired),
 			StatusReason: task.Ptr(persistentFlakyCIReason),
+			Tags:         task.Ptr(tags),
 		}); err != nil {
 			r.logger.Error("pr-monitor.ci-flaky.escalate", "task_id", t.ID, "err", err)
 			return

@@ -435,6 +435,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted(t *t
 		ProjectID: task.Ptr("o/r"),
 		PRNumber:  task.Ptr(4242),
 		Branch:    task.Ptr("feat/x"),
+		Tags:      task.Ptr([]string{reconciledLatchTag, "keep"}),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -480,5 +481,32 @@ func TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted(t *t
 	}
 	if got.StatusReason != persistentFlakyCIReason {
 		t.Fatalf("statusReason = %q, want %q", got.StatusReason, persistentFlakyCIReason)
+	}
+	for _, tag := range got.Tags {
+		if tag == reconciledLatchTag {
+			t.Fatalf("reconciliation latch still present after flaky escalation: tags=%v", got.Tags)
+		}
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcileHumanRequiredBlockers(all, []github.PullRequest{{
+		Number:      4242,
+		Repository:  "o/r",
+		HeadRefName: "feat/x",
+		Mergeable:   "MERGEABLE",
+		CIStatus:    "SUCCESS",
+	}})
+	got, err = tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q after green PR reconciliation, want in-review", got.Status)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("statusReason = %q after green PR reconciliation, want cleared", got.StatusReason)
 	}
 }
