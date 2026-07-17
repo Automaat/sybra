@@ -438,18 +438,21 @@ func TestMirrorReconcileEscalatesLogLevelOnRepeatedFailure(t *testing.T) {
 	mirror := NewMirror(cfg, mgr, roster, logger, 5*time.Millisecond)
 
 	var consecutiveFailures int
-	client, _ := roster.Client("pet-box")
-	for range reconcileFailureEscalateThreshold {
+	for range reconcileFailureEscalateThreshold - 1 {
 		mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
 	}
-	_ = client
-
-	out := buf.String()
-	if !strings.Contains(out, "level=WARN") {
-		t.Errorf("expected at least one Warn-level reconcile failure log, got:\n%s", out)
+	beforeThreshold := buf.String()
+	if !strings.Contains(beforeThreshold, "level=WARN") {
+		t.Errorf("expected a Warn-level reconcile failure log below the threshold, got:\n%s", beforeThreshold)
 	}
-	if !strings.Contains(out, "level=ERROR") {
-		t.Errorf("expected escalation to Error after %d consecutive failures, got:\n%s", reconcileFailureEscalateThreshold, out)
+	if strings.Contains(beforeThreshold, "level=ERROR") {
+		t.Errorf("escalated to Error before reaching the %d-failure threshold, got:\n%s", reconcileFailureEscalateThreshold, beforeThreshold)
+	}
+
+	mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+	atThreshold := buf.String()
+	if !strings.Contains(atThreshold, "level=ERROR") {
+		t.Errorf("expected escalation to Error exactly at %d consecutive failures, got:\n%s", reconcileFailureEscalateThreshold, atThreshold)
 	}
 }
 

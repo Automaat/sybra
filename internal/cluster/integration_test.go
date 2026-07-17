@@ -7,11 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/httpapi"
-	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -36,14 +34,12 @@ func (f *fakeTaskService) AssignTask(t task.Task) error {
 	return nil
 }
 
-func realServer(t *testing.T, token string, svc *fakeTaskService) (*httptest.Server, *sse.Broker) {
+func realServer(t *testing.T, token string, svc *fakeTaskService) *httptest.Server {
 	t.Helper()
-	broker := sse.New()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	mux.HandleFunc("GET /events", broker.ServeAll)
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(svc, "ListTasks", "GetTask", "AssignTask"),
 	}, slog.Default())
@@ -65,7 +61,7 @@ func realServer(t *testing.T, token string, svc *fakeTaskService) (*httptest.Ser
 	})
 	srv := httptest.NewServer(authed)
 	t.Cleanup(srv.Close)
-	return srv, broker
+	return srv
 }
 
 func mustClient(t *testing.T, node cluster.Node) *cluster.Client {
@@ -82,7 +78,7 @@ func mustClient(t *testing.T, node cluster.Node) *cluster.Client {
 
 func TestClientAgainstRealHTTPAPI(t *testing.T) {
 	svc := &fakeTaskService{tasks: []task.Task{{ID: "t1", Title: "one"}, {ID: "t2"}}}
-	srv, _ := realServer(t, "tok", svc)
+	srv := realServer(t, "tok", svc)
 
 	client := mustClient(t, cluster.Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "tok"})
 
@@ -114,36 +110,9 @@ func TestClientAgainstRealHTTPAPI(t *testing.T) {
 
 func TestClientTokenRejectedByRealServer(t *testing.T) {
 	svc := &fakeTaskService{}
-	srv, _ := realServer(t, "right", svc)
+	srv := realServer(t, "right", svc)
 	client := mustClient(t, cluster.Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "wrong"})
 	if _, err := client.ListTasks(context.Background()); err == nil {
 		t.Fatal("real server must reject a wrong token")
-	}
-}
-
-func TestSubscribeAgainstRealBroker(t *testing.T) {
-	svc := &fakeTaskService{}
-	srv, broker := realServer(t, "tok", svc)
-	client := mustClient(t, cluster.Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "tok"})
-
-	ch, err := client.Subscribe(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		broker.Emit("task:updated", map[string]string{"id": "t9"})
-	}()
-
-	select {
-	case ev, ok := <-ch:
-		if !ok {
-			t.Fatal("event channel closed before an event arrived")
-		}
-		if ev.Name != "task:updated" || !strings.Contains(ev.Data, "t9") {
-			t.Fatalf("event = %+v", ev)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for an event from the real broker")
 	}
 }

@@ -90,9 +90,9 @@ func TestClientListTasks(t *testing.T) {
 }
 
 func TestClientOversizedResponseErrorsInsteadOfTruncating(t *testing.T) {
-	old := maxResponseBody
-	maxResponseBody = 100
-	t.Cleanup(func() { maxResponseBody = old })
+	old := maxResponseBody.Load()
+	maxResponseBody.Store(100)
+	t.Cleanup(func() { maxResponseBody.Store(old) })
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/TaskService/ListTasks", func(w http.ResponseWriter, _ *http.Request) {
@@ -112,9 +112,9 @@ func TestClientOversizedResponseErrorsInsteadOfTruncating(t *testing.T) {
 }
 
 func TestClientResponseUnderCapSucceeds(t *testing.T) {
-	old := maxResponseBody
-	maxResponseBody = 4096
-	t.Cleanup(func() { maxResponseBody = old })
+	old := maxResponseBody.Load()
+	maxResponseBody.Store(4096)
+	t.Cleanup(func() { maxResponseBody.Store(old) })
 
 	stub := &stubFollower{tasks: []task.Task{{ID: "a"}}}
 	srv := stub.server(t)

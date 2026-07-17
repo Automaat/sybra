@@ -12,11 +12,19 @@ import (
 )
 
 // DefaultReconcileInterval is how often the mirror re-lists each follower's
-// tasks — the sole sync mechanism (#2188 dropped the SSE event stream: it
-// never fires for filesystem-direct writes such as sybra-cli run outside the
-// live server's API context, and reverse connectivity from follower to
-// leader isn't available in this deployment, so polling-only is both simpler
-// and more honest about what actually delivers updates).
+// tasks — the sole sync mechanism as of #2188. Every follower update, not
+// only the filesystem-direct-write case that motivated the change, now lags
+// the leader's canonical store by up to this interval; previously most
+// updates arrived near-instantly over an SSE stream. Traded deliberately for
+// reliability: SSE is leader-initiated (not a reverse-connectivity problem)
+// but was confirmed live to never fire for a write applied outside the
+// follower's own API process — e.g. sybra-cli run over plain SSH with no
+// SYBRA_PORT/SYBRA_AUTH_TOKEN in its environment, which is how every
+// operator fix applied directly on a follower host reaches it — so it left
+// exactly that class of update permanently stale with no self-healing path.
+// Whether the follower's own filesystem watcher could be made to re-emit
+// task:updated for such writes is unexplored; until it is, one dependable
+// polling path beats one broken push path plus one that only partly works.
 const DefaultReconcileInterval = 30 * time.Second
 
 // reconcileFailureEscalateThreshold is how many consecutive reconcile
