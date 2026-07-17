@@ -1211,3 +1211,55 @@ func TestDispatchInboundReview_UnderRateLimitStillReviews(t *testing.T) {
 		t.Fatalf("workflow = %+v, want pr-review", got.Workflow)
 	}
 }
+
+// #2167 hit a re-park loop in the review handler: human-required is not
+// terminal, so the poller kept re-escalating and overwriting the operator's
+// note. The dispatcher is structurally different — it gates on
+// status == in-review before ever reaching the rate check — but that is worth
+// pinning rather than assuming.
+func TestDispatchInboundReview_ParkedTaskIsNotReParked(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range config.DefaultReviewRoundsPerHour {
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i*5)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+	parked, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Status != task.StatusHumanRequired {
+		t.Fatalf("precondition: want parked, got %q", parked.Status)
+	}
+
+	const note = "OPERATOR: investigating, do not touch"
+	if _, uerr := a.tasks.Update(tk.ID, task.Update{StatusReason: task.Ptr(note)}); uerr != nil {
+		t.Fatal(uerr)
+	}
+	before, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 3 {
+		a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+	}
+
+	after, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.StatusReason != note {
+		t.Errorf("StatusReason = %q, want the operator's note %q — re-parked and clobbered it", after.StatusReason, note)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("updated_at rewritten (%v -> %v) on an already-parked task", before.UpdatedAt, after.UpdatedAt)
+	}
+}
