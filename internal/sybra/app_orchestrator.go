@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -218,6 +219,24 @@ func isInboundReviewTask(t task.Task) bool {
 	return slices.Contains(t.Tags, "review") && t.ProjectID != "" && t.PRNumber != 0
 }
 
+// reviewCoversHead reports whether an automated review was already dispatched
+// against head. An unknown head ("") is treated as covered: the caller could
+// not establish what to review, and declining is the safe direction.
+func reviewCoversHead(t task.Task, head string) bool {
+	if head == "" {
+		return true
+	}
+	return t.ReviewedHeadSHA == head
+}
+
+// fetchPRHeadSHAFunc returns the PR-head lookup, overridable in tests.
+func (a *App) fetchPRHeadSHAFunc() func(repo string, number int) (string, error) {
+	if a.fetchPRHeadSHA != nil {
+		return a.fetchPRHeadSHA
+	}
+	return github.FetchPRHeadSHA
+}
+
 func (a *App) dispatchInboundReviewWorkflow(taskID string) {
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
@@ -239,6 +258,28 @@ func (a *App) dispatchInboundReviewWorkflow(taskID string) {
 		return
 	}
 	if a.agents.HasRunningAgentForTask(taskID) {
+		return
+	}
+
+	// Everything above is a function of local state, so a stale or frozen phase
+	// re-opens the gate every cooldown. Ask GitHub what the head actually is and
+	// refuse to review a commit we already reviewed — the durable backstop that
+	// #2164 lacked. The lookup is TTL-cached and only runs once the cheap gates
+	// pass, so it costs at most one call per cooldown per task.
+	head, err := a.fetchPRHeadSHAFunc()(t.ProjectID, t.PRNumber)
+	if err != nil {
+		// Fail closed: without the head we cannot tell a new push from the
+		// commit we already reviewed, and guessing is what produced 112 reviews.
+		a.logger.Warn("workflow.dispatch.inbound-review.head", "task_id", taskID, "err", err)
+		return
+	}
+	if reviewCoversHead(t, head) {
+		return
+	}
+	// Stamp before dispatching: a run that crashes or loops must not be able to
+	// re-review the same commit on the next tick.
+	if _, err := a.tasks.Update(taskID, task.Update{ReviewedHeadSHA: task.Ptr(head)}); err != nil {
+		a.logger.Error("workflow.dispatch.inbound-review.stamp", "task_id", taskID, "err", err)
 		return
 	}
 	if err := a.workflowEngine.StartWorkflow(taskID, "pr-review"); err != nil &&

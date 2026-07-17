@@ -347,6 +347,15 @@ export class Task {
     "reviewPhase"?: string;
 
     /**
+     * ReviewedHeadSHA is the PR head an automated review was last dispatched
+     * against; the dispatcher refuses to re-review it. Durable backstop against
+     * a re-dispatch loop (#2164 posted 112 reviews on one unchanged commit).
+     * Stamped at dispatch, not completion, so a crashing run cannot re-review
+     * forever — a real push moves the head and re-opens review.
+     */
+    "reviewedHeadSha"?: string;
+
+    /**
      * PRPhase tracks where an outbound own-PR task (status in-review/ready-review,
      * not tag `review`) sits in its lifecycle: draft → building → fixing →
      * changes-requested → awaiting-approval → approved. Computed by the PR poller;
@@ -560,9 +569,9 @@ export class Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
         const $$createField18_0 = $$createType0;
-        const $$createField37_0 = $$createType2;
-        const $$createField38_0 = $$createType4;
-        const $$createField54_0 = $$createType5;
+        const $$createField38_0 = $$createType2;
+        const $$createField39_0 = $$createType4;
+        const $$createField55_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -574,13 +583,13 @@ export class Task {
             $$parsedSource["dependsOn"] = $$createField18_0($$parsedSource["dependsOn"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField37_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField38_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField38_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField39_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField54_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField55_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -643,6 +652,7 @@ export class Update {
     "RunRole": string | null;
     "SupervisorSteer": string | null;
     "ReviewPhase": string | null;
+    "ReviewedHeadSHA": string | null;
     "PRPhase": string | null;
     "TodoistID": string | null;
     "Priority": Priority | null;
@@ -731,6 +741,9 @@ export class Update {
         if (!("ReviewPhase" in $$source)) {
             this["ReviewPhase"] = null;
         }
+        if (!("ReviewedHeadSHA" in $$source)) {
+            this["ReviewedHeadSHA"] = null;
+        }
         if (!("PRPhase" in $$source)) {
             this["PRPhase"] = null;
         }
@@ -798,7 +811,7 @@ export class Update {
     static createFrom($$source: any = {}): Update {
         const $$createField6_0 = $$createType6;
         const $$createField10_0 = $$createType6;
-        const $$createField26_0 = $$createType7;
+        const $$createField27_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("DependsOn" in $$parsedSource) {
             $$parsedSource["DependsOn"] = $$createField6_0($$parsedSource["DependsOn"]);
@@ -807,7 +820,7 @@ export class Update {
             $$parsedSource["Tags"] = $$createField10_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField26_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField27_0($$parsedSource["Workflow"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }

@@ -61,9 +61,11 @@ import (
 )
 
 type App struct {
-	ctx               context.Context
-	cancel            context.CancelFunc
-	wg                sync.WaitGroup
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
+	fetchPRHeadSHA    func(repo string, number int) (string, error)
 	tasks             *task.Manager
 	projects          *project.Store
 	loopAgents        *loopagent.Store

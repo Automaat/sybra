@@ -34,6 +34,7 @@ type Update struct {
 	RunRole               *string
 	SupervisorSteer       *string
 	ReviewPhase           *string
+	ReviewedHeadSHA       *string
 	PRPhase               *string
 	TodoistID             *string
 	Priority              *Priority
@@ -90,7 +91,7 @@ func applyMapField(u *Update, k string, v any) error {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "todoist_id", "plan", "plan_critique",
 		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
-		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
+		"review_phase", "reviewed_head_sha", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
 	case "depends_on":
 		return applyDependsOnField(u, k, v)
@@ -202,6 +203,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.CodeReview = &s
 	case "review_phase":
 		u.ReviewPhase = &s
+	case "reviewed_head_sha":
+		u.ReviewedHeadSHA = &s
 	case "pr_phase":
 		u.PRPhase = &s
 	case "outcome":
