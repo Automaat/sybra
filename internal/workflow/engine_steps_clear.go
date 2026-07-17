@@ -99,6 +99,13 @@ func (e *Engine) clearWorktreeGlob(taskID string, step *Step, t TaskInfo, glob s
 		e.logger.Info("workflow.clear-plan-artifacts.no-worktree", "task_id", taskID, "step", step.ID, "dir", dir)
 		return 0, nil
 	}
+	// An absolute or traversing pattern makes filepath.Join escape the worktree
+	// and unlink whatever it matches: '/etc/*' or '../*' would turn a cleanup
+	// step into a delete primitive pointed anywhere this process can reach.
+	// Builtins are trusted today; nothing should sit one edit away from that.
+	if filepath.IsAbs(glob) || strings.Contains(glob, "..") || strings.ContainsAny(glob, `/\`) {
+		return 0, fmt.Errorf("worktree glob %q must be a bare filename pattern", glob)
+	}
 	matches, globErr := filepath.Glob(filepath.Join(dir, glob))
 	if globErr != nil {
 		return 0, fmt.Errorf("worktree files matching %s (%w)", glob, globErr)
@@ -106,6 +113,11 @@ func (e *Engine) clearWorktreeGlob(taskID string, step *Step, t TaskInfo, glob s
 	removed := 0
 	var stuck []string
 	for _, m := range matches {
+		// Belt and braces for a symlinked or otherwise surprising match: only
+		// unlink what genuinely sits directly in this worktree.
+		if filepath.Dir(m) != filepath.Clean(dir) {
+			return removed, fmt.Errorf("worktree glob %q matched %s outside %s", glob, m, dir)
+		}
 		if rmErr := os.Remove(m); rmErr != nil && !os.IsNotExist(rmErr) {
 			e.logger.Error("workflow.clear-plan-artifacts.remove", "task_id", taskID, "path", m, "err", rmErr)
 			stuck = append(stuck, filepath.Base(m))

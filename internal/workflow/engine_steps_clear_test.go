@@ -332,3 +332,37 @@ func globsCover(globs []string, from string) bool {
 	}
 	return false
 }
+
+// A glob that escapes the worktree turns a cleanup step into a delete
+// primitive. Builtins are trusted, but the step must not be one edit away from
+// unlinking files outside the task's own checkout.
+func TestClearPlanArtifacts_RejectsEscapingGlobs(t *testing.T) {
+	for _, glob := range []string{"/etc/*", "../*", "../../.sybra-plan-*", "sub/dir/*", `..\win`} {
+		t.Run(glob, func(t *testing.T) {
+			dir := t.TempDir()
+			outside := filepath.Join(filepath.Dir(dir), "must-survive.txt")
+			if err := os.WriteFile(outside, []byte("not yours"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Remove(outside) })
+
+			engine, tasks, info := clearTestEnv(t, dir)
+			step := &Step{
+				ID:     "clear",
+				Type:   StepClearPlanArtifacts,
+				Config: StepConfig{ClearSidecars: []string{"plan"}, ClearWorktreeGlobs: []string{glob}},
+			}
+
+			if _, err := engine.execClearPlanArtifacts("t1", step, info); err != nil {
+				t.Fatalf("must escalate, not error out: %v", err)
+			}
+			got, _ := tasks.GetTask("t1")
+			if got.Status != "human-required" {
+				t.Errorf("status = %q, want human-required for an escaping glob", got.Status)
+			}
+			if _, err := os.Stat(outside); err != nil {
+				t.Errorf("a file outside the worktree was deleted: %v", err)
+			}
+		})
+	}
+}
