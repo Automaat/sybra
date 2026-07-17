@@ -73,5 +73,19 @@ func skipTaskCreatedWorkflow(t task.Task) bool {
 }
 
 func allowsTaskCreatedWorkflowWithPR(t task.Task) bool {
-	return slices.Contains(t.Tags, "handoff")
+	if slices.Contains(t.Tags, "handoff") {
+		return true
+	}
+	// Inbound PR-review tasks (tag "review") always carry a PRNumber from
+	// creation (see review.createReviewTask), so without this exception they
+	// would never reach pr-review's task.created trigger and the legacy
+	// inline triage (which punted small PRs to human-required) would be the
+	// only dispatch path. "handoff-pr" tasks are excluded: they route through
+	// their own dedicated lane, matching pr-review.yaml's own trigger
+	// conditions. Scope the exception to freshly created task statuses only:
+	// later planning/in-review tasks with a linked PR are resumed by their
+	// status-specific lanes, not by task.created/planning re-entry.
+	return (t.Status == task.StatusNew || t.Status == task.StatusTodo) &&
+		slices.Contains(t.Tags, "review") &&
+		!slices.Contains(t.Tags, "handoff-pr")
 }

@@ -166,6 +166,7 @@ in-cluster service account.
 | `agent.k8s_jobs.image` | `string` |  |  |
 | `agent.k8s_jobs.command` | `[]string` |  |  |
 | `agent.k8s_jobs.ttl_seconds_after_finished` | `int` |  |  |
+| `agent.k8s_jobs.failed_ttl_seconds_after_finished` | `int` |  | FailedTTL overrides TTL for a Job that finishes Failed rather than Succeeded, via a post-completion patch once the runner observes the failure — Kubernetes' own ttlSecondsAfterFinished is a single value that cannot vary by outcome at creation time. Defaults much longer than TTL's own default so a failed run's logs survive long enough for an operator to pull them before Kubernetes garbage-collects the Pod. |
 | `agent.k8s_jobs.mode` | `string` |  |  |
 | `agent.k8s_jobs.create_pr` | `bool` |  | CreatePR lets the agent Job open its own pull request once it has pushed its branch, instead of the server shelling gh in the task worktree. Only fires when the task's remote is a GitHub URL — a PVC-backed bare clone has no PR to open. Default false: the server-side create_pr workflow step still owns the normal path, and this would otherwise open a PR after every agent run rather than at the pr stage. |
 | `agent.k8s_jobs.env` | `[]K8sJobEnvVar` | _(see below)_ |  |

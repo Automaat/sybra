@@ -484,6 +484,7 @@ func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerCo
 		Image:     cfg.Image,
 		Command:   cfg.Command,
 		TTL:       cfg.TTL,
+		FailedTTL: cfg.FailedTTL,
 		Mode:      cfg.Mode,
 		CreatePR:  cfg.CreatePR,
 	}

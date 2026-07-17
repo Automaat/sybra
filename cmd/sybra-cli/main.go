@@ -99,11 +99,19 @@ func run(args []string) int {
 	// points at its sandbox; `--home` lets an agent explicitly inspect the
 	// sandbox/app-under-test store instead (see docs/manual-testing.md).
 	effectiveHome := homeOverride
+	fromControlHome := false
+	fromSybraHome := false
 	if effectiveHome == "" {
-		effectiveHome = os.Getenv("SYBRA_CONTROL_HOME")
+		if controlHome := os.Getenv("SYBRA_CONTROL_HOME"); controlHome != "" {
+			effectiveHome = controlHome
+			fromControlHome = true
+		}
 	}
 	if effectiveHome == "" {
-		effectiveHome = os.Getenv("SYBRA_HOME")
+		if sybraHome := os.Getenv("SYBRA_HOME"); sybraHome != "" {
+			effectiveHome = sybraHome
+			fromSybraHome = true
+		}
 	}
 
 	restoreHome := func() {}
@@ -148,7 +156,12 @@ func run(args []string) int {
 	}
 
 	cmd, rest := filtered[0], filtered[1:]
-	return dispatch(cmd, rest, cfg, store, projStore, homeOverride == "", jsonOut)
+	// HTTP auto-detect is only safe on the untouched default path. Any resolved
+	// home override — --home, SYBRA_CONTROL_HOME, or SYBRA_HOME — means the
+	// caller explicitly targeted an on-disk store, so reaching some unrelated
+	// reachable server would violate that contract.
+	allowHTTP := homeOverride == "" && !fromControlHome && !fromSybraHome
+	return dispatch(cmd, rest, cfg, store, projStore, allowHTTP, jsonOut)
 }
 
 // dispatch routes a parsed subcommand (with its own args and the global
@@ -2604,6 +2617,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	}
 
 	addK8sSecretEnvFindings(cfg, add)
+	addK8sFailedTTLFindings(cfg, add)
 
 	if len(findings) == 0 {
 		add("ok", "no issues found")
@@ -2658,6 +2672,23 @@ func addK8sSecretEnvFindings(cfg *config.Config, add func(severity, format strin
 		if len(missing) > 0 {
 			add("error", "agent.k8s_jobs.secret_env[%d]: missing %s", i, strings.Join(missing, ", "))
 		}
+	}
+}
+
+// addK8sFailedTTLFindings warns when ttl_seconds_after_finished is set low
+// enough to undermine failed_ttl_seconds_after_finished: the runner extends a
+// failed Job's TTL by PATCHing it after the fact
+// (internal/agent/k8s_job_runner.go), but per Kubernetes' own
+// ttlSecondsAfterFinished docs a late-extended TTL is not guaranteed to be
+// honored once the original, shorter window has elapsed.
+func addK8sFailedTTLFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if !cfg.Agent.K8sJobs.Enabled {
+		return
+	}
+	ttl := cfg.Agent.K8sJobs.TTL
+	failedTTL := cfg.Agent.K8sJobs.FailedTTL
+	if ttl > 0 && ttl < 30 && failedTTL != ttl {
+		add("warning", "agent.k8s_jobs.ttl_seconds_after_finished is %ds — Kubernetes does not guarantee honoring the failed_ttl_seconds_after_finished extension once such a short window has already elapsed", ttl)
 	}
 }
 
