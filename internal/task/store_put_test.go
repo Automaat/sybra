@@ -50,6 +50,7 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	}
 
 	in.Status = StatusReadyPR
+	in.UpdatedAt = updated.Add(time.Minute)
 	if _, err := store.Put(in); err != nil {
 		t.Fatalf("second Put (upsert): %v", err)
 	}
@@ -69,13 +70,14 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	}
 }
 
-// TestStorePutBumpsUpdatedAtWhenStatusChangesWithoutAdvancing covers #2203: a
+// TestStorePutRejectsStatusChangeWithoutAdvancingUpdatedAt covers #2203: a
 // Put that changes Status but carries forward a stale/unchanged UpdatedAt
-// (e.g. a push built from a snapshot captured before the change) silently
-// defeats any consumer gating on strictly-newer to detect the update — the
-// cluster mirror's own staleness guard among them. Put must correct the
-// timestamp rather than trust the caller in this one specific case.
-func TestStorePutBumpsUpdatedAtWhenStatusChangesWithoutAdvancing(t *testing.T) {
+// (e.g. a push built from a snapshot captured before the change, such as a
+// cluster-mirror re-push racing a real edit) is not distinguishable from a
+// stale clobber. Put must discard the incoming status/timestamp and keep
+// what's already on disk rather than let the stale value masquerade as a
+// fresh update to a consumer like the cluster mirror's Merge.
+func TestStorePutRejectsStatusChangeWithoutAdvancingUpdatedAt(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -90,8 +92,7 @@ func TestStorePutBumpsUpdatedAtWhenStatusChangesWithoutAdvancing(t *testing.T) {
 		t.Fatalf("first Put: %v", err)
 	}
 
-	// Same UpdatedAt as before, but Status changed — the exact bug: a caller
-	// that forgot to advance the timestamp on a real status change.
+	// The exact bug: same UpdatedAt as before, but Status changed.
 	if _, err := store.Put(Task{
 		ID: "task-x", Title: "t", Status: StatusTodo,
 		CreatedAt: stale, UpdatedAt: stale,
@@ -103,11 +104,50 @@ func TestStorePutBumpsUpdatedAtWhenStatusChangesWithoutAdvancing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != StatusTodo {
-		t.Fatalf("status = %q, want todo", got.Status)
+	if got.Status != StatusBlocked {
+		t.Fatalf("status = %q, want it to stay blocked — the stale status change must be discarded", got.Status)
 	}
-	if !got.UpdatedAt.After(stale) {
-		t.Fatalf("UpdatedAt = %v, want it bumped past the stale caller-supplied value %v", got.UpdatedAt, stale)
+	if !got.UpdatedAt.Equal(stale) {
+		t.Fatalf("UpdatedAt = %v, want it left unchanged at %v — no fabricated timestamp", got.UpdatedAt, stale)
+	}
+}
+
+// TestStorePutRejectsStatusChangeWithBackdatedUpdatedAt pins the boundary
+// below equal: a caller-supplied UpdatedAt strictly before what's on disk is
+// just as stale as an equal one and must be rejected the same way — guards
+// a narrower `!Equal` reformulation of the #2203 guard from slipping through.
+func TestStorePutRejectsStatusChangeWithBackdatedUpdatedAt(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
+	backdated := current.Add(-1 * time.Hour)
+	if _, err := store.Put(Task{
+		ID: "task-w", Title: "t", Status: StatusBlocked,
+		CreatedAt: current, UpdatedAt: current,
+	}); err != nil {
+		t.Fatalf("first Put: %v", err)
+	}
+
+	if _, err := store.Put(Task{
+		ID: "task-w", Title: "t", Status: StatusTodo,
+		CreatedAt: current, UpdatedAt: backdated,
+	}); err != nil {
+		t.Fatalf("second Put: %v", err)
+	}
+
+	got, err := store.Get("task-w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusBlocked {
+		t.Fatalf("status = %q, want it to stay blocked — a backdated status change must be discarded", got.Status)
+	}
+	if !got.UpdatedAt.Equal(current) {
+		t.Fatalf("UpdatedAt = %v, want it left unchanged at %v", got.UpdatedAt, current)
 	}
 }
 

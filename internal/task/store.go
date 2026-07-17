@@ -596,11 +596,19 @@ func (s *Store) Put(t Task) (Task, error) {
 	if t.UpdatedAt.IsZero() {
 		t.UpdatedAt = now
 	}
-	// A status change with a non-advancing UpdatedAt defeats every consumer
-	// gating on strictly-newer to detect it (#2203) — correct that one field
-	// rather than trust every Put caller to have gotten it right.
-	if existing, err := s.read(t.ID); err == nil && existing.Status != t.Status && !t.UpdatedAt.After(existing.UpdatedAt) {
-		t.UpdatedAt = now
+	// A status change whose UpdatedAt doesn't strictly advance past what's
+	// already on disk is a stale snapshot, not a real update (#2203).
+	// Fabricating a fresh timestamp on top of it would let the stale status
+	// masquerade as the latest legitimate state to a consumer like the
+	// cluster mirror's Merge — discard it instead and keep what's on disk.
+	if existing, err := s.read(t.ID); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Default().Warn("task.store.put.read_existing_failed", "id", t.ID, "err", err)
+		}
+	} else if existing.Status != t.Status && !t.UpdatedAt.After(existing.UpdatedAt) {
+		t.Status = existing.Status
+		t.UpdatedAt = existing.UpdatedAt
+		t.StatusChangedAt = existing.StatusChangedAt
 	}
 	if t.StatusChangedAt.IsZero() {
 		t.StatusChangedAt = t.UpdatedAt
