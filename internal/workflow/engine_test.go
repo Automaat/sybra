@@ -4528,6 +4528,85 @@ steps:
 	if len(agents.calls) != 0 {
 		t.Fatalf("StartAgent calls = %d, want no third attempt", len(agents.calls))
 	}
+	if ti.Workflow.State != ExecCompleted {
+		t.Fatalf("Workflow.State = %q, want %q so a later recovery trigger is not blocked by ErrWorkflowAlreadyActive", ti.Workflow.State, ExecCompleted)
+	}
+	if ti.Workflow.CurrentStep != "" {
+		t.Fatalf("Workflow.CurrentStep = %q, want empty", ti.Workflow.CurrentStep)
+	}
+}
+
+// TestHandleAgentComplete_UnverifiedSkillExhaustionAllowsFreshWorkflowStart
+// covers the human-review recovery handoff: once skill-receipt exhaustion
+// marks a task human-required, a subsequent recovery attempt must be able to
+// start a fresh workflow instance rather than fail with
+// ErrWorkflowAlreadyActive against the exhausted, never-finalized Execution
+// (the bug in #5ba88ecc — a later genuinely passing run stayed parked at
+// human-required because the stale Execution was still "active").
+func TestHandleAgentComplete_UnverifiedSkillExhaustionAllowsFreshWorkflowStart(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /sybra-test now."
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				skillReceiptRecoveryKey("run"): "1",
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-2",
+			Role:               "plan-critic",
+			Provider:           "codex",
+			RequestedSkill:     "sybra-test",
+			SkillExecutionMode: "injected",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-2", Result: "still no receipt", Success: true})
+
+	if err := engine.StartWorkflow("t1", "skill-receipt"); err != nil {
+		t.Fatalf("StartWorkflow after exhaustion = %v, want nil (fresh recovery trigger must not be rejected as already active)", err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("skill receipt retry var = %q, want a fresh budget on the new Execution", got)
+	}
+	if ti.Workflow.State == ExecCompleted {
+		t.Fatalf("Workflow.State = %q, want the fresh restart to be running/waiting again", ti.Workflow.State)
+	}
 }
 
 // TestAdvanceStep_EmptyStepIDIsNoop covers the direct-call variant: a caller
