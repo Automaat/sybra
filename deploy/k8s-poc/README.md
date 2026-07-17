@@ -375,6 +375,23 @@ version=vX.Y.Z`, or leave `version` empty to auto-bump the minor via
 a deliberate, CI-run action, not something that fires on every merge to
 `main`.
 
+The first push under a new GHCR repository name defaults to **private** —
+`ghcr.io/automaat/sybra-server` will not exist as a package until
+`docker-publish.yml` runs once, and after that first run it is only pullable
+by an authenticated, authorized principal until someone flips its visibility
+in the package's GHCR settings (Package → Package settings → Danger Zone →
+Change visibility). Decide deliberately rather than by default:
+
+- **Public** — simplest; an unauthenticated `docker pull` (as shown below)
+  and a plain Kubernetes image reference both just work, no cluster-side
+  credential needed.
+- **Private** — safer default for a production image, but then the cluster
+  needs an `imagePullSecrets` entry: `kubectl create secret docker-registry
+  ghcr-pull --docker-server=ghcr.io --docker-username=<user>
+  --docker-password=<a token with read:packages>`, referenced from the
+  Deployment's `spec.template.spec.imagePullSecrets` (or the ServiceAccount,
+  so every pod using it inherits the credential without repeating the field).
+
 For a production deploy, pin by digest rather than a mutable tag — a tag can
 be re-pointed (accidentally or via `docker-publish.yml` re-running the same
 version), a digest cannot:

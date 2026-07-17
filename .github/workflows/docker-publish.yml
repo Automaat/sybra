@@ -49,9 +49,10 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
-          # Same build, same digest, pushed under two repository names: the
-          # `-server` alias is what deploy/k8s-poc production docs pin, since
-          # the k8s runner deploys this exact image (ENTRYPOINT sybra-server).
+          # Same build, same digest, pushed under two repository names. The
+          # `-server` alias is what deploy/k8s-poc/README.md's "Versioned
+          # production images" section documents pinning manually — no
+          # in-repo manifest/overlay wires it in yet (tracked by #2110).
           images: |
             ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
             ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}-server
