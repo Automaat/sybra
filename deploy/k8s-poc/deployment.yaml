@@ -49,7 +49,10 @@ spec:
             - name: SYBRA_STATIC_DIR
               value: /app/web
             - name: SYBRA_AUTH_TOKEN
-              value: poc-token
+              valueFrom:
+                secretKeyRef:
+                  name: sybra-server-auth
+                  key: token
           volumeMounts:
             - name: sybra-home
               mountPath: /home/sybra/.sybra

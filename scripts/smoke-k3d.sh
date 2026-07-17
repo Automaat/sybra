@@ -137,6 +137,10 @@ fi
 log "Applying manifests ($PROVIDER, config=$CONFIG)"
 kubectl --context "k3d-$CLUSTER" apply -f "$REPO_ROOT/deploy/k8s-poc/namespace.yaml"
 
+kc create secret generic sybra-server-auth \
+  --from-literal=token=poc-token \
+  --dry-run=client -o yaml | kubectl --context "k3d-$CLUSTER" apply -f -
+
 if [ "$GITHUB_MODE" = "1" ] || [ "$PROVIDER" = "opencode" ]; then
   kc create secret generic sybra-provider-api-keys \
     --from-literal=openrouter_api_key="${OPENROUTER_API_KEY:-}" \

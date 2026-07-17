@@ -208,7 +208,13 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 	out.MirrorRev = canonical.MirrorRev + 1
 	followerUpdated := follower.UpdatedAt
 	out.MirrorUpdatedAt = &followerUpdated
-	out.UpdatedAt = follower.UpdatedAt
+	// UpdatedAt is the leader-local write clock every other Store writer
+	// (UpdateWithPrev) stamps with time.Now() — borrowing the follower's
+	// clock here instead let an unrelated leader-side edit's fresher
+	// UpdatedAt outrun a genuinely newer, already-validated (via
+	// MirrorUpdatedAt above) follower update, tripping Put's #2203 stale
+	// guard on legitimate mirror traffic.
+	out.UpdatedAt = time.Now().UTC()
 	return out, true
 }
 

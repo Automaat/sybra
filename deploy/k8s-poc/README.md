@@ -10,9 +10,20 @@ deployment.
 docker build -t sybra-server:poc .
 k3d cluster create sybra-poc --agents 1 --wait
 k3d image import sybra-server:poc -c sybra-poc
+kubectl apply -f deploy/k8s-poc/namespace.yaml
+kubectl -n sybra-poc create secret generic sybra-server-auth \
+  --from-literal=token=poc-token \
+  --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -k deploy/k8s-poc
 kubectl -n sybra-poc rollout status deployment/sybra-server --timeout=120s
 ```
+
+`sybra-server-auth` holds the bearer token the Deployment reads via
+`SYBRA_AUTH_TOKEN` (`deploy/k8s-poc/deployment.yaml`) — it is never a plain
+manifest value, so `kubectl apply -k` alone will not start the pod until this
+Secret exists. See [Production secret management](#production-secret-management)
+for how to handle it (and `sybra-provider-api-keys` below) outside a
+throwaway k3d cluster.
 
 Start a fake headless agent Job through Sybra:
 
@@ -289,6 +300,127 @@ After the Job completes, the local task worktree fast-forwards from `origin` so
 review/test stages see the pod's files. The `GITHUB_TOKEN` value is optional for
 public HTTPS remotes, but required for private GitHub HTTPS remotes and pushes.
 SSH remotes are not wired in this PoC.
+
+## Production secret management
+
+The PoC keeps two Secrets out of every manifest and out of git:
+
+- `sybra-server-auth` (`deploy/k8s-poc/server-auth-secret.example.yaml`) — the
+  Deployment's `SYBRA_AUTH_TOKEN`.
+- `sybra-provider-api-keys` (`deploy/k8s-poc/api-key-secret.example.yaml`) —
+  provider/GitHub credentials referenced by `agent.k8s_jobs.secret_env` and
+  injected straight into the agent Job's container as `valueFrom.secretKeyRef`
+  (`internal/agent/k8s_job_runner.go`). Kubernetes resolves the reference at
+  pod start; `sybra-server` never reads the secret value itself, so a
+  compromised server process cannot exfiltrate provider or GitHub credentials
+  it was never handed. `sybra-cli config doctor` catches a `secret_env` entry
+  with a missing `name`/`secret_name`/`secret_key` before it fails silently at
+  Job-creation time.
+
+The `.example.yaml` files are templates only (`replace-me` placeholders) and
+are not part of `kustomization.yaml` — nothing applies them automatically, and
+`kubectl create secret generic ... --from-literal=...` never writes a
+manifest to disk. That is enough for a throwaway k3d cluster. A real
+deployment needs the Secret's desired state to be reviewable and
+reproducible without ever putting plaintext credentials in git history. Pick
+one:
+
+- **SOPS** — encrypt a Secret manifest (or just the values) with `sops`,
+  commit the ciphertext, decrypt at deploy time and `kubectl apply` the
+  result (or `kubectl create secret --from-literal` from the decrypted
+  values, as `server-auth-secret.example.yaml` and
+  `api-key-secret.example.yaml` are shaped for). This is the option to
+  reach for if your deploy pipeline already runs `sops` for other
+  environments — the encrypted file lives next to the rest of the manifests
+  and needs no extra cluster component.
+- **Sealed Secrets** (bitnami-labs/sealed-secrets) — a cluster-side
+  controller decrypts a `SealedSecret` CRD that is safe to commit (encrypted
+  with the controller's public key) into a real `Secret`. Best fit when the
+  encryption key must stay cluster-local rather than shared with a CI
+  pipeline.
+- **External Secrets Operator** — a cluster-side controller syncs Secrets
+  from an external store (Vault, AWS/GCP/Azure secret managers, etc.) via an
+  `ExternalSecret` CRD; nothing encrypted ever touches git. Best fit when
+  provider/GitHub credentials are already centrally managed in one of those
+  stores.
+
+Whichever mechanism renders the final `Secret`, the object names/keys must
+match what `deployment.yaml` and `agent.k8s_jobs.secret_env` expect:
+`sybra-server-auth`/`token`, and `sybra-provider-api-keys`/
+`openrouter_api_key`+`github_token` (or whatever `secret_name`/`secret_key`
+pairs a given ConfigMap declares). None of the three tools are wired into
+this PoC's kustomization — pick one and add its manifests/controller to your
+own deployment overlay.
+
+## Versioned production images
+
+`docker build -t sybra-server:poc .` + `k3d image import` above is a local
+dev/smoke loop only — the resulting image never leaves the machine that built
+it, which is fine for a throwaway k3d cluster but not reproducible or
+immutable enough to run in production.
+
+`.github/workflows/docker-publish.yml` builds the same root `Dockerfile` (its
+`ENTRYPOINT` is `sybra-server`) and pushes it to GHCR under two repository
+names sharing one digest per build: `ghcr.io/automaat/sybra` and
+`ghcr.io/automaat/sybra-server`. Each push is tagged three ways:
+
+- `vX.Y.Z` — the exact released version
+- `X.Y` — floating latest-patch alias for that minor
+- `sha-<short-sha>` — the commit it was built from, for bisecting a bad
+  deploy back to source independent of the version bump
+
+It runs on `workflow_dispatch` (`gh workflow run docker-publish.yml -f
+version=vX.Y.Z`, or leave `version` empty to auto-bump the minor via
+`scripts/resolve-release-version.sh`) — publishing a new production image is
+a deliberate, CI-run action, not something that fires on every merge to
+`main`.
+
+The first push under a new GHCR repository name defaults to **private** —
+`ghcr.io/automaat/sybra-server` will not exist as a package until
+`docker-publish.yml` runs once, and after that first run it is only pullable
+by an authenticated, authorized principal until someone flips its visibility
+in the package's GHCR settings (Package → Package settings → Danger Zone →
+Change visibility). Decide deliberately rather than by default:
+
+- **Public** — simplest; an unauthenticated `docker pull` (as shown below)
+  and a plain Kubernetes image reference both just work, no cluster-side
+  credential needed.
+- **Private** — safer default for a production image, but then the cluster
+  needs an `imagePullSecrets` entry: `kubectl create secret docker-registry
+  ghcr-pull --docker-server=ghcr.io --docker-username=<user>
+  --docker-password=<a token with read:packages>`, referenced from the
+  Deployment's `spec.template.spec.imagePullSecrets` (or the ServiceAccount,
+  so every pod using it inherits the credential without repeating the field).
+
+For a production deploy, pin by digest rather than a mutable tag — a tag can
+be re-pointed (accidentally or via `docker-publish.yml` re-running the same
+version), a digest cannot. If the package is still private, log in first
+(a token with `read:packages` is enough — no need for `write:packages` just
+to pull):
+
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <user> --password-stdin
+docker pull ghcr.io/automaat/sybra-server:vX.Y.Z
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/automaat/sybra-server:vX.Y.Z
+# ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
+Point a deployment at it without ever building locally — either patch the
+image directly:
+
+```bash
+kubectl -n sybra-poc set image deployment/sybra-server \
+  sybra-server=ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
+or, in a kustomize overlay (see issue #2110 for splitting the PoC base from a
+real production overlay), add an `images:` transformer instead of hand-editing
+`deployment.yaml`:
+
+```bash
+cd your-production-overlay
+kustomize edit set image sybra-server:poc=ghcr.io/automaat/sybra-server@sha256:<digest>
+```
 
 ## Real OpenCode testbed e2e
 
