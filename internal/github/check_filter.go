@@ -1,6 +1,9 @@
 package github
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // informationalCheckPrefixes lists check-name prefixes that report on
 // codebase health (coverage, code-quality scans) but do not gate
@@ -154,42 +157,78 @@ func effectiveCheckState(c gqlCheckContext) string {
 }
 
 // flakyOnlyFailure reports whether every gating check name with a FAILURE
-// outcome also has at least one SUCCESS outcome among the same-named
-// contexts — i.e. the check is intermittently failing, not consistently
-// broken. GitHub's statusCheckRollup carries one context per check *name*
-// per commit, so a same-SHA mixed outcome only shows up when a check was
-// manually rerun (`gh run rerun --failed`) and the contexts list still
-// includes the earlier failed attempt alongside the rerun's outcome, or when
-// a workflow itself reports the same check name more than once (e.g. a
-// matrix job re-registering under a shared name). Names that never show
-// FAILURE, and PENDING-only names, are ignored — they carry no signal either
-// way. Returns false when there is no FAILURE at all (nothing to classify)
-// or when at least one FAILURE name never shows a SUCCESS (a deterministic,
-// consistently-broken check).
+// outcome was superseded by a *later re-run* that succeeded — i.e. the check is
+// intermittently failing, not consistently broken. GitHub's statusCheckRollup
+// carries one context per check *name* per commit, so a same-SHA mixed outcome
+// shows up in two very different situations, and only one of them is flaky:
+//
+//   - A manual re-run (`gh run rerun --failed`): the earlier failed attempt
+//     lingers in the contexts list alongside the re-run's success. The re-run
+//     is dispatched *after* the operator sees the failure, so its SUCCESS
+//     STARTED after the FAILURE COMPLETED. This is genuinely flaky.
+//   - Multiple concurrent gating jobs that share a check name (e.g. two matrix
+//     legs both reporting as `e2e`). They start together, so a consistently-red
+//     leg's FAILURE is *not* preceded by a completed attempt — the sibling
+//     SUCCESS started at roughly the same time, not after. This is a
+//     deterministic regression and must NOT be masked as flaky.
+//
+// The start-after-complete test distinguishes the two: a name is flaky only if,
+// for its latest FAILURE, some SUCCESS started strictly after that failure
+// finished. Missing timestamps (StatusContext, older gh shapes) yield the zero
+// time and fail the test, so the check falls through to the deterministic fix
+// path rather than being wrongly rerun. Returns false when there is no FAILURE
+// at all (nothing to classify).
 func flakyOnlyFailure(contexts []gqlCheckContext) bool {
-	sawSuccess := make(map[string]bool, len(contexts))
-	sawFailure := make(map[string]bool, len(contexts))
+	type outcome struct {
+		hasFailure        bool
+		latestFailureDone time.Time
+		successStarts     []time.Time
+	}
+	byName := make(map[string]*outcome, len(contexts))
 	for i := range contexts {
 		name := contexts[i].effectiveName()
 		if isNonGatingCheck(name) {
 			continue
 		}
+		o := byName[name]
+		if o == nil {
+			o = &outcome{}
+			byName[name] = o
+		}
 		switch effectiveCheckState(contexts[i]) {
-		case "SUCCESS":
-			sawSuccess[name] = true
 		case "FAILURE":
-			sawFailure[name] = true
+			o.hasFailure = true
+			if done := contexts[i].completedTime(); done.After(o.latestFailureDone) {
+				o.latestFailureDone = done
+			}
+		case "SUCCESS":
+			o.successStarts = append(o.successStarts, contexts[i].startedTime())
 		}
 	}
-	if len(sawFailure) == 0 {
-		return false
-	}
-	for name := range sawFailure {
-		if !sawSuccess[name] {
+
+	sawFailure := false
+	for _, o := range byName {
+		if !o.hasFailure {
+			continue
+		}
+		sawFailure = true
+		// A consistently-broken check (or one whose timestamps we can't read)
+		// has no success that STARTED after its latest failure COMPLETED.
+		if o.latestFailureDone.IsZero() {
+			return false
+		}
+		superseded := false
+		for _, start := range o.successStarts {
+			if !start.IsZero() && start.After(o.latestFailureDone) {
+				superseded = true
+				break
+			}
+		}
+		if !superseded {
 			return false
 		}
 	}
-	return true
+	return sawFailure
 }
 
 // rollupFromContexts computes (ciStatus, hasPendingChecks) ignoring

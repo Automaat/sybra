@@ -55,9 +55,11 @@ type restPR struct {
 
 type restCheckRuns struct {
 	CheckRuns []struct {
-		Name       string `json:"name"`
-		Status     string `json:"status"`     // queued | in_progress | completed
-		Conclusion string `json:"conclusion"` // success | failure | ...
+		Name        string `json:"name"`
+		Status      string `json:"status"`       // queued | in_progress | completed
+		Conclusion  string `json:"conclusion"`   // success | failure | ...
+		StartedAt   string `json:"started_at"`   // RFC3339
+		CompletedAt string `json:"completed_at"` // RFC3339
 	} `json:"check_runs"`
 }
 
@@ -209,10 +211,12 @@ func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pen
 		} else {
 			for _, c := range runs.CheckRuns {
 				contexts = append(contexts, gqlCheckContext{
-					Typename:   "CheckRun",
-					Name:       c.Name,
-					Status:     strings.ToUpper(c.Status),
-					Conclusion: strings.ToUpper(c.Conclusion),
+					Typename:    "CheckRun",
+					Name:        c.Name,
+					Status:      strings.ToUpper(c.Status),
+					Conclusion:  strings.ToUpper(c.Conclusion),
+					StartedAt:   c.StartedAt,
+					CompletedAt: c.CompletedAt,
 				})
 			}
 		}

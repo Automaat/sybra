@@ -393,6 +393,15 @@ func TestFlakyOnlyFailure(t *testing.T) {
 	checkRun := func(name, status, conclusion string) gqlCheckContext {
 		return gqlCheckContext{Typename: "CheckRun", Name: name, Status: status, Conclusion: conclusion}
 	}
+	// checkRunAt is checkRun with the CheckRun timestamps flakyOnlyFailure uses
+	// to tell a later re-run (success starts after the failure finished) from
+	// concurrent same-named jobs (started together).
+	checkRunAt := func(name, status, conclusion, startedAt, completedAt string) gqlCheckContext {
+		c := checkRun(name, status, conclusion)
+		c.StartedAt = startedAt
+		c.CompletedAt = completedAt
+		return c
+	}
 
 	tests := []struct {
 		name     string
@@ -400,12 +409,28 @@ func TestFlakyOnlyFailure(t *testing.T) {
 		want     bool
 	}{
 		{
-			name: "mixed outcome for one name -> flaky",
+			name: "rerun succeeded after failure finished -> flaky",
+			contexts: []gqlCheckContext{
+				checkRunAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
+				checkRunAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z"),
+			},
+			want: true,
+		},
+		{
+			name: "concurrent matrix legs, one consistently red -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRunAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
+				checkRunAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:01Z", "2026-01-01T00:06:00Z"),
+			},
+			want: false,
+		},
+		{
+			name: "mixed outcome but no timestamps -> not flaky (can't confirm rerun)",
 			contexts: []gqlCheckContext{
 				checkRun("e2e", "COMPLETED", "FAILURE"),
 				checkRun("e2e", "COMPLETED", "SUCCESS"),
 			},
-			want: true,
+			want: false,
 		},
 		{
 			name: "all-failure name -> not flaky",
@@ -432,8 +457,8 @@ func TestFlakyOnlyFailure(t *testing.T) {
 		{
 			name: "one flaky name, one consistently-broken name -> not flaky",
 			contexts: []gqlCheckContext{
-				checkRun("e2e", "COMPLETED", "FAILURE"),
-				checkRun("e2e", "COMPLETED", "SUCCESS"),
+				checkRunAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
+				checkRunAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z"),
 				checkRun("build", "COMPLETED", "FAILURE"),
 			},
 			want: false,

@@ -15,9 +15,11 @@ type PullRequest struct {
 	CIStatus         string   `json:"ciStatus"`         // SUCCESS, FAILURE, PENDING, or ""
 	HasPendingChecks bool     `json:"hasPendingChecks"` // true when any check is still in-progress/queued
 	// CIFlaky reports whether every gating check name in CIStatus's FAILURE
-	// verdict also shows a SUCCESS outcome for the same head commit (see
-	// flakyOnlyFailure) — an intermittent failure rather than a deterministic
-	// one. Only meaningful when CIStatus == "FAILURE"; zero value otherwise.
+	// verdict was superseded by a later re-run that succeeded (its SUCCESS
+	// started after the FAILURE finished — see flakyOnlyFailure) — an
+	// intermittent failure rather than a deterministic one. Concurrent jobs
+	// sharing a name (e.g. matrix legs) are not treated as flaky. Only
+	// meaningful when CIStatus == "FAILURE"; zero value otherwise.
 	CIFlaky         bool   `json:"ciFlaky"`
 	ReviewDecision  string `json:"reviewDecision"` // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
 	Mergeable       string `json:"mergeable"`      // MERGEABLE, CONFLICTING, UNKNOWN, or ""
