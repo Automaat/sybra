@@ -2646,13 +2646,13 @@ func addK8sSecretEnvFindings(cfg *config.Config, add func(severity, format strin
 	}
 	for i, e := range cfg.Agent.K8sJobs.SecretEnv {
 		var missing []string
-		if e.Name == "" {
+		if strings.TrimSpace(e.Name) == "" {
 			missing = append(missing, "name")
 		}
-		if e.SecretName == "" {
+		if strings.TrimSpace(e.SecretName) == "" {
 			missing = append(missing, "secret_name")
 		}
-		if e.SecretKey == "" {
+		if strings.TrimSpace(e.SecretKey) == "" {
 			missing = append(missing, "secret_key")
 		}
 		if len(missing) > 0 {

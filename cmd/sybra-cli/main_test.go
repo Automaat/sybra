@@ -690,6 +690,32 @@ func TestConfigDoctorJSONValidatesK8sSecretEnvRegardlessOfMode(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONReportsWhitespaceOnlyK8sSecretEnvFields(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.Mode = "provider"
+	cfg.Agent.K8sJobs.SecretEnv = []config.K8sJobSecretEnvVar{
+		{Name: "GITHUB_TOKEN", SecretName: "sybra-provider-api-keys", SecretKey: "  "},
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code == 0 {
+		t.Fatalf("expected a whitespace-only secret_key to be treated as missing, output:\n%s", out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "error" && strings.Contains(f.Message, "secret_env[0]") && strings.Contains(f.Message, "missing secret_key")
+	}) {
+		t.Fatalf("expected secret_env[0] missing secret_key error in report: %+v", report.Findings)
+	}
+}
+
 func TestConfigDoctorJSONAcceptsSupportedEnforceHosts(t *testing.T) {
 	setupStore(t)
 

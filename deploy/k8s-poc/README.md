@@ -12,7 +12,8 @@ k3d cluster create sybra-poc --agents 1 --wait
 k3d image import sybra-server:poc -c sybra-poc
 kubectl apply -f deploy/k8s-poc/namespace.yaml
 kubectl -n sybra-poc create secret generic sybra-server-auth \
-  --from-literal=token=poc-token
+  --from-literal=token=poc-token \
+  --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -k deploy/k8s-poc
 kubectl -n sybra-poc rollout status deployment/sybra-server --timeout=120s
 ```
