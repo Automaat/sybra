@@ -189,7 +189,8 @@ func TestBuildRunPatchIncludesSkillAttributionMetadata(t *testing.T) {
 	ag.NoteSubagentCall("tool-1")
 	ag.NoteSubagentCall("tool-2")
 
-	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 1.25, 0, "done", nil)
+	resultWithReceipt := "done\n" + skillattr.ReceiptMarker("sybra-test", "deadbeefcafebabe")
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 1.25, 0, resultWithReceipt, nil)
 
 	if patch.RequestedSkill == nil || *patch.RequestedSkill != "sybra-test" {
 		t.Fatalf("RequestedSkill = %v, want sybra-test", patch.RequestedSkill)
@@ -205,6 +206,43 @@ func TestBuildRunPatchIncludesSkillAttributionMetadata(t *testing.T) {
 	}
 	if patch.SubagentCallCount == nil || *patch.SubagentCallCount != 2 {
 		t.Fatalf("SubagentCallCount = %v, want 2 distinct parents", patch.SubagentCallCount)
+	}
+}
+
+// TestBuildRunPatchDowngradesConformanceWhenReceiptMissing covers #2009: a
+// process can exit cleanly and produce a plausible result without the
+// mandatory workflow skill's transcript ever proving it was followed. The
+// pre-execution ConformanceExact/ConformanceFallback classification (set by
+// resolveWorkflowSkillPrompt before the agent ran) must be downgraded to
+// ConformanceUnverified when the result carries no matching receipt, so a
+// fake/incomplete artifact can never be recorded as a first-pass conformant
+// run.
+func TestBuildRunPatchDowngradesConformanceWhenReceiptMissing(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		conformance string
+	}{
+		{"exact_without_receipt", skillattr.ConformanceExact},
+		{"fallback_without_receipt", skillattr.ConformanceFallback},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ag := &agent.Agent{
+				ID:                      "ag-1",
+				TaskID:                  "task-1",
+				Name:                    agent.RoleImplementation.AgentName("Impl"),
+				RequestedSkill:          "sybra-test",
+				ResolvedSkillSourceHash: "deadbeefcafebabe",
+				SkillConformance:        tc.conformance,
+			}
+			patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "looks done, no receipt here", nil)
+			if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceUnverified {
+				t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceUnverified)
+			}
+		})
 	}
 }
 
