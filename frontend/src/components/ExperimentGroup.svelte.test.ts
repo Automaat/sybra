@@ -135,6 +135,44 @@ describe('ExperimentGroup', () => {
     expect(within(container).getByText(/Revert: breach/).classList.contains('experiment-caveat--dominant')).toBe(true)
   })
 
+  it('renders parity-unknown caveats distinctly from low-sample ones', () => {
+    render(ExperimentGroup, {
+      props: {
+        kind: 'model',
+        title: 'Model experiments',
+        breakdown: breakdown('model', [
+          {
+            experimentId: 'exp-a',
+            subject: undefined,
+            rows: [
+              row({
+                key: 'exp-a:v1',
+                experimentId: 'exp-a',
+                variantId: 'v1',
+                sampleStatus: 'parity-unknown',
+              }),
+            ],
+            rowsContribution: [],
+            experiments: [{
+              key: 'exp-a|implementation',
+              experimentId: 'exp-a',
+              role: 'implementation',
+              minSamplesPerVariant: 20,
+              variants: [{ variantId: 'v1', runs: 20, resolvedRuns: 20, ready: false, configured: true, observed: true, sampleStatus: 'parity-unknown' }],
+              readyVariants: 0,
+              totalRuns: 20,
+              totalResolvedRuns: 20,
+              status: 'low-sample',
+            }],
+          },
+        ]),
+      },
+    })
+
+    expect(screen.getByText('parity-unknown')).toBeDefined()
+    expect(screen.getByText('1 parity-unknown variant')).toBeDefined()
+  })
+
   it('never renders pause/retire affordances', () => {
     const { container } = render(ExperimentGroup, {
       props: {
