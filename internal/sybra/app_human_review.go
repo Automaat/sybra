@@ -243,7 +243,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.logger.Error("human-review.add-run", "task_id", taskID, "agent_id", ag.ID, "err", err)
 	}
 	h.logAudit(audit.EventHumanReviewSpawned, taskID, ag.ID, map[string]any{
-		"prev_status": prevStatus, "model": h.cfg.HumanReviewModel(),
+		"prev_status": prevStatus, "model": h.cfg.HumanReviewModel(), "prompt_hash": ag.GetPromptHash(),
 	})
 	return true
 }
