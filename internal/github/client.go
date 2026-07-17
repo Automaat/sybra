@@ -216,7 +216,14 @@ const prQuery = `query($q: String!) {
                 contexts(first: 50) {
                   nodes {
                     __typename
-                    ... on CheckRun { name status conclusion startedAt completedAt }
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                      startedAt
+                      completedAt
+                      checkSuite { workflowRun { runAttempt } }
+                    }
                     ... on StatusContext { name: context state }
                   }
                 }
@@ -255,6 +262,11 @@ type gqlCheckContext struct {
 	State       string `json:"state"`       // StatusContext only: PENDING|SUCCESS|FAILURE|ERROR|EXPECTED
 	StartedAt   string `json:"startedAt"`   // CheckRun only: RFC3339, when the run began
 	CompletedAt string `json:"completedAt"` // CheckRun only: RFC3339, when the run finished
+	CheckSuite  struct {
+		WorkflowRun *struct {
+			RunAttempt int `json:"runAttempt"`
+		} `json:"workflowRun"`
+	} `json:"checkSuite"` // GitHub Actions only; nil for non-Actions checks
 }
 
 // effectiveName returns the check's display name regardless of which JSON
@@ -273,6 +285,13 @@ func (c gqlCheckContext) effectiveName() string {
 // fix path.
 func (c gqlCheckContext) startedTime() time.Time   { return parseCheckTime(c.StartedAt) }
 func (c gqlCheckContext) completedTime() time.Time { return parseCheckTime(c.CompletedAt) }
+
+func (c gqlCheckContext) workflowRunAttempt() int {
+	if c.CheckSuite.WorkflowRun == nil {
+		return 0
+	}
+	return c.CheckSuite.WorkflowRun.RunAttempt
+}
 
 func parseCheckTime(s string) time.Time {
 	if s == "" {

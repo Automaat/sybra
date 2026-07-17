@@ -192,8 +192,9 @@ func restMergeable(state string) string {
 // cancelled-check handling stay identical across both paths. ok reports
 // whether both legs were fetched and parsed successfully — false distinguishes
 // a failed fetch from a genuinely check-free commit, so callers never read an
-// empty CIStatus caused by a failed fetch as green. flaky mirrors CIFlaky: set
-// only when status == "FAILURE" (see flakyOnlyFailure).
+// empty CIStatus caused by a failed fetch as green. flaky mirrors CIFlaky, but
+// the REST check-runs payload has no workflow-attempt discriminator, so mixed
+// same-name outcomes fail closed to deterministic CI failure.
 func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pending, flaky, ok bool) {
 	if sha == "" {
 		return "", false, false, false

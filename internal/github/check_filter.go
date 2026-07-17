@@ -157,32 +157,35 @@ func effectiveCheckState(c gqlCheckContext) string {
 }
 
 // flakyOnlyFailure reports whether every gating check name with a FAILURE
-// outcome was superseded by a *later re-run* that succeeded — i.e. the check is
-// intermittently failing, not consistently broken. GitHub's statusCheckRollup
-// carries one context per check *name* per commit, so a same-SHA mixed outcome
-// shows up in two very different situations, and only one of them is flaky:
+// outcome was superseded by a *later re-run attempt* that succeeded — i.e. the
+// check is intermittently failing, not consistently broken. GitHub's
+// statusCheckRollup carries one context per check *name* per commit, so a
+// same-SHA mixed outcome shows up in different situations, and only one of them
+// is flaky:
 //
 //   - A manual re-run (`gh run rerun --failed`): the earlier failed attempt
 //     lingers in the contexts list alongside the re-run's success. The re-run
 //     is dispatched *after* the operator sees the failure, so its SUCCESS
 //     STARTED after the FAILURE COMPLETED. This is genuinely flaky.
-//   - Multiple concurrent gating jobs that share a check name (e.g. two matrix
-//     legs both reporting as `e2e`). They start together, so a consistently-red
-//     leg's FAILURE is *not* preceded by a completed attempt — the sibling
-//     SUCCESS started at roughly the same time, not after. This is a
-//     deterministic regression and must NOT be masked as flaky.
+//   - Multiple gating jobs that share a check name (e.g. two matrix legs both
+//     reporting as `e2e`). They can start together or one can sit queued until
+//     after its sibling finishes, so timestamps alone do not prove a re-run.
+//     This is a deterministic regression and must NOT be masked as flaky.
 //
-// The start-after-complete test distinguishes the two: a name is flaky only if,
-// for its latest FAILURE, some SUCCESS started strictly after that failure
-// finished. Missing timestamps (StatusContext, older gh shapes) yield the zero
-// time and fail the test, so the check falls through to the deterministic fix
-// path rather than being wrongly rerun. Returns false when there is no FAILURE
-// at all (nothing to classify).
+// A name is flaky only if, for its latest FAILURE, some SUCCESS both started
+// strictly after that failure finished and belongs to an Actions workflow
+// attempt after the first one. Missing timestamps or attempt metadata fail the
+// test, so the check falls through to the deterministic fix path rather than
+// being wrongly rerun. Returns false when there is no FAILURE at all.
 func flakyOnlyFailure(contexts []gqlCheckContext) bool {
+	type success struct {
+		start      time.Time
+		runAttempt int
+	}
 	type outcome struct {
 		hasFailure        bool
 		latestFailureDone time.Time
-		successStarts     []time.Time
+		successes         []success
 	}
 	byName := make(map[string]*outcome, len(contexts))
 	for i := range contexts {
@@ -202,7 +205,10 @@ func flakyOnlyFailure(contexts []gqlCheckContext) bool {
 				o.latestFailureDone = done
 			}
 		case "SUCCESS":
-			o.successStarts = append(o.successStarts, contexts[i].startedTime())
+			o.successes = append(o.successes, success{
+				start:      contexts[i].startedTime(),
+				runAttempt: contexts[i].workflowRunAttempt(),
+			})
 		}
 	}
 
@@ -212,14 +218,14 @@ func flakyOnlyFailure(contexts []gqlCheckContext) bool {
 			continue
 		}
 		sawFailure = true
-		// A consistently-broken check (or one whose timestamps we can't read)
-		// has no success that STARTED after its latest failure COMPLETED.
+		// A consistently-broken check (or one whose timestamps/attempt we
+		// can't read) has no later re-run success after its latest failure.
 		if o.latestFailureDone.IsZero() {
 			return false
 		}
 		superseded := false
-		for _, start := range o.successStarts {
-			if !start.IsZero() && start.After(o.latestFailureDone) {
+		for _, s := range o.successes {
+			if s.runAttempt > 1 && !s.start.IsZero() && s.start.After(o.latestFailureDone) {
 				superseded = true
 				break
 			}
