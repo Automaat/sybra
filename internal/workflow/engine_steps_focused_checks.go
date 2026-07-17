@@ -53,7 +53,7 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 		return stepDone(step, "skipped: no worktree for task")
 	}
 
-	changedFiles, err := changedFilesSinceOriginBase(e.ctx, wtPath)
+	changedFiles, err := changedFilesSinceProjectBase(e.ctx, wtPath, e.focusedChecksBaseRef(taskID))
 	if err != nil {
 		return StepOutput{}, fmt.Errorf("focused-checks: discover changed files: %w", err)
 	}
@@ -69,15 +69,10 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 	}
 
 	if len(cmds) == 0 {
-		report.Fallback = "no safe focused mapping matched changed files"
-		cmds = e.checks.VerifyCommands(e.ctx, taskID)
-		report.Commands = cmds
-		if len(cmds) == 0 {
-			if err := e.recordFocusedChecksReport(taskID, step.ID, report); err != nil {
-				e.logger.Warn("workflow.focused-checks.artifact", "task_id", taskID, "err", err)
-			}
-			return stepDone(step, "skipped: no safe focused mapping matched and no verify fallback configured")
+		if err := e.recordFocusedChecksReport(taskID, step.ID, report); err != nil {
+			e.logger.Warn("workflow.focused-checks.artifact", "task_id", taskID, "err", err)
 		}
+		return stepDone(step, "skipped: no safe focused mapping matched changed files")
 	}
 
 	timeout := e.verifyTimeout
@@ -116,10 +111,21 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 	return e.reaskFocusedChecks(taskID, step, wfExec, t, selected, changedFiles, report.Fallback, failedCmd, output)
 }
 
-func changedFilesSinceOriginBase(parentCtx context.Context, wtPath string) ([]string, error) {
+type worktreeBaseRefGetter interface {
+	WorktreeBaseRef(ctx context.Context, taskID string) string
+}
+
+func (e *Engine) focusedChecksBaseRef(taskID string) string {
+	if getter, ok := e.checks.(worktreeBaseRefGetter); ok {
+		return getter.WorktreeBaseRef(e.ctx, taskID)
+	}
+	return project.WorktreeBaseRefFresh
+}
+
+func changedFilesSinceProjectBase(parentCtx context.Context, wtPath, worktreeBaseRef string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
 	defer cancel()
-	base := resolveOriginBase(ctx, wtPath)
+	base := resolveProjectBase(ctx, wtPath, worktreeBaseRef)
 	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", base+"...HEAD")
 	cmd.Dir = wtPath
 	out, err := cmd.CombinedOutput()
@@ -141,6 +147,37 @@ func changedFilesSinceOriginBase(parentCtx context.Context, wtPath string) ([]st
 		changed = append(changed, file)
 	}
 	return changed, nil
+}
+
+func resolveProjectBase(ctx context.Context, wtPath, worktreeBaseRef string) string {
+	if worktreeBaseRef == project.WorktreeBaseRefHead {
+		if base := resolveLocalDefaultBranchBase(ctx, wtPath); base != "" {
+			return base
+		}
+	}
+	return resolveOriginBase(ctx, wtPath)
+}
+
+func resolveLocalDefaultBranchBase(ctx context.Context, wtPath string) string {
+	branches := []string{}
+	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	cmd.Dir = wtPath
+	if out, err := cmd.Output(); err == nil {
+		branch := strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
+		if branch != "" {
+			branches = append(branches, branch)
+		}
+	}
+	branches = append(branches, "master", "main")
+	for _, branch := range branches {
+		candidate := "refs/heads/" + branch
+		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", candidate)
+		cmd.Dir = wtPath
+		if cmd.Run() == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func selectFocusedChecks(focused []project.FocusedCheck, changedFiles []string) (selected []selectedFocusedCheck, commands []string) {
