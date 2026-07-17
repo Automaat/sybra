@@ -14,10 +14,10 @@ type PullRequest struct {
 	HeadSHA          string   `json:"headSha"`
 	CIStatus         string   `json:"ciStatus"`         // SUCCESS, FAILURE, PENDING, or ""
 	HasPendingChecks bool     `json:"hasPendingChecks"` // true when any check is still in-progress/queued
-	// CIFlaky reports whether every gating check name in CIStatus's FAILURE
+	// CIFlaky reports whether every gating workflow/check in CIStatus's FAILURE
 	// verdict was superseded by a later Actions re-run attempt that succeeded
 	// (see flakyOnlyFailure) — an intermittent failure rather than a
-	// deterministic one. Same-name first-attempt jobs (e.g. matrix legs) are not
+	// deterministic one. Same-name checks from distinct workflows are not
 	// treated as flaky. Only meaningful when CIStatus == "FAILURE"; zero value
 	// otherwise.
 	CIFlaky         bool   `json:"ciFlaky"`

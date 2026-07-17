@@ -251,7 +251,7 @@ func TestFetchReviewSearchWith_queryRequestsActionableThreadSignalsAndRunAttempt
 	if !strings.Contains(normalized, want) {
 		t.Errorf("reviewThreads selection missing actionable thread signals\nwant fragment: %s\nquery: %s", want, normalized)
 	}
-	want = "checkSuite { workflowRun { runAttempt } }"
+	want = "checkSuite { workflowRun { id runAttempt } }"
 	if !strings.Contains(normalized, want) {
 		t.Errorf("CheckRun selection missing workflow run attempt\nwant fragment: %s\nquery: %s", want, normalized)
 	}
@@ -414,7 +414,7 @@ func TestFetchPRsForMonitorWith_queryRequestsRunAttempts(t *testing.T) {
 		t.Fatal("graphql query argument not captured")
 	}
 	normalized := strings.Join(strings.Fields(query), " ")
-	want := "checkSuite { workflowRun { runAttempt } }"
+	want := "checkSuite { workflowRun { id runAttempt } }"
 	if !strings.Contains(normalized, want) {
 		t.Errorf("monitor CheckRun selection missing workflow run attempt\nwant fragment: %s\nquery: %s", want, normalized)
 	}
@@ -447,7 +447,7 @@ func TestFetchPRsForMonitorWith_flakyRerunFromGraphQL(t *testing.T) {
 										"conclusion": "FAILURE",
 										"startedAt": "2026-01-01T00:00:00Z",
 										"completedAt": "2026-01-01T00:05:00Z",
-										"checkSuite": {"workflowRun": {"runAttempt": 1}}
+										"checkSuite": {"workflowRun": {"id": "workflow-a", "runAttempt": 1}}
 									},
 									{
 										"__typename": "CheckRun",
@@ -456,7 +456,7 @@ func TestFetchPRsForMonitorWith_flakyRerunFromGraphQL(t *testing.T) {
 										"conclusion": "SUCCESS",
 										"startedAt": "2026-01-01T00:10:00Z",
 										"completedAt": "2026-01-01T00:15:00Z",
-										"checkSuite": {"workflowRun": {"runAttempt": 2}}
+										"checkSuite": {"workflowRun": {"id": "workflow-a", "runAttempt": 2}}
 									}
 								]}
 							}

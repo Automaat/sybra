@@ -335,15 +335,15 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 }
 
 // handleFlakyCI handles a ci_failure issue classified as flaky (see
-// github.flakyOnlyFailure: every failing check name also shows a passing
-// outcome on the same head SHA). It never dispatches a fix agent — there is
-// no code change that fixes noise — and never touches the deterministic
-// ci_failure retry budget (handleTaskPRIssues routes a flaky issue around
-// that budget entirely). It logs the pattern, then gives the check another
-// shot through the same ci-infra rerun budget a deterministic ci_failure's
-// first attempt uses (rerunCIFailure / ciInfraRerunKind). Only once that
-// budget itself is exhausted — meaning reruns alone never cleared it — does
-// it escalate to human-required, with a reason distinct from
+// github.flakyOnlyFailure: every failing workflow/check also shows a later
+// successful rerun outcome on the same head SHA). It never dispatches a fix
+// agent, since code changes do not fix noise, and never touches the
+// deterministic ci_failure retry budget (handleTaskPRIssues routes a flaky
+// issue around that budget entirely). It logs the pattern, then gives the
+// check another shot through the same ci-infra rerun budget a deterministic
+// ci_failure's first attempt uses (rerunCIFailure / ciInfraRerunKind). Only
+// once that budget itself is exhausted, meaning reruns alone never cleared it,
+// does it escalate to human-required, with a reason distinct from
 // exhaustedFixReason so a human can tell "the fix agent gave up" apart from
 // "this looks like a genuinely unstable test."
 func (r *Handler) handleFlakyCI(issue github.PRIssue) {
