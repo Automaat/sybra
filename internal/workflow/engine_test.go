@@ -7304,8 +7304,18 @@ func TestParsePlanCritiqueVerdict(t *testing.T) {
 			"",
 		},
 		{
-			"whole-word match rejects a substring hit",
-			"# Plan Review\n\n## Verdict\n\nThis was rejected previously but is now fine.",
+			"inflected verdict word still resolves to its base form",
+			"# Plan Review: REJECTED\n\n## Verdict\n\nThis plan is rejected due to missing rollback safety verification steps.",
+			"REJECT",
+		},
+		{
+			"heading-level drift on the title line still matches",
+			"## Plan Review: REFINE\n\n## Verdict\n\nSeveral steps need adjustment.",
+			"REFINE",
+		},
+		{
+			"a longer unrelated word is not a boundary-crossing false match",
+			"# Plan Review\n\n## Verdict\n\nNo concerns; this is not a rejectionist take, just a sanity check.",
 			"",
 		},
 	}

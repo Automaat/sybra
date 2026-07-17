@@ -31,18 +31,38 @@ func (e *Engine) execFlagPlanCritique(taskID string, step *Step, t TaskInfo) (St
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "verdict: " + verdict + " — flagged"}, nil
 }
 
-// verdictWordRe matches a whole-word APPROVE/REFINE/REJECT, so prose like
-// "rejected previously" or "refine the error message" (a finding's own
-// wording, not a verdict) can't false-match.
-var verdictWordRe = regexp.MustCompile(`(?i)\b(APPROVE|REFINE|REJECT)\b`)
+// verdictWordRe matches a whole word inflected from APPROVE/REFINE/REJECT
+// (APPROVED, REJECTS, REFINING, ...), so prose like "rejected previously" or
+// "refine the error message" (a finding's own wording, not a verdict) can't
+// false-match, while a critic phrasing the verdict in a full sentence
+// ("this plan is rejected") still resolves to the base verdict.
+var verdictWordRe = regexp.MustCompile(`(?i)\b(APPROV(?:E|ES|ED|ING)|REFIN(?:E|ES|ED|ING)|REJECT(?:S|ED|ING)?)\b`)
 
 // planReviewTitleRe matches the /plan-critic skill's required title line,
 // "# Plan Review: <VERDICT>", within the first few lines of the sidecar.
-var planReviewTitleRe = regexp.MustCompile(`(?im)^#\s*Plan Review:?\s*([A-Z]*)`)
+// Tolerates 1-6 leading `#`s (a critic that titles at ## instead of #).
+var planReviewTitleRe = regexp.MustCompile(`(?im)^#{1,6}\s*Plan Review:?\s*([A-Z]*)`)
 
 // verdictSectionRe isolates the skill's "## Verdict" section (its prose
 // body, up to the next heading or end of content) as a fallback location.
-var verdictSectionRe = regexp.MustCompile(`(?is)##\s*Verdict\s*\n(.*?)(\n##|\z)`)
+// Tolerates 1-6 leading `#`s, same as planReviewTitleRe.
+var verdictSectionRe = regexp.MustCompile(`(?is)#{1,6}\s*Verdict\s*\n(.*?)(\n#{1,6}\s|\z)`)
+
+// canonicalVerdict maps a matched inflected verdict word (APPROVED,
+// REJECTS, REFINING, ...) back to its base APPROVE/REFINE/REJECT form.
+func canonicalVerdict(word string) string {
+	upper := strings.ToUpper(word)
+	switch {
+	case strings.HasPrefix(upper, "APPROV"):
+		return "APPROVE"
+	case strings.HasPrefix(upper, "REFIN"):
+		return "REFINE"
+	case strings.HasPrefix(upper, "REJECT"):
+		return "REJECT"
+	default:
+		return ""
+	}
+}
 
 // parsePlanCritiqueVerdict extracts the verdict word from a plan-critique
 // sidecar. The /plan-critic skill's output contract states the verdict twice
@@ -58,13 +78,13 @@ var verdictSectionRe = regexp.MustCompile(`(?is)##\s*Verdict\s*\n(.*?)(\n##|\z)`
 // is fine" behavior for critics that don't follow the contract at all.
 func parsePlanCritiqueVerdict(content string) string {
 	if m := planReviewTitleRe.FindStringSubmatch(content); m != nil {
-		if v := verdictWordRe.FindString(m[1]); v != "" {
-			return strings.ToUpper(v)
+		if v := canonicalVerdict(verdictWordRe.FindString(m[1])); v != "" {
+			return v
 		}
 	}
 	if m := verdictSectionRe.FindStringSubmatch(content); m != nil {
-		if v := verdictWordRe.FindString(m[1]); v != "" {
-			return strings.ToUpper(v)
+		if v := canonicalVerdict(verdictWordRe.FindString(m[1])); v != "" {
+			return v
 		}
 	}
 	return ""
