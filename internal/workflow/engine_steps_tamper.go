@@ -1087,7 +1087,7 @@ func pathTokenIsDocumentedDeletion(segment string, token documentedPathToken, ac
 		previous = verb
 	}
 	if previous != nil {
-		return verbRangeInList(previous, deletionVerbs)
+		return verbRangeInList(previous, deletionVerbs) && tokenHasDeletionVerbLead(segment, previous, token)
 	}
 	next := nextActionVerbAfterToken(token, actionVerbs)
 	return next != nil && verbRangeInList(next, deletionVerbs) && tokenHasDeletionVerbTrailer(segment, token, next)
@@ -1109,6 +1109,48 @@ func tokenHasDeletionVerbTrailer(segment string, token documentedPathToken, verb
 		return true
 	}
 	return trailer == "-" || trailer == ":" || trailer == "("
+}
+
+func tokenHasDeletionVerbLead(segment string, verb []int, token documentedPathToken) bool {
+	lead := segment[verb[1]:token.start]
+	if lead == "" {
+		return true
+	}
+	// Keep backward association local. Existing path tokens in a deletion list
+	// are list syntax, not explanatory distance from the deletion verb.
+	lead = redactDocumentedPathTokens(lead)
+	lead = strings.TrimSpace(lead)
+	lead = strings.TrimSpace(strings.Trim(lead, "`\"'"))
+	if lead == "" {
+		return true
+	}
+	if strings.ContainsAny(lead, ".?!") {
+		return false
+	}
+	words := strings.FieldsFunc(lead, func(r rune) bool {
+		return (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_'
+	})
+	return len(words) <= 5
+}
+
+func redactDocumentedPathTokens(s string) string {
+	tokens := pathTokensFromSegment(s)
+	if len(tokens) == 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	cursor := 0
+	for _, token := range tokens {
+		if token.start < cursor {
+			continue
+		}
+		b.WriteString(s[cursor:token.start])
+		b.WriteString(strings.Repeat(" ", token.end-token.start))
+		cursor = token.end
+	}
+	b.WriteString(s[cursor:])
+	return b.String()
 }
 
 func verbRangeInList(needle []int, haystack [][]int) bool {

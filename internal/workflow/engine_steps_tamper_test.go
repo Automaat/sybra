@@ -479,6 +479,16 @@ func TestBuildTamperReport(t *testing.T) {
 			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
 		}
 	})
+
+	t.Run("distant_prior_delete_does_not_bless_test_file", func(t *testing.T) {
+		body := "## Scope\n- delete the old cache layer entirely, and make sure `internal/foo/bar_test.go` still passes\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/foo/bar_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 1 {
+			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
+		}
+	})
 }
 
 func TestDocumentedDeletionAllowlist(t *testing.T) {
@@ -539,6 +549,14 @@ func TestDocumentedDeletionAllowlist(t *testing.T) {
 		got := documentedDeletionAllowlist(body)
 		if !got.ExactPaths["internal/config/loader.go"] {
 			t.Fatalf("ExactPaths = %v, want later explicit delete of same path", got.ExactPaths)
+		}
+	})
+
+	t.Run("ignores_path_after_distant_prior_delete", func(t *testing.T) {
+		body := "## Files\n- delete the old cache layer entirely, and make sure `internal/foo/bar_test.go` still passes.\n"
+		got := documentedDeletionAllowlist(body)
+		if got.ExactPaths["internal/foo/bar_test.go"] {
+			t.Fatalf("ExactPaths = %v, did not want unrelated test path", got.ExactPaths)
 		}
 	})
 
