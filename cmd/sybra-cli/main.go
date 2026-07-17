@@ -2604,6 +2604,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	}
 
 	addK8sSecretEnvFindings(cfg, add)
+	addK8sFailedTTLFindings(cfg, add)
 
 	if len(findings) == 0 {
 		add("ok", "no issues found")
@@ -2658,6 +2659,23 @@ func addK8sSecretEnvFindings(cfg *config.Config, add func(severity, format strin
 		if len(missing) > 0 {
 			add("error", "agent.k8s_jobs.secret_env[%d]: missing %s", i, strings.Join(missing, ", "))
 		}
+	}
+}
+
+// addK8sFailedTTLFindings warns when ttl_seconds_after_finished is set low
+// enough to undermine failed_ttl_seconds_after_finished: the runner extends a
+// failed Job's TTL by PATCHing it after the fact
+// (internal/agent/k8s_job_runner.go), but per Kubernetes' own
+// ttlSecondsAfterFinished docs a late-extended TTL is not guaranteed to be
+// honored once the original, shorter window has elapsed.
+func addK8sFailedTTLFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if !cfg.Agent.K8sJobs.Enabled {
+		return
+	}
+	ttl := cfg.Agent.K8sJobs.TTL
+	failedTTL := cfg.Agent.K8sJobs.FailedTTL
+	if ttl > 0 && ttl < 30 && failedTTL != ttl {
+		add("warning", "agent.k8s_jobs.ttl_seconds_after_finished is %ds — Kubernetes does not guarantee honoring the failed_ttl_seconds_after_finished extension once such a short window has already elapsed", ttl)
 	}
 }
 

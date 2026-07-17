@@ -287,6 +287,100 @@ func TestPatchJobTTLSendsMergePatch(t *testing.T) {
 	}
 }
 
+// TestK8sRunPatchesFailedJobTTL exercises Run() itself end-to-end against a
+// mocked Kubernetes API, not just patchJobTTL in isolation — a regression
+// that dropped the call, inverted the failedTTL!=ttl guard, or moved it into
+// the success branch would pass every other test in this file.
+func TestK8sRunPatchesFailedJobTTL(t *testing.T) {
+	var patchSeen bool
+	var patchTTL float64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/namespaces/sybra-poc/pods", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+	})
+	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			t.Errorf("unexpected method on jobs collection: %s", req.Method)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs/sybra-agent-test-agent", func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"failed": 1}})
+		case http.MethodPatch:
+			patchSeen = true
+			var body map[string]any
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			spec, _ := body["spec"].(map[string]any)
+			patchTTL, _ = spec["ttlSecondsAfterFinished"].(float64)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected method on job resource: %s", req.Method)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 86400})
+	r.apiURL = srv.URL
+	r.client = srv.Client()
+	r.token = "test-token"
+
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "test-agent", TaskID: "task-1", Provider: "claude"}
+
+	r.Run(t.Context(), m, a, RunConfig{})
+
+	if !patchSeen {
+		t.Fatal("expected a PATCH to extend TTL on the failed Job, saw none")
+	}
+	if patchTTL != 86400 {
+		t.Fatalf("patched ttlSecondsAfterFinished = %v, want 86400", patchTTL)
+	}
+	if a.GetExitErr() == nil {
+		t.Fatal("expected the agent to record an error for a failed Job")
+	}
+}
+
+// TestK8sRunSkipsPatchWhenFailedTTLMatchesTTL confirms the guard actually
+// saves the extra API call when there's nothing to extend.
+func TestK8sRunSkipsPatchWhenFailedTTLMatchesTTL(t *testing.T) {
+	var patchSeen bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/namespaces/sybra-poc/pods", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+	})
+	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs/sybra-agent-test-agent", func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"failed": 1}})
+		case http.MethodPatch:
+			patchSeen = true
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 300})
+	r.apiURL = srv.URL
+	r.client = srv.Client()
+	r.token = "test-token"
+
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "test-agent", TaskID: "task-1", Provider: "claude"}
+
+	r.Run(t.Context(), m, a, RunConfig{})
+
+	if patchSeen {
+		t.Fatal("expected no PATCH when failedTTL equals ttl — the Job already has that TTL from creation")
+	}
+}
+
 func TestPatchJobTTLReturnsErrorOnNonSuccessStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusUnsupportedMediaType)

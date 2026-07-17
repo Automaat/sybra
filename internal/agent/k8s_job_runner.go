@@ -197,7 +197,9 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 			a.SetExitErr(fmt.Errorf("kubernetes job %s failed", jobName))
 			if r.failedTTL != r.ttl {
 				if perr := r.patchJobTTL(ctx, jobName, r.failedTTL); perr != nil {
-					r.logger.Warn("agent.k8s.failed_ttl_patch", "job", jobName, "err", perr)
+					r.logger.Warn("agent.k8s.failed_ttl_patch",
+						"job", jobName, "err", perr,
+						"hint", "failed-Job retention not extended past ttl_seconds_after_finished; check the patch verb on batch/jobs RBAC")
 				}
 			}
 		} else {
