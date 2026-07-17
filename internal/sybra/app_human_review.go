@@ -254,7 +254,14 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 	taskID := ag.TaskID
 	defer func() {
 		h.mu.Lock()
-		delete(h.inflight, taskID)
+		// Only clear the slot if it still belongs to this completing agent.
+		// A crash-retry dispatched earlier in this same call (see
+		// retryAfterCrash) registers a new inflight agent for taskID before
+		// this defer runs; blindly deleting here would wipe that fresh
+		// registration and reopen the in_flight guard for the retry.
+		if h.inflight[taskID] == ag.ID {
+			delete(h.inflight, taskID)
+		}
 		h.mu.Unlock()
 	}()
 
@@ -291,6 +298,16 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 			h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": "provider_rate_limited"})
 			return
 		}
+		// A crashed run (e.g. error_during_execution before any tool call)
+		// produces no usable final text, which would otherwise fall through
+		// to the generic "unparseable verdict" path below and get marked
+		// verdict_rendered — permanently disabling further autonomy attempts
+		// via the idempotency gate in maybeSpawn, even though the autonomy
+		// mandate never actually ran.
+		if ag.HadTerminalError() {
+			h.handleCrashedVerdict(taskID, ag)
+			return
+		}
 		h.logger.Warn("human-review.verdict.parse", "task_id", taskID, "agent_id", ag.ID, "err", parseErr)
 		if h.appendNote(taskID, "Auto-review (unparseable verdict)", h.scrubForTask(current.ProjectID, final)) {
 			h.markVerdictRendered(taskID, ag.ID)
@@ -311,42 +328,74 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 			h.markVerdictRendered(taskID, ag.ID)
 		}
 	case "sybra_bug":
-		// Re-check work context at completion time so a project re-typed
-		// during the review run still routes correctly.
-		var wctx *WorkScrubContext
-		if h.workCtx != nil {
-			if t, err := h.tasks.Get(taskID); err == nil {
-				wctx = h.workCtx(t.ProjectID)
-			}
-		}
-		switch h.cfg.HumanReviewSybraBugAction() {
-		case config.HumanReviewSybraBugActionNoteOnly:
-			if wctx != nil {
-				v = scrubVerdict(v, wctx)
-			}
-			h.noteSybraBugOnly(taskID, ag.ID, v)
-		case config.HumanReviewSybraBugActionBlockOnly:
-			if wctx != nil {
-				v = scrubVerdict(v, wctx)
-			}
-			h.blockSybraBugOnly(taskID, ag.ID, v)
-		case config.HumanReviewSybraBugActionLocalTask:
-			if wctx != nil {
-				h.fileLocalScrubbed(taskID, ag.ID, v, wctx)
-			} else {
-				h.fileLocalConfigured(taskID, ag.ID, v)
-			}
-		default:
-			if wctx != nil {
-				h.fileLocalScrubbed(taskID, ag.ID, v, wctx)
-			} else {
-				h.fileIssue(taskID, ag.ID, v)
-			}
-		}
+		h.handleSybraBugVerdict(taskID, ag, v)
 	default:
 		h.logger.Warn("human-review.verdict.unknown", "task_id", taskID, "decision", v.Decision)
 		if h.appendNote(taskID, "Auto-review (unknown decision)", h.scrubForTask(current.ProjectID, final)) {
 			h.markVerdictRendered(taskID, ag.ID)
+		}
+	}
+}
+
+// handleCrashedVerdict is onComplete's branch for a review run that produced
+// no usable output because it crashed (HadTerminalError). It retries once via
+// the existing per-task spawn budget rather than falling through to the
+// generic unparseable-verdict path, which would mark verdict_rendered and
+// permanently disable further autonomy attempts for a run that never
+// actually diagnosed anything.
+func (h *humanReviewHandler) handleCrashedVerdict(taskID string, ag *agent.Agent) {
+	h.logger.Warn("human-review.verdict.crashed", "task_id", taskID, "agent_id", ag.ID)
+	h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": "crashed_before_output"})
+	if h.retryAfterCrash(taskID) {
+		return
+	}
+	h.logger.Warn("human-review.verdict.crashed-exhausted", "task_id", taskID, "agent_id", ag.ID)
+	if h.appendNote(taskID, "Auto-review (crashed)",
+		"The autonomy-mandate agent crashed before producing a diagnosis, on repeated "+
+			"attempts. This is a genuine human-required case, but note the automated "+
+			"recovery attempt never actually ran to completion — it errored out before "+
+			"doing anything, so the failure itself has not been reviewed.") {
+		h.markVerdictRendered(taskID, ag.ID)
+	}
+	h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
+		"decision": "crashed_exhausted", "verdict_source": "unparseable",
+	})
+}
+
+// handleSybraBugVerdict is onComplete's branch for a "sybra_bug" verdict. It
+// re-checks the work context at completion time (rather than reusing the one
+// captured before the review agent ran) so a project re-typed work/pet during
+// the run still routes to the right sink, then dispatches per
+// HumanReviewSybraBugAction.
+func (h *humanReviewHandler) handleSybraBugVerdict(taskID string, ag *agent.Agent, v verdictDecision) {
+	var wctx *WorkScrubContext
+	if h.workCtx != nil {
+		if t, err := h.tasks.Get(taskID); err == nil {
+			wctx = h.workCtx(t.ProjectID)
+		}
+	}
+	switch h.cfg.HumanReviewSybraBugAction() {
+	case config.HumanReviewSybraBugActionNoteOnly:
+		if wctx != nil {
+			v = scrubVerdict(v, wctx)
+		}
+		h.noteSybraBugOnly(taskID, ag.ID, v)
+	case config.HumanReviewSybraBugActionBlockOnly:
+		if wctx != nil {
+			v = scrubVerdict(v, wctx)
+		}
+		h.blockSybraBugOnly(taskID, ag.ID, v)
+	case config.HumanReviewSybraBugActionLocalTask:
+		if wctx != nil {
+			h.fileLocalScrubbed(taskID, ag.ID, v, wctx)
+		} else {
+			h.fileLocalConfigured(taskID, ag.ID, v)
+		}
+	default:
+		if wctx != nil {
+			h.fileLocalScrubbed(taskID, ag.ID, v, wctx)
+		} else {
+			h.fileIssue(taskID, ag.ID, v)
 		}
 	}
 }
@@ -863,6 +912,31 @@ func (h *humanReviewHandler) allowSpawnForTaskLocked(taskID string) bool {
 		h.perTask[taskID] = kept
 	}
 	return len(kept) < humanReviewMaxPerTaskPerWindow
+}
+
+// retryAfterCrash re-spawns the autonomy-mandate agent once for a task whose
+// review run crashed before producing any output. It deliberately reuses the
+// existing per-task spawn budget (allowSpawnForTaskLocked,
+// humanReviewMaxPerTaskPerWindow) as the retry bound instead of adding a
+// second counter: the crashed run already consumed one slot, so at most one
+// further attempt fits within the window before allowSpawnForTaskLocked (and
+// maybeSpawn's own re-check) start rejecting further spawns. Returns true if
+// a retry was dispatched.
+//
+// Called from onComplete before its own `defer delete(h.inflight, taskID)`
+// runs, so the crashed run's own slot must be freed here first — otherwise
+// maybeSpawn's in_flight guard sees the (still-registered) crashed run and
+// silently skips the retry.
+func (h *humanReviewHandler) retryAfterCrash(taskID string) bool {
+	h.mu.Lock()
+	delete(h.inflight, taskID)
+	ok := h.allowSpawnForTaskLocked(taskID)
+	h.mu.Unlock()
+	if !ok {
+		return false
+	}
+	h.maybeSpawn(taskID, "human-required")
+	return true
 }
 
 func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[string]any) {
