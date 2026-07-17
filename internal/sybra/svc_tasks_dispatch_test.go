@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -27,12 +28,26 @@ import (
 type fakeAgentLauncher struct {
 	startErr   error
 	startCalls int
+	// tasks mirrors production's agentAdapter, which records an AgentRun for
+	// every start (recordSystemAgentStart). Guards that count runs — the review
+	// rate cap — read that list, so a fake that skips it would let a cap that is
+	// dead in production pass every test.
+	tasks *task.Manager
 }
 
-func (f *fakeAgentLauncher) StartAgent(_, _, _, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+func (f *fakeAgentLauncher) StartAgent(taskID, role, mode, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	f.startCalls++
 	if f.startErr != nil {
 		return "", "", "", f.startErr
+	}
+	if f.tasks != nil {
+		id := fmt.Sprintf("fake-agent-%d", f.startCalls)
+		if aerr := f.tasks.AddRun(taskID, task.AgentRun{
+			AgentID: id, Role: role, Mode: mode, StartedAt: time.Now(),
+		}); aerr != nil {
+			return "", "", "", aerr
+		}
+		return id, "", "", nil
 	}
 	return "fake-agent-id", "", "", nil
 }
@@ -62,6 +77,7 @@ func (f *fakeAgentLauncher) AdmitDispatch(string, string, string) (admit bool, r
 func setupDispatchTestService(t *testing.T, launcher *fakeAgentLauncher) (*TaskService, *App) {
 	t.Helper()
 	svc, a := setupTaskService(t)
+	launcher.tasks = a.tasks
 	ta := &taskAdapter{tasks: a.tasks}
 	svc.workflowEngine = workflow.NewEngine(mustWorkflowStore(t), ta, launcher, a.logger)
 	return svc, a
@@ -1327,4 +1343,59 @@ func TestDispatchInboundReview_RateLimitDisabledByConfig(t *testing.T) {
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("parked despite the cap being disabled: %q", got.StatusReason)
 	}
+}
+
+// How the cap is actually reachable in production. On a frozen head the
+// per-head budget (#2166) stops at 2, below this cap — so the rate limit only
+// engages when distinct heads churn inside the hour, which is the loop shape
+// the per-head guard cannot see. Fabricating runs with AddRun would hide that.
+func TestDispatchInboundReview_RateLimitReachedByHeadChurn(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	head := "head-0"
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return head, nil }
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+
+	// Each new head buys a fresh per-head budget; only the rate cap counts across them.
+	dispatched := 0
+	for i := range 6 {
+		head = fmt.Sprintf("head-%d", i)
+		completedAt := time.Now().Add(-inboundReviewRedispatchCooldown - time.Minute)
+		if _, err := a.tasks.UpdateMap(tk.ID, map[string]any{
+			"status":       string(task.StatusInReview),
+			"review_phase": "needs-approval",
+			"workflow": &workflow.Execution{
+				WorkflowID: "pr-review", State: workflow.ExecCompleted,
+				CompletedAt: &completedAt, Variables: map[string]string{},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		before := launcher.startCalls
+		a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+		if launcher.startCalls > before {
+			dispatched++
+		}
+		cur, err := a.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cur.Status == task.StatusHumanRequired {
+			break
+		}
+	}
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("6 distinct heads in an hour never tripped the cap: status=%q dispatched=%d", got.Status, dispatched)
+	}
+	if dispatched > config.DefaultReviewRoundsPerHour {
+		t.Errorf("dispatched %d reviews before the cap tripped, want <= %d", dispatched, config.DefaultReviewRoundsPerHour)
+	}
+	t.Logf("head churn: %d reviews dispatched before the breaker tripped", dispatched)
 }
