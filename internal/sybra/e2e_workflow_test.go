@@ -2742,6 +2742,10 @@ func TestE2E_TestingTaskWorkflow_InfraFailureEscalatesWhenOpenPRDisabled(t *test
 // the real builtin test-runner schema so e2e coverage cannot drift from the
 // production structured evidence contract.
 func testingTaskWithOutputSchemaYAML(t *testing.T) string {
+	return testingTaskWithOutputSchemaPromptYAML(t, "Test {{.Task.ID}}")
+}
+
+func testingTaskWithOutputSchemaPromptYAML(t *testing.T, prompt string) string {
 	t.Helper()
 
 	def := workflow.Definition{
@@ -2765,7 +2769,7 @@ func testingTaskWithOutputSchemaYAML(t *testing.T) string {
 					Mode:         "headless",
 					Model:        "sonnet",
 					OutputSchema: testingTaskOutputSchema(t),
-					Prompt:       "Test {{.Task.ID}}",
+					Prompt:       prompt,
 				},
 				Next: []workflow.Transition{{GoTo: "route_test"}},
 			},
@@ -2809,9 +2813,14 @@ func testingTaskOutputSchema(t *testing.T) string {
 // output_schema into the engine's workflow store.
 func installTestingTaskWithOutputSchemaWorkflow(t *testing.T, env *e2eEnv) {
 	t.Helper()
+	installTestingTaskWithOutputSchemaPromptWorkflow(t, env, "Test {{.Task.ID}}")
+}
+
+func installTestingTaskWithOutputSchemaPromptWorkflow(t *testing.T, env *e2eEnv, prompt string) {
+	t.Helper()
 	if err := os.WriteFile(
 		filepath.Join(env.wfStore.Dir(), "testing-task.yaml"),
-		[]byte(testingTaskWithOutputSchemaYAML(t)), 0o644,
+		[]byte(testingTaskWithOutputSchemaPromptYAML(t, prompt)), 0o644,
 	); err != nil {
 		t.Fatalf("write testing-task.yaml: %v", err)
 	}
@@ -2894,6 +2903,51 @@ func TestE2E_Codex_TestVerdict_Fail_JSON(t *testing.T) {
 	tk, _ := env.tasks.Get(created.ID)
 	if tk.Status != task.StatusInProgress {
 		t.Errorf("status after JSON FAIL = %q, want %q", tk.Status, task.StatusInProgress)
+	}
+}
+
+func TestE2E_Codex_TestVerdict_Pass_JSON_WithMandatorySkillReceiptPreamble(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSkillFixture(t, home, ".codex", "sybra-test")
+
+	env := setupE2EMultiProvider(t, "codex", []string{"test_verdict_pass_with_receipt_preamble"})
+	installTestingTaskWithOutputSchemaPromptWorkflow(t, env, "Test {{.Task.ID}} with /sybra-test")
+
+	created, err := env.tasks.Create("codex json verdict pass with skill receipt", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Status != task.StatusReadyPR {
+		t.Fatalf("status after JSON PASS + receipt preamble = %q, want %q", tk.Status, task.StatusReadyPR)
+	}
+	if len(tk.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns len = %d, want 1", len(tk.AgentRuns))
+	}
+	if tk.AgentRuns[0].SkillExecutionMode != "native" {
+		t.Fatalf("SkillExecutionMode = %q, want native", tk.AgentRuns[0].SkillExecutionMode)
+	}
+	if tk.AgentRuns[0].SkillConformance != "exact" {
+		t.Fatalf("SkillConformance = %q, want exact", tk.AgentRuns[0].SkillConformance)
 	}
 }
 
