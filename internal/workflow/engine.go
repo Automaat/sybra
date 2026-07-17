@@ -330,11 +330,14 @@ type Engine struct {
 	humanAction      map[string]struct{}    // taskID → HandleHumanAction in progress
 	agentRoutes      map[string]agentRoute  // agentID → {taskID, stepID}
 	pendingStepStart map[string]int         // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
-	// pendingCompletions holds an untracked agent completion that arrived
-	// while its own step's start was still registering (see
-	// bufferPendingCompletion). Keyed like pendingStepStart; replayed by
-	// execRunAgent once the route is registered, or dropped if the start
-	// ultimately failed.
+	// pendingCompletions holds an agent completion that arrived while its own
+	// step's start was still registering (see resolveCompletionRoute). Keyed
+	// like pendingStepStart; execRunAgent's deferred cleanup always pops and
+	// redelivers it via unmarkStepStartingAndTakePending — if the route ended
+	// up registered, that redelivery is a normal tracked completion; if the
+	// underlying StartAgent call had failed instead, it falls through to the
+	// usual untracked-completion handling (dropped as a phantom, or credited
+	// to the current step for a role match) rather than being silently lost.
 	pendingCompletions map[string][]AgentCompletion
 	cascadeDepth       map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
 	pendingRecovery    map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
