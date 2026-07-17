@@ -524,9 +524,19 @@ with:
 
 | PVC | Mount | Holds | Reproducible? |
 |---|---|---|---|
-| `sybra-home` | `/home/sybra/.sybra` | `tasks/`, `projects/`, `config.yaml`, `agents/` (live-agent registry), `learning/`, `experience/`, `agentqueue/`, `logs/`, `artifacts/` | **No** — this is Sybra's actual ledger: task/project history, the thing the issue's acceptance criterion means by "state" |
+| `sybra-home` | `/home/sybra/.sybra` | `tasks/`, `projects/`, `agents/` (live-agent registry), `learning/`, `experience/`, `agentqueue/`, `logs/`, `artifacts/` | **No** — this is Sybra's actual ledger: task/project history, the thing the issue's acceptance criterion means by "state" |
 | `sybra-clones` | `/home/sybra/.sybra/clones` | bare git clones, one per registered project | Yes — re-clonable from each project's remote |
 | `sybra-worktrees` | `/home/sybra/.sybra/worktrees` | per-task working-tree checkouts | Yes — re-derivable from a clone + task branch, modulo any uncommitted/unpushed changes in a worktree that dies mid-run (a risk independent of backup strategy) |
+
+`config.yaml` at that same path is **not** PVC state despite living under the
+`sybra-home` mount — `deployment.yaml` mounts it from the `sybra-config`
+ConfigMap via `subPath`, so the file is always sourced from the ConfigMap
+(itself checked into this repo) while the pod runs. Backing it up from inside
+the PVC would just capture a redundant snapshot of the ConfigMap's current
+value, and restoring it into the PVC is a no-op — the ConfigMap mount
+reasserts itself the moment the pod starts regardless of what's underneath
+it. `config.yaml`'s actual "backup" is this repo's git history for the
+ConfigMap manifests.
 
 Only `sybra-home` needs backup coverage. `sybra-clones`/`sybra-worktrees` are
 capacity-planning concerns (they grow with registered-project count and
@@ -551,7 +561,11 @@ data across **before** rolling out the new manifest:
 ```bash
 kubectl -n sybra-poc scale deployment/sybra-server --replicas=0
 kubectl -n sybra-poc wait --for=delete pod -l app=sybra-server --timeout=60s
-kubectl apply -f deploy/k8s-poc/deployment.yaml   # creates sybra-clones/sybra-worktrees; does not yet mount them anywhere
+kubectl apply -f deploy/k8s-poc/deployment.yaml
+# apply reasserts the manifest's replicas:1, racing the migration job below —
+# scale back down and confirm the pod it started is gone before proceeding.
+kubectl -n sybra-poc scale deployment/sybra-server --replicas=0
+kubectl -n sybra-poc wait --for=delete pod -l app=sybra-server --timeout=60s
 kubectl -n sybra-poc run sybra-migrate --rm -i --restart=Never --image=busybox:1.36 --overrides='
 {
   "spec": {
@@ -608,7 +622,7 @@ stronger guarantee for a particular backup run.
 kubectl -n sybra-poc exec deploy/sybra-server -- sh -c '
   cd /home/sybra/.sybra
   existing=""
-  for p in tasks projects config.yaml agents learning experience agentqueue logs artifacts; do
+  for p in tasks projects agents learning experience agentqueue logs artifacts; do
     [ -e "$p" ] && existing="$existing $p"
   done
   tar czf - $existing
