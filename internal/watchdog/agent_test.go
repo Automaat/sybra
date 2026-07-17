@@ -1200,6 +1200,35 @@ func TestReapIdleInteractive_ReleasesHumanRequiredTaskAgent(t *testing.T) {
 	}
 }
 
+// TestReapIdleInteractive_SparesHumanReviewAgent guards against #2221: the
+// human-review agent app_human_review.go dispatches the moment a task
+// becomes human-required, specifically to act on that status, must not be
+// killed by the same-tick status-release reaper before it can do its job.
+func TestReapIdleInteractive_SparesHumanReviewAgent(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("set human-required: %v", err)
+	}
+
+	stopped := ""
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	ag := &agent.Agent{
+		ID: "a1", TaskID: tk.ID, Mode: "interactive",
+		Name:      agent.RoleHumanReview.AgentName(tk.Title),
+		StartedAt: time.Now(), LastEventAt: time.Now(),
+	}
+	w.reapIdleInteractive(ag, time.Now())
+
+	if stopped != "" {
+		t.Fatalf("stopAgent called with %q, want the human-review agent left running", stopped)
+	}
+}
+
 func TestReapIdleInteractive_HardStopsHungTaskAgent(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 
@@ -1220,6 +1249,92 @@ func TestReapIdleInteractive_HardStopsHungTaskAgent(t *testing.T) {
 	}
 	if got.StatusReason != "watchdog hang: idle deadline exceeded" {
 		t.Fatalf("status_reason = %q, want watchdog idle deadline", got.StatusReason)
+	}
+	if stopped != "a1" {
+		t.Fatalf("stopAgent called with %q, want a1", stopped)
+	}
+}
+
+func TestReapTaskAgentForStatus_ReleasesOrphanedHeadlessAgent(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("set human-required: %v", err)
+	}
+
+	stopped := ""
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "headless", StartedAt: time.Now(), LastEventAt: time.Now()}
+	if !w.reapTaskAgentForStatus(ag) {
+		t.Fatal("reapTaskAgentForStatus = false, want true for a non-human-review agent")
+	}
+	if stopped != "a1" {
+		t.Fatalf("stopAgent called with %q, want a1", stopped)
+	}
+}
+
+// TestReapTaskAgentForStatus_SparesHumanReviewAgent is the regression guard
+// for the human-review self-defeat bug: the human-review agent
+// (internal/sybra/app_human_review.go) is dispatched the moment a task
+// becomes human-required specifically to diagnose and unblock it. Before
+// this fix, the very next watchdog tick treated it as an orphan of the
+// status it was launched to handle and killed it seconds in — both
+// e153081f and 27dd0478 landed here with an empty verdict because of this
+// race.
+func TestReapTaskAgentForStatus_SparesHumanReviewAgent(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("set human-required: %v", err)
+	}
+
+	stopped := ""
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	ag := &agent.Agent{
+		ID: "a1", TaskID: tk.ID, Mode: "headless",
+		Name:      agent.RoleHumanReview.AgentName(tk.Title),
+		StartedAt: time.Now(), LastEventAt: time.Now(),
+	}
+	if w.reapTaskAgentForStatus(ag) {
+		t.Fatal("reapTaskAgentForStatus = true, want false for the human-review agent")
+	}
+	if stopped != "" {
+		t.Fatalf("stopAgent called with %q, want the human-review agent left running", stopped)
+	}
+}
+
+// TestReapTaskAgentForStatus_ReleasesAnyAgentOnTerminalStatus guards the
+// original, broader contract this reaper exists for (#1877): once a task is
+// terminal, any non-human-review agent still attached to it is an orphan
+// regardless of when it started relative to the transition — there is no
+// legitimate path that dispatches a fresh agent to act on an
+// already-closed task the way human-review does for human-required.
+func TestReapTaskAgentForStatus_ReleasesAnyAgentOnTerminalStatus(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	got, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusDone)})
+	if err != nil {
+		t.Fatalf("set done: %v", err)
+	}
+
+	stopped := ""
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	startedAt := got.StatusChangedAt.Add(time.Millisecond)
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "headless", StartedAt: startedAt, LastEventAt: startedAt}
+	if !w.reapTaskAgentForStatus(ag) {
+		t.Fatal("reapTaskAgentForStatus = false, want true: any live agent on a terminal task is an orphan")
 	}
 	if stopped != "a1" {
 		t.Fatalf("stopAgent called with %q, want a1", stopped)
