@@ -34,6 +34,20 @@ steps:
         it is opened.
 
         For full task context, run `sybra-cli get --compact {{.Task.ID}}`.
+
+        Downstream, after you push, Sybra runs three deterministic checks that
+        are not yours to run to completion: a codegen/format gate re-applies
+        the project's configured codegen and formatter commands and commits
+        any resulting drift; a tamper detector inspects the diff for
+        reward-hacking edits (deleted assertions, skip/xfail markers,
+        neutered CI config); and the project's `checks.verify` suite is the
+        authoritative pass/fail gate, not any local run of it. While editing,
+        use focused checks — a single test, package, or lint pass scoped to
+        the files you touched — to iterate; do not repeatedly run the full
+        build/lint/test suite as a substitute for that gate. Stop once your
+        focused checks pass and you are satisfied with the diff: commit and
+        push. If the deterministic suite later fails, you will be re-asked
+        with the exact failing command and its output.
         {{- if currenttestfailures .Task.Body}}
 
         A prior implementation FAILED adversarial manual testing. Fix the root

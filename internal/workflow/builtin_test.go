@@ -299,6 +299,42 @@ func TestBuiltinSimpleTaskImplement_UsesCompactTaskView(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTaskImplement_DisclosesDownstreamVerification pins the
+// initial prompt naming the authoritative deterministic checks that run
+// after the agent pushes (codegen_gate, detect_tampering, verify_checks), so
+// the agent iterates with focused checks instead of repeating the full
+// build/lint/test suite locally. See #2020.
+func TestBuiltinSimpleTaskImplement_DisclosesDownstreamVerification(t *testing.T) {
+	t.Parallel()
+
+	impl := mustBuiltinDefinition(t, "simple-task-implement")
+	step := impl.StepByID("implement")
+	if step == nil {
+		t.Fatal("implement step not found in simple-task-implement")
+	}
+	prompt := step.Config.Prompt
+
+	for _, want := range []string{
+		"codegen/format gate",
+		"tamper detector",
+		"checks.verify` suite is the authoritative pass/fail gate",
+		"use focused checks",
+		"do not repeatedly run the full build/lint/test suite",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("implement prompt must disclose downstream verification contract, missing %q, got:\n%s", want, prompt)
+		}
+	}
+
+	// The contract must sit ahead of the reask/retry notes so a retried
+	// implementation still sees it before the failure-specific context.
+	contractIdx := strings.Index(prompt, "Downstream, after you push")
+	reaskIdx := strings.Index(prompt, `{{getvar .Vars "verify_reask_note"}}`)
+	if contractIdx < 0 || reaskIdx < 0 || contractIdx > reaskIdx {
+		t.Fatalf("downstream verification contract must precede the verify reask note, contractIdx=%d reaskIdx=%d", contractIdx, reaskIdx)
+	}
+}
+
 func TestBuiltinPromptLabAuthor_OwnsPromptLabImplementation(t *testing.T) {
 	t.Parallel()
 
