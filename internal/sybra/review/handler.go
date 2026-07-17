@@ -98,6 +98,11 @@ type Handler struct {
 	// rerunFailedChecks requests a rerun of the failed checks on a PR;
 	// overridable in tests. nil falls back to github.RerunFailedChecks.
 	rerunFailedChecks func(repo string, number int) error
+	// classifyFlakiness classifies whether a lone ci_failure's gating checks
+	// are all flaky on the head commit; overridable in tests. nil falls back
+	// to github.ClassifyCIFlakiness. Only consulted when
+	// cfg.GitHub.FlakyDetection is enabled.
+	classifyFlakiness func(repo, sha string, threshold float64) (allFlaky bool, flakyChecks []string, err error)
 	// enableAutoMergeFn arms GitHub's native auto-merge on a PR; overridable in
 	// tests. nil falls back to github.EnableAutoMerge.
 	enableAutoMergeFn func(repo string, number int) error
@@ -236,6 +241,7 @@ func New(
 		authCircuit:         poll.NewAuthCircuit("reviews", logger),
 		mergePR:             github.MergePR,
 		rerunFailedChecks:   github.RerunFailedChecks,
+		classifyFlakiness:   github.ClassifyCIFlakiness,
 		enableAutoMergeFn:   github.EnableAutoMerge,
 		supportsAutoMergeFn: github.SupportsNativeAutoMerge,
 		mergePRViaREST:      github.MergePRViaREST,

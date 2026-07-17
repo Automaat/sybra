@@ -395,6 +395,10 @@ const (
 	DefaultIssuesSeconds                = 600 // was 300
 	DefaultRenovateFastSeconds          = 120 // was 60
 	DefaultRenovateSlowSeconds          = 600 // was 300
+	// DefaultFlakySuccessThreshold is the fallback same-check success rate
+	// (0-1) above which a currently-failing gating check is classified
+	// flaky rather than deterministic. See GitHubConfig.FlakyThreshold.
+	DefaultFlakySuccessThreshold = 0.75
 )
 
 // RunsSearchPollers reports whether this machine owns the periodic GitHub
@@ -480,6 +484,16 @@ func (c GitHubConfig) RenovateFast() time.Duration {
 }
 func (c GitHubConfig) RenovateSlow() time.Duration {
 	return secsOr(c.RenovateSlowSeconds, DefaultRenovateSlowSeconds)
+}
+
+// FlakyThreshold resolves the configured same-check success-rate threshold
+// for flaky classification. Non-positive (unset) falls back to
+// DefaultFlakySuccessThreshold.
+func (c GitHubConfig) FlakyThreshold() float64 {
+	if c.FlakySuccessThreshold <= 0 {
+		return DefaultFlakySuccessThreshold
+	}
+	return c.FlakySuccessThreshold
 }
 
 func secsOr(v, def int) time.Duration {

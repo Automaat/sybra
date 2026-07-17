@@ -2,14 +2,18 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -344,5 +348,314 @@ func TestPollAndMonitorPRs_CIFailureRerunsWorkPRBeforeFixAgent(t *testing.T) {
 	}
 	if got.Workflow != nil {
 		t.Fatal("unexpected pr-fix workflow; a work project's transient rerun should wait for GitHub checks")
+	}
+}
+
+// TestPollAndMonitorPRs_FlakyCIFailureRerunsAndLogsFlakeEvent verifies that
+// with github.flaky_detection enabled and the classifier reporting every
+// gating check flaky, a lone ci_failure issue reruns (same deterministic
+// infra-rerun path as the unconditional rerun) but additionally records a
+// distinct ci_flake_detected audit event and marks the PRIssueCIFlake budget,
+// while still never dispatching a pr-fix agent.
+func TestPollAndMonitorPRs_FlakyCIFailureRerunsAndLogsFlakeEvent(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(4242),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	failingPR := github.PullRequest{
+		Number:      4242,
+		Repository:  "o/r",
+		HeadRefName: "feat/x",
+		HeadSHA:     "sha-fail",
+		URL:         "https://github.com/o/r/pull/4242",
+		Mergeable:   "MERGEABLE",
+		CIStatus:    "FAILURE",
+		Author:      "me",
+	}
+
+	auditDir := filepath.Join(t.TempDir(), "audit")
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+
+	r := buildPRFixHandler(t, tasks, func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{CreatedByMe: []github.PullRequest{failingPR}}, nil
+	})
+	r.audit = auditLog
+	r.cfg = &config.Config{GitHub: config.GitHubConfig{FlakyDetection: true}}
+	var classifiedRepo, classifiedSHA string
+	var classifiedThreshold float64
+	r.classifyFlakiness = func(repo, sha string, threshold float64) (bool, []string, error) {
+		classifiedRepo, classifiedSHA, classifiedThreshold = repo, sha, threshold
+		return true, []string{"unit-tests"}, nil
+	}
+	var rerunCalled bool
+	r.rerunFailedChecks = func(repo string, number int) error {
+		rerunCalled = true
+		return nil
+	}
+	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
+
+	r.pollAndMonitorPRs(context.Background())
+
+	if !rerunCalled {
+		t.Fatal("flaky classification should still trigger the deterministic infra rerun")
+	}
+	if classifiedRepo != "o/r" || classifiedSHA != "sha-fail" {
+		t.Fatalf("classifier called with repo=%q sha=%q, want o/r sha-fail", classifiedRepo, classifiedSHA)
+	}
+	if classifiedThreshold != config.DefaultFlakySuccessThreshold {
+		t.Fatalf("classifier threshold = %v, want default %v", classifiedThreshold, config.DefaultFlakySuccessThreshold)
+	}
+	if got := r.prTracker.Retries(created.ID, github.PRIssueCIFlake); got != 1 {
+		t.Errorf("ci_flake retries = %d, want 1", got)
+	}
+	if got := r.prTracker.Retries(created.ID, github.PRIssueCIFailure); got != 0 {
+		t.Errorf("ci_failure retries = %d, want 0 (no fix agent dispatched)", got)
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil {
+		t.Fatal("unexpected pr-fix workflow; a flaky classification should skip the fix agent")
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want in-review", got.Status)
+	}
+
+	events := readExperienceAuditEvents(t, auditDir)
+	idx := slices.IndexFunc(events, func(e audit.Event) bool {
+		return e.Type == audit.EventPRCIFlakeDetected
+	})
+	if idx < 0 {
+		t.Fatal("missing pr_monitor.ci_flake_detected audit event")
+	}
+	data := events[idx].Data
+	if got := data["repo"]; got != "o/r" {
+		t.Errorf("flake event repo = %v, want o/r", got)
+	}
+	checksRaw, _ := json.Marshal(data["checks"])
+	if !strings.Contains(string(checksRaw), "unit-tests") {
+		t.Errorf("flake event checks = %s, want to contain unit-tests", checksRaw)
+	}
+}
+
+// TestPollAndMonitorPRs_DeterministicCIFailureSkipsFlakeEventEvenWhenEnabled
+// verifies that enabling github.flaky_detection does not change behavior for
+// a deterministic (non-flaky) ci_failure: the blind infra rerun still fires
+// exactly as before, but no ci_flake_detected event is logged and no
+// PRIssueCIFlake budget is spent.
+func TestPollAndMonitorPRs_DeterministicCIFailureSkipsFlakeEventEvenWhenEnabled(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(4242),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	failingPR := github.PullRequest{
+		Number:      4242,
+		Repository:  "o/r",
+		HeadRefName: "feat/x",
+		HeadSHA:     "sha-fail",
+		URL:         "https://github.com/o/r/pull/4242",
+		Mergeable:   "MERGEABLE",
+		CIStatus:    "FAILURE",
+		Author:      "me",
+	}
+
+	auditDir := filepath.Join(t.TempDir(), "audit")
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+
+	r := buildPRFixHandler(t, tasks, func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{CreatedByMe: []github.PullRequest{failingPR}}, nil
+	})
+	r.audit = auditLog
+	r.cfg = &config.Config{GitHub: config.GitHubConfig{FlakyDetection: true}}
+	var classifyCalled bool
+	r.classifyFlakiness = func(repo, sha string, threshold float64) (bool, []string, error) {
+		classifyCalled = true
+		return false, nil, nil
+	}
+	var rerunCalled bool
+	r.rerunFailedChecks = func(repo string, number int) error {
+		rerunCalled = true
+		return nil
+	}
+	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
+
+	r.pollAndMonitorPRs(context.Background())
+
+	if !classifyCalled {
+		t.Fatal("classifier should have been consulted")
+	}
+	if !rerunCalled {
+		t.Fatal("deterministic failure should still fall through to the ordinary infra rerun")
+	}
+	if got := r.prTracker.Retries(created.ID, github.PRIssueCIFlake); got != 0 {
+		t.Errorf("ci_flake retries = %d, want 0 for a deterministic failure", got)
+	}
+
+	events := readExperienceAuditEvents(t, auditDir)
+	if idx := slices.IndexFunc(events, func(e audit.Event) bool {
+		return e.Type == audit.EventPRCIFlakeDetected
+	}); idx >= 0 {
+		t.Fatalf("unexpected ci_flake_detected event for a deterministic failure: %+v", events[idx])
+	}
+}
+
+// TestEscalateExhaustedFix_FlakyCIFailureStaysInReview verifies that an
+// exhausted ci_failure budget does not park the task human-required when
+// flaky detection is enabled and the classifier attributes the failure to
+// flakiness — the task stays exactly where it was, and a
+// ci_flake_detected audit event records why escalation was skipped.
+func TestEscalateExhaustedFix_FlakyCIFailureStaysInReview(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(4242),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	auditDir := filepath.Join(t.TempDir(), "audit")
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		audit:     auditLog,
+		tasks:     tasks,
+		prTracker: github.NewIssueTracker(time.Minute),
+		cfg:       &config.Config{GitHub: config.GitHubConfig{FlakyDetection: true}},
+		classifyFlakiness: func(repo, sha string, threshold float64) (bool, []string, error) {
+			return true, []string{"e2e-tests"}, nil
+		},
+	}
+
+	issue := github.PRIssue{
+		Kind:   github.PRIssueCIFailure,
+		TaskID: created.ID,
+		PR:     github.PullRequest{Number: 4242, Repository: "o/r", HeadSHA: "sha-fail"},
+	}
+	r.escalateExhaustedFix(issue)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want in-review (flaky exhaustion must not escalate)", got.Status)
+	}
+
+	events := readExperienceAuditEvents(t, auditDir)
+	if idx := slices.IndexFunc(events, func(e audit.Event) bool {
+		return e.Type == audit.EventPRCIFlakeDetected
+	}); idx < 0 {
+		t.Fatal("missing pr_monitor.ci_flake_detected audit event on exhausted flaky escalation")
+	} else if idx2 := slices.IndexFunc(events, func(e audit.Event) bool {
+		return e.Type == audit.EventPRFixExhausted
+	}); idx2 >= 0 {
+		t.Fatal("unexpected pr_monitor.fix_exhausted event for a flaky-classified exhaustion")
+	}
+}
+
+// TestEscalateExhaustedFix_DeterministicCIFailureStillEscalates guards the
+// flaky gate from swallowing real escalations: when the classifier reports a
+// deterministic failure, exhaustion still parks the task human-required
+// exactly as it did before flaky detection existed.
+func TestEscalateExhaustedFix_DeterministicCIFailureStillEscalates(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(4242),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		prTracker: github.NewIssueTracker(time.Minute),
+		cfg:       &config.Config{GitHub: config.GitHubConfig{FlakyDetection: true}},
+		classifyFlakiness: func(repo, sha string, threshold float64) (bool, []string, error) {
+			return false, nil, nil
+		},
+	}
+
+	issue := github.PRIssue{
+		Kind:   github.PRIssueCIFailure,
+		TaskID: created.ID,
+		PR:     github.PullRequest{Number: 4242, Repository: "o/r", HeadSHA: "sha-fail"},
+	}
+	r.escalateExhaustedFix(issue)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required (deterministic failures still escalate)", got.Status)
 	}
 }

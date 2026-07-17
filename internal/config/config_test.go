@@ -1067,6 +1067,60 @@ func TestLoadGitHubAutoResolveCleanMerges(t *testing.T) {
 	}
 }
 
+func TestDefaultGitHubFlakyDetection(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	if cfg.GitHub.FlakyDetection {
+		t.Error("default GitHub.FlakyDetection should be false (kill-switch, opt-in)")
+	}
+	if got := cfg.GitHub.FlakyThreshold(); got != DefaultFlakySuccessThreshold {
+		t.Errorf("default FlakyThreshold() = %v, want %v", got, DefaultFlakySuccessThreshold)
+	}
+}
+
+func TestLoadGitHubFlakyDetection(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("github:\n  flaky_detection: true\n  flaky_success_threshold: 0.6\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.GitHub.FlakyDetection {
+		t.Error("FlakyDetection = false, want true after round-tripping through yaml")
+	}
+	if got := cfg.GitHub.FlakyThreshold(); got != 0.6 {
+		t.Errorf("FlakyThreshold() = %v, want 0.6", got)
+	}
+}
+
+func TestGitHubConfig_FlakyThreshold(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cfg  GitHubConfig
+		want float64
+	}{
+		{"unset falls back to default", GitHubConfig{}, DefaultFlakySuccessThreshold},
+		{"zero falls back to default", GitHubConfig{FlakySuccessThreshold: 0}, DefaultFlakySuccessThreshold},
+		{"negative falls back to default", GitHubConfig{FlakySuccessThreshold: -0.1}, DefaultFlakySuccessThreshold},
+		{"explicit override", GitHubConfig{FlakySuccessThreshold: 0.5}, 0.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.FlakyThreshold(); got != tt.want {
+				t.Errorf("FlakyThreshold() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDefaultRequirePermissions(t *testing.T) {
 	t.Parallel()
 	boolPtr := func(b bool) *bool { return &b }

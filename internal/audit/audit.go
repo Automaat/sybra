@@ -57,6 +57,13 @@ const (
 	// outside Sybra). Data carries the prior status_reason and the probe
 	// result, never PR titles or agent output.
 	EventPRBlockerReconciled = "pr_monitor.blocker_reconciled"
+	// EventPRCIFlakeDetected records that a lone ci_failure issue was
+	// classified flaky: the head commit's check-run history (all attempts,
+	// not just the latest) shows the same gating check both passing and
+	// failing at or above the configured success-rate threshold. Logged
+	// instead of dispatching a fix agent or escalating to human-required.
+	// Data carries pr, repo, and the flaky check names — never agent output.
+	EventPRCIFlakeDetected   = "pr_monitor.ci_flake_detected"
 	EventReviewStarted       = "review.agent_started"
 	EventFixReviewStarted    = "fix_review.agent_started"
 	EventReviewPublished     = "review.published"

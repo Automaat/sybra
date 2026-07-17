@@ -308,6 +308,9 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 	if issue.Kind == github.PRIssueReadyToMerge {
 		return
 	}
+	if r.exhaustedFixIsFlaky(issue) {
+		return
+	}
 	t, err := r.tasks.Get(issue.TaskID)
 	if err != nil || t.Status == task.StatusHumanRequired {
 		return
@@ -332,6 +335,76 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 	r.logger.Warn("pr-monitor.fix-exhausted",
 		"task_id", issue.TaskID, "pr", issue.PR.Number,
 		"kind", string(issue.Kind), "attempts", github.MaxRetries)
+}
+
+// exhaustedFixIsFlaky reports whether an exhausted ci_failure issue should
+// stay in-review instead of parking human-required: flaky detection is
+// enabled and ClassifyCIFlakiness attributes every currently-failing gating
+// check on the head commit to flakiness rather than a deterministic bug.
+// Logs EventPRCIFlakeDetected (cooldown-gated via prTracker's PRIssueCIFlake
+// kind, so a still-flaky PR doesn't spam the audit log every poll cycle) as
+// the observable record of why escalation was skipped. Only ci_failure
+// carries a same-commit check history to classify — conflict/comments
+// exhaustion always escalates. Fails closed: disabled detection, a missing
+// PR repo/SHA, or a classifier error/deterministic verdict all return false.
+func (r *Handler) exhaustedFixIsFlaky(issue github.PRIssue) bool {
+	if issue.Kind != github.PRIssueCIFailure || r.cfg == nil || !r.cfg.GitHub.FlakyDetection {
+		return false
+	}
+	if r.prTracker == nil || issue.PR.Repository == "" || issue.PR.HeadSHA == "" {
+		return false
+	}
+	classify := r.classifyFlakiness
+	if classify == nil {
+		classify = github.ClassifyCIFlakiness
+	}
+	allFlaky, flakyChecks, err := classify(issue.PR.Repository, issue.PR.HeadSHA, r.cfg.GitHub.FlakyThreshold())
+	if err != nil || !allFlaky {
+		return false
+	}
+	if r.prTracker.ShouldHandle(issue.TaskID, github.PRIssueCIFlake, issue.PR.HeadSHA) {
+		r.prTracker.MarkHandled(issue.TaskID, github.PRIssueCIFlake, issue.PR.HeadSHA)
+		r.logAudit(audit.EventPRCIFlakeDetected, issue.TaskID, "", map[string]any{
+			"pr": issue.PR.Number, "repo": issue.PR.Repository, "checks": flakyChecks, "exhausted": true,
+		})
+		r.logger.Info("pr-monitor.ci-flake.exhausted-not-escalated",
+			"task_id", issue.TaskID, "pr", issue.PR.Number, "checks", flakyChecks)
+	}
+	return true
+}
+
+// dispatchFlakyRerun classifies a lone ci_failure's gating checks against the
+// head commit's full check-run history and, when every currently-failing
+// gating check is flaky, triggers the same deterministic infra-rerun
+// rerunCIFailure already performs (reusing its ciInfraRerunKind budget) but
+// additionally records a distinct audit event so a flaky classification is
+// observable separately from a blind rerun attempt. Returns false — a no-op —
+// when flaky detection is disabled, the classifier errors or reports a
+// deterministic failure, or the shared rerun budget for this head SHA is
+// already spent; the caller then falls through to the ordinary
+// rerun-then-fixer path unchanged, which is exactly today's behavior when
+// this feature is off (the default).
+func (r *Handler) dispatchFlakyRerun(t task.Task, issue github.PRIssue) bool {
+	if r.cfg == nil || !r.cfg.GitHub.FlakyDetection || issue.PR.Repository == "" || issue.PR.HeadSHA == "" {
+		return false
+	}
+	classify := r.classifyFlakiness
+	if classify == nil {
+		classify = github.ClassifyCIFlakiness
+	}
+	allFlaky, flakyChecks, err := classify(issue.PR.Repository, issue.PR.HeadSHA, r.cfg.GitHub.FlakyThreshold())
+	if err != nil || !allFlaky {
+		return false
+	}
+	if !r.rerunCIFailure(t, issue) {
+		return false
+	}
+	r.prTracker.MarkHandled(t.ID, github.PRIssueCIFlake, issue.PR.HeadSHA)
+	r.logAudit(audit.EventPRCIFlakeDetected, t.ID, "", map[string]any{
+		"pr": issue.PR.Number, "repo": issue.PR.Repository, "checks": flakyChecks,
+	})
+	r.logger.Info("pr-monitor.ci-flake.detected", "task_id", t.ID, "pr", issue.PR.Number, "checks", flakyChecks)
+	return true
 }
 
 // ciFailurePrompt is the pr-fix agent prompt for a failing-CI issue.
@@ -565,7 +638,7 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	if !opts.replaceActiveWorkflow &&
 		len(handle) == 1 &&
 		primary.Kind == github.PRIssueCIFailure &&
-		r.rerunCIFailure(t, primary) {
+		(r.dispatchFlakyRerun(t, primary) || r.rerunCIFailure(t, primary)) {
 		return true
 	}
 
