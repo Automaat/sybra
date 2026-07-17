@@ -591,6 +591,15 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	if postureErr != nil {
 		return nil, "", postureErr
 	}
+	return o.runImplementationAgent(taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, model, t, assignment, opts)
+}
+
+// runImplementationAgent builds the RunConfig for an implementation dispatch,
+// launches it, and translates a launch failure through the same
+// capacity-race / provider-gate handling startAgent used inline before this
+// was split out to satisfy funlen.
+func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions) (*agent.Agent, string, error) {
+	ignoreConcurrencyLimit := effMode == "interactive"
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	o.logSandboxEscapeHatch(taskID, t)

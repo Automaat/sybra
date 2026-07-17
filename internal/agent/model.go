@@ -462,6 +462,10 @@ func (a *Agent) toRecord() Record {
 		PostResultWaitReason:    a.postResultWaitReason,
 		PostResultWaitSince:     a.postResultWaitSince,
 		ForkSubagent:            a.forkSubagent,
+		PromptHash:              a.promptHash,
+		RenderedSyntax:          a.renderedSyntax,
+		RenderedSkills:          slices.Clone(a.renderedSkills),
+		UnrenderedSkills:        slices.Clone(a.unrenderedSkills),
 	}
 }
 
@@ -501,6 +505,10 @@ func fromRecord(r Record) *Agent {
 		postResultWaitReason:    r.PostResultWaitReason,
 		postResultWaitSince:     r.PostResultWaitSince,
 		forkSubagent:            r.ForkSubagent,
+		promptHash:              r.PromptHash,
+		renderedSyntax:          r.RenderedSyntax,
+		renderedSkills:          slices.Clone(r.RenderedSkills),
+		unrenderedSkills:        slices.Clone(r.UnrenderedSkills),
 		detached:                true,
 	}
 }

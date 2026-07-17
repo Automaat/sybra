@@ -32,3 +32,9 @@ skill_recovery_attempt: true
 post_result_wait_reason: background_tasks
 post_result_wait_since: 2026-06-28T20:40:00Z
 fork_subagent: true
+prompt_hash: prompt-hash-map
+rendered_syntax: slash-to-dollar
+rendered_skills:
+    - sybra-test
+unrendered_skills:
+    - sybra-tasks

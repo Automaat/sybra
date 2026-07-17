@@ -324,12 +324,12 @@ type Engine struct {
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
-	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
-	dispatching      map[string]struct{}        // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
-	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
-	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
-	agentRoutes      map[string]agentRoute      // agentID → {taskID, stepID}
-	pendingStepStart map[string]int             // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
+	inflightMutexes  map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
+	dispatching      map[string]struct{}    // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
+	starting         map[string]struct{}    // taskID → StartWorkflowWithVars in progress
+	humanAction      map[string]struct{}    // taskID → HandleHumanAction in progress
+	agentRoutes      map[string]agentRoute  // agentID → {taskID, stepID}
+	pendingStepStart map[string]int         // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
 	// pendingCompletions holds an agent completion that arrived while its own
 	// step's start was still registering (see resolveCompletionRoute). Keyed
 	// like pendingStepStart; execRunAgent's deferred cleanup always pops and

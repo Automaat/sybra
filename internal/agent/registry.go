@@ -74,6 +74,14 @@ type Record struct {
 	PostResultWaitReason string    `yaml:"post_result_wait_reason,omitempty"`
 	PostResultWaitSince  time.Time `yaml:"post_result_wait_since,omitempty"`
 	ForkSubagent         bool      `yaml:"fork_subagent,omitempty"`
+	// PromptHash and the RenderedSyntax/RenderedSkills/UnrenderedSkills triple
+	// preserve the dispatch-time prompt hash and provider render summary across
+	// restart so a reattached completion still emits agent.prompt_rendered
+	// instead of dropping it on an empty hash.
+	PromptHash       string   `yaml:"prompt_hash,omitempty"`
+	RenderedSyntax   string   `yaml:"rendered_syntax,omitempty"`
+	RenderedSkills   []string `yaml:"rendered_skills,omitempty"`
+	UnrenderedSkills []string `yaml:"unrendered_skills,omitempty"`
 }
 
 // survivalRegistry implementations must be safe for concurrent use.

@@ -193,6 +193,10 @@ func recordMappingAgent(started time.Time) *Agent {
 		postResultWaitReason:    postResultWaitBackgroundTask,
 		postResultWaitSince:     started.Add(10 * time.Minute),
 		forkSubagent:            true,
+		promptHash:              "prompt-hash-map",
+		renderedSyntax:          "slash-to-dollar",
+		renderedSkills:          []string{"sybra-test"},
+		unrenderedSkills:        []string{"sybra-tasks"},
 	}
 }
 
@@ -229,6 +233,10 @@ func recordMappingRecord(started time.Time) Record {
 		PostResultWaitReason:    postResultWaitBackgroundTask,
 		PostResultWaitSince:     started.Add(10 * time.Minute),
 		ForkSubagent:            true,
+		PromptHash:              "prompt-hash-map",
+		RenderedSyntax:          "slash-to-dollar",
+		RenderedSkills:          []string{"sybra-test"},
+		UnrenderedSkills:        []string{"sybra-tasks"},
 	}
 }
 
