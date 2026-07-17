@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,17 +56,19 @@ func (e *Engine) execClearPlanArtifacts(taskID string, step *Step, t TaskInfo) (
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 			e.logger.Error("workflow.clear-plan-artifacts.status", "task_id", taskID, "err", statusErr)
 		}
-		return StepOutput{Status: "failed", Output: reason}, errStepParked
+		e.logger.Warn("workflow.clear-plan-artifacts.blocked", "task_id", taskID, "step", step.ID, "failed", strings.Join(failed, ", "))
+		// Escalate exactly as require_sidecar does: flip the status and let the
+		// step's human-required edge halt the workflow. errStepParked would be
+		// wrong — its contract is that the step already persisted its own
+		// ExecWaiting, and returning it without having done so strands the
+		// execution at a step nothing resumes, wedging the very task this
+		// escalation exists to protect.
+		return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
 	}
 
 	e.logger.Info("workflow.clear-plan-artifacts", "task_id", taskID, "step", step.ID,
 		"sidecars", len(kinds), "files_removed", removed)
 	return StepOutput{Status: "completed", Output: fmt.Sprintf("cleared %d sidecars, %d files", len(kinds), removed)}, nil
-}
-
-func dirExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
 }
 
 // clearWorktreeGlob unlinks the agent-written planning files.
@@ -83,9 +87,15 @@ func (e *Engine) clearWorktreeGlob(taskID string, step *Step, t TaskInfo, glob s
 	if dir == "" {
 		return 0, fmt.Errorf("worktree files matching %s (worktree dir unknown)", glob)
 	}
-	if !dirExists(dir) {
-		// A worktree that is genuinely gone holds no stale files to serve, so
-		// there is nothing to clear and nothing to fail closed over.
+	if _, statErr := os.Stat(dir); statErr != nil {
+		// Only a genuinely absent worktree is safe to pass: it holds no stale
+		// files to serve. Any other stat error (EACCES on a parent traverse,
+		// ESTALE, EIO) means the files may be sitting right there — reading
+		// that as "gone" reports success over a worktree still holding cycle
+		// 1's decisions, which walks straight back into #2191's fail-open.
+		if !errors.Is(statErr, fs.ErrNotExist) {
+			return 0, fmt.Errorf("worktree files matching %s (stat %s: %w)", glob, dir, statErr)
+		}
 		e.logger.Info("workflow.clear-plan-artifacts.no-worktree", "task_id", taskID, "step", step.ID, "dir", dir)
 		return 0, nil
 	}

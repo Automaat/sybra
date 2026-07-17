@@ -145,11 +145,11 @@ func TestClearPlanArtifacts_UnknownWorktreeEscalatesRatherThanReplanning(t *test
 	tasks.Put(info)
 
 	out, err := engine.execClearPlanArtifacts("t1", newClearStep(), info)
-	if err == nil {
-		t.Fatal("expected the step to park: it cannot know the previous cycle's files are gone")
+	if err != nil {
+		t.Fatalf("escalation must not error: the human-required edge halts the workflow, and a bare error strands the execution at a step nothing resumes: %v", err)
 	}
-	if out.Status != "failed" {
-		t.Errorf("status = %q, want failed", out.Status)
+	if strings.Contains(out.Output, "cleared") {
+		t.Errorf("output = %q, want a blocked reason", out.Output)
 	}
 	got, _ := tasks.GetTask("t1")
 	if got.Status != "human-required" {
@@ -160,8 +160,9 @@ func TestClearPlanArtifacts_UnknownWorktreeEscalatesRatherThanReplanning(t *test
 	}
 }
 
-// A worktree that is genuinely gone holds no stale files to serve, so there is
-// nothing to clear and nothing to fail closed over.
+// A worktree that is genuinely ABSENT holds no stale files to serve, so there
+// is nothing to clear and nothing to fail closed over. Only ENOENT qualifies —
+// see the sibling test below for why that distinction is the whole ballgame.
 func TestClearPlanArtifacts_MissingWorktreeDirIsNotAFailure(t *testing.T) {
 	engine, tasks, info := clearTestEnv(t, filepath.Join(t.TempDir(), "worktree-was-cleaned-up"))
 
@@ -174,6 +175,41 @@ func TestClearPlanArtifacts_MissingWorktreeDirIsNotAFailure(t *testing.T) {
 	}
 	if got.PlanDecisions != "" {
 		t.Error("sidecars must still be cleared when the worktree is gone — they are what the fail-open reads")
+	}
+}
+
+// An unreadable worktree is not an absent one. Treating every stat error as
+// "gone" reports success over a worktree still holding cycle 1's decisions, and
+// cycle 2 then walks straight back into the fail-open this step exists to close
+// — the original bug, reached through the fix's own hole.
+func TestClearPlanArtifacts_UnreadableWorktreeEscalates(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root traverses any permission bit")
+	}
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "worktree")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCycle1Artifacts(t, dir)
+	// Block the traverse so Stat fails with EACCES rather than ENOENT: the
+	// files are still there, we simply cannot see them.
+	if err := os.Chmod(parent, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+
+	engine, tasks, info := clearTestEnv(t, dir)
+	out, err := engine.execClearPlanArtifacts("t1", newClearStep(), info)
+	if err != nil {
+		t.Fatalf("execClearPlanArtifacts: %v", err)
+	}
+	if strings.Contains(out.Output, "cleared") {
+		t.Errorf("output = %q, want a blocked reason: it reported success over files it never even saw", out.Output)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Errorf("status = %q, want human-required: cycle 1's decisions survive in that worktree", got.Status)
 	}
 }
 
@@ -222,8 +258,18 @@ func TestBuiltinSimpleTask_ReplanClearsBeforeReplanning(t *testing.T) {
 	if clearStep.Type != StepClearPlanArtifacts {
 		t.Errorf("type = %q, want %q", clearStep.Type, StepClearPlanArtifacts)
 	}
-	if len(clearStep.Next) != 1 || clearStep.Next[0].GoTo != "plan" {
-		t.Fatalf("clear_plan_artifacts goes to %+v, want plan", clearStep.Next)
+	// Two edges: halt on the escalation it raises when it cannot clear, then
+	// plan. Without the first, a blocked clear replans onto stale artifacts —
+	// the exact thing it just refused to do.
+	if len(clearStep.Next) != 2 {
+		t.Fatalf("clear_plan_artifacts has %d edges, want 2 (human-required halt, then plan): %+v", len(clearStep.Next), clearStep.Next)
+	}
+	halt := clearStep.Next[0]
+	if halt.When == nil || halt.When.Value != "human-required" || halt.GoTo != "" {
+		t.Errorf("first edge = %+v, want a human-required halt", halt)
+	}
+	if clearStep.Next[1].GoTo != "plan" {
+		t.Errorf("second edge goes to %q, want plan", clearStep.Next[1].GoTo)
 	}
 }
 

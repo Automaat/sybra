@@ -566,4 +566,11 @@ steps:
         - '.sybra-plan-*'
         - '.sybra-critique-*'
     next:
+      # Anything it could not clear escalates rather than replanning onto the
+      # previous cycle's content — same halt the require_* guards use.
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: plan
