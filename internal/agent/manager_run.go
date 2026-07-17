@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/google/uuid"
 )
 
@@ -646,17 +647,25 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		SkillConformance:        cfg.SkillConformance,
 		skillRecoveryAttempt:    cfg.SkillRecoveryAttempt,
 		Prompt:                  cfg.Prompt,
-		State:                   StateRunning,
-		StartedAt:               now,
-		LastEventAt:             now,
-		cancel:                  cancel,
-		sessionCWD:              cfg.Dir,
-		sandboxHomeDir:          cfg.resolvedSandboxHome,
-		MaxTurns:                cfg.MaxTurns,
-		oneShot:                 cfg.OneShot,
-		requirePermissions:      cfg.RequirePermissions,
-		sandboxMode:             cfg.SandboxMode,
-		headlessPermissionMode:  cfg.HeadlessPermissionMode,
+		// Stamp the canonical dispatch prompt hash centrally for every run
+		// (all providers, all roles, both modes). cfg.Prompt is the fully
+		// prepared prompt (post NOTES.md/guardrail/skill preparation) — the
+		// same value recordImplAgentStart hashes. Stamping here (not only in
+		// the implementation-only dispatch path) is what lets completion emit
+		// agent.prompt_rendered for review/fix-review/pr-fix/human-review/
+		// workflow runs, which also record provider render summaries.
+		promptHash:             skillattr.HashSourceID(cfg.Prompt),
+		State:                  StateRunning,
+		StartedAt:              now,
+		LastEventAt:            now,
+		cancel:                 cancel,
+		sessionCWD:             cfg.Dir,
+		sandboxHomeDir:         cfg.resolvedSandboxHome,
+		MaxTurns:               cfg.MaxTurns,
+		oneShot:                cfg.OneShot,
+		requirePermissions:     cfg.RequirePermissions,
+		sandboxMode:            cfg.SandboxMode,
+		headlessPermissionMode: cfg.HeadlessPermissionMode,
 	}
 	if cfg.ResumeSessionID != "" {
 		a.SetSessionID(cfg.ResumeSessionID)

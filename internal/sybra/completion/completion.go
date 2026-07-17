@@ -324,10 +324,12 @@ func (h *Handler) emitPermissionDenialAudits(ag *agent.Agent) {
 }
 
 // emitPromptRenderedAudit emits agent.prompt_rendered, correlating this run's
-// provider-specific skill render summary with its agent.started event via
-// prompt_hash. No-ops when no hash was stamped (recordImplAgentStart only
-// stamps implementation dispatches). Never carries prompt text — only the
-// render summary.
+// provider-specific skill render summary with its dispatch record via
+// prompt_hash. The hash is stamped centrally for every run in newRunningAgent,
+// so this fires for all roles/providers/modes (review, fix-review, pr-fix,
+// human-review, workflow) — not just implementation dispatches. No-ops only for
+// agents constructed outside that path with no hash stamped. Never carries
+// prompt text — only the render summary.
 func (h *Handler) emitPromptRenderedAudit(ag *agent.Agent) {
 	hash := ag.GetPromptHash()
 	if hash == "" {
