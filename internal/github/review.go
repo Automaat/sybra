@@ -45,6 +45,8 @@ const reviewSummaryQuery = `query($q: String!) {
                       name
                       status
                       conclusion
+                      startedAt
+                      completedAt
                     }
                     ... on StatusContext {
                       name: context
@@ -102,6 +104,8 @@ const monitorPRFields = `
                     name
                     status
                     conclusion
+                    startedAt
+                    completedAt
                   }
                   ... on StatusContext {
                     name: context
