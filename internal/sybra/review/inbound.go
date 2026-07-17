@@ -45,6 +45,11 @@ func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID st
 }
 
 func (r *Handler) triageReview(t task.Task) {
+	start := r.startReviewAgentFn
+	if start == nil {
+		start = r.StartReviewAgent
+	}
+
 	statsFn := r.fetchPRStatsFn
 	if statsFn == nil {
 		statsFn = github.FetchPRStats
@@ -56,7 +61,7 @@ func (r *Handler) triageReview(t task.Task) {
 		if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 			r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 		}
-		if err := r.StartReviewAgent(t, false); err != nil {
+		if err := start(t, false); err != nil {
 			r.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
 		}
 		return
@@ -66,10 +71,6 @@ func (r *Handler) triageReview(t task.Task) {
 
 	if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 		r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
-	}
-	start := r.startReviewAgentFn
-	if start == nil {
-		start = r.StartReviewAgent
 	}
 	if err := start(t, false); err != nil {
 		r.logger.Error("review.triage.start", "task_id", t.ID, "err", err)

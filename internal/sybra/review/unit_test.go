@@ -1545,6 +1545,66 @@ func TestTriageReviewStartsAgentAfterStatsRegardlessOfSize(t *testing.T) {
 	}
 }
 
+func TestTriageReviewStartsAgentWhenStatsFetchFails(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	tags := []string{"review"}
+	tk, err := tasks.CreateFull("Review: unknown size", "body", string(task.AgentModeHeadless), task.Update{
+		Tags:      &tags,
+		ProjectID: task.Ptr("owner/repo"),
+		PRNumber:  task.Ptr(42),
+	})
+	if err != nil {
+		t.Fatalf("CreateFull: %v", err)
+	}
+
+	started := false
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
+		fetchPRStatsFn: func(repo string, number int) (github.PRStats, error) {
+			if repo != "owner/repo" || number != 42 {
+				t.Fatalf("FetchPRStats repo/number = %s/%d, want owner/repo/42", repo, number)
+			}
+			return github.PRStats{}, errors.New("stats unavailable")
+		},
+		startReviewAgentFn: func(got task.Task, force bool) error {
+			started = true
+			if force {
+				t.Fatal("StartReviewAgent force = true, want false")
+			}
+			if got.ID != tk.ID {
+				t.Fatalf("StartReviewAgent task = %q, want %q", got.ID, tk.ID)
+			}
+			latest, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("Get after triage: %v", err)
+			}
+			if latest.Status != task.StatusInReview {
+				t.Fatalf("status before StartReviewAgent = %q, want %q", latest.Status, task.StatusInReview)
+			}
+			return nil
+		},
+	}
+
+	r.triageReview(tk)
+
+	if !started {
+		t.Fatal("StartReviewAgent was not called")
+	}
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
+	}
+}
+
 // TestPrepareWorktree_CircuitBreaker verifies the stateful failure counter:
 // each call that fails worktree creation increments a per-task counter, and
 // once that counter reaches wtFailureLimit the task is escalated to
