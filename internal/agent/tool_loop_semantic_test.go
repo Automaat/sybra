@@ -67,6 +67,53 @@ func TestTruncateCommandFamily(t *testing.T) {
 	}
 }
 
+// TestNormalizeBashActionLabel_UnwrapsCodexShellDashC covers the false-positive
+// semantic-loop kills seen live on codex agents (#2217-adjacent): codex's exec
+// tool always shells out as `<shell> -c/-lc "<cmd>"`, and without unwrapping,
+// every such call's outer wrapper — not the real inner command — was what got
+// classified, collapsing distinct reads/greps/tests into one identical
+// "bash:/bin/bash" family regardless of what they actually did.
+func TestNormalizeBashActionLabel_UnwrapsCodexShellDashC(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{
+			name:    "bash -lc read of file A",
+			command: `/bin/bash -lc "sed -n '940,1085p' internal/sybra/app_human_review.go"`,
+			want:    "read:internal/sybra/app_human_review.go",
+		},
+		{
+			name:    "bash -lc read of file B — must differ from file A",
+			command: `/bin/bash -lc "sed -n '1,220p' internal/sybra/completion/completion.go"`,
+			want:    "read:internal/sybra/completion/completion.go",
+		},
+		{
+			name:    "bash -lc long-running check",
+			command: `/bin/bash -lc "go test ./internal/sybra -run TestFoo"`,
+			want:    "check:go test ./internal/sybra -run",
+		},
+		{
+			name:    "sh -c generic command",
+			command: `sh -c "git status --short"`,
+			want:    "bash:git",
+		},
+		{
+			name:    "no shell wrapper stays unaffected",
+			command: `sed -n '1,10p' foo.go`,
+			want:    "read:foo.go",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeBashActionLabel(tc.command); got != tc.want {
+				t.Fatalf("normalizeBashActionLabel(%q) = %q, want %q", tc.command, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeBashActionLabel_HeadTailWithoutFileStayGeneric(t *testing.T) {
 	for _, cmd := range []string{"tail -n 20", "head -n 20", "tail --lines 20", "head --bytes 20"} {
 		want := "bash:" + strings.Fields(cmd)[0]
