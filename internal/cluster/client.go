@@ -12,13 +12,23 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/task"
 )
 
-const maxResponseBody = 32 << 20
+// maxResponseBody bounds a single API response. Sized with real headroom
+// over a large follower's full ListTasks payload (#2188: one follower's task
+// store alone reached ~51MB, silently breaking reconcile under the previous
+// 32MB cap with no operator-visible error — see the truncation check in do).
+// atomic.Int64, not a const, so tests can shrink it rather than transmit
+// 256MB — a plain var would race under go test -race the moment any test in
+// this package runs in parallel with one that overrides it.
+var maxResponseBody atomic.Int64
+
+func init() { maxResponseBody.Store(256 << 20) }
 
 const defaultCallTimeout = 30 * time.Second
 
@@ -37,10 +47,9 @@ type Node struct {
 
 // Client is a follower's outbound RPC client with ordered-endpoint failover.
 type Client struct {
-	node    Node
-	http    *http.Client
-	sseHTTP *http.Client
-	logger  *slog.Logger
+	node   Node
+	http   *http.Client
+	logger *slog.Logger
 
 	mu     sync.Mutex
 	active int
@@ -86,10 +95,9 @@ func NewClient(node Node, logger *slog.Logger) (*Client, error) {
 		transport = tr
 	}
 	return &Client{
-		node:    node,
-		http:    &http.Client{Timeout: defaultCallTimeout, Transport: transport},
-		sseHTTP: &http.Client{Transport: transport},
-		logger:  logger,
+		node:   node,
+		http:   &http.Client{Timeout: defaultCallTimeout, Transport: transport},
+		logger: logger,
 	}, nil
 }
 
@@ -237,9 +245,13 @@ func (c *Client) do(ctx context.Context, base, service, method string, body []by
 		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+	limit := maxResponseBody.Load()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, nil, err
+	}
+	if int64(len(respBody)) > limit {
+		return nil, nil, fmt.Errorf("cluster: response from %s exceeds %d byte cap (truncated)", url, limit)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
 		return nil, parseAPIError(resp.StatusCode, respBody), nil

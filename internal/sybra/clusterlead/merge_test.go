@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -117,27 +116,6 @@ func TestMergeFirstApplyWhenNeverMirrored(t *testing.T) {
 	}
 	if out.MirrorRev != 1 || out.Status != task.StatusInProgress {
 		t.Errorf("first apply = %+v, want rev 1 + in-progress", out)
-	}
-}
-
-func TestTaskIDFromEvent(t *testing.T) {
-	cases := []struct {
-		name      string
-		eventName string
-		eventData string
-		want      string
-	}{
-		{"task path", "task:updated", "/data/sybra/tasks/abc123.md", "abc123"},
-		{"quoted path", "task:created", `"/x/y/def456.md"`, "def456"},
-		{"non-task event", "agent:state", "/x/abc.md", ""},
-		{"empty", "task:updated", "", ""},
-		{"traversal basename resolves to basename", "task:updated", "/x/../y.md", "y"},
-	}
-	for _, c := range cases {
-		got := taskIDFromEvent(cluster.Event{Name: c.eventName, Data: c.eventData})
-		if got != c.want {
-			t.Errorf("%s: taskIDFromEvent = %q, want %q", c.name, got, c.want)
-		}
 	}
 }
 
