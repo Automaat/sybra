@@ -519,8 +519,12 @@ func clampToReportingDeadline(scaled time.Duration) time.Duration {
 		return scaled // no -timeout set: nothing to outlive
 	}
 	remaining := budget - time.Since(e2eSuiteStart) - e2eReportReserve
-	if remaining < time.Second {
-		remaining = time.Second
+	if remaining <= 0 {
+		// The reserve itself is now the only budget left, so fail at once while
+		// there is still time to print. Flooring to something larger would hand
+		// back a deadline that outlives the binary — the panic this exists to
+		// prevent, in the window where it is most likely.
+		return time.Millisecond
 	}
 	return min(scaled, remaining)
 }

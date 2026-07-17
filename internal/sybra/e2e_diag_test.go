@@ -114,6 +114,25 @@ func TestClampToReportingDeadline(t *testing.T) {
 			t.Errorf("clamped = %s, want > 0", got)
 		}
 	})
+
+	// A near-spent budget is where the clamp matters most and is easiest to get
+	// wrong: flooring to any comfortable minimum hands back a deadline that
+	// outlives the binary, and the process panics with no evidence — exactly
+	// what this converts. Not parallel: it moves the package-level suite clock.
+	t.Run("a near-spent budget yields a deadline inside it", func(t *testing.T) {
+		orig := e2eSuiteStart
+		t.Cleanup(func() { e2eSuiteStart = orig })
+		// Pretend the suite has burned all but a sliver of its -timeout.
+		e2eSuiteStart = time.Now().Add(-budget + 100*time.Millisecond)
+
+		got := clampToReportingDeadline(30 * time.Second)
+		if got <= 0 {
+			t.Fatalf("clamped = %s, want a positive deadline", got)
+		}
+		if got > 100*time.Millisecond {
+			t.Errorf("clamped = %s, want <= the ~100ms actually left: a longer wait outlives the binary and panics instead of reporting", got)
+		}
+	})
 }
 
 func TestDropParkedTestGoroutines_NothingToDrop(t *testing.T) {
