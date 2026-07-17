@@ -480,6 +480,13 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: flag_plan_critique_verdict
+
+  # Non-blocking by design — see StepFlagPlanCritique's doc comment for why.
+  - id: flag_plan_critique_verdict
+    name: Flag Plan Critique Verdict
+    type: flag_plan_critique
+    next:
       - goto: review_plan
 
   - id: review_plan

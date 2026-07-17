@@ -587,6 +587,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execValidatePlanContract(taskID, step, t)
 	case StepTriageReview:
 		return e.execTriageReview(taskID, step, t)
+	case StepFlagPlanCritique:
+		return e.execFlagPlanCritique(taskID, step, t)
 	case StepDetectTampering:
 		return e.execDetectTampering(taskID, step, t)
 	case StepVerifyChecks:
