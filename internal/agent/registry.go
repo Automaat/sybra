@@ -64,6 +64,10 @@ type Record struct {
 	// SkillConformance preserves whether the resolved source exactly matched,
 	// fell back, or was unavailable.
 	SkillConformance string `yaml:"skill_conformance,omitempty"`
+	// SkillRecoveryAttempt preserves whether this live run is the workflow
+	// engine's automatic second-chance retry after a missing conformance
+	// receipt.
+	SkillRecoveryAttempt bool `yaml:"skill_recovery_attempt,omitempty"`
 	// PostResultWait* preserve the runner's post-terminal-result teardown
 	// decision so reattach can continue the same fast-close/grace path instead
 	// of starting a fresh wait window from restart time.

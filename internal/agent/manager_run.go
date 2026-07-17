@@ -644,6 +644,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		SkillExecutionMode:      cfg.SkillExecutionMode,
 		ResolvedSkillSourceHash: cfg.ResolvedSkillSourceHash,
 		SkillConformance:        cfg.SkillConformance,
+		skillRecoveryAttempt:    cfg.SkillRecoveryAttempt,
 		Prompt:                  cfg.Prompt,
 		State:                   StateRunning,
 		StartedAt:               now,

@@ -57,7 +57,7 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string
 	if err != nil {
 		home = ""
 	}
-	resolution := resolveWorkflowSkill(home, providerName, name)
+	resolution := resolveWorkflowSkill(home, providerName, name, cfg.ForceInjectedSkill)
 	cfg.RequestedSkill = resolution.name
 	cfg.SkillExecutionMode = resolution.mode
 	cfg.ResolvedSkillSourceHash = resolution.sourceHash
@@ -88,12 +88,12 @@ func appendSkillReceiptInstruction(prompt string, resolution workflowSkillResolu
 	return prompt + "\n\n" + skillattr.ReceiptInstruction(resolution.name, resolution.sourceHash)
 }
 
-func resolveWorkflowSkill(home, providerName, skillName string) workflowSkillResolution {
+func resolveWorkflowSkill(home, providerName, skillName string, forceInjected bool) workflowSkillResolution {
 	resolution := workflowSkillResolution{
 		name:          skillName,
 		nativeVisible: providerSkillVisible(providerName, home, skillName),
 	}
-	if resolution.nativeVisible {
+	if resolution.nativeVisible && !forceInjected {
 		resolution.mode = skillattr.ExecutionModeNative
 		resolution.conformance = skillattr.ConformanceExact
 		return resolution

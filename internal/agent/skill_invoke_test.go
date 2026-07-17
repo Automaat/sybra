@@ -285,6 +285,39 @@ func TestResolveWorkflowSkillPrompt_InjectedFromCrossProviderPath(t *testing.T) 
 	}
 }
 
+func TestResolveWorkflowSkillPrompt_ForceInjectedSkipsNative(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), "sybra-test")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:               "Run /sybra-test now.",
+		RequestedSkill:       "sybra-test",
+		ForceInjectedSkill:   true,
+		SkillRecoveryAttempt: true,
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if cfg.SkillExecutionMode != skillattr.ExecutionModeInjected {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillattr.ExecutionModeInjected)
+	}
+	if cfg.SkillConformance != skillattr.ConformanceExact {
+		t.Fatalf("SkillConformance = %q, want %q", cfg.SkillConformance, skillattr.ConformanceExact)
+	}
+	if cfg.ResolvedSkillSourceHash == "" {
+		t.Fatal("ResolvedSkillSourceHash empty for forced injected retry")
+	}
+	if !strings.Contains(cfg.Prompt, "BEGIN INJECTED SKILL: sybra-test") {
+		t.Fatalf("Prompt missing injected skill block:\n%s", cfg.Prompt)
+	}
+	if strings.Contains(cfg.Prompt, "\nRun /sybra-test now.") {
+		t.Fatalf("Prompt still contains raw slash invocation:\n%s", cfg.Prompt)
+	}
+}
+
 func TestResolveWorkflowSkillPrompt_UsesBundledFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

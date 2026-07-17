@@ -380,6 +380,9 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	if ag.RequestedSkill != "" {
 		transcript := finalAssistantText(ag) + "\n" + resultContent
 		ag.SkillConformance = skillattr.VerifyReceipt(ag.SkillConformance, transcript, ag.RequestedSkill, ag.ResolvedSkillSourceHash)
+		if ag.IsSkillRecoveryAttempt() && (ag.SkillConformance == skillattr.ConformanceExact || ag.SkillConformance == skillattr.ConformanceFallback) {
+			ag.SkillConformance = skillattr.ConformanceRecovered
+		}
 	}
 	truncated := resultContent
 	if len(truncated) > maxResultLen {

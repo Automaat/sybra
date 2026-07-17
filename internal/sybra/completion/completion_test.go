@@ -246,6 +246,26 @@ func TestBuildRunPatchDowngradesConformanceWhenReceiptMissing(t *testing.T) {
 	}
 }
 
+func TestBuildRunPatchMarksVerifiedRecoveryAsRecovered(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleImplementation.AgentName("Impl"),
+		RequestedSkill:          "sybra-test",
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceExact,
+	}
+	ag.SetSkillRecoveryAttempt(true)
+
+	result := "done\n" + skillattr.ReceiptMarker("sybra-test", "deadbeefcafebabe")
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, result, nil)
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceRecovered {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceRecovered)
+	}
+}
+
 func TestIsSignalKill(t *testing.T) {
 	t.Parallel()
 
