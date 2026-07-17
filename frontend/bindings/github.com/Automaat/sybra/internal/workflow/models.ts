@@ -819,6 +819,17 @@ export enum StepType {
     StepTriageReview = "triage_review",
 
     /**
+     * StepFlagPlanCritique reads the plan-critic verdict (# Plan Review:
+     * APPROVE|REFINE|REJECT, the /plan-critic skill's required first line)
+     * and, on REFINE/REJECT, appends a prominent note to the task body so the
+     * verdict is impossible to miss at the review_plan human-approval gate.
+     * Never blocks progression itself — a human still approves/rejects every
+     * time regardless of verdict; this only ensures they can't miss that the
+     * critic asked for changes without opening the full critique sidecar.
+     */
+    StepFlagPlanCritique = "flag_plan_critique",
+
+    /**
      * StepDetectTampering inspects the worktree diff for reward-hacking /
      * test-tampering signals (deleted assertions, added skip/xfail markers,
      * deleted test files, neutered CI). A high-severity finding flips the task
