@@ -52,6 +52,10 @@ in_pod() { kc exec deploy/sybra-server -- "$@"; }
 dump_diagnostics() {
   printf '\n===== DIAGNOSTICS =====\n' >&2
   kc get pods,jobs -o wide 2>&1 | head -30 >&2 || true
+  # A Pending pod says nothing about why; the events do (PVC binding, taints,
+  # insufficient memory). Cheap, and the first thing wanted on a CI failure.
+  printf '\n--- recent events ---\n' >&2
+  kc get events --sort-by=.lastTimestamp 2>&1 | tail -15 >&2 || true
   # Sybra's slog handler writes to a rotating file, not stdout, so `kubectl logs`
   # on the server shows almost nothing — the real sink is on the PVC.
   in_pod tail -100 /home/sybra/.sybra/logs/sybra.log 2>&1 | tail -60 >&2 || true
@@ -75,7 +79,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for bin in docker k3d kubectl jq; do
+# python3 filters the default ConfigMap out of the kustomize output below.
+for bin in docker k3d kubectl jq python3; do
   command -v "$bin" >/dev/null 2>&1 || fail "$bin is required but not on PATH"
 done
 
@@ -98,27 +103,44 @@ k3d kubeconfig get "$CLUSTER" > "$KUBECONFIG"
 log "Importing $IMAGE"
 k3d image import "$IMAGE" -c "$CLUSTER"
 
-log "Applying manifests ($PROVIDER)"
-kubectl --context "k3d-$CLUSTER" apply -k "$REPO_ROOT/deploy/k8s-poc"
-
+# Resolve the config BEFORE anything is applied. The old order applied the
+# kustomization (starting a pod on the default config), swapped the ConfigMap,
+# then rollout-restarted — needed because the config is a subPath mount, which
+# never updates in place. That restart raced itself: strategy Recreate plus a
+# ReadWriteOnce PVC means the new pod cannot schedule until the old one releases
+# the volume, and the old one was still coming up, so the rollout hung Pending
+# until it timed out. Giving the pod the right config at birth removes the
+# restart, and with it the race.
 case "$PROVIDER" in
   fake) CONFIG=config-fake-repo.yaml ;;
   opencode)
     CONFIG=config-provider-example.yaml
     [ -n "${OPENROUTER_API_KEY:-}" ] || fail "SMOKE_PROVIDER=opencode needs OPENROUTER_API_KEY"
-    kc create secret generic sybra-provider-api-keys \
-      --from-literal=openrouter_api_key="$OPENROUTER_API_KEY" \
-      --from-literal=github_token="${GITHUB_TOKEN:-}" \
-      --dry-run=client -o yaml | kubectl --context "k3d-$CLUSTER" apply -f -
     ;;
   *) fail "unknown SMOKE_PROVIDER '$PROVIDER' (want: fake, opencode)" ;;
 esac
 
-# These configs declare the same ConfigMap name, so this swaps sybra-config
-# wholesale. The mount is a subPath, which never receives ConfigMap updates, so
-# the restart below is mandatory rather than cosmetic.
+log "Applying manifests ($PROVIDER, config=$CONFIG)"
+kubectl --context "k3d-$CLUSTER" apply -f "$REPO_ROOT/deploy/k8s-poc/namespace.yaml"
+
+if [ "$PROVIDER" = "opencode" ]; then
+  kc create secret generic sybra-provider-api-keys \
+    --from-literal=openrouter_api_key="$OPENROUTER_API_KEY" \
+    --from-literal=github_token="${GITHUB_TOKEN:-}" \
+    --dry-run=client -o yaml | kubectl --context "k3d-$CLUSTER" apply -f -
+fi
+
+# The chosen ConfigMap goes in first, then everything else except the default
+# one it would otherwise be clobbered by (both declare the same name).
 kubectl --context "k3d-$CLUSTER" apply -f "$REPO_ROOT/deploy/k8s-poc/$CONFIG"
-kc rollout restart deployment/sybra-server
+kubectl kustomize "$REPO_ROOT/deploy/k8s-poc" \
+  | python3 -c '
+import sys
+docs = sys.stdin.read().split("\n---\n")
+kept = [d for d in docs if not ("kind: ConfigMap" in d and "name: sybra-config" in d)]
+sys.stdout.write("\n---\n".join(kept))
+' | kubectl --context "k3d-$CLUSTER" apply -f -
+
 kc rollout status deployment/sybra-server --timeout=180s
 
 log "Seeding fake repo project"
