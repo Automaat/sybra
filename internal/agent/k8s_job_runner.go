@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 const (
@@ -43,6 +44,7 @@ type K8sJobRunnerConfig struct {
 	Command   []string
 	TTL       int
 	Mode      string
+	CreatePR  bool
 	Env       []K8sJobEnvVar
 	SecretEnv []K8sJobSecretEnvVar
 	Volumes   []K8sJobVolume
@@ -73,6 +75,7 @@ type k8sJobRunner struct {
 	command   []string
 	ttl       int
 	mode      string
+	createPR  bool
 	env       []K8sJobEnvVar
 	secretEnv []K8sJobSecretEnvVar
 	volumes   []K8sJobVolume
@@ -108,6 +111,7 @@ func newK8sJobRunner(logger *slog.Logger, cfg K8sJobRunnerConfig) *k8sJobRunner 
 		command:   append([]string(nil), cfg.Command...),
 		ttl:       ttl,
 		mode:      normalizeK8sRunnerMode(cfg.Mode),
+		createPR:  cfg.CreatePR,
 		env:       append([]K8sJobEnvVar(nil), cfg.Env...),
 		secretEnv: append([]K8sJobSecretEnvVar(nil), cfg.SecretEnv...),
 		volumes:   append([]K8sJobVolume(nil), cfg.Volumes...),
@@ -322,6 +326,9 @@ func (r *k8sJobRunner) jobCommandAndEnv(ctx context.Context, a *Agent, cfg RunCo
 			return nil, nil, err
 		}
 		env = appendK8sWorkspaceEnv(env, workspace)
+		if r.createPR {
+			env = appendK8sPRRepoEnv(env, workspace.Remote, r.logger)
+		}
 		for _, pair := range inv.env {
 			name, value, ok := strings.Cut(pair, "=")
 			if ok && name != "" {
@@ -376,6 +383,19 @@ func appendK8sWorkspaceEnv(env []map[string]any, workspace k8sGitWorkspace) []ma
 		env = append(env, map[string]any{"name": "SYBRA_K8S_GIT_BRANCH", "value": workspace.Branch})
 	}
 	return env
+}
+
+// appendK8sPRRepoEnv tells the Job which repo to open its PR against. Silently
+// skips a non-GitHub remote: the fake-repo smoke points origin at a bare clone
+// on the PVC, which has no PR to open, and that is a valid setup rather than a
+// misconfiguration worth failing the run over.
+func appendK8sPRRepoEnv(env []map[string]any, remote string, logger *slog.Logger) []map[string]any {
+	owner, repo, err := project.ParseGitHubURL(remote)
+	if err != nil {
+		logger.Info("agent.k8s.pr.skip", "reason", "remote is not a github url", "err", err)
+		return env
+	}
+	return append(env, map[string]any{"name": "SYBRA_K8S_PR_REPO", "value": owner + "/" + repo})
 }
 
 func buildK8sProviderInvocation(a *Agent, cfg RunConfig, workdir string) (headlessInvocation, error) {

@@ -166,6 +166,7 @@ in-cluster service account.
 | `agent.k8s_jobs.command` | `[]string` |  |  |
 | `agent.k8s_jobs.ttl_seconds_after_finished` | `int` |  |  |
 | `agent.k8s_jobs.mode` | `string` |  |  |
+| `agent.k8s_jobs.create_pr` | `bool` |  | CreatePR lets the agent Job open its own pull request once it has pushed its branch, instead of the server shelling gh in the task worktree. Only fires when the task's remote is a GitHub URL — a PVC-backed bare clone has no PR to open. Default false: the server-side create_pr workflow step still owns the normal path, and this would otherwise open a PR after every agent run rather than at the pr stage. |
 | `agent.k8s_jobs.env` | `[]K8sJobEnvVar` | _(see below)_ |  |
 | `agent.k8s_jobs.secret_env` | `[]K8sJobSecretEnvVar` | _(see below)_ |  |
 | `agent.k8s_jobs.volumes` | `[]K8sJobVolume` | _(see below)_ |  |
