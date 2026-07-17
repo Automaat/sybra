@@ -69,6 +69,116 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	}
 }
 
+// TestStorePutBumpsUpdatedAtWhenStatusChangesWithoutAdvancing covers #2203: a
+// Put that changes Status but carries forward a stale/unchanged UpdatedAt
+// (e.g. a push built from a snapshot captured before the change) silently
+// defeats any consumer gating on strictly-newer to detect the update — the
+// cluster mirror's own staleness guard among them. Put must correct the
+// timestamp rather than trust the caller in this one specific case.
+func TestStorePutBumpsUpdatedAtWhenStatusChangesWithoutAdvancing(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stale := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
+	if _, err := store.Put(Task{
+		ID: "task-x", Title: "t", Status: StatusBlocked,
+		CreatedAt: stale, UpdatedAt: stale,
+	}); err != nil {
+		t.Fatalf("first Put: %v", err)
+	}
+
+	// Same UpdatedAt as before, but Status changed — the exact bug: a caller
+	// that forgot to advance the timestamp on a real status change.
+	if _, err := store.Put(Task{
+		ID: "task-x", Title: "t", Status: StatusTodo,
+		CreatedAt: stale, UpdatedAt: stale,
+	}); err != nil {
+		t.Fatalf("second Put: %v", err)
+	}
+
+	got, err := store.Get("task-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusTodo {
+		t.Fatalf("status = %q, want todo", got.Status)
+	}
+	if !got.UpdatedAt.After(stale) {
+		t.Fatalf("UpdatedAt = %v, want it bumped past the stale caller-supplied value %v", got.UpdatedAt, stale)
+	}
+}
+
+// TestStorePutKeepsVerbatimUpdatedAtWhenStatusUnchanged pins that the #2203
+// guard is scoped to an actual status change — a same-status Put (the common
+// idempotent-repush case) must still write UpdatedAt exactly as supplied.
+func TestStorePutKeepsVerbatimUpdatedAtWhenStatusUnchanged(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stale := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
+	if _, err := store.Put(Task{
+		ID: "task-y", Title: "t", Status: StatusTodo,
+		CreatedAt: stale, UpdatedAt: stale,
+	}); err != nil {
+		t.Fatalf("first Put: %v", err)
+	}
+	if _, err := store.Put(Task{
+		ID: "task-y", Title: "t retitled", Status: StatusTodo,
+		CreatedAt: stale, UpdatedAt: stale,
+	}); err != nil {
+		t.Fatalf("second Put: %v", err)
+	}
+
+	got, err := store.Get("task-y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.UpdatedAt.Equal(stale) {
+		t.Fatalf("UpdatedAt = %v, want unchanged verbatim %v — status did not change, no bump should apply", got.UpdatedAt, stale)
+	}
+}
+
+// TestStorePutTrustsGenuinelyAdvancingUpdatedAt pins the normal, correct
+// case unaffected: a status change whose caller-supplied UpdatedAt already
+// advances past what's on disk (the cluster mirror applying a real, newer
+// follower update) is written verbatim, no defensive bump needed or applied.
+func TestStorePutTrustsGenuinelyAdvancingUpdatedAt(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	older := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
+	newer := time.Date(2026, 7, 16, 7, 3, 50, 0, time.UTC)
+	if _, err := store.Put(Task{
+		ID: "task-z", Title: "t", Status: StatusInProgress,
+		CreatedAt: older, UpdatedAt: older,
+	}); err != nil {
+		t.Fatalf("first Put: %v", err)
+	}
+	if _, err := store.Put(Task{
+		ID: "task-z", Title: "t", Status: StatusDone,
+		CreatedAt: older, UpdatedAt: newer,
+	}); err != nil {
+		t.Fatalf("second Put: %v", err)
+	}
+
+	got, err := store.Get("task-z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.UpdatedAt.Equal(newer) {
+		t.Fatalf("UpdatedAt = %v, want the caller-supplied, already-advancing %v preserved verbatim", got.UpdatedAt, newer)
+	}
+}
+
 func TestStorePutRejectsUnsafeID(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

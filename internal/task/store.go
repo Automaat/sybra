@@ -596,6 +596,12 @@ func (s *Store) Put(t Task) (Task, error) {
 	if t.UpdatedAt.IsZero() {
 		t.UpdatedAt = now
 	}
+	// A status change with a non-advancing UpdatedAt defeats every consumer
+	// gating on strictly-newer to detect it (#2203) — correct that one field
+	// rather than trust every Put caller to have gotten it right.
+	if existing, err := s.read(t.ID); err == nil && existing.Status != t.Status && !t.UpdatedAt.After(existing.UpdatedAt) {
+		t.UpdatedAt = now
+	}
 	if t.StatusChangedAt.IsZero() {
 		t.StatusChangedAt = t.UpdatedAt
 	}
