@@ -22,6 +22,8 @@ func (codexProvider) Name() string { return "codex" }
 // which tools the model may call, so allowed_tools cannot be mapped onto it.
 func (codexProvider) HonorsAllowedTools() bool { return false }
 
+func (codexProvider) SupportsOutputSchema() bool { return true }
+
 func (codexProvider) NormalizeModel(model string) string {
 	// Codex models come from `codex debug models` and never carry a [1m]
 	// suffix — a stray suffix stays untouched and is rejected by safeArgRe.

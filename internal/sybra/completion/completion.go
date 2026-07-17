@@ -378,9 +378,12 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	// workflow.HandleAgentComplete) can retry instead of trusting a fake or
 	// incomplete artifact.
 	//
-	// OutputSchema is excluded: resolveWorkflowSkillPrompt never requests a
-	// receipt for it, so the schema enforcement itself is the signal instead.
-	if ag.RequestedSkill != "" && ag.OutputSchema == "" {
+	// Skip only when the resolved provider actually enforces OutputSchema —
+	// resolveWorkflowSkillPrompt requested no receipt in that case. Gating on
+	// OutputSchema alone would wrongly skip verification for a provider like
+	// copilot that silently drops the schema but still got the receipt ask.
+	schemaEnforced := ag.OutputSchema != "" && agent.ProviderSupportsOutputSchema(ag.Provider)
+	if ag.RequestedSkill != "" && !schemaEnforced {
 		transcript := skillReceiptTranscript(ag, resultContent)
 		ag.SkillConformance = skillattr.VerifyReceipt(ag.SkillConformance, transcript, ag.RequestedSkill, ag.ResolvedSkillSourceHash)
 		if ag.IsSkillRecoveryAttempt() && (ag.SkillConformance == skillattr.ConformanceExact || ag.SkillConformance == skillattr.ConformanceFallback) {

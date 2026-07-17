@@ -389,6 +389,7 @@ func PrependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 type startOptions struct {
 	admissionGate bool
 	manualDrain   bool
+	outputSchema  string
 }
 
 // StartAgent is the manual/direct dispatch entry point (App.StartAgent,
@@ -504,8 +505,8 @@ func translatePoolBusy(err error) error {
 // when the agent pool is saturated it offers the task to the queue and
 // returns workflow.ErrAgentPoolBusy instead of dispatching, so run_agent
 // parks ExecWaiting and ResumeStalled retries once a slot frees.
-func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
-	return o.startAgent(o.baseCtx(), taskID, mode, prompt, includeTaskDescription, oneShot, cleanRetryRef, assignment, startOptions{admissionGate: true})
+func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef, outputSchema string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
+	return o.startAgent(o.baseCtx(), taskID, mode, prompt, includeTaskDescription, oneShot, cleanRetryRef, assignment, startOptions{admissionGate: true, outputSchema: outputSchema})
 }
 
 func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment, opts startOptions) (*agent.Agent, string, error) {
@@ -588,38 +589,12 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	o.logSandboxEscapeHatch(taskID, t)
-	ag, err := o.agents.Run(agent.RunConfig{
-		TaskID:                  taskID,
-		Name:                    t.Title,
-		Mode:                    effMode,
-		Prompt:                  fullPrompt,
-		AllowedTools:            t.AllowedTools,
-		Dir:                     dir,
-		Provider:                assignment.Provider,
-		Model:                   model,
-		ExperimentID:            assignment.ExperimentID,
-		VariantID:               assignment.VariantID,
-		AssignmentUnit:          assignment.AssignmentUnit,
-		AssignmentKey:           assignment.AssignmentKey,
-		DisableProviderFailover: assignment.ExperimentID != "",
-		RequestedSkill:          requestedWorkflowSkill(prompt),
-		RequirePermissions:      requirePerm,
-		HeadlessPermissionMode:  posture,
-		OneShot:                 oneShot,
-		IgnoreConcurrencyLimit:  ignoreConcurrencyLimit,
-		ResumeSessionID:         resumeSessionID,
-		ExtraEnv:                extraEnv,
-		MaxTurns:                t.MaxTurns,
-		// Always an implementation run (a code-author role, Role.AuthorsCode),
-		// so the task-level opt-in applies unconditionally here — see
-		// agentAdapter.StartAgent for the role-gated equivalent used by
-		// every other role (verifier roles must never fork).
-		ForkSubagent:    t.ForkSubagent,
-		SandboxMode:     ResolveSandboxMode(t, o.cfg),
-		ReasoningEffort: FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort, ResolveRoleEffort(agent.RoleImplementation, o.cfg)),
-		// Always an implementation run — prime it with the NOTES.md scratchpad.
-		SeedWorkingMemory: true,
-	})
+	ag, err := o.agents.Run(o.implementationRunConfig(implementationRunParams{
+		taskID: taskID, t: t, effMode: effMode, prompt: prompt, fullPrompt: fullPrompt, dir: dir,
+		assignment: assignment, model: model, requirePerm: requirePerm, posture: posture,
+		oneShot: oneShot, ignoreConcurrencyLimit: ignoreConcurrencyLimit,
+		resumeSessionID: resumeSessionID, extraEnv: extraEnv, opts: opts,
+	}))
 	if err != nil {
 		o.handleProviderGateStartError(taskID, err)
 		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts); handled {
@@ -629,6 +604,64 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	}
 	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, oneShot, fullPrompt)
 	return ag, baselineRef, nil
+}
+
+// implementationRunParams collects startAgent's locals for
+// implementationRunConfig, which builds the agent.RunConfig for the
+// implementation-role dispatch. Kept as one struct rather than a long
+// positional parameter list — mirrors the shape of the RunConfig it feeds.
+type implementationRunParams struct {
+	taskID                 string
+	t                      task.Task
+	effMode                string
+	prompt                 string
+	fullPrompt             string
+	dir                    string
+	assignment             workflow.AgentAssignment
+	model                  string
+	requirePerm            bool
+	posture                string
+	oneShot                bool
+	ignoreConcurrencyLimit bool
+	resumeSessionID        string
+	extraEnv               []string
+	opts                   startOptions
+}
+
+func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.RunConfig {
+	return agent.RunConfig{
+		TaskID:                  p.taskID,
+		Name:                    p.t.Title,
+		Mode:                    p.effMode,
+		Prompt:                  p.fullPrompt,
+		AllowedTools:            p.t.AllowedTools,
+		Dir:                     p.dir,
+		Provider:                p.assignment.Provider,
+		Model:                   p.model,
+		ExperimentID:            p.assignment.ExperimentID,
+		VariantID:               p.assignment.VariantID,
+		AssignmentUnit:          p.assignment.AssignmentUnit,
+		AssignmentKey:           p.assignment.AssignmentKey,
+		DisableProviderFailover: p.assignment.ExperimentID != "",
+		RequestedSkill:          requestedWorkflowSkill(p.prompt),
+		RequirePermissions:      p.requirePerm,
+		HeadlessPermissionMode:  p.posture,
+		OneShot:                 p.oneShot,
+		IgnoreConcurrencyLimit:  p.ignoreConcurrencyLimit,
+		ResumeSessionID:         p.resumeSessionID,
+		ExtraEnv:                p.extraEnv,
+		MaxTurns:                p.t.MaxTurns,
+		// Always an implementation run (a code-author role, Role.AuthorsCode),
+		// so the task-level opt-in applies unconditionally here — see
+		// agentAdapter.StartAgent for the role-gated equivalent used by
+		// every other role (verifier roles must never fork).
+		ForkSubagent:    p.t.ForkSubagent,
+		SandboxMode:     ResolveSandboxMode(p.t, o.cfg),
+		ReasoningEffort: FirstNonEmpty(p.assignment.ReasoningEffort, p.t.ReasoningEffort, ResolveRoleEffort(agent.RoleImplementation, o.cfg)),
+		// Always an implementation run — prime it with the NOTES.md scratchpad.
+		SeedWorkingMemory: true,
+		OutputSchema:      p.opts.outputSchema,
+	}
 }
 
 func requestedWorkflowSkill(prompt string) string {

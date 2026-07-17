@@ -67,7 +67,11 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string
 	// comment line, so the receipt instruction below can never be satisfied.
 	// The schema itself, enforced via structured output, is already a
 	// stronger conformance signal than a string match — skip the receipt.
-	schemaEnforced := cfg.OutputSchema != ""
+	// Gated on the resolved provider actually applying the schema (see
+	// Provider.SupportsOutputSchema): a provider that silently drops it (e.g.
+	// copilot) falls back to the step's own plain-text contract, which has
+	// room for a receipt line same as any other unschemed run.
+	schemaEnforced := cfg.OutputSchema != "" && ProviderSupportsOutputSchema(providerName)
 	switch resolution.mode {
 	case skillattr.ExecutionModeNative:
 		// Native invocation alone doesn't prove the model actually followed
@@ -86,6 +90,17 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string
 		cfg.Prompt = unavailableWorkflowSkillPrompt(cfg.Prompt, providerName, resolution.name)
 	}
 	return nil
+}
+
+// ProviderSupportsOutputSchema reports whether providerName's resolved
+// Provider actually applies RunConfig.OutputSchema. An unresolvable name
+// falls back to false — the same fail-closed default baseProvider uses.
+func ProviderSupportsOutputSchema(providerName string) bool {
+	prov, err := lookupProvider(providerName)
+	if err != nil {
+		return false
+	}
+	return prov.SupportsOutputSchema()
 }
 
 // appendSkillReceiptInstruction appends the deterministic conformance-receipt

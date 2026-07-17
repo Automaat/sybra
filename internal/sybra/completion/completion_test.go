@@ -283,6 +283,32 @@ func TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema(t *testing.T) {
 	}
 }
 
+// TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema guards the
+// adversarial-review follow-up to #2235: copilot never applies
+// RunConfig.OutputSchema, so a run routed to it under cross-provider
+// failover still got the receipt instruction (resolveWorkflowSkillPrompt)
+// and must still be verified here. Gating on OutputSchema's mere presence
+// instead of the real provider would wrongly skip the downgrade and record a
+// copilot run that ignored the skill as falsely conformant.
+func TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleTestRunner.AgentName("Test"),
+		Provider:                "copilot",
+		RequestedSkill:          "sybra-test",
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceFallback,
+		OutputSchema:            `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+	}
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "TEST_VERDICT: PASS", nil)
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceUnverified {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceUnverified)
+	}
+}
+
 func TestBuildRunPatchMarksVerifiedRecoveryAsRecovered(t *testing.T) {
 	t.Parallel()
 

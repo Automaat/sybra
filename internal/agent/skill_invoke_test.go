@@ -414,6 +414,37 @@ func TestResolveWorkflowSkillPrompt_OutputSchemaSkipsReceipt(t *testing.T) {
 	}
 }
 
+// TestResolveWorkflowSkillPrompt_OutputSchemaIgnoredByProviderStillReceipts
+// guards the adversarial-review follow-up to #2235: copilot never applies
+// RunConfig.OutputSchema (see copilotProvider.BuildHeadlessInvocation), so a
+// step routed to it under a cross-provider failover falls back to its
+// plain-text contract — which has room for a receipt line same as any other
+// unschemed run. Gating solely on OutputSchema's presence (ignoring which
+// provider actually resolved) would skip the receipt request here and leave
+// a copilot run that ignores the skill entirely indistinguishable from one
+// that followed it.
+func TestResolveWorkflowSkillPrompt_OutputSchemaIgnoredByProviderStillReceipts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:         "Adversarially test with /sybra-test.",
+		RequestedSkill: "sybra-test",
+		OutputSchema:   `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "copilot"); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if cfg.SkillExecutionMode != skillattr.ExecutionModeFallback {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillattr.ExecutionModeFallback)
+	}
+	if !strings.Contains(cfg.Prompt, skillattr.ReceiptMarker("sybra-test", cfg.ResolvedSkillSourceHash)) {
+		t.Fatalf("Prompt missing skill-conformance receipt instruction for a provider that ignores OutputSchema:\n%s", cfg.Prompt)
+	}
+}
+
 func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

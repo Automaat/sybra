@@ -641,7 +641,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// agent.ErrMaxConcurrentReached into workflow.ErrAgentPoolBusy at the
 		// source, so every caller (this adapter, recovery.Recovery) sees the
 		// same benign sentinel without needing its own wrap here.
-		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, assignment)
+		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, outputSchema, assignment)
 		if err != nil {
 			return "", "", "", err
 		}
