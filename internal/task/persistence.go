@@ -59,34 +59,38 @@ type taskFrontmatter struct {
 }
 
 type agentRunRecord struct {
-	AgentID                string    `yaml:"agent_id"`
-	Role                   string    `yaml:"role,omitempty"`
-	Mode                   string    `yaml:"mode"`
-	Provider               string    `yaml:"provider,omitempty"`
-	Model                  string    `yaml:"model,omitempty"`
-	ExperimentID           string    `yaml:"experiment_id,omitempty"`
-	VariantID              string    `yaml:"variant_id,omitempty"`
-	AssignmentUnit         string    `yaml:"assignment_unit,omitempty"`
-	AssignmentKey          string    `yaml:"assignment_key,omitempty"`
-	ReasoningEffort        string    `yaml:"reasoning_effort,omitempty"`
-	SkillExecutionMode     string    `yaml:"skill_execution_mode,omitempty"`
-	State                  string    `yaml:"state"`
-	Outcome                string    `yaml:"outcome,omitempty"`
-	EscalationReason       string    `yaml:"escalation_reason,omitempty"`
-	StartedAt              time.Time `yaml:"started_at"`
-	CostUSD                float64   `yaml:"cost_usd,omitempty"`
-	PremiumRequests        float64   `yaml:"premium_requests,omitempty"`
-	Prompt                 string    `yaml:"prompt,omitempty"`
-	Result                 string    `yaml:"result,omitempty"`
-	OneShot                bool      `yaml:"one_shot,omitempty"`
-	Verdict                string    `yaml:"verdict,omitempty"`
-	VerdictRendered        bool      `yaml:"verdict_rendered,omitempty"`
-	LogFile                string    `yaml:"log_file,omitempty"`
-	SessionID              string    `yaml:"session_id,omitempty"`
-	ProtocolViolation      string    `yaml:"protocol_violation,omitempty"`
-	TestOutcome            string    `yaml:"test_outcome,omitempty"`
-	TestFailureFingerprint string    `yaml:"test_failure_fingerprint,omitempty"`
-	HeadSHA                string    `yaml:"head_sha,omitempty"`
+	AgentID                 string    `yaml:"agent_id"`
+	Role                    string    `yaml:"role,omitempty"`
+	Mode                    string    `yaml:"mode"`
+	Provider                string    `yaml:"provider,omitempty"`
+	Model                   string    `yaml:"model,omitempty"`
+	ExperimentID            string    `yaml:"experiment_id,omitempty"`
+	VariantID               string    `yaml:"variant_id,omitempty"`
+	AssignmentUnit          string    `yaml:"assignment_unit,omitempty"`
+	AssignmentKey           string    `yaml:"assignment_key,omitempty"`
+	ReasoningEffort         string    `yaml:"reasoning_effort,omitempty"`
+	RequestedSkill          string    `yaml:"requested_skill,omitempty"`
+	SkillExecutionMode      string    `yaml:"skill_execution_mode,omitempty"`
+	ResolvedSkillSourceHash string    `yaml:"resolved_skill_source_hash,omitempty"`
+	SkillConformance        string    `yaml:"skill_conformance,omitempty"`
+	State                   string    `yaml:"state"`
+	Outcome                 string    `yaml:"outcome,omitempty"`
+	EscalationReason        string    `yaml:"escalation_reason,omitempty"`
+	StartedAt               time.Time `yaml:"started_at"`
+	CostUSD                 float64   `yaml:"cost_usd,omitempty"`
+	PremiumRequests         float64   `yaml:"premium_requests,omitempty"`
+	Prompt                  string    `yaml:"prompt,omitempty"`
+	Result                  string    `yaml:"result,omitempty"`
+	OneShot                 bool      `yaml:"one_shot,omitempty"`
+	Verdict                 string    `yaml:"verdict,omitempty"`
+	VerdictRendered         bool      `yaml:"verdict_rendered,omitempty"`
+	LogFile                 string    `yaml:"log_file,omitempty"`
+	SessionID               string    `yaml:"session_id,omitempty"`
+	ProtocolViolation       string    `yaml:"protocol_violation,omitempty"`
+	TestOutcome             string    `yaml:"test_outcome,omitempty"`
+	TestFailureFingerprint  string    `yaml:"test_failure_fingerprint,omitempty"`
+	HeadSHA                 string    `yaml:"head_sha,omitempty"`
+	SubagentCallCount       int       `yaml:"subagent_call_count,omitempty"`
 }
 
 // taskFromFrontmatter rebuilds the persisted task fields. Store loading
