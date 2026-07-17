@@ -305,18 +305,22 @@ fi
 WT=$(in_pod sh -ceu "ls -d /home/sybra/.sybra/worktrees/*$TASK_ID 2>/dev/null | head -1" | tr -d '\r')
 [ -n "$WT" ] || fail "no worktree found for task $TASK_ID under ~/.sybra/worktrees"
 
-# 3/4/5. The marker file reaches the server-side worktree only if the in-pod
-# wrapper committed it, pushed the branch to the PVC-backed origin, and the
-# server fast-forwarded from it.
-in_pod sh -ceu "test -f '$WT/k8s-agent-output.txt'" \
-  || fail "k8s-agent-output.txt missing from the server worktree — push-back or fast-forward failed"
-in_pod grep -q 'changed by k8s fake agent' "$WT/k8s-agent-output.txt" \
-  || fail "k8s-agent-output.txt has unexpected content"
-printf '  ok  marker file fast-forwarded into %s\n' "$WT"
+if [ "$GITHUB_MODE" = "0" ]; then
+  # 3/4/5. On the PVC path the server owns the worktree, so the marker file
+  # reaching it proves the wrapper committed, pushed to the bare origin, and the
+  # server fast-forwarded. GitHub mode asserts against GitHub instead: there the
+  # Job owns the repo work and the server-side fast-forward is the very coupling
+  # being removed, so the branch on the remote is the honest evidence.
+  in_pod sh -ceu "test -f '$WT/k8s-agent-output.txt'" \
+    || fail "k8s-agent-output.txt missing from the server worktree — push-back or fast-forward failed"
+  in_pod grep -q 'changed by k8s fake agent' "$WT/k8s-agent-output.txt" \
+    || fail "k8s-agent-output.txt has unexpected content"
+  printf '  ok  marker file fast-forwarded into %s\n' "$WT"
 
-in_pod git -C "$WT" log --oneline -3 | grep -q 'persist k8s agent changes' \
-  || fail "no 'chore: persist k8s agent changes' commit in the worktree — the wrapper did not commit"
-printf '  ok  agent commit present\n'
+  in_pod git -C "$WT" log --oneline -3 | grep -q 'persist k8s agent changes' \
+    || fail "no 'chore: persist k8s agent changes' commit in the worktree — the wrapper did not commit"
+  printf '  ok  agent commit present\n'
+fi
 
 if [ "$GITHUB_MODE" = "1" ]; then
   BRANCH=$(in_pod git -C "$WT" rev-parse --abbrev-ref HEAD | tr -d '\r')
@@ -327,6 +331,12 @@ if [ "$GITHUB_MODE" = "1" ]; then
   gh api "repos/$TESTBED/branches/$BRANCH" >/dev/null 2>&1 \
     || fail "branch $BRANCH is not on $TESTBED — the Job did not push to GitHub"
   printf '  ok  branch %s pushed to %s\n' "$BRANCH" "$TESTBED"
+
+  # The agent's actual work is on that branch, not just an empty ref.
+  gh api "repos/$TESTBED/contents/k8s-agent-output.txt?ref=$BRANCH" --jq '.content' 2>/dev/null \
+    | base64 -d 2>/dev/null | grep -q 'changed by k8s fake agent' \
+    || fail "k8s-agent-output.txt is not on $BRANCH at $TESTBED — the Job pushed an empty branch"
+  printf '  ok  agent work is on the pushed branch\n' 
 
   # 7. The Job opened the PR itself and recorded it, so the server never needed
   #    a GitHub credential.
