@@ -78,6 +78,9 @@ type AgentRunInfo struct {
 	AgentID                string
 	Role                   string
 	Provider               string
+	RequestedSkill         string
+	SkillExecutionMode     string
+	SkillConformance       string
 	StartedAt              time.Time
 	ProtocolViolation      string
 	TestOutcome            string

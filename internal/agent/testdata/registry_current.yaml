@@ -28,6 +28,7 @@ requested_skill: sybra-test
 skill_execution_mode: injected
 resolved_skill_source_hash: deadbeefcafebabe
 skill_conformance: exact
+skill_recovery_attempt: true
 post_result_wait_reason: background_tasks
 post_result_wait_since: 2026-06-28T20:40:00Z
 fork_subagent: true

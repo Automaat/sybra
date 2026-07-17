@@ -106,6 +106,14 @@ type AgentAssignment struct {
 	ReasoningEffort string
 	PromptTransform *PromptTransform
 	SkillAliases    map[string]string
+	// ForceInjectedSkill forces provider prep to inject the resolved skill
+	// instructions instead of relying on native visibility. Used by the
+	// automatic retry after a missing mandatory-skill receipt.
+	ForceInjectedSkill bool
+	// SkillRecoveryAttempt marks the automatic second-chance retry after a
+	// missing mandatory-skill receipt so completion can record a recovered run
+	// distinctly from a first-pass conformant one.
+	SkillRecoveryAttempt bool
 }
 
 // PromptTransform mirrors the A/B assignment payload used to rewrite a prompt
