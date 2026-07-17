@@ -15,8 +15,53 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 )
+
+// Skill-conformance cohort buckets. See skillConformanceBucket.
+const (
+	SkillCohortSkill         = "skill"         // the full mandatory workflow skill ran and was receipt-verified
+	SkillCohortDirect        = "direct"        // known direct provider work: bundled fallback, unavailable, or no skill requested
+	SkillCohortIndeterminate = "indeterminate" // conformance can't be trusted either way
+)
+
+// skillConformanceBucket collapses skillattr's fine-grained conformance
+// states into the three populations a comparison cohort must never blend
+// (see issue #2007, "split skill and fallback execution cohorts"):
+//
+//   - SkillCohortSkill: native or injected delivery, including a recovered
+//     retry — the full multi-agent skill workflow actually ran.
+//   - SkillCohortDirect: bundled-fallback instructions, no skill source
+//     found at all, or the role never requested a skill in the first place —
+//     known, legitimate "direct provider work", kept visible as its own
+//     cohort rather than dropped.
+//   - SkillCohortIndeterminate: a delivered skill whose completion receipt
+//     never verified, or pre-instrumentation legacy data with no recorded
+//     conformance at all. This can't be trusted as either population, so it
+//     is excluded from skill-parity comparisons — see comparisonRows.
+func skillConformanceBucket(conformance string) string {
+	switch skillattr.NormalizeConformance(conformance) {
+	case skillattr.ConformanceExact, skillattr.ConformanceRecovered:
+		return SkillCohortSkill
+	case skillattr.ConformanceFallback, skillattr.ConformanceUnavailable, skillattr.ConformanceNone:
+		return SkillCohortDirect
+	default: // ConformanceUnverified, ConformanceUnknown
+		return SkillCohortIndeterminate
+	}
+}
+
+// agentModelCohortKey groups by provider/model/reasoning-effort/role plus the
+// run's skill-conformance bucket, so a direct fallback and a conformant full
+// skill-workflow run for the same role/provider never land in the same
+// ByAgentModel(Contribution) row — "a direct review cannot appear in the same
+// cohort as a conformant staff review" (issue #2007).
+func agentModelCohortKey(r stats.RunRecord) string {
+	if r.Provider == "" || r.Model == "" {
+		return ""
+	}
+	return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role) + ":" + skillConformanceBucket(r.SkillConformance)
+}
 
 // Scorecard holds the aggregate metrics over one time window.
 //
@@ -100,52 +145,65 @@ const (
 )
 
 type ComparisonBreakdown struct {
-	Key                       string                `json:"key"`
-	AttributionMode           string                `json:"attributionMode"`
-	Provider                  string                `json:"provider,omitempty"`
-	Model                     string                `json:"model,omitempty"`
-	Role                      string                `json:"role,omitempty"`
-	ReasoningEffort           string                `json:"reasoningEffort,omitempty"`
-	ExperimentID              string                `json:"experimentId,omitempty"`
-	VariantID                 string                `json:"variantId,omitempty"`
-	Kind                      string                `json:"kind,omitempty"`
-	Subject                   *abtest.Subject       `json:"subject,omitempty"`
-	Runs                      int                   `json:"runs"`
-	Failures                  int                   `json:"failures"`
-	Stalled                   int                   `json:"stalled"`
-	ResolvedRuns              int                   `json:"resolvedRuns"`
-	FailureRate               float64               `json:"failureRate"`
-	FailureEstimate           RateEstimate          `json:"failureEstimate"`
-	Landed                    int                   `json:"landed"`
-	LandedEstimate            RateEstimate          `json:"landedEstimate"`
-	Merged                    int                   `json:"merged"`
-	MergedWithEdits           int                   `json:"mergedWithEdits"`
-	Closed                    int                   `json:"closed"`
-	MergeRate                 float64               `json:"mergeRate"`
-	MergedWithEditsRate       float64               `json:"mergedWithEditsRate"`
-	CIFirstPassRate           float64               `json:"ciFirstPassRate"`
-	ReworkRate                float64               `json:"reworkRate"`
-	RevertRate                float64               `json:"revertRate"`
-	MergeEstimate             RateEstimate          `json:"mergeEstimate"`
-	CIFirstPassEstimate       RateEstimate          `json:"ciFirstPassEstimate"`
-	MergedWithEditsEstimate   RateEstimate          `json:"mergedWithEditsEstimate"`
-	ReworkEstimate            RateEstimate          `json:"reworkEstimate"`
-	RevertEstimate            RateEstimate          `json:"revertEstimate"`
-	DurationP50S              float64               `json:"durationP50S"`
-	DurationP90S              float64               `json:"durationP90S"`
-	TotalCostUSD              float64               `json:"totalCostUsd"`
-	CostPerLanded             float64               `json:"costPerLanded"`
-	PremiumRequests           float64               `json:"premiumRequests"`
-	PremiumRequestsPerLanded  float64               `json:"premiumRequestsPerLanded"`
-	TurnsPerLanded            float64               `json:"turnsPerLanded"`
-	ToolsPerLanded            float64               `json:"toolsPerLanded"`
-	InsufficientData          bool                  `json:"insufficientData"`
-	QualityAttributionLimited bool                  `json:"qualityAttributionLimited"`
-	Baseline                  bool                  `json:"baseline"`
-	BaselineVariantID         string                `json:"baselineVariantId,omitempty"`
-	SampleStatus              string                `json:"sampleStatus,omitempty"`
-	MinSamplesPerVariant      int                   `json:"minSamplesPerVariant,omitempty"`
-	RoleBreakdowns            []ComparisonBreakdown `json:"roleBreakdowns,omitempty"`
+	Key                       string          `json:"key"`
+	AttributionMode           string          `json:"attributionMode"`
+	Provider                  string          `json:"provider,omitempty"`
+	Model                     string          `json:"model,omitempty"`
+	Role                      string          `json:"role,omitempty"`
+	ReasoningEffort           string          `json:"reasoningEffort,omitempty"`
+	ExperimentID              string          `json:"experimentId,omitempty"`
+	VariantID                 string          `json:"variantId,omitempty"`
+	Kind                      string          `json:"kind,omitempty"`
+	Subject                   *abtest.Subject `json:"subject,omitempty"`
+	Runs                      int             `json:"runs"`
+	Failures                  int             `json:"failures"`
+	Stalled                   int             `json:"stalled"`
+	ResolvedRuns              int             `json:"resolvedRuns"`
+	FailureRate               float64         `json:"failureRate"`
+	FailureEstimate           RateEstimate    `json:"failureEstimate"`
+	Landed                    int             `json:"landed"`
+	LandedEstimate            RateEstimate    `json:"landedEstimate"`
+	Merged                    int             `json:"merged"`
+	MergedWithEdits           int             `json:"mergedWithEdits"`
+	Closed                    int             `json:"closed"`
+	MergeRate                 float64         `json:"mergeRate"`
+	MergedWithEditsRate       float64         `json:"mergedWithEditsRate"`
+	CIFirstPassRate           float64         `json:"ciFirstPassRate"`
+	ReworkRate                float64         `json:"reworkRate"`
+	RevertRate                float64         `json:"revertRate"`
+	MergeEstimate             RateEstimate    `json:"mergeEstimate"`
+	CIFirstPassEstimate       RateEstimate    `json:"ciFirstPassEstimate"`
+	MergedWithEditsEstimate   RateEstimate    `json:"mergedWithEditsEstimate"`
+	ReworkEstimate            RateEstimate    `json:"reworkEstimate"`
+	RevertEstimate            RateEstimate    `json:"revertEstimate"`
+	DurationP50S              float64         `json:"durationP50S"`
+	DurationP90S              float64         `json:"durationP90S"`
+	TotalCostUSD              float64         `json:"totalCostUsd"`
+	CostPerLanded             float64         `json:"costPerLanded"`
+	PremiumRequests           float64         `json:"premiumRequests"`
+	PremiumRequestsPerLanded  float64         `json:"premiumRequestsPerLanded"`
+	TurnsPerLanded            float64         `json:"turnsPerLanded"`
+	ToolsPerLanded            float64         `json:"toolsPerLanded"`
+	InsufficientData          bool            `json:"insufficientData"`
+	QualityAttributionLimited bool            `json:"qualityAttributionLimited"`
+	// SkillConformance is this row's skill-conformance bucket
+	// (SkillCohortSkill/SkillCohortDirect/SkillCohortIndeterminate) when every
+	// run credited to the row shares one, "" when the row blends more than
+	// one — see SkillParityUnknown, the same condition reified as a bool for
+	// API consumers that would rather not special-case an empty string.
+	SkillConformance string `json:"skillConformance,omitempty"`
+	// SkillParityUnknown reports whether this row's population is not purely
+	// SkillCohortSkill or SkillCohortDirect — either it blends runs with
+	// different skill delivery, or every run in it has indeterminate
+	// conformance. Either way the row can't support a skill-parity
+	// comparison regardless of sample size, so it always forces
+	// InsufficientData.
+	SkillParityUnknown   bool                  `json:"skillParityUnknown,omitempty"`
+	Baseline             bool                  `json:"baseline"`
+	BaselineVariantID    string                `json:"baselineVariantId,omitempty"`
+	SampleStatus         string                `json:"sampleStatus,omitempty"`
+	MinSamplesPerVariant int                   `json:"minSamplesPerVariant,omitempty"`
+	RoleBreakdowns       []ComparisonBreakdown `json:"roleBreakdowns,omitempty"`
 }
 
 // RateEstimate is a binomial rate with fixed 95% Wilson uncertainty and an
@@ -275,7 +333,35 @@ func reportNotes(records []stats.RunRecord, since, until time.Time) []string {
 	if n := unaccountedFailureNote(records, since, until); n != "" {
 		notes = append(notes, n)
 	}
+	if n := skillParityNote(records, since, until); n != "" {
+		notes = append(notes, n)
+	}
 	return notes
+}
+
+// skillParityNote counts in-window runs whose skill conformance is
+// indeterminate (see skillConformanceBucket) — diagnostic only, mirroring
+// unaccountedFailureNote: it never adjusts a metric, it just states the
+// ambiguity so a report where every comparison row reads InsufficientData
+// has a visible cause instead of looking like the feature silently broke.
+func skillParityNote(records []stats.RunRecord, since, until time.Time) string {
+	indeterminate, total := 0, 0
+	for i := range records {
+		r := records[i]
+		if r.Timestamp.Before(since) || r.Timestamp.After(until) {
+			continue
+		}
+		total++
+		if skillConformanceBucket(r.SkillConformance) == SkillCohortIndeterminate {
+			indeterminate++
+		}
+	}
+	if indeterminate == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%d of %d in-window runs have indeterminate skill conformance (an unverified receipt, or pre-instrumentation legacy data with no recorded conformance) — any comparison cohort containing them is marked insufficient rather than compared",
+		indeterminate, total)
 }
 
 // deferredNotes documents metrics that need signals not yet captured, so the
@@ -576,11 +662,12 @@ type CompareResult struct {
 // semantics. minSamples controls the InsufficientData flag only; rows are still
 // emitted so users can see early data.
 type comparisonAcc struct {
-	row             ComparisonBreakdown
-	durations       []float64
-	turns, tools    int
-	ciClean, rework int
-	reverted        int
+	row              ComparisonBreakdown
+	skillConformance valueConsensus
+	durations        []float64
+	turns, tools     int
+	ciClean, rework  int
+	reverted         int
 }
 
 func CompareBy(records []stats.RunRecord, events []audit.Event, since, until time.Time, opts CompareOptions, key func(stats.RunRecord) string) CompareResult {
@@ -639,6 +726,7 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 		a.durations = append(a.durations, r.DurationS)
 		a.turns += r.TurnCount
 		a.tools += r.ToolCalls
+		a.skillConformance.add(skillConformanceBucket(r.SkillConformance))
 	}
 
 	applyComparisonLandings(ensure, records, events, since, until, key, mode)
@@ -999,9 +1087,14 @@ func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []Comparis
 		}
 		row.DurationP50S = percentile(a.durations, 50)
 		row.DurationP90S = percentile(a.durations, 90)
+		row.SkillConformance = a.skillConformance.value()
+		row.SkillParityUnknown = row.SkillConformance != SkillCohortSkill && row.SkillConformance != SkillCohortDirect
 		// Gate on resolved runs, or a variant with 29 stalls and 1 failure —
 		// one data point — is declared trustworthy at a 100% failure rate.
-		row.InsufficientData = minSamples > 0 && row.ResolvedRuns < minSamples
+		// A row whose skill-parity is unknown (mixed delivery, or every run
+		// indeterminate) is insufficient regardless of sample size: no
+		// amount of unparitied data makes a comparison honest.
+		row.InsufficientData = (minSamples > 0 && row.ResolvedRuns < minSamples) || row.SkillParityUnknown
 		row.QualityAttributionLimited = row.Landed == 0 && row.Runs > 0
 		out = append(out, row)
 	}
@@ -1079,7 +1172,11 @@ func applyVariantSemantics(rows []ComparisonBreakdown, opts CompareOptions) []Ex
 			}
 			row.MinSamplesPerVariant = opts.MinSamples
 			row.BaselineVariantID = cfg.baselineVariantID
-			if opts.MinSamples > 0 && row.ResolvedRuns < opts.MinSamples {
+			// InsufficientData already covers both the sample-size floor and
+			// skill-parity unknowns (see comparisonRows), so SampleStatus
+			// mirrors it directly rather than re-deriving the sample-size
+			// half and silently ignoring the parity half.
+			if row.InsufficientData {
 				row.SampleStatus = "low-sample"
 			} else {
 				row.SampleStatus = "actionable"
@@ -1215,16 +1312,18 @@ func experimentSampleStatus(key string, cfg experimentRoleConfig, rows map[strin
 	}
 	for _, id := range variantIDs {
 		row := rows[id]
-		// Readiness gates on resolved runs to match the row-level SampleStatus
-		// above rather than contradict it, while Runs stays the dispatch count
-		// so "never ran" stays distinguishable from "every dispatch stalled".
+		// Readiness gates on resolved runs (and, via InsufficientData, on
+		// skill parity too) to match the row-level SampleStatus above rather
+		// than contradict it, while Runs stays the dispatch count so "never
+		// ran" stays distinguishable from "every dispatch stalled".
 		runs, resolved := 0, 0
-		observed := false
+		observed, insufficient := false, false
 		if row != nil {
 			runs, resolved = row.Runs, row.ResolvedRuns
 			observed = true
+			insufficient = row.InsufficientData
 		}
-		ready := minSamples <= 0 || resolved >= minSamples
+		ready := (minSamples <= 0 || resolved >= minSamples) && !insufficient
 		if ready {
 			status.ReadyVariants++
 		}
