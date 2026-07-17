@@ -348,6 +348,115 @@ func TestResolveWorkflowSkillPrompt_UsesBundledFallback(t *testing.T) {
 	}
 }
 
+// TestResolveWorkflowSkillPrompt_OutputSchemaSkipsReceipt is the regression
+// guard for issue #2235: a step enforcing OutputSchema constrains the final
+// response to a structured payload with no room for a trailing receipt
+// comment, so the instruction must never be requested — every delivery mode
+// still resolves and injects/falls back exactly as it would without a
+// schema, just without the unsatisfiable receipt ask.
+func TestResolveWorkflowSkillPrompt_OutputSchemaSkipsReceipt(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, home string)
+		wantMode   string
+		wantMarker string
+	}{
+		{
+			name: "native",
+			setup: func(t *testing.T, home string) {
+				t.Helper()
+				mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), "sybra-test")
+			},
+			wantMode: skillattr.ExecutionModeNative,
+		},
+		{
+			name: "injected",
+			setup: func(t *testing.T, home string) {
+				t.Helper()
+				mkNamedSkillRoot(t, filepath.Join(home, ".claude", "skills", "sybra-test"), "sybra-test", "\n")
+			},
+			wantMode:   skillattr.ExecutionModeInjected,
+			wantMarker: "BEGIN INJECTED SKILL: sybra-test",
+		},
+		{
+			name:       "fallback",
+			setup:      func(t *testing.T, home string) { t.Helper() },
+			wantMode:   skillattr.ExecutionModeFallback,
+			wantMarker: "bundled skill fallback",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			resetCodexSkillsCache(t)
+			withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+			tc.setup(t, home)
+
+			cfg := RunConfig{
+				Prompt:         "Adversarially test with /sybra-test.",
+				RequestedSkill: "sybra-test",
+				OutputSchema:   `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+			}
+			if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+				t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+			}
+			if cfg.SkillExecutionMode != tc.wantMode {
+				t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, tc.wantMode)
+			}
+			if tc.wantMarker != "" && !strings.Contains(cfg.Prompt, tc.wantMarker) {
+				t.Fatalf("Prompt missing delivery marker %q:\n%s", tc.wantMarker, cfg.Prompt)
+			}
+			if strings.Contains(cfg.Prompt, skillattr.ReceiptTag) {
+				t.Fatalf("Prompt must not request a conformance receipt under OutputSchema:\n%s", cfg.Prompt)
+			}
+		})
+	}
+}
+
+// TestResolveWorkflowSkillPrompt_OutputSchemaIgnoredByProviderStillReceipts
+// guards the adversarial-review follow-up to #2235: copilot never applies
+// RunConfig.OutputSchema (see copilotProvider.BuildHeadlessInvocation), so a
+// step routed to it under a cross-provider failover falls back to its
+// plain-text contract — which has room for a receipt line same as any other
+// unschemed run. Gating solely on OutputSchema's presence (ignoring which
+// provider actually resolved) would skip the receipt request here and leave
+// a copilot run that ignores the skill entirely indistinguishable from one
+// that followed it.
+func TestResolveWorkflowSkillPrompt_OutputSchemaIgnoredByProviderStillReceipts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:         "Adversarially test with /sybra-test.",
+		RequestedSkill: "sybra-test",
+		OutputSchema:   `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "copilot"); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if cfg.SkillExecutionMode != skillattr.ExecutionModeFallback {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillattr.ExecutionModeFallback)
+	}
+	if !strings.Contains(cfg.Prompt, skillattr.ReceiptMarker("sybra-test", cfg.ResolvedSkillSourceHash)) {
+		t.Fatalf("Prompt missing skill-conformance receipt instruction for a provider that ignores OutputSchema:\n%s", cfg.Prompt)
+	}
+}
+
+// TestProviderSupportsOutputSchema_EmptyNameFailsClosed pins that an empty
+// providerName is treated as unresolvable, not as lookupProvider's unrelated
+// empty-defaults-to-claude fallback (a different mechanism, for a legacy
+// caller that never set Provider) — otherwise ProviderSupportsOutputSchema
+// would silently answer true for a call site that hasn't resolved a
+// provider yet, defeating the fail-closed contract its own doc promises.
+func TestProviderSupportsOutputSchema_EmptyNameFailsClosed(t *testing.T) {
+	if got := ProviderSupportsOutputSchema(""); got {
+		t.Fatal("ProviderSupportsOutputSchema(\"\") = true, want false")
+	}
+}
+
 func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

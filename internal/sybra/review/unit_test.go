@@ -107,6 +107,24 @@ func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 }
 
+// A pr-fix agent that backgrounds its test run and then narrates "still
+// waiting" status messages instead of blocking on it trips the watchdog's
+// semantic-loop detector and burns the run for nothing. Both conflict
+// prompts must tell the agent to run tests as a single blocking foreground
+// command instead.
+func TestConflictPrompt_TestsRunSynchronously(t *testing.T) {
+	t.Parallel()
+
+	for _, prompt := range []string{
+		buildConflictPrompt(github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, ""),
+		branchConflictPrompt(task.Task{Branch: "fix/example"}, "main"),
+	} {
+		if !strings.Contains(prompt, "never background a test run or narrate/poll its progress") {
+			t.Fatalf("conflict prompt does not forbid backgrounding/narrating test runs:\n%s", prompt)
+		}
+	}
+}
+
 func TestCIFailurePrompt_DetectsForkRemote(t *testing.T) {
 	t.Parallel()
 
