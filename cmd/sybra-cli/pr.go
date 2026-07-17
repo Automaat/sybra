@@ -13,7 +13,7 @@ import (
 // cmdPR routes the `pr` subcommands.
 func cmdPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: pr create <task-id> --repo owner/name --head branch [--title T] [--body B] [--draft]")
+		return fatal(jsonOut, "usage: pr create <task-id> --repo owner/name --head branch [--title T] [--body B] [--dir D] [--draft]")
 	}
 	switch args[0] {
 	case "create":
@@ -21,6 +21,17 @@ func cmdPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
 	default:
 		return fatal(jsonOut, "unknown pr subcommand %q (valid: create)", args[0])
 	}
+}
+
+// getTaskViaAPIOrFS reads a task through the server when the API is reachable,
+// falling back to the local store. Mirrors updateTaskViaAPIOrFS: a Job that has
+// only the HTTP endpoint and no mounted tasks dir must still be able to read the
+// task it is opening a PR for.
+func getTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string) (task.Task, error) {
+	if got, handled, apiErr := viaAPI[task.Task](api, "TaskService", "GetTask", id); handled {
+		return got, apiErr
+	}
+	return s.Get(id)
 }
 
 // cmdPRCreate opens a pull request for an already-pushed branch and records its
@@ -38,7 +49,7 @@ func cmdPRCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) i
 	// at the first non-flag argument, so `pr create <id> --repo ...` would
 	// otherwise silently ignore every flag after the id.
 	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
-		return fatal(jsonOut, "usage: pr create <task-id> --repo owner/name --head branch [--title T] [--body B] [--draft]")
+		return fatal(jsonOut, "usage: pr create <task-id> --repo owner/name --head branch [--title T] [--body B] [--dir D] [--draft]")
 	}
 	id := args[0]
 
@@ -56,7 +67,7 @@ func cmdPRCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) i
 		return fatal(jsonOut, "--repo and --head are required")
 	}
 
-	t, err := s.Get(id)
+	t, err := getTaskViaAPIOrFS(s, api, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}

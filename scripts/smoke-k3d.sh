@@ -318,8 +318,14 @@ if [ "$GITHUB_MODE" = "0" ]; then
     || fail "k8s-agent-output.txt has unexpected content"
   printf '  ok  marker file fast-forwarded into %s\n' "$WT"
 
-  in_pod git -C "$WT" log --oneline -3 | grep -q 'persist k8s agent changes' \
-    || fail "no 'chore: persist k8s agent changes' commit in the worktree — the wrapper did not commit"
+  # Capture first, then match. Piping straight into grep conflates "git log
+  # failed" (a flaky kubectl exec — this is a remote command) with "the commit is
+  # missing", and blames the wrapper for a commit that is actually there.
+  if ! WT_LOG=$(in_pod git -C "$WT" log --oneline -3 2>&1); then
+    fail "could not read the worktree log: $WT_LOG"
+  fi
+  printf '%s' "$WT_LOG" | grep -q 'persist k8s agent changes' \
+    || fail "no 'chore: persist k8s agent changes' commit in the worktree — the wrapper did not commit. log: $WT_LOG"
   printf '  ok  agent commit present\n'
 fi
 
