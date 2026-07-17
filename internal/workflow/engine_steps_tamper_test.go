@@ -399,6 +399,25 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("negated_delete_instruction_keeps_deleted_test_file_high", func(t *testing.T) {
+		body := "## Scope\n- Do not delete `internal/foo/bar_test.go` under any circumstances\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/foo/bar_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 1 {
+			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
+		}
+		if len(r.Findings) != 1 {
+			t.Fatalf("Findings = %v, want 1 high deletion finding", r.Findings)
+		}
+		if r.Findings[0].Rule != "deleted-verification-file" || r.Findings[0].Severity != tamperHigh {
+			t.Fatalf("finding = %+v, want deleted-verification-file high", r.Findings[0])
+		}
+		if strings.Contains(r.Findings[0].Detail, "documented in task spec") {
+			t.Fatalf("detail = %q, did not want documented marker", r.Findings[0].Detail)
+		}
+	})
+
 	t.Run("documented_multiple_deleted_test_files_are_downgraded", func(t *testing.T) {
 		body := "## Files\n- delete `internal/foo/a_test.go` and `internal/foo/b_test.go`\n"
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
@@ -617,6 +636,30 @@ func TestDocumentedDeletionAllowlist(t *testing.T) {
 		got := documentedDeletionAllowlist(body)
 		if len(got.ExactPaths) != 0 {
 			t.Fatalf("ExactPaths = %v, want empty", got.ExactPaths)
+		}
+	})
+
+	t.Run("ignores_negated_deletion_instructions", func(t *testing.T) {
+		cases := []string{
+			"## Scope\n- Do not delete `internal/foo/bar_test.go` under any circumstances\n",
+			"## Scope\n- Never remove `internal/foo/bar_test.go`.\n",
+			"## Scope\n- Don't delete `internal/foo/bar_test.go`.\n",
+			"## Scope\n- We should not delete `internal/foo/bar_test.go`.\n",
+			"## Scope\n- Avoid deleting `internal/foo/bar_test.go`.\n",
+		}
+		for _, body := range cases {
+			got := documentedDeletionAllowlist(body)
+			if got.ExactPaths["internal/foo/bar_test.go"] {
+				t.Fatalf("body %q: ExactPaths = %v, did not want negated deletion path", body, got.ExactPaths)
+			}
+		}
+	})
+
+	t.Run("negation_before_clause_boundary_does_not_block_later_deletion", func(t *testing.T) {
+		body := "## Scope\n- Do not edit the live tests, delete `internal/foo/obsolete_test.go`.\n"
+		got := documentedDeletionAllowlist(body)
+		if !got.ExactPaths["internal/foo/obsolete_test.go"] {
+			t.Fatalf("ExactPaths = %v, want explicit deletion after comma boundary", got.ExactPaths)
 		}
 	})
 }

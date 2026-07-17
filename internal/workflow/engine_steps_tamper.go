@@ -1087,10 +1087,15 @@ func pathTokenIsDocumentedDeletion(segment string, token documentedPathToken, ac
 		previous = verb
 	}
 	if previous != nil {
-		return verbRangeInList(previous, deletionVerbs) && tokenHasDeletionVerbLead(segment, previous, token)
+		return verbRangeInList(previous, deletionVerbs) &&
+			!documentedDeletionVerbIsNegated(segment, previous) &&
+			tokenHasDeletionVerbLead(segment, previous, token)
 	}
 	next := nextActionVerbAfterToken(token, actionVerbs)
-	return next != nil && verbRangeInList(next, deletionVerbs) && tokenHasDeletionVerbTrailer(segment, token, next)
+	return next != nil &&
+		verbRangeInList(next, deletionVerbs) &&
+		!documentedDeletionVerbIsNegated(segment, next) &&
+		tokenHasDeletionVerbTrailer(segment, token, next)
 }
 
 func nextActionVerbAfterToken(token documentedPathToken, actionVerbs [][]int) []int {
@@ -1145,6 +1150,26 @@ func tokenHasDeletionVerbLead(segment string, verb []int, token documentedPathTo
 	return documentedDeletionLeadWholeFileDescriptor(words)
 }
 
+func documentedDeletionVerbIsNegated(segment string, verb []int) bool {
+	prefix := segment[:verb[0]]
+	lastBoundary := -1
+	for i, r := range prefix {
+		switch r {
+		case '.', '?', '!', ';', ':', ',', '\n', '\r':
+			lastBoundary = i
+		}
+	}
+	if lastBoundary >= 0 {
+		prefix = prefix[lastBoundary+1:]
+	}
+	words := documentedDeletionContextWords(prefix)
+	const maxWordsBeforeVerb = 6
+	if len(words) > maxWordsBeforeVerb {
+		words = words[len(words)-maxWordsBeforeVerb:]
+	}
+	return slices.ContainsFunc(words, documentedDeletionNegationWord)
+}
+
 func documentedDeletionLeadConnectorOnly(s string) bool {
 	words := documentedDeletionLeadWords(s)
 	if len(words) == 0 {
@@ -1159,13 +1184,39 @@ func documentedDeletionLeadConnectorOnly(s string) bool {
 }
 
 func documentedDeletionLeadWords(s string) []string {
+	return documentedDeletionContextWords(s)
+}
+
+func documentedDeletionContextWords(s string) []string {
 	words := strings.FieldsFunc(s, func(r rune) bool {
-		return (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_'
+		return (r < 'A' || r > 'Z') &&
+			(r < 'a' || r > 'z') &&
+			(r < '0' || r > '9') &&
+			r != '_' &&
+			r != '\''
 	})
 	for i := range words {
 		words[i] = strings.ToLower(words[i])
 	}
 	return words
+}
+
+func documentedDeletionNegationWord(word string) bool {
+	switch word {
+	case "avoid", "avoided", "avoiding", "avoids",
+		"cannot", "cant", "can't",
+		"dont", "don't",
+		"forbid", "forbidden", "forbids",
+		"mustnt", "mustn't",
+		"never",
+		"no",
+		"not",
+		"shouldnt", "shouldn't",
+		"without",
+		"wont", "won't":
+		return true
+	}
+	return strings.HasSuffix(word, "n't")
 }
 
 func documentedDeletionLeadWholeFileDescriptor(words []string) bool {
