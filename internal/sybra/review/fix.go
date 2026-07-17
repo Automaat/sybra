@@ -1430,11 +1430,11 @@ func branchConflictPrompt(t task.Task, base string) string {
 			"git fetch origin\n"+
 			"git merge refs/remotes/origin/%s\n"+
 			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
-			"# this branch's intent and the upstream changes, run targeted tests for\n"+
-			"# touched code, then git add and git commit to complete the merge.\n"+
+			"# this branch's intent and the upstream changes, then git add and git\n"+
+			"# commit to complete the merge.\n"+
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
-			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
+			"# will fail with \"nothing to commit\".\n"+
 			"%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
@@ -1443,6 +1443,7 @@ func branchConflictPrompt(t task.Task, base string) string {
 			"- Do not force-push or rewrite existing commits — this is a merge, never a rebase; a plain push is always expected to succeed\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
+			"- Before pushing, run tests for touched code as a single blocking foreground command (e.g. `go test ./pkg/foo/...`) and wait for it to exit — never background a test run or narrate/poll its progress; if it has not finished within a couple of minutes, stop and report a blocker instead of waiting indefinitely\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes",
 		branch, base, prFixPushPrompt(branch, "", false), base, base,
@@ -1554,11 +1555,11 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"git fetch origin\n"+
 			"git merge %s\n"+
 			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
-			"# the PR intent and upstream changes, run targeted tests for touched code,\n"+
-			"# then git add and git commit to complete the merge.\n"+
+			"# the PR intent and upstream changes, then git add and git commit to\n"+
+			"# complete the merge.\n"+
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
-			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
+			"# will fail with \"nothing to commit\".\n"+
 			"%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
@@ -1567,6 +1568,7 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"- Do not force-push or rewrite existing commits — the merge commit and any conflict-resolution commits must be purely additive, and a plain push is expected to succeed\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
+			"- Before pushing, run tests for touched code as a single blocking foreground command (e.g. `go test ./pkg/foo/...`) and wait for it to exit — never background a test run or narrate/poll its progress; if it has not finished within a couple of minutes, stop and report a blocker instead of waiting indefinitely\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
