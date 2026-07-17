@@ -352,6 +352,56 @@ pairs a given ConfigMap declares). None of the three tools are wired into
 this PoC's kustomization — pick one and add its manifests/controller to your
 own deployment overlay.
 
+## Versioned production images
+
+`docker build -t sybra-server:poc .` + `k3d image import` above is a local
+dev/smoke loop only — the resulting image never leaves the machine that built
+it, which is fine for a throwaway k3d cluster but not reproducible or
+immutable enough to run in production.
+
+`.github/workflows/docker-publish.yml` builds the same root `Dockerfile` (its
+`ENTRYPOINT` is `sybra-server`) and pushes it to GHCR under two repository
+names sharing one digest per build: `ghcr.io/automaat/sybra` and
+`ghcr.io/automaat/sybra-server`. Each push is tagged three ways:
+
+- `vX.Y.Z` — the exact released version
+- `X.Y` — floating latest-patch alias for that minor
+- `sha-<short-sha>` — the commit it was built from, for bisecting a bad
+  deploy back to source independent of the version bump
+
+It runs on `workflow_dispatch` (`gh workflow run docker-publish.yml -f
+version=vX.Y.Z`, or leave `version` empty to auto-bump the minor via
+`scripts/resolve-release-version.sh`) — publishing a new production image is
+a deliberate, CI-run action, not something that fires on every merge to
+`main`.
+
+For a production deploy, pin by digest rather than a mutable tag — a tag can
+be re-pointed (accidentally or via `docker-publish.yml` re-running the same
+version), a digest cannot:
+
+```bash
+docker pull ghcr.io/automaat/sybra-server:vX.Y.Z
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/automaat/sybra-server:vX.Y.Z
+# ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
+Point a deployment at it without ever building locally — either patch the
+image directly:
+
+```bash
+kubectl -n sybra-poc set image deployment/sybra-server \
+  sybra-server=ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
+or, in a kustomize overlay (see issue #2110 for splitting the PoC base from a
+real production overlay), add an `images:` transformer instead of hand-editing
+`deployment.yaml`:
+
+```bash
+cd your-production-overlay
+kustomize edit set image sybra-server:poc=ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
 ## Real OpenCode testbed e2e
 
 This is the end-to-end path used to prove the PoC with a real model. It uses

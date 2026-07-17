@@ -49,7 +49,12 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+          # Same build, same digest, pushed under two repository names: the
+          # `-server` alias is what deploy/k8s-poc production docs pin, since
+          # the k8s runner deploys this exact image (ENTRYPOINT sybra-server).
+          images: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}-server
           tags: |
             type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }}
