@@ -246,6 +246,43 @@ func TestBuildRunPatchDowngradesConformanceWhenReceiptMissing(t *testing.T) {
 	}
 }
 
+// TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema is the regression
+// guard for #2235: a step enforcing OutputSchema constrains the agent's
+// final response to a structured payload with no room for a trailing
+// receipt line, so resolveWorkflowSkillPrompt never asks for one there. A
+// result with no receipt marker must not be downgraded to
+// ConformanceUnverified in that case — the schema enforcement itself stands
+// in as the conformance signal.
+func TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		conformance string
+	}{
+		{"exact_without_receipt", skillattr.ConformanceExact},
+		{"fallback_without_receipt", skillattr.ConformanceFallback},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ag := &agent.Agent{
+				ID:                      "ag-1",
+				TaskID:                  "task-1",
+				Name:                    agent.RoleTestRunner.AgentName("Test"),
+				RequestedSkill:          "sybra-test",
+				ResolvedSkillSourceHash: "deadbeefcafebabe",
+				SkillConformance:        tc.conformance,
+				OutputSchema:            `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+			}
+			patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS"}`, nil)
+			if patch.SkillConformance == nil || *patch.SkillConformance != tc.conformance {
+				t.Fatalf("SkillConformance = %v, want unchanged %q", patch.SkillConformance, tc.conformance)
+			}
+		})
+	}
+}
+
 func TestBuildRunPatchMarksVerifiedRecoveryAsRecovered(t *testing.T) {
 	t.Parallel()
 

@@ -348,6 +348,72 @@ func TestResolveWorkflowSkillPrompt_UsesBundledFallback(t *testing.T) {
 	}
 }
 
+// TestResolveWorkflowSkillPrompt_OutputSchemaSkipsReceipt is the regression
+// guard for issue #2235: a step enforcing OutputSchema constrains the final
+// response to a structured payload with no room for a trailing receipt
+// comment, so the instruction must never be requested — every delivery mode
+// still resolves and injects/falls back exactly as it would without a
+// schema, just without the unsatisfiable receipt ask.
+func TestResolveWorkflowSkillPrompt_OutputSchemaSkipsReceipt(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, home string)
+		wantMode   string
+		wantMarker string
+	}{
+		{
+			name: "native",
+			setup: func(t *testing.T, home string) {
+				t.Helper()
+				mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), "sybra-test")
+			},
+			wantMode: skillattr.ExecutionModeNative,
+		},
+		{
+			name: "injected",
+			setup: func(t *testing.T, home string) {
+				t.Helper()
+				mkNamedSkillRoot(t, filepath.Join(home, ".claude", "skills", "sybra-test"), "sybra-test", "\n")
+			},
+			wantMode:   skillattr.ExecutionModeInjected,
+			wantMarker: "BEGIN INJECTED SKILL: sybra-test",
+		},
+		{
+			name:       "fallback",
+			setup:      func(t *testing.T, home string) { t.Helper() },
+			wantMode:   skillattr.ExecutionModeFallback,
+			wantMarker: "bundled skill fallback",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			resetCodexSkillsCache(t)
+			withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+			tc.setup(t, home)
+
+			cfg := RunConfig{
+				Prompt:         "Adversarially test with /sybra-test.",
+				RequestedSkill: "sybra-test",
+				OutputSchema:   `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+			}
+			if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+				t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+			}
+			if cfg.SkillExecutionMode != tc.wantMode {
+				t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, tc.wantMode)
+			}
+			if tc.wantMarker != "" && !strings.Contains(cfg.Prompt, tc.wantMarker) {
+				t.Fatalf("Prompt missing delivery marker %q:\n%s", tc.wantMarker, cfg.Prompt)
+			}
+			if strings.Contains(cfg.Prompt, skillattr.ReceiptTag) {
+				t.Fatalf("Prompt must not request a conformance receipt under OutputSchema:\n%s", cfg.Prompt)
+			}
+		})
+	}
+}
+
 func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

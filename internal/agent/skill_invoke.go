@@ -62,17 +62,26 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string
 	cfg.SkillExecutionMode = resolution.mode
 	cfg.ResolvedSkillSourceHash = resolution.sourceHash
 	cfg.SkillConformance = resolution.conformance
+	// A step that also enforces OutputSchema constrains the model's final
+	// response to a structured tool-call payload with no room for a trailing
+	// comment line, so the receipt instruction below can never be satisfied.
+	// The schema itself, enforced via structured output, is already a
+	// stronger conformance signal than a string match — skip the receipt.
+	schemaEnforced := cfg.OutputSchema != ""
 	switch resolution.mode {
 	case skillattr.ExecutionModeNative:
-		// The skill runs natively, but native invocation alone doesn't prove
-		// the model actually followed it — append the same deterministic
-		// receipt instruction injected/fallback runs get, so completion can
-		// verify conformance from the transcript rather than trusting
-		// delivery mode alone.
-		cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+		// Native invocation alone doesn't prove the model actually followed
+		// it — append the same deterministic receipt instruction
+		// injected/fallback runs get, so completion can verify conformance
+		// from the transcript rather than trusting delivery mode alone.
+		if !schemaEnforced {
+			cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+		}
 	case skillattr.ExecutionModeInjected, skillattr.ExecutionModeFallback:
 		cfg.Prompt = injectWorkflowSkillPrompt(cfg.Prompt, providerName, resolution)
-		cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+		if !schemaEnforced {
+			cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+		}
 	default:
 		cfg.Prompt = unavailableWorkflowSkillPrompt(cfg.Prompt, providerName, resolution.name)
 	}
