@@ -2,6 +2,7 @@ package github
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -19,15 +20,16 @@ func (j *jsonExecer) run(args ...string) ([]byte, error) {
 }
 
 func checkRunsJSON(runs ...string) string {
-	body := "{\"check_runs\":["
+	var b strings.Builder
+	b.WriteString("{\"check_runs\":[")
 	for i, r := range runs {
 		if i > 0 {
-			body += ","
+			b.WriteByte(',')
 		}
-		body += r
+		b.WriteString(r)
 	}
-	body += "]}"
-	return body
+	b.WriteString("]}")
+	return b.String()
 }
 
 func checkRun(name, status, conclusion string) string {

@@ -531,9 +531,10 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 			switch matched[i].Kind {
 			case github.PRIssueConflict, github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueCIFailure, github.PRIssueReadyToMerge:
 				handled = append(handled, matched[i])
-			case github.PRIssueComments:
+			case github.PRIssueComments, github.PRIssueCIFlake:
 				// REST exposes no thread-resolution data; comments stay
-				// dropped until GraphQL recovers.
+				// dropped until GraphQL recovers. ci_flake is tracker-only
+				// and is never emitted by MatchTaskPRs.
 			}
 		}
 		if r.prTracker != nil {

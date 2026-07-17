@@ -20,7 +20,7 @@ func ClassifyCIFlakiness(repo, sha string, threshold float64) (allFlaky bool, fl
 	return classifyCIFlakinessWith(defaultExecer, repo, sha, threshold)
 }
 
-func classifyCIFlakinessWith(e execer, repo, sha string, threshold float64) (bool, []string, error) {
+func classifyCIFlakinessWith(e execer, repo, sha string, threshold float64) (allFlaky bool, flakyChecks []string, err error) {
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" || sha == "" {
 		return false, nil, fmt.Errorf("invalid repo or sha: %s@%s", repo, sha)
