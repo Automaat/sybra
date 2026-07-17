@@ -4311,7 +4311,12 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	logDir := t.TempDir()
+	logDir, err := os.MkdirTemp("", "sybra-e2e-logs-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
+
 	var engine *workflow.Engine
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, e2eLogger(t), logDir, agent.ManagerConfig{
 		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: env.provider},
