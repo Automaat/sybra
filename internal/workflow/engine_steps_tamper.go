@@ -1142,7 +1142,7 @@ func tokenHasDeletionVerbLead(segment string, verb []int, token documentedPathTo
 	if len(words) > 5 {
 		return false
 	}
-	return slices.Contains([]string{"at", "for", "from", "in", "inside", "under", "within"}, words[len(words)-1])
+	return documentedDeletionLeadWholeFileDescriptor(words)
 }
 
 func documentedDeletionLeadConnectorOnly(s string) bool {
@@ -1166,6 +1166,24 @@ func documentedDeletionLeadWords(s string) []string {
 		words[i] = strings.ToLower(words[i])
 	}
 	return words
+}
+
+func documentedDeletionLeadWholeFileDescriptor(words []string) bool {
+	if len(words) == 0 {
+		return true
+	}
+	hasFileNoun := false
+	for _, word := range words {
+		switch word {
+		case "a", "an", "the", "old", "legacy", "obsolete", "stale", "unused":
+		case "test", "tests", "snapshot", "snapshots", "fixture", "fixtures", "ci", "workflow", "workflows":
+		case "file", "files":
+			hasFileNoun = true
+		default:
+			return false
+		}
+	}
+	return hasFileNoun
 }
 
 func redactDocumentedPathTokens(s string) string {

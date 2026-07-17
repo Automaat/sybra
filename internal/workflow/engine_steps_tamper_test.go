@@ -381,7 +381,7 @@ func TestBuildTamperReport(t *testing.T) {
 	})
 
 	t.Run("documented_deleted_test_file_is_downgraded", func(t *testing.T) {
-		body := "## Scope\n- delete mode cases from mesh_helpers_test.go\n"
+		body := "## Scope\n- delete mesh_helpers_test.go\n"
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "D", Path: "internal/mesh/mesh_helpers_test.go"},
 		}, documentedDeletionAllowlist(body))
@@ -480,6 +480,26 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("remove_inside_file_phrase_does_not_bless_deleted_test_file", func(t *testing.T) {
+		body := "## Scope\n- Remove debug logging in foo_test.go\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "foo_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 1 {
+			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
+		}
+	})
+
+	t.Run("remove_import_from_file_phrase_does_not_bless_deleted_test_file", func(t *testing.T) {
+		body := "## Scope\n- Remove unused import from foo_test.go\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "foo_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 1 {
+			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
+		}
+	})
+
 	t.Run("distant_prior_delete_does_not_bless_test_file", func(t *testing.T) {
 		body := "## Scope\n- delete the old cache layer entirely, and make sure `internal/foo/bar_test.go` still passes\n"
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
@@ -507,7 +527,7 @@ func TestDocumentedDeletionAllowlist(t *testing.T) {
 	t.Run("extracts_from_scope_and_files_sections", func(t *testing.T) {
 		body := "" +
 			"## Scope\n" +
-			"- delete mode cases from mesh_helpers_test.go\n\n" +
+			"- delete mesh_helpers_test.go\n\n" +
 			"## Files\n" +
 			"- `internal/mesh/legacy_test.go` - remove tests for deleted helper\n"
 		got := documentedDeletionAllowlist(body)
@@ -942,7 +962,7 @@ func TestExecDetectTampering_DocumentedDeletedTestDoesNotFlag(t *testing.T) {
 	wf.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "agent-1"})
 	captureTamperDeletionAllowlist(wf, "implement", "implementation", TaskInfo{
 		ID:   "t1",
-		Body: "## Scope\n- delete mode cases from mesh_helpers_test.go\n",
+		Body: "## Scope\n- delete mesh_helpers_test.go\n",
 	})
 	tasks.Put(TaskInfo{
 		ID:       "t1",
