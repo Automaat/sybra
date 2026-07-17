@@ -352,6 +352,76 @@ pairs a given ConfigMap declares). None of the three tools are wired into
 this PoC's kustomization — pick one and add its manifests/controller to your
 own deployment overlay.
 
+## Versioned production images
+
+`docker build -t sybra-server:poc .` + `k3d image import` above is a local
+dev/smoke loop only — the resulting image never leaves the machine that built
+it, which is fine for a throwaway k3d cluster but not reproducible or
+immutable enough to run in production.
+
+`.github/workflows/docker-publish.yml` builds the same root `Dockerfile` (its
+`ENTRYPOINT` is `sybra-server`) and pushes it to GHCR under two repository
+names sharing one digest per build: `ghcr.io/automaat/sybra` and
+`ghcr.io/automaat/sybra-server`. Each push is tagged three ways:
+
+- `vX.Y.Z` — the exact released version
+- `X.Y` — floating latest-patch alias for that minor
+- `sha-<short-sha>` — the commit it was built from, for bisecting a bad
+  deploy back to source independent of the version bump
+
+It runs on `workflow_dispatch` (`gh workflow run docker-publish.yml -f
+version=vX.Y.Z`, or leave `version` empty to auto-bump the minor via
+`scripts/resolve-release-version.sh`) — publishing a new production image is
+a deliberate, CI-run action, not something that fires on every merge to
+`main`.
+
+The first push under a new GHCR repository name defaults to **private** —
+`ghcr.io/automaat/sybra-server` will not exist as a package until
+`docker-publish.yml` runs once, and after that first run it is only pullable
+by an authenticated, authorized principal until someone flips its visibility
+in the package's GHCR settings (Package → Package settings → Danger Zone →
+Change visibility). Decide deliberately rather than by default:
+
+- **Public** — simplest; an unauthenticated `docker pull` (as shown below)
+  and a plain Kubernetes image reference both just work, no cluster-side
+  credential needed.
+- **Private** — safer default for a production image, but then the cluster
+  needs an `imagePullSecrets` entry: `kubectl create secret docker-registry
+  ghcr-pull --docker-server=ghcr.io --docker-username=<user>
+  --docker-password=<a token with read:packages>`, referenced from the
+  Deployment's `spec.template.spec.imagePullSecrets` (or the ServiceAccount,
+  so every pod using it inherits the credential without repeating the field).
+
+For a production deploy, pin by digest rather than a mutable tag — a tag can
+be re-pointed (accidentally or via `docker-publish.yml` re-running the same
+version), a digest cannot. If the package is still private, log in first
+(a token with `read:packages` is enough — no need for `write:packages` just
+to pull):
+
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <user> --password-stdin
+docker pull ghcr.io/automaat/sybra-server:vX.Y.Z
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/automaat/sybra-server:vX.Y.Z
+# ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
+Point a deployment at it without ever building locally — either patch the
+image directly:
+
+```bash
+kubectl -n sybra-poc set image deployment/sybra-server \
+  sybra-server=ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
+or, in a kustomize overlay (see issue #2110 for splitting the PoC base from a
+real production overlay), add an `images:` transformer instead of hand-editing
+`deployment.yaml`:
+
+```bash
+cd your-production-overlay
+kustomize edit set image sybra-server:poc=ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
 ## Real OpenCode testbed e2e
 
 This is the end-to-end path used to prove the PoC with a real model. It uses
