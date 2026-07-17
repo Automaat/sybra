@@ -18,6 +18,10 @@ var ErrWorkflowAlreadyActive = fmt.Errorf("task already has an active workflow")
 // benign no-op, not a failure.
 var ErrAutoDispatchDisabled = errors.New("workflow dispatch is disabled on this instance")
 
+// ErrTamperBlessRequired is returned when a tamper-flagged task is restarted
+// through a generic workflow entry point instead of the explicit bless flow.
+var ErrTamperBlessRequired = errors.New("task requires tamper bless before workflow restart")
+
 // StartWorkflow assigns a workflow to a task and executes the first step.
 func (e *Engine) StartWorkflow(taskID, workflowID string) error {
 	return e.StartWorkflowWithVars(taskID, workflowID, nil)
@@ -90,12 +94,17 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 	// otherwise see an empty map and overwrite A's workflow. Mirror the check
 	// DispatchEvent already performs so both entry points agree that a task
 	// can only have one non-terminal workflow at a time.
-	if t, getErr := e.tasks.GetTask(taskID); getErr == nil &&
-		t.Workflow != nil &&
-		t.Workflow.State != ExecCompleted &&
-		t.Workflow.State != ExecFailed {
-		return nil, fmt.Errorf("%w: %s (state=%s)",
-			ErrWorkflowAlreadyActive, t.Workflow.WorkflowID, t.Workflow.State)
+	if t, getErr := e.tasks.GetTask(taskID); getErr == nil {
+		if taskRequiresTamperBless(t) {
+			return nil, fmt.Errorf("%w: status=%s reason=%q",
+				ErrTamperBlessRequired, t.Status, t.StatusReason)
+		}
+		if t.Workflow != nil &&
+			t.Workflow.State != ExecCompleted &&
+			t.Workflow.State != ExecFailed {
+			return nil, fmt.Errorf("%w: %s (state=%s)",
+				ErrWorkflowAlreadyActive, t.Workflow.WorkflowID, t.Workflow.State)
+		}
 	}
 
 	def, err := e.store.Get(workflowID)
@@ -137,6 +146,10 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 		e.surfaceInitialDispatchFailure(taskID, wfExec, start.ID, err)
 	}
 	return comp, err
+}
+
+func taskRequiresTamperBless(t TaskInfo) bool {
+	return t.Status == "human-required" && IsTamperFlaggedReason(t.StatusReason)
 }
 
 // surfaceInitialDispatchFailure classifies and escalates a run_agent dispatch
