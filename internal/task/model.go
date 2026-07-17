@@ -348,8 +348,8 @@ type Task struct {
 	SupervisorSteer string `json:"supervisorSteer,omitempty"`
 	// ReviewPhase tracks where an inbound PR-review task (tag `review`) sits in
 	// the review lifecycle: reviewing → drafted → awaiting-author →
-	// needs-approval → approved (plus `manual` for small PRs punted to the
-	// human). Computed by the PR poller; drives the board's PR Reviews lane.
+	// needs-approval → approved (plus `manual` for human follow-up). Computed by
+	// the PR poller; drives the board's PR Reviews lane.
 	// Empty for non-review tasks.
 	ReviewPhase string `json:"reviewPhase,omitempty"`
 	// Bounds automated re-review per PR commit: the durable backstop against a
