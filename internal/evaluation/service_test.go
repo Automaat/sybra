@@ -121,3 +121,39 @@ func TestServiceScanGroupsSkillExecutionMode(t *testing.T) {
 		t.Fatalf("unknown breakdown = %+v", got.BySkillExecutionMode[2])
 	}
 }
+
+// TestServiceScanSplitsDirectReviewFromConformantStaffReview is the
+// end-to-end workflow case for #2007: a direct review and a conformant staff
+// review sharing every other dimension (provider, model, role) must land in
+// separate ByAgentModel rows, each still visible with its own sample size.
+func TestServiceScanSplitsDirectReviewFromConformantStaffReview(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	in := now.Add(-1 * time.Hour)
+	svc := NewService(Deps{
+		Cfg: config.EvaluationConfig{WindowDays: 7},
+		Stats: testStatsReader{records: []stats.RunRecord{
+			{TaskID: "A", Role: "review", Provider: "claude", Model: "sonnet", SkillConformance: skillattr.ConformanceExact, Outcome: "completed", Timestamp: in},
+			{TaskID: "B", Role: "review", Provider: "claude", Model: "sonnet", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+		}},
+		Audit: auditFunc(func(q audit.Query) ([]audit.Event, error) { return nil, nil }),
+		Now:   func() time.Time { return now },
+	})
+
+	got, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(got.ByAgentModel) != 2 {
+		t.Fatalf("ByAgentModel = %+v, want 2 rows (direct review, conformant staff review)", got.ByAgentModel)
+	}
+	seen := map[string]int{}
+	for _, row := range got.ByAgentModel {
+		seen[row.SkillConformance]++
+		if row.Runs != 1 {
+			t.Fatalf("row = %+v, want 1 run each", row)
+		}
+	}
+	if seen[SkillCohortSkill] != 1 || seen[SkillCohortDirect] != 1 {
+		t.Fatalf("cohorts by conformance = %+v, want exactly one skill and one direct row", seen)
+	}
+}
