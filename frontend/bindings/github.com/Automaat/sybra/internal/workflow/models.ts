@@ -586,6 +586,23 @@ export class StepConfig {
     "allowMissing": boolean;
 
     /**
+     * clear_plan_artifacts: which sidecars to clear before the cycle that
+     * follows. Same values as Sidecar.
+     */
+    "clearSidecars"?: string[];
+
+    /**
+     * ClearWorktreeGlobs names the agent-written files to unlink, relative to
+     * the worktree. Every sidecar in ClearSidecars needs its file covered by
+     * one of these, since either half alone still serves the previous cycle's
+     * content: a surviving file is exactly what the next import reads back, and
+     * a surviving sidecar is exactly what an absent file leaves untouched
+     * (#2191). Note the families do not share a prefix — plan_critique's file
+     * is .sybra-critique-<id>.md, not .sybra-plan-*.
+     */
+    "clearWorktreeGlobs"?: string[];
+
+    /**
      * run_agent: when set, the engine ingests a file produced by the agent
      * (typically under /tmp) and stores its content as the named task
      * sidecar after the agent exits. Lets review/critique steps work with
@@ -718,9 +735,11 @@ export class StepConfig {
         const $$createField5_0 = $$createType24;
         const $$createField7_0 = $$createType24;
         const $$createField10_0 = $$createType26;
-        const $$createField18_0 = $$createType28;
-        const $$createField19_0 = $$createType29;
-        const $$createField22_0 = $$createType24;
+        const $$createField18_0 = $$createType24;
+        const $$createField19_0 = $$createType24;
+        const $$createField20_0 = $$createType28;
+        const $$createField21_0 = $$createType29;
+        const $$createField24_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField5_0($$parsedSource["allowedTools"]);
@@ -731,14 +750,20 @@ export class StepConfig {
         if ("check" in $$parsedSource) {
             $$parsedSource["check"] = $$createField10_0($$parsedSource["check"]);
         }
+        if ("clearSidecars" in $$parsedSource) {
+            $$parsedSource["clearSidecars"] = $$createField18_0($$parsedSource["clearSidecars"]);
+        }
+        if ("clearWorktreeGlobs" in $$parsedSource) {
+            $$parsedSource["clearWorktreeGlobs"] = $$createField19_0($$parsedSource["clearWorktreeGlobs"]);
+        }
         if ("importSidecar" in $$parsedSource) {
-            $$parsedSource["importSidecar"] = $$createField18_0($$parsedSource["importSidecar"]);
+            $$parsedSource["importSidecar"] = $$createField20_0($$parsedSource["importSidecar"]);
         }
         if ("importSidecars" in $$parsedSource) {
-            $$parsedSource["importSidecars"] = $$createField19_0($$parsedSource["importSidecars"]);
+            $$parsedSource["importSidecars"] = $$createField21_0($$parsedSource["importSidecars"]);
         }
         if ("attemptProviders" in $$parsedSource) {
-            $$parsedSource["attemptProviders"] = $$createField22_0($$parsedSource["attemptProviders"]);
+            $$parsedSource["attemptProviders"] = $$createField24_0($$parsedSource["attemptProviders"]);
         }
         return new StepConfig($$parsedSource as Partial<StepConfig>);
     }
@@ -814,6 +839,17 @@ export enum StepType {
     StepLinkPRAndReview = "link_pr_and_review",
     StepEvaluate = "evaluate",
     StepRequireSidecar = "require_sidecar",
+
+    /**
+     * StepClearPlanArtifacts wipes a planning cycle's outputs — both the task
+     * sidecars and the agent-written files in the worktree — so that every
+     * artifact the next cycle presents was written by the planner that owns it.
+     * A replan reuses the same worktree and the files are git-excluded rather
+     * than deleted, so without this the next cycle re-imports the last one's
+     * bytes and the require_sidecar guards pass on them: they assert non-empty,
+     * and stale content is non-empty (#2191).
+     */
+    StepClearPlanArtifacts = "clear_plan_artifacts",
     StepValidatePlan = "validate_plan",
     StepValidatePlanContract = "validate_plan_contract",
     StepTriageReview = "triage_review",

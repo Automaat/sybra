@@ -540,4 +540,30 @@ steps:
     config:
       status: planning
     next:
+      - goto: clear_plan_artifacts
+
+  # A replan reuses the same worktree, and .sybra-plan-* is git-excluded rather
+  # than deleted, so without this cycle 2 re-imports cycle 1's bytes as though
+  # the current planner had just written them. The require_sidecar guards can't
+  # catch that — they assert non-empty, and stale content is non-empty. Worst
+  # case is a fail-open: a stale "No open decisions" from a plan the human
+  # already rejected lets shouldAutoApprovePlanReview approve cycle 2 with no
+  # human at all.
+  - id: clear_plan_artifacts
+    name: Clear Previous Plan Artifacts
+    type: clear_plan_artifacts
+    config:
+      clear_sidecars:
+        - plan
+        - plan_research
+        - plan_decisions
+        - plan_brief
+        - plan_contract
+        - plan_critique
+      # Every cleared sidecar needs its file listed, or the survivor is read
+      # straight back in. plan_critique's file does not share the plan prefix.
+      clear_worktree_globs:
+        - '.sybra-plan-*'
+        - '.sybra-critique-*'
+    next:
       - goto: plan
