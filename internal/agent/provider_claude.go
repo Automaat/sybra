@@ -24,6 +24,10 @@ func (claudeProvider) Name() string { return "claude" }
 // into --allowedTools. Every other provider inherits the false default.
 func (claudeProvider) HonorsAllowedTools() bool { return true }
 
+// EnforcesOutputSchema is true: claude receives OutputSchema inline via
+// --json-schema (BuildHeadlessInvocation), forcing schema-valid JSON output.
+func (claudeProvider) EnforcesOutputSchema() bool { return true }
+
 func (claudeProvider) NormalizeModel(model string) string {
 	// [1m] is a Claude-Code-only context marker. Fable 5 ships a 1M context
 	// window by default, so CC 2.1.173 strips the redundant suffix; Sybra

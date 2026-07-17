@@ -108,6 +108,10 @@ func (codexProvider) SandboxArgs(requirePerms, headless bool) []string {
 
 func (codexProvider) OutputSchemaAsFile() bool { return true }
 
+// EnforcesOutputSchema is true: codex receives OutputSchema as a temp file via
+// --output-schema (OutputSchemaAsFile), forcing schema-valid JSON output.
+func (codexProvider) EnforcesOutputSchema() bool { return true }
+
 func (codexProvider) UsesPerTurnConvo() bool { return true }
 
 func (p codexProvider) BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation {

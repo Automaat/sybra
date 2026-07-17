@@ -144,7 +144,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if providerErr != nil {
 		return cfg, nil, providerErr
 	}
-	if err := m.resolveWorkflowSkillPrompt(&cfg, prov.Name()); err != nil {
+	if err := m.resolveWorkflowSkillPrompt(&cfg, prov); err != nil {
 		return cfg, nil, err
 	}
 	cfg.provider = prov
@@ -672,8 +672,12 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		ResolvedSkillSourceHash: cfg.ResolvedSkillSourceHash,
 		SkillConformance:        cfg.SkillConformance,
 		skillRecoveryAttempt:    cfg.SkillRecoveryAttempt,
-		hasOutputSchema:         cfg.OutputSchema != "",
-		Prompt:                  cfg.Prompt,
+		// Only a provider that actually forwards OutputSchema to its CLI makes
+		// the conformance receipt unsatisfiable; copilot/opencode ignore it, so
+		// their runs still get (and must pass) receipt verification. Mirror the
+		// exact wantReceipt condition in resolveWorkflowSkillPrompt.
+		hasOutputSchema: cfg.OutputSchema != "" && prov.EnforcesOutputSchema(),
+		Prompt:          cfg.Prompt,
 		// Stamp the canonical dispatch prompt hash centrally for every run
 		// (all providers, all roles, both modes). cfg.Prompt is the fully
 		// prepared prompt (post NOTES.md/guardrail/skill preparation) — the

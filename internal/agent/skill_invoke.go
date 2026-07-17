@@ -72,7 +72,8 @@ type workflowSkillResolution struct {
 	conformance   string
 }
 
-func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string) error {
+func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, prov Provider) error {
+	providerName := prov.Name()
 	name, ok := skillinvoke.NormalizeName(cfg.RequestedSkill)
 	if !ok {
 		cfg.RequestedSkill = ""
@@ -92,10 +93,13 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string
 	cfg.SkillConformance = resolution.conformance
 	// A trailing conformance receipt is unsatisfiable when the provider is
 	// forced to emit schema-valid JSON (--json-schema / --output-schema): the
-	// LAST line cannot be an HTML comment. Skip the receipt for schema-enforced
-	// runs; completion mirrors this by not receipt-verifying them (see
-	// Agent.HasOutputSchema). The skill content is still delivered.
-	wantReceipt := cfg.OutputSchema == ""
+	// LAST line cannot be an HTML comment. Skip the receipt only for runs the
+	// provider actually schema-enforces; completion mirrors this exact
+	// condition via Agent.HasOutputSchema. Providers that ignore OutputSchema
+	// (copilot/opencode) never receive the flag, so the receipt stays
+	// satisfiable and must still be appended and verified for them. The skill
+	// content is delivered regardless.
+	wantReceipt := cfg.OutputSchema == "" || !prov.EnforcesOutputSchema()
 	switch resolution.mode {
 	case skillattr.ExecutionModeNative:
 		// The skill runs natively, but native invocation alone doesn't prove

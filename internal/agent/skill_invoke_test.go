@@ -364,7 +364,7 @@ func TestResolveWorkflowSkillPrompt_NativeCodexSkill(t *testing.T) {
 		Prompt:         "Run /sybra-test now.",
 		RequestedSkill: "sybra-test",
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeNative {
@@ -395,7 +395,7 @@ func TestResolveWorkflowSkillPrompt_InjectedFromCrossProviderPath(t *testing.T) 
 		Prompt:         "Run /sybra-test now.",
 		RequestedSkill: "sybra-test",
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeInjected {
@@ -438,7 +438,7 @@ func TestResolveWorkflowSkillPrompt_SchemaSkipsReceipt(t *testing.T) {
 		RequestedSkill: "sybra-test",
 		OutputSchema:   `{"type":"object"}`,
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if !strings.Contains(cfg.Prompt, "BEGIN INJECTED SKILL: sybra-test") {
@@ -446,6 +446,34 @@ func TestResolveWorkflowSkillPrompt_SchemaSkipsReceipt(t *testing.T) {
 	}
 	if strings.Contains(cfg.Prompt, skillattr.ReceiptTag) {
 		t.Fatalf("schema-enforced run must not carry a receipt instruction:\n%s", cfg.Prompt)
+	}
+}
+
+// TestResolveWorkflowSkillPrompt_SchemaKeepsReceiptForNonEnforcingProvider pins
+// the mirror of the above: a provider that does NOT forward OutputSchema to its
+// CLI (copilot) never emits schema-valid JSON, so the trailing conformance
+// receipt stays satisfiable and MUST still be appended — otherwise the run
+// bypasses skill-conformance verification entirely.
+func TestResolveWorkflowSkillPrompt_SchemaKeepsReceiptForNonEnforcingProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkNamedSkillRoot(t, filepath.Join(home, ".claude", "skills", "sybra-test"), "sybra-test", "\n")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:         "Run /sybra-test now.",
+		RequestedSkill: "sybra-test",
+		OutputSchema:   `{"type":"object"}`,
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, copilotProvider{}); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if !strings.Contains(cfg.Prompt, "BEGIN INJECTED SKILL: sybra-test") {
+		t.Fatalf("Prompt missing injected skill block:\n%s", cfg.Prompt)
+	}
+	if !strings.Contains(cfg.Prompt, skillattr.ReceiptMarker("sybra-test", cfg.ResolvedSkillSourceHash)) {
+		t.Fatalf("non-enforcing provider must still carry a receipt instruction:\n%s", cfg.Prompt)
 	}
 }
 
@@ -462,7 +490,7 @@ func TestResolveWorkflowSkillPrompt_ForceInjectedSkipsNative(t *testing.T) {
 		ForceInjectedSkill:   true,
 		SkillRecoveryAttempt: true,
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeInjected {
@@ -492,7 +520,7 @@ func TestResolveWorkflowSkillPrompt_UsesBundledFallback(t *testing.T) {
 		Prompt:         "Adversarially test with /sybra-test.",
 		RequestedSkill: "sybra-test",
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeFallback {
@@ -522,7 +550,7 @@ func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
 		Prompt:         "Run /missing-skill now.",
 		RequestedSkill: "missing-skill",
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeUnavailable {
@@ -547,7 +575,7 @@ func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
 
 func TestResolveWorkflowSkillPrompt_NoRequestedSkillRecordsNone(t *testing.T) {
 	cfg := RunConfig{Prompt: "plain prompt"}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.RequestedSkill != "" {

@@ -82,8 +82,11 @@ type Agent struct {
 	skillRecoveryAttempt bool
 
 	// hasOutputSchema records whether this run enforced a provider output
-	// schema (--json-schema / --output-schema). A schema-enforced run must
-	// return schema-valid JSON and so cannot also close with the trailing
+	// schema (--json-schema / --output-schema). It is true only when the
+	// provider actually forwards OutputSchema to its CLI (Provider.
+	// EnforcesOutputSchema) — copilot/opencode silently ignore the schema, so
+	// their runs stay false even with OutputSchema set. A schema-enforced run
+	// must return schema-valid JSON and so cannot also close with the trailing
 	// skill-conformance receipt line; completion skips receipt verification
 	// for these runs rather than downgrading a valid JSON result to
 	// unverified and self-escalating the task to human-required.
