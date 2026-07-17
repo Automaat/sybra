@@ -219,7 +219,7 @@ var (
 		`(?i)\b(add|adds|added|adding|adjust|adjusts|adjusted|adjusting|change|changes|changed|changing|` +
 			`create|creates|created|creating|edit|edits|edited|editing|fix|fixes|fixed|fixing|implement|implements|implemented|implementing|` +
 			`modify|modifies|modified|modifying|move|moves|moved|moving|refactor|refactors|refactored|refactoring|` +
-			`rename|renames|renamed|renaming|update|updates|updated|updating)\b`)
+			`rename|renames|renamed|renaming|touch|touches|touched|touching|update|updates|updated|updating)\b`)
 	tamperBacktickTokenRe = regexp.MustCompile("`([^`]+)`")
 	tamperBarePathTokenRe = regexp.MustCompile(
 		`(^|[\s([{"'])((?:\.?[\w-]+/)*\.?[\w-]+\.[\w.-]+)([\s)\]},"':;]|$)`)
@@ -1073,7 +1073,7 @@ func deletionPathTokensFromSegment(segment string, deletionVerbs [][]int) []docu
 	tokens := pathTokensFromSegment(segment)
 	out := tokens[:0]
 	for _, token := range tokens {
-		if pathTokenIsAfterNonDeletionVerb(token, actionVerbs, deletionVerbs) {
+		if !pathTokenIsDocumentedDeletion(segment, token, actionVerbs, deletionVerbs) {
 			continue
 		}
 		out = append(out, token)
@@ -1081,7 +1081,7 @@ func deletionPathTokensFromSegment(segment string, deletionVerbs [][]int) []docu
 	return out
 }
 
-func pathTokenIsAfterNonDeletionVerb(token documentedPathToken, actionVerbs, deletionVerbs [][]int) bool {
+func pathTokenIsDocumentedDeletion(segment string, token documentedPathToken, actionVerbs, deletionVerbs [][]int) bool {
 	var previous []int
 	for _, verb := range actionVerbs {
 		if verb[1] > token.start {
@@ -1089,7 +1089,29 @@ func pathTokenIsAfterNonDeletionVerb(token documentedPathToken, actionVerbs, del
 		}
 		previous = verb
 	}
-	return previous != nil && !verbRangeInList(previous, deletionVerbs)
+	if previous != nil {
+		return verbRangeInList(previous, deletionVerbs)
+	}
+	next := nextActionVerbAfterToken(token, actionVerbs)
+	return next != nil && verbRangeInList(next, deletionVerbs) && tokenHasDeletionVerbTrailer(segment, token, next)
+}
+
+func nextActionVerbAfterToken(token documentedPathToken, actionVerbs [][]int) []int {
+	for _, verb := range actionVerbs {
+		if verb[0] >= token.end {
+			return verb
+		}
+	}
+	return nil
+}
+
+func tokenHasDeletionVerbTrailer(segment string, token documentedPathToken, verb []int) bool {
+	trailer := strings.TrimSpace(segment[token.end:verb[0]])
+	trailer = strings.TrimSpace(strings.Trim(trailer, "`\"'"))
+	if trailer == "" {
+		return true
+	}
+	return trailer == "-" || trailer == ":" || trailer == "("
 }
 
 func verbRangeInList(needle []int, haystack [][]int) bool {
@@ -1102,14 +1124,12 @@ func verbRangeInList(needle []int, haystack [][]int) bool {
 }
 
 func pathTokensFromSegment(segment string) []documentedPathToken {
-	seen := map[string]bool{}
 	var out []documentedPathToken
 	add := func(raw string, start, end int) {
 		token, ok := normalizeDocumentedPath(raw)
-		if !ok || seen[token] {
+		if !ok {
 			return
 		}
-		seen[token] = true
 		out = append(out, documentedPathToken{path: token, start: start, end: end})
 	}
 	for _, m := range tamperBacktickTokenRe.FindAllStringSubmatchIndex(segment, -1) {
