@@ -400,6 +400,12 @@ steps:
         goto: critique_plan
       - goto: review_plan
 
+  # Orchestration owner: /plan-critic (.claude/skills/plan-critic/SKILL.md,
+  # internal/skills/data/plan-critic.md). The steps below are I/O contract
+  # only (which sidecars to read, where to write the critique) — the persona
+  # methodology (Triage/Grounding/Persona Review/Synthesis) lives solely in
+  # the skill. Do not restate it here; that duplication (and drift between
+  # the two copies) is the failure mode task #2018 fixed for testing-task.
   - id: critique_plan
     name: Critique Plan
     type: run_agent
