@@ -49,6 +49,20 @@ func TestSkillsData_InSyncWithRepoSkills(t *testing.T) {
 		if !bytes.Equal(regen, prev[name]) {
 			t.Errorf("internal/skills/data/%s.md is stale — run `go generate ./internal/skills/...`", name)
 		}
+
+		// A skill silently dropped from cmd/gen-skills-sync's own list would
+		// leave data/<name>.md untouched, so regen == prev above passes even
+		// as the two sources actually diverge — the same silent-no-op shape
+		// this whole test exists to catch. Compare straight against the repo
+		// source too, independent of what the generator did or didn't touch.
+		repoPath := filepath.Join(root, ".claude", "skills", name, "SKILL.md")
+		repoContent, err := os.ReadFile(repoPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", repoPath, err)
+		}
+		if !bytes.Equal(regen, repoContent) {
+			t.Errorf("internal/skills/data/%s.md does not match %s — is %q still listed in cmd/gen-skills-sync's dualSourcedSkills?", name, repoPath, name)
+		}
 	}
 }
 
