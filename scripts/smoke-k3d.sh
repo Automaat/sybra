@@ -30,9 +30,15 @@
 #   SMOKE_KEEP=1 scripts/smoke-k3d.sh # leave the cluster up for debugging
 #   SMOKE_SKIP_BUILD=1 ...            # reuse an existing sybra-server:poc
 #   SMOKE_PROVIDER=opencode ...       # real OpenRouter run (costs money)
+#   SMOKE_GITHUB=1 ...                # push to the real GitHub testbed + open a PR
 set -euo pipefail
 
 PROVIDER="${SMOKE_PROVIDER:-fake}"
+# GitHub mode swaps the PVC-backed bare clone for the real testbed remote, which
+# is the only way to prove the Job pushes to GitHub and opens a PR. Still runs
+# fake-claude, so it costs nothing but GitHub API calls.
+GITHUB_MODE="${SMOKE_GITHUB:-0}"
+TESTBED="${SMOKE_TESTBED:-Automaat/sybra-testbed}"
 CLUSTER="${SMOKE_CLUSTER:-sybra-smoke}"
 NS=sybra-poc
 IMAGE=sybra-server:poc
@@ -79,6 +85,10 @@ for bin in docker k3d kubectl jq; do
   command -v "$bin" >/dev/null 2>&1 || fail "$bin is required but not on PATH"
 done
 
+if [ "$GITHUB_MODE" = "1" ]; then
+  command -v gh >/dev/null 2>&1 || fail "SMOKE_GITHUB=1 needs gh on PATH to assert the branch and PR"
+fi
+
 if [ "${SMOKE_SKIP_BUILD:-0}" != "1" ]; then
   log "Building $IMAGE"
   docker build -t "$IMAGE" "$REPO_ROOT"
@@ -101,6 +111,14 @@ k3d image import "$IMAGE" -c "$CLUSTER"
 log "Applying manifests ($PROVIDER)"
 kubectl --context "k3d-$CLUSTER" apply -k "$REPO_ROOT/deploy/k8s-poc"
 
+if [ "$GITHUB_MODE" = "1" ]; then
+  [ -n "${GITHUB_TOKEN:-}" ] || fail "SMOKE_GITHUB=1 needs GITHUB_TOKEN (contents+pull-requests write on $TESTBED)"
+  kc create secret generic sybra-provider-api-keys \
+    --from-literal=openrouter_api_key="${OPENROUTER_API_KEY:-}" \
+    --from-literal=github_token="$GITHUB_TOKEN" \
+    --dry-run=client -o yaml | kubectl --context "k3d-$CLUSTER" apply -f -
+fi
+
 case "$PROVIDER" in
   fake) CONFIG=config-fake-repo.yaml ;;
   opencode)
@@ -117,12 +135,21 @@ esac
 # These configs declare the same ConfigMap name, so this swaps sybra-config
 # wholesale. The mount is a subPath, which never receives ConfigMap updates, so
 # the restart below is mandatory rather than cosmetic.
+if [ "$GITHUB_MODE" = "1" ]; then
+  CONFIG=config-github-testbed.yaml
+fi
 kubectl --context "k3d-$CLUSTER" apply -f "$REPO_ROOT/deploy/k8s-poc/$CONFIG"
 kc rollout restart deployment/sybra-server
 kc rollout status deployment/sybra-server --timeout=180s
 
-log "Seeding fake repo project"
-in_pod sh -ceu '
+if [ "$GITHUB_MODE" = "1" ]; then
+  log "Registering the real testbed project ($TESTBED)"
+  PROJECT="$TESTBED"
+  in_pod sybra-cli project create "https://github.com/$TESTBED.git" >/dev/null
+else
+  PROJECT=FakeOrg/k8s-testbed
+  log "Seeding fake repo project"
+  in_pod sh -ceu '
 HOME_DIR=/home/sybra/.sybra
 OWNER=FakeOrg
 REPO=k8s-testbed
@@ -156,6 +183,7 @@ created_at: "2026-07-14T00:00:00Z"
 updated_at: "2026-07-14T00:00:00Z"
 YAML
 '
+fi
 
 # A real model needs the literal spelled out; fake-claude ignores the prompt and
 # writes the same marker either way, so both providers land on one assertion set.
@@ -165,7 +193,7 @@ log "Creating task"
 TASK_ID=$(in_pod sybra-cli --json create \
   --title "k3d smoke: fake repo agent job" \
   --body "$PROMPT" \
-  --mode headless --project FakeOrg/k8s-testbed \
+  --mode headless --project "$PROJECT" \
   --tags handoff-manual,k8s-smoke --allow-dup | jq -r .id)
 [ -n "$TASK_ID" ] && [ "$TASK_ID" != "null" ] || fail "could not create task"
 echo "task: $TASK_ID"
@@ -275,5 +303,29 @@ printf '  ok  marker file fast-forwarded into %s\n' "$WT"
 in_pod git -C "$WT" log --oneline -3 | grep -q 'persist k8s agent changes' \
   || fail "no 'chore: persist k8s agent changes' commit in the worktree — the wrapper did not commit"
 printf '  ok  agent commit present\n'
+
+if [ "$GITHUB_MODE" = "1" ]; then
+  BRANCH=$(in_pod git -C "$WT" rev-parse --abbrev-ref HEAD | tr -d '\r')
+  [ -n "$BRANCH" ] || fail "could not read the task branch"
+
+  # 6. The branch reached GitHub itself, not just the PVC. This is the whole
+  #    point of the mode: the PoC only ever proved push-back to a bare clone.
+  gh api "repos/$TESTBED/branches/$BRANCH" >/dev/null 2>&1 \
+    || fail "branch $BRANCH is not on $TESTBED — the Job did not push to GitHub"
+  printf '  ok  branch %s pushed to %s\n' "$BRANCH" "$TESTBED"
+
+  # 7. The Job opened the PR itself and recorded it, so the server never needed
+  #    a GitHub credential.
+  PR=$(in_pod sybra-cli --json get "$TASK_ID" | jq -r '.prNumber // 0')
+  [ "${PR:-0}" -gt 0 ] 2>/dev/null \
+    || fail "task has no pr_number — the Job did not open a PR (or could not report it back)"
+  gh api "repos/$TESTBED/pulls/$PR" --jq '.state' 2>/dev/null | grep -q open \
+    || fail "PR #$PR is not open on $TESTBED"
+  printf '  ok  Job opened PR #%s and recorded it on the task\n' "$PR"
+
+  log "Cleaning up the testbed"
+  gh pr close "$PR" --repo "$TESTBED" --delete-branch --comment "k3d smoke run; closing automatically." >/dev/null 2>&1 \
+    || printf '::warning::could not close PR #%s on %s — close it by hand\n' "$PR" "$TESTBED"
+fi
 
 log "PASS — k3d agent-Job smoke green"
