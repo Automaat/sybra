@@ -125,7 +125,7 @@ export function interpretExperiment(
   return {
     verdict,
     verdictLabel: verdictLabels[verdict],
-    verdictReason: verdictReason(verdict, guardrails, row.qualityAttributionLimited, landed),
+    verdictReason: verdictReason(row, verdict, guardrails, row.qualityAttributionLimited, landed),
     primaryLabel: 'Landed/run',
     primaryValue: landedPerRun === undefined ? '—' : `${(landedPerRun * 100).toFixed(0)}%`,
     primaryDetail: `${landed}/${runs} landed`,
@@ -143,17 +143,28 @@ function deriveVerdict(row: ComparisonBreakdown, landed: number, guardrails: Gua
 }
 
 function verdictReason(
+  row: ComparisonBreakdown,
   verdict: ExperimentVerdict,
   guardrails: GuardrailSignal[],
   qualityAttributionLimited: boolean,
   landed: number,
 ): string {
-  if (verdict === 'underpowered') return 'Run count is below the comparison minimum.'
+  if (verdict === 'underpowered') {
+    if (row.sampleStatus === 'low-sample+parity-unknown') {
+      return 'Run count is below the comparison minimum and execution parity is unknown.'
+    }
+    if (rowHasParityUnknown(row)) return 'Execution parity is unknown, so this cohort is not comparable.'
+    return 'Run count is below the comparison minimum.'
+  }
   if (qualityAttributionLimited) return 'Runs exist, but landed-task quality signals are not attributable yet.'
   if (landed === 0) return 'No landed tasks yet, so outcome quality cannot be judged.'
   const breach = guardrails.find((g) => g.status === 'breach')
   if (breach) return `${breach.label} breached its guardrail.`
   return 'Primary signal is available and no guardrail is breached.'
+}
+
+function rowHasParityUnknown(row: Pick<ComparisonBreakdown, 'sampleStatus'>): boolean {
+  return row.sampleStatus === 'parity-unknown' || row.sampleStatus === 'low-sample+parity-unknown'
 }
 
 function thresholdLow(

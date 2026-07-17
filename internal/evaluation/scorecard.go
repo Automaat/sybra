@@ -26,6 +26,16 @@ const (
 	SkillCohortIndeterminate = "indeterminate" // conformance can't be trusted either way
 )
 
+// Sample/parity readiness statuses surfaced on comparison rows and experiment
+// variants. Readiness math still gates on ResolvedRuns + SkillParityUnknown;
+// these strings exist so callers can explain *why* a row is insufficient.
+const (
+	SampleStatusActionable             = "actionable"
+	SampleStatusLowSample              = "low-sample"
+	SampleStatusParityUnknown          = "parity-unknown"
+	SampleStatusLowSampleParityUnknown = "low-sample+parity-unknown"
+)
+
 // skillConformanceBucket collapses skillattr's fine-grained conformance
 // states into the three populations a comparison cohort must never blend
 // (see issue #2007, "split skill and fallback execution cohorts"):
@@ -1095,11 +1105,25 @@ func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []Comparis
 		// indeterminate) is insufficient regardless of sample size: no
 		// amount of unparitied data makes a comparison honest.
 		row.InsufficientData = (minSamples > 0 && row.ResolvedRuns < minSamples) || row.SkillParityUnknown
+		row.SampleStatus = comparisonSampleStatus(minSamples > 0 && row.ResolvedRuns < minSamples, row.SkillParityUnknown)
 		row.QualityAttributionLimited = row.Landed == 0 && row.Runs > 0
 		out = append(out, row)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
+}
+
+func comparisonSampleStatus(lowSample, parityUnknown bool) string {
+	switch {
+	case lowSample && parityUnknown:
+		return SampleStatusLowSampleParityUnknown
+	case parityUnknown:
+		return SampleStatusParityUnknown
+	case lowSample:
+		return SampleStatusLowSample
+	default:
+		return SampleStatusActionable
+	}
 }
 
 func wilson95(numerator, denominator int) RateEstimate {
@@ -1172,15 +1196,6 @@ func applyVariantSemantics(rows []ComparisonBreakdown, opts CompareOptions) []Ex
 			}
 			row.MinSamplesPerVariant = opts.MinSamples
 			row.BaselineVariantID = cfg.baselineVariantID
-			// InsufficientData already covers both the sample-size floor and
-			// skill-parity unknowns (see comparisonRows), so SampleStatus
-			// mirrors it directly rather than re-deriving the sample-size
-			// half and silently ignoring the parity half.
-			if row.InsufficientData {
-				row.SampleStatus = "low-sample"
-			} else {
-				row.SampleStatus = "actionable"
-			}
 			rowByVariant[row.VariantID] = row
 		}
 		applyBaselineDeltas(rowByVariant, cfg.baselineVariantID)
@@ -1318,10 +1333,12 @@ func experimentSampleStatus(key string, cfg experimentRoleConfig, rows map[strin
 		// ran" stays distinguishable from "every dispatch stalled".
 		runs, resolved := 0, 0
 		observed, insufficient := false, false
+		sampleStatus := ""
 		if row != nil {
 			runs, resolved = row.Runs, row.ResolvedRuns
 			observed = true
 			insufficient = row.InsufficientData
+			sampleStatus = row.SampleStatus
 		}
 		ready := (minSamples <= 0 || resolved >= minSamples) && !insufficient
 		if ready {
@@ -1329,9 +1346,12 @@ func experimentSampleStatus(key string, cfg experimentRoleConfig, rows map[strin
 		}
 		status.TotalRuns += runs
 		status.TotalResolvedRuns += resolved
-		sampleStatus := "low-sample"
-		if ready {
-			sampleStatus = "actionable"
+		if sampleStatus == "" {
+			if ready {
+				sampleStatus = SampleStatusActionable
+			} else {
+				sampleStatus = SampleStatusLowSample
+			}
 		}
 		status.Variants = append(status.Variants, VariantSampleStatus{
 			VariantID:    id,

@@ -1,11 +1,14 @@
 package learning
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 )
 
@@ -124,7 +127,17 @@ func TestBuildPacketExperimentSignalsCarryInsufficientData(t *testing.T) {
 	in := since.Add(time.Hour)
 
 	recs := []stats.RunRecord{
-		{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", ExperimentID: "exp", VariantID: "a", Outcome: "completed", Timestamp: in},
+		{
+			TaskID:           "A",
+			Role:             "implementation",
+			Provider:         "claude",
+			Model:            "sonnet",
+			ExperimentID:     "exp",
+			VariantID:        "a",
+			SkillConformance: skillattr.ConformanceNone,
+			Outcome:          "completed",
+			Timestamp:        in,
+		},
 	}
 	evts := []audit.Event{
 		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
@@ -146,5 +159,66 @@ func TestBuildPacketExperimentSignalsCarryInsufficientData(t *testing.T) {
 	}
 	if !row.InsufficientData {
 		t.Fatalf("row with 1 run against MinSamplesPerVariant=20 must be flagged InsufficientData: %+v", row)
+	}
+	if row.SampleStatus != evaluation.SampleStatusLowSample {
+		t.Fatalf("row sample status = %q, want %q", row.SampleStatus, evaluation.SampleStatusLowSample)
+	}
+}
+
+func TestBuildPacketExperimentSignalsCarryParityUnknownStatus(t *testing.T) {
+	since := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	until := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
+	in := since.Add(time.Hour)
+
+	recs := []stats.RunRecord{
+		{
+			TaskID:           "A",
+			Role:             "implementation",
+			Provider:         "claude",
+			Model:            "sonnet",
+			ExperimentID:     "exp",
+			VariantID:        "a",
+			SkillConformance: skillattr.ConformanceUnverified,
+			Outcome:          "completed",
+			Timestamp:        in,
+		},
+	}
+	abTesting := abtest.Config{
+		MinSamplesPerVariant: 1,
+		Experiments: []abtest.Experiment{
+			{ID: "exp", Kind: "model", Variants: []abtest.Variant{{ID: "a"}}},
+		},
+	}
+
+	pkt := buildPacket(recs, nil, abTesting, since, until, nil)
+	if len(pkt.Experiments) != 1 {
+		t.Fatalf("Experiments = %+v, want 1 row", pkt.Experiments)
+	}
+	row := pkt.Experiments[0]
+	if !row.InsufficientData {
+		t.Fatalf("row with parity-unknown delivery must be flagged InsufficientData: %+v", row)
+	}
+	if row.SampleStatus != evaluation.SampleStatusParityUnknown {
+		t.Fatalf("row sample status = %q, want %q", row.SampleStatus, evaluation.SampleStatusParityUnknown)
+	}
+}
+
+func TestBuildPromptExplainsParityUnknownExperimentSignals(t *testing.T) {
+	prompt := buildPrompt(Packet{
+		Since: time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC),
+		Until: time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC),
+		Experiments: []ExperimentSignal{{
+			ExperimentID:     "exp",
+			VariantID:        "control",
+			Kind:             "model",
+			InsufficientData: true,
+			SampleStatus:     evaluation.SampleStatusParityUnknown,
+		}},
+	})
+	if !strings.Contains(prompt, "parity-unknown") {
+		t.Fatalf("prompt missing parity-unknown guidance:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "never frame parity-unknown rows as wins/losses") {
+		t.Fatalf("prompt missing parity caveat:\n%s", prompt)
 	}
 }

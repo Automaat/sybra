@@ -109,6 +109,14 @@ export function guardrailClasses(status: string): string {
 export function sampleClasses(status: string | undefined): string {
   if (status === 'actionable') return 'bg-success-100 text-success-700 dark:bg-success-900 dark:text-success-200'
   if (status === 'directional') return 'bg-warning-100 text-warning-700 dark:bg-warning-900 dark:text-warning-200'
+  if (status === 'parity-unknown' || status === 'low-sample+parity-unknown') {
+    return 'bg-warning-100 text-warning-700 dark:bg-warning-900 dark:text-warning-200'
+  }
   if (status === 'low-sample') return 'bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-200'
   return 'bg-surface-100 text-surface-500 dark:bg-surface-800 dark:text-surface-300'
+}
+
+export function sampleLabel(status: string | undefined): string {
+  if (status === 'low-sample+parity-unknown') return 'low-sample + parity-unknown'
+  return status ?? ''
 }

@@ -45,6 +45,17 @@ describe('interpretExperiment', () => {
 
     expect(result.verdict).toBe('underpowered')
     expect(result.verdictLabel).toBe('Underpowered')
+    expect(result.verdictReason).toContain('Run count is below')
+  })
+
+  it('explains parity-unknown rows as incomparable, not just low-sample', () => {
+    const result = interpretExperiment(row({
+      insufficientData: true,
+      sampleStatus: 'parity-unknown',
+    }), [peer()])
+
+    expect(result.verdict).toBe('underpowered')
+    expect(result.verdictReason).toContain('Execution parity is unknown')
   })
 
   it('marks rows with no landed tasks as needing more data', () => {
