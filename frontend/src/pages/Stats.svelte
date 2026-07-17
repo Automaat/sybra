@@ -41,6 +41,12 @@
   const taskSeries = $derived(closedTasksSeries(statsStore.data?.closedTasksDaily ?? [], cutoff, now))
   const projectCosts = $derived(costByProject(recentRuns, cutoff))
 
+  // Review rounds are aggregated per task across its whole lifetime, so the
+  // backend reports them all-time only — the period selector above does not
+  // apply and the caption says so rather than letting the table look filtered.
+  const reviewRounds = $derived(statsStore.data?.reviewRounds ?? [])
+  const anyMixedImplModels = $derived(reviewRounds.some((r) => (r.mixedImplModels ?? 0) > 0))
+
   $effect(() => {
     void refreshStats()
   })
@@ -385,6 +391,58 @@
           {/if}
         </div>
       {/each}
+    </div>
+
+    <!-- Review rounds by implementing model -->
+    <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+      <div class="mb-3 flex items-baseline justify-between gap-2">
+        <h3 class="text-sm font-semibold text-surface-500">Review rounds by implementing model</h3>
+        <span class="text-[10px] text-surface-400">All Time · tasks that reached review</span>
+      </div>
+      {#if reviewRounds.length > 0}
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
+                <th class="pb-2">Model</th>
+                <th class="pb-2 text-right">Tasks</th>
+                <th class="pb-2 text-right">Avg rounds</th>
+                <th class="pb-2 text-right">Max</th>
+                <th class="pb-2 text-right">Clean 1st pass</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each reviewRounds as row (row.key)}
+                <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
+                  <td class="py-1.5 font-mono text-xs">
+                    {row.key}
+                    {#if (row.mixedImplModels ?? 0) > 0}
+                      <span
+                        class="ml-1 cursor-help text-surface-400"
+                        title="{row.mixedImplModels} of {row.tasks} task(s) had implementation runs on more than one model (provider failover, or a test failure re-entering implement). Attributed to the earliest run, so this average is approximate."
+                        aria-label="{row.mixedImplModels} of {row.tasks} tasks had mixed implementation models; average is approximate"
+                      >*</span>
+                    {/if}
+                  </td>
+                  <td class="py-1.5 text-right">{row.tasks}</td>
+                  <td class="py-1.5 text-right">{row.avgRounds.toFixed(2)}</td>
+                  <td class="py-1.5 text-right">{row.maxRounds}</td>
+                  <td class="py-1.5 text-right text-surface-400">
+                    {row.cleanFirstPass}{#if row.tasks > 0}<span class="ml-1 text-[10px]">({Math.round((row.cleanFirstPass / row.tasks) * 100)}%)</span>{/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <p class="mt-3 text-[10px] leading-relaxed text-surface-400">
+          Rounds a model's code needed before a reviewer stopped finding issues. 1 round means the first
+          reviewer found nothing actionable. Tasks that skipped review are excluded.
+          {#if anyMixedImplModels}<span class="font-mono">*</span> marks models whose average includes tasks implemented by more than one model.{/if}
+        </p>
+      {:else}
+        <p class="text-xs text-surface-400">No reviewed tasks yet</p>
+      {/if}
     </div>
 
     <!-- Recent runs -->

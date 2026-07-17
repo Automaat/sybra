@@ -330,6 +330,10 @@ type Engine struct {
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	maxTestAttempts  int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
+	// reviewLoopDisabled: see SetReviewUntilClean. Inverted so the zero value
+	// keeps the review→fix→review cycle running, matching
+	// config.ReviewUntilClean's default of true.
+	reviewLoopDisabled bool
 	// openPROnUnrunnableGate: see SetOpenPROnUnrunnableGate. Defaults to true
 	// (set in NewEngine), matching config.TestingOpenPROnUnrunnableGateEnabled's
 	// nil-is-true default.
@@ -533,6 +537,12 @@ func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
 // fingerprints still escalate independently of this count. Values <= 0 fall
 // back to defaultTestAttempts.
 func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
+
+// SetReviewUntilClean controls whether simple-task-review re-reviews after
+// every fix until the verdict is CLEAN (true, the default) or runs a single
+// review pass per task (false). The cycle has no round cap; false is the way
+// to bound it when a per-task cost ceiling is not configured.
+func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
 
 // SetOpenPROnUnrunnableGate controls whether execRouteTestResult opens a PR
 // (ready-pr) instead of escalating to human-required once a testing cycle

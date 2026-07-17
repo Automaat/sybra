@@ -104,20 +104,45 @@ type TaskSeriesPoint struct {
 	Count int    `json:"count"`
 }
 
+// ReviewRoundsStat answers "how many review rounds did each model's code need
+// before a reviewer stopped finding issues?" — the code-quality signal that
+// per-run cost and turn counts cannot express. Key is the model that authored
+// the implementation; the counts describe review runs over that same task.
+//
+// simple-task-review loops review→fix→review until the verdict is CLEAN, so
+// Rounds is an outcome measure of the implementing model: 1 means the first
+// reviewer found nothing actionable, higher means its code needed rework.
+//
+// Attribution is to the FIRST implementation run of a task. A task can hold
+// several (provider failover mid-task, or a test failure re-entering
+// implement), and the first is the one whose output the first review judged.
+// MixedImplModels counts tasks whose implementation runs did not all share one
+// model, so a skewed Avg can be recognised rather than silently trusted.
+type ReviewRoundsStat struct {
+	Key             string  `json:"key"`
+	Tasks           int     `json:"tasks"`
+	TotalRounds     int     `json:"totalRounds"`
+	AvgRounds       float64 `json:"avgRounds"`
+	MaxRounds       int     `json:"maxRounds"`
+	CleanFirstPass  int     `json:"cleanFirstPass"`
+	MixedImplModels int     `json:"mixedImplModels,omitempty"`
+}
+
 // StatsResponse is the full analytics payload returned to the frontend.
 type StatsResponse struct {
-	Today                Summary           `json:"today"`
-	ThisWeek             Summary           `json:"thisWeek"`
-	ThisMonth            Summary           `json:"thisMonth"`
-	AllTime              Summary           `json:"allTime"`
-	ByProject            []GroupedStat     `json:"byProject"`
-	ByProjectType        []GroupedStat     `json:"byProjectType"`
-	ByMode               []GroupedStat     `json:"byMode"`
-	ByRole               []GroupedStat     `json:"byRole"`
-	ByModel              []GroupedStat     `json:"byModel"`
-	ByProvider           []GroupedStat     `json:"byProvider"`
-	BySkillExecutionMode []GroupedStat     `json:"bySkillExecutionMode"`
-	RecentRuns           []RunRecord       `json:"recentRuns"`
-	ClosedTasksDaily     []TaskSeriesPoint `json:"closedTasksDaily"`
-	Limits               *limits.Summary   `json:"limits,omitempty"`
+	Today                Summary            `json:"today"`
+	ThisWeek             Summary            `json:"thisWeek"`
+	ThisMonth            Summary            `json:"thisMonth"`
+	AllTime              Summary            `json:"allTime"`
+	ByProject            []GroupedStat      `json:"byProject"`
+	ByProjectType        []GroupedStat      `json:"byProjectType"`
+	ByMode               []GroupedStat      `json:"byMode"`
+	ByRole               []GroupedStat      `json:"byRole"`
+	ByModel              []GroupedStat      `json:"byModel"`
+	ByProvider           []GroupedStat      `json:"byProvider"`
+	BySkillExecutionMode []GroupedStat      `json:"bySkillExecutionMode"`
+	ReviewRounds         []ReviewRoundsStat `json:"reviewRounds"`
+	RecentRuns           []RunRecord        `json:"recentRuns"`
+	ClosedTasksDaily     []TaskSeriesPoint  `json:"closedTasksDaily"`
+	Limits               *limits.Summary    `json:"limits,omitempty"`
 }
