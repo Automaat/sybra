@@ -529,6 +529,16 @@ export class GitHubConfig {
      * volume; lower them only on a high-limit (App-token) instance.
      */
     "reviewsFastSeconds": number;
+
+    /**
+     * ReviewRoundsPerHour caps automated review runs one PR may receive in a
+     * rolling hour before the task is parked for a human. 0 uses the default;
+     * negative disables the cap. Rate-based rather than a lifetime total so a
+     * long-lived PR that is legitimately re-reviewed after each push is never
+     * blocked, while a runaway loop is stopped within the hour (#2164 sustained
+     * ~5/hour for 23 hours).
+     */
+    "reviewRoundsPerHour": number;
     "reviewsSlowSeconds": number;
 
     /**
@@ -594,6 +604,9 @@ export class GitHubConfig {
         if (!("reviewsFastSeconds" in $$source)) {
             this["reviewsFastSeconds"] = 0;
         }
+        if (!("reviewRoundsPerHour" in $$source)) {
+            this["reviewRoundsPerHour"] = 0;
+        }
         if (!("reviewsSlowSeconds" in $$source)) {
             this["reviewsSlowSeconds"] = 0;
         }
@@ -629,10 +642,10 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField11_0 = $$createType4;
+        const $$createField12_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField11_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField12_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
     }
