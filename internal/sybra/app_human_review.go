@@ -147,29 +147,31 @@ func (a *App) initHumanReview() {
 // maybeSpawn is called from the status hook when a task lands in
 // human-required. Returns immediately if the feature is disabled, the task
 // already has an in-flight review, or the rolling rate limit is exceeded.
-func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
+// The bool return reports whether a review agent was actually dispatched —
+// retryAfterCrash relies on it to tell a real retry apart from a silent skip.
+func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 	if h == nil {
-		return
+		return false
 	}
 	// Don't loop when an unblock flow flips blocked → todo → human-required.
 	if prevStatus == string(task.StatusBlocked) {
 		h.skip(taskID, "prev_status_blocked")
-		return
+		return false
 	}
 	t, err := h.tasks.Get(taskID)
 	if err != nil {
 		h.logger.Error("human-review.task.get", "task_id", taskID, "err", err)
-		return
+		return false
 	}
 	// Idempotency gate: a prior run already produced a verdict — re-spawning
 	// on app restart or repeated status hooks would just duplicate the diagnosis.
 	if verdictAlreadyRendered(t) {
 		h.skip(taskID, "verdict_rendered")
-		return
+		return false
 	}
 	if strings.TrimSpace(t.ProjectID) == "" {
 		h.skip(taskID, "no_project")
-		return
+		return false
 	}
 	// Work-Data Confidentiality: if the task's project is work-typed, the
 	// review still runs (we want the diagnosis) but the prompt is augmented
@@ -184,17 +186,17 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 	if _, busy := h.inflight[taskID]; busy {
 		h.mu.Unlock()
 		h.skip(taskID, "in_flight")
-		return
+		return false
 	}
 	if !h.allowSpawnLocked() {
 		h.mu.Unlock()
 		h.skip(taskID, "rate_limited")
-		return
+		return false
 	}
 	if !h.allowSpawnForTaskLocked(taskID) {
 		h.mu.Unlock()
 		h.skip(taskID, "task_rate_limited")
-		return
+		return false
 	}
 	// Reserve the slot before spawning so a racing second flip is rejected.
 	h.inflight[taskID] = ""
@@ -223,7 +225,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 		h.mu.Unlock()
 		h.logger.Error("human-review.spawn", "task_id", taskID, "err", err)
 		h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{"reason": "spawn_failed", "err": err.Error()})
-		return
+		return false
 	}
 	h.mu.Lock()
 	h.inflight[taskID] = ag.ID
@@ -243,6 +245,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 	h.logAudit(audit.EventHumanReviewSpawned, taskID, ag.ID, map[string]any{
 		"prev_status": prevStatus, "model": h.cfg.HumanReviewModel(),
 	})
+	return true
 }
 
 // onComplete is the routing target inside App.onAgentComplete for runs whose
@@ -298,13 +301,11 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 			h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": "provider_rate_limited"})
 			return
 		}
-		// A crashed run (e.g. error_during_execution before any tool call)
-		// produces no usable final text, which would otherwise fall through
-		// to the generic "unparseable verdict" path below and get marked
-		// verdict_rendered — permanently disabling further autonomy attempts
-		// via the idempotency gate in maybeSpawn, even though the autonomy
-		// mandate never actually ran.
-		if ag.HadTerminalError() {
+		// Without the zero-tool-calls check, a run that did real diagnostic
+		// work and only errored at the very end would be treated the same as
+		// an instant crash and get retried/discarded instead of routing
+		// through the ordinary unparseable-verdict path below.
+		if ag.HadTerminalError() && ag.GetToolCalls() == 0 {
 			h.handleCrashedVerdict(taskID, ag)
 			return
 		}
@@ -350,11 +351,15 @@ func (h *humanReviewHandler) handleCrashedVerdict(taskID string, ag *agent.Agent
 		return
 	}
 	h.logger.Warn("human-review.verdict.crashed-exhausted", "task_id", taskID, "agent_id", ag.ID)
+	// Deliberately silent on retry count: retryAfterCrash's true/false only
+	// says whether maybeSpawn actually dispatched a retry, not how many were
+	// attempted, so this note must not assert a specific attempt count.
 	if h.appendNote(taskID, "Auto-review (crashed)",
-		"The autonomy-mandate agent crashed before producing a diagnosis, on repeated "+
-			"attempts. This is a genuine human-required case, but note the automated "+
-			"recovery attempt never actually ran to completion — it errored out before "+
-			"doing anything, so the failure itself has not been reviewed.") {
+		"The autonomy-mandate agent crashed before producing a diagnosis, and an "+
+			"automatic retry could not be dispatched (spawn budget exhausted, or the "+
+			"retry attempt itself failed to start). This is a genuine human-required "+
+			"case, but note the failure itself has not actually been reviewed — the "+
+			"automated recovery never completed a run.") {
 		h.markVerdictRendered(taskID, ag.ID)
 	}
 	h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
@@ -919,9 +924,14 @@ func (h *humanReviewHandler) allowSpawnForTaskLocked(taskID string) bool {
 // existing per-task spawn budget (allowSpawnForTaskLocked,
 // humanReviewMaxPerTaskPerWindow) as the retry bound instead of adding a
 // second counter: the crashed run already consumed one slot, so at most one
-// further attempt fits within the window before allowSpawnForTaskLocked (and
-// maybeSpawn's own re-check) start rejecting further spawns. Returns true if
-// a retry was dispatched.
+// further attempt fits within the window before maybeSpawn's own budget
+// checks start rejecting further spawns.
+//
+// Returns maybeSpawn's own report of whether a review agent was actually
+// dispatched — not merely whether this method decided to try. maybeSpawn can
+// still decline (global fleet-wide rate limit, a race on the per-task budget,
+// or the spawn call itself failing) after this method's own pre-check passes,
+// and the caller needs to know that happened rather than assume success.
 //
 // Called from onComplete before its own `defer delete(h.inflight, taskID)`
 // runs, so the crashed run's own slot must be freed here first — otherwise
@@ -930,13 +940,8 @@ func (h *humanReviewHandler) allowSpawnForTaskLocked(taskID string) bool {
 func (h *humanReviewHandler) retryAfterCrash(taskID string) bool {
 	h.mu.Lock()
 	delete(h.inflight, taskID)
-	ok := h.allowSpawnForTaskLocked(taskID)
 	h.mu.Unlock()
-	if !ok {
-		return false
-	}
-	h.maybeSpawn(taskID, "human-required")
-	return true
+	return h.maybeSpawn(taskID, "human-required")
 }
 
 func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[string]any) {

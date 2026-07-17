@@ -1463,7 +1463,10 @@ func TestOnComplete_CrashedVerdict_ExhaustedRetriesMarksDistinguishableNote(t *t
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("owner/repo"),
+	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
@@ -1502,5 +1505,119 @@ func TestOnComplete_CrashedVerdict_ExhaustedRetriesMarksDistinguishableNote(t *t
 	}
 	if !rendered {
 		t.Error("expected VerdictRendered=true once retries are exhausted, so the task doesn't loop forever")
+	}
+}
+
+// TestOnComplete_CrashedVerdict_GlobalCapDeclinesRetrySilently pins that a
+// retry attempt maybeSpawn silently declines for a reason other than the
+// per-task budget (here: the fleet-wide global cap, allowSpawnLocked) still
+// lands on the distinguishable crashed-exhausted note rather than acting as
+// if a retry actually happened. retryAfterCrash's own pre-check only covers
+// the per-task budget, so this exercises the case where that pre-check would
+// have said "go ahead" but maybeSpawn's independent global check declines.
+func TestOnComplete_CrashedVerdict_GlobalCapDeclinesRetrySilently(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	h.cfg.HumanReview.MaxPerHour = 1
+	h.recent = []time.Time{h.now()}
+
+	const agentID = "agent-hr-crash-global"
+	tk, err := tasks.Create("Crashed review, global cap", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("owner/repo"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Subtype: "error_during_execution"})
+	h.inflight[tk.ID] = agentID
+	// Must not panic: the global cap declines inside maybeSpawn before it
+	// ever reaches the nil h.agents call that TestOnComplete_CrashedVerdict_
+	// RetriesOnce relies on panicking.
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if !strings.Contains(got.Body, "crashed") {
+		t.Errorf("expected a distinguishable crash note in body; got:\n%s", got.Body)
+	}
+	var rendered bool
+	for i := range got.AgentRuns {
+		if got.AgentRuns[i].AgentID == agentID {
+			rendered = got.AgentRuns[i].VerdictRendered
+			break
+		}
+	}
+	if !rendered {
+		t.Error("expected VerdictRendered=true once the global cap silently declines the retry")
+	}
+}
+
+// TestOnComplete_TerminalErrorWithToolCalls_SkipsCrashPath pins that a run
+// which made real tool calls before hitting a terminal error is NOT treated
+// as "crashed before doing anything" — it must fall through to the ordinary
+// unparseable-verdict path so its (possibly substantive) output is preserved
+// instead of being discarded for a pointless retry.
+func TestOnComplete_TerminalErrorWithToolCalls_SkipsCrashPath(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-hr-worked-then-errored"
+	tk, err := tasks.Create("Errored after real work", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "Investigated the failure at length."})
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "result",
+		Subtype: "error_during_execution",
+		Content: "Ran out of turns before finishing the investigation.",
+	})
+	ag.AddToolCalls(3)
+	h.inflight[tk.ID] = agentID
+	// h.agents is nil: if this went down the crash-retry path it would
+	// attempt a spawn and panic, which is this test's failure signal too.
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if strings.Contains(got.Body, "Auto-review (crashed)") {
+		t.Errorf("a run with tool calls should not use the crashed-run note; got:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "Auto-review (unparseable verdict)") {
+		t.Errorf("expected the ordinary unparseable-verdict path; got:\n%s", got.Body)
 	}
 }
