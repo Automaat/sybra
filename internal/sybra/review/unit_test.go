@@ -1471,43 +1471,137 @@ func TestIncludeKnownTaskPRsAddsLinkedPRsMissingFromSearch(t *testing.T) {
 	}
 }
 
-// TestTriageReviewSmall guards the reviewSmallAdditions (40) and
-// reviewSmallFiles (5) thresholds. Both conditions must hold for the PR to be
-// routed to human-required; if either meets or exceeds its limit the review
-// agent should be dispatched.
-func TestTriageReviewSmall(t *testing.T) {
+func TestTriageReviewStartsAgentAfterStatsRegardlessOfSize(t *testing.T) {
 	tests := []struct {
 		name      string
 		additions int
 		files     int
-		wantSmall bool
 	}{
-		// Both strictly below threshold → too small for agent
-		{"39 additions, 4 files — below both limits", 39, 4, true},
-		{"0 additions, 0 files — zero-sized PR", 0, 0, true},
-		{"1 addition, 1 file — minimal PR", 1, 1, true},
-
-		// additions at exact threshold → no longer small (dispatch agent)
-		{"40 additions, 4 files — additions at limit", 40, 4, false},
-		// files at exact threshold → no longer small (dispatch agent)
-		{"39 additions, 5 files — files at limit", 39, 5, false},
-		// both at threshold
-		{"40 additions, 5 files — both at limit", 40, 5, false},
-		// both above threshold
-		{"200 additions, 20 files — large PR", 200, 20, false},
-		// one well above, one below
-		{"100 additions, 1 file — additions above, files below", 100, 1, false},
-		{"1 addition, 10 files — additions below, files above", 1, 10, false},
+		{name: "zero-sized PR", additions: 0, files: 0},
+		{name: "tiny PR", additions: 1, files: 1},
+		{name: "large PR", additions: 200, files: 20},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := triageReviewSmall(tt.additions, tt.files)
-			if got != tt.wantSmall {
-				t.Errorf("triageReviewSmall(%d, %d) = %v, want %v",
-					tt.additions, tt.files, got, tt.wantSmall)
+			store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tasks := task.NewManager(store, nil)
+
+			tags := []string{"review"}
+			tk, err := tasks.CreateFull("Review: tiny change", "body", string(task.AgentModeHeadless), task.Update{
+				Tags:      &tags,
+				ProjectID: task.Ptr("owner/repo"),
+				PRNumber:  task.Ptr(42),
+			})
+			if err != nil {
+				t.Fatalf("CreateFull: %v", err)
+			}
+
+			started := false
+			r := &Handler{
+				logger: slog.New(slog.DiscardHandler),
+				tasks:  tasks,
+				fetchPRStatsFn: func(repo string, number int) (github.PRStats, error) {
+					if repo != "owner/repo" || number != 42 {
+						t.Fatalf("FetchPRStats repo/number = %s/%d, want owner/repo/42", repo, number)
+					}
+					return github.PRStats{Additions: tt.additions, ChangedFiles: tt.files}, nil
+				},
+				startReviewAgentFn: func(got task.Task, force bool) error {
+					started = true
+					if force {
+						t.Fatal("StartReviewAgent force = true, want false")
+					}
+					if got.ID != tk.ID {
+						t.Fatalf("StartReviewAgent task = %q, want %q", got.ID, tk.ID)
+					}
+					latest, err := tasks.Get(tk.ID)
+					if err != nil {
+						t.Fatalf("Get after triage: %v", err)
+					}
+					if latest.Status != task.StatusInReview {
+						t.Fatalf("status before StartReviewAgent = %q, want %q", latest.Status, task.StatusInReview)
+					}
+					return nil
+				},
+			}
+
+			r.triageReview(tk)
+
+			if !started {
+				t.Fatal("StartReviewAgent was not called")
+			}
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Status != task.StatusInReview {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
 			}
 		})
+	}
+}
+
+func TestTriageReviewStartsAgentWhenStatsFetchFails(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	tags := []string{"review"}
+	tk, err := tasks.CreateFull("Review: unknown size", "body", string(task.AgentModeHeadless), task.Update{
+		Tags:      &tags,
+		ProjectID: task.Ptr("owner/repo"),
+		PRNumber:  task.Ptr(42),
+	})
+	if err != nil {
+		t.Fatalf("CreateFull: %v", err)
+	}
+
+	started := false
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
+		fetchPRStatsFn: func(repo string, number int) (github.PRStats, error) {
+			if repo != "owner/repo" || number != 42 {
+				t.Fatalf("FetchPRStats repo/number = %s/%d, want owner/repo/42", repo, number)
+			}
+			return github.PRStats{}, errors.New("stats unavailable")
+		},
+		startReviewAgentFn: func(got task.Task, force bool) error {
+			started = true
+			if force {
+				t.Fatal("StartReviewAgent force = true, want false")
+			}
+			if got.ID != tk.ID {
+				t.Fatalf("StartReviewAgent task = %q, want %q", got.ID, tk.ID)
+			}
+			latest, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("Get after triage: %v", err)
+			}
+			if latest.Status != task.StatusInReview {
+				t.Fatalf("status before StartReviewAgent = %q, want %q", latest.Status, task.StatusInReview)
+			}
+			return nil
+		},
+	}
+
+	r.triageReview(tk)
+
+	if !started {
+		t.Fatal("StartReviewAgent was not called")
+	}
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
 	}
 }
 
@@ -1931,7 +2025,7 @@ func TestCloseFinishedReviewTasks(t *testing.T) {
 			wantStatus: task.StatusInReview,
 		},
 		{
-			// human-required tasks are eligible too (small PR punted to human).
+			// human-required review tasks are eligible too (draft/manual follow-up).
 			name:       "human-required review task with merged PR — advances to done",
 			taskStatus: task.StatusHumanRequired,
 			prState:    "MERGED",

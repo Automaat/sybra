@@ -151,7 +151,7 @@ func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
 		t.Fatalf("seed draft-review task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, nil)
+	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
 	for _, want := range []string{
 		"pre-flight the draft before submitting anything",
 		"APPROVE drafts must NEVER be auto-submitted",

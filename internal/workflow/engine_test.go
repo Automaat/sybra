@@ -2945,9 +2945,9 @@ func TestResumeStalled_SkipWaitHuman(t *testing.T) {
 }
 
 // TestResumeStalled_SkipsHumanRequired reproduces the post-restart dispatch bug
-// where a review task was set to human-required by inline triage (small PR)
-// but ResumeStalled re-dispatched its workflow's run_agent step after restart,
-// overriding the triage verdict.
+// where a review task was parked on human-required but ResumeStalled
+// re-dispatched its workflow's run_agent step after restart, overriding the
+// triage verdict.
 func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -2955,8 +2955,8 @@ func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
 	// Simulate a review task whose pr-review workflow is at the implement
-	// (run_agent) step but whose status was flipped to human-required by the
-	// inline triage path before the restart.
+	// (run_agent) step but whose status was flipped to human-required before
+	// the restart.
 	tasks.Put(TaskInfo{
 		ID:        "t1",
 		Status:    "human-required",
