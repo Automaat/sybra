@@ -276,6 +276,20 @@ func TestGhShim_BlocksApprovalsInvisibleToArgv(t *testing.T) {
 				"-f", "query=mutation{addPullRequestReview(input:{pullRequestId:\"x\",event:APPROVE}){clientMutationId}}",
 			},
 		},
+		{
+			// -F key=@path reads the value from a file, so the whole mutation
+			// stays out of argv — the same hole as --input, one field wide.
+			name: "graphql query read from a file",
+			args: []string{"api", "graphql", "-F", "query=@/tmp/mutation.graphql"},
+		},
+		{
+			name: "graphql query read from stdin",
+			args: []string{"api", "graphql", "-F", "query=@-"},
+		},
+		{
+			name: "review event read from a file",
+			args: []string{"api", "repos/o/r/pulls/151/reviews", "-F", "event=@/tmp/event.txt"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -312,6 +326,19 @@ func TestGhShim_AllowsInspectableAndUnrelatedCalls(t *testing.T) {
 			args: []string{"api", "repos/o/r/issues/1/comments", "--method", "POST", "--input", "-"},
 		},
 		{"unrelated graphql", []string{"api", "graphql", "-f", "query=query{viewer{login}}"}},
+		{
+			// Variables are fine; it is a file-sourced *value* that hides intent.
+			name: "graphql read query with variables",
+			args: []string{
+				"api", "graphql",
+				"-f", "query=query($n:Int!){repository(owner:\"o\",name:\"r\"){pullRequest(number:$n){id}}}",
+				"-F", "n=151",
+			},
+		},
+		{
+			name: "file-sourced body on a non-review endpoint",
+			args: []string{"api", "repos/o/r/issues/1/comments", "-F", "body=@/tmp/note.md"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

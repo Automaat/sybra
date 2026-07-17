@@ -51,15 +51,19 @@ if [ "$1" = "api" ]; then
 			exit 1
 			;;
 		esac
-		# A body read from stdin or a file is invisible to argv, so an approval
-		# can be posted with no matching arg at all.
+		# A payload read from stdin or a file is invisible to argv, so an approval
+		# can be posted with no matching arg at all. --input carries a whole
+		# body; -F/--field key=@path pulls a single value the same way, which is
+		# enough to hide a whole GraphQL mutation.
 		case "$arg" in
-		--input | --input=*)
+		--input | --input=* | *=@*)
 			sawinput=1
 			;;
 		esac
+		# graphql counts as review-capable: addPullRequestReview reaches the same
+		# place as POST /pulls/N/reviews.
 		case "$arg" in
-		*[Pp][Uu][Ll][Ll][Ss]/*/[Rr][Ee][Vv][Ii][Ee][Ww][Ss]* | */[Rr][Ee][Vv][Ii][Ee][Ww][Ss])
+		[Gg][Rr][Aa][Pp][Hh][Qq][Ll] | *[Pp][Uu][Ll][Ll][Ss]/*/[Rr][Ee][Vv][Ii][Ee][Ww][Ss]* | */[Rr][Ee][Vv][Ii][Ee][Ww][Ss])
 			sawreviews=1
 			;;
 		esac
