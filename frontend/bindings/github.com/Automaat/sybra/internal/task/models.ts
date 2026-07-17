@@ -36,13 +36,28 @@ export class AgentRun {
     "assignmentUnit"?: string;
     "assignmentKey"?: string;
     "reasoningEffort"?: string;
+    "requestedSkill"?: string;
 
     /**
      * SkillExecutionMode records how a mandatory workflow skill actually ran:
-     * native invocation, injected SKILL.md, bundled fallback, or unavailable.
-     * Empty means the run had no mandatory workflow skill.
+     * none, native invocation, injected SKILL.md, bundled fallback, or
+     * unavailable. Legacy empty values remain readable and normalize to
+     * unknown at query time.
      */
     "skillExecutionMode"?: string;
+
+    /**
+     * ResolvedSkillSourceHash is a privacy-safe hash of the resolved local or
+     * bundled skill source identifier. Empty when the skill ran natively or no
+     * source was resolved.
+     */
+    "resolvedSkillSourceHash"?: string;
+
+    /**
+     * SkillConformance records whether the executed skill path exactly matched
+     * the requested skill, fell back, was unavailable, or had no skill at all.
+     */
+    "skillConformance"?: string;
     "state": string;
 
     /**
@@ -112,6 +127,13 @@ export class AgentRun {
      * human edits after the agent (merged_with_edits) and measure edit distance.
      */
     "headSha"?: string;
+
+    /**
+     * SubagentCallCount is the number of distinct forked-Claude subagent calls
+     * observed in the run. Zero for non-Claude runs and runs recorded before
+     * fan-out counting existed.
+     */
+    "subagentCallCount"?: number;
 
     /** Creates a new AgentRun instance. */
     constructor($$source: Partial<AgentRun> = {}) {

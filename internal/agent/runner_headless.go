@@ -793,6 +793,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	a.applyStreamEventState(event)
 	a.AppendOutput(event)
 	a.AddToolCalls(event.ToolCalls)
+	a.NoteSubagentCall(event.parentToolUseID)
 	// Feed the tool-call fingerprint into the real-time loop detector. An empty
 	// signature (non-tool event) is a no-op, so the low-progress window survives
 	// reasoning between repeated actions and the watchdog can spot an active loop.

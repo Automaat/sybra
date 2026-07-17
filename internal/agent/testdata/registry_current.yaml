@@ -24,7 +24,10 @@ max_turns: 7
 require_permissions: true
 sandbox_mode: enforce
 reasoning_effort: high
+requested_skill: sybra-test
 skill_execution_mode: injected
+resolved_skill_source_hash: deadbeefcafebabe
+skill_conformance: exact
 post_result_wait_reason: background_tasks
 post_result_wait_since: 2026-06-28T20:40:00Z
 fork_subagent: true

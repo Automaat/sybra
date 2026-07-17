@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/skillattr"
 )
 
 // Store persists RunRecords to a JSON file and computes aggregates in memory.
@@ -117,63 +118,69 @@ func (s *Store) QueryAt(now time.Time) StatsResponse {
 	byRole := map[string][]RunRecord{}
 	byModel := map[string][]RunRecord{}
 	byProvider := map[string][]RunRecord{}
+	bySkillExecutionMode := map[string][]RunRecord{}
 
 	for i := range s.runs {
-		r := &s.runs[i]
-		all = append(all, *r)
+		r := normalizedRunRecord(s.runs[i])
+		all = append(all, r)
 
 		if !r.Timestamp.Before(todayStart) {
-			today = append(today, *r)
+			today = append(today, r)
 		}
 		if !r.Timestamp.Before(weekStart) {
-			week = append(week, *r)
+			week = append(week, r)
 		}
 		if !r.Timestamp.Before(monthStart) {
-			month = append(month, *r)
+			month = append(month, r)
 		}
 
 		pid := r.ProjectID
 		if pid == "" {
 			pid = "(none)"
 		}
-		byProject[pid] = append(byProject[pid], *r)
+		byProject[pid] = append(byProject[pid], r)
 
-		byMode[r.Mode] = append(byMode[r.Mode], *r)
+		byMode[r.Mode] = append(byMode[r.Mode], r)
 
 		role := r.Role
 		if role == "" {
 			role = "implementation"
 		}
-		byRole[role] = append(byRole[role], *r)
+		byRole[role] = append(byRole[role], r)
 
 		model := r.Model
 		if model == "" {
 			model = "(unknown)"
 		}
-		byModel[model] = append(byModel[model], *r)
+		byModel[model] = append(byModel[model], r)
 
 		provider := r.Provider
 		if provider == "" {
 			provider = "(unknown)"
 		}
-		byProvider[provider] = append(byProvider[provider], *r)
+		byProvider[provider] = append(byProvider[provider], r)
+
+		bySkillExecutionMode[r.SkillExecutionMode] = append(bySkillExecutionMode[r.SkillExecutionMode], r)
 	}
 
 	resp := StatsResponse{
-		Today:      summarize(today),
-		ThisWeek:   summarize(week),
-		ThisMonth:  summarize(month),
-		AllTime:    summarize(all),
-		ByProject:  groupedStats(byProject),
-		ByMode:     groupedStats(byMode),
-		ByRole:     groupedStats(byRole),
-		ByModel:    groupedStats(byModel),
-		ByProvider: groupedStats(byProvider),
+		Today:                summarize(today),
+		ThisWeek:             summarize(week),
+		ThisMonth:            summarize(month),
+		AllTime:              summarize(all),
+		ByProject:            groupedStats(byProject),
+		ByMode:               groupedStats(byMode),
+		ByRole:               groupedStats(byRole),
+		ByModel:              groupedStats(byModel),
+		ByProvider:           groupedStats(byProvider),
+		BySkillExecutionMode: groupedStats(bySkillExecutionMode),
 	}
 
 	// Recent runs: last 50, newest first
 	recent := make([]RunRecord, len(s.runs))
-	copy(recent, s.runs)
+	for i := range s.runs {
+		recent[i] = normalizedRunRecord(s.runs[i])
+	}
 	slices.SortFunc(recent, func(a, b RunRecord) int { return b.Timestamp.Compare(a.Timestamp) })
 	if len(recent) > 50 {
 		recent = recent[:50]
@@ -181,6 +188,12 @@ func (s *Store) QueryAt(now time.Time) StatsResponse {
 	resp.RecentRuns = recent
 
 	return resp
+}
+
+func normalizedRunRecord(r RunRecord) RunRecord {
+	r.SkillExecutionMode = skillattr.NormalizeExecutionMode(r.SkillExecutionMode)
+	r.SkillConformance = skillattr.NormalizeConformance(r.SkillConformance)
+	return r
 }
 
 func (s *Store) flush() error {
@@ -195,7 +208,7 @@ func summarize(runs []RunRecord) Summary {
 	if len(runs) == 0 {
 		return Summary{}
 	}
-	var s Summary
+	s := Summary{OutcomeCounts: map[string]int{}}
 	s.TotalRuns = len(runs)
 	for i := range runs {
 		s.TotalCostUSD += runs[i].CostUSD
@@ -206,6 +219,14 @@ func summarize(runs []RunRecord) Summary {
 		s.TotalCacheReadInputTokens += runs[i].CacheReadInputTokens
 		s.TotalReasoningTokens += runs[i].ReasoningTokens
 		s.TotalPremiumRequests += runs[i].PremiumRequests
+		outcome := runs[i].Outcome
+		if outcome == "" {
+			outcome = "unknown"
+		}
+		s.OutcomeCounts[outcome]++
+		if outcome == "failed" {
+			s.FailedRuns++
+		}
 	}
 	s.AvgCostPerRun = s.TotalCostUSD / float64(s.TotalRuns)
 	s.AvgDurationS = s.TotalDurationS / float64(s.TotalRuns)

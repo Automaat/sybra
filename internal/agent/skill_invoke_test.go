@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 )
 
@@ -230,8 +231,14 @@ func TestResolveWorkflowSkillPrompt_NativeCodexSkill(t *testing.T) {
 	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
-	if cfg.SkillExecutionMode != skillExecutionModeNative {
-		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillExecutionModeNative)
+	if cfg.SkillExecutionMode != skillattr.ExecutionModeNative {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillattr.ExecutionModeNative)
+	}
+	if cfg.SkillConformance != skillattr.ConformanceExact {
+		t.Fatalf("SkillConformance = %q, want %q", cfg.SkillConformance, skillattr.ConformanceExact)
+	}
+	if cfg.ResolvedSkillSourceHash != "" {
+		t.Fatalf("ResolvedSkillSourceHash = %q, want empty for native skill", cfg.ResolvedSkillSourceHash)
 	}
 	if cfg.Prompt != "Run /sybra-test now." {
 		t.Fatalf("Prompt = %q, want unchanged native invocation", cfg.Prompt)
@@ -252,11 +259,20 @@ func TestResolveWorkflowSkillPrompt_InjectedFromCrossProviderPath(t *testing.T) 
 	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
-	if cfg.SkillExecutionMode != skillExecutionModeInjected {
-		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillExecutionModeInjected)
+	if cfg.SkillExecutionMode != skillattr.ExecutionModeInjected {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillattr.ExecutionModeInjected)
+	}
+	if cfg.SkillConformance != skillattr.ConformanceExact {
+		t.Fatalf("SkillConformance = %q, want %q", cfg.SkillConformance, skillattr.ConformanceExact)
+	}
+	if cfg.ResolvedSkillSourceHash == "" {
+		t.Fatal("ResolvedSkillSourceHash empty for injected skill")
 	}
 	if !strings.Contains(cfg.Prompt, "BEGIN INJECTED SKILL: sybra-test") {
 		t.Fatalf("Prompt missing injected marker:\n%s", cfg.Prompt)
+	}
+	if strings.Contains(cfg.Prompt, filepath.Join(home, ".claude", "skills")) {
+		t.Fatalf("Prompt leaked raw absolute skill path:\n%s", cfg.Prompt)
 	}
 	if strings.Contains(cfg.Prompt, "\nRun /sybra-test now.") {
 		t.Fatalf("Prompt still contains raw slash invocation:\n%s", cfg.Prompt)
@@ -276,8 +292,14 @@ func TestResolveWorkflowSkillPrompt_UsesBundledFallback(t *testing.T) {
 	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
-	if cfg.SkillExecutionMode != skillExecutionModeFallback {
-		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillExecutionModeFallback)
+	if cfg.SkillExecutionMode != skillattr.ExecutionModeFallback {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillattr.ExecutionModeFallback)
+	}
+	if cfg.SkillConformance != skillattr.ConformanceFallback {
+		t.Fatalf("SkillConformance = %q, want %q", cfg.SkillConformance, skillattr.ConformanceFallback)
+	}
+	if cfg.ResolvedSkillSourceHash == "" {
+		t.Fatal("ResolvedSkillSourceHash empty for bundled fallback")
 	}
 	if !strings.Contains(cfg.Prompt, "bundled skill fallback") {
 		t.Fatalf("Prompt missing bundled fallback marker:\n%s", cfg.Prompt)
@@ -297,14 +319,39 @@ func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
 	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
-	if cfg.SkillExecutionMode != skillExecutionModeUnavailable {
-		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillExecutionModeUnavailable)
+	if cfg.SkillExecutionMode != skillattr.ExecutionModeUnavailable {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillattr.ExecutionModeUnavailable)
+	}
+	if cfg.SkillConformance != skillattr.ConformanceUnavailable {
+		t.Fatalf("SkillConformance = %q, want %q", cfg.SkillConformance, skillattr.ConformanceUnavailable)
+	}
+	if cfg.ResolvedSkillSourceHash != "" {
+		t.Fatalf("ResolvedSkillSourceHash = %q, want empty for unavailable skill", cfg.ResolvedSkillSourceHash)
 	}
 	if !strings.Contains(cfg.Prompt, "no SKILL.md or bundled fallback was found") {
 		t.Fatalf("Prompt missing unavailable note:\n%s", cfg.Prompt)
 	}
 	if strings.Contains(cfg.Prompt, "\nRun /missing-skill now.") {
 		t.Fatalf("Prompt still contains raw slash invocation:\n%s", cfg.Prompt)
+	}
+}
+
+func TestResolveWorkflowSkillPrompt_NoRequestedSkillRecordsNone(t *testing.T) {
+	cfg := RunConfig{Prompt: "plain prompt"}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if cfg.RequestedSkill != "" {
+		t.Fatalf("RequestedSkill = %q, want empty", cfg.RequestedSkill)
+	}
+	if cfg.SkillExecutionMode != skillattr.ExecutionModeNone {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillattr.ExecutionModeNone)
+	}
+	if cfg.SkillConformance != skillattr.ConformanceNone {
+		t.Fatalf("SkillConformance = %q, want %q", cfg.SkillConformance, skillattr.ConformanceNone)
+	}
+	if cfg.ResolvedSkillSourceHash != "" {
+		t.Fatalf("ResolvedSkillSourceHash = %q, want empty", cfg.ResolvedSkillSourceHash)
 	}
 }
 
