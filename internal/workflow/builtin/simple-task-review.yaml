@@ -112,6 +112,10 @@ steps:
   # code_review_staff so fix_review reads either one transparently.
   # /adversarial-review emits `Review Verdict: CLEAN|NEEDS_FIXES` natively, so
   # the mapping below is identity — no verdict translation to get wrong.
+  # Orchestration owner: /adversarial-review (internal/skills/data/
+  # adversarial-review.md). The prompt below is a thin artifact contract
+  # (where to save the diff/review, the verdict-line format this workflow
+  # routes on) — the review methodology itself lives solely in the skill.
   - id: code_review_simple
     name: Code Review (adversarial)
     type: run_agent
@@ -155,6 +159,10 @@ steps:
   # via the force-staff-review tag — triage no longer routes here. Tag a task
   # when you want the architectural/convention/dead-code lenses that
   # /adversarial-review deliberately drops.
+  # Orchestration owner: /staff-code-review (marketplace plugin skill — no
+  # bundled fallback in this repo). Thin artifact contract only, mirroring
+  # code_review_simple above; the review methodology lives solely in the
+  # skill.
   - id: code_review_staff
     name: Code Review (staff)
     type: run_agent
