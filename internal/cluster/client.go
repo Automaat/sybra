@@ -18,7 +18,12 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-const maxResponseBody = 32 << 20
+// maxResponseBody bounds a single API response. Sized with real headroom
+// over a large follower's full ListTasks payload (#2188: one follower's task
+// store alone reached ~51MB, silently breaking reconcile under the previous
+// 32MB cap with no operator-visible error — see the truncation check in do).
+// A var, not a const, so tests can shrink it rather than transmit 256MB.
+var maxResponseBody int64 = 256 << 20
 
 const defaultCallTimeout = 30 * time.Second
 
@@ -237,9 +242,12 @@ func (c *Client) do(ctx context.Context, base, service, method string, body []by
 		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
 	if err != nil {
 		return nil, nil, err
+	}
+	if int64(len(respBody)) > maxResponseBody {
+		return nil, nil, fmt.Errorf("cluster: response from %s exceeds %d byte cap (truncated)", url, maxResponseBody)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
 		return nil, parseAPIError(resp.StatusCode, respBody), nil

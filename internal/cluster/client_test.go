@@ -89,6 +89,45 @@ func TestClientListTasks(t *testing.T) {
 	}
 }
 
+func TestClientOversizedResponseErrorsInsteadOfTruncating(t *testing.T) {
+	old := maxResponseBody
+	maxResponseBody = 100
+	t.Cleanup(func() { maxResponseBody = old })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/TaskService/ListTasks", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("a", 200)))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}})
+	_, err := client.ListTasks(context.Background())
+	if err == nil {
+		t.Fatal("ListTasks succeeded on an oversized response, want a truncation error")
+	}
+	if !strings.Contains(err.Error(), "exceeds") || !strings.Contains(err.Error(), "cap") {
+		t.Fatalf("err = %q, want a named truncation error rather than a generic JSON parse failure", err.Error())
+	}
+}
+
+func TestClientResponseUnderCapSucceeds(t *testing.T) {
+	old := maxResponseBody
+	maxResponseBody = 4096
+	t.Cleanup(func() { maxResponseBody = old })
+
+	stub := &stubFollower{tasks: []task.Task{{ID: "a"}}}
+	srv := stub.server(t)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}})
+	got, err := client.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks under the cap should succeed, got: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("ListTasks = %+v", got)
+	}
+}
+
 func TestClientAssignTaskEncodesArgs(t *testing.T) {
 	stub := &stubFollower{token: "sekret"}
 	srv := stub.server(t)
