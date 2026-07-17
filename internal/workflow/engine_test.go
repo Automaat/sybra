@@ -4279,7 +4279,7 @@ func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) 
 	// Once the pending start clears (StartAgent returned and registered the real
 	// agent), a genuinely untracked completion for THIS step still falls back
 	// to crediting the current step, as designed for manual/recovery agents.
-	engine.unmarkStepStarting("t1", "implement")
+	engine.unmarkStepStartingAndTakePending("t1", "implement")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
 
 	tiFinal, _ := tasks.GetTask("t1")
@@ -4351,7 +4351,7 @@ func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 	// must not clear the winner's in-flight claim.
 	engine.markStepStarting("t1", "implement")
 	engine.markStepStarting("t1", "implement")
-	engine.unmarkStepStarting("t1", "implement")
+	engine.unmarkStepStartingAndTakePending("t1", "implement")
 
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
 
@@ -4361,7 +4361,7 @@ func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 			tiAfter.Workflow.CurrentStep)
 	}
 
-	engine.unmarkStepStarting("t1", "implement")
+	engine.unmarkStepStartingAndTakePending("t1", "implement")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
 
 	tiFinal, _ := tasks.GetTask("t1")
