@@ -369,6 +369,23 @@ func (r *Handler) clearReconcileFailure(taskID string) {
 	delete(r.reconcileFailures, taskID)
 }
 
+// RateLimitParkReason prefixes the StatusReason written when the review rate
+// breaker trips (#2168). The reconciler honours it as a latch.
+const RateLimitParkReason = "automated review rate limit"
+
+// circuitParked reports whether t was parked by an automation breaker rather
+// than by ordinary review flow.
+//
+// human-required is NOT a latch here: reconcileReviewPhases skips only
+// done/cancelled, and computeReviewPhase names Status=in-review for the
+// needs-approval state, so a parked task is dragged back to in-review on the
+// next poll and re-dispatched within the cooldown. The breaker would self-heal
+// into the next burst and its reason would be overwritten before a human read it.
+func circuitParked(t *task.Task) bool {
+	return t.Status == task.StatusHumanRequired &&
+		strings.HasPrefix(t.StatusReason, RateLimitParkReason)
+}
+
 // reconcileReviewPhases recomputes the lifecycle phase of every inbound
 // PR-review task (tag `review`) from live GitHub signals and persists any
 // delta. It supersedes the old human-required→in-review "published" detector,
@@ -380,6 +397,9 @@ func (r *Handler) reconcileReviewPhases(tasks []task.Task, summary github.Review
 	for i := range tasks {
 		t := &tasks[i]
 		if !slices.Contains(t.Tags, "review") || task.IsTerminalStatus(t.Status) {
+			continue
+		}
+		if circuitParked(t) {
 			continue
 		}
 		if t.PRNumber == 0 || t.ProjectID == "" {

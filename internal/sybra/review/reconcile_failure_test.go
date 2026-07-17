@@ -362,3 +362,51 @@ func TestRecordReconcileFailure_ParkedTaskLeavesNoStaleCounter(t *testing.T) {
 		t.Errorf("parked task still holds a counter entry (%d); it leaks for the life of the process", n)
 	}
 }
+
+// The park must survive the poller, not just the dispatcher. human-required is
+// not a latch here: reconcileReviewPhases skips only done/cancelled, and
+// computeReviewPhase names Status=in-review for the needs-approval state — so a
+// task parked by the rate breaker (#2168) was dragged straight back to
+// in-review on the next poll. The breaker self-healed into the next burst
+// within ~2 minutes and its reason was overwritten before any human read it.
+func TestReconcileReviewPhases_DoesNotUnparkTheRateBreaker(t *testing.T) {
+	r, tasks := newReconcileFailureHandler(t)
+	tk := newReviewTaskInPhase(t, tasks, "needs-approval")
+
+	reason := RateLimitParkReason + ": 3 rounds within an hour on PR #151"
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The viewer's own state says "author pushed past your review" — precisely
+	// the signal that used to drag it back to in-review.
+	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
+		return github.MyReviewState{Submitted: true, ReviewedSHA: "old-sha"}, nil
+	}
+	summary := github.ReviewSummary{
+		ReviewRequested: []github.PullRequest{
+			{Number: tk.PRNumber, Repository: tk.ProjectID, Mergeable: "MERGEABLE", HeadSHA: "new-sha"},
+		},
+	}
+
+	for range 3 {
+		all, err := tasks.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.reconcileReviewPhases(all, summary)
+	}
+
+	got := mustGet(t, tasks, tk.ID)
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q — the poller un-parked the breaker; it re-dispatches within the cooldown",
+			got.Status, task.StatusHumanRequired)
+	}
+	if got.StatusReason != reason {
+		t.Errorf("StatusReason = %q, want %q — the operator never learns the budget blew",
+			got.StatusReason, reason)
+	}
+}

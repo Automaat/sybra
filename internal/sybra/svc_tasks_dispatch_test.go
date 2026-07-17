@@ -1263,3 +1263,68 @@ func TestDispatchInboundReview_ParkedTaskIsNotReParked(t *testing.T) {
 		t.Errorf("updated_at rewritten (%v -> %v) on an already-parked task", before.UpdatedAt, after.UpdatedAt)
 	}
 }
+
+// Every other dispatch test runs with a nil cfg, which takes the one branch of
+// reviewRoundsPerHourLimit that never executes in production (App always sets
+// cfg). Without this, a resolver that ignores config entirely — or that reads
+// an omitted key as 0 and disables the cap fleet-wide — passes the whole suite.
+func TestDispatchInboundReview_RateLimitReadsRealConfig(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	cfg := config.DefaultConfig()
+	cfg.GitHub.ReviewRoundsPerHour = 1 // deliberately not the default
+	a.cfg = cfg
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	// One round: under the default of 3, over the configured 1.
+	if err := a.tasks.AddRun(tk.ID, reviewRun(time.Now().Add(-2*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q — the configured limit of 1 was ignored in favour of the default",
+			got.Status, task.StatusHumanRequired)
+	}
+	if launcher.startCalls != 0 {
+		t.Errorf("startCalls = %d, want 0", launcher.startCalls)
+	}
+}
+
+// A negative limit must genuinely disable the cap on the production path.
+func TestDispatchInboundReview_RateLimitDisabledByConfig(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	cfg := config.DefaultConfig()
+	cfg.GitHub.ReviewRoundsPerHour = -1
+	a.cfg = cfg
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range 10 {
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("parked despite the cap being disabled: %q", got.StatusReason)
+	}
+}

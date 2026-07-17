@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -291,7 +292,7 @@ func (a *App) parkReviewRateLimited(t task.Task, limit int) {
 	a.logger.Error("workflow.dispatch.inbound-review.rate-limit",
 		"task_id", t.ID, "repo", t.ProjectID, "pr", t.PRNumber,
 		"rounds", reviewRoundsSpent(t, time.Now()), "limit", limit)
-	reason := fmt.Sprintf("automated review rate limit: %d rounds within an hour on PR #%d", limit, t.PRNumber)
+	reason := fmt.Sprintf("%s: %d rounds within an hour on PR #%d", review.RateLimitParkReason, limit, t.PRNumber)
 	if _, err := a.tasks.Update(t.ID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),

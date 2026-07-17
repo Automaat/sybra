@@ -1964,3 +1964,32 @@ func TestCheckpointDefaults(t *testing.T) {
 		t.Error("configured CheckpointOnTurnCeilingEnabled() = true, want false")
 	}
 }
+
+// The resolver's three branches are the PR's headline claim ("config-backed,
+// default 3, negative disables"), and every dispatcher test runs with a nil cfg
+// — so without this table the production path is exercised by nothing, and a
+// regression that silently disables the cap fleet-wide ships green.
+func TestGitHubConfig_ReviewRoundsPerHourLimit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		set  int
+		want int
+	}{
+		// Every config written before the key existed omits it, so 0 must mean
+		// "unset" rather than "disabled" — otherwise upgrading turns the cap off.
+		{"unset uses the default", 0, DefaultReviewRoundsPerHour},
+		{"explicit value wins", 10, 10},
+		{"one is honoured, not treated as unset", 1, 1},
+		{"negative disables the cap", -1, -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := GitHubConfig{ReviewRoundsPerHour: tt.set}.ReviewRoundsPerHourLimit()
+			if got != tt.want {
+				t.Errorf("ReviewRoundsPerHourLimit(%d) = %d, want %d", tt.set, got, tt.want)
+			}
+		})
+	}
+}
