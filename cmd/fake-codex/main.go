@@ -56,6 +56,10 @@ func runExec() {
 	emit(map[string]any{"type": "thread.started", "thread_id": "fake-thread-1"})
 	emit(map[string]any{"type": "turn.started"})
 
+	if runCodexTestScenario(scenario) {
+		return
+	}
+
 	switch scenario {
 	case "success":
 		emitAgentMessage(withReceiptFromArgs(os.Args, "Working on it..."))
@@ -103,10 +107,6 @@ func runExec() {
 			"code":    529,
 		})
 		os.Exit(1)
-	case "test_verdict_pass":
-		runCodexTestVerdictPass()
-	case "test_verdict_fail":
-		runCodexTestVerdictFail()
 	case "implement", "interactive_implement":
 		emitAgentMessage("Implementing...")
 		emitTurnCompleted(100, 20)
@@ -126,6 +126,20 @@ func runExec() {
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
 	}
+}
+
+func runCodexTestScenario(scenario string) bool {
+	switch scenario {
+	case "test_verdict_pass":
+		runCodexTestVerdictPass()
+	case "test_verdict_pass_with_receipt_preamble":
+		runCodexTestVerdictPassWithReceiptPreamble()
+	case "test_verdict_fail":
+		runCodexTestVerdictFail()
+	default:
+		return false
+	}
+	return true
 }
 
 func runCodexTestVerdictPass() {
@@ -163,6 +177,11 @@ func runCodexTestVerdictPass() {
 		"unable_to_run_reason": "",
 	})
 	emitTurnCompleted(100, 20)
+}
+
+func runCodexTestVerdictPassWithReceiptPreamble() {
+	emitAgentMessage(withReceiptFromArgs(os.Args, "Followed the mandatory skill before returning structured output."))
+	runCodexTestVerdictPass()
 }
 
 func runCodexTestVerdictFail() {

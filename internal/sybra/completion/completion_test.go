@@ -266,6 +266,33 @@ func TestBuildRunPatchMarksVerifiedRecoveryAsRecovered(t *testing.T) {
 	}
 }
 
+func TestBuildRunPatchFindsReceiptInEarlierAssistantMessage(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleTestRunner.AgentName("Test"),
+		RequestedSkill:          "sybra-test",
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceExact,
+	}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: "Followed the skill.\n" + skillattr.ReceiptMarker("sybra-test", "deadbeefcafebabe"),
+	})
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"verdict":"PASS","outcome":"pass"}`,
+	})
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: ""})
+
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS","outcome":"pass"}`, nil)
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceExact {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceExact)
+	}
+}
+
 func TestIsSignalKill(t *testing.T) {
 	t.Parallel()
 
