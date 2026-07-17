@@ -42,6 +42,44 @@ func TestAssignTaskPersistsVerbatim(t *testing.T) {
 	}
 }
 
+// TestAssignTaskScrubsLeakedMirrorBookkeeping guards against a Route push
+// (internal/sybra/clusterlead/assigner.go) that forwards the leader's
+// canonical task copy as-is: a task re-routed to a follower after a prior
+// mirror cycle still carries a stale MirrorRev/MirrorUpdatedAt. Store.Put's
+// stale-status guard reads those fields as proof a write came through the
+// serialized clusterlead.Merge; left on the pushed task, an unrelated
+// assignment could masquerade as mirror-authoritative and silently clobber
+// a fresher local status with a stale one.
+func TestAssignTaskScrubsLeakedMirrorBookkeeping(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	recent := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
+	if err := svc.AssignTask(task.Task{
+		ID: "leader-mirror-leak", Title: "t", Status: task.StatusInProgress,
+		AgentMode: task.AgentModeHeadless, CreatedAt: recent, UpdatedAt: recent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := recent.Add(-time.Hour)
+	leaked := stale
+	if err := svc.AssignTask(task.Task{
+		ID: "leader-mirror-leak", Title: "t", Status: task.StatusBlocked,
+		AgentMode: task.AgentModeHeadless, CreatedAt: recent, UpdatedAt: stale,
+		MirrorRev: 7, MirrorUpdatedAt: &leaked,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetTask("leader-mirror-leak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want it to stay in-progress — a stale push carrying leaked mirror bookkeeping must not masquerade as mirror-authoritative", got.Status)
+	}
+}
+
 func TestAssignTaskUpsertsOnRepeatedPush(t *testing.T) {
 	svc, _ := setupTaskService(t)
 

@@ -509,6 +509,15 @@ func (s *TaskService) AssignTask(t task.Task) error {
 		s.logger.Debug("cluster.task.assign.noop", "task", current.ID, "assigned_node", current.AssignedNode, "status", string(current.Status))
 		return nil
 	}
+	// Leader-owned mirror bookkeeping (see normalizeAssignedTaskForCompare)
+	// must never reach the local store: Assigner.Route forwards the leader's
+	// canonical copy as-is, so a task re-routed after prior mirror cycles
+	// still carries a stale MirrorRev/MirrorUpdatedAt here. Store.Put reads
+	// those fields as proof this Put came through Merge; left untouched,
+	// this write would masquerade as mirror-authoritative and bypass its
+	// plain staleness guard.
+	t.MirrorRev = 0
+	t.MirrorUpdatedAt = nil
 	saved, created, err := s.tasks.Put(t)
 	if err != nil {
 		return fmt.Errorf("assign task: %w", err)
