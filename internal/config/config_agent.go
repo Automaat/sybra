@@ -183,7 +183,14 @@ type K8sJobsConfig struct {
 	Image     string   `yaml:"image,omitempty" json:"image"`
 	Command   []string `yaml:"command,omitempty" json:"command"`
 	TTL       int      `yaml:"ttl_seconds_after_finished,omitempty" json:"ttlSecondsAfterFinished"`
-	Mode      string   `yaml:"mode,omitempty" json:"mode"`
+	// FailedTTL overrides TTL for a Job that finishes Failed rather than
+	// Succeeded, via a post-completion patch once the runner observes the
+	// failure — Kubernetes' own ttlSecondsAfterFinished is a single value
+	// that cannot vary by outcome at creation time. Defaults much longer
+	// than TTL's own default so a failed run's logs survive long enough for
+	// an operator to pull them before Kubernetes garbage-collects the Pod.
+	FailedTTL int    `yaml:"failed_ttl_seconds_after_finished,omitempty" json:"failedTtlSecondsAfterFinished"`
+	Mode      string `yaml:"mode,omitempty" json:"mode"`
 	// CreatePR lets the agent Job open its own pull request once it has pushed
 	// its branch, instead of the server shelling gh in the task worktree. Only
 	// fires when the task's remote is a GitHub URL — a PVC-backed bare clone

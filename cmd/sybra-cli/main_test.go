@@ -690,6 +690,54 @@ func TestConfigDoctorJSONValidatesK8sSecretEnvRegardlessOfMode(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONWarnsOnLowTTLWithDifferingFailedTTL(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.TTL = 5
+	cfg.Agent.K8sJobs.FailedTTL = 86400
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected a warning-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" && strings.Contains(f.Message, "ttl_seconds_after_finished")
+	}) {
+		t.Fatalf("expected a low-ttl warning in report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONAcceptsTypicalTTLDefaults(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.TTL = 300
+	cfg.Agent.K8sJobs.FailedTTL = 86400
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected typical TTL defaults to stay clean, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "ttl_seconds_after_finished is")
+	}) {
+		t.Fatalf("did not expect a TTL finding for the recommended defaults: %+v", report.Findings)
+	}
+}
+
 func TestConfigDoctorJSONReportsWhitespaceOnlyK8sSecretEnvFields(t *testing.T) {
 	setupStore(t)
 

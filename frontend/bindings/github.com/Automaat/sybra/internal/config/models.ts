@@ -746,6 +746,16 @@ export class K8sJobsConfig {
     "image": string;
     "command": string[];
     "ttlSecondsAfterFinished": number;
+
+    /**
+     * FailedTTL overrides TTL for a Job that finishes Failed rather than
+     * Succeeded, via a post-completion patch once the runner observes the
+     * failure — Kubernetes' own ttlSecondsAfterFinished is a single value
+     * that cannot vary by outcome at creation time. Defaults much longer
+     * than TTL's own default so a failed run's logs survive long enough for
+     * an operator to pull them before Kubernetes garbage-collects the Pod.
+     */
+    "failedTtlSecondsAfterFinished": number;
     "mode": string;
 
     /**
@@ -778,6 +788,9 @@ export class K8sJobsConfig {
         if (!("ttlSecondsAfterFinished" in $$source)) {
             this["ttlSecondsAfterFinished"] = 0;
         }
+        if (!("failedTtlSecondsAfterFinished" in $$source)) {
+            this["failedTtlSecondsAfterFinished"] = 0;
+        }
         if (!("mode" in $$source)) {
             this["mode"] = "";
         }
@@ -802,21 +815,21 @@ export class K8sJobsConfig {
      */
     static createFrom($$source: any = {}): K8sJobsConfig {
         const $$createField3_0 = $$createType5;
-        const $$createField7_0 = $$createType7;
-        const $$createField8_0 = $$createType9;
-        const $$createField9_0 = $$createType11;
+        const $$createField8_0 = $$createType7;
+        const $$createField9_0 = $$createType9;
+        const $$createField10_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("command" in $$parsedSource) {
             $$parsedSource["command"] = $$createField3_0($$parsedSource["command"]);
         }
         if ("env" in $$parsedSource) {
-            $$parsedSource["env"] = $$createField7_0($$parsedSource["env"]);
+            $$parsedSource["env"] = $$createField8_0($$parsedSource["env"]);
         }
         if ("secretEnv" in $$parsedSource) {
-            $$parsedSource["secretEnv"] = $$createField8_0($$parsedSource["secretEnv"]);
+            $$parsedSource["secretEnv"] = $$createField9_0($$parsedSource["secretEnv"]);
         }
         if ("volumes" in $$parsedSource) {
-            $$parsedSource["volumes"] = $$createField9_0($$parsedSource["volumes"]);
+            $$parsedSource["volumes"] = $$createField10_0($$parsedSource["volumes"]);
         }
         return new K8sJobsConfig($$parsedSource as Partial<K8sJobsConfig>);
     }
