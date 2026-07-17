@@ -469,7 +469,7 @@ func (w *Watchdog) reapTaskAgentForStatus(ag *agent.Agent) bool {
 	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
 		return false
 	}
-	if !shouldReleaseTaskAgentForStatus(t.Status) || !agentPredatesStatus(ag, t) {
+	if !shouldReleaseTaskAgentForStatus(t.Status) || isHumanReviewAgent(ag) {
 		return false
 	}
 	w.logger.Warn("agent.watchdog.status_release",
@@ -491,7 +491,7 @@ func (w *Watchdog) reapIdleInteractive(ag *agent.Agent, now time.Time) {
 	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
 		return
 	}
-	if shouldReleaseTaskAgentForStatus(t.Status) && agentPredatesStatus(ag, t) {
+	if shouldReleaseTaskAgentForStatus(t.Status) && !isHumanReviewAgent(ag) {
 		w.logger.Warn("agent.watchdog.status_release",
 			"id", ag.ID, "task_id", ag.TaskID, "status", t.Status)
 		if err := w.stopForRelease(ag); err != nil {
@@ -510,19 +510,19 @@ func shouldReleaseTaskAgentForStatus(status task.Status) bool {
 	return status == task.StatusHumanRequired || task.IsTerminalStatus(status)
 }
 
-// agentPredatesStatus reports whether ag was already running before the
-// task's current status took effect, as opposed to one freshly dispatched
-// specifically to act on that status — most notably the human-review agent
-// (internal/sybra/app_human_review.go), which app.go launches the moment a
-// task transitions to human-required. Only a leftover from a prior status is
-// safe for the release reapers above to stop; a same-status dispatch needs to
-// be left alone to do its job, and if it gets stuck, caught by the normal
-// stall/budget/loop triggers instead. StatusChangedAt is only ever zero for
-// legacy task files, which Store.List backfills on read (see
-// internal/task/store.go), so treating a zero value as "predates" preserves
-// the reapers' original behavior for that edge case.
-func agentPredatesStatus(ag *agent.Agent, t task.Task) bool {
-	return t.StatusChangedAt.IsZero() || ag.StartedAt.Before(t.StatusChangedAt)
+// isHumanReviewAgent reports whether ag is the human-review agent
+// (internal/sybra/app_human_review.go), which app.go dispatches the moment a
+// task transitions to human-required specifically to diagnose and unblock
+// it. The status-release reapers above must not kill it just because the
+// task's status is — by design — human-required; if it gets stuck itself,
+// the normal stall/budget/loop triggers in inspectHeadless still apply. This
+// mirrors the same exclusion App.releaseTaskAgents already applies at the
+// point of the status transition (internal/sybra/app_init.go) — a role-based
+// check, not a timing-based one, so it can't be widened by a future status
+// change to spare an unrelated agent that raced onto an already-terminal
+// task, which is unconditionally an orphan under this reaper's contract.
+func isHumanReviewAgent(ag *agent.Agent) bool {
+	return agent.RoleFromName(ag.Name) == agent.RoleHumanReview
 }
 
 func (w *Watchdog) stopForRelease(ag *agent.Agent) error {
