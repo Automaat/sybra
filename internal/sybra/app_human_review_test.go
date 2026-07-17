@@ -131,6 +131,44 @@ func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 	}
 }
 
+// TestBuildPrompt_DraftApproveRequiresHumanSubmission pins that the autonomy
+// prompt keeps APPROVE review drafts human-only: a task parked on a pending
+// approval draft must never be auto-submitted by the review agent, since
+// approval authority is human-only.
+func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Review draft task", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	reason := "Draft review ready — verify & submit on GitHub"
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: &reason,
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		PRNumber:     task.Ptr(42),
+	})
+	if err != nil {
+		t.Fatalf("seed draft-review task: %v", err)
+	}
+
+	prompt := h.buildPrompt(tk, nil)
+	for _, want := range []string{
+		"pre-flight the draft before submitting anything",
+		"APPROVE drafts must NEVER be auto-submitted",
+		"If you cannot prove the draft is COMMENT or REQUEST_CHANGES, do not submit it.",
+		"Review APPROVE verdict ready for human submission (approval authority required)",
+		"surface that exact rejection",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 // TestBuildPrompt_RequiresRecheckingSupersededFailures pins that the prompt
 // tells the reviewer to re-verify a test-runner product_bug FAIL against
 // current acceptance criteria/repo state when a trusted later requirement
