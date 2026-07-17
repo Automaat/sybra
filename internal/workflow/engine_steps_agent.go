@@ -183,6 +183,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	dir := wfExec.Variables[WorkflowVarDir]
 	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
 	cleanRetryRef := wfExec.Variables[cleanRetryKey]
+	captureTamperDeletionAllowlist(wfExec, step.ID, step.Config.Role, ctx.Task)
 
 	// Stop stale agents left over from earlier workflow steps (e.g. an
 	// interactive plan agent with reuse_agent that outlived plan approval).
