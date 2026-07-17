@@ -1340,6 +1340,20 @@ func (a *Agent) TerminalResultIdle(grace time.Duration) bool {
 	return time.Since(a.LastEventAt) >= grace
 }
 
+// HadTerminalError reports whether the headless stream buffer contains a
+// terminal result event that ended in an error (e.g. a CLI-level
+// error_during_execution, distinct from a provider rate-limit/auth signal
+// classified via SetError/GetErrorKind). Callers use this to tell "the agent
+// crashed before producing any usable output" apart from "the agent finished
+// and returned text that just didn't parse the way we expected" — the two
+// need different recovery treatment.
+func (a *Agent) HadTerminalError() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	found, isError := bufferedResultEvent(a.outputBuffer)
+	return found && isError
+}
+
 // bufferedResultEvent scans the full event slice for the last "result" event,
 // regardless of whether it is the final element — unlike
 // lastHeadlessResultEvent, which requires the result to be strictly last.
@@ -1636,10 +1650,15 @@ func (a *Agent) Output() []StreamEvent {
 
 // RunConfig is the single entry point for starting any agent.
 type RunConfig struct {
-	TaskID             string
-	Name               string
-	Mode               string // "headless", "interactive", or "conversational"
-	Prompt             string
+	TaskID string
+	Name   string
+	Mode   string // "headless", "interactive", or "conversational"
+	Prompt string
+	// AllowedTools is honoured only by providers whose HonorsAllowedTools()
+	// reports true — claude alone today. Elsewhere it is silently ignored, and
+	// warnUnenforceableAllowedTools says so at dispatch, since ab/cross choose
+	// the provider long after the step declared its list. Treat it as advisory:
+	// only the OS-level sandbox binds a run on every provider.
 	AllowedTools       []string
 	Dir                string
 	Provider           string // "claude", "codex", or "copilot"

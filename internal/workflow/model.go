@@ -75,18 +75,26 @@ type Condition struct {
 type StepType string
 
 const (
-	StepRunAgent             StepType = "run_agent"
-	StepWaitHuman            StepType = "wait_human"
-	StepSetStatus            StepType = "set_status"
-	StepCondition            StepType = "condition"
-	StepShell                StepType = "shell"
-	StepEnsurePRClosesIssue  StepType = "ensure_pr_closes_issue"
-	StepStampPRAttribution   StepType = "stamp_pr_attribution"
-	StepRerequestReview      StepType = "rerequest_review"
-	StepVerifyCommits        StepType = "verify_commits"
-	StepLinkPRAndReview      StepType = "link_pr_and_review"
-	StepEvaluate             StepType = "evaluate"
-	StepRequireSidecar       StepType = "require_sidecar"
+	StepRunAgent            StepType = "run_agent"
+	StepWaitHuman           StepType = "wait_human"
+	StepSetStatus           StepType = "set_status"
+	StepCondition           StepType = "condition"
+	StepShell               StepType = "shell"
+	StepEnsurePRClosesIssue StepType = "ensure_pr_closes_issue"
+	StepStampPRAttribution  StepType = "stamp_pr_attribution"
+	StepRerequestReview     StepType = "rerequest_review"
+	StepVerifyCommits       StepType = "verify_commits"
+	StepLinkPRAndReview     StepType = "link_pr_and_review"
+	StepEvaluate            StepType = "evaluate"
+	StepRequireSidecar      StepType = "require_sidecar"
+	// StepClearPlanArtifacts wipes a planning cycle's outputs — both the task
+	// sidecars and the agent-written files in the worktree — so that every
+	// artifact the next cycle presents was written by the planner that owns it.
+	// A replan reuses the same worktree and the files are git-excluded rather
+	// than deleted, so without this the next cycle re-imports the last one's
+	// bytes and the require_sidecar guards pass on them: they assert non-empty,
+	// and stale content is non-empty (#2191).
+	StepClearPlanArtifacts   StepType = "clear_plan_artifacts"
 	StepValidatePlan         StepType = "validate_plan"
 	StepValidatePlanContract StepType = "validate_plan_contract"
 	StepTriageReview         StepType = "triage_review"
@@ -102,6 +110,10 @@ const (
 	// detect_tampering: structural test tampering is caught there; this catches
 	// incomplete/broken work committed without the suite passing.
 	StepVerifyChecks StepType = "verify_checks"
+	// StepFocusedChecks runs cheap changed-surface checks selected from the
+	// project's configured checks.focused mappings. It is an author-loop speed
+	// gate only; the final full project contract remains verify_checks.
+	StepFocusedChecks StepType = "focused_checks"
 	// StepRoutePRFixResult inspects the completed pr-fix agent output before
 	// mechanical PR relinking can overwrite a human-required escalation.
 	StepRoutePRFixResult StepType = "route_pr_fix_result"
@@ -196,11 +208,19 @@ type Position struct {
 // Only fields relevant to the step type are populated.
 type StepConfig struct {
 	// run_agent
-	Role          string   `yaml:"role,omitempty" json:"role"`
-	Mode          string   `yaml:"mode,omitempty" json:"mode"`
-	Model         string   `yaml:"model,omitempty" json:"model"`
-	Provider      string   `yaml:"provider,omitempty" json:"provider"` // "", "claude", "codex", "copilot", "cross"
-	Prompt        string   `yaml:"prompt,omitempty" json:"prompt"`
+	Role     string `yaml:"role,omitempty" json:"role"`
+	Mode     string `yaml:"mode,omitempty" json:"mode"`
+	Model    string `yaml:"model,omitempty" json:"model"`
+	Provider string `yaml:"provider,omitempty" json:"provider"` // "", "claude", "codex", "copilot", "opencode", "cross", "ab"
+	Prompt   string `yaml:"prompt,omitempty" json:"prompt"`
+	// AllowedTools is advisory, not a capability boundary. Only claude enforces
+	// it (as --allowedTools); codex has no per-tool allowlist at all, and
+	// copilot spawns with --allow-all-tools. Since provider: ab / cross pick the
+	// provider at dispatch, the same step is enforced on a claude spawn and
+	// unenforced on the copilot spawn beside it — dispatch logs
+	// agent.run.allowed_tools.unenforced whenever that happens. For containment
+	// that binds every provider, rely on the OS-level sandbox instead (see
+	// internal/agent/procsandbox_*.go).
 	AllowedTools  []string `yaml:"allowed_tools,omitempty" json:"allowedTools"`
 	NeedsWorktree bool     `yaml:"needs_worktree,omitempty" json:"needsWorktree"`
 
@@ -235,6 +255,21 @@ type StepConfig struct {
 	// AllowMissing turns require_sidecar into a soft gate: the step records a
 	// warning output instead of flipping the task to human-required.
 	AllowMissing bool `yaml:"allow_missing,omitempty" json:"allowMissing"`
+
+	// clear_plan_artifacts: which sidecars to clear before the cycle that
+	// follows. Same values as Sidecar.
+	ClearSidecars []string `yaml:"clear_sidecars,omitempty" json:"clearSidecars,omitempty"`
+	// ClearWorktreeGlobs names the agent-written files to unlink, relative to
+	// the worktree. Each entry must be a bare filename pattern: no absolute
+	// path, no "..", no path separator — clearWorktreeGlob rejects anything
+	// that would let a pattern escape the worktree. Every sidecar in
+	// ClearSidecars needs its file covered by one of these, since either half
+	// alone still serves the previous cycle's content: a surviving file is
+	// exactly what the next import reads back, and a surviving sidecar is
+	// exactly what an absent file leaves untouched (#2191). Note the families
+	// do not share a prefix — plan_critique's file is .sybra-critique-<id>.md,
+	// not .sybra-plan-*.
+	ClearWorktreeGlobs []string `yaml:"clear_worktree_globs,omitempty" json:"clearWorktreeGlobs,omitempty"`
 
 	// run_agent: when set, the engine ingests a file produced by the agent
 	// (typically under /tmp) and stores its content as the named task

@@ -151,7 +151,7 @@ func setupBootstrapE2E(t *testing.T, repoSetup, appSetup []string) *bootstrapE2E
 	if err := os.MkdirAll(agentLogDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	logger := e2eLogger()
+	logger := e2eLogger(t)
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, agentLogDir, agent.ManagerConfig{
 		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
 	})

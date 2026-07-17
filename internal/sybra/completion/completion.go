@@ -413,7 +413,7 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	// workflow.HandleAgentComplete) can retry instead of trusting a fake or
 	// incomplete artifact.
 	if ag.RequestedSkill != "" {
-		transcript := finalAssistantText(ag) + "\n" + resultContent
+		transcript := skillReceiptTranscript(ag, resultContent)
 		ag.SkillConformance = skillattr.VerifyReceipt(ag.SkillConformance, transcript, ag.RequestedSkill, ag.ResolvedSkillSourceHash)
 		if ag.IsSkillRecoveryAttempt() && (ag.SkillConformance == skillattr.ConformanceExact || ag.SkillConformance == skillattr.ConformanceFallback) {
 			ag.SkillConformance = skillattr.ConformanceRecovered
@@ -942,6 +942,20 @@ func finalAssistantText(ag *agent.Agent) string {
 		}
 	}
 	return ""
+}
+
+func skillReceiptTranscript(ag *agent.Agent, resultContent string) string {
+	var parts []string
+	output := ag.Output()
+	for i := range output {
+		if (output[i].Type == "assistant" || output[i].Type == "result") && strings.TrimSpace(output[i].Content) != "" {
+			parts = append(parts, output[i].Content)
+		}
+	}
+	if strings.TrimSpace(resultContent) != "" && (len(parts) == 0 || parts[len(parts)-1] != resultContent) {
+		parts = append(parts, resultContent)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // lastAssistantText returns the content of the last assistant-typed stream event.

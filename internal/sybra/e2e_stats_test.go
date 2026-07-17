@@ -94,12 +94,12 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = os.RemoveAll(logDir) })
+			t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 
-			logger := e2eLogger()
+			logger := e2eLogger(t)
 			done := make(chan struct{})
 			var h *completion.Handler
 			agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
@@ -217,11 +217,11 @@ func TestE2E_Stats_WorkflowSkillExecutionModeRecorded(t *testing.T) {
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: env.worktreesDir,
 		Tasks:        env.tasks,
-		Logger:       e2eLogger(),
+		Logger:       e2eLogger(t),
 		AgentChecker: env.agents.HasRunningAgentForTask,
 	})
 	handler := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
 		Worktrees:      wm,
 		WorkflowEngine: env.engine,

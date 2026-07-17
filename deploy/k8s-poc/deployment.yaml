@@ -3,11 +3,40 @@ kind: PersistentVolumeClaim
 metadata:
   name: sybra-home
   namespace: sybra-poc
+  labels:
+    sybra.io/backup: "true"
 spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
       storage: 2Gi
+---
+# clones/ and worktrees/ split onto their own PVCs: both are reproducible
+# (re-clonable from the project's remote, re-checked-out from a clone + task
+# branch) and can grow far larger than task/project state, so they neither
+# need nor benefit from the same backup coverage as sybra-home — see
+# "Persistent storage, backup, and restore" in README.md.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sybra-clones
+  namespace: sybra-poc
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sybra-worktrees
+  namespace: sybra-poc
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -56,6 +85,10 @@ spec:
           volumeMounts:
             - name: sybra-home
               mountPath: /home/sybra/.sybra
+            - name: sybra-clones
+              mountPath: /home/sybra/.sybra/clones
+            - name: sybra-worktrees
+              mountPath: /home/sybra/.sybra/worktrees
             - name: sybra-config
               mountPath: /home/sybra/.sybra/config.yaml
               subPath: config.yaml
@@ -75,6 +108,12 @@ spec:
         - name: sybra-home
           persistentVolumeClaim:
             claimName: sybra-home
+        - name: sybra-clones
+          persistentVolumeClaim:
+            claimName: sybra-clones
+        - name: sybra-worktrees
+          persistentVolumeClaim:
+            claimName: sybra-worktrees
         - name: sybra-config
           configMap:
             name: sybra-config
