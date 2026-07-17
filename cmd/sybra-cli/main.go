@@ -2603,6 +2603,19 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		add("error", "github.app.enabled is true but github.app.private_key_path is empty")
 	}
 
+	if cfg.Agent.K8sJobs.Enabled && cfg.Agent.K8sJobs.Mode == "provider" {
+		for i, e := range cfg.Agent.K8sJobs.SecretEnv {
+			switch {
+			case e.Name == "":
+				add("error", "agent.k8s_jobs.secret_env[%d]: name is empty", i)
+			case e.SecretName == "":
+				add("error", "agent.k8s_jobs.secret_env[%d] (%s): secret_name is empty", i, e.Name)
+			case e.SecretKey == "":
+				add("error", "agent.k8s_jobs.secret_env[%d] (%s): secret_key is empty", i, e.Name)
+			}
+		}
+	}
+
 	if len(findings) == 0 {
 		add("ok", "no issues found")
 	}

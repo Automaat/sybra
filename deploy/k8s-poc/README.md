@@ -10,9 +10,19 @@ deployment.
 docker build -t sybra-server:poc .
 k3d cluster create sybra-poc --agents 1 --wait
 k3d image import sybra-server:poc -c sybra-poc
+kubectl apply -f deploy/k8s-poc/namespace.yaml
+kubectl -n sybra-poc create secret generic sybra-server-auth \
+  --from-literal=token=poc-token
 kubectl apply -k deploy/k8s-poc
 kubectl -n sybra-poc rollout status deployment/sybra-server --timeout=120s
 ```
+
+`sybra-server-auth` holds the bearer token the Deployment reads via
+`SYBRA_AUTH_TOKEN` (`deploy/k8s-poc/deployment.yaml`) — it is never a plain
+manifest value, so `kubectl apply -k` alone will not start the pod until this
+Secret exists. See [Production secret management](#production-secret-management)
+for how to handle it (and `sybra-provider-api-keys` below) outside a
+throwaway k3d cluster.
 
 Start a fake headless agent Job through Sybra:
 
@@ -289,6 +299,57 @@ After the Job completes, the local task worktree fast-forwards from `origin` so
 review/test stages see the pod's files. The `GITHUB_TOKEN` value is optional for
 public HTTPS remotes, but required for private GitHub HTTPS remotes and pushes.
 SSH remotes are not wired in this PoC.
+
+## Production secret management
+
+The PoC keeps two Secrets out of every manifest and out of git:
+
+- `sybra-server-auth` (`deploy/k8s-poc/server-auth-secret.example.yaml`) — the
+  Deployment's `SYBRA_AUTH_TOKEN`.
+- `sybra-provider-api-keys` (`deploy/k8s-poc/api-key-secret.example.yaml`) —
+  provider/GitHub credentials referenced by `agent.k8s_jobs.secret_env` and
+  injected straight into the agent Job's container as `valueFrom.secretKeyRef`
+  (`internal/agent/k8s_job_runner.go`). Kubernetes resolves the reference at
+  pod start; `sybra-server` never reads the secret value itself, so a
+  compromised server process cannot exfiltrate provider or GitHub credentials
+  it was never handed. `sybra-cli config doctor` catches a `secret_env` entry
+  with a missing `name`/`secret_name`/`secret_key` before it fails silently at
+  Job-creation time.
+
+The `.example.yaml` files are templates only (`replace-me` placeholders) and
+are not part of `kustomization.yaml` — nothing applies them automatically, and
+`kubectl create secret generic ... --from-literal=...` never writes a
+manifest to disk. That is enough for a throwaway k3d cluster. A real
+deployment needs the Secret's desired state to be reviewable and
+reproducible without ever putting plaintext credentials in git history. Pick
+one:
+
+- **SOPS** — encrypt a Secret manifest (or just the values) with `sops`,
+  commit the ciphertext, decrypt at deploy time and `kubectl apply` the
+  result (or `kubectl create secret --from-literal` from the decrypted
+  values, as `server-auth-secret.example.yaml` and
+  `api-key-secret.example.yaml` are shaped for). This is the option to
+  reach for if your deploy pipeline already runs `sops` for other
+  environments — the encrypted file lives next to the rest of the manifests
+  and needs no extra cluster component.
+- **Sealed Secrets** (bitnami-labs/sealed-secrets) — a cluster-side
+  controller decrypts a `SealedSecret` CRD that is safe to commit (encrypted
+  with the controller's public key) into a real `Secret`. Best fit when the
+  encryption key must stay cluster-local rather than shared with a CI
+  pipeline.
+- **External Secrets Operator** — a cluster-side controller syncs Secrets
+  from an external store (Vault, AWS/GCP/Azure secret managers, etc.) via an
+  `ExternalSecret` CRD; nothing encrypted ever touches git. Best fit when
+  provider/GitHub credentials are already centrally managed in one of those
+  stores.
+
+Whichever mechanism renders the final `Secret`, the object names/keys must
+match what `deployment.yaml` and `agent.k8s_jobs.secret_env` expect:
+`sybra-server-auth`/`token`, and `sybra-provider-api-keys`/
+`openrouter_api_key`+`github_token` (or whatever `secret_name`/`secret_key`
+pairs a given ConfigMap declares). None of the three tools are wired into
+this PoC's kustomization — pick one and add its manifests/controller to your
+own deployment overlay.
 
 ## Real OpenCode testbed e2e
 

@@ -585,6 +585,76 @@ func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONReportsIncompleteK8sSecretEnv(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.Mode = "provider"
+	cfg.Agent.K8sJobs.SecretEnv = []config.K8sJobSecretEnvVar{
+		{Name: "GITHUB_TOKEN", SecretName: "sybra-provider-api-keys", SecretKey: ""},
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for an incomplete secret_env entry, output:\n%s", out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "error" && strings.Contains(f.Message, "secret_env[0]") && strings.Contains(f.Message, "secret_key is empty")
+	}) {
+		t.Fatalf("expected secret_env[0] secret_key error in report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONAcceptsCompleteK8sSecretEnv(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.Mode = "provider"
+	cfg.Agent.K8sJobs.SecretEnv = []config.K8sJobSecretEnvVar{
+		{Name: "GITHUB_TOKEN", SecretName: "sybra-provider-api-keys", SecretKey: "github_token"},
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected a complete secret_env entry to stay non-fatal, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "secret_env")
+	}) {
+		t.Fatalf("did not expect a secret_env finding: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONIgnoresK8sSecretEnvWhenModeNotProvider(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.Mode = "fake"
+	cfg.Agent.K8sJobs.SecretEnv = []config.K8sJobSecretEnvVar{
+		{Name: "GITHUB_TOKEN", SecretName: "", SecretKey: ""},
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected fake mode to skip secret_env validation, got %d:\n%s", code, out)
+	}
+}
+
 func TestConfigDoctorJSONAcceptsSupportedEnforceHosts(t *testing.T) {
 	setupStore(t)
 
