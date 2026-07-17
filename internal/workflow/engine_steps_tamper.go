@@ -226,8 +226,8 @@ var (
 )
 
 type tamperDeletionAllowlist struct {
-	ExactPaths map[string]bool
-	Basenames  map[string]bool
+	ExactPaths map[string]bool `json:"exactPaths"`
+	Basenames  map[string]bool `json:"basenames"`
 }
 
 // isEstablishedSkipIdiom reports whether the added skip line is already a
@@ -762,13 +762,84 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 		}
 		c.UpstreamContent = upstreamContent
 	}
-	report := buildTamperReport(taskID, base, changes, documentedDeletionAllowlist(t.Body))
+	report := buildTamperReport(taskID, base, changes, documentedDeletionAllowlistSnapshot(t))
 	report.Range = rangeSpec
 	return report, nil
 }
 
 func tamperBaselineVar(stepID string) string {
 	return "step." + stepID + ".tamper_base"
+}
+
+func tamperDeletionAllowlistVar(stepID string) string {
+	return "step." + stepID + ".tamper_deletion_allowlist"
+}
+
+func captureTamperDeletionAllowlist(wfExec *Execution, stepID, role string, t TaskInfo) {
+	if wfExec == nil || stepID == "" || !tamperCodeAuthorRole(role) {
+		return
+	}
+	data, err := json.Marshal(documentedDeletionAllowlistForTrustedSpec(t))
+	if err != nil {
+		return
+	}
+	wfExec.SetVar(tamperDeletionAllowlistVar(stepID), string(data))
+}
+
+func tamperCodeAuthorRole(role string) bool {
+	switch role {
+	case "", "implementation", "fix-review", "pr-fix":
+		return true
+	default:
+		return false
+	}
+}
+
+func documentedDeletionAllowlistForTrustedSpec(t TaskInfo) tamperDeletionAllowlist {
+	allow := tamperDeletionAllowlist{
+		ExactPaths: map[string]bool{},
+		Basenames:  map[string]bool{},
+	}
+	mergeDocumentedDeletionAllowlist(&allow, documentedDeletionAllowlist(t.Body))
+	mergeDocumentedDeletionAllowlist(&allow, documentedDeletionAllowlist(t.Plan))
+	return allow
+}
+
+func mergeDocumentedDeletionAllowlist(dst *tamperDeletionAllowlist, src tamperDeletionAllowlist) {
+	if dst == nil {
+		return
+	}
+	if dst.ExactPaths == nil {
+		dst.ExactPaths = map[string]bool{}
+	}
+	if dst.Basenames == nil {
+		dst.Basenames = map[string]bool{}
+	}
+	for path := range src.ExactPaths {
+		dst.ExactPaths[path] = true
+	}
+	for base := range src.Basenames {
+		dst.Basenames[base] = true
+	}
+}
+
+func documentedDeletionAllowlistSnapshot(t TaskInfo) tamperDeletionAllowlist {
+	if t.Workflow == nil {
+		return tamperDeletionAllowlist{}
+	}
+	stepID := t.Workflow.LastAgentStepID()
+	if stepID == "" {
+		return tamperDeletionAllowlist{}
+	}
+	raw := strings.TrimSpace(t.Workflow.Variables[tamperDeletionAllowlistVar(stepID)])
+	if raw == "" {
+		return tamperDeletionAllowlist{}
+	}
+	var allow tamperDeletionAllowlist
+	if err := json.Unmarshal([]byte(raw), &allow); err != nil {
+		return tamperDeletionAllowlist{}
+	}
+	return allow
 }
 
 func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo, taskID string, logger *slog.Logger) (base, rangeSpec string) {
