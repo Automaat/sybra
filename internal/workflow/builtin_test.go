@@ -326,12 +326,29 @@ func TestBuiltinSimpleTaskImplement_DisclosesDownstreamVerification(t *testing.T
 		}
 	}
 
-	// The contract must sit ahead of the reask/retry notes so a retried
-	// implementation still sees it before the failure-specific context.
+	// The contract must sit ahead of every failure-specific/retry block so a
+	// retried implementation always sees it before that context. Pin it
+	// against the earliest such block, not just the verify reask note —
+	// currenttestfailures and acceptanceledger both precede verify_reask_note,
+	// so checking only the latter would let an edit slip the contract below
+	// them while staying green.
 	contractIdx := strings.Index(prompt, "Downstream, after you push")
-	reaskIdx := strings.Index(prompt, `{{getvar .Vars "verify_reask_note"}}`)
-	if contractIdx < 0 || reaskIdx < 0 || contractIdx > reaskIdx {
-		t.Fatalf("downstream verification contract must precede the verify reask note, contractIdx=%d reaskIdx=%d", contractIdx, reaskIdx)
+	if contractIdx < 0 {
+		t.Fatalf("downstream verification contract not found in implement prompt, got:\n%s", prompt)
+	}
+	for _, block := range []string{
+		"{{- if currenttestfailures .Task.Body}}",
+		"{{- if acceptanceledger .Task.Body}}",
+		`{{getvar .Vars "verify_reask_note"}}`,
+		`{{getvar .Vars "watchdog_reask_note"}}`,
+	} {
+		blockIdx := strings.Index(prompt, block)
+		if blockIdx < 0 {
+			t.Fatalf("expected retry/failure block %q not found in implement prompt", block)
+		}
+		if contractIdx > blockIdx {
+			t.Fatalf("downstream verification contract must precede retry/failure block %q, contractIdx=%d blockIdx=%d", block, contractIdx, blockIdx)
+		}
 	}
 }
 
