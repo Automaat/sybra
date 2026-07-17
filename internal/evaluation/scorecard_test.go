@@ -691,7 +691,7 @@ func TestCompareByVariantEstimatesAndExperimentStatus(t *testing.T) {
 		t.Fatalf("treatment secondary estimates = ci %+v edited %+v rework %+v revert %+v",
 			treatment.CIFirstPassEstimate, treatment.MergedWithEditsEstimate, treatment.ReworkEstimate, treatment.RevertEstimate)
 	}
-	if observed.SampleStatus != "low-sample" || observed.MinSamplesPerVariant != 2 {
+	if observed.SampleStatus != SampleStatusLowSample || observed.MinSamplesPerVariant != 2 {
 		t.Fatalf("observed sample status = %+v", *observed)
 	}
 	if len(res.Experiments) != 1 {
@@ -1366,6 +1366,9 @@ func TestComparisonRowsIndeterminateSkillConformanceForcesInsufficient(t *testin
 	if !row.InsufficientData {
 		t.Fatalf("row = %+v, want InsufficientData despite a 20-run sample — history with unknown skill parity is never sufficient", row)
 	}
+	if row.SampleStatus != SampleStatusParityUnknown {
+		t.Fatalf("row sample status = %q, want %q", row.SampleStatus, SampleStatusParityUnknown)
+	}
 }
 
 func TestComparisonRowsMixedSkillConformanceForcesInsufficient(t *testing.T) {
@@ -1389,6 +1392,9 @@ func TestComparisonRowsMixedSkillConformanceForcesInsufficient(t *testing.T) {
 	}
 	if !row.SkillParityUnknown || !row.InsufficientData {
 		t.Fatalf("row = %+v, a mixed-delivery cohort must never read as a sufficient parity comparison", row)
+	}
+	if row.SampleStatus != SampleStatusParityUnknown {
+		t.Fatalf("row sample status = %q, want %q", row.SampleStatus, SampleStatusParityUnknown)
 	}
 }
 
@@ -1437,6 +1443,16 @@ func TestExperimentSampleStatusBlocksReadinessOnSkillParityUnknown(t *testing.T)
 		if v.VariantID == "treatment" && !v.Ready {
 			t.Fatalf("treatment variant = %+v, want ready", v)
 		}
+	}
+	byVariant := map[string]VariantSampleStatus{}
+	for _, v := range status.Variants {
+		byVariant[v.VariantID] = v
+	}
+	if byVariant["control"].SampleStatus != SampleStatusParityUnknown {
+		t.Fatalf("control variant sample status = %q, want %q", byVariant["control"].SampleStatus, SampleStatusParityUnknown)
+	}
+	if byVariant["treatment"].SampleStatus != SampleStatusActionable {
+		t.Fatalf("treatment variant sample status = %q, want %q", byVariant["treatment"].SampleStatus, SampleStatusActionable)
 	}
 }
 
