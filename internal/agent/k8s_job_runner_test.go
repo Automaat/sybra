@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -172,4 +173,63 @@ func TestK8sProviderWrapperCommitsUntrackedFiles(t *testing.T) {
 	if strings.Contains(script, "git diff --quiet") {
 		t.Errorf("wrapper script gates its commit on `git diff`, which cannot see a newly created file:\n%s", script)
 	}
+}
+
+func TestAppendK8sPRRepoEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		remote  string
+		want    string
+		explain string
+	}{
+		{
+			name:    "https remote",
+			remote:  "https://github.com/Automaat/sybra-testbed.git",
+			want:    "Automaat/sybra-testbed",
+			explain: "the normal registered-project remote",
+		},
+		{
+			name:    "https remote without .git",
+			remote:  "https://github.com/Automaat/sybra-testbed",
+			want:    "Automaat/sybra-testbed",
+			explain: "gh and the API both accept this form",
+		},
+		{
+			name:    "ssh remote",
+			remote:  "git@github.com:Automaat/sybra-testbed.git",
+			want:    "Automaat/sybra-testbed",
+			explain: "the PR repo is derivable even though the Job cannot push over ssh",
+		},
+		{
+			name:    "pvc bare clone",
+			remote:  "/home/sybra/.sybra/clones/FakeOrg/k8s-testbed.git",
+			want:    "",
+			explain: "the fake-repo smoke has no GitHub remote and must not attempt a PR",
+		},
+		{
+			name:    "empty remote",
+			remote:  "",
+			want:    "",
+			explain: "no remote at all is not a misconfiguration worth failing over",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := appendK8sPRRepoEnv(nil, tt.remote, discardK8sLogger())
+
+			var got string
+			for _, e := range env {
+				if e["name"] == "SYBRA_K8S_PR_REPO" {
+					got, _ = e["value"].(string)
+				}
+			}
+			if got != tt.want {
+				t.Errorf("SYBRA_K8S_PR_REPO = %q, want %q — %s", got, tt.want, tt.explain)
+			}
+		})
+	}
+}
+
+func discardK8sLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
 }

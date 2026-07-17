@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
@@ -369,6 +370,20 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 }
 
 func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string, exitErr error) task.RunPatch {
+	// A mandatory skill's pre-execution ConformanceExact/ConformanceFallback
+	// only reflects that the instructions were delivered (natively or
+	// injected) — not that the model actually followed them. Downgrade to
+	// ConformanceUnverified when the transcript never produced the matching
+	// receipt so the workflow engine's skill-conformance gate (see
+	// workflow.HandleAgentComplete) can retry instead of trusting a fake or
+	// incomplete artifact.
+	if ag.RequestedSkill != "" {
+		transcript := finalAssistantText(ag) + "\n" + resultContent
+		ag.SkillConformance = skillattr.VerifyReceipt(ag.SkillConformance, transcript, ag.RequestedSkill, ag.ResolvedSkillSourceHash)
+		if ag.IsSkillRecoveryAttempt() && (ag.SkillConformance == skillattr.ConformanceExact || ag.SkillConformance == skillattr.ConformanceFallback) {
+			ag.SkillConformance = skillattr.ConformanceRecovered
+		}
+	}
 	truncated := resultContent
 	if len(truncated) > maxResultLen {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"

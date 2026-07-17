@@ -204,6 +204,15 @@ func (c *Config) DefaultRequirePermissions() bool {
 	return true
 }
 
+// ReviewUntilClean reports whether simple-task-review re-reviews after each
+// fix until the verdict is CLEAN. Defaults to true when unset.
+func (c *Config) ReviewUntilClean() bool {
+	if c != nil && c.Agent.ReviewUntilClean != nil {
+		return *c.Agent.ReviewUntilClean
+	}
+	return true
+}
+
 // PromptLabAutoApprove reports whether a filed Prompt Lab proposal may start
 // its authoring workflow without a human click. Defaults to true, but is
 // hard-gated on evaluation.offline.enabled regardless of the setting.
@@ -381,6 +390,7 @@ const (
 	DefaultReviewsFastSeconds           = 120 // was 60
 	DefaultReviewsSlowSeconds           = 600 // was 300
 	DefaultReviewsMaxPRsPerTick         = 25
+	DefaultReviewRoundsPerHour          = 3
 	DefaultReviewsStableBackoffMaxTicks = 8
 	DefaultIssuesSeconds                = 600 // was 300
 	DefaultRenovateFastSeconds          = 120 // was 60
@@ -404,6 +414,15 @@ func (c GitHubConfig) RunsIssuesFetcher() bool {
 // the top-level kill-switch AND the reviews-specific sub-toggle.
 func (c GitHubConfig) RunsReviewer() bool {
 	return c.Enabled && c.ReviewsEnabled
+}
+
+// ReviewRoundsPerHourLimit resolves the per-PR review rate cap. 0 means unset
+// (use the default); a negative value disables the cap entirely.
+func (c GitHubConfig) ReviewRoundsPerHourLimit() int {
+	if c.ReviewRoundsPerHour == 0 {
+		return DefaultReviewRoundsPerHour
+	}
+	return c.ReviewRoundsPerHour
 }
 
 func (c GitHubConfig) reviewsFast() time.Duration {

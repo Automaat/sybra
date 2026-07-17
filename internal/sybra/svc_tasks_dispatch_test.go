@@ -1,15 +1,21 @@
 package sybra
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
@@ -22,12 +28,26 @@ import (
 type fakeAgentLauncher struct {
 	startErr   error
 	startCalls int
+	// tasks mirrors production's agentAdapter, which records an AgentRun for
+	// every start (recordSystemAgentStart). Guards that count runs — the review
+	// rate cap — read that list, so a fake that skips it would let a cap that is
+	// dead in production pass every test.
+	tasks *task.Manager
 }
 
-func (f *fakeAgentLauncher) StartAgent(_, _, _, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+func (f *fakeAgentLauncher) StartAgent(taskID, role, mode, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	f.startCalls++
 	if f.startErr != nil {
 		return "", "", "", f.startErr
+	}
+	if f.tasks != nil {
+		id := fmt.Sprintf("fake-agent-%d", f.startCalls)
+		if aerr := f.tasks.AddRun(taskID, task.AgentRun{
+			AgentID: id, Role: role, Mode: mode, StartedAt: time.Now(),
+		}); aerr != nil {
+			return "", "", "", aerr
+		}
+		return id, "", "", nil
 	}
 	return "fake-agent-id", "", "", nil
 }
@@ -57,6 +77,7 @@ func (f *fakeAgentLauncher) AdmitDispatch(string, string, string) (admit bool, r
 func setupDispatchTestService(t *testing.T, launcher *fakeAgentLauncher) (*TaskService, *App) {
 	t.Helper()
 	svc, a := setupTaskService(t)
+	launcher.tasks = a.tasks
 	ta := &taskAdapter{tasks: a.tasks}
 	svc.workflowEngine = workflow.NewEngine(mustWorkflowStore(t), ta, launcher, a.logger)
 	return svc, a
@@ -522,7 +543,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 		t.Fatal(err)
 	}
 
-	a.reconcileRunnableBoardTasks()
+	a.reconcileRunnableBoardTasks(t.Context())
 	a.wg.Wait()
 
 	assertWorkflow := func(id, want string) {
@@ -793,4 +814,588 @@ func TestDispatchFromHumanRequired_FailsClosedOnDispatchError(t *testing.T) {
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
 	}
+}
+
+// The durable backstop from #2164: a review must never be dispatched twice
+// against the same PR head. The phase/cooldown gates above this are all
+// functions of local state, so a frozen or wrong review_phase re-opens them
+// every cooldown — which is exactly how one unchanged commit collected 112
+// reviews. Asking GitHub for the head and refusing a commit we already
+// reviewed is what holds when those gates are wrong.
+func TestDispatchInboundReview_SkipsAlreadyReviewedHead(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	const head = "e57e4b5db72c55ba7610140631a80946a7edddf0"
+	var headCalls atomic.Int64
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		headCalls.Add(1)
+		return head, nil
+	}
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	// This commit's review budget is already spent.
+	if _, err := a.tasks.Update(tk.ID, task.Update{
+		ReviewedHeadSHA:      task.Ptr(head),
+		ReviewedHeadAttempts: task.Ptr(maxReviewAttemptsPerHead),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("dispatched a pr-review for an already-reviewed head %s", head)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 — the head was already reviewed", launcher.startCalls)
+	}
+	if headCalls.Load() == 0 {
+		t.Fatal("never asked GitHub for the head; the guard cannot be honest about local state alone")
+	}
+}
+
+// A genuine new push must still be reviewed — the guard is per-SHA, not a
+// blanket reviewed-once flag.
+func TestDispatchInboundReview_NewHeadIsReviewed(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "new-head-sha", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	if _, err := a.tasks.Update(tk.ID, task.Update{
+		ReviewedHeadSHA:      task.Ptr("old-head-sha"),
+		ReviewedHeadAttempts: task.Ptr(maxReviewAttemptsPerHead),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-review" {
+		t.Fatalf("workflow = %+v, want pr-review — a new push must be reviewed", got.Workflow)
+	}
+	if got.ReviewedHeadSHA != "new-head-sha" {
+		t.Errorf("reviewed_head_sha = %q, want new-head-sha stamped at dispatch", got.ReviewedHeadSHA)
+	}
+}
+
+// Without the head we cannot tell a new push from the commit we already
+// reviewed. Guessing is what produced the incident, so fail closed.
+func TestDispatchInboundReview_HeadLookupFailureDefers(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	// A non-empty SHA alongside the error: with "" the fail-closed branch in
+	// reviewCoversHead would mask a deleted error check, making this tautological.
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		return "unreviewed-head-sha", errors.New("gh: HTTP 502")
+	}
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" {
+		t.Fatalf("dispatched despite an unknown head: %+v", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 — an unknown head must not dispatch", launcher.startCalls)
+	}
+	if got.ReviewedHeadSHA != "" {
+		t.Errorf("reviewed_head_sha = %q, want empty — nothing was reviewed", got.ReviewedHeadSHA)
+	}
+}
+
+// The incident itself, reduced: review_phase frozen at needs-approval and the
+// 10-minute cooldown long expired, so every local gate re-opens — exactly the
+// state that re-fired 112 times. The head is unchanged, so the SHA guard is the
+// only thing left that can say no.
+func TestDispatchInboundReview_CooldownOpenButHeadUnchanged(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	const head = "e57e4b5db72c55ba7610140631a80946a7edddf0"
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return head, nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	completedAt := time.Now().Add(-inboundReviewRedispatchCooldown - time.Minute)
+	if _, err := a.tasks.UpdateMap(tk.ID, map[string]any{
+		"reviewed_head_sha":      head,
+		"reviewed_head_attempts": maxReviewAttemptsPerHead,
+		"workflow": &workflow.Execution{
+			WorkflowID: "pr-review", State: workflow.ExecCompleted,
+			CompletedAt: &completedAt, Variables: map[string]string{},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The local gates must genuinely be open, or this test proves nothing.
+	stale, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inboundReviewNeedsAgent(stale) {
+		t.Fatal("precondition: the phase/cooldown gates must be open for this test to exercise the SHA guard")
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 — re-reviewed an unchanged head with the cooldown open (the #2164 loop)", launcher.startCalls)
+	}
+}
+
+func TestReviewCoversHead(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		reviewed string
+		attempts int
+		head     string
+		want     bool
+	}{
+		{"never reviewed", "", 0, "abc", false},
+		{"same head, budget left", "abc", 1, "abc", false},
+		{"same head, budget spent", "abc", maxReviewAttemptsPerHead, "abc", true},
+		{"same head, over budget", "abc", maxReviewAttemptsPerHead + 5, "abc", true},
+		{"new head resets the budget", "abc", maxReviewAttemptsPerHead, "def", false},
+		{"unknown head fails closed", "abc", 0, "", true},
+		{"unknown head with no prior review fails closed", "", 0, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tk := task.Task{ReviewedHeadSHA: tt.reviewed, ReviewedHeadAttempts: tt.attempts}
+			if got := reviewCoversHead(tk, tt.head); got != tt.want {
+				t.Errorf("reviewCoversHead(sha=%q attempts=%d, head=%q) = %v, want %v",
+					tt.reviewed, tt.attempts, tt.head, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNextReviewAttempt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		reviewed string
+		attempts int
+		head     string
+		want     int
+	}{
+		{"first ever review", "", 0, "abc", 1},
+		{"retry on the same head", "abc", 1, "abc", 2},
+		{"a new push restarts the budget", "abc", 9, "def", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tk := task.Task{ReviewedHeadSHA: tt.reviewed, ReviewedHeadAttempts: tt.attempts}
+			if got := nextReviewAttempt(tk, tt.head); got != tt.want {
+				t.Errorf("nextReviewAttempt = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// The blocking regression the adversary found in the first cut: stamping at
+// dispatch and refusing forever turned any transient provider failure into a PR
+// that is never reviewed again. A run that fails to start must not spend budget.
+func TestDispatchInboundReview_FailedStartDoesNotSpendBudget(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "head-1", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	// Auto-dispatch off models StartWorkflow refusing before anything runs.
+	a.workflowEngine.SetAutoDispatch(false)
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewedHeadSHA != "" || got.ReviewedHeadAttempts != 0 {
+		t.Fatalf("charged the head (sha=%q attempts=%d) for a review that never started — "+
+			"the PR would never be reviewed again", got.ReviewedHeadSHA, got.ReviewedHeadAttempts)
+	}
+
+	// With dispatch re-enabled the review must still happen.
+	a.workflowEngine.SetAutoDispatch(true)
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+	got, err = a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewedHeadAttempts != 1 {
+		t.Errorf("attempts = %d, want 1 once a run actually started", got.ReviewedHeadAttempts)
+	}
+}
+
+func newInboundReviewTask(t *testing.T, a *App, prNumber int, phase string) task.Task {
+	t.Helper()
+	tk, err := a.tasks.Create("Review: external PR", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := a.tasks.UpdateMap(tk.ID, map[string]any{
+		"status":       string(task.StatusInReview),
+		"tags":         []string{"review"},
+		"project_id":   "Automaat/lightroom-mcp",
+		"pr_number":    prNumber,
+		"review_phase": phase,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return updated
+}
+
+// An empty SHA with no error means gh returned something we don't understand.
+// Declining is right, but it must be visible: a PR quietly never reviewed again
+// is precisely what made #2164 hard to diagnose.
+func TestDispatchInboundReview_EmptyHeadIsLoggedNotSilent(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	var buf bytes.Buffer
+	a.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 — an unknown head must not dispatch", launcher.startCalls)
+	}
+	if !strings.Contains(buf.String(), "head-empty") {
+		t.Errorf("declined silently; logs = %q", buf.String())
+	}
+}
+
+func reviewRun(started time.Time) task.AgentRun {
+	return task.AgentRun{AgentID: "a", Role: string(agent.RoleReview), StartedAt: started}
+}
+
+// The blast-radius cap. Every other gate assumes something: the per-head budget
+// assumes the head is a meaningful key, the phase gates assume the phase machine
+// is sane. This one only assumes the clock, so it is what bounds a loop nobody
+// has thought of yet.
+func TestReviewRateLimitExceeded(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		runs  []task.AgentRun
+		limit int
+		want  bool
+	}{
+		{"no runs", nil, 3, false},
+		{"under the limit", []task.AgentRun{reviewRun(now.Add(-5 * time.Minute))}, 3, false},
+		{
+			name: "at the limit",
+			runs: []task.AgentRun{
+				reviewRun(now.Add(-5 * time.Minute)),
+				reviewRun(now.Add(-20 * time.Minute)),
+				reviewRun(now.Add(-50 * time.Minute)),
+			},
+			limit: 3, want: true,
+		},
+		{
+			// The incident sustained ~5/hour for 23 hours.
+			name: "the #2164 rate trips it",
+			runs: []task.AgentRun{
+				reviewRun(now.Add(-2 * time.Minute)), reviewRun(now.Add(-14 * time.Minute)),
+				reviewRun(now.Add(-26 * time.Minute)), reviewRun(now.Add(-38 * time.Minute)),
+				reviewRun(now.Add(-50 * time.Minute)),
+			},
+			limit: 3, want: true,
+		},
+		{
+			// A long-lived PR re-reviewed after each push over weeks is legitimate
+			// and must never be blocked — this is why the cap is a rate, not a total.
+			name: "many rounds, all outside the window",
+			runs: []task.AgentRun{
+				reviewRun(now.Add(-2 * time.Hour)), reviewRun(now.Add(-30 * time.Hour)),
+				reviewRun(now.Add(-72 * time.Hour)), reviewRun(now.Add(-200 * time.Hour)),
+				reviewRun(now.Add(-400 * time.Hour)),
+			},
+			limit: 3, want: false,
+		},
+		{
+			name: "non-review runs never count",
+			runs: []task.AgentRun{
+				{Role: string(agent.RoleImplementation), StartedAt: now.Add(-time.Minute)},
+				{Role: string(agent.RolePRFix), StartedAt: now.Add(-time.Minute)},
+				{Role: string(agent.RoleTestRunner), StartedAt: now.Add(-time.Minute)},
+			},
+			limit: 1, want: false,
+		},
+		{"negative limit disables the cap", []task.AgentRun{
+			reviewRun(now), reviewRun(now), reviewRun(now), reviewRun(now),
+		}, -1, false},
+		{"zero limit disables the cap", []task.AgentRun{reviewRun(now), reviewRun(now)}, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := reviewRateLimitExceeded(task.Task{AgentRuns: tt.runs}, now, tt.limit)
+			if got != tt.want {
+				t.Errorf("reviewRateLimitExceeded(%d runs, limit=%d) = %v, want %v",
+					len(tt.runs), tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
+// Tripping the breaker parks the task for a human rather than silently
+// declining: a task posting reviews this fast is misbehaving, and the operator
+// needs to learn that the automation blew its budget.
+func TestDispatchInboundReview_RateLimitParksForHuman(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range config.DefaultReviewRoundsPerHour {
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i*5)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launcher.startCalls != 0 {
+		t.Errorf("startCalls = %d, want 0 — dispatched past the rate cap", launcher.startCalls)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q — a blown budget must reach a human", got.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(got.StatusReason, "rate limit") {
+		t.Errorf("StatusReason = %q, want it to name the rate limit", got.StatusReason)
+	}
+}
+
+// The cap must not block a healthy PR: a fresh head under the rate still gets
+// reviewed.
+func TestDispatchInboundReview_UnderRateLimitStillReviews(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	if err := a.tasks.AddRun(tk.ID, reviewRun(time.Now().Add(-30*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("parked a task well under the rate cap: %q", got.StatusReason)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-review" {
+		t.Fatalf("workflow = %+v, want pr-review", got.Workflow)
+	}
+}
+
+// #2167 hit a re-park loop in the review handler: human-required is not
+// terminal, so the poller kept re-escalating and overwriting the operator's
+// note. The dispatcher is structurally different — it gates on
+// status == in-review before ever reaching the rate check — but that is worth
+// pinning rather than assuming.
+func TestDispatchInboundReview_ParkedTaskIsNotReParked(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range config.DefaultReviewRoundsPerHour {
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i*5)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+	parked, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Status != task.StatusHumanRequired {
+		t.Fatalf("precondition: want parked, got %q", parked.Status)
+	}
+
+	const note = "OPERATOR: investigating, do not touch"
+	if _, uerr := a.tasks.Update(tk.ID, task.Update{StatusReason: task.Ptr(note)}); uerr != nil {
+		t.Fatal(uerr)
+	}
+	before, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 3 {
+		a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+	}
+
+	after, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.StatusReason != note {
+		t.Errorf("StatusReason = %q, want the operator's note %q — re-parked and clobbered it", after.StatusReason, note)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("updated_at rewritten (%v -> %v) on an already-parked task", before.UpdatedAt, after.UpdatedAt)
+	}
+}
+
+// Every other dispatch test runs with a nil cfg, which takes the one branch of
+// reviewRoundsPerHourLimit that never executes in production (App always sets
+// cfg). Without this, a resolver that ignores config entirely — or that reads
+// an omitted key as 0 and disables the cap fleet-wide — passes the whole suite.
+func TestDispatchInboundReview_RateLimitReadsRealConfig(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	cfg := config.DefaultConfig()
+	cfg.GitHub.ReviewRoundsPerHour = 1 // deliberately not the default
+	a.cfg = cfg
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	// One round: under the default of 3, over the configured 1.
+	if err := a.tasks.AddRun(tk.ID, reviewRun(time.Now().Add(-2*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q — the configured limit of 1 was ignored in favour of the default",
+			got.Status, task.StatusHumanRequired)
+	}
+	if launcher.startCalls != 0 {
+		t.Errorf("startCalls = %d, want 0", launcher.startCalls)
+	}
+}
+
+// A negative limit must genuinely disable the cap on the production path.
+func TestDispatchInboundReview_RateLimitDisabledByConfig(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	cfg := config.DefaultConfig()
+	cfg.GitHub.ReviewRoundsPerHour = -1
+	a.cfg = cfg
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range 10 {
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("parked despite the cap being disabled: %q", got.StatusReason)
+	}
+}
+
+// How the cap is actually reachable in production. On a frozen head the
+// per-head budget (#2166) stops at 2, below this cap — so the rate limit only
+// engages when distinct heads churn inside the hour, which is the loop shape
+// the per-head guard cannot see. Fabricating runs with AddRun would hide that.
+func TestDispatchInboundReview_RateLimitReachedByHeadChurn(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	head := "head-0"
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return head, nil }
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+
+	// Each new head buys a fresh per-head budget; only the rate cap counts across them.
+	dispatched := 0
+	for i := range 6 {
+		head = fmt.Sprintf("head-%d", i)
+		completedAt := time.Now().Add(-inboundReviewRedispatchCooldown - time.Minute)
+		if _, err := a.tasks.UpdateMap(tk.ID, map[string]any{
+			"status":       string(task.StatusInReview),
+			"review_phase": "needs-approval",
+			"workflow": &workflow.Execution{
+				WorkflowID: "pr-review", State: workflow.ExecCompleted,
+				CompletedAt: &completedAt, Variables: map[string]string{},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		before := launcher.startCalls
+		a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+		if launcher.startCalls > before {
+			dispatched++
+		}
+		cur, err := a.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cur.Status == task.StatusHumanRequired {
+			break
+		}
+	}
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("6 distinct heads in an hour never tripped the cap: status=%q dispatched=%d", got.Status, dispatched)
+	}
+	if dispatched > config.DefaultReviewRoundsPerHour {
+		t.Errorf("dispatched %d reviews before the cap tripped, want <= %d", dispatched, config.DefaultReviewRoundsPerHour)
+	}
+	t.Logf("head churn: %d reviews dispatched before the breaker tripped", dispatched)
 }

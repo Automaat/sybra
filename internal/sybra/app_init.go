@@ -485,6 +485,7 @@ func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerCo
 		Command:   cfg.Command,
 		TTL:       cfg.TTL,
 		Mode:      cfg.Mode,
+		CreatePR:  cfg.CreatePR,
 	}
 	for _, e := range cfg.Env {
 		out.Env = append(out.Env, agent.K8sJobEnvVar{Name: e.Name, Value: e.Value})
@@ -1241,7 +1242,28 @@ func (a *App) getPressureGate() *pressure.Gate {
 // funlen cap).
 func (a *App) configureTestingEscalation() {
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
+	a.workflowEngine.SetReviewUntilClean(a.cfg.ReviewUntilClean())
 	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
+	a.warnUnboundedReviewLoop()
+}
+
+// warnUnboundedReviewLoop surfaces the one posture where the review→fix cycle
+// has no stopping condition at all. The cycle has no round cap by design, so
+// agent.max_task_cost_usd is its only bound — and that guardrail is disabled at
+// its default of 0 (enforceTaskCostBudget returns early on <= 0). Stock config
+// therefore pairs an uncapped loop with no ceiling, which a reviewer and fixer
+// that disagree can ride indefinitely. Operators should not have to read the
+// workflow YAML to discover that.
+func (a *App) warnUnboundedReviewLoop() {
+	if !a.cfg.ReviewUntilClean() || a.cfg.Agent.MaxTaskCostUSD > 0 {
+		return
+	}
+	a.logger.Warn("review.loop.unbounded",
+		"review_until_clean", true,
+		"max_task_cost_usd", 0,
+		"detail", "review→fix cycles until CLEAN with no round cap and no cost ceiling; "+
+			"set agent.max_task_cost_usd to bound it, or agent.review_until_clean: false for a single review pass",
+	)
 }
 
 func (a *App) initAgentConfig() {

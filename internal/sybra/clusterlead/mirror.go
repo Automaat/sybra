@@ -3,8 +3,6 @@ package clusterlead
 import (
 	"context"
 	"log/slog"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -14,12 +12,29 @@ import (
 )
 
 // DefaultReconcileInterval is how often the mirror re-lists each follower's
-// tasks, covering silent SSE drops and a leader restart.
+// tasks — the sole sync mechanism as of #2188. Every follower update, not
+// only the filesystem-direct-write case that motivated the change, now lags
+// the leader's canonical store by up to this interval; previously most
+// updates arrived near-instantly over an SSE stream. Traded deliberately for
+// reliability: SSE is leader-initiated (not a reverse-connectivity problem)
+// but was confirmed live to never fire for a write applied outside the
+// follower's own API process — e.g. sybra-cli run over plain SSH with no
+// SYBRA_PORT/SYBRA_AUTH_TOKEN in its environment, which is how every
+// operator fix applied directly on a follower host reaches it — so it left
+// exactly that class of update permanently stale with no self-healing path.
+// Whether the follower's own filesystem watcher could be made to re-emit
+// task:updated for such writes is unexplored; until it is, one dependable
+// polling path beats one broken push path plus one that only partly works.
 const DefaultReconcileInterval = 30 * time.Second
 
+// reconcileFailureEscalateThreshold is how many consecutive reconcile
+// failures for one node before the log level escalates from Warn to Error —
+// a transient blip logs a warning; a stuck node (auth drift, a payload that
+// still exceeds the response cap, network loss) becomes impossible to miss.
+const reconcileFailureEscalateThreshold = 5
+
 // Mirror keeps the leader's canonical store in sync with follower execution
-// state. Per follower it consumes the SSE event stream (for immediacy) and runs
-// a reconcile ticker (for durability), applying both through one authority
+// state via a reconcile ticker, applying every update through one authority
 // merge: execution fields are follower-authoritative, identity/assignment
 // fields stay leader-authoritative, and a per-task monotonic clock drops stale
 // or out-of-order updates.
@@ -44,16 +59,15 @@ func NewMirror(cfg *config.Config, tasks *task.Manager, roster *cluster.Roster, 
 	return &Mirror{cfg: cfg, tasks: tasks, roster: roster, logger: logger, interval: interval}
 }
 
-// Run starts, per follower, an SSE consumer and a reconcile ticker, and blocks
-// until ctx is cancelled. Inert on a non-leader node or with no roster.
+// Run starts, per follower, a reconcile ticker, and blocks until ctx is
+// cancelled. Inert on a non-leader node or with no roster.
 func (m *Mirror) Run(ctx context.Context) {
 	if m.cfg == nil || !m.cfg.IsLeader() || m.roster == nil {
 		return
 	}
 	var wg sync.WaitGroup
 	for _, name := range m.roster.Names() {
-		wg.Add(2)
-		go func(name string) { defer wg.Done(); m.streamLoop(ctx, name) }(name)
+		wg.Add(1)
 		go func(name string) { defer wg.Done(); m.reconcileLoop(ctx, name) }(name)
 	}
 	wg.Wait()
@@ -62,73 +76,37 @@ func (m *Mirror) Run(ctx context.Context) {
 func (m *Mirror) reconcileLoop(ctx context.Context, node string) {
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
-	m.reconcileNode(ctx, node)
+	var consecutiveFailures int
+	m.reconcileNode(ctx, node, &consecutiveFailures)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.reconcileNode(ctx, node)
+			m.reconcileNode(ctx, node, &consecutiveFailures)
 		}
 	}
 }
 
-func (m *Mirror) reconcileNode(ctx context.Context, node string) {
+func (m *Mirror) reconcileNode(ctx context.Context, node string, consecutiveFailures *int) {
 	client, ok := m.roster.Client(node)
 	if !ok || client == nil {
 		return
 	}
 	tasks, err := client.ListTasks(ctx)
 	if err != nil {
-		m.logger.Debug("cluster.mirror.reconcile.failed", "node", node, "err", err)
+		*consecutiveFailures++
+		level := slog.LevelWarn
+		if *consecutiveFailures >= reconcileFailureEscalateThreshold {
+			level = slog.LevelError
+		}
+		m.logger.Log(ctx, level, "cluster.mirror.reconcile.failed",
+			"node", node, "err", err, "consecutive_failures", *consecutiveFailures)
 		return
 	}
+	*consecutiveFailures = 0
 	for i := range tasks {
 		m.applyFollowerTask(node, tasks[i])
-	}
-}
-
-func (m *Mirror) streamLoop(ctx context.Context, node string) {
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		client, ok := m.roster.Client(node)
-		if !ok || client == nil {
-			return
-		}
-		ch, err := client.Subscribe(ctx)
-		if err != nil {
-			m.logger.Debug("cluster.mirror.subscribe.failed", "node", node, "err", err)
-			if !sleepCtx(ctx, m.interval) {
-				return
-			}
-			continue
-		}
-		m.consume(ctx, node, client, ch)
-	}
-}
-
-func (m *Mirror) consume(ctx context.Context, node string, client *cluster.Client, ch <-chan cluster.Event) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, open := <-ch:
-			if !open {
-				return
-			}
-			id := taskIDFromEvent(ev)
-			if id == "" {
-				continue
-			}
-			follower, err := client.GetTask(ctx, id)
-			if err != nil {
-				m.logger.Debug("cluster.mirror.fetch.failed", "node", node, "task", id, "err", err)
-				continue
-			}
-			m.applyFollowerTask(node, follower)
-		}
 	}
 }
 
@@ -212,6 +190,8 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 	out.PRNumber = follower.PRNumber
 	out.PRPhase = follower.PRPhase
 	out.ReviewPhase = follower.ReviewPhase
+	out.ReviewedHeadSHA = follower.ReviewedHeadSHA
+	out.ReviewedHeadAttempts = follower.ReviewedHeadAttempts
 	out.Reviewed = follower.Reviewed
 	out.RunRole = follower.RunRole
 	out.Outcome = follower.Outcome
@@ -230,30 +210,6 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 	out.MirrorUpdatedAt = &followerUpdated
 	out.UpdatedAt = follower.UpdatedAt
 	return out, true
-}
-
-func taskIDFromEvent(ev cluster.Event) string {
-	if !strings.HasPrefix(ev.Name, "task:") {
-		return ""
-	}
-	base := filepath.Base(strings.TrimSpace(ev.Data))
-	base = strings.Trim(base, "\"")
-	id := strings.TrimSuffix(base, ".md")
-	if id == "" || id == "." || strings.ContainsAny(id, `/\`) {
-		return ""
-	}
-	return id
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
 }
 
 func nodesFromConfig(cfg *config.Config) []cluster.Node {

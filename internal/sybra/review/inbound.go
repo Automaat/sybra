@@ -301,6 +301,91 @@ func reviewPRKey(projectID string, prNumber int) string {
 	return projectID + "#" + strconv.Itoa(prNumber)
 }
 
+// reconcileFailureLimit is how many consecutive non-transient reconcile
+// failures a review task tolerates before escalating to a human.
+//
+// The reconcile read decides whether a review task still needs an agent. The
+// old code logged a warning and left the phase untouched on failure, which
+// sounds conservative but is not: `needs-approval` is a *dispatchable* phase,
+// so a permanently-failing read parked the task in the one state that re-fires
+// every cooldown. #2164 warned every ~2 minutes for 23 hours while re-reviewing
+// a stranger's PR 112 times. A warn-log is not an alarm.
+const reconcileFailureLimit = 5
+
+// reconcileEscalationReason prefixes the StatusReason this circuit writes.
+const reconcileEscalationReason = "review reconcile failed"
+
+// recordReconcileFailure counts consecutive reconcile failures and escalates
+// once they look permanent. Transient blips (5xx, timeouts, budget backoff) are
+// expected and never count; only a read that keeps failing is a defect.
+func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
+	if github.IsTransientError(err) {
+		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "transient", true)
+		return
+	}
+
+	// Already parked on a human: escalating again achieves nothing and actively
+	// harms — human-required is not terminal, so the poller keeps feeding this
+	// task back, and each pass would overwrite the operator's own triage note
+	// and rewrite updated_at on work nobody is doing. Deliberately keyed on
+	// status alone, not on our own reason string: an operator who replaces the
+	// note must not thereby re-arm the clobber.
+	if t.Status == task.StatusHumanRequired {
+		// Drop the count too: it measures progress toward an escalation that has
+		// already happened, and keeping it would pin an entry for every parked
+		// task for the life of the process.
+		r.clearReconcileFailure(t.ID)
+		return
+	}
+
+	r.failureMu.Lock()
+	if r.reconcileFailures == nil {
+		r.reconcileFailures = make(map[string]int)
+	}
+	r.reconcileFailures[t.ID]++
+	attempts := r.reconcileFailures[t.ID]
+	if attempts < reconcileFailureLimit {
+		r.failureMu.Unlock()
+		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "attempts", attempts)
+		return
+	}
+	r.failureMu.Unlock()
+
+	r.logger.Error("review.reconcile.circuit-open",
+		"task_id", t.ID, "failures", reconcileFailureLimit, "err", err)
+	// human-required is not dispatchable, so escalating both surfaces the defect
+	// and starves the re-review a frozen phase would keep feeding.
+	if _, uerr := r.tasks.Update(t.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(fmt.Sprintf("%s %d times: %v", reconcileEscalationReason, reconcileFailureLimit, err)),
+	}); uerr != nil {
+		r.logger.Error("review.reconcile.escalate", "task_id", t.ID, "err", uerr)
+	}
+}
+
+func (r *Handler) clearReconcileFailure(taskID string) {
+	r.failureMu.Lock()
+	defer r.failureMu.Unlock()
+	delete(r.reconcileFailures, taskID)
+}
+
+// RateLimitParkReason prefixes the StatusReason written when the review rate
+// breaker trips (#2168). The reconciler honours it as a latch.
+const RateLimitParkReason = "automated review rate limit"
+
+// circuitParked reports whether t was parked by an automation breaker rather
+// than by ordinary review flow.
+//
+// human-required is NOT a latch here: reconcileReviewPhases skips only
+// done/cancelled, and computeReviewPhase names Status=in-review for the
+// needs-approval state, so a parked task is dragged back to in-review on the
+// next poll and re-dispatched within the cooldown. The breaker would self-heal
+// into the next burst and its reason would be overwritten before a human read it.
+func circuitParked(t *task.Task) bool {
+	return t.Status == task.StatusHumanRequired &&
+		strings.HasPrefix(t.StatusReason, RateLimitParkReason)
+}
+
 // reconcileReviewPhases recomputes the lifecycle phase of every inbound
 // PR-review task (tag `review`) from live GitHub signals and persists any
 // delta. It supersedes the old human-required→in-review "published" detector,
@@ -312,6 +397,9 @@ func (r *Handler) reconcileReviewPhases(tasks []task.Task, summary github.Review
 	for i := range tasks {
 		t := &tasks[i]
 		if !slices.Contains(t.Tags, "review") || task.IsTerminalStatus(t.Status) {
+			continue
+		}
+		if circuitParked(t) {
 			continue
 		}
 		if t.PRNumber == 0 || t.ProjectID == "" {
@@ -326,6 +414,10 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	// An agent owning the PR short-circuits: surface "reviewing" without the
 	// extra GitHub round-trips.
 	if r.agents.HasRunningAgentForTask(t.ID) {
+		// Reaching this proves the task is healthy, so any earlier failures are
+		// stale. Without clearing here the count never decays and a single fresh
+		// failure hours later can trip a circuit meant to catch a persistent one.
+		r.clearReconcileFailure(t.ID)
 		r.applyReviewPhase(t, computeReviewPhase(reviewSignals{AgentRunning: true}))
 		return
 	}
@@ -355,15 +447,21 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		}
 	}
 	if res, decided := stickyConflictPhase(mergeable, t.ReviewPhase); decided {
+		r.clearReconcileFailure(t.ID)
 		r.applyReviewPhase(t, res)
 		return
 	}
 
-	myState, err := github.FetchMyReviewState(t.ProjectID, t.PRNumber)
+	myStateFn := github.FetchMyReviewState
+	if r.fetchMyReviewStateFn != nil {
+		myStateFn = r.fetchMyReviewStateFn
+	}
+	myState, err := myStateFn(t.ProjectID, t.PRNumber)
 	if err != nil {
-		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err)
+		r.recordReconcileFailure(t, err)
 		return
 	}
+	r.clearReconcileFailure(t.ID)
 
 	submitted := myState.Submitted || inApproved
 	headSHA := ""

@@ -433,3 +433,62 @@ describe('Stats', () => {
     expect(dashes.length).toBeGreaterThan(0)
   })
 })
+
+describe('Stats review rounds', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockStatsStore.data = null
+    mockStatsStore.error = ''
+    mockStatsStore.loading = false
+  })
+
+  afterEach(() => cleanup())
+
+  function withReviewRounds(rows: unknown[]): StatsResponse {
+    const data = makeStatsData()
+    return StatsResponse.createFrom({ ...data, reviewRounds: rows })
+  }
+
+  it('renders rounds per implementing model', () => {
+    mockStatsStore.data = withReviewRounds([
+      { key: 'opus', tasks: 3, totalRounds: 5, avgRounds: 1.6666, maxRounds: 3, cleanFirstPass: 2 },
+    ])
+    render(Stats, { props: {} })
+
+    expect(screen.getByText('Review rounds by implementing model')).toBeTruthy()
+    expect(screen.getByText('opus')).toBeTruthy()
+    // avgRounds is rounded for display rather than shown raw.
+    expect(screen.getByText('1.67')).toBeTruthy()
+    // Clean-first-pass shows the share, not just the count.
+    expect(screen.getByText('(67%)')).toBeTruthy()
+  })
+
+  it('flags models whose average mixes implementation models', () => {
+    mockStatsStore.data = withReviewRounds([
+      { key: 'opus', tasks: 2, totalRounds: 4, avgRounds: 2, maxRounds: 3, cleanFirstPass: 0, mixedImplModels: 1 },
+    ])
+    render(Stats, { props: {} })
+
+    // The marker appears on the row and again in the footnote that explains it.
+    expect(screen.getAllByText('*')).toHaveLength(2)
+    expect(
+      screen.getByLabelText('1 of 2 tasks had mixed implementation models; average is approximate'),
+    ).toBeTruthy()
+  })
+
+  it('omits the mixed-model footnote when no model is affected', () => {
+    mockStatsStore.data = withReviewRounds([
+      { key: 'opus', tasks: 1, totalRounds: 1, avgRounds: 1, maxRounds: 1, cleanFirstPass: 1 },
+    ])
+    render(Stats, { props: {} })
+
+    expect(screen.queryByText('*')).toBeNull()
+  })
+
+  it('shows an empty state when nothing reached review', () => {
+    mockStatsStore.data = withReviewRounds([])
+    render(Stats, { props: {} })
+
+    expect(screen.getByText('No reviewed tasks yet')).toBeTruthy()
+  })
+})

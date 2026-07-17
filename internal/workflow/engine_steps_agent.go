@@ -138,16 +138,7 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
 
-	mode := step.Config.Mode
-	if strings.Contains(mode, "{{") {
-		rendered, rErr := RenderTemplate(mode, ctx)
-		if rErr == nil {
-			mode = rendered
-		}
-	}
-	if mode == "" {
-		mode = "headless"
-	}
+	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		err := fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 		classifiedReason, _ := ClassifyAgentStartError(err)
@@ -168,6 +159,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if err != nil {
 		return err
 	}
+	applySkillReceiptRecoveryAssignment(step.ID, wfExec, &assignment)
 
 	prompt, err := e.renderAssignedPrompt(taskID, step, ctx, assignment, "workflow.consume-steer")
 	if err != nil {
@@ -221,29 +213,8 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	defer e.unmarkStepStarting(taskID, step.ID)
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
-		// Another dispatcher already holds the per-task dispatch claim (e.g. the
-		// recovery loop won the race for this task). That agent will run and its
-		// completion drives the workflow forward — so wait rather than failing
-		// the step (which would otherwise route into verify_commits /
-		// human-required on a task that has live work in flight).
-		if errors.Is(err, ErrDispatchInFlight) {
-			wfExec.State = ExecWaiting
-			e.logger.Info("workflow.run-agent.dispatch-in-flight", "task_id", taskID, "step", step.ID)
-			return e.tasks.SetWorkflow(taskID, wfExec)
-		}
-
-		// Testing concurrency cap saturated — park and let ResumeStalled retry
-		// when a test-runner slot frees, same as dispatch-in-flight.
-		if errors.Is(err, ErrTestRunnerBusy) {
-			wfExec.State = ExecWaiting
-			e.logger.Info("workflow.run-agent.test-runner-busy", "task_id", taskID, "step", step.ID)
-			return e.tasks.SetWorkflow(taskID, wfExec)
-		}
-
-		if errors.Is(err, ErrAgentPoolBusy) {
-			wfExec.State = ExecWaiting
-			e.logger.Info("workflow.run-agent.agent-pool-busy", "task_id", taskID, "step", step.ID)
-			return e.tasks.SetWorkflow(taskID, wfExec)
+		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
+			return parkErr
 		}
 		return fmt.Errorf("start agent: %w", err)
 	}
@@ -267,6 +238,38 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
 	return e.tasks.SetWorkflow(taskID, wfExec)
+}
+
+func resolveRunAgentMode(mode string, ctx TemplateContext) string {
+	if strings.Contains(mode, "{{") {
+		rendered, err := RenderTemplate(mode, ctx)
+		if err == nil {
+			mode = rendered
+		}
+	}
+	if mode == "" {
+		return "headless"
+	}
+	return mode
+}
+
+func (e *Engine) parkRunAgentStartError(taskID, stepID string, wfExec *Execution, err error) (bool, error) {
+	switch {
+	case errors.Is(err, ErrDispatchInFlight):
+		wfExec.State = ExecWaiting
+		e.logger.Info("workflow.run-agent.dispatch-in-flight", "task_id", taskID, "step", stepID)
+		return true, e.tasks.SetWorkflow(taskID, wfExec)
+	case errors.Is(err, ErrTestRunnerBusy):
+		wfExec.State = ExecWaiting
+		e.logger.Info("workflow.run-agent.test-runner-busy", "task_id", taskID, "step", stepID)
+		return true, e.tasks.SetWorkflow(taskID, wfExec)
+	case errors.Is(err, ErrAgentPoolBusy):
+		wfExec.State = ExecWaiting
+		e.logger.Info("workflow.run-agent.agent-pool-busy", "task_id", taskID, "step", stepID)
+		return true, e.tasks.SetWorkflow(taskID, wfExec)
+	default:
+		return false, nil
+	}
 }
 
 func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, bool, error) {

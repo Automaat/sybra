@@ -244,27 +244,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		e.logger.Error("workflow.agent-complete.get", "task_id", taskID, "err", err)
 		return
 	}
-	if t.Workflow == nil {
-		e.logger.Info("workflow.agent-complete.bail", "task_id", taskID, "agent_id", c.AgentID, "reason", "no-workflow")
-		return
-	}
-	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
-		// Still import sidecar for tracked agents that finish after the
-		// workflow turns terminal (e.g. an untracked agent advanced the step
-		// first, leaving the real agent's output file unread).
-		if c.Success {
-			if spawnedStep, tracked := e.lookupAgentStep(c.AgentID); tracked {
-				e.importSidecarIfConfigured(taskID, spawnedStep, t)
-			}
-		}
-		e.logger.Info("workflow.agent-complete.bail",
-			"task_id", taskID, "agent_id", c.AgentID, "reason", "terminal", "state", string(t.Workflow.State))
-		e.clearAgentStep(c.AgentID)
-		return
-	}
-	if t.Workflow.CurrentStep == "" {
-		e.logger.Info("workflow.agent-complete.bail",
-			"task_id", taskID, "agent_id", c.AgentID, "reason", "no-current-step", "state", string(t.Workflow.State))
+	if e.handleAgentCompleteInitialBail(taskID, t, c) {
 		e.clearAgentStep(c.AgentID)
 		return
 	}
@@ -309,23 +289,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 
-	if e.recorder != nil {
-		tid := traceID(taskID, spawnedStep, c.AgentID)
-		ev := map[string]any{
-			"trace_id": tid,
-			"traceId":  tid,
-			"task_id":  taskID,
-			"taskId":   taskID,
-			"step":     spawnedStep,
-			"status":   status,
-			"agent_id": c.AgentID,
-			"agentId":  c.AgentID,
-			"provider": c.Provider,
-		}
-		if recErr := e.recorder.RecordTrace(taskID, ev); recErr != nil {
-			e.logger.Warn("artifact.record.failed", "kind", "trace", "task_id", taskID, "step", spawnedStep, "err", recErr)
-		}
-	}
+	e.recordAgentCompletionTrace(taskID, spawnedStep, c, status)
 
 	out := StepOutput{
 		StepID:   spawnedStep,
@@ -337,6 +301,10 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	if !c.Success && c.EscalationReason == "checkpoint_failed" {
 		out.TerminalStatus = "human-required"
 		out.TerminalReason = "checkpoint_failed: checkpoint commit failed — no durable checkpoint state created"
+	}
+	if def, ok := defs.get(); ok && e.maybeRecoverUnverifiedSkillRun(taskID, c.AgentID, spawnedStep, def, def.StepByID(t.Workflow.CurrentStep)) {
+		e.clearAgentStep(c.AgentID)
+		return
 	}
 
 	if err := e.AdvanceStep(taskID, out); err != nil {
@@ -358,6 +326,53 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 	e.clearAgentStep(c.AgentID)
+}
+
+func (e *Engine) handleAgentCompleteInitialBail(taskID string, t TaskInfo, c AgentCompletion) bool {
+	if t.Workflow == nil {
+		e.logger.Info("workflow.agent-complete.bail", "task_id", taskID, "agent_id", c.AgentID, "reason", "no-workflow")
+		return true
+	}
+	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
+		// Still import sidecar for tracked agents that finish after the
+		// workflow turns terminal (e.g. an untracked agent advanced the step
+		// first, leaving the real agent's output file unread).
+		if c.Success {
+			if spawnedStep, tracked := e.lookupAgentStep(c.AgentID); tracked {
+				e.importSidecarIfConfigured(taskID, spawnedStep, t)
+			}
+		}
+		e.logger.Info("workflow.agent-complete.bail",
+			"task_id", taskID, "agent_id", c.AgentID, "reason", "terminal", "state", string(t.Workflow.State))
+		return true
+	}
+	if t.Workflow.CurrentStep == "" {
+		e.logger.Info("workflow.agent-complete.bail",
+			"task_id", taskID, "agent_id", c.AgentID, "reason", "no-current-step", "state", string(t.Workflow.State))
+		return true
+	}
+	return false
+}
+
+func (e *Engine) recordAgentCompletionTrace(taskID, spawnedStep string, c AgentCompletion, status string) {
+	if e.recorder == nil {
+		return
+	}
+	tid := traceID(taskID, spawnedStep, c.AgentID)
+	ev := map[string]any{
+		"trace_id": tid,
+		"traceId":  tid,
+		"task_id":  taskID,
+		"taskId":   taskID,
+		"step":     spawnedStep,
+		"status":   status,
+		"agent_id": c.AgentID,
+		"agentId":  c.AgentID,
+		"provider": c.Provider,
+	}
+	if recErr := e.recorder.RecordTrace(taskID, ev); recErr != nil {
+		e.logger.Warn("artifact.record.failed", "kind", "trace", "task_id", taskID, "step", spawnedStep, "err", recErr)
+	}
 }
 
 func traceID(taskID, stepID, agentID string) string {

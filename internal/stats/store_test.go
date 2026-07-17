@@ -254,3 +254,135 @@ func TestQueryEmptyStore(t *testing.T) {
 		t.Errorf("empty store: expected empty recentRuns, got %d", len(resp.RecentRuns))
 	}
 }
+
+func TestReviewRoundsByModel(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	at := func(offset int) time.Time { return base.Add(time.Duration(offset) * time.Minute) }
+	ok := func(r RunRecord) RunRecord { r.Outcome = OutcomeCompleted; return r }
+
+	runs := []RunRecord{
+		// opus task: clean first pass.
+		ok(RunRecord{TaskID: "t1", Role: "implementation", Model: "opus", Timestamp: at(0)}),
+		ok(RunRecord{TaskID: "t1", Role: "review", Model: "sonnet", Timestamp: at(1)}),
+
+		// opus task: needed three review rounds.
+		ok(RunRecord{TaskID: "t2", Role: "implementation", Model: "opus", Timestamp: at(0)}),
+		ok(RunRecord{TaskID: "t2", Role: "review", Model: "sonnet", Timestamp: at(1)}),
+		ok(RunRecord{TaskID: "t2", Role: "fix-review", Model: "sonnet", Timestamp: at(2)}),
+		ok(RunRecord{TaskID: "t2", Role: "review", Model: "sonnet", Timestamp: at(3)}),
+		ok(RunRecord{TaskID: "t2", Role: "fix-review", Model: "sonnet", Timestamp: at(4)}),
+		ok(RunRecord{TaskID: "t2", Role: "review", Model: "sonnet", Timestamp: at(5)}),
+
+		// legacy empty role counts as implementation.
+		ok(RunRecord{TaskID: "t3", Role: "", Model: "codex", Timestamp: at(0)}),
+		ok(RunRecord{TaskID: "t3", Role: "review", Model: "sonnet", Timestamp: at(1)}),
+
+		// never reviewed -> excluded entirely.
+		ok(RunRecord{TaskID: "t4", Role: "implementation", Model: "opus", Timestamp: at(0)}),
+
+		// failover mid-task: attributed to earliest impl, flagged mixed.
+		ok(RunRecord{TaskID: "t5", Role: "implementation", Model: "codex", Timestamp: at(9)}),
+		ok(RunRecord{TaskID: "t5", Role: "implementation", Model: "opus", Timestamp: at(0)}),
+		ok(RunRecord{TaskID: "t5", Role: "review", Model: "sonnet", Timestamp: at(10)}),
+	}
+
+	got := reviewRoundsByModel(runs)
+
+	byKey := map[string]ReviewRoundsStat{}
+	for _, s := range got {
+		byKey[s.Key] = s
+	}
+
+	opus := byKey["opus"]
+	if opus.Tasks != 3 {
+		t.Errorf("opus Tasks = %d, want 3 (t4 unreviewed must be excluded)", opus.Tasks)
+	}
+	if opus.TotalRounds != 5 {
+		t.Errorf("opus TotalRounds = %d, want 5", opus.TotalRounds)
+	}
+	if opus.MaxRounds != 3 {
+		t.Errorf("opus MaxRounds = %d, want 3", opus.MaxRounds)
+	}
+	if opus.CleanFirstPass != 2 {
+		t.Errorf("opus CleanFirstPass = %d, want 2", opus.CleanFirstPass)
+	}
+	if opus.MixedImplModels != 1 {
+		t.Errorf("opus MixedImplModels = %d, want 1 (t5 failed over)", opus.MixedImplModels)
+	}
+	if opus.AvgRounds < 1.66 || opus.AvgRounds > 1.67 {
+		t.Errorf("opus AvgRounds = %v, want ~1.667", opus.AvgRounds)
+	}
+
+	codex := byKey["codex"]
+	if codex.Tasks != 1 || codex.TotalRounds != 1 {
+		t.Errorf("codex = %+v, want 1 task / 1 round (empty role is implementation)", codex)
+	}
+
+	if _, exists := byKey["(unknown)"]; exists {
+		t.Errorf("unexpected (unknown) bucket: %+v", got)
+	}
+}
+
+// A reviewer that crashed and was retried is provider flakiness, not rework:
+// recordRunStats writes a record per termination, so only successful runs may
+// count as rounds.
+func TestReviewRoundsByModel_CountsOnlySuccessfulRuns(t *testing.T) {
+	t.Parallel()
+
+	runs := []RunRecord{
+		{TaskID: "t1", Role: "implementation", Model: "opus", Outcome: OutcomeCompleted},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeFailed},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeStalled},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
+	}
+
+	got := reviewRoundsByModel(runs)
+	if len(got) != 1 {
+		t.Fatalf("reviewRoundsByModel = %+v, want 1 model", got)
+	}
+	if got[0].TotalRounds != 1 {
+		t.Errorf("TotalRounds = %d, want 1 (failed and stalled attempts are not rounds)", got[0].TotalRounds)
+	}
+	if got[0].CleanFirstPass != 1 {
+		t.Errorf("CleanFirstPass = %d, want 1 — a retried reviewer that then found nothing is still a clean first pass", got[0].CleanFirstPass)
+	}
+}
+
+// simple-task-best-of-n-implement dispatches its judge with role "review" and
+// nothing on the record separates it from a real reviewer, so the whole task
+// is dropped rather than reported with a phantom round.
+func TestReviewRoundsByModel_ExcludesBestOfNTasks(t *testing.T) {
+	t.Parallel()
+
+	runs := []RunRecord{
+		{TaskID: "t1", Role: "implementation", Model: "opus", Outcome: OutcomeCompleted, AssignmentUnit: "bestofn-attempt", VariantID: "attempt_1"},
+		{TaskID: "t1", Role: "implementation", Model: "opus", Outcome: OutcomeCompleted, AssignmentUnit: "bestofn-attempt", VariantID: "attempt_2"},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
+		{TaskID: "t2", Role: "implementation", Model: "opus", Outcome: OutcomeCompleted},
+		{TaskID: "t2", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
+	}
+
+	got := reviewRoundsByModel(runs)
+	if len(got) != 1 {
+		t.Fatalf("reviewRoundsByModel = %+v, want only the non-best-of-N task", got)
+	}
+	if got[0].Tasks != 1 || got[0].TotalRounds != 1 {
+		t.Errorf("got %+v, want 1 task / 1 round (best-of-N task t1 excluded)", got[0])
+	}
+}
+
+func TestReviewRoundsByModel_ExcludesUnreviewedAndEmptyTaskID(t *testing.T) {
+	t.Parallel()
+
+	runs := []RunRecord{
+		{TaskID: "", Role: "implementation", Model: "opus", Outcome: OutcomeCompleted},
+		{TaskID: "", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
+	}
+	if got := reviewRoundsByModel(runs); len(got) != 0 {
+		t.Errorf("reviewRoundsByModel = %+v, want empty (no attributable impl run)", got)
+	}
+}

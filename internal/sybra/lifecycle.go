@@ -614,13 +614,7 @@ func (lm *LifecycleManager) startLearningDigestService(ctx context.Context, emit
 	if a.stats != nil {
 		deps.Stats = a.stats
 	}
-	// a.providerHealth is a typed *provider.Checker that stays nil when
-	// health-checking is disabled; assigning a nil pointer straight into the
-	// Gate interface field would produce a non-nil interface wrapping a nil
-	// receiver, and Checker's methods are not nil-receiver-safe.
-	if a.providerHealth != nil {
-		deps.Gate = a.providerHealth
-	}
+	deps.Gate = a.providerHealth
 	svc := learning.NewService(deps)
 	a.learningDigestSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })

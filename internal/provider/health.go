@@ -427,9 +427,25 @@ func (c *Checker) failoverActiveLocked(unhealthy string) bool {
 }
 
 // --- HealthGate implementation ---
+//
+// Every method in this section is nil-receiver safe, and must stay that way.
+//
+// With providers.health_check.enabled=false the checker is never constructed
+// (App.initProviderHealth), which the config documents as "no gate, no
+// blocking". Callers box that nil *Checker into a HealthGate, and an interface
+// holding a nil pointer is itself not nil — so their `if gate != nil` guards
+// all pass and call straight through to here. Answering as an absent gate is
+// what makes the documented config actually work; panicking made it crash
+// planning, triage, PR content, umbrella expansion, and the learning digest.
+//
+// A new method on this interface that dereferences c unguarded reopens that
+// crash for every one of those callers at once.
 
 // IsHealthy reports whether the named provider can currently be used.
 func (c *Checker) IsHealthy(provider string) bool {
+	if c == nil {
+		return true
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	s, ok := c.statuses[provider]
@@ -445,6 +461,9 @@ func (c *Checker) IsHealthy(provider string) bool {
 // that's the distinction recovery uses to wait-and-retry rate limits while
 // letting auth failures take the human-required path.
 func (c *Checker) RateLimited(provider string) bool {
+	if c == nil {
+		return false
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	s, ok := c.statuses[provider]
@@ -456,6 +475,9 @@ func (c *Checker) RateLimited(provider string) bool {
 
 // Reason returns the current reason string for a provider, or empty if unknown.
 func (c *Checker) Reason(provider string) string {
+	if c == nil {
+		return ""
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if s, ok := c.statuses[provider]; ok {
@@ -468,6 +490,9 @@ func (c *Checker) Reason(provider string) string {
 // failoverPriority in order (claude > codex > copilot). Returns empty string
 // if auto-failover is disabled or no enabled peer is currently healthy.
 func (c *Checker) Failover(unhealthy string) string {
+	if c == nil {
+		return ""
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.failoverLocked(unhealthy)
@@ -508,7 +533,12 @@ func (c *Checker) providerEnabledLocked(provider string) bool {
 // ReportAuthFailure marks a provider as logged-out from a passive runner signal.
 // Only cleared by a successful active probe.
 func (c *Checker) ReportAuthFailure(provider, reason string) {
+	// The metric records a provider event, not gate state, so it stays truthful
+	// with no checker; only the status write needs one.
 	metrics.ProviderAuthFailure(provider)
+	if c == nil {
+		return
+	}
 	if reason == "" {
 		reason = "logged_out"
 	}
@@ -523,7 +553,12 @@ func (c *Checker) ReportAuthFailure(provider, reason string) {
 // ReportRateLimit marks a provider as rate-limited. retryAfter zero falls back
 // to the per-provider configured cooldown.
 func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+	// See ReportAuthFailure: the metric is a provider event and survives a nil
+	// checker; the cooldown it would record has nowhere to live without one.
 	metrics.ProviderRateLimit(provider)
+	if c == nil {
+		return
+	}
 	cooldown := retryAfter
 	if cooldown <= 0 {
 		c.mu.RLock()

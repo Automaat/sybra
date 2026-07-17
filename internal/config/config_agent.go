@@ -35,6 +35,15 @@ type AgentDefaults struct {
 	// nil means not configured (falls back to true — safe default).
 	// Set to false in config to opt all tasks into skip-permissions mode.
 	RequirePermissions *bool `yaml:"require_permissions" json:"requirePermissions"`
+	// ReviewUntilClean keeps simple-task-review cycling review→fix→review
+	// until the reviewer returns a CLEAN verdict, so the fix agent's diff is
+	// never the last word. nil means not configured (falls back to true).
+	// The cycle is uncapped by design — a round cap would censor the
+	// review-rounds distribution the stats page reports — and is bounded only
+	// by MaxTaskCostUSD, which is enforced before every dispatch. false falls
+	// back to a single review pass per task: cheaper and more predictable when
+	// no per-task budget is configured.
+	ReviewUntilClean *bool `yaml:"review_until_clean" json:"reviewUntilClean"`
 	// BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
 	// claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
 	// vars (claude has no equivalent CLI flag). 0 means use
@@ -169,12 +178,19 @@ type PlaywrightMCPConfig struct {
 // enabled, future headless agents are run as Kubernetes Jobs using the
 // in-cluster service account.
 type K8sJobsConfig struct {
-	Enabled   bool                 `yaml:"enabled" json:"enabled"`
-	Namespace string               `yaml:"namespace,omitempty" json:"namespace"`
-	Image     string               `yaml:"image,omitempty" json:"image"`
-	Command   []string             `yaml:"command,omitempty" json:"command"`
-	TTL       int                  `yaml:"ttl_seconds_after_finished,omitempty" json:"ttlSecondsAfterFinished"`
-	Mode      string               `yaml:"mode,omitempty" json:"mode"`
+	Enabled   bool     `yaml:"enabled" json:"enabled"`
+	Namespace string   `yaml:"namespace,omitempty" json:"namespace"`
+	Image     string   `yaml:"image,omitempty" json:"image"`
+	Command   []string `yaml:"command,omitempty" json:"command"`
+	TTL       int      `yaml:"ttl_seconds_after_finished,omitempty" json:"ttlSecondsAfterFinished"`
+	Mode      string   `yaml:"mode,omitempty" json:"mode"`
+	// CreatePR lets the agent Job open its own pull request once it has pushed
+	// its branch, instead of the server shelling gh in the task worktree. Only
+	// fires when the task's remote is a GitHub URL — a PVC-backed bare clone
+	// has no PR to open. Default false: the server-side create_pr workflow step
+	// still owns the normal path, and this would otherwise open a PR after
+	// every agent run rather than at the pr stage.
+	CreatePR  bool                 `yaml:"create_pr,omitempty" json:"createPr"`
 	Env       []K8sJobEnvVar       `yaml:"env,omitempty" json:"env"`
 	SecretEnv []K8sJobSecretEnvVar `yaml:"secret_env,omitempty" json:"secretEnv"`
 	Volumes   []K8sJobVolume       `yaml:"volumes,omitempty" json:"volumes"`

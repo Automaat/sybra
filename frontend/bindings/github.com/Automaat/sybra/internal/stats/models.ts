@@ -42,6 +42,64 @@ export class GroupedStat {
 }
 
 /**
+ * ReviewRoundsStat answers "how many review rounds did each model's code need
+ * before a reviewer stopped finding issues?" — the code-quality signal that
+ * per-run cost and turn counts cannot express. Key is the model that authored
+ * the implementation; the counts describe review runs over that same task.
+ * 
+ * simple-task-review loops review→fix→review until the verdict is CLEAN, so
+ * Rounds is an outcome measure of the implementing model: 1 means the first
+ * reviewer found nothing actionable, higher means its code needed rework.
+ * 
+ * Attribution is to the FIRST implementation run of a task. A task can hold
+ * several (provider failover mid-task, or a test failure re-entering
+ * implement), and the first is the one whose output the first review judged.
+ * MixedImplModels counts tasks whose implementation runs did not all share one
+ * model, so a skewed Avg can be recognised rather than silently trusted.
+ */
+export class ReviewRoundsStat {
+    "key": string;
+    "tasks": number;
+    "totalRounds": number;
+    "avgRounds": number;
+    "maxRounds": number;
+    "cleanFirstPass": number;
+    "mixedImplModels"?: number;
+
+    /** Creates a new ReviewRoundsStat instance. */
+    constructor($$source: Partial<ReviewRoundsStat> = {}) {
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+        if (!("tasks" in $$source)) {
+            this["tasks"] = 0;
+        }
+        if (!("totalRounds" in $$source)) {
+            this["totalRounds"] = 0;
+        }
+        if (!("avgRounds" in $$source)) {
+            this["avgRounds"] = 0;
+        }
+        if (!("maxRounds" in $$source)) {
+            this["maxRounds"] = 0;
+        }
+        if (!("cleanFirstPass" in $$source)) {
+            this["cleanFirstPass"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewRoundsStat instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewRoundsStat {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewRoundsStat($$parsedSource as Partial<ReviewRoundsStat>);
+    }
+}
+
+/**
  * RunRecord captures a single agent execution for analytics.
  * 
  * Cache token fields are recorded so the stats UI can show actual API
@@ -140,6 +198,7 @@ export class StatsResponse {
     "byModel": GroupedStat[];
     "byProvider": GroupedStat[];
     "bySkillExecutionMode": GroupedStat[];
+    "reviewRounds": ReviewRoundsStat[];
     "recentRuns": RunRecord[];
     "closedTasksDaily": TaskSeriesPoint[];
     "limits"?: limits$0.Summary | null;
@@ -179,6 +238,9 @@ export class StatsResponse {
         if (!("bySkillExecutionMode" in $$source)) {
             this["bySkillExecutionMode"] = [];
         }
+        if (!("reviewRounds" in $$source)) {
+            this["reviewRounds"] = [];
+        }
         if (!("recentRuns" in $$source)) {
             this["recentRuns"] = [];
         }
@@ -207,6 +269,7 @@ export class StatsResponse {
         const $$createField11_0 = $$createType4;
         const $$createField12_0 = $$createType6;
         const $$createField13_0 = $$createType8;
+        const $$createField14_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("today" in $$parsedSource) {
             $$parsedSource["today"] = $$createField0_0($$parsedSource["today"]);
@@ -241,14 +304,17 @@ export class StatsResponse {
         if ("bySkillExecutionMode" in $$parsedSource) {
             $$parsedSource["bySkillExecutionMode"] = $$createField10_0($$parsedSource["bySkillExecutionMode"]);
         }
+        if ("reviewRounds" in $$parsedSource) {
+            $$parsedSource["reviewRounds"] = $$createField11_0($$parsedSource["reviewRounds"]);
+        }
         if ("recentRuns" in $$parsedSource) {
-            $$parsedSource["recentRuns"] = $$createField11_0($$parsedSource["recentRuns"]);
+            $$parsedSource["recentRuns"] = $$createField12_0($$parsedSource["recentRuns"]);
         }
         if ("closedTasksDaily" in $$parsedSource) {
-            $$parsedSource["closedTasksDaily"] = $$createField12_0($$parsedSource["closedTasksDaily"]);
+            $$parsedSource["closedTasksDaily"] = $$createField13_0($$parsedSource["closedTasksDaily"]);
         }
         if ("limits" in $$parsedSource) {
-            $$parsedSource["limits"] = $$createField13_0($$parsedSource["limits"]);
+            $$parsedSource["limits"] = $$createField14_0($$parsedSource["limits"]);
         }
         return new StatsResponse($$parsedSource as Partial<StatsResponse>);
     }
@@ -310,7 +376,7 @@ export class Summary {
      * Creates a new Summary instance from a string or object.
      */
     static createFrom($$source: any = {}): Summary {
-        const $$createField12_0 = $$createType9;
+        const $$createField12_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("outcomeCounts" in $$parsedSource) {
             $$parsedSource["outcomeCounts"] = $$createField12_0($$parsedSource["outcomeCounts"]);
@@ -351,10 +417,12 @@ export class TaskSeriesPoint {
 const $$createType0 = Summary.createFrom;
 const $$createType1 = GroupedStat.createFrom;
 const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = RunRecord.createFrom;
+const $$createType3 = ReviewRoundsStat.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = TaskSeriesPoint.createFrom;
+const $$createType5 = RunRecord.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = limits$0.Summary.createFrom;
-const $$createType8 = $Create.Nullable($$createType7);
-const $$createType9 = $Create.Map($Create.Any, $Create.Any);
+const $$createType7 = TaskSeriesPoint.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = limits$0.Summary.createFrom;
+const $$createType10 = $Create.Nullable($$createType9);
+const $$createType11 = $Create.Map($Create.Any, $Create.Any);

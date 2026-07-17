@@ -76,6 +76,9 @@ type Handler struct {
 	// global-search fetch path (pollAndMonitorPRs) and backs off instead of
 	// retrying at pollFast cadence once tripped. See poll.AuthCircuit.
 	authCircuit *poll.AuthCircuit
+	// reconcileFailures tracks consecutive non-transient phase-reconcile
+	// failures per task ID, escalating at reconcileFailureLimit (#2164).
+	reconcileFailures map[string]int
 	// wtFailures tracks consecutive worktree-creation failures per task ID.
 	// Once a task hits wtFailureLimit, it is escalated to human-required.
 	wtFailures map[string]int
@@ -149,6 +152,10 @@ type Handler struct {
 	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
 	// falls back to github.FetchReviews.
 	fetchReviewsFn func() (github.ReviewSummary, error)
+	// fetchMyReviewStateFn reads the viewer's own review state on a PR — the
+	// signal that decides whether a review task still needs an agent.
+	// Overridable in tests; nil falls back to github.FetchMyReviewState.
+	fetchMyReviewStateFn func(repo string, number int) (github.MyReviewState, error)
 	// viewerLoginFn returns the authenticated GitHub login (the identity the fix
 	// agent posts as), used to tell the agent's own thread replies from a human
 	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.

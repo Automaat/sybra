@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 const (
@@ -43,6 +44,7 @@ type K8sJobRunnerConfig struct {
 	Command   []string
 	TTL       int
 	Mode      string
+	CreatePR  bool
 	Env       []K8sJobEnvVar
 	SecretEnv []K8sJobSecretEnvVar
 	Volumes   []K8sJobVolume
@@ -73,6 +75,7 @@ type k8sJobRunner struct {
 	command   []string
 	ttl       int
 	mode      string
+	createPR  bool
 	env       []K8sJobEnvVar
 	secretEnv []K8sJobSecretEnvVar
 	volumes   []K8sJobVolume
@@ -108,6 +111,7 @@ func newK8sJobRunner(logger *slog.Logger, cfg K8sJobRunnerConfig) *k8sJobRunner 
 		command:   append([]string(nil), cfg.Command...),
 		ttl:       ttl,
 		mode:      normalizeK8sRunnerMode(cfg.Mode),
+		createPR:  cfg.CreatePR,
 		env:       append([]K8sJobEnvVar(nil), cfg.Env...),
 		secretEnv: append([]K8sJobSecretEnvVar(nil), cfg.SecretEnv...),
 		volumes:   append([]K8sJobVolume(nil), cfg.Volumes...),
@@ -322,6 +326,9 @@ func (r *k8sJobRunner) jobCommandAndEnv(ctx context.Context, a *Agent, cfg RunCo
 			return nil, nil, err
 		}
 		env = appendK8sWorkspaceEnv(env, workspace)
+		if r.createPR {
+			env = appendK8sPRRepoEnv(env, workspace.Remote, r.logger)
+		}
 		for _, pair := range inv.env {
 			name, value, ok := strings.Cut(pair, "=")
 			if ok && name != "" {
@@ -376,6 +383,19 @@ func appendK8sWorkspaceEnv(env []map[string]any, workspace k8sGitWorkspace) []ma
 		env = append(env, map[string]any{"name": "SYBRA_K8S_GIT_BRANCH", "value": workspace.Branch})
 	}
 	return env
+}
+
+// appendK8sPRRepoEnv tells the Job which repo to open its PR against. Silently
+// skips a non-GitHub remote: the fake-repo smoke points origin at a bare clone
+// on the PVC, which has no PR to open, and that is a valid setup rather than a
+// misconfiguration worth failing the run over.
+func appendK8sPRRepoEnv(env []map[string]any, remote string, logger *slog.Logger) []map[string]any {
+	owner, repo, err := project.ParseGitHubURL(remote)
+	if err != nil {
+		logger.Info("agent.k8s.pr.skip", "reason", "remote is not a github url", "err", err)
+		return env
+	}
+	return append(env, map[string]any{"name": "SYBRA_K8S_PR_REPO", "value": owner + "/" + repo})
 }
 
 func buildK8sProviderInvocation(a *Agent, cfg RunConfig, workdir string) (headlessInvocation, error) {
@@ -451,6 +471,18 @@ if [ "$status" -eq 0 ] && [ -n "${SYBRA_K8S_GIT_REMOTE:-}" ]; then
 	else
 		git push
 	fi
+	# The Job opens its own PR. Creating it server-side would force the server
+	# to hold a GitHub credential and own repo state, when its whole job in
+	# Kubernetes is to dispatch Jobs and watch them. sybra-cli records the PR
+	# number back through the HTTP API.
+	if [ -n "${SYBRA_K8S_PR_REPO:-}" ] && [ -n "${SYBRA_K8S_GIT_BRANCH:-}" ]; then
+		sybra-cli pr create "$SYBRA_TASK_ID" \
+			--repo "$SYBRA_K8S_PR_REPO" \
+			--head "$SYBRA_K8S_GIT_BRANCH" \
+			--dir "$workdir" \
+			${SYBRA_K8S_PR_TITLE:+--title "$SYBRA_K8S_PR_TITLE"} \
+			${SYBRA_K8S_PR_BODY:+--body "$SYBRA_K8S_PR_BODY"}
+	fi
 fi
 exit "$status"
 `
@@ -480,14 +512,40 @@ func detectK8sGitWorkspace(ctx context.Context, dir string) (k8sGitWorkspace, er
 	return k8sGitWorkspace{Remote: strings.TrimSpace(remote), Branch: branch}, nil
 }
 
+// pushK8sGitWorkspace carries local commits to the remote so the Job's clone can
+// see them. It skips entirely when the remote already has everything HEAD does,
+// which is the normal k8s case: the agent works inside the Job, so a fresh task
+// has nothing local, and the wrapper creates the branch itself when it is
+// missing.
+//
+// The skip is what lets a Kubernetes server run without a GitHub credential.
+// Pushing unconditionally meant a real GitHub remote failed here with "could not
+// read Username", which aborted job creation — so the server could only dispatch
+// at all if it held a token, exactly the coupling the k8s split removes. When
+// there really are local commits, a failure here is still fatal: the Job would
+// silently work from the wrong base.
 func pushK8sGitWorkspace(ctx context.Context, dir string, workspace k8sGitWorkspace) error {
 	if workspace.Remote == "" || workspace.Branch == "" {
+		return nil
+	}
+	if !hasUnpushedCommits(ctx, dir) {
 		return nil
 	}
 	if _, err := gitOutput(ctx, dir, "push", "-u", "origin", "HEAD:"+workspace.Branch); err != nil {
 		return fmt.Errorf("push k8s workspace branch: %w", err)
 	}
 	return nil
+}
+
+// hasUnpushedCommits reports whether HEAD holds commits that no remote branch
+// contains. Errs toward true: if the count cannot be read, push and let a real
+// failure surface rather than silently dropping work.
+func hasUnpushedCommits(ctx context.Context, dir string) bool {
+	out, err := gitOutput(ctx, dir, "rev-list", "--count", "HEAD", "--not", "--remotes")
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(out) != "0"
 }
 
 func syncK8sGitWorkspace(ctx context.Context, dir string) error {
