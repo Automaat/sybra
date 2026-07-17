@@ -102,7 +102,7 @@ func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, nil)
+	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
 	if strings.Contains(prompt, "sybra-verdict") {
 		t.Errorf("prompt still instructs a fenced sybra-verdict block:\n%s", prompt)
 	}
@@ -125,7 +125,7 @@ func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, nil)
+	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
 	if !strings.Contains(prompt, "actually re-run the exact failing command") {
 		t.Errorf("prompt does not require re-running the failing command before calling it transient:\n%s", prompt)
 	}
@@ -146,7 +146,7 @@ func TestBuildPrompt_RequiresRecheckingSupersededFailures(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, nil)
+	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
 	if !strings.Contains(prompt, "supersedes the wording the failure quotes") {
 		t.Errorf("prompt does not require rechecking superseded test-runner FAILs:\n%s", prompt)
 	}
@@ -397,7 +397,7 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 		ID: "t1", Title: "x", Status: task.StatusHumanRequired,
 		Branch: "feat/queue", WorktreeDir: "/data/worktrees/queue",
 	}
-	p := h.buildPrompt(tk, nil)
+	p := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
 	for _, want := range []string{
 		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
 		"never fabricate", "/data/worktrees/queue", "feat/queue",
