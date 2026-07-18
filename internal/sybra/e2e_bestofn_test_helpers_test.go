@@ -4,6 +4,7 @@ package sybra
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
 )
@@ -15,7 +16,7 @@ import (
 func lastAssistantText(ag *agent.Agent) string {
 	out := ag.Output()
 	for i := range slices.Backward(out) {
-		if out[i].Type == "assistant" {
+		if out[i].Type == "assistant" && strings.TrimSpace(out[i].Content) != "" {
 			return out[i].Content
 		}
 	}
