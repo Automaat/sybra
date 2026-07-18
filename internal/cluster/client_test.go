@@ -32,6 +32,8 @@ type stubFollower struct {
 	gotPath  string
 	gotAuth  string
 	assigned *task.Task
+	gotPaths []string
+	forNode  string
 }
 
 func (s *stubFollower) server(t *testing.T) *httptest.Server {
@@ -42,6 +44,7 @@ func (s *stubFollower) server(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
 		s.gotPath = r.URL.Path
+		s.gotPaths = append(s.gotPaths, r.URL.Path)
 		s.gotAuth = r.Header.Get("Authorization")
 		s.gotBody, _ = io.ReadAll(r.Body)
 		if s.token != "" && r.Header.Get("Authorization") != "Bearer "+s.token {
@@ -51,6 +54,13 @@ func (s *stubFollower) server(t *testing.T) *httptest.Server {
 			return
 		}
 		switch r.URL.Path {
+		case "/api/TaskService/ListTasksForNode":
+			var args []string
+			_ = json.Unmarshal(s.gotBody, &args)
+			if len(args) == 1 {
+				s.forNode = args[0]
+			}
+			_ = json.NewEncoder(w).Encode(s.tasks)
 		case "/api/TaskService/ListTasks":
 			_ = json.NewEncoder(w).Encode(s.tasks)
 		case "/api/TaskService/GetTask":
@@ -86,6 +96,38 @@ func TestClientListTasks(t *testing.T) {
 	}
 	if stub.gotAuth != "Bearer sekret" {
 		t.Errorf("auth header = %q", stub.gotAuth)
+	}
+	if stub.gotPath != "/api/TaskService/ListTasksForNode" {
+		t.Errorf("gotPath = %q, want the node-filtered endpoint", stub.gotPath)
+	}
+	if stub.forNode != "n1" {
+		t.Errorf("forNode = %q, want the client's own roster name %q", stub.forNode, "n1")
+	}
+}
+
+// TestClientListTasksFallsBackToLegacyWhenNodeFilteredEndpointMissing covers
+// the rolling-deploy window: a follower that hasn't picked up
+// ListTasksForNode yet (auto-update lag, or a leader built ahead of it)
+// returns 404 for the lean endpoint, and the client must still succeed via
+// the original unfiltered ListTasks rather than surfacing the 404.
+func TestClientListTasksFallsBackToLegacyWhenNodeFilteredEndpointMissing(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	})
+	mux.HandleFunc("POST /api/TaskService/ListTasks", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]task.Task{{ID: "legacy"}})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}})
+	got, err := client.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks did not fall back to the legacy endpoint: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "legacy" {
+		t.Fatalf("ListTasks = %+v, want the legacy endpoint's result", got)
 	}
 }
 

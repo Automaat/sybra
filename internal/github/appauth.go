@@ -104,7 +104,21 @@ func RefreshAppToken(ctx context.Context) error {
 	if src == nil {
 		return nil
 	}
-	return src.refresh(ctx)
+	return src.refresh(ctx, false)
+}
+
+// ForceRefreshAppToken always mints a new installation token when App auth is
+// enabled, even if the cached token isn't near expiry by our locally recorded
+// timestamp. A preflight failure landing right at the hourly rotation
+// boundary can observe a token that GitHub already considers invalid but that
+// this process still believes is fresh; a plain RefreshAppToken would no-op
+// and repeat the same failure. A no-op when App auth is disabled.
+func ForceRefreshAppToken(ctx context.Context) error {
+	src := currentAppSource()
+	if src == nil {
+		return nil
+	}
+	return src.refresh(ctx, true)
 }
 
 // cachedAppToken returns the current installation token, or "" when App auth is
@@ -127,12 +141,14 @@ func cachedAppToken() string {
 	return src.token
 }
 
-func (s *appTokenSource) refresh(ctx context.Context) error {
-	s.mu.RLock()
-	fresh := s.token != "" && time.Until(s.expires) > appTokenRenewBefore
-	s.mu.RUnlock()
-	if fresh {
-		return nil
+func (s *appTokenSource) refresh(ctx context.Context, force bool) error {
+	if !force {
+		s.mu.RLock()
+		fresh := s.token != "" && time.Until(s.expires) > appTokenRenewBefore
+		s.mu.RUnlock()
+		if fresh {
+			return nil
+		}
 	}
 
 	jwt, err := s.signJWT(time.Now())
