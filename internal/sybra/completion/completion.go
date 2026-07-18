@@ -964,14 +964,20 @@ func skillReceiptTranscript(ag *agent.Agent, resultContent string) string {
 	return strings.Join(parts, "\n")
 }
 
-// lastAssistantText returns the content of the last assistant-typed stream event.
-// Unlike finalAssistantText it applies no sybra-verdict gating — it is the
-// general "what did the model say last" accessor used to fill c.Result for
-// providers (codex) whose terminal turn.completed event carries no text.
+// lastAssistantText returns the content of the last non-empty assistant-typed
+// stream event. Unlike finalAssistantText it applies no sybra-verdict gating
+// — it is the general "what did the model say last" accessor used to fill
+// c.Result for providers (codex) whose terminal turn.completed event carries
+// no text.
+//
+// Codex can emit trailing non-message item.completed events (for example
+// reasoning) after the real agent_message. Those currently normalize to
+// assistant events with empty Content; skipping empty turns keeps the fallback
+// on the last real message instead of erasing a valid structured verdict.
 func lastAssistantText(ag *agent.Agent) string {
 	out := ag.Output()
 	for i := range slices.Backward(out) {
-		if out[i].Type == "assistant" {
+		if out[i].Type == "assistant" && strings.TrimSpace(out[i].Content) != "" {
 			return out[i].Content
 		}
 	}

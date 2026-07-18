@@ -380,12 +380,12 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// reopened below (see NewStore) has no way to inherit s.now, so its own
-	// reloadLocked always uses the real clock. A fixed historical date here
-	// would drift more than eventMaxAge (21d) past that real clock over
-	// time, silently filtering the fixture events out as stale — this test
-	// failed for exactly that reason. time.Now() keeps both clocks aligned
-	// no matter when the test runs.
+	// A hardcoded calendar date here is a time bomb: reopening below builds a
+	// second Store whose clock is the real wall clock (nothing overrides it
+	// before its own reloadLocked prunes on construction), so once real time
+	// drifts eventMaxAge past a fixed date the just-persisted events get
+	// pruned as stale on reload. Anchor to the real clock instead so the
+	// fixture stays valid indefinitely.
 	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 
