@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/testutil/loadscale"
 )
 
 // managerTaskService is a real, *task.Manager-backed adapter exposing the
@@ -35,6 +38,56 @@ func (s *managerTaskService) GetTask(id string) (task.Task, error) { return s.mg
 func (s *managerTaskService) AssignTask(t task.Task) error {
 	_, _, err := s.mgr.Put(t)
 	return err
+}
+
+const (
+	clusterleadTimeoutScaleCeiling    = 8
+	mirrorOldResponseCapBytes         = 32 << 20
+	mirrorDefaultHeadroomBytes        = 8 << 20
+	mirrorOversubscribedHeadroomBytes = 3 << 20
+)
+
+var clusterleadTimeoutScaleCached struct {
+	once  sync.Once
+	value int64
+}
+
+func scaledClusterleadDeadline(base time.Duration) time.Duration {
+	return loadscale.ScaleDuration(base, clusterleadTimeoutScale())
+}
+
+func clusterleadTimeoutScale() int64 {
+	clusterleadTimeoutScaleCached.once.Do(func() {
+		clusterleadTimeoutScaleCached.value = clusterleadTimeoutScaleResolve()
+	})
+	return clusterleadTimeoutScaleCached.value
+}
+
+func clusterleadTimeoutScaleResolve() int64 {
+	return clusterleadTimeoutScaleResolveWith(
+		os.Getenv("SYBRA_CLUSTERLEAD_TIMEOUT_SCALE"),
+		func() int64 { return loadscale.HostOversubscriptionFactor(clusterleadTimeoutScaleCeiling) },
+	)
+}
+
+func clusterleadTimeoutScaleResolveWith(envValue string, hostFactor func() int64) int64 {
+	if v := strings.TrimSpace(envValue); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return hostFactor()
+}
+
+func mirrorOversizedPayloadBytes() int {
+	return mirrorOversizedPayloadBytesForScale(clusterleadTimeoutScale())
+}
+
+func mirrorOversizedPayloadBytesForScale(scale int64) int {
+	if scale > 1 {
+		return mirrorOldResponseCapBytes + mirrorOversubscribedHeadroomBytes
+	}
+	return mirrorOldResponseCapBytes + mirrorDefaultHeadroomBytes
 }
 
 // realFollowerServer stands up a genuine HTTP server, mounted with
@@ -153,7 +206,8 @@ func TestMirrorReconcileSucceedsPastOldThirtyTwoMegabyteCap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bigBody := strings.Repeat("x", 40<<20) // 40MB of real bytes, transmitted over real loopback HTTP
+	payloadBytes := mirrorOversizedPayloadBytes()
+	bigBody := strings.Repeat("x", payloadBytes)
 	if _, _, err := followerMgr.Put(task.Task{
 		ID: "task-big", Title: "t", Status: task.StatusDone,
 		ProjectID: "owner/pet", Body: bigBody, UpdatedAt: time.Now(),
@@ -167,7 +221,7 @@ func TestMirrorReconcileSucceedsPastOldThirtyTwoMegabyteCap(t *testing.T) {
 	go func() { defer close(done); mirror.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-done })
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(scaledClusterleadDeadline(10 * time.Second))
 	var got task.Task
 	var gerr error
 	for time.Now().Before(deadline) {
@@ -183,6 +237,61 @@ func TestMirrorReconcileSucceedsPastOldThirtyTwoMegabyteCap(t *testing.T) {
 	}
 	if len(got.Body) != len(bigBody) {
 		t.Errorf("mirrored Body length = %d, want %d -- payload may have been truncated in transit", len(got.Body), len(bigBody))
+	}
+}
+
+func TestClusterleadTimeoutScaleResolveWithEnvOverride(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		host     int64
+		want     int64
+		wantHost bool
+	}{
+		{name: "explicit positive override wins", envValue: "1", host: 7, want: 1},
+		{name: "override is trimmed", envValue: " 3 ", host: 7, want: 3},
+		{name: "invalid override falls back", envValue: "nope", host: 4, want: 4, wantHost: true},
+		{name: "zero override falls back", envValue: "0", host: 5, want: 5, wantHost: true},
+		{name: "empty override uses host", envValue: "", host: 6, want: 6, wantHost: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			got := clusterleadTimeoutScaleResolveWith(tt.envValue, func() int64 {
+				called = true
+				return tt.host
+			})
+			if got != tt.want {
+				t.Fatalf("clusterleadTimeoutScaleResolveWith(%q) = %d, want %d", tt.envValue, got, tt.want)
+			}
+			if called != tt.wantHost {
+				t.Fatalf("host factor called = %v, want %v", called, tt.wantHost)
+			}
+		})
+	}
+}
+
+func TestMirrorOversizedPayloadBytesForScale(t *testing.T) {
+	tests := []struct {
+		name  string
+		scale int64
+		want  int
+	}{
+		{name: "unscaled keeps the original 40 MiB proof", scale: 1, want: 40 << 20},
+		{name: "oversubscribed host trims to 35 MiB", scale: 2, want: 35 << 20},
+		{name: "any larger scale keeps the lighter proof", scale: 8, want: 35 << 20},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mirrorOversizedPayloadBytesForScale(tt.scale); got != tt.want {
+				t.Fatalf("mirrorOversizedPayloadBytesForScale(%d) = %d, want %d", tt.scale, got, tt.want)
+			}
+			if got := mirrorOversizedPayloadBytesForScale(tt.scale); got <= mirrorOldResponseCapBytes {
+				t.Fatalf("mirrorOversizedPayloadBytesForScale(%d) = %d, want > old %d-byte cap", tt.scale, got, mirrorOldResponseCapBytes)
+			}
+		})
 	}
 }
 
