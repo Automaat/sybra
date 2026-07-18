@@ -152,6 +152,12 @@ func TestImportSidecar_EmptyDirVarRecoversViaWorktreeGetter(t *testing.T) {
 	if got.PlanContract != body {
 		t.Fatalf("PlanContract = %q, want recovered sidecar", got.PlanContract)
 	}
+	if got.Workflow == nil {
+		t.Fatal("Workflow is nil, want persisted recovered worktree")
+	}
+	if got.Workflow.Variables[WorkflowVarDir] != worktree {
+		t.Fatalf("%s = %q, want persisted recovered worktree", WorkflowVarDir, got.Workflow.Variables[WorkflowVarDir])
+	}
 	if reason := tasks.Reason("t1"); reason != "" {
 		t.Fatalf("reason = %q, want no human-required escalation", reason)
 	}

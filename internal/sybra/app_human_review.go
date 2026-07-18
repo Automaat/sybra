@@ -183,6 +183,10 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.logger.Error("human-review.task.get", "task_id", taskID, "err", err)
 		return false
 	}
+	if t.Status != task.StatusHumanRequired {
+		h.skip(taskID, "stale_status_"+string(t.Status))
+		return false
+	}
 	// Idempotency gate: a prior run already produced a verdict — re-spawning
 	// on app restart or repeated status hooks would just duplicate the diagnosis.
 	if verdictAlreadyRendered(t) {

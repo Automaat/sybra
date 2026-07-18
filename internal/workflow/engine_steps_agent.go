@@ -140,16 +140,14 @@ func (e *Engine) recoverImportedSidecarFromWorktree(taskID, stepID string, step 
 	if !ok || strings.TrimSpace(worktreePath) == "" {
 		return "", nil, false
 	}
-	vars := maps.Clone(info.Workflow.Variables)
-	if vars == nil {
-		vars = map[string]string{}
-	}
-	vars[WorkflowVarDir] = worktreePath
+	recoveredWorkflow := *info.Workflow
+	recoveredWorkflow.Variables = maps.Clone(info.Workflow.Variables)
+	recoveredWorkflow.SetVar(WorkflowVarDir, worktreePath)
 	path, rErr := RenderTemplate(cfg.From, TemplateContext{
 		Task:     info,
 		Step:     *step,
-		Vars:     vars,
-		Workflow: info.Workflow,
+		Vars:     recoveredWorkflow.Variables,
+		Workflow: &recoveredWorkflow,
 	})
 	if rErr != nil {
 		e.logger.Warn("workflow.import-sidecar.recover.render", "task_id", taskID, "step", stepID, "err", rErr)
@@ -158,6 +156,11 @@ func (e *Engine) recoverImportedSidecarFromWorktree(taskID, stepID string, step 
 	content, readErr := os.ReadFile(path)
 	if readErr != nil {
 		e.logger.Warn("workflow.import-sidecar.recover.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
+		return "", nil, false
+	}
+	info.Workflow.SetVar(WorkflowVarDir, worktreePath)
+	if err := e.tasks.SetWorkflow(taskID, info.Workflow); err != nil {
+		e.logger.Warn("workflow.import-sidecar.recover.persist", "task_id", taskID, "step", stepID, "path", path, "err", err)
 		return "", nil, false
 	}
 	e.logger.Info("workflow.import-sidecar.recover", "task_id", taskID, "step", stepID, "path", path, "bytes", len(content))
