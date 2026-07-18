@@ -338,6 +338,7 @@ func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, 
 		case isDiffHeaderLine(line):
 			inHunk = false
 		case strings.HasPrefix(line, "@@"):
+			s.resetHunkState()
 			inHunk = true
 		case !inHunk && (strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++")):
 			// file header before any hunk; ignore
@@ -345,6 +346,8 @@ func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, 
 			s.feedAdded(line[1:])
 		case inHunk && strings.HasPrefix(line, "-"):
 			s.feedRemoved(line[1:])
+		case inHunk && strings.HasPrefix(line, " "):
+			s.feedContext(line[1:])
 		}
 	}
 	return s.finalize()
@@ -427,6 +430,14 @@ func (s *tamperScan) add(rule, detail string) {
 	s.findings = append(s.findings, tamperFinding{
 		File: s.path, Category: string(s.cat), Severity: tamperHigh, Rule: rule, Detail: detail,
 	})
+}
+
+func (s *tamperScan) resetHunkState() {
+	s.platformGuardDepth = 0
+}
+
+func (s *tamperScan) feedContext(content string) {
+	s.updatePlatformGuardDepth(content, false)
 }
 
 func (s *tamperScan) feedAdded(content string) {

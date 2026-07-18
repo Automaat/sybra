@@ -143,6 +143,11 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: []string{"added-skip"},
 		},
 		{
+			name:      "unrelated_skip_after_platform_guard_closed_by_context_still_flags",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n \t{\n-\t\tif setupOK() {\n+\t\tif runtime.GOOS != \"linux\" { if setupOK() {\n \t\t\tsetup()\n \t\t}\n \t}\n }\n \n func TestOther(t *testing.T) {\n+\tt.Skip(\"unrelated flaky\")\n \tassertReady(t)\n }\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:      "skip_message_brace_does_not_extend_platform_guard",
 			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" {\n+\t\tt.Skip(\"only works on {legacy} platform\")\n+\t}\n+\tt.Skip(\"flaky\")\n",
 			wantRules: []string{"added-skip"},
