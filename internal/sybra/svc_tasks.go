@@ -872,6 +872,18 @@ var dispatchTargets = map[string]dispatchTargetSpec{
 	string(task.StatusInReview):   {requiresPR: true, dispatches: false},
 }
 
+func readyPRNoWorkflowAllowed(role, target string) bool {
+	if target != string(task.StatusReadyPR) {
+		return false
+	}
+	switch agent.Role(role) {
+	case agent.RoleReview, agent.RoleTestRunner, agent.RoleHumanReview:
+		return true
+	default:
+		return false
+	}
+}
+
 // DispatchFromHumanRequired flips a task parked in human-required to target
 // (one of in-progress/testing/ready-pr/in-review), recording reason as the
 // audit-visible status_reason. For dispatching targets it synchronously
@@ -958,20 +970,24 @@ func (s *TaskService) dispatchFromHumanRequiredLocked(id, target, reason string)
 			if dispatchErr != nil {
 				failure = dispatchErr.Error()
 			}
-			s.logger.Error("task.dispatch.failed", "task_id", id, "target", target, "err", failure)
-			revertReason := fmt.Sprintf("%s (dispatch to %s failed: %s)", reason, target, failure)
-			if _, revertErr := s.tasks.UpdateMap(id, map[string]any{
-				"status":        string(task.StatusHumanRequired),
-				"status_reason": revertReason,
-			}); revertErr != nil {
-				s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
-				s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
-				return task.Task{}, fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr)
+			if dispatchErr == nil && matched == "" && readyPRNoWorkflowAllowed(cur.RunRole, target) {
+				s.logger.Info("task.dispatch.no-workflow-needed", "task_id", id, "target", target, "role", cur.RunRole)
+			} else {
+				s.logger.Error("task.dispatch.failed", "task_id", id, "target", target, "err", failure)
+				revertReason := fmt.Sprintf("%s (dispatch to %s failed: %s)", reason, target, failure)
+				if _, revertErr := s.tasks.UpdateMap(id, map[string]any{
+					"status":        string(task.StatusHumanRequired),
+					"status_reason": revertReason,
+				}); revertErr != nil {
+					s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
+					s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
+					return task.Task{}, fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr)
+				}
+				// The bounce back to human-required is the event an operator most
+				// needs a durable record of — log it, not just the success path.
+				s.logDispatchAudit(id, target, string(cur.Status), reason, "reverted")
+				return task.Task{}, conflictError(fmt.Sprintf("dispatch to %q failed: %s", target, failure))
 			}
-			// The bounce back to human-required is the event an operator most
-			// needs a durable record of — log it, not just the success path.
-			s.logDispatchAudit(id, target, string(cur.Status), reason, "reverted")
-			return task.Task{}, conflictError(fmt.Sprintf("dispatch to %q failed: %s", target, failure))
 		}
 	}
 
