@@ -126,6 +126,9 @@ func cmpConfigSubset(got, want *Config) string {
 	if got.SchemaVersion != want.SchemaVersion {
 		diffs = append(diffs, fmt.Sprintf("SchemaVersion: got %d want %d", got.SchemaVersion, want.SchemaVersion))
 	}
+	if got.GitHub.Enabled != want.GitHub.Enabled {
+		diffs = append(diffs, fmt.Sprintf("GitHub.Enabled: got %v want %v", got.GitHub.Enabled, want.GitHub.Enabled))
+	}
 	if got.Todoist.PollSeconds != want.Todoist.PollSeconds {
 		diffs = append(diffs, fmt.Sprintf("Todoist.PollSeconds: got %d want %d", got.Todoist.PollSeconds, want.Todoist.PollSeconds))
 	}
@@ -956,11 +959,11 @@ func TestAllowsProjectType(t *testing.T) {
 	}
 }
 
-func TestDefaultGitHubOptIn(t *testing.T) {
+func TestDefaultConfigMatchesLegacyEmptyFileGitHubBehavior(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
-	if cfg.GitHub.Enabled {
-		t.Error("default GitHub.Enabled should be false for first-run opt-in")
+	if !cfg.GitHub.Enabled {
+		t.Error("DefaultConfig GitHub.Enabled should match legacy empty-file resolution")
 	}
 	if !cfg.GitHub.IssuesEnabled {
 		t.Error("default GitHub.IssuesEnabled should be true so github.enabled=true enables issues")

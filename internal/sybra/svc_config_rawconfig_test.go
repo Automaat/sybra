@@ -43,6 +43,9 @@ func TestGetDefaultSettings_MatchesDefaultConfig(t *testing.T) {
 
 	def := svc.GetDefaultSettings()
 	want := config.DefaultConfig()
+	if def.GitHub.Enabled != want.GitHub.Enabled {
+		t.Errorf("default github.enabled = %v, want %v", def.GitHub.Enabled, want.GitHub.Enabled)
+	}
 	if def.Agent.MaxConcurrent != want.Agent.MaxConcurrent {
 		t.Errorf("default maxConcurrent = %d, want %d", def.Agent.MaxConcurrent, want.Agent.MaxConcurrent)
 	}
@@ -153,6 +156,29 @@ func TestSaveRawConfig_ValidRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(saved), "max_files: 9") {
 		t.Error("raw save did not persist the edit")
+	}
+}
+
+func TestSaveRawConfig_PreservesServerAuthTokenWhenOmitted(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.cfg.Server.AuthToken = "persist-me"
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	raw := "schema_version: 2\nagent:\n  bash_timeout: 2m\n"
+	if err := svc.SaveRawConfig(raw); err != nil {
+		t.Fatalf("SaveRawConfig: %v", err)
+	}
+	if svc.cfg.Server.AuthToken != "persist-me" {
+		t.Fatalf("in-memory auth token = %q, want persist-me", svc.cfg.Server.AuthToken)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedText := string(saved)
+	if !strings.Contains(savedText, "auth_token: persist-me") {
+		t.Fatalf("saved config missing preserved auth token:\n%s", savedText)
 	}
 }
 

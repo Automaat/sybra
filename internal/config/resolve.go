@@ -57,7 +57,7 @@ type ResolveResult struct {
 // the app, applying defaults, legacy aliases, env overrides, reconciles, and
 // cross-field validation in one order.
 func Resolve(file *FileConfig, env Environment, opts ResolveOptions) (*ResolveResult, error) {
-	cfg := DefaultConfig()
+	cfg := defaultSeedConfig()
 
 	if file != nil && len(file.data) > 0 {
 		cfg.ABTesting.BuiltinVersion = nil

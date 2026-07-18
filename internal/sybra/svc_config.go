@@ -3,6 +3,8 @@ package sybra
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -10,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/workflow"
+	"gopkg.in/yaml.v3"
 )
 
 // ConfigService exposes settings read/write as Wails-bound methods.
@@ -80,9 +83,10 @@ func (s *ConfigService) UpdateTodoistToken(token string) error {
 	return nil
 }
 
-// GetDefaultSettings returns the settings a fresh install would have. The UI
-// diffs live values against these to flag "modified from default" fields and to
-// power per-field reset-to-default, without hardcoding defaults in TypeScript.
+// GetDefaultSettings returns the settings an empty config file resolves to. The
+// UI diffs live values against these to flag "modified from default" fields and
+// to power per-field reset-to-default, without hardcoding defaults in
+// TypeScript.
 func (s *ConfigService) GetDefaultSettings() AppSettings {
 	return configToSettings(config.DefaultConfig())
 }
@@ -100,18 +104,142 @@ func (s *ConfigService) GetRawConfig() (string, error) {
 // formatting and comments), then hot-reloads. Invalid YAML or a value that
 // fails validation is rejected without touching disk.
 func (s *ConfigService) SaveRawConfig(raw string) error {
-	fileCfg, err := config.ParseFileConfig([]byte(raw))
+	saveRaw := []byte(raw)
+	var err error
+	s.mu.RLock()
+	preserveServerToken := serverAuthTokenForRawSave(s.cfg)
+	s.mu.RUnlock()
+	if preserveServerToken != "" {
+		saveRaw, err = ensureServerAuthTokenInRawConfig(saveRaw, preserveServerToken)
+		if err != nil {
+			return validationError(fmt.Sprintf("invalid config: %s", err))
+		}
+	}
+	fileCfg, err := config.ParseFileConfig(saveRaw)
 	if err != nil {
 		return validationError(fmt.Sprintf("invalid config: %s", err))
 	}
 	if _, err := config.ResolveFromCurrentEnvironment(fileCfg, config.ResolveOptions{}); err != nil {
 		return validationError(err.Error())
 	}
-	if err := config.WriteRawConfig([]byte(raw)); err != nil {
+	if err := config.WriteRawConfig(saveRaw); err != nil {
 		return err
 	}
 	_, err = s.ReloadFromDisk()
 	return err
+}
+
+func serverAuthTokenForRawSave(cfg *config.Config) string {
+	if cfg == nil || strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN")) != "" {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Server.AuthToken)
+}
+
+func ensureServerAuthTokenInRawConfig(raw []byte, token string) ([]byte, error) {
+	fileCfg, err := config.ParseFileConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	if fileCfg.Has("server", "auth_token") {
+		return raw, nil
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return nil, err
+	}
+	keyNode, valueNode, ok := yamlTopLevelField(&root, "server")
+	if !ok {
+		return appendServerBlock(raw, token), nil
+	}
+	if valueNode.Kind != yaml.MappingNode {
+		return rewriteRawConfigServerAuthToken(&root, keyNode, valueNode, token)
+	}
+	return insertServerAuthTokenLine(raw, keyNode, token)
+}
+
+func yamlTopLevelField(root *yaml.Node, key string) (*yaml.Node, *yaml.Node, bool) {
+	node := root
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		node = node.Content[0]
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil, nil, false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i], node.Content[i+1], true
+		}
+	}
+	return nil, nil, false
+}
+
+func appendServerBlock(raw []byte, token string) []byte {
+	trimmed := strings.TrimRight(string(raw), "\n")
+	if trimmed != "" {
+		trimmed += "\n"
+	}
+	return []byte(trimmed + "server:\n  auth_token: " + yamlScalar(token) + "\n")
+}
+
+func rewriteRawConfigServerAuthToken(root, keyNode, valueNode *yaml.Node, token string) ([]byte, error) {
+	if valueNode.Kind == 0 {
+		valueNode.Kind = yaml.MappingNode
+		valueNode.Tag = "!!map"
+		valueNode.Value = ""
+		valueNode.Style = 0
+	}
+	valueNode.Kind = yaml.MappingNode
+	valueNode.Tag = "!!map"
+	valueNode.Content = append(valueNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "auth_token"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: token},
+	)
+	if keyNode != nil && keyNode.HeadComment != "" && valueNode.HeadComment == "" {
+		valueNode.HeadComment = keyNode.HeadComment
+	}
+	var out strings.Builder
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(root); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return []byte(out.String()), nil
+}
+
+func insertServerAuthTokenLine(raw []byte, keyNode *yaml.Node, token string) ([]byte, error) {
+	lines := strings.Split(string(raw), "\n")
+	serverIndent := keyNode.Column - 1
+	insertAt := len(lines)
+	for i := keyNode.Line; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent <= serverIndent {
+			insertAt = i
+			break
+		}
+	}
+	entry := strings.Repeat(" ", serverIndent+2) + "auth_token: " + yamlScalar(token)
+	lines = append(lines, "")
+	copy(lines[insertAt+1:], lines[insertAt:])
+	lines[insertAt] = entry
+	return []byte(strings.Join(lines, "\n")), nil
+}
+
+func yamlScalar(s string) string {
+	data, err := yaml.Marshal(s)
+	if err != nil {
+		return s
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // UpdateSettings validates, persists, and hot-reloads the provided settings.

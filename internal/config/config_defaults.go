@@ -577,6 +577,18 @@ func HomeDir() string {
 }
 
 func DefaultConfig() *Config {
+	fileCfg, err := ParseFileConfig([]byte("{}\n"))
+	if err != nil {
+		panic(fmt.Sprintf("config: parse built-in empty config: %v", err))
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		panic(fmt.Sprintf("config: resolve built-in empty config: %v", err))
+	}
+	return resolved.Config
+}
+
+func defaultSeedConfig() *Config {
 	cfg := &Config{
 		SchemaVersion: CurrentSchemaVersion,
 		Logging: LoggingConfig{
