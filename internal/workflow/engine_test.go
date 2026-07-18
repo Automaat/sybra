@@ -61,6 +61,16 @@ func TestTaskFields_PlanCritiqueAndReplanCount(t *testing.T) {
 	})
 }
 
+func TestTaskFields_Role(t *testing.T) {
+	t.Parallel()
+
+	ti := TaskInfo{ID: "t1", Role: "review"}
+	fields := taskFields(ti)
+	if got := fields["task.role"]; got != ti.Role {
+		t.Fatalf("task.role = %q, want %q", got, ti.Role)
+	}
+}
+
 // --- Test helpers ---
 
 func init() {

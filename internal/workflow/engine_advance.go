@@ -751,6 +751,7 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.title":                   t.Title,
 		"task.status":                  t.Status,
 		"task.status_reason":           t.StatusReason,
+		"task.role":                    t.Role,
 		"task.tags":                    strings.Join(t.Tags, ","),
 		"task.agent_mode":              t.AgentMode,
 		"task.project_id":              t.ProjectID,
