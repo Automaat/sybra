@@ -1627,6 +1627,39 @@ func TestSimpleTaskReview_DoesNotMatchLinkedPRTask(t *testing.T) {
 	}
 }
 
+func TestSimpleTaskPR_SkipsReviewOnlyRoles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := SyncBuiltins(store); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	codeAuthor := TaskInfo{ID: "code-author", Status: "ready-pr"}
+	if got := engine.MatchWorkflow(codeAuthor, "task.status_changed"); got == nil || got.ID != "simple-task-pr" {
+		id := "<nil>"
+		if got != nil {
+			id = got.ID
+		}
+		t.Fatalf("code-author ready-pr task matched %q, want simple-task-pr", id)
+	}
+
+	for _, role := range []string{"review", "test-runner", "human-review"} {
+		t.Run(role, func(t *testing.T) {
+			if got := engine.MatchWorkflow(TaskInfo{ID: role, Status: "ready-pr", Role: role}, "task.status_changed"); got != nil {
+				t.Fatalf("%s ready-pr task matched %q, want no PR workflow", role, got.ID)
+			}
+		})
+	}
+}
+
 // TestBuiltinBestOfN_DeclaresMechanicalSteps confirms the opt-in workflow
 // wires both new step types with the promote step correctly cross-referencing
 // the judge and best_of_n steps — a minimal regression net for the YAML
