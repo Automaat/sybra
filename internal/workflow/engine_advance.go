@@ -125,9 +125,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		}
 	}
 
-	t, parked, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
+	t, parked, comp, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
 	if err != nil || parked {
 		return err
+	}
+	if e.finishRecoveredCompletion(comp, release) {
+		return nil
 	}
 
 	nextStep, comp, err := e.resolveNext(taskID, &def, currentStep, wfExec, t)
@@ -149,14 +152,16 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 
 // reloadTaskAndCheckImplementRetry re-reads task state after a step
 // completion (the agent may have changed tags/status directly, e.g.
-// self-escalating to human-required) and gives maybeParkImplementGitHubRetry
-// a chance to reclassify a transient GitHub push/auth failure as a parked
-// retry before the caller resolves the next workflow edge. When parked is
-// true the caller must return immediately (err may be nil).
-func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *Step, wfExec *Execution, output StepOutput, release func()) (t TaskInfo, parked bool, err error) {
+// self-escalating to human-required) and gives workflow-level recovery hooks a
+// chance to rewrite that park before the caller resolves the next edge.
+//
+// parked=true means the current workflow was re-armed and the caller must
+// return immediately. comp!=nil means the current workflow was completed early
+// and the caller must fire that completion instead of advancing further.
+func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *Step, wfExec *Execution, output StepOutput, release func()) (t TaskInfo, parked bool, comp *CompletionInfo, err error) {
 	t, err = e.tasks.GetTask(taskID)
 	if err != nil {
-		return TaskInfo{}, false, err
+		return TaskInfo{}, false, nil, err
 	}
 	t = e.withManualTestConfig(t)
 	t.Workflow = wfExec
@@ -164,9 +169,23 @@ func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *St
 	parked, err = e.maybeParkImplementGitHubRetry(taskID, currentStep, wfExec, t, output)
 	if parked || err != nil {
 		release()
-		return t, parked, err
+		return t, parked, nil, err
 	}
-	return t, false, nil
+	var recovered bool
+	comp, recovered, err = e.maybeRecoverHumanRequiredByOpeningPR(taskID, currentStep, wfExec, t, output)
+	if recovered || err != nil {
+		return t, false, comp, err
+	}
+	return t, false, nil, nil
+}
+
+func (e *Engine) finishRecoveredCompletion(comp *CompletionInfo, release func()) bool {
+	if comp == nil {
+		return false
+	}
+	release()
+	e.fireComplete(comp)
+	return true
 }
 
 // handleFanOutCompletion routes a parallel-child or best-of-N-attempt
