@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -1554,6 +1555,31 @@ func workflowRetryAfter(wf *Execution) (time.Time, bool) {
 	return t, err == nil
 }
 
+// isShutdownCancellationGate short-circuits surfaceStartFailure ahead of the
+// rebase-conflict-recovery branch further down: a context cancellation
+// tracing back to the engine's own shutdown context (e.ctx) is not a
+// task-attributable failure — one graceful restart cancels every in-flight
+// git/agent operation across every concurrently-dispatching task at once.
+// Placement matters: a shutdown-cancelled fetch inside reconcileAndRebase's
+// ReconcileWithRemote step wraps ErrRebaseFailed rather than
+// ErrTransientFetch (project.IsTransientNetworkError doesn't recognize
+// "context canceled" as a transient network blip), so a check placed only in
+// surfaceStartFailureClassified would still let this case fall into the
+// conflict-recovery branch below and dispatch real branch-conflict-fix
+// agents — doomed to be cancelled by that same shutdown — on top of
+// mass-tripping the circuit breaker this fix primarily targets. Suppressed
+// exactly like the other benign dispatch-plumbing sentinels
+// surfaceStartFailureClassified handles below (ErrDispatchInFlight et al.):
+// no status write, no breaker increment, no recovery dispatch (sybra#2291).
+func (e *Engine) isShutdownCancellationGate(taskID, stepID string, err error) bool {
+	if !e.isShutdownCancellation(err) {
+		return false
+	}
+	e.logger.Info("workflow.start-failure.shutdown-cancellation.suppress",
+		"task_id", taskID, "step", stepID)
+	return true
+}
+
 // surfaceStartFailure writes a human-readable reason to task.StatusReason
 // when ResumeStalled fails to (re-)dispatch a step's agent. Permanent errors
 // (e.g. project missing) also flip the task to human-required so the resume
@@ -1568,6 +1594,9 @@ func workflowRetryAfter(wf *Execution) (time.Time, bool) {
 // tracked. Either may be zero-valued (nil wf, empty stepID) for callers that
 // don't have them handy — the breaker simply stays inactive for that call.
 func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf *Execution, stepID string) {
+	if e.isShutdownCancellationGate(taskID, stepID, err) {
+		return
+	}
 	// A pre-agent-start rebase failure is the same "task branch conflicts
 	// with base" condition push_branch/create_pr hit further down the
 	// pipeline (see pushTaskBranch's project.ErrDivergedNeedsResolve branch) —
@@ -1644,6 +1673,46 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 	if uErr := e.tasks.UpdateTaskStatus(taskID, target, reason); uErr != nil {
 		e.logger.Error("workflow.resume-stalled.surface", "task_id", taskID, "err", uErr)
 	}
+}
+
+// isShutdownCancellation applies IsShutdownCancellation's correlation
+// heuristic against e.ctx: err wraps context.Canceled while the engine's own
+// shutdown context is currently done. e.ctx is bound exactly once, from the
+// app's root context (App.Startup -> Engine.SetContext), and is the same
+// context object agentorch.Orchestrator uses to cancel worktree/git
+// operations on shutdown.
+func (e *Engine) isShutdownCancellation(err error) bool {
+	return IsShutdownCancellation(e.ctx, err)
+}
+
+// IsShutdownCancellation is a correlation heuristic, not causality proof: it
+// reports whether ctx is currently done AND err wraps context.Canceled. It
+// cannot verify err's cancellation actually originated from ctx specifically
+// (vs. some other cancelled context in the same call chain) — but a
+// different, unrelated context's own timeout would surface as
+// context.DeadlineExceeded or a non-context error instead, so in practice
+// this reliably distinguishes "we are shutting down" from a genuine failure.
+// Exported so internal/recovery's independent stale-task restart path —
+// which surfaces dispatch failures through its own
+// Recovery.surfaceStartFailure rather than going through Engine — can apply
+// the identical shutdown-vs-genuine-failure heuristic to the
+// "restart-stale.failed" log line named in sybra#2291, rather than
+// maintaining a second, drifting copy of this logic.
+func IsShutdownCancellation(ctx context.Context, err error) bool {
+	return ctx != nil && ctx.Err() != nil && errors.Is(err, context.Canceled)
+}
+
+// transientOrShutdownStartError reports whether a fan-out attempt/child spawn
+// error (best-of-n, parallel) should park the attempt as retryable ("pending")
+// rather than permanently "failed". transientAgentStartError alone doesn't
+// recognize context.Canceled, so a shutdown-cancelled spawn used to fall
+// straight to a hard "failed" that finalizeBestOfNParent/finalizeParallelParent
+// would then escalate the whole task to human-required for — the exact
+// mass-park symptom sybra#2291 targets, reached through a code path the
+// primary surfaceStartFailure fix doesn't gate on its own, since these two
+// call sites only invoke surfaceStartFailure inside the transient branch.
+func (e *Engine) transientOrShutdownStartError(err error) bool {
+	return transientAgentStartError(err) || e.isShutdownCancellation(err)
 }
 
 func circuitBreakerFailureKey(stepID string) string { return circuitBreakerFailureVarPrefix + stepID }
