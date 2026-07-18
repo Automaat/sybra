@@ -153,6 +153,57 @@ func TestRefreshAppToken_MintsAndInjectsEnv(t *testing.T) {
 	}
 }
 
+func TestForceRefreshAppToken_AlwaysRemintsEvenWhenFresh(t *testing.T) {
+	path, _ := writeTestKey(t, false)
+	t.Cleanup(DisableAppAuth)
+
+	var mints int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mints++
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprintf(w, `{"token":"ghs_token_%d","expires_at":"%s"}`,
+			mints, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	}))
+	defer srv.Close()
+	origBase := appAPIBaseURL
+	appAPIBaseURL = srv.URL
+	t.Cleanup(func() { appAPIBaseURL = origBase })
+
+	if err := EnableAppAuth(AppCredentials{AppID: 42, InstallationID: 7, PrivateKeyPath: path}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if err := RefreshAppToken(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if mints != 1 {
+		t.Fatalf("mints after initial refresh = %d, want 1", mints)
+	}
+	first := cachedAppToken()
+
+	// A plain refresh no-ops: the cached token is still well within its
+	// hour-long lifetime, so this must not mint again.
+	if err := RefreshAppToken(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if mints != 1 {
+		t.Fatalf("mints after fresh refresh = %d, want still 1", mints)
+	}
+
+	// A forced refresh must mint a new token regardless of freshness — this
+	// is what lets a push-preflight retry recover from a token that our
+	// locally cached expiry still considers valid but GitHub has already
+	// rotated out from under it (#2160).
+	if err := ForceRefreshAppToken(context.Background()); err != nil {
+		t.Fatalf("force refresh: %v", err)
+	}
+	if mints != 2 {
+		t.Fatalf("mints after forced refresh = %d, want 2", mints)
+	}
+	if got := cachedAppToken(); got == first {
+		t.Fatalf("forced refresh kept the same cached token %q", got)
+	}
+}
+
 func TestEnableAppAuth_RequiresAllFields(t *testing.T) {
 	t.Cleanup(DisableAppAuth)
 	if err := EnableAppAuth(AppCredentials{AppID: 1}); err == nil {
