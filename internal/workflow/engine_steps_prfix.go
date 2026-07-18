@@ -1,9 +1,12 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -177,7 +180,7 @@ func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Exec
 		return StepOutput{}, nil, false
 	}
 
-	cmds, err := e.resolvedMergeFocusedCommands(ctx, taskID, wtPath, resolved)
+	cmds, checkedFiles, err := e.resolvedMergeFocusedCommands(ctx, taskID, wtPath, resolved)
 	if err != nil {
 		out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict could not determine a focused sanity gate: "+trimDiffLine(err.Error()))
 		return out, err, true
@@ -216,6 +219,10 @@ func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Exec
 		return out, err, true
 	}
 
+	if out, err, handled := e.rejectUnexpectedResolvedMergeDirtyPaths(taskID, step, wtPath, checkedFiles); handled {
+		return out, err, true
+	}
+
 	commitCtx, commitCancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer commitCancel()
 	committed, err := project.CheckpointCommit(commitCtx, wtPath, resolvedMergeCheckpointMessage)
@@ -250,20 +257,101 @@ func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Exec
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil, true
 }
 
-func (e *Engine) resolvedMergeFocusedCommands(ctx context.Context, taskID, wtPath string, resolved []string) ([]string, error) {
-	files := slices.Clone(resolved)
+func (e *Engine) rejectUnexpectedResolvedMergeDirtyPaths(taskID string, step *Step, wtPath string, checkedFiles []string) (StepOutput, error, bool) {
+	unexpectedDirty, err := resolvedMergeUnexpectedDirtyPaths(e.ctx, wtPath, checkedFiles)
+	if err != nil {
+		out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict dirty-path audit failed: "+trimDiffLine(err.Error()))
+		return out, err, true
+	}
+	if len(unexpectedDirty) == 0 {
+		return StepOutput{}, nil, false
+	}
+	out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict left dirty paths outside the focused sanity gate: "+trimDiffLine(strings.Join(unexpectedDirty, ", ")))
+	return out, err, true
+}
+
+func (e *Engine) resolvedMergeFocusedCommands(ctx context.Context, taskID, wtPath string, resolved []string) (commands, files []string, err error) {
+	files = slices.Clone(resolved)
 	changed, err := changedFilesSinceProjectBase(ctx, wtPath, e.focusedChecksBaseRef(taskID))
 	if err != nil {
 		e.logger.Warn("workflow.pr-fix.recover-resolved-merge.changed-files", "task_id", taskID, "err", err)
-		return nil, err
+		return nil, nil, err
 	}
 	for _, file := range changed {
 		if !slices.Contains(files, file) {
 			files = append(files, file)
 		}
 	}
-	_, cmds := selectFocusedChecks(e.checks.FocusedChecks(ctx, taskID), files)
-	return cmds, nil
+	_, commands = selectFocusedChecks(e.checks.FocusedChecks(ctx, taskID), files)
+	return commands, files, nil
+}
+
+func resolvedMergeUnexpectedDirtyPaths(ctx context.Context, wtPath string, allowed []string) ([]string, error) {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, file := range allowed {
+		clean, ok := cleanGitRelPath(file)
+		if !ok {
+			return nil, fmt.Errorf("unsafe focused path %q", file)
+		}
+		allowedSet[clean] = struct{}{}
+	}
+
+	dirty, err := gitStatusPorcelainPaths(ctx, wtPath)
+	if err != nil {
+		return nil, err
+	}
+	var unexpected []string
+	for _, file := range dirty {
+		clean, ok := cleanGitRelPath(file)
+		if !ok {
+			return nil, fmt.Errorf("unsafe dirty path %q", file)
+		}
+		if _, ok := allowedSet[clean]; !ok {
+			unexpected = append(unexpected, clean)
+		}
+	}
+	return unexpected, nil
+}
+
+func gitStatusPorcelainPaths(ctx context.Context, wtPath string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			return nil, fmt.Errorf("git status --porcelain -z: %w", err)
+		}
+		return nil, fmt.Errorf("git status --porcelain -z: %w: %s", err, detail)
+	}
+
+	var paths []string
+	parts := bytes.Split(out, []byte{0})
+	for i := 0; i < len(parts); i++ {
+		entry := parts[i]
+		if len(entry) == 0 {
+			continue
+		}
+		if len(entry) < 4 {
+			return nil, fmt.Errorf("parse git status --porcelain -z entry %q", string(entry))
+		}
+		paths = append(paths, string(entry[3:]))
+		if entry[0] == 'R' || entry[0] == 'C' {
+			i++
+		}
+	}
+	return paths, nil
+}
+
+func cleanGitRelPath(file string) (string, bool) {
+	if file == "" || path.IsAbs(file) {
+		return "", false
+	}
+	clean := path.Clean(file)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+	return clean, true
 }
 
 // checkPRAlreadyResolved re-probes the live PR when the pr-fix agent (or a

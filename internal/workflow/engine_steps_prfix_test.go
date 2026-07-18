@@ -323,6 +323,79 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	}
 }
 
+func TestExecRoutePRFixResult_ResolvedMergeRejectsUnexpectedDirtyPath(t *testing.T) {
+	t.Parallel()
+
+	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-unexpected-dirty")
+	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
+	if err := os.WriteFile(filepath.Join(wtPath, "scratch.txt"), []byte("unverified\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	beforeSHA := headSHA(t, wtPath)
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved on disk but merge not finalized.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: git still reports an unmerged path\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2233,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-unexpected-dirty",
+		Workflow:  wf,
+	})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2233,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-unexpected-dirty",
+	})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output == "continue" {
+		t.Fatal("route output = continue, want human-required dirty-path stop")
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "scratch.txt") {
+		t.Fatalf("reason = %q, want unexpected dirty path", reason)
+	}
+	if got := headSHA(t, wtPath); got != beforeSHA {
+		t.Fatalf("HEAD = %q, want unchanged %q", got, beforeSHA)
+	}
+}
+
 func TestExecRoutePRFixResult_HumanRequiredApprovalStopSkipsResolvedMergeRecovery(t *testing.T) {
 	t.Parallel()
 
@@ -467,7 +540,7 @@ func TestResolvedMergeFocusedCommandsReturnsChangedFilesError(t *testing.T) {
 		Commands: []string{"true"},
 	}}})
 
-	cmds, err := engine.resolvedMergeFocusedCommands(
+	cmds, files, err := engine.resolvedMergeFocusedCommands(
 		context.Background(),
 		"t1",
 		t.TempDir(),
@@ -478,6 +551,9 @@ func TestResolvedMergeFocusedCommandsReturnsChangedFilesError(t *testing.T) {
 	}
 	if len(cmds) != 0 {
 		t.Fatalf("cmds = %v, want none on changed-file discovery error", cmds)
+	}
+	if len(files) != 0 {
+		t.Fatalf("files = %v, want none on changed-file discovery error", files)
 	}
 }
 
