@@ -249,7 +249,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		OutputSchema:           verdict.Schema,
 		IgnoreConcurrencyLimit: true,
 	}, h.cfg.ABTesting, taskID, string(agent.RoleHumanReview))
-	if !h.preRunEligible(taskID) {
+	if !h.preRunEligible(taskID, now) {
 		return false
 	}
 	ag, err := h.agents.Run(cfg)
@@ -1021,30 +1021,52 @@ func (h *humanReviewHandler) clearInflight(taskID string) {
 	h.mu.Unlock()
 }
 
+func removeOneTimestamp(timestamps []time.Time, ts time.Time) []time.Time {
+	for i := range slices.Backward(timestamps) {
+		if timestamps[i].Equal(ts) {
+			return slices.Delete(timestamps, i, i+1)
+		}
+	}
+	return timestamps
+}
+
+func (h *humanReviewHandler) releaseReservedSlot(taskID string, reservedAt time.Time) {
+	h.mu.Lock()
+	delete(h.inflight, taskID)
+	h.recent = removeOneTimestamp(h.recent, reservedAt)
+	taskRecent := removeOneTimestamp(h.perTask[taskID], reservedAt)
+	if len(taskRecent) == 0 {
+		delete(h.perTask, taskID)
+	} else {
+		h.perTask[taskID] = taskRecent
+	}
+	h.mu.Unlock()
+}
+
 // preRunEligible re-reads the task at the last safe point before Run: the
 // status-hook goroutine can sit behind unrelated work long enough for another
 // actor to move the task off human-required, and launching a reviewer after
 // that only creates a stale run whose completion we later discard.
-func (h *humanReviewHandler) preRunEligible(taskID string) bool {
+func (h *humanReviewHandler) preRunEligible(taskID string, reservedAt time.Time) bool {
 	current, err := h.tasks.Get(taskID)
 	if err != nil {
-		h.clearInflight(taskID)
+		h.releaseReservedSlot(taskID, reservedAt)
 		h.logger.Error("human-review.task.reget-before-spawn", "task_id", taskID, "err", err)
 		h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{"reason": "task_reget_failed", "err": err.Error()})
 		return false
 	}
 	if current.Status != task.StatusHumanRequired {
-		h.clearInflight(taskID)
+		h.releaseReservedSlot(taskID, reservedAt)
 		h.skip(taskID, "status_"+string(current.Status))
 		return false
 	}
 	if verdictAlreadyRendered(current) {
-		h.clearInflight(taskID)
+		h.releaseReservedSlot(taskID, reservedAt)
 		h.skip(taskID, "verdict_rendered")
 		return false
 	}
 	if strings.TrimSpace(current.ProjectID) == "" {
-		h.clearInflight(taskID)
+		h.releaseReservedSlot(taskID, reservedAt)
 		h.skip(taskID, "no_project")
 		return false
 	}
