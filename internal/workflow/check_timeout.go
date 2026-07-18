@@ -15,9 +15,9 @@ const verifyTimeoutScaleCeiling int64 = 8
 var workflowCheckLoadPerCPU = pressure.CurrentLoadPerCPU
 
 // resolveWorkflowCheckTimeout derives the effective timeout budget for
-// deterministic local workflow checks (codegen/verify). On an oversubscribed
-// host, a fixed wall-clock budget misclassifies scheduler starvation as a
-// product failure, so the budget scales with live load per CPU instead.
+// deterministic local workflow checks. On an oversubscribed host, a fixed
+// wall-clock budget misclassifies scheduler starvation as a product failure,
+// so the budget scales with live load per CPU instead.
 func resolveWorkflowCheckTimeout(base time.Duration) time.Duration {
 	if base <= 0 {
 		base = verifyChecksDefaultTimeout
