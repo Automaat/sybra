@@ -21,7 +21,7 @@ type fixedStatusHookPRFinder struct {
 	found  bool
 }
 
-func (f fixedStatusHookPRFinder) FindPRForBranch(context.Context, string, string) (int, bool, error) {
+func (f fixedStatusHookPRFinder) FindPRForBranch(context.Context, string, string) (number int, found bool, err error) {
 	return f.number, f.found, nil
 }
 
