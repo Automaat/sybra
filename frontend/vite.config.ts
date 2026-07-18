@@ -4,6 +4,32 @@ import { defineConfig, loadEnv } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'url'
+import os from 'node:os'
+
+// Mirrors internal/testutil/loadscale + e2eTimeoutScaleResolve
+// (internal/sybra/e2e_workflow_test.go) so vitest's default 5s testTimeout
+// survives the same conditions the Go e2e suite scales for: CI runners and
+// a locally-loaded host (e.g. a fleet of concurrent agents).
+const vitestTimeoutScaleCeiling = 20
+const vitestCITimeoutScaleFloor = 12
+const vitestBaseTestTimeoutMs = 5000
+
+function vitestTimeoutScale(): number {
+  const override = process.env.SYBRA_E2E_TIMEOUT_SCALE
+  if (override) {
+    const n = Number.parseInt(override, 10)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  const cpus = os.cpus().length || 1
+  const loadPerCPU = os.loadavg()[0] / cpus
+  const factor = loadPerCPU > 1
+    ? Math.min(Math.ceil(loadPerCPU), vitestTimeoutScaleCeiling)
+    : 1
+  if (!process.env.CI && !process.env.GITHUB_ACTIONS) {
+    return factor
+  }
+  return Math.min(Math.max(vitestCITimeoutScaleFloor * factor, vitestCITimeoutScaleFloor), vitestTimeoutScaleCeiling)
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -64,6 +90,7 @@ export default defineConfig(({ mode }) => {
       include: ['src/**/*.test.ts'],
       exclude: ['e2e/**', 'node_modules/**'],
       setupFiles: ['./src/test-setup.ts'],
+      testTimeout: vitestBaseTestTimeoutMs * vitestTimeoutScale(),
       coverage: {
         provider: 'v8',
         reporter: ['text', 'json'],
