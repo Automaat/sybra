@@ -164,7 +164,7 @@ func TestSaveRawConfig_PreservesFormattingWhenBuiltinVersionMissing(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	edited := "# keep this comment\n" + regexp.MustCompile(`builtin_version: \d+\n`).ReplaceAllString(raw, "")
+	edited := "# keep this comment\n" + regexp.MustCompile(`(?m)^\s*builtin_version: \d+\n`).ReplaceAllString(raw, "")
 	edited = strings.Replace(edited, "max_files: 5", "max_files: 7", 1)
 
 	if err := svc.SaveRawConfig(edited); err != nil {

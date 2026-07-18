@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -2648,36 +2647,12 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		}
 	}
 
-	if cfg.Agent.Provider != "" {
-		if _, err := task.ValidateAgentProvider(cfg.Agent.Provider); err != nil {
-			add("error", "agent.provider: %v", err)
-		}
-	}
-	if cfg.Agent.HeadlessPermissionMode != "" {
-		if _, err := config.NormalizeHeadlessPermissionMode(cfg.Agent.HeadlessPermissionMode); err != nil {
-			add("error", "agent.headless_permission_mode: %v", err)
-		}
-	}
-	if cfg.Agent.SandboxMode != "" {
-		mode, err := config.NormalizeSandboxMode(cfg.Agent.SandboxMode)
-		if err != nil {
-			add("error", "agent.sandbox_mode: %v", err)
-		} else if mode == "enforce" && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-			add("error", "agent.sandbox_mode=enforce requires darwin or linux; current host is %s", runtime.GOOS)
+	if err := config.ValidateResolvedConfig(cfg); err != nil {
+		for _, msg := range config.ValidationMessages(err) {
+			add("error", "%s", msg)
 		}
 	}
 
-	if cfg.Todoist.Enabled && cfg.Todoist.APIToken == "" {
-		add("error", "todoist.enabled is true but no API token is set (todoist.api_token or SYBRA_TODOIST_TOKEN)")
-	}
-	if cfg.GitHub.PollerRole != "" && cfg.GitHub.PollerRole != "primary" && cfg.GitHub.PollerRole != "secondary" {
-		add("error", "github.poller_role must be \"primary\", \"secondary\", or empty, got %q", cfg.GitHub.PollerRole)
-	}
-	if cfg.GitHub.App.Enabled && cfg.GitHub.App.PrivateKeyPath == "" {
-		add("error", "github.app.enabled is true but github.app.private_key_path is empty")
-	}
-
-	addK8sSecretEnvFindings(cfg, add)
 	addK8sFailedTTLFindings(cfg, add)
 
 	if len(findings) == 0 {
