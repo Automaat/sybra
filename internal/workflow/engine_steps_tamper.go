@@ -501,7 +501,10 @@ func isPlatformGuard(content string) bool {
 		return false
 	}
 	expr, ok := parsePlatformGuardExpr(content)
-	return ok && isPlatformGuardExpr(expr)
+	if !ok || expr == nil {
+		return false
+	}
+	return isPlatformGuardExpr(expr)
 }
 
 func parsePlatformGuardExpr(content string) (ast.Expr, bool) {
