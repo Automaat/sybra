@@ -758,3 +758,97 @@ func TestAdvanceStep_PRFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 		t.Fatalf("workflow state = %+v, want completed", got.Workflow)
 	}
 }
+
+// recordPRFixVars must also classify a completed test-fix (not just pr-fix)
+// step — otherwise prFixFailingTests falls back to re-parsing the step's
+// recorded output, which RecordStep truncates to 4000 chars, silently
+// reintroducing the truncation issue #2223 fixed for the original pr-fix
+// step. Mirrors TestAdvanceStep_PRFixHumanRequiredUsesUntruncatedOutput but
+// for role test-fix, with the failing-test sentinel placed past the 4000-
+// char boundary so a truncating code path would lose it.
+func TestAdvanceStep_TestFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "test-fix-route-test",
+		Name: "test-fix route test",
+		Steps: []Step{
+			{
+				ID:   "test_fix",
+				Type: StepRunAgent,
+				Config: StepConfig{
+					Role:   "test-fix",
+					Prompt: "test_fix",
+				},
+				Next: []Transition{{GoTo: "route_test_fix_result"}},
+			},
+			{
+				ID:   "route_test_fix_result",
+				Type: StepRoutePRFixResult,
+				Next: []Transition{
+					{
+						When: &Condition{Field: "task.status", Operator: "equals", Value: "human-required"},
+						GoTo: "",
+					},
+					{GoTo: ""},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save workflow: %v", err)
+	}
+
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	if err := engine.StartWorkflow("t1", "test-fix-route-test"); err != nil {
+		t.Fatalf("start workflow: %v", err)
+	}
+
+	longOutput := strings.Repeat("progress details\n", 400) +
+		"SYBRA_PR_FIX_RESULT: human-required\n" +
+		"SYBRA_PR_FIX_REASON: fix attempt did not resolve the test\n" +
+		"SYBRA_PR_FIX_FAILING_TEST: pkg/a_test.go:1 TestA (still failing after fix attempt)\n"
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "test_fix",
+		Status:  "completed",
+		Output:  longOutput,
+		AgentID: "agent-1",
+	}); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if !strings.Contains(got.Body, "pkg/a_test.go:1 TestA (still failing after fix attempt)") {
+		t.Errorf("expected the untruncated failing test in body; got:\n%s", got.Body)
+	}
+}
+
+func TestIsCodeAuthorRole_IncludesTestFix(t *testing.T) {
+	t.Parallel()
+	if !isCodeAuthorRole("test-fix") {
+		t.Error("isCodeAuthorRole(\"test-fix\") = false, want true")
+	}
+}
+
+func TestTamperCodeAuthorRole_IncludesTestFix(t *testing.T) {
+	t.Parallel()
+	if !tamperCodeAuthorRole("test-fix") {
+		t.Error("tamperCodeAuthorRole(\"test-fix\") = false, want true")
+	}
+}
+
+func TestIsCodeAuthorRun_IncludesTestFix(t *testing.T) {
+	t.Parallel()
+	if !isCodeAuthorRun(AgentRunInfo{Role: "test-fix"}) {
+		t.Error("isCodeAuthorRun({Role: \"test-fix\"}) = false, want true")
+	}
+}

@@ -92,6 +92,22 @@ steps:
         a design decision, missing context you cannot reconstruct, or
         touching code beyond the named tests — stop without pushing further
         changes and report human-required rather than guessing.
+
+
+        Once the named tests pass, commit (git commit -s -S) and push the
+        fix back to this same PR branch:
+
+        ```sh
+        PUSH_REMOTE=origin
+        if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi
+        PUSH_URL=$(git remote get-url --push "$PUSH_REMOTE")
+        case "$PUSH_URL" in https://github.com/*|http://github.com/*|https://github.com:[0-9]*/*|http://github.com:[0-9]*/*) gh auth status --hostname github.com >/dev/null ;; esac
+        git push "$PUSH_REMOTE" HEAD:{{.Task.Branch}}
+        ```
+
+        Do not force-push or rewrite existing commits — this branch already
+        has a PR open against it; a plain push is always expected to
+        succeed since you only added a commit on top.
         {{ getvar .Vars "pr_fix_result_contract" }}
     next:
       - goto: route_test_fix_result

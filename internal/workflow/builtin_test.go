@@ -886,6 +886,7 @@ func TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired(t *testing.T) {
 	// A pure wiring assertion can't catch a template syntax typo or a wrong
 	// getvar key, so render the real prompt string against realistic vars.
 	rendered, err := RenderTemplate(testFix.Config.Prompt, TemplateContext{
+		Task: TaskInfo{Branch: "chore/example-branch-1234abcd"},
 		Vars: map[string]string{
 			"step.fix.pr_fix_failing_tests": "pkg/a_test.go:1 TestA\npkg/b_test.go:2 TestB",
 			"step.fix.pr_fix_reason":        "targeted tests still fail after the merge",
@@ -904,6 +905,12 @@ func TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired(t *testing.T) {
 		"pkg/b_test.go:2 TestB",
 		"targeted tests still fail after the merge",
 		"SYBRA_PR_FIX_RESULT",
+		// Without explicit push instructions naming the branch, a test_fix
+		// agent that fixes the tests but never pushes leaves the PR
+		// unchanged while the workflow proceeds as if it succeeded.
+		"git push",
+		"chore/example-branch-1234abcd",
+		"Do not force-push",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("rendered test_fix prompt missing %q; got:\n%s", want, rendered)
