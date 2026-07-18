@@ -65,6 +65,19 @@ type GitHubConfig struct {
 	// no agent is spawned; conflicts, no-op merges, and errors still fall
 	// through to the agent-assisted path. Default off (zero value = false).
 	AutoResolveCleanMerges bool `yaml:"auto_resolve_clean_merges" json:"autoResolveCleanMerges"`
+	// FlakyDetection is a kill-switch for same-commit CI flakiness
+	// classification. When true, a lone ci_failure issue is classified via
+	// ClassifyCIFlakiness (the head commit's full check-run history, not just
+	// the latest attempt) before it is escalated to a fix agent or a human: a
+	// check that both passed and failed on the same SHA at or above
+	// FlakySuccessThreshold is flaky, and gets a targeted rerun plus a
+	// distinct audit event instead. Default off (zero value = false).
+	FlakyDetection bool `yaml:"flaky_detection" json:"flakyDetection"`
+	// FlakySuccessThreshold is the minimum same-check success rate (0-1) for
+	// a currently-failing gating check to be classified flaky rather than
+	// deterministic. Zero falls back to the built-in default; see
+	// GitHubConfig.FlakyThreshold().
+	FlakySuccessThreshold float64 `yaml:"flaky_success_threshold" json:"flakySuccessThreshold"`
 }
 
 // GitHubAppConfig holds GitHub App installation-token credentials. The private

@@ -186,6 +186,27 @@ func restMergeable(state string) string {
 	}
 }
 
+// fetchCheckRunsWith fetches check-run attempts for a commit. filter selects
+// GitHub's check-runs history scope: "" requests GitHub's default (latest
+// attempt per check name), "all" requests every attempt including superseded
+// reruns — needed by ClassifyCIFlakiness to see prior failed attempts a
+// latest-only rollup would otherwise hide. fetched reports whether the fetch
+// and parse both succeeded; false must never be read as "no check runs".
+func fetchCheckRunsWith(e execer, owner, name, sha, filter string) (runs restCheckRuns, fetched bool) {
+	path := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, name, sha)
+	if filter != "" {
+		path += "?filter=" + filter
+	}
+	resp, err := runGHAPIWith(e, "30s", path)
+	if err != nil {
+		return restCheckRuns{}, false
+	}
+	if jErr := json.Unmarshal(resp.body, &runs); jErr != nil {
+		return restCheckRuns{}, false
+	}
+	return runs, true
+}
+
 // fetchCIStatusViaREST aggregates check-runs and legacy commit statuses for a
 // commit into the monitor's CIStatus semantics. It converts REST payloads into
 // the same context shape used by GraphQL so informational-check filtering and
@@ -202,28 +223,22 @@ func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pen
 	contexts := make([]gqlCheckContext, 0)
 	ok = true
 
-	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, name, sha))
-	if err != nil {
+	if runs, fetched := fetchCheckRunsWith(e, owner, name, sha, ""); !fetched {
 		ok = false
 	} else {
-		var runs restCheckRuns
-		if jErr := json.Unmarshal(resp.body, &runs); jErr != nil {
-			ok = false
-		} else {
-			for _, c := range runs.CheckRuns {
-				contexts = append(contexts, gqlCheckContext{
-					Typename:    "CheckRun",
-					Name:        c.Name,
-					Status:      strings.ToUpper(c.Status),
-					Conclusion:  strings.ToUpper(c.Conclusion),
-					StartedAt:   c.StartedAt,
-					CompletedAt: c.CompletedAt,
-				})
-			}
+		for _, c := range runs.CheckRuns {
+			contexts = append(contexts, gqlCheckContext{
+				Typename:    "CheckRun",
+				Name:        c.Name,
+				Status:      strings.ToUpper(c.Status),
+				Conclusion:  strings.ToUpper(c.Conclusion),
+				StartedAt:   c.StartedAt,
+				CompletedAt: c.CompletedAt,
+			})
 		}
 	}
 
-	resp, err = runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/%s/commits/%s/status", owner, name, sha))
+	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/%s/commits/%s/status", owner, name, sha))
 	if err != nil {
 		ok = false
 	} else {

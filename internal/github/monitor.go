@@ -16,6 +16,12 @@ const (
 	PRIssueCIFailure          PRIssueKind = "ci_failure"
 	PRIssueComments           PRIssueKind = "comments"
 	PRIssueReadyToMerge       PRIssueKind = "ready_to_merge"
+	// PRIssueCIFlake is a tracker-only kind for flaky-CI observability. It is
+	// never emitted by MatchTaskPRs and exists only to record, via the same
+	// IssueTracker MarkHandled/Retries machinery as every other kind, that a
+	// ci_failure was classified flaky (ClassifyCIFlakiness) rather than
+	// dispatching a fix agent or escalating.
+	PRIssueCIFlake PRIssueKind = "ci_flake"
 )
 
 // PRIssue represents a detected problem on a PR linked to a task.

@@ -268,9 +268,9 @@ func hasFixableIssue(issues []github.PRIssue) bool {
 		switch issues[i].Kind {
 		case github.PRIssueConflict, github.PRIssueCIFailure, github.PRIssueComments:
 			return true
-		case github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueReadyToMerge:
-			// branch_conflict_no_pr is tracker-only (never emitted by
-			// MatchTaskPRs); ready_to_merge is not a blocker.
+		case github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueReadyToMerge, github.PRIssueCIFlake:
+			// branch_conflict_no_pr and ci_flake are tracker-only (never
+			// emitted by MatchTaskPRs); ready_to_merge is not a blocker.
 		}
 	}
 	return false

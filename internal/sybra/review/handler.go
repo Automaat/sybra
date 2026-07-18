@@ -93,6 +93,11 @@ type Handler struct {
 	// rerunFailedChecks requests a rerun of the failed checks on a PR;
 	// overridable in tests. nil falls back to github.RerunFailedChecks.
 	rerunFailedChecks func(repo string, number int) error
+	// classifyFlakiness classifies whether a lone ci_failure's gating checks
+	// are all flaky on the head commit; overridable in tests. nil falls back
+	// to github.ClassifyCIFlakiness. Only consulted when
+	// cfg.GitHub.FlakyDetection is enabled.
+	classifyFlakiness func(repo, sha string, threshold float64) (allFlaky bool, flakyChecks []string, err error)
 	// enableAutoMergeFn arms GitHub's native auto-merge on a PR; overridable in
 	// tests. nil falls back to github.EnableAutoMerge.
 	enableAutoMergeFn func(repo string, number int) error
@@ -237,6 +242,7 @@ func New(
 		authCircuit:         poll.NewAuthCircuit("reviews", logger),
 		mergePR:             github.MergePR,
 		rerunFailedChecks:   github.RerunFailedChecks,
+		classifyFlakiness:   github.ClassifyCIFlakiness,
 		enableAutoMergeFn:   github.EnableAutoMerge,
 		supportsAutoMergeFn: github.SupportsNativeAutoMerge,
 		mergePRViaREST:      github.MergePRViaREST,
@@ -526,9 +532,10 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 			switch matched[i].Kind {
 			case github.PRIssueConflict, github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueCIFailure, github.PRIssueReadyToMerge:
 				handled = append(handled, matched[i])
-			case github.PRIssueComments:
+			case github.PRIssueComments, github.PRIssueCIFlake:
 				// REST exposes no thread-resolution data; comments stay
-				// dropped until GraphQL recovers.
+				// dropped until GraphQL recovers. ci_flake is tracker-only
+				// and is never emitted by MatchTaskPRs.
 			}
 		}
 		if r.prTracker != nil {
