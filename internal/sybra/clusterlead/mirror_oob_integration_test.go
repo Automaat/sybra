@@ -46,6 +46,9 @@ func (s *managerTaskService) ListTasksForNode(node string) ([]task.Task, error) 
 	out := all[:0]
 	for i := range all {
 		t := all[i]
+		if t.TaskType == task.TaskTypeChat {
+			continue
+		}
 		if t.AssignedNode != node {
 			continue
 		}

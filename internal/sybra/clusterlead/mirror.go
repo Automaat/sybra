@@ -127,6 +127,7 @@ func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *clus
 	}
 	canonical, err := m.tasks.List()
 	if err != nil {
+		m.logger.Warn("cluster.mirror.reconcile_missing.list_failed", "node", node, "err", err)
 		return
 	}
 	for i := range canonical {
