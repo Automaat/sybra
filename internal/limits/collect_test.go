@@ -412,6 +412,10 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reopened.now = func() time.Time { return now }
+	if err := reopened.reloadLocked(); err != nil {
+		t.Fatal(err)
+	}
 	if len(reopened.events) != 2 {
 		t.Fatalf("persisted events = %d, want 2", len(reopened.events))
 	}
