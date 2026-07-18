@@ -327,6 +327,7 @@ func TestExecRoutePRFixResult_ResolvedUnmergedWithFailingTestsRoutesToTestFix(t 
 	t.Parallel()
 
 	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-with-tests")
+	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -386,6 +387,30 @@ func TestExecRoutePRFixResult_ResolvedUnmergedWithFailingTestsRoutesToTestFix(t 
 	}
 }
 
+func TestResolvedMergeFocusedCommandsReturnsChangedFilesError(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+
+	cmds, err := engine.resolvedMergeFocusedCommands(
+		context.Background(),
+		"t1",
+		t.TempDir(),
+		[]string{"internal/workflow/engine_advance.go"},
+	)
+	if err == nil {
+		t.Fatalf("resolvedMergeFocusedCommands err = nil, cmds = %v; want changed-file discovery error", cmds)
+	}
+	if len(cmds) != 0 {
+		t.Fatalf("cmds = %v, want none on changed-file discovery error", cmds)
+	}
+}
+
 func newResolvedUnmergedPRFixWorktree(t *testing.T, branch string) (bare, wtPath string) {
 	t.Helper()
 
@@ -417,6 +442,7 @@ func newResolvedUnmergedPRFixWorktree(t *testing.T, branch string) (bare, wtPath
 	}
 	runGitAt(t, baseWT, "add", conflictPath)
 	runGitAt(t, baseWT, "commit", "-m", "feat: base side")
+	runGitAt(t, wtPath, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
 
 	cmd := exec.Command("git", "merge", "refs/heads/main")
 	cmd.Dir = wtPath

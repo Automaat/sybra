@@ -234,14 +234,15 @@ func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Exec
 
 func (e *Engine) resolvedMergeFocusedCommands(ctx context.Context, taskID, wtPath string, resolved []string) ([]string, error) {
 	files := slices.Clone(resolved)
-	if changed, err := changedFilesSinceProjectBase(ctx, wtPath, e.focusedChecksBaseRef(taskID)); err == nil {
-		for _, file := range changed {
-			if !slices.Contains(files, file) {
-				files = append(files, file)
-			}
-		}
-	} else {
+	changed, err := changedFilesSinceProjectBase(ctx, wtPath, e.focusedChecksBaseRef(taskID))
+	if err != nil {
 		e.logger.Warn("workflow.pr-fix.recover-resolved-merge.changed-files", "task_id", taskID, "err", err)
+		return nil, err
+	}
+	for _, file := range changed {
+		if !slices.Contains(files, file) {
+			files = append(files, file)
+		}
 	}
 	_, cmds := selectFocusedChecks(e.checks.FocusedChecks(ctx, taskID), files)
 	return cmds, nil
