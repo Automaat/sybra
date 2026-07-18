@@ -209,6 +209,11 @@ steps:
       - when:
           field: task.status
           operator: equals
+          value: blocked
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
           value: human-required
         goto: ""
       - when:

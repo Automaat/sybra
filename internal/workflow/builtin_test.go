@@ -554,6 +554,9 @@ func TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview(t *testing.T) {
 	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "in-progress", "task.pr_number": "17478"}); err != nil || got != "set_ready_pr_existing" {
 		t.Fatalf("verify_checks existing-PR goto = %q, err=%v; want set_ready_pr_existing", got, err)
 	}
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "blocked", "task.pr_number": "17478"}); err != nil || got != "" {
+		t.Fatalf("verify_checks blocked goto = %q, err=%v; want end (wins over PR routing)", got, err)
+	}
 	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "human-required", "task.pr_number": "17478"}); err != nil || got != "" {
 		t.Fatalf("verify_checks human-required goto = %q, err=%v; want end (wins over PR routing)", got, err)
 	}
