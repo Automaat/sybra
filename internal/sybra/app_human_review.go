@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
@@ -46,6 +47,11 @@ type humanReviewIssueFiler interface {
 	SubmitIssue(ctx context.Context, title, body string, extraLabels []string) (created bool, url string, err error)
 }
 
+type humanReviewAgentRunner interface {
+	ApplyABVariant(cfg agent.RunConfig, ab abtest.Config, taskID, role string) agent.RunConfig
+	Run(cfg agent.RunConfig) (*agent.Agent, error)
+}
+
 // humanReviewHandler spawns a headless review agent each time a task
 // transitions into status=human-required. The agent inspects task state,
 // agent runs and Sybra logs/source, then emits a structured verdict
@@ -55,7 +61,7 @@ type humanReviewIssueFiler interface {
 type humanReviewHandler struct {
 	cfg     *config.Config
 	tasks   *task.Manager
-	agents  *agent.Manager
+	agents  humanReviewAgentRunner
 	audit   *audit.Logger
 	logger  *slog.Logger
 	sink    humanReviewIssueFiler
@@ -85,7 +91,7 @@ type verdictDecision = verdict.Decision
 func newHumanReviewHandler(
 	cfg *config.Config,
 	tasks *task.Manager,
-	agents *agent.Manager,
+	agents humanReviewAgentRunner,
 	al *audit.Logger,
 	logger *slog.Logger,
 	sink humanReviewIssueFiler,
@@ -243,11 +249,12 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		OutputSchema:           verdict.Schema,
 		IgnoreConcurrencyLimit: true,
 	}, h.cfg.ABTesting, taskID, string(agent.RoleHumanReview))
+	if !h.preRunEligible(taskID) {
+		return false
+	}
 	ag, err := h.agents.Run(cfg)
 	if err != nil {
-		h.mu.Lock()
-		delete(h.inflight, taskID)
-		h.mu.Unlock()
+		h.clearInflight(taskID)
 		h.logger.Error("human-review.spawn", "task_id", taskID, "err", err)
 		h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{"reason": "spawn_failed", "err": err.Error()})
 		return false
@@ -1006,6 +1013,42 @@ func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[stri
 	}); err != nil {
 		h.logger.Warn("human-review.audit.log", "type", evt, "task_id", taskID, "err", err)
 	}
+}
+
+func (h *humanReviewHandler) clearInflight(taskID string) {
+	h.mu.Lock()
+	delete(h.inflight, taskID)
+	h.mu.Unlock()
+}
+
+// preRunEligible re-reads the task at the last safe point before Run: the
+// status-hook goroutine can sit behind unrelated work long enough for another
+// actor to move the task off human-required, and launching a reviewer after
+// that only creates a stale run whose completion we later discard.
+func (h *humanReviewHandler) preRunEligible(taskID string) bool {
+	current, err := h.tasks.Get(taskID)
+	if err != nil {
+		h.clearInflight(taskID)
+		h.logger.Error("human-review.task.reget-before-spawn", "task_id", taskID, "err", err)
+		h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{"reason": "task_reget_failed", "err": err.Error()})
+		return false
+	}
+	if current.Status != task.StatusHumanRequired {
+		h.clearInflight(taskID)
+		h.skip(taskID, "status_"+string(current.Status))
+		return false
+	}
+	if verdictAlreadyRendered(current) {
+		h.clearInflight(taskID)
+		h.skip(taskID, "verdict_rendered")
+		return false
+	}
+	if strings.TrimSpace(current.ProjectID) == "" {
+		h.clearInflight(taskID)
+		h.skip(taskID, "no_project")
+		return false
+	}
+	return true
 }
 
 // buildPrompt assembles the review agent's instructions and context. The
