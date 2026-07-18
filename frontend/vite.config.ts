@@ -14,9 +14,14 @@ const vitestTimeoutScaleCeiling = 20
 const vitestCITimeoutScaleFloor = 12
 const vitestBaseTestTimeoutMs = 5000
 
+// Matches strconv.ParseInt(v, 10, 64): the trimmed string must be entirely a
+// base-10 integer (optional leading sign, digits only) — no partial-prefix
+// parses like "3x" get accepted the way Number.parseInt would accept them.
+const strconvBase10IntPattern = /^[+-]?\d+$/
+
 function vitestTimeoutScale(): number {
-  const override = process.env.SYBRA_E2E_TIMEOUT_SCALE
-  if (override) {
+  const override = process.env.SYBRA_E2E_TIMEOUT_SCALE?.trim()
+  if (override && strconvBase10IntPattern.test(override)) {
     const n = Number.parseInt(override, 10)
     if (Number.isFinite(n) && n > 0) return n
   }
