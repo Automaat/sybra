@@ -336,6 +336,7 @@ func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, 
 	for line := range strings.SplitSeq(patch, "\n") {
 		switch {
 		case isDiffHeaderLine(line):
+			s.resetHunkState()
 			inHunk = false
 		case strings.HasPrefix(line, "@@"):
 			s.resetHunkState()
@@ -433,6 +434,7 @@ func (s *tamperScan) add(rule, detail string) {
 }
 
 func (s *tamperScan) resetHunkState() {
+	s.guardWindow = 0
 	s.platformGuardDepth = 0
 }
 

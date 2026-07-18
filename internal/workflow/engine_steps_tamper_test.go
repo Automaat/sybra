@@ -108,6 +108,18 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: nil,
 		},
 		{
+			name: "guard_window_resets_between_hunks",
+			patch: "@@ @@\n func TestDocker(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\tt.Skip(\"docker not installed\")\n+\t}\n" +
+				"@@ @@\n func TestFlaky(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name: "guard_window_resets_between_files",
+			patch: "diff --git a/a_test.go b/a_test.go\n@@ @@\n func TestDocker(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\tt.Skip(\"docker not installed\")\n+\t}\n" +
+				"diff --git a/b_test.go b/b_test.go\n@@ @@\n func TestFlaky(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:      "goos_guarded_skip_not_flagged",
 			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" {\n+\t\tt.Skip(\"linux-only process enumeration test\")\n+\t}\n",
 			wantRules: nil,

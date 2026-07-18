@@ -16,10 +16,10 @@ var conflictMarkerPrefixes = [][]byte{
 	[]byte(">>>>>>>"),
 }
 
-// ResolvedUnmergedPaths reports staged paths in an in-progress merge only after
-// Git's index has no unresolved stages left. Returns nil when the tree has no
-// merge to finish, when any path is still unmerged in the index, or when staged
-// content still contains conflict markers.
+// ResolvedUnmergedPaths reports resolved paths in an in-progress merge. It
+// accepts both already-staged resolutions and marker-free working-tree files
+// that are still unmerged in Git's index, so the caller can stage/checkpoint
+// agent fixes that forgot `git add`.
 func ResolvedUnmergedPaths(ctx context.Context, wtPath string) ([]string, error) {
 	inMerge, err := mergeInProgress(ctx, wtPath)
 	if err != nil {
@@ -40,7 +40,11 @@ func ResolvedUnmergedPaths(ctx context.Context, wtPath string) ([]string, error)
 		return nil, fmt.Errorf("git ls-files -u -z: %w: %s", err, detail)
 	}
 	if len(unmergedOut) > 0 {
-		return nil, nil
+		paths, err := unmergedPathsFromLSFiles(unmergedOut)
+		if err != nil {
+			return nil, err
+		}
+		return markerFreeWorktreePaths(wtPath, paths, true)
 	}
 
 	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--name-only", "-z")
@@ -69,6 +73,34 @@ func ResolvedUnmergedPaths(ctx context.Context, wtPath string) ([]string, error)
 		return nil, nil
 	}
 
+	return markerFreeWorktreePaths(wtPath, paths, false)
+}
+
+func unmergedPathsFromLSFiles(out []byte) ([]string, error) {
+	seen := map[string]bool{}
+	var paths []string
+	for raw := range bytes.SplitSeq(out, []byte{0}) {
+		if len(raw) == 0 {
+			continue
+		}
+		_, pathBytes, ok := bytes.Cut(raw, []byte{'\t'})
+		if !ok || len(pathBytes) == 0 {
+			return nil, fmt.Errorf("parse git ls-files -u entry %q", string(raw))
+		}
+		path := string(pathBytes)
+		if !isSafeProtectedPath(path) {
+			return nil, fmt.Errorf("unsafe merge path %q", path)
+		}
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
+func markerFreeWorktreePaths(wtPath string, paths []string, rejectBinary bool) ([]string, error) {
 	for _, path := range paths {
 		data, readErr := os.ReadFile(filepath.Join(wtPath, filepath.FromSlash(path)))
 		if readErr != nil {
@@ -77,7 +109,7 @@ func ResolvedUnmergedPaths(ctx context.Context, wtPath string) ([]string, error)
 			}
 			return nil, fmt.Errorf("read unmerged path %s: %w", path, readErr)
 		}
-		if hasConflictMarker(data) {
+		if hasConflictMarker(data) || (rejectBinary && bytes.IndexByte(data, 0) >= 0) {
 			return nil, nil
 		}
 	}

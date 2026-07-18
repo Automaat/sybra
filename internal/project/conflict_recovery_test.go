@@ -29,7 +29,7 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("marker-free unmerged path is not recoverable", func(t *testing.T) {
+	t.Run("marker-free unmerged path is recoverable", func(t *testing.T) {
 		t.Parallel()
 		wtPath := newConflictedWorktree(t)
 		if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("feature\nmain\n"), 0o644); err != nil {
@@ -40,8 +40,8 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
 		}
-		if len(got) != 0 {
-			t.Fatalf("paths = %v, want none while index remains unmerged", got)
+		if !slices.Equal(got, []string{"README.md"}) {
+			t.Fatalf("paths = %v, want [README.md]", got)
 		}
 	})
 
