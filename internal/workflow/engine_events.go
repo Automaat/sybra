@@ -1244,6 +1244,9 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 	retryKey := watchdogHangRetryKey(step.ID)
 	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
 	if attempts >= maxWatchdogHangRetries {
+		if e.handleWatchdogRunTestExhausted(t, step, attempts) {
+			return true
+		}
 		reason := fmt.Sprintf("watchdog hang: retry budget exhausted after %d clean re-dispatches", attempts)
 		t.Workflow.State = ExecFailed
 		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
@@ -1262,7 +1265,11 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 		cleanRef = "HEAD"
 	}
 	t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
-	t.Workflow.SetVar(watchdogReaskNoteVar, buildWatchdogReaskNote(attempts+1))
+	note := buildWatchdogReaskNote(attempts + 1)
+	t.Workflow.SetVar(watchdogReaskNoteVar, note)
+	if step.ID == testVerdictSourceStep {
+		t.Workflow.SetVar(testingReaskNoteVar, note)
+	}
 	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 		e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
 		return true
@@ -1274,6 +1281,32 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 	e.logger.Info("workflow.watchdog-hang.retry",
 		"task_id", t.ID, "step", step.ID, "attempt", attempts+1, "max", maxWatchdogHangRetries)
 	return false
+}
+
+func (e *Engine) handleWatchdogRunTestExhausted(t *TaskInfo, step *Step, attempts int) bool {
+	if step.ID != testVerdictSourceStep || t.Workflow.WorkflowID != "testing-task" {
+		return false
+	}
+	t.Workflow.State = ExecFailed
+	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		e.logger.Error("workflow.watchdog-hang.testing.persist", "task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	if e.openPROnUnrunnableGate {
+		if _, err := e.openPRForUnrunnableTestingGate(t.ID, step.ID); err != nil {
+			e.logger.Error("workflow.watchdog-hang.testing.open-pr", "task_id", t.ID, "step", step.ID, "err", err)
+		} else {
+			e.logger.Warn("workflow.watchdog-hang.testing.exhausted-open-pr", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+		}
+		return true
+	}
+	reason := fmt.Sprintf("watchdog hang: run_test retry budget exhausted after %d clean re-dispatches", attempts)
+	if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+		e.logger.Error("workflow.watchdog-hang.testing.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+	} else {
+		e.logger.Warn("workflow.watchdog-hang.testing.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+	}
+	return true
 }
 
 func isWatchdogHangReason(reason string) bool {
