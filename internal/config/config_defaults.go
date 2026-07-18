@@ -810,6 +810,7 @@ func load(opts loadOptions) (*Config, error) {
 		if writeErr := writeDefaultConfig(path); writeErr != nil {
 			return nil, writeErr
 		}
+		data = defaultConfigStub
 	}
 	if opts.persistLoadReconciles {
 		tightenConfigPerms(path, existingFile)
@@ -887,21 +888,13 @@ func load(opts loadOptions) (*Config, error) {
 	applyHarnessEvolveDefaults(cfg)
 	applyPromptLabDefaults(cfg)
 	applyExperienceDefaults(cfg)
-	// Snapshot ab_testing exactly as parsed from disk before the reconcile
-	// mutates it in memory. When load() has to persist a freshly generated
-	// server auth token, it writes this on-disk snapshot back (not the
-	// reconciled set) so the token-persist can't reintroduce builtin drift
-	// into a declaratively-managed config.yaml. applyABTestingDefaults only
-	// ever reassigns these fields (never mutates through the slice/pointer),
-	// so a shallow struct copy is a stable snapshot.
-	abTestingOnDisk := cfg.ABTesting
 	applyABTestingDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 	applyReviewHoldDefaults(cfg)
 	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
 
-	persistLoadReconciles(cfg, opts, serverTokenGenerated, abTestingOnDisk)
+	persistLoadReconciles(data, cfg, opts, serverTokenGenerated)
 
 	return cfg, nil
 }
@@ -912,31 +905,85 @@ func load(opts loadOptions) (*Config, error) {
 // startup, so an unsaved token would silently rotate on every restart and
 // lock operators out).
 //
-// The ab_testing builtin reconcile deliberately does NOT persist here: unlike
-// a generated secret, reconciled builtin experiments are fully derived from
-// code (abtest.DefaultConfig) and cheap to recompute, so applyABTestingDefaults
-// re-merges them into the in-memory config on every load instead of writing
-// them back. Writing the whole document on every stale-builtin_version load
-// fought any external tool that renders config.yaml declaratively (Ansible,
-// Nix, Chezmoi): Sybra would expand the operator's file on every restart, the
-// tool would see drift and re-render it, Sybra would expand it again.
+// No other reconcile persists here — not ab_testing builtins, not any of the
+// defaults load() fills in for logging/agent/etc. All of those are fully
+// derived from code and cheap to recompute, so they're re-applied to the
+// in-memory config on every load instead of being written back. Doing that
+// via Save() (which marshals the *entire* in-memory config) fought any
+// external tool that renders config.yaml declaratively (Ansible, Nix,
+// Chezmoi): a missing token forced a write, and that write materialized
+// every default onto disk, turning the operator's minimal file into a fully
+// expanded one. The tool would then see drift, re-render its own file, and
+// Sybra would expand it again on the next restart.
 //
-// Because Save() marshals the entire in-memory config, the token-persist here
-// would otherwise drag the reconciled ab_testing set to disk as a side effect
-// on the first restart after upgrade (existing config, no auth_token, stale
-// builtins). To keep the two concerns separate, restore the on-disk ab_testing
-// snapshot for the write and re-apply the reconciled set afterwards, so only
-// the token — never the derived builtins — lands on disk.
-func persistLoadReconciles(cfg *Config, opts loadOptions, serverTokenGenerated bool, abTestingOnDisk abtest.Config) {
+// Instead, the token is merged directly into docBefore — the exact bytes
+// load() read from disk (or the stub written for a brand-new install) —
+// leaving every other key, comment, and formatting choice untouched. Only
+// server.auth_token is added or updated.
+func persistLoadReconciles(docBefore []byte, cfg *Config, opts loadOptions, serverTokenGenerated bool) {
 	if !opts.persistLoadReconciles || !serverTokenGenerated {
 		return
 	}
-	reconciled := cfg.ABTesting
-	cfg.ABTesting = abTestingOnDisk
-	defer func() { cfg.ABTesting = reconciled }()
-	if saveErr := cfg.Save(); saveErr != nil {
-		slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
+	merged, err := setYAMLPath(docBefore, cfg.Server.AuthToken, "server", "auth_token")
+	if err != nil {
+		slog.Warn("config: failed to persist generated server auth token", "err", err)
+		return
 	}
+	if err := WriteRawConfig(merged); err != nil {
+		slog.Warn("config: failed to persist generated server auth token", "err", err)
+	}
+}
+
+// setYAMLPath returns doc with the scalar string at the given key path set to
+// value, creating any missing mapping levels. Existing content, comments, and
+// formatting elsewhere in the document are preserved via yaml.Node
+// round-tripping — this is a surgical single-field edit, not a re-marshal of
+// a Go struct.
+func setYAMLPath(doc []byte, value string, path ...string) ([]byte, error) {
+	var root yaml.Node
+	if len(doc) > 0 {
+		if err := yaml.Unmarshal(doc, &root); err != nil {
+			return nil, err
+		}
+	}
+	if root.Kind == 0 {
+		root = yaml.Node{Kind: yaml.DocumentNode}
+	}
+	if len(root.Content) == 0 {
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
+	}
+	node := root.Content[0]
+	if node.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("config: expected mapping at document root, got kind %d", node.Kind)
+	}
+	for i, key := range path {
+		last := i == len(path)-1
+		var target *yaml.Node
+		for j := 0; j+1 < len(node.Content); j += 2 {
+			if node.Content[j].Value == key {
+				target = node.Content[j+1]
+				break
+			}
+		}
+		switch {
+		case target == nil:
+			valNode := &yaml.Node{Kind: yaml.MappingNode}
+			if last {
+				valNode = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+			}
+			node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, valNode)
+			target = valNode
+		case last:
+			target.Kind = yaml.ScalarNode
+			target.Tag = "!!str"
+			target.Value = value
+			target.Content = nil
+		case target.Kind != yaml.MappingNode:
+			return nil, fmt.Errorf("config: expected mapping at %q, got kind %d", key, target.Kind)
+		}
+		node = target
+	}
+	return yaml.Marshal(&root)
 }
 
 // applyServerDefaults resolves sybra-server's auth token and CORS allowlist:
@@ -1459,11 +1506,16 @@ const (
 	configFilePerm os.FileMode = 0o600
 )
 
+// defaultConfigStub is the minimal document written for a brand-new install.
+// load() reuses it as the "on-disk" document when persisting a freshly
+// generated server auth token, without a second disk read.
+var defaultConfigStub = []byte("# Sybra configuration\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n")
+
 func writeDefaultConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Sybra configuration\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n"), configFilePerm)
+	return os.WriteFile(path, defaultConfigStub, configFilePerm)
 }
 
 // tightenConfigPerms retrofits the config directory and file to 0o700/0o600

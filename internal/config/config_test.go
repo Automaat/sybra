@@ -2000,6 +2000,47 @@ func TestLoadPersistsTokenWithoutReconciledBuiltins(t *testing.T) {
 	}
 }
 
+// TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults is the #2180 repro:
+// an externally-rendered config.yaml with no server.auth_token must gain only
+// the generated token on disk, not every other default Load() fills in
+// in-memory (logging, agent, providers, ...). Before the fix, the missing
+// token forced a full Save() of the reconciled in-memory config, turning a
+// minimal operator-authored file into a fully expanded document.
+func TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	minimal := []byte("ab_testing:\n  enabled: true\n  min_samples_per_variant: 20\n  experiments:\n    - id: my-custom-experiment\n      enabled: true\n      assignment_unit: stage\n      roles: [implementation]\n      variants:\n        - id: custom-v1\n          provider: claude\n          model: sonnet\n          weight: 1\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), minimal, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.AuthToken == "" {
+		t.Fatal("Load did not generate a server auth token")
+	}
+
+	persisted, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unrelated := range []string{"logging:", "agent:", "providers:", "cluster:", "orchestrator:"} {
+		if bytes.Contains(persisted, []byte(unrelated)) {
+			t.Fatalf("persisted config.yaml leaked unrelated default block %q:\n%s", unrelated, persisted)
+		}
+	}
+	if !bytes.Contains(persisted, []byte("my-custom-experiment")) {
+		t.Fatalf("persisted config.yaml lost the operator's ab_testing experiment:\n%s", persisted)
+	}
+	if !bytes.Contains(persisted, []byte(cfg.Server.AuthToken)) {
+		t.Fatalf("persisted config.yaml missing the generated auth token:\n%s", persisted)
+	}
+}
+
 func TestTestingMaxAttemptsDefault(t *testing.T) {
 	t.Parallel()
 	var cfg *Config
