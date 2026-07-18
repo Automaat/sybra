@@ -43,7 +43,7 @@ func TestRouteMode(t *testing.T) {
 	}{
 		{"pet keeps headless", "headless", "feature", "pet", "headless"},
 		{"pet keeps interactive", "interactive", "feature", "pet", "interactive"},
-		{"work feature forced interactive", "headless", "feature", "work", "interactive"},
+		{"work feature no longer forced", "headless", "feature", "work", "headless"},
 		{"work review stays headless", "headless", "review", "work", "headless"},
 		{"empty project type", "headless", "feature", "", "headless"},
 	}

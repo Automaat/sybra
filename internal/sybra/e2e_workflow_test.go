@@ -461,9 +461,9 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 }
 
 // waitFor polls a condition with timeout. The timeout is scaled by
-// e2eTimeoutScale so CI runners (slow fork/exec, container I/O variance)
-// don't have to be defended against per-test. Local runs see the unscaled
-// deadline.
+// e2eTimeoutScale so CI runners (slow fork/exec, container I/O variance) and
+// locally-loaded hosts (e.g. a fleet of concurrent agents) don't have to be
+// defended against per-test.
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
 	scale := e2eTimeoutScale()
@@ -607,10 +607,16 @@ func e2eTimeoutScaleResolve() int64 {
 			return n
 		}
 	}
+	factor := loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
+	// CI runners carry a known-bad baseline (slow fork/exec, container I/O
+	// variance) even when the load average looks idle, so they get a fixed
+	// floor on top of the measured factor. Local/dev runs (including a fleet
+	// of concurrent agents on darwin/linux) have no such baseline — they
+	// scale purely off measured host load, same as CI does above the floor.
 	if os.Getenv("CI") == "" && os.Getenv("GITHUB_ACTIONS") == "" {
-		return 1
+		return factor
 	}
-	scaled := e2eCITimeoutScaleFloor * loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
+	scaled := e2eCITimeoutScaleFloor * factor
 	if scaled < e2eCITimeoutScaleFloor {
 		return e2eCITimeoutScaleFloor
 	}
