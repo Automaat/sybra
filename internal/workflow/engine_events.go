@@ -25,6 +25,18 @@ const (
 	watchdogRateLimitStatusPrefix   = "watchdog: rate limit"
 	watchdogRateLimitRetryVarPrefix = "watchdog.rate_limit_retry."
 	maxWatchdogRateLimitRetries     = 2
+	// watchdogRewardHackingStatusPrefix must stay in sync with
+	// internal/watchdog/agent.go's rewardHackingRetryStatusReason — the
+	// watchdog writes this exact status-reason prefix when it retries a
+	// reward_hacking stop on a fix-review agent (#2229), and
+	// handleWatchdogRewardHackingRetry below pattern-matches on it.
+	watchdogRewardHackingStatusPrefix   = "watchdog: reward-hacking retry"
+	watchdogRewardHackingRetryVarPrefix = "watchdog.reward_hacking_retry."
+	// maxWatchdogRewardHackingRetries is deliberately 1, not the generic hang
+	// budget's 2: this path only fires when the review sidecar already names
+	// the fix location, so a fresh agent that still can't land it after one
+	// steered retry is a genuine stuck loop, not a flake.
+	maxWatchdogRewardHackingRetries = 1
 	transientFetchRetryVarPrefix    = "transient_fetch.retry."
 	maxTransientFetchRetries        = 2
 	circuitBreakerFailureVarPrefix  = "circuit_breaker.failures."
@@ -1175,7 +1187,7 @@ func (e *Engine) ResumeStalled() {
 		if e.shouldSkipResumeForRateLimitedProvider(t, step) {
 			continue
 		}
-		if e.handleWatchdogHangRetry(t, step) {
+		if e.handleWatchdogRetries(t, step) {
 			continue
 		}
 		reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
@@ -1225,6 +1237,18 @@ func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *S
 	e.clearTransientFetchRetry(fresh.ID, fresh.Workflow, step.ID)
 	e.clearCircuitBreakerOnSuccess(fresh.ID, fresh.Workflow, step.ID)
 	e.clearWatchdogReaskNote(fresh.ID, fresh.Workflow)
+}
+
+// handleWatchdogRetries checks both bounded watchdog stop-retry paths — a
+// plain stall/generic-stall hang, and #2229's narrower
+// reward-hacking-on-fix-review carve-out — and reports whether either
+// consumed this tick, so ResumeStalled skips to the next task without
+// dispatching.
+func (e *Engine) handleWatchdogRetries(t *TaskInfo, step *Step) bool {
+	if e.handleWatchdogHangRetry(t, step) {
+		return true
+	}
+	return e.handleWatchdogRewardHackingRetry(t, step)
 }
 
 func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
@@ -1352,6 +1376,102 @@ func buildWatchdogReaskNote(attempt int) string {
 	b.WriteString("- Commit and push incrementally so partial progress survives a restart.\n")
 	b.WriteString("- If you are genuinely blocked, STOP and mark the task human-required with the specific " +
 		"blocker instead of looping.")
+	return b.String()
+}
+
+// handleWatchdogRewardHackingRetry re-dispatches a fix-review step's agent
+// once, fresh, when the watchdog stopped it for a reward_hacking pattern that
+// it judged retriable (internal/watchdog/agent.go's
+// retriableRewardHackingFixReview — a concrete, unaddressed review finding
+// still exists to point the retry at). Bounded by its own dedicated budget
+// (maxWatchdogRewardHackingRetries), separate from the generic hang budget,
+// since this is a narrower and more targeted retry than a plain no-output
+// hang. Exhausting it escalates to human-required, same as every other
+// bounded watchdog retry.
+func (e *Engine) handleWatchdogRewardHackingRetry(t *TaskInfo, step *Step) bool {
+	if t == nil || t.Workflow == nil || !isWatchdogRewardHackingReason(t.StatusReason) {
+		return false
+	}
+	if step.Type != StepRunAgent {
+		return false
+	}
+	// Mirrors handleWatchdogHangRetry's guard: a tracked agent for this
+	// task+step may still be mid-completion-routing even though
+	// HasRunningAgent already returned false.
+	if e.hasTrackedAgentForTaskStep(t.ID, step.ID) {
+		return false
+	}
+	retryKey := watchdogRewardHackingRetryKey(step.ID)
+	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
+	if attempts >= maxWatchdogRewardHackingRetries {
+		reason := fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatch(es) — review finding still unaddressed", attempts)
+		t.Workflow.State = ExecFailed
+		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+			e.logger.Error("workflow.watchdog-reward-hacking.persist", "task_id", t.ID, "step", step.ID, "err", err)
+		}
+		if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+			e.logger.Error("workflow.watchdog-reward-hacking.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+		} else {
+			e.logger.Warn("workflow.watchdog-reward-hacking.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+		}
+		return true
+	}
+	t.Workflow.SetVar(retryKey, strconv.Itoa(attempts+1))
+	cleanRef := t.Workflow.Variables[tamperBaselineVar(step.ID)]
+	if cleanRef == "" {
+		cleanRef = "HEAD"
+	}
+	t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
+	t.Workflow.SetVar(watchdogReaskNoteVar, buildRewardHackingReaskNote(attempts+1))
+	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		e.logger.Error("workflow.watchdog-reward-hacking.persist", "task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	if err := e.tasks.UpdateTaskStatus(t.ID, t.Status, ""); err != nil {
+		e.logger.Error("workflow.watchdog-reward-hacking.clear", "task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	e.logger.Info("workflow.watchdog-reward-hacking.retry",
+		"task_id", t.ID, "step", step.ID, "attempt", attempts+1, "max", maxWatchdogRewardHackingRetries)
+	return false
+}
+
+func isWatchdogRewardHackingReason(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	return reason == watchdogRewardHackingStatusPrefix || strings.HasPrefix(reason, watchdogRewardHackingStatusPrefix+":")
+}
+
+func watchdogRewardHackingRetryKey(stepID string) string {
+	return watchdogRewardHackingRetryVarPrefix + stepID
+}
+
+// clearWatchdogRewardHackingRetry drops the per-step reward-hacking retry
+// counter once that step's run completes cleanly. Without this, the same
+// step ID (e.g. fix_review, which loops back through code_review each
+// round) would carry an already-exhausted counter into a later, unrelated
+// round and escalate to human-required on the very first reward_hacking stop
+// of that round instead of retrying once as designed (#2229).
+func clearWatchdogRewardHackingRetry(wf *Execution, stepID string) {
+	if wf == nil || wf.Variables == nil || stepID == "" {
+		return
+	}
+	delete(wf.Variables, watchdogRewardHackingRetryKey(stepID))
+}
+
+// buildRewardHackingReaskNote builds the steer prepended to a re-dispatched
+// fix-review prompt: the previous attempt looped without editing anything, so
+// point it straight at the finding the reviewer already located instead of
+// re-reading unrelated files.
+func buildRewardHackingReaskNote(attempt int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️ Your previous run on this step was TERMINATED because the watchdog detected a "+
+		"reward-hacking pattern — repeating the same non-editing action (reading/navigating) instead of "+
+		"making progress — attempt %d of %d.\n\n", attempt, maxWatchdogRewardHackingRetries)
+	b.WriteString("The previous attempt stalled reading unrelated files; the code review sidecar already " +
+		"names the fix location. Read it, then edit that exact file directly — do not re-read unrelated " +
+		"files or repeat prior investigation.\n\n")
+	b.WriteString("If you are genuinely blocked on understanding the finding, STOP and mark the task " +
+		"human-required with the specific blocker instead of looping.")
 	return b.String()
 }
 
