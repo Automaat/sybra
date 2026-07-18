@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
@@ -164,18 +165,18 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 	e.repairTornNodeModules(e.ctx, taskID, wtPath)
 
-	failedCmd, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
+	failedCmd, output, commandErr, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
 
 	if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {
-		if healed, fc, out, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
-			failedCmd, output, runErr = fc, out, rErr
+		if healed, fc, out, cErr, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
+			failedCmd, output, commandErr, runErr = fc, out, cErr, rErr
 		}
 	}
 
 	report := verifyChecksReport{
 		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
 	}
-	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output)
+	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output, commandErr)
 	if classification != nil {
 		report.Classification = classification.Kind
 		report.FailedPackages = classification.FailedPackages
@@ -250,7 +251,7 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, pa
 	}
 	e.repairTornNodeModules(ctx, taskID, wtPath)
 	maybeMiseTrust(ctx, wtPath)
-	failedCmd, output, err = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+	failedCmd, output, _, err = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 	if err != nil {
 		return true, false, failedCmd, output, err
 	}
@@ -261,44 +262,44 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, pa
 // returns an error so the workflow stalls instead of advancing past the gate —
 // the YAML transition keys off task.status, so a silently-failed write would
 // otherwise route a failing implementation straight to review.
-func (e *Engine) runVerifySuiteWithRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (failedCmd, output string, runErr error) {
+func (e *Engine) runVerifySuiteWithRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (failedCmd, output string, commandErr, runErr error) {
 	for attempt := 0; attempt <= verifyChecksTimeoutRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(e.ctx, timeout)
 		maybeMiseTrust(ctx, wtPath)
-		failedCmd, output, runErr = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+		failedCmd, output, commandErr, runErr = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 		cancel()
 		if !errors.Is(runErr, context.DeadlineExceeded) || e.ctx.Err() != nil {
-			return failedCmd, output, runErr
+			return failedCmd, output, commandErr, runErr
 		}
 		if attempt < verifyChecksTimeoutRetries {
 			e.logger.Warn("workflow.verify-checks.timeout-retry",
 				"task_id", taskID, "step", stepID, "attempt", attempt+1, "budget", timeout.String())
 		}
 	}
-	return failedCmd, output, runErr
+	return failedCmd, output, commandErr, runErr
 }
 
-func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (attempted bool, failedCmd, output string, runErr error) {
+func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (attempted bool, failedCmd, output string, commandErr, runErr error) {
 	setupCtx, cancel := context.WithTimeout(e.ctx, timeout)
 	setup := e.checks.SetupCommands(setupCtx, taskID)
 	if len(setup) == 0 {
 		cancel()
-		return false, "", "", nil
+		return false, "", "", nil, nil
 	}
 	e.logger.Warn("workflow.verify-checks.toolchain-heal",
 		"task_id", taskID, "step", stepID, "setup_commands", len(setup))
 	maybeMiseTrust(setupCtx, wtPath)
-	sFailed, sOut, sErr := e.runVerifyCommands(setupCtx, taskID, wtPath, setup)
+	sFailed, sOut, _, sErr := e.runVerifyCommands(setupCtx, taskID, wtPath, setup)
 	cancel()
 	if sFailed != "" || sErr != nil {
 		e.logger.Warn("workflow.verify-checks.toolchain-heal.setup-failed",
 			"task_id", taskID, "cmd", trimDiffLine(sFailed), "err", sErr, "tail", tailString(sOut, 400))
-		return false, "", "", nil
+		return false, "", "", nil, nil
 	}
-	failedCmd, output, runErr = e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, stepID)
+	failedCmd, output, commandErr, runErr = e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, stepID)
 	e.logger.Info("workflow.verify-checks.toolchain-heal.reran",
 		"task_id", taskID, "step", stepID, "still_failing", failedCmd != "" || runErr != nil)
-	return true, failedCmd, output, runErr
+	return true, failedCmd, output, commandErr, runErr
 }
 
 func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
@@ -317,11 +318,11 @@ func (e *Engine) blockVerifyChecks(taskID string, step *Step, reason, detail str
 	return stepDone(step, "blocked")
 }
 
-func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string) *verifyFailureClassification {
+func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string, commandErr error) *verifyFailureClassification {
 	if failedCmd == "" {
 		return nil
 	}
-	if verifyGoInfraFailure(output) {
+	if verifyGoInfraFailure(commandErr, output) {
 		return &verifyFailureClassification{
 			Kind:   "infra_failure",
 			Reason: "verify suite hit Go toolchain/build-cache instability (linker terminated or cache artifacts vanished) — blocked as verifier infrastructure, not an implementation failure",
@@ -339,13 +340,25 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 	}
 }
 
-func verifyGoInfraFailure(output string) bool {
+func verifyGoInfraFailure(commandErr error, output string) bool {
+	if !verifyCommandTerminatedBySignal(commandErr) {
+		return false
+	}
 	for _, re := range verifyGoInfraFailureRes {
 		if re.MatchString(output) {
 			return true
 		}
 	}
 	return false
+}
+
+func verifyCommandTerminatedBySignal(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ProcessState == nil {
+		return false
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled()
 }
 
 func classifyUnrelatedVerifyGoFailure(
@@ -364,7 +377,7 @@ func classifyUnrelatedVerifyGoFailure(
 	if len(failedPackages) == 0 {
 		return nil, changedFiles, false
 	}
-	changedPkgs := changedGoPackages(changedFiles)
+	changedPkgs := changedGoPackages(wtPath, changedFiles)
 	for _, pkg := range failedPackages {
 		affected, err := goPackageAffectedByChanges(parentCtx, taskID, wtPath, pkg, changedPkgs, modulePath)
 		if err != nil || affected {
@@ -450,20 +463,51 @@ func normalizeFailedGoPackage(pkg, modulePath string) string {
 	return ""
 }
 
-func changedGoPackages(changedFiles []string) map[string]bool {
+func changedGoPackages(wtPath string, changedFiles []string) map[string]bool {
 	out := map[string]bool{}
 	for _, file := range changedFiles {
-		if filepath.Ext(file) != ".go" {
+		file = filepath.ToSlash(filepath.Clean(file))
+		if filepath.Ext(file) == ".go" {
+			out[goPackageDir(filepath.Dir(file))] = true
 			continue
 		}
-		dir := filepath.ToSlash(filepath.Dir(file))
-		if dir == "." {
-			out["."] = true
-			continue
+		if dir := nearestGoPackageDir(wtPath, file); dir != "" {
+			out[dir] = true
 		}
-		out[dir] = true
 	}
 	return out
+}
+
+func nearestGoPackageDir(wtPath, file string) string {
+	for dir := filepath.Dir(file); ; dir = filepath.Dir(dir) {
+		if dirHasGoFiles(filepath.Join(wtPath, filepath.FromSlash(dir))) {
+			return goPackageDir(dir)
+		}
+		if dir == "." || dir == string(filepath.Separator) {
+			return ""
+		}
+	}
+}
+
+func goPackageDir(dir string) string {
+	dir = filepath.ToSlash(filepath.Clean(dir))
+	if dir == "." {
+		return "."
+	}
+	return dir
+}
+
+func dirHasGoFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".go" {
+			return true
+		}
+	}
+	return false
 }
 
 func goPackageAffectedByChanges(
@@ -484,7 +528,7 @@ func goPackageAffectedByChanges(
 	if failedPkg != "." {
 		target = "./" + failedPkg
 	}
-	cmd := exec.CommandContext(ctx, "go", "list", "-deps", target)
+	cmd := exec.CommandContext(ctx, "go", "list", "-test", "-deps", target)
 	cmd.Dir = wtPath
 	env, err := verifyCommandEnv(taskID)
 	if err != nil {
@@ -891,18 +935,19 @@ func ownedByNpm(dir string) bool {
 // failure) and is never retried — the budget is already spent; the caller
 // decides the policy. Output streams into a fixed-size tail buffer so a flood
 // of stdout/stderr cannot exhaust memory.
-func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
+func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, commandErr, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
 	cmdEnv, err := verifyCommandEnv(taskID)
 	if err != nil {
-		return "", tail.String(), err
+		return "", tail.String(), nil, err
 	}
 	for _, raw := range cmds {
 		e.ensureNodeToolchain(ctx, taskID, wtPath, raw, tail)
 		passed := false
+		var lastRunErr error
 		for attempt := 0; attempt <= verifyChecksFlakeRetries; attempt++ {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return "", tail.String(), ctxErr
+				return "", tail.String(), nil, ctxErr
 			}
 			if attempt > 0 {
 				_, _ = fmt.Fprintf(tail,
@@ -922,15 +967,16 @@ func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, c
 				passed = true
 				break // passed (possibly on retry) — go to the next command
 			}
+			lastRunErr = runErr
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return "", tail.String(), ctxErr // deadline/cancel: do not retry
+				return "", tail.String(), nil, ctxErr // deadline/cancel: do not retry
 			}
 		}
 		if !passed {
-			return raw, tail.String(), nil // failed every attempt → block
+			return raw, tail.String(), lastRunErr, nil // failed every attempt → block
 		}
 	}
-	return "", tail.String(), nil
+	return "", tail.String(), nil, nil
 }
 
 func verifyCommandEnv(taskID string) ([]string, error) {

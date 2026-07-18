@@ -368,7 +368,7 @@ func TestExecVerifyChecks_RealFailureSkipsToolchainHeal(t *testing.T) {
 func TestExecVerifyChecks_GoInfraFailureBlocks(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
-	engine, tasks := newVerifyChecksEngine(t, wt, []string{`echo "link: signal: terminated" >&2; exit 1`})
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{`echo "link: signal: terminated" >&2; kill -TERM $$`})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
 	wf := implementedExec()
@@ -388,6 +388,29 @@ func TestExecVerifyChecks_GoInfraFailureBlocks(t *testing.T) {
 	}
 	if wf.Variables["step.verify_checks.auto_fix"] != "" {
 		t.Fatalf("auto-fix counter = %q, want empty for blocked infra failure", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
+func TestExecVerifyChecks_GoInfraTextOnlyFailureAutoFixes(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{`echo "link: signal: terminated" >&2; exit 1`})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("parked output = %+v, want zero value", out)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress (text-only infra marker should auto-fix)", ti.Status)
+	}
+	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
+		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
 	}
 }
 
@@ -458,6 +481,73 @@ func TestExecVerifyChecks_DependentGoPackageFailureStillAutoFixes(t *testing.T) 
 	}
 }
 
+func TestExecVerifyChecks_NonGoPackageInputFailureStillAutoFixes(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"go.mod":                                 "module example.com/verifyrepo\n\ngo 1.26.5\n",
+		"internal/agent/agent.go":                "package agent\n\nfunc Ready() bool { return true }\n",
+		"internal/agent/templates/prompt.tmpl":   "old\n",
+		"internal/promptlab/promptlab.go":        "package promptlab\n\nfunc Title() string { return \"a\" }\n",
+		"internal/promptlab/templates/body.tmpl": "unchanged\n",
+	})
+	writeRepoFile(t, wt, "internal/agent/templates/prompt.tmpl", "new\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: change agent template")
+
+	cmd := `go test ./... >/dev/null 2>&1; printf '# example.com/verifyrepo/internal/agent\n--- FAIL: TestPromptTemplate (0.00s)\nFAIL\texample.com/verifyrepo/internal/agent\t0.004s\nFAIL\n' >&2; exit 1`
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("parked output = %+v, want zero value", out)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress (related non-Go package input should auto-fix)", ti.Status)
+	}
+	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
+		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
+func TestExecVerifyChecks_TestOnlyDependentGoPackageFailureStillAutoFixes(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"go.mod":                        "module example.com/verifyrepo\n\ngo 1.26.5\n",
+		"internal/agent/agent.go":       "package agent\n\nfunc Ready() bool { return true }\n",
+		"internal/agent/agent_test.go":  "package agent\n\nimport (\n\t\"testing\"\n\n\t\"example.com/verifyrepo/internal/testutil\"\n)\n\nfunc TestReady(t *testing.T) {\n\tif testutil.Value() != 1 {\n\t\tt.Fatal(\"not ready\")\n\t}\n}\n",
+		"internal/testutil/testutil.go": "package testutil\n\nfunc Value() int { return 1 }\n",
+	})
+	writeRepoFile(t, wt, "internal/testutil/testutil.go", "package testutil\n\nfunc Value() int { return 2 }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: change testutil")
+
+	cmd := `go test ./... >/dev/null 2>&1; printf '# example.com/verifyrepo/internal/agent\n--- FAIL: TestReady (0.00s)\nFAIL\texample.com/verifyrepo/internal/agent\t0.004s\nFAIL\n' >&2; exit 1`
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("parked output = %+v, want zero value", out)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress (test-only dependency should auto-fix)", ti.Status)
+	}
+	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
+		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
 func TestExecVerifyChecks_FlakeRetryPasses(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -485,7 +575,7 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	failed, _, err := engine.runVerifyCommands(ctx, "t1", wt, []string{"sleep 20"})
+	failed, _, _, err := engine.runVerifyCommands(ctx, "t1", wt, []string{"sleep 20"})
 	if err == nil {
 		t.Fatal("expected a context error on deadline, got nil")
 	}
@@ -504,11 +594,11 @@ func TestRunVerifyCommands_GOCACHEIsPerTaskWhileGOMODCACHEStaysShared(t *testing
 	ctx := context.Background()
 	cmd := `printf '%s|%s' "$GOCACHE" "$GOMODCACHE"`
 
-	_, out1, err := engine.runVerifyCommands(ctx, "task-1", wt, []string{cmd})
+	_, out1, _, err := engine.runVerifyCommands(ctx, "task-1", wt, []string{cmd})
 	if err != nil {
 		t.Fatalf("runVerifyCommands(task-1): %v", err)
 	}
-	_, out2, err := engine.runVerifyCommands(ctx, "task-2", wt, []string{cmd})
+	_, out2, _, err := engine.runVerifyCommands(ctx, "task-2", wt, []string{cmd})
 	if err != nil {
 		t.Fatalf("runVerifyCommands(task-2): %v", err)
 	}

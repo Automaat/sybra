@@ -45,7 +45,7 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 	report := codegenGateReport{Commands: cmds}
 	tail := &boundedTail{max: verifyChecksMaxOutput}
 	for _, raw := range cmds {
-		failedCmd, output, runErr := e.runVerifyCommands(ctx, taskID, wtPath, []string{raw})
+		failedCmd, output, _, runErr := e.runVerifyCommands(ctx, taskID, wtPath, []string{raw})
 		_, _ = io.WriteString(tail, output)
 
 		if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {

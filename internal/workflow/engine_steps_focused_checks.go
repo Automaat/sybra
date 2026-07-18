@@ -82,7 +82,7 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 	ctx, cancel := context.WithTimeout(e.ctx, timeout)
 	defer cancel()
 	maybeMiseTrust(ctx, wtPath)
-	failedCmd, output, runErr := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+	failedCmd, output, _, runErr := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 
 	report.FailedCmd = failedCmd
 	report.OutputTail = tailString(output, verifyChecksOutputTail)
