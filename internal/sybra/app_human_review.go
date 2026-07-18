@@ -189,6 +189,13 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.logger.Error("human-review.task.get", "task_id", taskID, "err", err)
 		return false
 	}
+	// Status guard: the status hook launches maybeSpawn asynchronously
+	// (go a.humanReview.maybeSpawn), so a fast recovery path
+	// (human-required -> ready-pr / in-review) can flip the task out of
+	// human-required before this goroutine re-reads it. Bail if the task is
+	// no longer parked at human-required — spawning the autonomy agent
+	// against an already-recovered task would race the recovery flow and let
+	// the agent's unblock actions rewrite the task to the wrong state.
 	if t.Status != task.StatusHumanRequired {
 		h.skip(taskID, "stale_status_"+string(t.Status))
 		return false
