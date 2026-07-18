@@ -1923,6 +1923,83 @@ func TestLoadReconcileSurvivesExternalToolReRenderingStaleVersion(t *testing.T) 
 	}
 }
 
+// TestLoadPersistsTokenWithoutReconciledBuiltins is the real upgrade case the
+// headline fix must hold on: an existing config with stale ab_testing builtins
+// and NO server.auth_token. Load() legitimately generates+persists a token,
+// but because Save() marshals the whole in-memory config that write must not
+// also drag the reconciled builtins to disk — otherwise the first restart
+// after upgrade reintroduces exactly the drift this change removes. The token
+// lands; the on-disk ab_testing stays byte-for-byte the operator's own.
+func TestLoadPersistsTokenWithoutReconciledBuiltins(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	enabled := true
+	// Old-shape config WITHOUT a pinned auth token, so Load() must generate one.
+	fixture := &Config{
+		ABTesting: abtest.Config{
+			Enabled:              &enabled,
+			MinSamplesPerVariant: 20,
+			Experiments:          oldShapeABTestingExperiments(),
+			// BuiltinVersion intentionally absent: pre-builtin_version config.
+		},
+	}
+	data, err := yamlv3.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// In memory, the reconcile still took effect.
+	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+		t.Fatalf("in-memory BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
+	}
+
+	persisted, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloaded Config
+	if err := yamlv3.Unmarshal(persisted, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+
+	// The generated token must have been written back...
+	if reloaded.Server.AuthToken == "" {
+		t.Fatal("Load did not persist the generated server auth token")
+	}
+	if reloaded.Server.AuthToken != cfg.Server.AuthToken {
+		t.Fatal("persisted auth token differs from the in-memory token (would rotate on restart)")
+	}
+	// ...but the reconciled builtins must NOT have leaked onto disk.
+	if regexp.MustCompile(`builtin_version:`).Match(persisted) {
+		t.Fatal("token-persist leaked the reconciled ab_testing builtin_version to disk")
+	}
+	if got := len(reloaded.ABTesting.Experiments); got != len(oldShapeABTestingExperiments()) {
+		t.Fatalf("persisted experiment count = %d, want %d (on-disk ab_testing must be untouched)", got, len(oldShapeABTestingExperiments()))
+	}
+	staleWeightKept := false
+	for _, exp := range reloaded.ABTesting.Experiments {
+		if exp.ID != "code-author-cheap" {
+			continue
+		}
+		for _, v := range exp.Variants {
+			if v.ID == "claude-sonnet" && v.Weight == 99 {
+				staleWeightKept = true
+			}
+		}
+	}
+	if !staleWeightKept {
+		t.Fatal("token-persist rewrote the operator's ab_testing experiments (stale on-disk weight was lost)")
+	}
+}
+
 func TestTestingMaxAttemptsDefault(t *testing.T) {
 	t.Parallel()
 	var cfg *Config
