@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"runtime"
@@ -21,7 +22,8 @@ func ValidationMessages(err error) []string {
 	if err == nil {
 		return nil
 	}
-	if verr, ok := err.(*ValidationError); ok {
+	var verr *ValidationError
+	if errors.As(err, &verr) {
 		return append([]string(nil), verr.Messages...)
 	}
 	return []string{err.Error()}

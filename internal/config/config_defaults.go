@@ -800,16 +800,17 @@ func load(opts loadOptions) (*ResolvedConfig, error) {
 	data, err := os.ReadFile(path)
 	existingFile := err == nil
 	var fileCfg *FileConfig
-	if existingFile {
+	switch {
+	case existingFile:
 		fileCfg, err = ParseFileConfig(data)
 		if err != nil {
 			return nil, err
 		}
-	} else if os.IsNotExist(err) {
+	case os.IsNotExist(err):
 		if writeErr := writeDefaultConfig(path); writeErr != nil {
 			return nil, writeErr
 		}
-	} else if err != nil {
+	default:
 		return nil, err
 	}
 	if opts.persistLoadReconciles {

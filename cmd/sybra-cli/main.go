@@ -2686,31 +2686,6 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	return 0
 }
 
-// addK8sSecretEnvFindings validates agent.k8s_jobs.secret_env whenever k8s_jobs
-// is enabled at all: baseEnv (internal/agent/k8s_job_runner.go) injects these
-// entries into the Job container regardless of agent.k8s_jobs.mode, and an
-// incomplete entry is silently dropped there rather than erroring.
-func addK8sSecretEnvFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
-	if !cfg.Agent.K8sJobs.Enabled {
-		return
-	}
-	for i, e := range cfg.Agent.K8sJobs.SecretEnv {
-		var missing []string
-		if strings.TrimSpace(e.Name) == "" {
-			missing = append(missing, "name")
-		}
-		if strings.TrimSpace(e.SecretName) == "" {
-			missing = append(missing, "secret_name")
-		}
-		if strings.TrimSpace(e.SecretKey) == "" {
-			missing = append(missing, "secret_key")
-		}
-		if len(missing) > 0 {
-			add("error", "agent.k8s_jobs.secret_env[%d]: missing %s", i, strings.Join(missing, ", "))
-		}
-	}
-}
-
 // addK8sFailedTTLFindings warns when ttl_seconds_after_finished is set low
 // enough to undermine failed_ttl_seconds_after_finished: the runner extends a
 // failed Job's TTL by PATCHing it after the fact
