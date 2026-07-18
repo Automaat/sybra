@@ -223,6 +223,11 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 	if step == nil || step.Type != StepRunAgent {
 		return
 	}
+	// A task can self-escalate to human-required only because live verification
+	// needs an open PR (branch already pushed) via a plain CLI status update,
+	// without the agent exiting. That arrives here through the status hook, not
+	// an agent-completion callback, so recover it before the wait_for_status
+	// guard bails — otherwise the pushed branch strands in human-required.
 	if comp, recovered, err := e.maybeRecoverHumanRequiredByOpeningPR(taskID, step, t.Workflow, t, StepOutput{
 		StepID: step.ID,
 		Status: "completed",

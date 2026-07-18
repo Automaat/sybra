@@ -29,12 +29,21 @@ func TestLoadGeneratesAndPersistsServerAuthToken(t *testing.T) {
 		t.Errorf("AuthToken length = %d, want 64 (32 random bytes, hex-encoded)", len(cfg.Server.AuthToken))
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	// The generated token must be persisted to its own file, never to
+	// config.yaml — see #2180.
+	tokenFile, err := os.ReadFile(AuthTokenPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), cfg.Server.AuthToken) {
-		t.Error("generated token was not persisted to config.yaml")
+	if strings.TrimSpace(string(tokenFile)) != cfg.Server.AuthToken {
+		t.Error("generated token was not persisted to AuthTokenPath()")
+	}
+	cfgData, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(cfgData), cfg.Server.AuthToken) {
+		t.Error("generated token leaked into config.yaml")
 	}
 
 	// A second Load() must reuse the persisted token rather than rotating it.
@@ -137,5 +146,8 @@ func TestLoadNoPersistDoesNotGenerateServerAuthToken(t *testing.T) {
 	}
 	if strings.Contains(string(data), "auth_token") {
 		t.Fatalf("LoadNoPersist should not persist auth_token, got %s", data)
+	}
+	if _, err := os.Stat(AuthTokenPath()); !os.IsNotExist(err) {
+		t.Fatalf("LoadNoPersist should not create AuthTokenPath(), stat err = %v", err)
 	}
 }
