@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
-	"go/token"
+	gotoken "go/token"
 	"log/slog"
 	"os/exec"
 	pathpkg "path"
@@ -499,7 +499,7 @@ func parsePlatformGuardExpr(content string) (ast.Expr, bool) {
 		return nil, false
 	}
 	src := "package p\nfunc _(){\n" + content + strings.Repeat("\n}", braceDelta+1)
-	file, err := parser.ParseFile(token.NewFileSet(), "", src, 0)
+	file, err := parser.ParseFile(gotoken.NewFileSet(), "", src, 0)
 	if err != nil || len(file.Decls) != 1 {
 		return nil, false
 	}
@@ -520,9 +520,9 @@ func isPlatformGuardExpr(expr ast.Expr) bool {
 		return isPlatformGuardExpr(e.X)
 	case *ast.BinaryExpr:
 		switch e.Op {
-		case token.LAND, token.LOR:
+		case gotoken.LAND, gotoken.LOR:
 			return isPlatformGuardExpr(e.X) && isPlatformGuardExpr(e.Y)
-		case token.EQL, token.NEQ:
+		case gotoken.EQL, gotoken.NEQ:
 			return isPlatformComparison(e.X, e.Y) || isPlatformComparison(e.Y, e.X)
 		default:
 			return false
@@ -542,7 +542,7 @@ func isPlatformComparison(left, right ast.Expr) bool {
 		return false
 	}
 	lit, ok := right.(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
+	if !ok || lit.Kind != gotoken.STRING {
 		return false
 	}
 	value, err := strconv.Unquote(lit.Value)
