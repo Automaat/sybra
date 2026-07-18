@@ -81,10 +81,17 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	if reason == "" {
 		reason = "pr-fix agent requested human review"
 	}
-	// reviewHoldForced means the agent's own verdict was continue/flake — any
-	// SYBRA_PR_FIX_FAILING_TEST: lines in its output describe tests it already
-	// dealt with, not the reason for this park, so they must not be attributed
-	// to the review-hold note.
+	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)
+	}
+	e.logger.Warn("workflow.pr-fix.human-required", "task_id", taskID, "reason", reason)
+	// Best-effort, after the status update: the failing-tests note is a
+	// supplement to a park that has already happened, not a precondition for
+	// it, so a store failure here must never leave the task un-parked or
+	// re-append the note on a retry of this step. reviewHoldForced means the
+	// agent's own verdict was continue/flake — any SYBRA_PR_FIX_FAILING_TEST:
+	// lines in its output describe tests it already dealt with, not the
+	// reason for this park, so they must not be attributed to it.
 	if !reviewHoldForced {
 		if tests := prFixFailingTests(wfExec); len(tests) > 0 {
 			note := "## PR-Fix: Failing Tests\n\n" + reason + "\n\n- " + strings.Join(tests, "\n- ")
@@ -93,10 +100,6 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 			}
 		}
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)
-	}
-	e.logger.Warn("workflow.pr-fix.human-required", "task_id", taskID, "reason", reason)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
 }
 
