@@ -347,6 +347,9 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
+	if cfg.ReadOnlyDir {
+		return m.injectReadOnlyProcessSandbox(cfg, mode)
+	}
 	worktree := cfg.Dir
 	sandboxHome := cfg.resolvedSandboxHome
 	if sandboxHome == "" {
@@ -428,6 +431,69 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		"opencode_state", cfg.sandbox.opencodeState, "git_admin", cfg.sandbox.gitAdminDir,
 		"git_common", cfg.sandbox.gitCommonDir, "git_worktrees", cfg.sandbox.gitWorktrees,
 		"tool_cache", cfg.sandbox.toolCache, "profile", profilePath)
+	return nil
+}
+
+// injectReadOnlyProcessSandbox is injectProcessSandbox's variant for runs
+// whose cfg.Dir must stay read-only under enforce (RunConfig.ReadOnlyDir).
+// It grants the same sandbox-home/tmp/shared-cache write roots as the normal
+// path but never resolves or binds cfg.Dir, its .git metadata, or a git
+// overlay — there is nothing to commit, so the default `--ro-bind / /`
+// from wrapInvocation is left standing over it.
+func (m *Manager) injectReadOnlyProcessSandbox(cfg *RunConfig, mode string) error {
+	dir := cfg.Dir
+	sandboxHome := cfg.resolvedSandboxHome
+	if sandboxHome == "" {
+		sandboxHome = dir
+	}
+	tmp := os.TempDir()
+	sharedCache := sharedBuildCacheDir()
+
+	if !sandboxExecAvailable() {
+		if mode == "enforce" {
+			err := fmt.Errorf("agent.Run: enforce sandbox mode requires %s, which is unavailable on this host", sandboxWrapperName())
+			m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+			return err
+		}
+		m.logger.Warn("agent.sandbox.report.unavailable", "task_id", cfg.TaskID)
+		cfg.sandbox = sandboxSpec{mode: "off"}
+		return nil
+	}
+	if mode != "enforce" {
+		m.logger.Info("agent.sandbox.report.readonly_dir", "task_id", cfg.TaskID, "dir", dir,
+			"sandbox_home", m.reportSandboxRoot(cfg.TaskID, "sandbox_home", sandboxHome),
+			"tmp", m.reportSandboxRoot(cfg.TaskID, "tmp", tmp),
+			"shared_cache", m.reportSandboxRoot(cfg.TaskID, "shared_cache", sharedCache))
+		cfg.sandbox = sandboxSpec{mode: "off"}
+		return nil
+	}
+	canonSandboxHome, err := canonicalizeRoot(sandboxHome)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox home root: %w", err)
+	}
+	canonTmp, err := canonicalizeRoot(tmp)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox tmp root: %w", err)
+	}
+	canonSharedCache, err := canonicalizeCreatedRoot(sharedCache, 0o755)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox shared-cache root: %w", err)
+	}
+	profilePath, err := materializeSandboxProfile()
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
+	}
+	cfg.sandbox = enforceSpec("", nil, canonSandboxHome, canonTmp, canonSharedCache, profilePath, gitSandboxRoots{}, gitSandboxOverlay{})
+	m.logger.Info("agent.sandbox.enforce.readonly_dir", "task_id", cfg.TaskID,
+		"dir", dir, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
+		"shared_cache", canonSharedCache, "claude_state", cfg.sandbox.claudeState,
+		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
+		"opencode_state", cfg.sandbox.opencodeState, "tool_cache", cfg.sandbox.toolCache,
+		"profile", profilePath)
 	return nil
 }
 

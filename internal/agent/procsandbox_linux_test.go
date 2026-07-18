@@ -121,6 +121,40 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	}
 }
 
+// TestInjectProcessSandbox_ReadOnlyDirNeverBindsDirWritable pins the
+// human-review fix: a run whose Dir is a diagnostic-only checkout (e.g. the
+// Sybra deploy/build source, not a task worktree) must never get that Dir
+// added to the sandbox's writable roots under enforce, so the default
+// `--ro-bind / /` keeps it read-only regardless of RequirePermissions.
+func TestInjectProcessSandbox_ReadOnlyDirNeverBindsDirWritable(t *testing.T) {
+	m := newPostureManager("enforce")
+
+	dir := t.TempDir()
+	cfg := &RunConfig{TaskID: "task-1", Dir: dir, ReadOnlyDir: true, resolvedSandboxHome: t.TempDir()}
+	if err := m.injectProcessSandbox(cfg); err != nil {
+		t.Fatalf("injectProcessSandbox: %v", err)
+	}
+	if cfg.sandbox.mode != "enforce" {
+		t.Fatalf("sandbox.mode = %q, want enforce", cfg.sandbox.mode)
+	}
+	if cfg.sandbox.worktree != "" {
+		t.Fatalf("sandbox.worktree = %q, want empty: ReadOnlyDir must never register Dir as a writable root", cfg.sandbox.worktree)
+	}
+
+	name, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
+	if name != bwrapPath {
+		t.Fatalf("wrapInvocation name = %q, want bwrap (no git-overlay sync shell expected)", name)
+	}
+	joined := strings.Join(args, " ")
+	canonDir, err := canonicalizeRoot(dir)
+	if err != nil {
+		t.Fatalf("canonicalizeRoot(%q): %v", dir, err)
+	}
+	if strings.Contains(joined, "--bind "+canonDir+" "+canonDir) {
+		t.Fatalf("ReadOnlyDir must not be bound read-write: %s", joined)
+	}
+}
+
 func TestWrapInvocation_Linux_NonEnforcePassThrough(t *testing.T) {
 	for _, mode := range []string{"", "off", "report"} {
 		cfg := &RunConfig{sandbox: sandboxSpec{mode: mode, worktree: "/data/wt"}}
