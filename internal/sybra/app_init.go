@@ -636,6 +636,18 @@ func (a *App) initStatusHook() {
 		if local && a.workflowEngine != nil {
 			a.workflowEngine.HandleStatusChange(taskID, to)
 		}
+		// HandleStatusChange may reroute a human-required self-escalation back
+		// into the PR flow (missing live-PR blocker recovery). When it does the
+		// task no longer sits at human-required, so skip the stale
+		// human-required follow-up below — just release the agents and return.
+		if to == string(task.StatusHumanRequired) {
+			if t, err := a.tasks.Get(taskID); err == nil && t.Status != task.StatusHumanRequired {
+				if local && releaseTaskAgents {
+					a.releaseTaskAgents(taskID)
+				}
+				return
+			}
+		}
 		if local && releaseTaskAgents {
 			a.releaseTaskAgents(taskID)
 		}
