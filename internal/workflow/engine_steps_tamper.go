@@ -337,9 +337,14 @@ func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, 
 		switch {
 		case isDiffHeaderLine(line):
 			inHunk = false
+			// A guard and the skip it protects must be adjacent added lines; a
+			// hunk boundary breaks that adjacency, so reset the window rather
+			// than let an earlier guard exempt an unrelated skip in a later hunk.
+			s.guardWindow = 0
 		case strings.HasPrefix(line, "@@"):
 			s.resetHunkState()
 			inHunk = true
+			s.guardWindow = 0
 		case !inHunk && (strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++")):
 			// file header before any hunk; ignore
 		case inHunk && strings.HasPrefix(line, "+"):
