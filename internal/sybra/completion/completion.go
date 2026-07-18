@@ -964,14 +964,14 @@ func skillReceiptTranscript(ag *agent.Agent, resultContent string) string {
 	return strings.Join(parts, "\n")
 }
 
-// lastAssistantText returns the content of the last assistant-typed stream event.
+// lastAssistantText returns the content of the last non-empty assistant event.
 // Unlike finalAssistantText it applies no sybra-verdict gating — it is the
 // general "what did the model say last" accessor used to fill c.Result for
 // providers (codex) whose terminal turn.completed event carries no text.
 func lastAssistantText(ag *agent.Agent) string {
 	out := ag.Output()
 	for i := range slices.Backward(out) {
-		if out[i].Type == "assistant" {
+		if out[i].Type == "assistant" && strings.TrimSpace(out[i].Content) != "" {
 			return out[i].Content
 		}
 	}
