@@ -1,0 +1,416 @@
+logging:
+    level: info
+    dir: /data/sybra/home/worktrees/fix-workflow-promote-resumestalled-skip-57ca928d/.tmp-sybra-home/logs
+    max_size_mb: 50
+    max_files: 5
+audit:
+    enabled: true
+    retention_days: 30
+trash:
+    retention_days: 0
+sandbox:
+    retention_hours: 0
+task_snapshot:
+    enabled: null
+    interval_seconds: 0
+agent:
+    provider: claude
+    model: ""
+    mode: ""
+    max_concurrent: 25
+    research_machine_dir: ""
+    max_cost_usd: 5
+    max_turns: 150
+    max_checkpoints: 3
+    checkpoint_on_turn_ceiling: null
+    max_task_cost_usd: 0
+    turn_cost_fraction: 0
+    turn_multiplier: 0
+    require_permissions: null
+    review_until_clean: null
+    bash_timeout_seconds: 0
+    retry_watchdog: 0
+    fallback_model: ""
+    max_log_events: 0
+    log_retention_days: 0
+    log_gzip_after_days: 0
+    log_retention_max_size_mb: 0
+    survive_restart: null
+    approval_port: 0
+    headless_permission_mode: ""
+    dispatch_jitter_ms: 1000
+    sandbox_mode: ""
+    headless_steerable: null
+    default_project_id: ""
+    role_effort: {}
+    playwright_mcp:
+        enabled: false
+        extra_args: []
+    k8s_jobs:
+        enabled: false
+    queue:
+        max_depth: 0
+testing:
+    max_concurrent: 0
+    max_attempts: 0
+    open_pr_on_unrunnable_gate: null
+notification:
+    desktop: true
+orchestrator:
+    role: full
+    dispatch_interval_seconds: 10
+    maintenance_interval_seconds: 60
+    auto_approve_plans_without_decisions: false
+    pressure:
+        enabled: true
+        min_disk_free_percent: 5
+        min_mem_available_percent: 8
+        max_load_per_cpu: 8
+        warning_disk_free_percent: 15
+        reclaim_cooldown_seconds: 300
+        sample_interval_seconds: 15
+todoist:
+    enabled: false
+    api_token: ""
+    project_id: ""
+    default_project_id: ""
+    poll_seconds: 120
+renovate:
+    enabled: true
+    author: app/renovate
+github:
+    enabled: false
+    issues_enabled: true
+    reviews_enabled: true
+    poller_role: ""
+    reviews_fast_seconds: 0
+    review_rounds_per_hour: 0
+    reviews_slow_seconds: 0
+    reviews_max_prs_per_tick: 0
+    reviews_stable_backoff_max_ticks: 0
+    issues_seconds: 0
+    renovate_fast_seconds: 0
+    renovate_slow_seconds: 0
+    app:
+        enabled: false
+        app_id: 0
+        installation_id: 0
+        private_key_path: ""
+    native_auto_merge: false
+    auto_resolve_clean_merges: false
+    flaky_detection: false
+    flaky_success_threshold: 0
+umbrella:
+    enabled: false
+    model: ""
+    ground: false
+    ground_min_sub_issues: 0
+triage:
+    enabled: false
+    poll_seconds: 60
+    model: ""
+human_review:
+    enabled: false
+    sybra_repo_dir: ""
+    repo: ""
+    model: ""
+    max_per_hour: 0
+    issue_label: ""
+    sybra_bug_action: ""
+review_hold:
+    enabled: false
+    mode: ""
+    nit_max_lines: 0
+monitor:
+    enabled: true
+    interval_seconds: 300
+    model: claude-haiku-4-5-20251001
+    issue_cooldown_minutes: 30
+    dispatch_limit: 25
+    stuck_human_hours: 8
+    lost_agent_minutes: 15
+    pr_gap_grace_minutes: 15
+    failure_rate_threshold: 0.3
+    bottleneck_hours:
+        default: 12
+        human-required: 8
+        in-progress: 6
+        plan-review: 4
+    issue_label: monitor
+    issue_repo: Automaat/sybra
+watchdog:
+    enabled: true
+    model: claude-haiku-4-5-20251001
+    loop_threshold: 6
+    max_runs_per_window: 30
+    run_window_minutes: 30
+self_monitor:
+    enabled: false
+    interval_hours: 6
+    judge_model: claude-haiku-4-5-20251001
+    synthesizer_model: claude-sonnet-4-6
+    max_issues_per_run: 5
+    max_auto_actions_per_day: 3
+    auto_act_categories:
+        - stuck_task
+        - workflow_loop
+        - cost_outlier
+        - triage_mismatch
+    dry_run: true
+    issue_cooldown_hours: 24
+    issue_label: selfmonitor
+    max_cost_per_tick_usd: 2
+    judge_parallelism: 4
+    suppression_days: 7
+    suppression_threshold: 3
+evaluation:
+    enabled: false
+    interval_hours: 24
+    window_days: 30
+    offline:
+        enabled: false
+        runner: auto
+        min_score: 1
+        unavailable_policy: fail
+learning_digest:
+    enabled: false
+    interval_hours: 24
+    window_days: 7
+    max_window_days: 30
+    model: sonnet
+    min_runs: 20
+    min_landings: 3
+harness_evolution:
+    enabled: true
+    interval_hours: 24
+    lookback_hours: 168
+    min_cluster_size: 2
+    sink: local-task
+prompt_lab:
+    enabled: false
+    interval_hours: 24
+    lookback_hours: 168
+    min_samples: 5
+    min_effect_size: 0.15
+    max_proposals_per_run: 3
+    auto_approve: null
+    refile_cooldown_days: 30
+experience:
+    enabled: false
+    max_records: 5
+    ttl_days: 0
+ab_testing:
+    enabled: true
+    min_samples_per_variant: 20
+    experiments:
+        - id: code-author-cheap
+          enabled: true
+          assignment_unit: stage
+          bracket: cheap
+          roles:
+            - implementation
+          variants:
+            - id: claude-sonnet
+              provider: claude
+              model: sonnet
+              tier: cheap
+              weight: 1
+            - id: codex-gpt-5.4
+              provider: codex
+              model: gpt-5.4
+              tier: cheap
+              weight: 1
+            - id: copilot-sonnet
+              provider: copilot
+              model: claude-sonnet-4.6
+              tier: cheap
+              weight: 1
+            - id: opencode-deepseek-v4-flash
+              provider: opencode
+              model: openrouter/deepseek/deepseek-v4-flash
+              tier: cheap
+              weight: 1
+        - id: code-author-maintenance-cheap
+          enabled: true
+          assignment_unit: stage
+          bracket: cheap
+          roles:
+            - pr-fix
+            - test-runner
+          variants:
+            - id: claude-sonnet
+              provider: claude
+              model: sonnet
+              tier: cheap
+              weight: 1
+            - id: codex-gpt-5.4
+              provider: codex
+              model: gpt-5.4
+              tier: cheap
+              weight: 1
+            - id: copilot-sonnet
+              provider: copilot
+              model: claude-sonnet-4.6
+              tier: cheap
+              weight: 1
+            - id: opencode-deepseek-v4-flash
+              provider: opencode
+              model: openrouter/deepseek/deepseek-v4-flash
+              tier: cheap
+              weight: 1
+        - id: fix-review-expensive
+          enabled: true
+          assignment_unit: stage
+          bracket: expensive
+          roles:
+            - fix-review
+          variants:
+            - id: claude-opus
+              provider: claude
+              model: opus
+              tier: expensive
+              weight: 1
+            - id: codex-gpt-5.5
+              provider: codex
+              model: gpt-5.5
+              tier: expensive
+              weight: 1
+            - id: copilot-gemini-3.1-pro
+              provider: copilot
+              model: gemini-3.1-pro-preview
+              tier: expensive
+              weight: 1
+            - id: opencode-glm-5.2
+              provider: opencode
+              model: openrouter/z-ai/glm-5.2
+              tier: expensive
+              weight: 1
+        - id: review-expensive
+          enabled: true
+          assignment_unit: stage
+          bracket: expensive
+          roles:
+            - plan
+          variants:
+            - id: claude-opus
+              provider: claude
+              model: opus
+              tier: expensive
+              weight: 1
+            - id: codex-gpt-5.5
+              provider: codex
+              model: gpt-5.5
+              tier: expensive
+              weight: 1
+            - id: copilot-gemini-3.1-pro
+              provider: copilot
+              model: gemini-3.1-pro-preview
+              tier: expensive
+              weight: 1
+            - id: opencode-glm-5.2
+              provider: opencode
+              model: openrouter/z-ai/glm-5.2
+              tier: expensive
+              weight: 1
+        - id: review-tighten-instructions-pl-a2d853b2c1d9
+          kind: compound
+          enabled: true
+          assignment_unit: stage
+          bracket: expensive
+          subject:
+            role: review
+          roles:
+            - review
+          variants:
+            - id: claude-opus
+              provider: claude
+              model: opus
+              tier: expensive
+              weight: 1
+            - id: codex-gpt-5.5
+              provider: codex
+              model: gpt-5.5
+              tier: expensive
+              weight: 1
+            - id: copilot-gemini-3.1-pro
+              provider: copilot
+              model: gemini-3.1-pro-preview
+              tier: expensive
+              weight: 1
+            - id: opencode-glm-5.2
+              provider: opencode
+              model: openrouter/z-ai/glm-5.2
+              tier: expensive
+              weight: 1
+            - id: pl-a2d853b2c1d9-codex-gpt-5.5
+              provider: codex
+              model: gpt-5.5
+              tier: expensive
+              version: pl-a2d853b2c1d9
+              digest: dd292a14c07267500cff8fe4fba5c6dfb17fe8809b3ae545acd1794d2be3de84
+              prompt_transform:
+                op: append
+                text: |4
+
+                    Review variant pl-a2d853b2c1d9: apply a stricter staff-code-review standard before returning a verdict.
+
+                    - Lead with concrete blocking defects only: correctness, security, data loss, broken workflows, test gaps that can hide a regression, or repository-rule violations.
+                    - For every finding, name the exact file/line evidence and the user-visible failure mode. If you cannot tie a concern to behavior or a repo rule, omit it.
+                    - Check that implementation and tests cover the task's current acceptance criteria, including edge cases and failure paths. Treat missing focused tests as a finding when the change is risky or user-visible.
+                    - Separate must-fix-before-merge issues from optional cleanup; do not block on style preferences, speculative rewrites, or unrelated refactors.
+                    - If no blocking issues remain, say that clearly and call out any residual test or runtime verification gap.
+              weight: 1
+    builtin_version: 6
+providers:
+    health_check:
+        enabled: true
+        interval_seconds: 300
+    claude:
+        enabled: true
+        rate_limit_cooldown_seconds: 900
+        monthly_subscription_usd: 0
+    codex:
+        enabled: true
+        rate_limit_cooldown_seconds: 900
+        monthly_subscription_usd: 0
+    copilot:
+        enabled: true
+        rate_limit_cooldown_seconds: 900
+        monthly_subscription_usd: 0
+    opencode:
+        enabled: true
+        rate_limit_cooldown_seconds: 900
+        monthly_subscription_usd: 0
+    limits:
+        enabled: true
+        session_threshold_percent: 85
+        weekly_threshold_percent: 90
+        prefer_underused: true
+        backfill_days: 14
+        max_in_flight_per_provider: 0
+    auto_failover: true
+metrics:
+    enabled: false
+server:
+    auth_token: 047ffef048ea10b0519629c18f7ff6b6cff14ab1182af3acd757f3b6c5859d4b
+    allowed_origins: []
+cluster:
+    role: standalone
+auto_update:
+    enabled: false
+    repo_dir: ""
+    remote: origin
+    branch: main
+    mode: notify
+    poll_seconds: 300
+    restart_delay_seconds: 2
+browser:
+    in_app: null
+project_types: []
+tasks_dir: /data/sybra/home/worktrees/fix-workflow-promote-resumestalled-skip-57ca928d/.tmp-sybra-home/tasks
+skills_dir: /data/sybra/home/worktrees/fix-workflow-promote-resumestalled-skip-57ca928d/.tmp-sybra-home/.claude/skills
+repo_dir: ""
+projects_dir: /data/sybra/home/worktrees/fix-workflow-promote-resumestalled-skip-57ca928d/.tmp-sybra-home/projects
+clones_dir: /data/sybra/home/worktrees/fix-workflow-promote-resumestalled-skip-57ca928d/.tmp-sybra-home/clones
+worktrees_dir: /data/sybra/home/worktrees/fix-workflow-promote-resumestalled-skip-57ca928d/.tmp-sybra-home/worktrees
+loop_agents_dir: /data/sybra/home/worktrees/fix-workflow-promote-resumestalled-skip-57ca928d/.tmp-sybra-home/loop-agents

@@ -2978,6 +2978,71 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 	}
 }
 
+// TestResumeStalled_SkipLogsPromotedToThrottledInfo proves ResumeStalled's
+// skip-reason logs are visible at the default (INFO) log level instead of
+// being silently swallowed at Debug: a dropped/skipped resume was previously
+// invisible in production logs. The first occurrence of a given skip under a
+// task logs at INFO; identical repeats on later ticks are throttled to Debug
+// so a long-lived cooldown (e.g. a multi-hour retry_after window) doesn't
+// flood the log with a duplicate INFO line every tick.
+func TestResumeStalled_SkipLogsPromotedToThrottledInfo(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, logger)
+
+	retryAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	wf := &Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+		Variables: map[string]string{
+			workflowRetryAfterVar: retryAt,
+		},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow:  wf,
+	})
+
+	skipRecords := func() []slog.Record {
+		var out []slog.Record
+		for _, r := range records {
+			if r.Message == "workflow.resume-stalled.skip" {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+
+	engine.ResumeStalled()
+	first := skipRecords()
+	if len(first) != 1 {
+		t.Fatalf("got %d skip records after first tick, want 1: %+v", len(first), first)
+	}
+	if first[0].Level != slog.LevelInfo {
+		t.Fatalf("first skip level = %v, want Info", first[0].Level)
+	}
+	if got := recordAttr(first[0], "reason"); got != "retry_after" {
+		t.Fatalf("reason = %q, want retry_after", got)
+	}
+
+	records = nil
+	engine.ResumeStalled()
+	repeat := skipRecords()
+	if len(repeat) != 1 {
+		t.Fatalf("got %d skip records after repeat tick, want 1: %+v", len(repeat), repeat)
+	}
+	if repeat[0].Level != slog.LevelDebug {
+		t.Fatalf("repeat skip level = %v, want Debug (throttled)", repeat[0].Level)
+	}
+}
+
 func TestResumeStalled_SkipWaitHuman(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
