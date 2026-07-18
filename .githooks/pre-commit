@@ -47,12 +47,6 @@ if [ -n "$staged_go" ]; then
   fi
 fi
 
-# 3. golangci-lint on changed lines only — fast feedback, no full repo scan.
-if [ -n "$staged_go" ] && command -v golangci-lint >/dev/null 2>&1; then
-  # --new-from-rev compares against the merge-base with main so the hook
-  # only flags newly introduced issues, never pre-existing ones.
-  if ! golangci-lint run --new-from-rev=origin/main --timeout 2m ./... 2>&1 | tail -50; then
-    echo "ERROR: golangci-lint flagged new issues on changed lines."
-    exit 1
-  fi
-fi
+# golangci-lint is intentionally not run here — CI's lint-go job covers it,
+# and running it per-commit across parallel agent worktrees overloads the
+# local machine.
