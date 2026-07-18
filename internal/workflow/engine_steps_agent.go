@@ -72,6 +72,13 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 	}
 	content, readErr := os.ReadFile(path)
 	if readErr != nil {
+		if recoveredPath, recoveredContent, ok := e.recoverImportedSidecarFromWorktree(taskID, stepID, step, info, cfg); ok {
+			path = recoveredPath
+			content = recoveredContent
+			readErr = nil
+		}
+	}
+	if readErr != nil {
 		e.logger.Warn("workflow.import-sidecar.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
 		if cfg.Required {
 			// A template referencing the reserved worktree-dir var that
@@ -123,6 +130,38 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 			e.logger.Warn("artifact.record.failed", "kind", "plan_contract", "task_id", taskID, "step", stepID, "err", recErr)
 		}
 	}
+}
+
+func (e *Engine) recoverImportedSidecarFromWorktree(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) (path string, content []byte, ok bool) {
+	if !worktreeDirTemplatePattern.MatchString(cfg.From) || strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) != "" || e.worktrees == nil {
+		return "", nil, false
+	}
+	worktreePath, ok := e.worktrees.GetWorktreePath(taskID)
+	if !ok || strings.TrimSpace(worktreePath) == "" {
+		return "", nil, false
+	}
+	vars := maps.Clone(info.Workflow.Variables)
+	if vars == nil {
+		vars = map[string]string{}
+	}
+	vars[WorkflowVarDir] = worktreePath
+	path, rErr := RenderTemplate(cfg.From, TemplateContext{
+		Task:     info,
+		Step:     *step,
+		Vars:     vars,
+		Workflow: info.Workflow,
+	})
+	if rErr != nil {
+		e.logger.Warn("workflow.import-sidecar.recover.render", "task_id", taskID, "step", stepID, "err", rErr)
+		return "", nil, false
+	}
+	content, readErr := os.ReadFile(path)
+	if readErr != nil {
+		e.logger.Warn("workflow.import-sidecar.recover.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
+		return "", nil, false
+	}
+	e.logger.Info("workflow.import-sidecar.recover", "task_id", taskID, "step", stepID, "path", path, "bytes", len(content))
+	return path, content, true
 }
 
 func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {

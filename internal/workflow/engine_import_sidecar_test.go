@@ -122,6 +122,41 @@ func TestImportSidecar_EmptyDirVarDistinguishedFromMissing(t *testing.T) {
 	}
 }
 
+func TestImportSidecar_EmptyDirVarRecoversViaWorktreeGetter(t *testing.T) {
+	store := newTestStoreWith(t, "test-import-required-sidecar-dir.yaml")
+	worktree := t.TempDir()
+	body := `{"task_id":"t1"}`
+	if err := os.WriteFile(filepath.Join(worktree, "review.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "test-import-required-sidecar-dir",
+			CurrentStep: "review",
+			Variables:   map[string]string{}, // lost during restart/reattach
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: worktree, ok: true})
+
+	info, _ := tasks.GetTask("t1")
+	engine.importSidecarIfConfigured("t1", "review", info)
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "in-progress" {
+		t.Fatalf("Status = %q, want in-progress", got.Status)
+	}
+	if got.PlanContract != body {
+		t.Fatalf("PlanContract = %q, want recovered sidecar", got.PlanContract)
+	}
+	if reason := tasks.Reason("t1"); reason != "" {
+		t.Fatalf("reason = %q, want no human-required escalation", reason)
+	}
+}
+
 // TestImportSidecar_MissingFileWithDirSetStillReportsMissing proves the new
 // empty-_dir diagnostic in importOneSidecar doesn't shadow the ordinary
 // "agent never wrote the file" case once _dir is genuinely populated.

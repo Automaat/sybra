@@ -37,6 +37,7 @@ type Store struct {
 	locker        *fsutil.KeyedLocker
 	cacheMu       sync.RWMutex
 	listCache     []Task
+	listSnapshot  []listCacheFile
 	listValid     bool
 }
 
@@ -260,9 +261,15 @@ func (s *Store) List() ([]Task, error) {
 		tasks = append(tasks, t)
 	}
 	if !parseErr {
-		s.storeListCache(tasks)
+		s.storeListCache(tasks, entries)
 	}
 	return tasks, nil
+}
+
+type listCacheFile struct {
+	name    string
+	size    int64
+	modTime time.Time
 }
 
 // sidecarIndex holds sidecar contents loaded in a single ReadDir pass,
@@ -1476,13 +1483,28 @@ func (s *Store) cachedList() ([]Task, bool) {
 	if !s.listValid {
 		return nil, false
 	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, false
+	}
+	snapshot, ok := listCacheSnapshot(entries)
+	if !ok || !slices.Equal(snapshot, s.listSnapshot) {
+		return nil, false
+	}
 	return cloneTasks(s.listCache), true
 }
 
-func (s *Store) storeListCache(tasks []Task) {
+func (s *Store) storeListCache(tasks []Task, entries []os.DirEntry) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
+	snapshot, ok := listCacheSnapshot(entries)
+	if !ok {
+		s.listValid = false
+		s.listSnapshot = nil
+		return
+	}
 	s.listCache = cloneTasks(tasks)
+	s.listSnapshot = snapshot
 	s.listValid = true
 }
 
@@ -1498,9 +1520,11 @@ func (s *Store) storeTaskCache(t Task) {
 			continue
 		}
 		s.listCache[i] = cloned
+		s.refreshListSnapshotLocked()
 		return
 	}
 	s.listCache = append(s.listCache, cloned)
+	s.refreshListSnapshotLocked()
 }
 
 func (s *Store) deleteCachedTask(id string) {
@@ -1514,15 +1538,61 @@ func (s *Store) deleteCachedTask(id string) {
 			continue
 		}
 		s.listCache = append(s.listCache[:i], s.listCache[i+1:]...)
+		s.refreshListSnapshotLocked()
 		return
 	}
-	s.listValid = true
+	s.refreshListSnapshotLocked()
 }
 
 func (s *Store) invalidateListCache() {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 	s.listValid = false
+	s.listSnapshot = nil
+}
+
+func (s *Store) refreshListSnapshotLocked() {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		s.listValid = false
+		s.listSnapshot = nil
+		return
+	}
+	snapshot, ok := listCacheSnapshot(entries)
+	if !ok {
+		s.listValid = false
+		s.listSnapshot = nil
+		return
+	}
+	s.listSnapshot = snapshot
+	s.listValid = true
+}
+
+func listCacheSnapshot(entries []os.DirEntry) ([]listCacheFile, bool) {
+	snapshot := make([]listCacheFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		base := entry.Name()
+		if !listCacheRelevantFile(base) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, false
+		}
+		snapshot = append(snapshot, listCacheFile{
+			name:    base,
+			size:    info.Size(),
+			modTime: info.ModTime(),
+		})
+	}
+	return snapshot, true
+}
+
+func listCacheRelevantFile(base string) bool {
+	return strings.HasSuffix(base, ".md") || IsSidecarFile(base)
 }
 
 func cloneTasks(tasks []Task) []Task {
