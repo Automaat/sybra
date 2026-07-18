@@ -813,6 +813,104 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	}
 }
 
+// TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired pins that
+// route_pr_fix_result's pr_fix_test_fix_eligible branch is checked before
+// its task.status==human-required branch — otherwise the eligibility var
+// would never get a chance to redirect to test_fix, since a real eligible
+// completion always has task.status still at in-progress (unset) rather
+// than human-required at this point, but a stale/misordered condition list
+// checked in the wrong order would silently never route there in practice
+// once a future edit changes what status looks like at this step.
+func TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired(t *testing.T) {
+	t.Parallel()
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var prfix *Definition
+	for i := range defs {
+		if defs[i].ID == "pr-fix" {
+			prfix = &defs[i]
+			break
+		}
+	}
+	if prfix == nil {
+		t.Fatal("pr-fix builtin definition not found")
+	}
+	route := prfix.StepByID("route_pr_fix_result")
+	if route == nil {
+		t.Fatal("route_pr_fix_result step missing from pr-fix")
+		return
+	}
+	got, err := ResolveTransition(route.Next, map[string]string{
+		"vars.step.route_pr_fix_result.pr_fix_test_fix_eligible": "true",
+		"task.status": "in-progress",
+	})
+	if err != nil || got != "test_fix" {
+		t.Fatalf("eligible route next = %q, err=%v; want test_fix", got, err)
+	}
+
+	testFix := prfix.StepByID("test_fix")
+	if testFix == nil {
+		t.Fatal("test_fix step missing from pr-fix")
+		return
+	}
+	if testFix.Type != StepRunAgent {
+		t.Fatalf("test_fix type = %q, want %q", testFix.Type, StepRunAgent)
+	}
+	if testFix.Config.Role != "test-fix" {
+		t.Fatalf("test_fix role = %q, want test-fix", testFix.Config.Role)
+	}
+	if got, err := ResolveTransition(testFix.Next, map[string]string{}); err != nil || got != "route_test_fix_result" {
+		t.Fatalf("test_fix next = %q, err=%v; want route_test_fix_result", got, err)
+	}
+
+	routeTestFix := prfix.StepByID("route_test_fix_result")
+	if routeTestFix == nil {
+		t.Fatal("route_test_fix_result step missing from pr-fix")
+		return
+	}
+	if routeTestFix.Type != StepRoutePRFixResult {
+		t.Fatalf("route_test_fix_result type = %q, want %q", routeTestFix.Type, StepRoutePRFixResult)
+	}
+	// route_test_fix_result must have no eligibility branch of its own — a
+	// human-required verdict here always parks, bounding the follow-up to
+	// exactly one attempt.
+	if got, err := ResolveTransition(routeTestFix.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
+		t.Fatalf("route_test_fix_result human-required next = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(routeTestFix.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "verify_commits" {
+		t.Fatalf("route_test_fix_result default next = %q, err=%v; want verify_commits", got, err)
+	}
+
+	// A pure wiring assertion can't catch a template syntax typo or a wrong
+	// getvar key, so render the real prompt string against realistic vars.
+	rendered, err := RenderTemplate(testFix.Config.Prompt, TemplateContext{
+		Vars: map[string]string{
+			"step.fix.pr_fix_failing_tests": "pkg/a_test.go:1 TestA\npkg/b_test.go:2 TestB",
+			"step.fix.pr_fix_reason":        "targeted tests still fail after the merge",
+			// A stand-in for internal/sybra/review.PRFixResultContract
+			// (that package imports this one, so it can't be referenced
+			// directly here) — only its presence in the rendered output
+			// matters for this test, not its exact wording.
+			"pr_fix_result_contract": "SYBRA_PR_FIX_RESULT: <verdict>",
+		},
+	})
+	if err != nil {
+		t.Fatalf("render test_fix prompt: %v", err)
+	}
+	for _, want := range []string{
+		"pkg/a_test.go:1 TestA",
+		"pkg/b_test.go:2 TestB",
+		"targeted tests still fail after the merge",
+		"SYBRA_PR_FIX_RESULT",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered test_fix prompt missing %q; got:\n%s", want, rendered)
+		}
+	}
+}
+
 // TestBuiltinDefinitions_NeverInstructForcePush is the repo-wide acceptance
 // probe for the "never force-push" invariant: no builtin workflow prompt may
 // instruct an agent to force-push, under any spelling. Sybra's own process

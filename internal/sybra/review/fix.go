@@ -967,6 +967,11 @@ func (r *Handler) dispatchPRIssueWithOptions(t task.Task, primary github.PRIssue
 		"pr_issue_kind":         string(primary.Kind),
 		"pr_issue_kinds":        strings.Join(kinds, ","),
 		workflow.WorkflowVarDir: dir,
+		// Exposed separately (not just baked into fullPrompt above) so the
+		// test_fix step's own YAML-authored prompt can reuse the identical
+		// result contract instead of duplicating it as a second copy that
+		// could drift out of sync.
+		"pr_fix_result_contract": PRFixResultContract,
 	}
 	// Deterministic backstop for review-hold: when the hold is active and this
 	// fix touches review comments, the agent drafted its replies into a pending

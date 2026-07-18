@@ -41,6 +41,66 @@ steps:
     type: route_pr_fix_result
     next:
       - when:
+          field: vars.step.route_pr_fix_result.pr_fix_test_fix_eligible
+          operator: equals
+          value: "true"
+        goto: test_fix
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: in-review
+        goto: ""
+      - goto: verify_commits
+
+  # Bounded, single-shot follow-up: route_pr_fix_result redirects here only
+  # when the pr-fix agent named specific non-merge test failures instead of
+  # parking immediately (see prFixTestFixEligibleVar). Scoped identically to
+  # pr-fix itself — fix only the named tests, no new investigation, no
+  # unrelated changes. route_test_fix_result (below) makes the final call;
+  # it reuses route_pr_fix_result's own step type, so a second human-required
+  # verdict here always parks — it can never redirect back to this step.
+  - id: test_fix
+    name: Fix Reported Test Failures
+    type: run_agent
+    config:
+      role: test-fix
+      mode: headless
+      model: sonnet
+      prompt: >-
+        A prior pr-fix agent working this task found these specific test
+        failures unrelated to the merge itself and stopped rather than
+        freelance outside its scope:
+
+
+        {{ getvar .Vars "step.fix.pr_fix_failing_tests" }}
+
+
+        Reported reason: {{ getvar .Vars "step.fix.pr_fix_reason" }}
+
+
+        Fix ONLY what is needed to make the tests named above pass. No new
+        investigation beyond these named failures, no unrelated changes —
+        the same scope discipline pr-fix itself follows. Re-run exactly
+        those tests (or their containing package, if that is the smallest
+        reproducible unit) and confirm they pass before reporting success.
+        If fixing them would require more than a narrow, targeted change —
+        a design decision, missing context you cannot reconstruct, or
+        touching code beyond the named tests — stop without pushing further
+        changes and report human-required rather than guessing.
+        {{ getvar .Vars "pr_fix_result_contract" }}
+    next:
+      - goto: route_test_fix_result
+
+  - id: route_test_fix_result
+    name: Route Test Fix Result
+    type: route_pr_fix_result
+    next:
+      - when:
           field: task.status
           operator: equals
           value: human-required

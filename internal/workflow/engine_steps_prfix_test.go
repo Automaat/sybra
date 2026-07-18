@@ -233,7 +233,12 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 // append the full, untruncated list to the task body — not just the
 // 200-char-truncated reason — so a human or a future scoped follow-up gets
 // exact repro info instead of having to rediscover the failing tests.
-func TestExecRoutePRFixResult_HumanRequiredWithFailingTestsAppendsNote(t *testing.T) {
+// The original router (route_pr_fix_result) must redirect to the scoped
+// test_fix follow-up instead of parking immediately, when the pr-fix agent
+// named specific non-merge test failures. It must NOT touch task status or
+// append the failing-tests note itself — that's test_fix's own router's job
+// once test_fix has actually had its one bounded attempt.
+func TestExecRoutePRFixResult_HumanRequiredWithFailingTestsRoutesToTestFix(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
@@ -264,17 +269,63 @@ func TestExecRoutePRFixResult_HumanRequiredWithFailingTestsAppendsNote(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", got.Status)
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress (must not park before test_fix's own attempt)", got.Status)
 	}
-	for _, want := range []string{
-		"## PR-Fix: Failing Tests",
-		"pkg/xds/bootstrap/generator_test.go:113 TestBootstrap/gateway_settings",
-		"pkg/xds/sync/proxy_builder_test.go:49 panics during spec construction",
-	} {
-		if !strings.Contains(got.Body, want) {
-			t.Errorf("body missing %q; got:\n%s", want, got.Body)
-		}
+	if strings.Contains(got.Body, "PR-Fix: Failing Tests") {
+		t.Errorf("must not append the failing-tests note before test_fix has attempted a fix; got body:\n%s", got.Body)
+	}
+	if v := wf.Variables["step.route_pr_fix_result."+prFixTestFixEligibleVar]; v != "true" {
+		t.Errorf("pr_fix_test_fix_eligible = %q, want \"true\"", v)
+	}
+}
+
+// route_test_fix_result reuses execRoutePRFixResult unchanged, but is never
+// itself eligible to redirect back to test_fix — a step ID other than
+// route_pr_fix_result must always park on a human-required verdict, bounding
+// the follow-up to exactly one attempt even if test_fix's own output also
+// names still-failing tests.
+func TestExecRoutePRFixResult_TestFixOwnHumanRequiredParksImmediately(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_test_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{
+			{StepID: "fix", Status: "completed", AgentID: "agent-1", Output: "SYBRA_PR_FIX_RESULT: human-required\nSYBRA_PR_FIX_REASON: first pass\nSYBRA_PR_FIX_FAILING_TEST: pkg/a_test.go:1 TestA\n"},
+			{
+				StepID: "test_fix",
+				Status: "completed",
+				Output: "Tried the narrow fix but it still fails.\n" +
+					"SYBRA_PR_FIX_RESULT: human-required\n" +
+					"SYBRA_PR_FIX_REASON: fix attempt did not resolve TestA\n" +
+					"SYBRA_PR_FIX_FAILING_TEST: pkg/a_test.go:1 TestA (still failing after fix attempt)\n",
+				AgentID:   "agent-2",
+				StartedAt: time.Now(),
+			},
+		},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 1178, Workflow: wf})
+
+	if _, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_test_fix_result"}, wf, TaskInfo{ID: "t1", PRNumber: 1178}); err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required (test_fix's own attempt must be the last one)", got.Status)
+	}
+	if !strings.Contains(got.Body, "pkg/a_test.go:1 TestA (still failing after fix attempt)") {
+		t.Errorf("expected test_fix's own still-failing test in the note; got body:\n%s", got.Body)
+	}
+	if v := wf.Variables["step.route_test_fix_result."+prFixTestFixEligibleVar]; v != "" {
+		t.Errorf("route_test_fix_result must never set pr_fix_test_fix_eligible; got %q", v)
 	}
 }
 
