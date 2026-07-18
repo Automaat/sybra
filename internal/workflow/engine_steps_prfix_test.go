@@ -237,43 +237,7 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	t.Parallel()
 
-	bare, wtPath := newPRWorktree(t, "feat/conflict-recovery")
-	conflictPath := filepath.Join("internal", "workflow", "engine_advance.go")
-	if err := os.MkdirAll(filepath.Join(wtPath, "internal", "workflow"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(wtPath, conflictPath), []byte("feature branch\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGitAt(t, wtPath, "add", conflictPath)
-	runGitAt(t, wtPath, "commit", "-m", "feat: branch side")
-	if err := project.PushSync(context.Background(), wtPath, "feat/conflict-recovery"); err != nil {
-		t.Fatalf("PushSync seed: %v", err)
-	}
-
-	baseWT := filepath.Join(t.TempDir(), "base")
-	if err := project.CreateWorktreeExisting(context.Background(), bare, baseWT, "main"); err != nil {
-		t.Fatalf("CreateWorktreeExisting(main): %v", err)
-	}
-	runGitAt(t, baseWT, "config", "user.email", "test@test.com")
-	runGitAt(t, baseWT, "config", "user.name", "Test")
-	if err := os.MkdirAll(filepath.Join(baseWT, "internal", "workflow"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(baseWT, conflictPath), []byte("main branch\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGitAt(t, baseWT, "add", conflictPath)
-	runGitAt(t, baseWT, "commit", "-m", "feat: base side")
-
-	cmd := exec.Command("git", "merge", "refs/heads/main")
-	cmd.Dir = wtPath
-	if out, err := cmd.CombinedOutput(); err == nil {
-		t.Fatalf("git merge unexpectedly succeeded: %s", out)
-	}
-	if err := os.WriteFile(filepath.Join(wtPath, conflictPath), []byte("feature branch\nmain branch\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	bare, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-recovery")
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -356,6 +320,112 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	if remoteSHA := strings.TrimSpace(string(remoteSHAOut)); remoteSHA != localSHA {
 		t.Fatalf("remote SHA = %q, want pushed local SHA %q", remoteSHA, localSHA)
 	}
+}
+
+func TestExecRoutePRFixResult_ResolvedUnmergedWithFailingTestsRoutesToTestFix(t *testing.T) {
+	t.Parallel()
+
+	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-with-tests")
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	beforeSHA := headSHA(t, wtPath)
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved on disk but targeted tests still fail.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: targeted tests still fail after resolving the merge\n" +
+				"SYBRA_PR_FIX_FAILING_TEST: internal/workflow/engine_steps_prfix_test.go:1 TestStillFailing\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2231,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-with-tests",
+		Workflow:  wf,
+	})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2231,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-with-tests",
+	})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output == "continue" {
+		t.Fatal("route output = continue, want scoped test-fix before resolved-merge recovery")
+	}
+	if v := wf.Variables["step.route_pr_fix_result."+prFixTestFixEligibleVar]; v != "true" {
+		t.Errorf("pr_fix_test_fix_eligible = %q, want \"true\"", v)
+	}
+	if got := headSHA(t, wtPath); got != beforeSHA {
+		t.Fatalf("HEAD = %q, want unchanged %q; route must not checkpoint before test_fix", got, beforeSHA)
+	}
+}
+
+func newResolvedUnmergedPRFixWorktree(t *testing.T, branch string) (bare, wtPath string) {
+	t.Helper()
+
+	bare, wtPath = newPRWorktree(t, branch)
+	conflictPath := filepath.Join("internal", "workflow", "engine_advance.go")
+	if err := os.MkdirAll(filepath.Join(wtPath, "internal", "workflow"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, conflictPath), []byte("feature branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtPath, "add", conflictPath)
+	runGitAt(t, wtPath, "commit", "-m", "feat: branch side")
+	if err := project.PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	baseWT := filepath.Join(t.TempDir(), "base")
+	if err := project.CreateWorktreeExisting(context.Background(), bare, baseWT, "main"); err != nil {
+		t.Fatalf("CreateWorktreeExisting(main): %v", err)
+	}
+	runGitAt(t, baseWT, "config", "user.email", "test@test.com")
+	runGitAt(t, baseWT, "config", "user.name", "Test")
+	if err := os.MkdirAll(filepath.Join(baseWT, "internal", "workflow"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(baseWT, conflictPath), []byte("main branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, baseWT, "add", conflictPath)
+	runGitAt(t, baseWT, "commit", "-m", "feat: base side")
+
+	cmd := exec.Command("git", "merge", "refs/heads/main")
+	cmd.Dir = wtPath
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("git merge unexpectedly succeeded: %s", out)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, conflictPath), []byte("feature branch\nmain branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return bare, wtPath
 }
 
 // A human-required verdict carrying SYBRA_PR_FIX_FAILING_TEST: lines must

@@ -99,11 +99,6 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	if reason == "" {
 		reason = "pr-fix agent requested human review"
 	}
-	if !reviewHoldForced {
-		if out, err, handled := e.tryRecoverResolvedMerge(taskID, step, wfExec, t); handled {
-			return out, err
-		}
-	}
 	// A bounded, single-shot follow-up: only route_pr_fix_result (the
 	// original router, gated by step ID so route_test_fix_result's own
 	// human-required outcome — test_fix's own attempt — can never loop back
@@ -115,6 +110,11 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 			wfExec.SetVar("step."+step.ID+"."+prFixTestFixEligibleVar, "true")
 			e.logger.Info("workflow.pr-fix.test-fix-eligible", "task_id", taskID, "pr", t.PRNumber, "test_count", len(tests))
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "routing to scoped test-fix: " + reason}, nil
+		}
+	}
+	if !reviewHoldForced {
+		if out, err, handled := e.tryRecoverResolvedMerge(taskID, step, wfExec, t); handled {
+			return out, err
 		}
 	}
 	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
