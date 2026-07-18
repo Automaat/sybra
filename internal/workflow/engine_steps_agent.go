@@ -138,16 +138,7 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
 
-	mode := step.Config.Mode
-	if strings.Contains(mode, "{{") {
-		rendered, rErr := RenderTemplate(mode, ctx)
-		if rErr == nil {
-			mode = rendered
-		}
-	}
-	if mode == "" {
-		mode = "headless"
-	}
+	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		err := fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 		classifiedReason, _ := ClassifyAgentStartError(err)
@@ -168,6 +159,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if err != nil {
 		return err
 	}
+	applySkillReceiptRecoveryAssignment(step.ID, wfExec, &assignment)
 
 	prompt, err := e.renderAssignedPrompt(taskID, step, ctx, assignment, "workflow.consume-steer")
 	if err != nil {
@@ -191,6 +183,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	dir := wfExec.Variables[WorkflowVarDir]
 	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
 	cleanRetryRef := wfExec.Variables[cleanRetryKey]
+	captureTamperDeletionAllowlist(wfExec, step.ID, step.Config.Role, ctx.Task)
 
 	// Stop stale agents left over from earlier workflow steps (e.g. an
 	// interactive plan agent with reuse_agent that outlived plan approval).
@@ -209,41 +202,33 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
 	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
 
-	// Mark the step as starting before the (potentially multi-second,
-	// worktree-prep-bound) StartAgent call so a stale/untracked agent
+	// The step-starting marker below brackets the (potentially multi-second,
+	// worktree-prep-bound) StartAgent call, so a stale/untracked agent
 	// completion arriving mid-start (e.g. a reattached agent from a prior
 	// step) sees this step as claimed instead of falling through to the
 	// "nothing tracked yet, credit the current step" fallback in
-	// HandleAgentComplete. Cleared by the deferred unmark when execRunAgent
-	// returns, at which point either agentRoutes (success) or the parked/failed
-	// step state takes over.
+	// HandleAgentComplete. The deferred unmark clears it once this function
+	// is done, at which point either agentRoutes (success) or the
+	// parked/failed step state takes over.
+	//
+	// A completion for this very start can also beat the agentRoutes write a
+	// few lines down. Unlike spawnParallelChild and startBestOfNAttempt,
+	// e.mu is not held across the StartAgent call here on purpose: this is
+	// the hot path and worktree prep can be slow. HandleAgentComplete
+	// buffers a completion that arrives in that window instead of dropping
+	// it (#2176's hang was exactly that silent drop). The deferred replay
+	// hands it back once this function's outcome — route registered, or
+	// parked/failed — is settled.
 	e.markStepStarting(taskID, step.ID)
-	defer e.unmarkStepStarting(taskID, step.ID)
+	defer func() {
+		for _, buffered := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {
+			e.HandleAgentComplete(taskID, buffered)
+		}
+	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
-		// Another dispatcher already holds the per-task dispatch claim (e.g. the
-		// recovery loop won the race for this task). That agent will run and its
-		// completion drives the workflow forward — so wait rather than failing
-		// the step (which would otherwise route into verify_commits /
-		// human-required on a task that has live work in flight).
-		if errors.Is(err, ErrDispatchInFlight) {
-			wfExec.State = ExecWaiting
-			e.logger.Info("workflow.run-agent.dispatch-in-flight", "task_id", taskID, "step", step.ID)
-			return e.tasks.SetWorkflow(taskID, wfExec)
-		}
-
-		// Testing concurrency cap saturated — park and let ResumeStalled retry
-		// when a test-runner slot frees, same as dispatch-in-flight.
-		if errors.Is(err, ErrTestRunnerBusy) {
-			wfExec.State = ExecWaiting
-			e.logger.Info("workflow.run-agent.test-runner-busy", "task_id", taskID, "step", step.ID)
-			return e.tasks.SetWorkflow(taskID, wfExec)
-		}
-
-		if errors.Is(err, ErrAgentPoolBusy) {
-			wfExec.State = ExecWaiting
-			e.logger.Info("workflow.run-agent.agent-pool-busy", "task_id", taskID, "step", step.ID)
-			return e.tasks.SetWorkflow(taskID, wfExec)
+		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
+			return parkErr
 		}
 		return fmt.Errorf("start agent: %w", err)
 	}
@@ -267,6 +252,38 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
 	return e.tasks.SetWorkflow(taskID, wfExec)
+}
+
+func resolveRunAgentMode(mode string, ctx TemplateContext) string {
+	if strings.Contains(mode, "{{") {
+		rendered, err := RenderTemplate(mode, ctx)
+		if err == nil {
+			mode = rendered
+		}
+	}
+	if mode == "" {
+		return "headless"
+	}
+	return mode
+}
+
+func (e *Engine) parkRunAgentStartError(taskID, stepID string, wfExec *Execution, err error) (bool, error) {
+	switch {
+	case errors.Is(err, ErrDispatchInFlight):
+		wfExec.State = ExecWaiting
+		e.logger.Info("workflow.run-agent.dispatch-in-flight", "task_id", taskID, "step", stepID)
+		return true, e.tasks.SetWorkflow(taskID, wfExec)
+	case errors.Is(err, ErrTestRunnerBusy):
+		wfExec.State = ExecWaiting
+		e.logger.Info("workflow.run-agent.test-runner-busy", "task_id", taskID, "step", stepID)
+		return true, e.tasks.SetWorkflow(taskID, wfExec)
+	case errors.Is(err, ErrAgentPoolBusy):
+		wfExec.State = ExecWaiting
+		e.logger.Info("workflow.run-agent.agent-pool-busy", "task_id", taskID, "step", stepID)
+		return true, e.tasks.SetWorkflow(taskID, wfExec)
+	default:
+		return false, nil
+	}
 }
 
 func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, bool, error) {

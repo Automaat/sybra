@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
@@ -237,6 +238,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 
 	h.emitPermissionDenialAudits(ag)
 	h.emitMalformedToolCallAudits(ag)
+	h.emitPromptRenderedAudit(ag)
 
 	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent, exitErr)
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
@@ -321,6 +323,40 @@ func (h *Handler) emitPermissionDenialAudits(ag *agent.Agent) {
 	}
 }
 
+// emitPromptRenderedAudit emits agent.prompt_rendered, correlating this run's
+// provider-specific skill render summary with its dispatch record via
+// prompt_hash. The hash is stamped centrally for every headless run in
+// newRunningAgent, so this fires for every headless role/provider (review,
+// fix-review, pr-fix, human-review, workflow) — not just implementation
+// dispatches. Never carries prompt text — only the render summary.
+//
+// Headless-only by design: a headless run is one-shot, so its (prompt_hash,
+// render) pair is stamped once and stays immutable. Interactive conversational
+// sessions re-render per turn via SetPromptRender while prompt_hash stays
+// pinned to the initial prompt, so emitting here would join turn 1's hash to a
+// later turn's render — false audit data rather than a harmless omission.
+func (h *Handler) emitPromptRenderedAudit(ag *agent.Agent) {
+	if ag.Mode != "headless" {
+		return
+	}
+	hash := ag.GetPromptHash()
+	if hash == "" {
+		return
+	}
+	syntax, rendered, unrendered := ag.GetPromptRender()
+	requested := make([]string, 0, len(rendered)+len(unrendered))
+	requested = append(requested, rendered...)
+	requested = append(requested, unrendered...)
+	h.logAudit(audit.EventAgentPromptRendered, ag.TaskID, ag.ID, map[string]any{
+		"prompt_hash":       hash,
+		"provider":          ag.Provider,
+		"rendered_syntax":   syntax,
+		"rendered_skills":   rendered,
+		"unrendered_skills": unrendered,
+		"requested_skills":  requested,
+	})
+}
+
 func (h *Handler) emitMalformedToolCallAudits(ag *agent.Agent) {
 	for _, record := range ag.GetMalformedToolCalls() {
 		eventType := audit.EventAgentMalformedToolCorrected
@@ -356,9 +392,39 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 	if ag.ReasoningEffort != "" {
 		updates.ReasoningEffort = task.Ptr(ag.ReasoningEffort)
 	}
+	if ag.RequestedSkill != "" {
+		updates.RequestedSkill = task.Ptr(ag.RequestedSkill)
+	}
+	if ag.ResolvedSkillSourceHash != "" {
+		updates.ResolvedSkillSourceHash = task.Ptr(ag.ResolvedSkillSourceHash)
+	}
+	if ag.SkillConformance != "" {
+		updates.SkillConformance = task.Ptr(ag.SkillConformance)
+	}
+	updates.SubagentCallCount = task.Ptr(ag.GetSubagentCallCount())
 }
 
 func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string, exitErr error) task.RunPatch {
+	// A mandatory skill's pre-execution ConformanceExact/ConformanceFallback
+	// only reflects that the instructions were delivered (natively or
+	// injected) — not that the model actually followed them. Downgrade to
+	// ConformanceUnverified when the transcript never produced the matching
+	// receipt so the workflow engine's skill-conformance gate (see
+	// workflow.HandleAgentComplete) can retry instead of trusting a fake or
+	// incomplete artifact.
+	//
+	// Skip only when the resolved provider actually enforces OutputSchema —
+	// resolveWorkflowSkillPrompt requested no receipt in that case. Gating on
+	// OutputSchema alone would wrongly skip verification for a provider like
+	// copilot that silently drops the schema but still got the receipt ask.
+	schemaEnforced := ag.OutputSchema != "" && agent.ProviderSupportsOutputSchema(ag.Provider)
+	if ag.RequestedSkill != "" && !schemaEnforced {
+		transcript := skillReceiptTranscript(ag, resultContent)
+		ag.SkillConformance = skillattr.VerifyReceipt(ag.SkillConformance, transcript, ag.RequestedSkill, ag.ResolvedSkillSourceHash)
+		if ag.IsSkillRecoveryAttempt() && (ag.SkillConformance == skillattr.ConformanceExact || ag.SkillConformance == skillattr.ConformanceFallback) {
+			ag.SkillConformance = skillattr.ConformanceRecovered
+		}
+	}
 	truncated := resultContent
 	if len(truncated) > maxResultLen {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"
@@ -756,6 +822,10 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		VariantID:                ag.VariantID,
 		AssignmentUnit:           ag.AssignmentUnit,
 		AssignmentKey:            ag.AssignmentKey,
+		RequestedSkill:           ag.RequestedSkill,
+		SkillExecutionMode:       ag.SkillExecutionMode,
+		ResolvedSkillSourceHash:  ag.ResolvedSkillSourceHash,
+		SkillConformance:         ag.SkillConformance,
 		CostUSD:                  agCost,
 		DurationS:                duration,
 		InputTokens:              in,
@@ -766,6 +836,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		PremiumRequests:          ag.GetPremiumRequests(),
 		TurnCount:                ag.GetTurnCount(),
 		ToolCalls:                ag.GetToolCalls(),
+		SubagentCallCount:        ag.GetSubagentCallCount(),
 		Outcome:                  outcome,
 		Timestamp:                time.Now(),
 	})
@@ -877,6 +948,20 @@ func finalAssistantText(ag *agent.Agent) string {
 		}
 	}
 	return ""
+}
+
+func skillReceiptTranscript(ag *agent.Agent, resultContent string) string {
+	var parts []string
+	output := ag.Output()
+	for i := range output {
+		if (output[i].Type == "assistant" || output[i].Type == "result") && strings.TrimSpace(output[i].Content) != "" {
+			parts = append(parts, output[i].Content)
+		}
+	}
+	if strings.TrimSpace(resultContent) != "" && (len(parts) == 0 || parts[len(parts)-1] != resultContent) {
+		parts = append(parts, resultContent)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // lastAssistantText returns the content of the last assistant-typed stream event.

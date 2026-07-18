@@ -179,6 +179,14 @@ func (r *Handler) applyPRPhase(t *task.Task, phase string) {
 const exhaustedFixReasonPrefix = "pr-monitor: auto-fix exhausted after "
 const ciInfraRerunPermissionReason = "CI failure rerun requires higher GitHub permissions"
 
+// persistentFlakyCIReason parks a task whose ci_failure kept classifying as
+// flaky (see flakyOnlyFailure) across every rerun attempt in the ci-infra
+// rerun budget — distinct from exhaustedFixReason so a human can tell "the
+// fix agent gave up on a deterministic failure" from "reruns alone never
+// cleared this, worth a closer look at test stability" at a glance.
+const persistentFlakyCIReason = "pr-monitor: CI failure kept classifying as flaky after " +
+	"repeated reruns — needs a human"
+
 // exhaustedFixReason renders the StatusReason escalateExhaustedFix parks a task
 // with. It is the sole producer of the string exhaustedFixReasonKind parses back
 // into a PRIssueKind — deriving both from exhaustedFixReasonPrefix keeps them in
@@ -229,7 +237,7 @@ func humanRequiredBlockerReconcilable(t *task.Task) (kind github.PRIssueKind, ok
 	if workflow.IsTamperFlaggedReason(reason) {
 		return "", false
 	}
-	if reason == ciInfraRerunPermissionReason {
+	if reason == ciInfraRerunPermissionReason || reason == persistentFlakyCIReason {
 		return github.PRIssueCIFailure, true
 	}
 	kind, ok = exhaustedFixReasonKind(reason)
@@ -260,9 +268,9 @@ func hasFixableIssue(issues []github.PRIssue) bool {
 		switch issues[i].Kind {
 		case github.PRIssueConflict, github.PRIssueCIFailure, github.PRIssueComments:
 			return true
-		case github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueReadyToMerge:
-			// branch_conflict_no_pr is tracker-only (never emitted by
-			// MatchTaskPRs); ready_to_merge is not a blocker.
+		case github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueReadyToMerge, github.PRIssueCIFlake:
+			// branch_conflict_no_pr and ci_flake are tracker-only (never
+			// emitted by MatchTaskPRs); ready_to_merge is not a blocker.
 		}
 	}
 	return false

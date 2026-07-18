@@ -113,7 +113,7 @@ func TestReconcileRunnableBoardTasks_ConvergedInboundReviewIsNoOp(t *testing.T) 
 		t.Fatalf("test precondition failed: status_changed_at=%s must be after workflow completed_at=%s", got.StatusChangedAt, completedAt)
 	}
 
-	a.reconcileRunnableBoardTasks()
+	a.reconcileRunnableBoardTasks(t.Context())
 	a.wg.Wait()
 	afterFirst, err := a.tasks.Get(got.ID)
 	if err != nil {
@@ -129,7 +129,7 @@ func TestReconcileRunnableBoardTasks_ConvergedInboundReviewIsNoOp(t *testing.T) 
 		t.Fatalf("first maintenance tick status = %q, want %q", afterFirst.Status, task.StatusInReview)
 	}
 
-	a.reconcileRunnableBoardTasks()
+	a.reconcileRunnableBoardTasks(t.Context())
 	a.wg.Wait()
 	afterSecond, err := a.tasks.Get(got.ID)
 	if err != nil {

@@ -1,0 +1,182 @@
+//go:build e2e
+
+package sybra
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+	"time"
+)
+
+// The e2e hang (#2176) has never been root-caused because every occurrence
+// destroys its own evidence: the app logger was DiscardHandler, so a CI-only
+// timeout left nothing but "timeout waiting for X" and a goroutine dump in
+// which every entry was a parked test. These two helpers are what make the next
+// occurrence explain itself, so they are worth pinning.
+
+func TestE2ELogBuffer_KeepsTheTailNotTheHead(t *testing.T) {
+	t.Parallel()
+
+	b := &e2eLogBuffer{}
+	// The head is startup noise; the tail is what the app did before it hung.
+	if _, err := b.Write([]byte(strings.Repeat("A", e2eLogTailBytes))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Write([]byte("THE-INTERESTING-PART")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := b.String()
+	if len(got) > e2eLogTailBytes {
+		t.Errorf("len = %d, want <= %d: the buffer must stay capped", len(got), e2eLogTailBytes)
+	}
+	if !strings.HasSuffix(got, "THE-INTERESTING-PART") {
+		t.Error("the newest bytes were dropped; a hung run's last lines are the whole point")
+	}
+}
+
+func TestE2ELogBuffer_ShortWritesSurviveIntact(t *testing.T) {
+	t.Parallel()
+
+	b := &e2eLogBuffer{}
+	if _, err := b.Write([]byte("agent.start\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Write([]byte("workflow.advance\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := b.String(), "agent.start\nworkflow.advance\n"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+func TestDropParkedTestGoroutines(t *testing.T) {
+	t.Parallel()
+
+	// Shape mirrors a real dump: a blocked sequential test, an app goroutine,
+	// and parked parallel tests that outnumber both.
+	dump := strings.Join([]string{
+		"goroutine 1 [chan receive, 2 minutes]:\ntesting.(*T).Run(0xc0001)\n\tmain.go:1 +0x1",
+		"goroutine 52 [chan receive, 10 minutes]:\ntesting.(*T).Parallel(0xc0002)\n\ttesting.go:1803 +0x50c",
+		"goroutine 77 [select]:\ngithub.com/Automaat/sybra/internal/agent.(*Manager).runHeadless(0xc0003)\n\trunner.go:1 +0x1",
+		"goroutine 91 [chan receive, 10 minutes]:\ntesting.(*T).Parallel(0xc0004)\n\ttesting.go:1803 +0x50c",
+	}, "\n\n")
+
+	got := dropParkedTestGoroutines(dump)
+
+	if strings.Contains(got, "testing.(*T).Parallel(") {
+		t.Error("parked test goroutines survived; they are the noise that buried the culprit")
+	}
+	if !strings.Contains(got, "runHeadless") {
+		t.Error("dropped an app goroutine — that is exactly what the dump exists to show")
+	}
+	if !strings.Contains(got, "testing.(*T).Run(") {
+		t.Error("dropped the blocked sequential test's own stack")
+	}
+	if !strings.Contains(got, "2 goroutines parked in t.Parallel omitted") {
+		t.Errorf("omission must be reported so the dump is not silently partial, got:\n%s", got)
+	}
+}
+
+// go test's -timeout panics the process without running any t.Cleanup or
+// t.Fatalf, so a wait allowed to outlive it prints none of the evidence this
+// file captures. CI pairs -timeout 20m with a 12-20x scale, which turns
+// waitFor(t, 90*time.Second) into an 18-30 minute deadline that can never
+// report. These pin the clamp that converts that silent panic into a failure.
+func TestClampToReportingDeadline(t *testing.T) {
+	budget := e2eBinaryTimeout()
+	if budget <= 0 {
+		t.Skip("binary started without -timeout; nothing to clamp against")
+	}
+
+	t.Run("a wait longer than the budget is cut short of it", func(t *testing.T) {
+		got := clampToReportingDeadline(budget * 10)
+		if got >= budget {
+			t.Errorf("clamped = %s, want < the %s binary budget: it must fail its own test, not panic the process", got, budget)
+		}
+		if got <= 0 {
+			t.Errorf("clamped = %s, want a positive deadline", got)
+		}
+	})
+
+	t.Run("a short wait is left alone", func(t *testing.T) {
+		// Well inside any sane budget, so the clamp must not touch it —
+		// shortening honest waits would invent failures.
+		want := 50 * time.Millisecond
+		if got := clampToReportingDeadline(want); got != want {
+			t.Errorf("clamped = %s, want %s untouched", got, want)
+		}
+	})
+
+	t.Run("never returns a non-positive deadline", func(t *testing.T) {
+		// Simulates a wait starting when the budget is already spent.
+		if got := clampToReportingDeadline(time.Nanosecond); got <= 0 {
+			t.Errorf("clamped = %s, want > 0", got)
+		}
+	})
+
+	// A near-spent budget is where the clamp matters most and is easiest to get
+	// wrong: flooring to any comfortable minimum hands back a deadline that
+	// outlives the binary, and the process panics with no evidence — exactly
+	// what this converts. Not parallel: it moves the package-level suite clock.
+	t.Run("a near-spent budget yields a deadline inside it", func(t *testing.T) {
+		orig := e2eSuiteStart
+		t.Cleanup(func() { e2eSuiteStart = orig })
+		// Pretend the suite has burned all but a sliver of its -timeout.
+		e2eSuiteStart = time.Now().Add(-budget + 100*time.Millisecond)
+
+		got := clampToReportingDeadline(30 * time.Second)
+		if got <= 0 {
+			t.Fatalf("clamped = %s, want a positive deadline", got)
+		}
+		if got > 100*time.Millisecond {
+			t.Errorf("clamped = %s, want <= the ~100ms actually left: a longer wait outlives the binary and panics instead of reporting", got)
+		}
+	})
+}
+
+func TestDropParkedTestGoroutines_NothingToDrop(t *testing.T) {
+	t.Parallel()
+
+	dump := "goroutine 77 [select]:\ninternal/agent.(*Manager).runHeadless(0xc0003)\n\trunner.go:1 +0x1"
+
+	got := dropParkedTestGoroutines(dump)
+	if !strings.Contains(got, "runHeadless") {
+		t.Errorf("dump = %q, want the goroutine kept", got)
+	}
+	if strings.Contains(got, "omitted") {
+		t.Error("reported an omission when nothing was dropped")
+	}
+}
+
+// The cap is a memory bound, not just a display bound: appending first and
+// trimming the length afterwards leaves the grown capacity allocated for the
+// rest of the test, so one oversized record would hold megabytes to show 64KB.
+func TestE2ELogBuffer_NeverAllocatesAboveTheCap(t *testing.T) {
+	t.Parallel()
+
+	b := &e2eLogBuffer{}
+	huge := bytes.Repeat([]byte("x"), 4*e2eLogTailBytes)
+	n, err := b.Write(huge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(huge) {
+		t.Errorf("Write returned %d, want %d: io.Writer must report the caller's length", n, len(huge))
+	}
+	if got := cap(b.buf); got > e2eLogTailBytes {
+		t.Errorf("cap = %d, want <= %d: the oversized write was allocated before being discarded", got, e2eLogTailBytes)
+	}
+
+	// And the tail it keeps is still the newest bytes.
+	if _, err := b.Write([]byte("NEWEST")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(b.String(), "NEWEST") {
+		t.Error("the newest bytes were dropped")
+	}
+	if cap(b.buf) > e2eLogTailBytes {
+		t.Errorf("cap = %d after a follow-up write, want <= %d", cap(b.buf), e2eLogTailBytes)
+	}
+}

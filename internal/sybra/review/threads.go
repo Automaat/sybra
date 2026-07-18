@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/audit"
@@ -20,7 +21,7 @@ import (
 // detected via isOutdated (the anchored code changed since the comment). Human-
 // authored threads and still-live (non-outdated) Copilot threads are never
 // touched, so genuinely-unaddressed feedback still blocks the merge.
-func (r *Handler) resolveAddressedCopilotThreads(tasks []task.Task, prs []github.PullRequest) {
+func (r *Handler) resolveAddressedCopilotThreads(ctx context.Context, tasks []task.Task, prs []github.PullRequest) {
 	byNumber := make(map[int]string, len(tasks))
 	byBranch := make(map[string]string, len(tasks))
 	for i := range tasks {
@@ -63,7 +64,7 @@ func (r *Handler) resolveAddressedCopilotThreads(tasks []task.Task, prs []github
 		if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(taskID) {
 			continue
 		}
-		r.resolveCopilotThreadsForPR(taskID, *pr, r.agentLogin())
+		r.resolveCopilotThreadsForPR(taskID, *pr, r.agentLogin(ctx))
 	}
 }
 

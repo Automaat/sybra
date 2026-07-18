@@ -3,13 +3,16 @@ package sybra
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -61,7 +64,7 @@ func (a *App) dispatchPass(ctx context.Context) {
 		return
 	}
 	a.releaseUnblockedChildren()
-	a.reconcileRunnableBoardTasks()
+	a.reconcileRunnableBoardTasks(ctx)
 	if a.assigner != nil {
 		a.assigner.Tick(ctx)
 	}
@@ -162,7 +165,7 @@ func (a *App) queueDrainPass(ctx context.Context) {
 	if !a.runsScheduler() {
 		return
 	}
-	a.reconcileRunnableBoardTasks()
+	a.reconcileRunnableBoardTasks(ctx)
 	if a.workflowEngine != nil {
 		// workflow.Engine derives its shell-step context from its own e.ctx
 		// field (Engine.SetContext, bound once from App's root ctx), not an
@@ -171,7 +174,7 @@ func (a *App) queueDrainPass(ctx context.Context) {
 	}
 }
 
-func (a *App) reconcileRunnableBoardTasks() {
+func (a *App) reconcileRunnableBoardTasks(ctx context.Context) {
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
@@ -204,7 +207,7 @@ func (a *App) reconcileRunnableBoardTasks() {
 			a.dispatchPlanningWorkflow(t.ID)
 		case task.StatusInReview:
 			if isInboundReviewTask(t) {
-				a.dispatchInboundReviewWorkflow(t.ID)
+				a.dispatchInboundReviewWorkflow(ctx, t.ID)
 				continue
 			}
 		case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
@@ -218,7 +221,98 @@ func isInboundReviewTask(t task.Task) bool {
 	return slices.Contains(t.Tags, "review") && t.ProjectID != "" && t.PRNumber != 0
 }
 
-func (a *App) dispatchInboundReviewWorkflow(taskID string) {
+// maxReviewAttemptsPerHead bounds automated review runs against one PR commit.
+// Above 1 so a transient provider failure gets a retry: refusing after a single
+// dispatch would trade #2164's re-review loop for a PR nobody ever reviews
+// again, which is the worse outcome for a contributor.
+const maxReviewAttemptsPerHead = 2
+
+// reviewCoversHead reports whether head's review budget is spent. An unknown
+// head ("") counts as covered: we cannot tell a new push from the commit we
+// just reviewed, and declining is the safe direction.
+func reviewCoversHead(t task.Task, head string) bool {
+	if head == "" {
+		return true
+	}
+	if t.ReviewedHeadSHA != head {
+		return false
+	}
+	return t.ReviewedHeadAttempts >= maxReviewAttemptsPerHead
+}
+
+// nextReviewAttempt returns the attempt number head is about to consume. A new
+// head restarts the budget, so a real push always re-opens review.
+func nextReviewAttempt(t task.Task, head string) int {
+	if t.ReviewedHeadSHA != head {
+		return 1
+	}
+	return t.ReviewedHeadAttempts + 1
+}
+
+// reviewRoundWindow is the rolling window reviewRoundsSpent counts over.
+const reviewRoundWindow = time.Hour
+
+// reviewRoundsSpent counts automated review runs started on t within the last
+// window, read off the durable AgentRuns list so it survives a restart.
+func reviewRoundsSpent(t task.Task, now time.Time) int {
+	cutoff := now.Add(-reviewRoundWindow)
+	spent := 0
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].Role != string(agent.RoleReview) {
+			continue
+		}
+		if t.AgentRuns[i].StartedAt.After(cutoff) {
+			spent++
+		}
+	}
+	return spent
+}
+
+// reviewRateLimitExceeded reports whether t has spent its review budget for the
+// current window. limit <= 0 disables the cap.
+func reviewRateLimitExceeded(t task.Task, now time.Time, limit int) bool {
+	if limit <= 0 {
+		return false
+	}
+	return reviewRoundsSpent(t, now) >= limit
+}
+
+// reviewRoundsPerHourLimit resolves the cap; a nil cfg (tests) uses the default.
+func (a *App) reviewRoundsPerHourLimit() int {
+	if a.cfg == nil {
+		return config.DefaultReviewRoundsPerHour
+	}
+	return a.cfg.GitHub.ReviewRoundsPerHourLimit()
+}
+
+// parkReviewRateLimited trips the breaker: a task posting reviews this fast is
+// misbehaving, and a tripped breaker needs a human to reset rather than
+// self-healing into the next burst.
+func (a *App) parkReviewRateLimited(t task.Task, limit int) {
+	a.logger.Error("workflow.dispatch.inbound-review.rate-limit",
+		"task_id", t.ID, "repo", t.ProjectID, "pr", t.PRNumber,
+		"rounds", reviewRoundsSpent(t, time.Now()), "limit", limit)
+	reason := fmt.Sprintf("%s: %d rounds within an hour on PR #%d", review.RateLimitParkReason, limit, t.PRNumber)
+	if _, err := a.tasks.Update(t.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		a.logger.Error("workflow.dispatch.inbound-review.rate-limit-park", "task_id", t.ID, "err", err)
+	}
+}
+
+// fetchPRHeadSHAFunc returns the PR-head lookup, overridable in tests. The
+// context-aware form is mandatory here: this runs inline on the orchestrator
+// loop, and gh's global request gate is held across the whole subprocess, so an
+// uncancellable call would stall every other dispatch behind it.
+func (a *App) fetchPRHeadSHAFunc() func(ctx context.Context, repo string, number int) (string, error) {
+	if a.fetchPRHeadSHA != nil {
+		return a.fetchPRHeadSHA
+	}
+	return github.FetchPRHeadSHAContext
+}
+
+func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) {
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
@@ -241,10 +335,61 @@ func (a *App) dispatchInboundReviewWorkflow(taskID string) {
 	if a.agents.HasRunningAgentForTask(taskID) {
 		return
 	}
-	if err := a.workflowEngine.StartWorkflow(taskID, "pr-review"); err != nil &&
-		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) &&
-		!errors.Is(err, workflow.ErrAutoDispatchDisabled) {
-		a.logger.Error("workflow.dispatch.inbound-review", "task_id", taskID, "err", err)
+
+	// The blast-radius cap, and the only gate here that bounds a loop we have
+	// not thought of: the per-head budget above assumes the head is a
+	// meaningful key, and every other gate assumes the phase machine is sane.
+	// Rate rather than lifetime total, so a PR legitimately re-reviewed after
+	// each push over weeks is never blocked while a runaway is stopped inside
+	// the hour. Counted off the durable AgentRuns list, so a restart cannot
+	// launder it. Checked before the GitHub call — it needs no network.
+	if limit := a.reviewRoundsPerHourLimit(); reviewRateLimitExceeded(t, time.Now(), limit) {
+		a.parkReviewRateLimited(t, limit)
+		return
+	}
+
+	// Every gate above is a function of local state, so a stale or frozen phase
+	// re-opens them every cooldown — that is how #2164 spent 112 reviews on one
+	// commit. Ask GitHub for the real head and spend a bounded budget per
+	// commit. Cached 30s (github.prHeadSHACache), so a task whose gates are
+	// stuck open costs ~2 lookups/min, not one per tick.
+	headCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	head, err := a.fetchPRHeadSHAFunc()(headCtx, t.ProjectID, t.PRNumber)
+	if err != nil {
+		// Fail closed: without the head we cannot tell a new push from the
+		// commit we already reviewed, and guessing is what produced 112 reviews.
+		a.logger.Warn("workflow.dispatch.inbound-review.head", "task_id", taskID, "err", err)
+		return
+	}
+	if head == "" {
+		// Declining is right, but silence is not: an empty SHA with no error means
+		// gh returned something we don't understand, and a PR that is quietly
+		// never reviewed again is exactly what #2164 was hard to diagnose about.
+		a.logger.Warn("workflow.dispatch.inbound-review.head-empty",
+			"task_id", taskID, "repo", t.ProjectID, "pr", t.PRNumber)
+		return
+	}
+	if reviewCoversHead(t, head) {
+		return
+	}
+
+	if err := a.workflowEngine.StartWorkflow(taskID, "pr-review"); err != nil {
+		if !errors.Is(err, workflow.ErrWorkflowAlreadyActive) &&
+			!errors.Is(err, workflow.ErrAutoDispatchDisabled) {
+			a.logger.Error("workflow.dispatch.inbound-review", "task_id", taskID, "err", err)
+		}
+		// Nothing ran, so nothing is charged; the next tick stays free to retry.
+		return
+	}
+	// Charge only once a run is underway. A run that then crashes or loops still
+	// burns its attempt, which is what bounds the loop.
+	attempt := nextReviewAttempt(t, head)
+	if _, err := a.tasks.Update(taskID, task.Update{
+		ReviewedHeadSHA:      task.Ptr(head),
+		ReviewedHeadAttempts: task.Ptr(attempt),
+	}); err != nil {
+		a.logger.Error("workflow.dispatch.inbound-review.stamp", "task_id", taskID, "err", err)
 	}
 }
 

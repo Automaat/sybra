@@ -1,12 +1,23 @@
 package workflow
 
 import (
+	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func manyGoFiles(n int) []string {
+	files := make([]string, 0, n)
+	for i := range n {
+		files = append(files, fmt.Sprintf("pkg/svc/file%d.go", i))
+	}
+
+	return files
+}
 
 func TestTriageVerdict(t *testing.T) {
 	t.Parallel()
@@ -46,8 +57,15 @@ func TestTriageVerdict(t *testing.T) {
 			want:       "staff",
 		},
 		{
-			name:       "test_file_always_staff",
+			name:       "test_file_alone_is_simple",
 			files:      []string{"internal/task/parser_test.go"},
+			insertions: 8,
+			deletions:  2,
+			want:       "simple",
+		},
+		{
+			name:       "test_file_under_risky_path_is_staff",
+			files:      []string{"internal/workflow/engine_test.go"},
 			insertions: 8,
 			deletions:  2,
 			want:       "staff",
@@ -67,22 +85,36 @@ func TestTriageVerdict(t *testing.T) {
 			want:       "staff",
 		},
 		{
-			name:       "main_go_always_staff",
+			name:       "main_go_is_simple",
 			files:      []string{"main.go"},
 			insertions: 2,
 			deletions:  1,
-			want:       "staff",
+			want:       "simple",
+		},
+		{
+			name:       "routine_feature_sized_diff_is_simple",
+			files:      []string{"frontend/src/App.svelte"},
+			insertions: 100,
+			deletions:  0,
+			want:       "simple",
 		},
 		{
 			name:       "many_lines_is_staff",
 			files:      []string{"frontend/src/App.svelte"},
-			insertions: 100,
+			insertions: triageReviewLineLimit + 1,
 			deletions:  0,
 			want:       "staff",
 		},
 		{
-			name:       "many_files_is_staff",
+			name:       "handful_of_files_is_simple",
 			files:      []string{"a.go", "b.go", "c.go", "d.go"},
+			insertions: 4,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "many_files_is_staff",
+			files:      manyGoFiles(triageReviewFileLimit + 1),
 			insertions: 4,
 			deletions:  0,
 			want:       "staff",
@@ -161,6 +193,20 @@ func TestTriageVerdict(t *testing.T) {
 			name:       "claude_md_carve_out_is_staff",
 			files:      []string{"CLAUDE.md"},
 			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "embedded_skill_bundle_carve_out_is_staff",
+			files:      []string{"internal/skills/data/adversarial-review.md"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "embedded_skill_bundle_large_diff_is_staff",
+			files:      []string{"internal/skills/data/sybra-test.md"},
+			insertions: triageReviewLineLimit + 100,
 			deletions:  0,
 			want:       "staff",
 		},
@@ -557,15 +603,15 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 			want: "code_review_simple",
 		},
 		{
-			name: "staff_verdict_routes_to_staff",
+			name: "staff_verdict_still_routes_to_adversarial",
 			fields: map[string]string{
 				"task.tags":                      "backend",
 				"vars.step.triage_review.output": "staff",
 			},
-			want: "code_review_staff",
+			want: "code_review_simple",
 		},
 		{
-			name: "force_staff_tag_overrides_simple_verdict",
+			name: "force_staff_tag_is_the_only_route_to_staff",
 			fields: map[string]string{
 				"task.tags":                      "backend,force-staff-review",
 				"vars.step.triage_review.output": "simple",
@@ -573,11 +619,19 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 			want: "code_review_staff",
 		},
 		{
-			name: "missing_verdict_falls_back_to_staff",
+			name: "force_staff_tag_overrides_staff_verdict_too",
+			fields: map[string]string{
+				"task.tags":                      "backend,force-staff-review",
+				"vars.step.triage_review.output": "staff",
+			},
+			want: "code_review_staff",
+		},
+		{
+			name: "missing_verdict_falls_back_to_adversarial",
 			fields: map[string]string{
 				"task.tags": "backend",
 			},
-			want: "code_review_staff",
+			want: "code_review_simple",
 		},
 		{
 			name: "skip_verdict_routes_to_done_review",
@@ -728,5 +782,270 @@ func TestBuiltinPRReview_PickReviewMethod(t *testing.T) {
 				t.Errorf("goto = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestBuiltinSimpleTask_ReviewLoopsUntilClean pins the review→fix→review cycle:
+// a clean tamper scan must re-enter review rather than hand off to testing, so
+// the fix agent's diff is never the last word. The CLEAN verdict is the only
+// exit; there is deliberately no round cap.
+func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-review" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-review not found")
+	}
+
+	step := func(id string) *Step {
+		for i := range simple.Steps {
+			if simple.Steps[i].ID == id {
+				return &simple.Steps[i]
+			}
+		}
+		t.Fatalf("step %q not found", id)
+		return nil
+	}
+
+	// A clean tamper scan re-enters the review picker; a tamper finding still
+	// parks the task instead of looping.
+	got, err := ResolveTransition(step("detect_tampering").Next, map[string]string{
+		"task.status": "testing",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "clear_review_sidecar" {
+		t.Errorf("detect_tampering clean goto = %q, want %q — the fix agent's diff must be re-reviewed", got, "clear_review_sidecar")
+	}
+
+	// clear_review_sidecar must be reachable ONLY from the back-edge. Its
+	// dir renders from `_dir`, which execRunAgent sets only after the first
+	// run_agent of this execution starts, and execShell rejects an empty dir
+	// outright — so on first entry the step would fail the workflow before any
+	// reviewer ran.
+	got, err = ResolveTransition(step("triage_review").Next, map[string]string{})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got == "clear_review_sidecar" {
+		t.Errorf("triage_review goto = %q — clear_review_sidecar needs _dir, which is unset before the first agent runs", got)
+	}
+	if got != "pick_review_method" {
+		t.Errorf("triage_review goto = %q, want pick_review_method", got)
+	}
+
+	// The back-edge must clear the sidecar before re-reviewing, otherwise a
+	// failed round re-reads the previous round's verdict and loops forever.
+	got, err = ResolveTransition(step("clear_review_sidecar").Next, map[string]string{})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "pick_review_method" {
+		t.Errorf("clear_review_sidecar goto = %q, want pick_review_method", got)
+	}
+
+	got, err = ResolveTransition(step("detect_tampering").Next, map[string]string{
+		"task.status": "human-required",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "" {
+		t.Errorf("detect_tampering tampered goto = %q, want \"\" (park, do not loop)", got)
+	}
+
+	// CLEAN is the only exit from the loop.
+	got, err = ResolveTransition(step("route_review_verdict").Next, map[string]string{
+		"task.code_review": "Review Verdict: CLEAN",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "done_review" {
+		t.Errorf("CLEAN verdict goto = %q, want done_review", got)
+	}
+
+	got, err = ResolveTransition(step("route_review_verdict").Next, map[string]string{
+		"task.code_review": "Review Verdict: NEEDS_FIXES",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "fix_review" {
+		t.Errorf("NEEDS_FIXES verdict goto = %q, want fix_review", got)
+	}
+}
+
+// TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle pins the kill-switch:
+// agent.review_until_clean=false must route the first fix straight to testing
+// instead of re-reviewing. Guards the field-name contract too — a
+// config.review_until_clean typo here would silently never match and the loop
+// would run uncapped regardless of config (the dead-condition bug class
+// KnownTriggerFields exists to prevent).
+func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
+	t.Parallel()
+
+	if !KnownTriggerFields["config.review_until_clean"] {
+		t.Fatal("config.review_until_clean missing from KnownTriggerFields — the condition would silently never match")
+	}
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-review" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-review not found")
+	}
+	var tamper *Step
+	for i := range simple.Steps {
+		if simple.Steps[i].ID == "detect_tampering" {
+			tamper = &simple.Steps[i]
+			break
+		}
+	}
+	if tamper == nil {
+		t.Fatal("detect_tampering step not found")
+	}
+
+	cases := []struct {
+		name  string
+		field string
+		want  string
+	}{
+		{name: "loop_when_enabled", field: "true", want: "clear_review_sidecar"},
+		{name: "single_pass_when_disabled", field: "false", want: "done_review"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(tamper.Next, map[string]string{
+				"task.status":               "testing",
+				"config.review_until_clean": tc.field,
+			})
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("review_until_clean=%s goto = %q, want %q", tc.field, got, tc.want)
+			}
+		})
+	}
+
+	// Tampering still parks regardless of the toggle.
+	got, err := ResolveTransition(tamper.Next, map[string]string{
+		"task.status":               "human-required",
+		"config.review_until_clean": "false",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "" {
+		t.Errorf("tampered goto = %q, want \"\" (park wins over the toggle)", got)
+	}
+}
+
+// TestEngineReviewUntilCleanReachesTransition covers the wiring the YAML-level
+// toggle test cannot: SetReviewUntilClean -> reviewLoopDisabled -> the
+// config.review_until_clean field resolveNext actually supplies. Without this,
+// dropping the `!` from the inverted setter (silently reversing the knob) or
+// deleting the field assignment entirely (making the knob dead) both pass the
+// whole suite — the config test builds its own field map and never touches
+// engine code.
+func TestEngineReviewUntilCleanReachesTransition(t *testing.T) {
+	t.Parallel()
+
+	// Two steps so resolveNext has a real target to pick, routed purely on the
+	// engine-supplied field.
+	def := &Definition{
+		ID: "test-review-toggle",
+		Steps: []Step{
+			{
+				ID:   "gate",
+				Type: StepCondition,
+				Next: []Transition{
+					{When: &Condition{Field: "config.review_until_clean", Operator: "equals", Value: "false"}, GoTo: "single_pass"},
+					{GoTo: "loop"},
+				},
+			},
+			{ID: "single_pass", Type: StepSetStatus},
+			{ID: "loop", Type: StepSetStatus},
+		},
+	}
+
+	cases := []struct {
+		name             string
+		reviewUntilClean bool
+		want             string
+	}{
+		{name: "default_engine_loops", reviewUntilClean: true, want: "loop"},
+		{name: "disabled_takes_single_pass", reviewUntilClean: false, want: "single_pass"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			mt := newMemTasks()
+			mt.tasks["t1"] = &TaskInfo{ID: "t1", Status: "testing"}
+			e := &Engine{logger: slog.New(slog.DiscardHandler), tasks: mt}
+			e.SetReviewUntilClean(tc.reviewUntilClean)
+
+			wfExec := &Execution{WorkflowID: def.ID, Variables: map[string]string{}}
+			next, _, err := e.resolveNext("t1", def, &def.Steps[0], wfExec, TaskInfo{ID: "t1", Status: "testing"})
+			if err != nil {
+				t.Fatalf("resolveNext: %v", err)
+			}
+			if next == nil {
+				t.Fatalf("resolveNext returned no step, want %q", tc.want)
+			}
+			if next.ID != tc.want {
+				t.Errorf("SetReviewUntilClean(%v) routed to %q, want %q — the toggle is inverted or unwired",
+					tc.reviewUntilClean, next.ID, tc.want)
+			}
+		})
+	}
+}
+
+// A zero-value Engine must keep the loop on, matching config.ReviewUntilClean's
+// documented default, since the field is stored inverted precisely so an engine
+// built without the setter does not silently ship single-pass review.
+func TestEngineReviewUntilCleanDefaultsToLooping(t *testing.T) {
+	t.Parallel()
+
+	mt := newMemTasks()
+	mt.tasks["t1"] = &TaskInfo{ID: "t1"}
+	e := &Engine{logger: slog.New(slog.DiscardHandler), tasks: mt}
+	def := &Definition{ID: "d", Steps: []Step{
+		{ID: "gate", Type: StepCondition, Next: []Transition{
+			{When: &Condition{Field: "config.review_until_clean", Operator: "equals", Value: "false"}, GoTo: "single_pass"},
+			{GoTo: "loop"},
+		}},
+		{ID: "single_pass", Type: StepSetStatus},
+		{ID: "loop", Type: StepSetStatus},
+	}}
+
+	next, _, err := e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("resolveNext: %v", err)
+	}
+	if next == nil || next.ID != "loop" {
+		t.Fatalf("zero-value engine routed to %v, want loop", next)
 	}
 }

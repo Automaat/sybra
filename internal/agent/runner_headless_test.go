@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/skillattr"
 )
 
 // newParseTestManager returns a Manager suitable for unit-testing
@@ -1251,6 +1252,9 @@ func TestGuardrails_SubagentAssistantTurnsExcluded(t *testing.T) {
 	if got := a.GetTurnCount(); got != 2 {
 		t.Errorf("TurnCount = %d, want 2 (only top-level assistant events count)", got)
 	}
+	if got := a.GetSubagentCallCount(); got != 1 {
+		t.Errorf("SubagentCallCount = %d, want 1 distinct parent_tool_use_id", got)
+	}
 }
 
 // TestGuardrails_SetMidRunVisibleToStream verifies SetGuardrails picks up
@@ -1859,6 +1863,42 @@ func TestPrepareRunConfig_DefaultsReasoningEffortForAllProviders(t *testing.T) {
 				t.Fatalf("expected --effort %s in %s args; got %v", DefaultReasoningEffort, provider, args)
 			}
 		})
+	}
+}
+
+// TestNewRunningAgent_StampsPromptHashForEveryRun proves the canonical dispatch
+// prompt hash is stamped centrally at construction — for every provider and for
+// non-implementation run names (review, fix-review) that never flow through
+// recordImplAgentStart. Without this the completion handler's prompt_rendered
+// audit is dropped for those runs (empty hash short-circuits emit).
+func TestNewRunningAgent_StampsPromptHashForEveryRun(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []string{"claude", "codex", "copilot"} {
+		for _, name := range []string{"impl", "review agent", "fix-review agent"} {
+			t.Run(provider+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				m := newParseTestManager(t)
+				cfg, prov, err := m.prepareRunConfig(RunConfig{
+					Provider: provider,
+					Name:     name,
+					Mode:     "headless",
+					Prompt:   "Run /staff-code-review now",
+					Dir:      t.TempDir(),
+				})
+				if err != nil {
+					t.Fatalf("prepareRunConfig: %v", err)
+				}
+				a := newRunningAgent("a", cfg, prov, func() {})
+				want := skillattr.HashSourceID(cfg.Prompt)
+				if want == "" {
+					t.Fatal("expected non-empty hash for non-empty prompt")
+				}
+				if got := a.GetPromptHash(); got != want {
+					t.Fatalf("prompt hash = %q, want %q", got, want)
+				}
+			})
+		}
 	}
 }
 

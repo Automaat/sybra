@@ -609,6 +609,185 @@ func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONReportsIncompleteK8sSecretEnv(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.Mode = "provider"
+	cfg.Agent.K8sJobs.SecretEnv = []config.K8sJobSecretEnvVar{
+		{Name: "GITHUB_TOKEN", SecretName: "sybra-provider-api-keys", SecretKey: ""},
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for an incomplete secret_env entry, output:\n%s", out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "error" && strings.Contains(f.Message, "secret_env[0]") && strings.Contains(f.Message, "missing secret_key")
+	}) {
+		t.Fatalf("expected secret_env[0] missing secret_key error in report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONReportsAllMissingK8sSecretEnvFields(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.Mode = "provider"
+	cfg.Agent.K8sJobs.SecretEnv = []config.K8sJobSecretEnvVar{
+		{Name: "", SecretName: "", SecretKey: ""},
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for an empty secret_env entry, output:\n%s", out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "error" &&
+			strings.Contains(f.Message, "secret_env[0]") &&
+			strings.Contains(f.Message, "name") &&
+			strings.Contains(f.Message, "secret_name") &&
+			strings.Contains(f.Message, "secret_key")
+	}) {
+		t.Fatalf("expected a single secret_env[0] finding listing all three missing fields: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONAcceptsCompleteK8sSecretEnv(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.Mode = "provider"
+	cfg.Agent.K8sJobs.SecretEnv = []config.K8sJobSecretEnvVar{
+		{Name: "GITHUB_TOKEN", SecretName: "sybra-provider-api-keys", SecretKey: "github_token"},
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected a complete secret_env entry to stay non-fatal, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "secret_env")
+	}) {
+		t.Fatalf("did not expect a secret_env finding: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONValidatesK8sSecretEnvRegardlessOfMode(t *testing.T) {
+	// baseEnv (internal/agent/k8s_job_runner.go) injects secret_env into the
+	// Job container regardless of agent.k8s_jobs.mode, so an incomplete entry
+	// must be caught even outside mode: provider — a bare mode: fake config
+	// with a stray secret_env entry silently dropped the credential at
+	// runtime before this check existed.
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.Mode = "fake"
+	cfg.Agent.K8sJobs.SecretEnv = []config.K8sJobSecretEnvVar{
+		{Name: "GITHUB_TOKEN", SecretName: "", SecretKey: ""},
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code == 0 {
+		t.Fatalf("expected mode: fake to still validate secret_env, output:\n%s", out)
+	}
+}
+
+func TestConfigDoctorJSONWarnsOnLowTTLWithDifferingFailedTTL(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.TTL = 5
+	cfg.Agent.K8sJobs.FailedTTL = 86400
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected a warning-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" && strings.Contains(f.Message, "ttl_seconds_after_finished")
+	}) {
+		t.Fatalf("expected a low-ttl warning in report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONAcceptsTypicalTTLDefaults(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.TTL = 300
+	cfg.Agent.K8sJobs.FailedTTL = 86400
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected typical TTL defaults to stay clean, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "ttl_seconds_after_finished is")
+	}) {
+		t.Fatalf("did not expect a TTL finding for the recommended defaults: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONReportsWhitespaceOnlyK8sSecretEnvFields(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.Mode = "provider"
+	cfg.Agent.K8sJobs.SecretEnv = []config.K8sJobSecretEnvVar{
+		{Name: "GITHUB_TOKEN", SecretName: "sybra-provider-api-keys", SecretKey: "  "},
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code == 0 {
+		t.Fatalf("expected a whitespace-only secret_key to be treated as missing, output:\n%s", out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "error" && strings.Contains(f.Message, "secret_env[0]") && strings.Contains(f.Message, "missing secret_key")
+	}) {
+		t.Fatalf("expected secret_env[0] missing secret_key error in report: %+v", report.Findings)
+	}
+}
+
 func TestConfigDoctorJSONAcceptsSupportedEnforceHosts(t *testing.T) {
 	setupStore(t)
 

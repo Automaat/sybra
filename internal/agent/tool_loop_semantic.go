@@ -100,6 +100,7 @@ func normalizeBashActionLabel(command string) string {
 	if cmd == "" {
 		return ""
 	}
+	cmd = unwrapShellDashC(cmd)
 	pipeline := splitShellPipeline(cmd)
 	for len(pipeline) > 1 && pipelineStageIsOutputFilter(pipeline[len(pipeline)-1]) {
 		pipeline = pipeline[:len(pipeline)-1]
@@ -227,6 +228,43 @@ func normalizePath(path string) string {
 		return ""
 	}
 	return filepath.Clean(path)
+}
+
+// unwrapShellDashC extracts the real command from a `<shell> -c "<cmd>"` /
+// `<shell> -lc "<cmd>"` wrapper. Codex's exec tool shells out every command
+// this way (e.g. `/bin/bash -lc "sed -n '1,50p' file.go"`), so without
+// unwrapping, the outer wrapper — not the inner command — is what gets
+// classified: every Codex bash call's first token is identically "/bin/bash",
+// collapsing every distinct command (reads of different files, greps, tests,
+// git operations) into the same loop-family signature regardless of what it
+// actually does. That defeats semantic-loop detection entirely for Codex
+// agents, firing the "loop" trigger (and downstream watchdog kill) on
+// perfectly normal, non-repetitive multi-step work. Bounded to a few
+// unwraps in case of nested wrapping; falls through unchanged for any shape
+// that isn't a plain `<shell> -c/-lc <command>` invocation.
+func unwrapShellDashC(command string) string {
+	for range 3 {
+		fields := shellFields(command)
+		if len(fields) < 3 {
+			return command
+		}
+		switch filepath.Base(fields[0]) {
+		case "bash", "sh", "zsh", "dash":
+		default:
+			return command
+		}
+		switch fields[1] {
+		case "-c", "-lc", "-ic", "-lic", "-cl", "-ci":
+		default:
+			return command
+		}
+		inner := strings.TrimSpace(fields[2])
+		if inner == "" || inner == command {
+			return command
+		}
+		command = inner
+	}
+	return command
 }
 
 func splitShellPipeline(command string) []string {

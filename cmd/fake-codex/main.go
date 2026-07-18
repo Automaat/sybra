@@ -56,12 +56,21 @@ func runExec() {
 	emit(map[string]any{"type": "thread.started", "thread_id": "fake-thread-1"})
 	emit(map[string]any{"type": "turn.started"})
 
+	if runCodexTestScenario(scenario) {
+		return
+	}
+
 	switch scenario {
 	case "success":
+		emitAgentMessage(withReceiptFromArgs(os.Args, "Working on it..."))
+		emitTurnCompleted(100, 20)
+	case "no_receipt":
 		emitAgentMessage("Working on it...")
 		emitTurnCompleted(100, 20)
 	case "write_sidecar_success":
 		runCodexWriteSidecarSuccess(taskID)
+	case "write_sidecar_success_no_receipt":
+		runCodexWriteSidecarSuccessNoReceipt(taskID)
 	case "fail_exit":
 		emitError("command failed")
 		os.Exit(1)
@@ -98,10 +107,6 @@ func runExec() {
 			"code":    529,
 		})
 		os.Exit(1)
-	case "test_verdict_pass":
-		runCodexTestVerdictPass()
-	case "test_verdict_fail":
-		runCodexTestVerdictFail()
 	case "implement", "interactive_implement":
 		emitAgentMessage("Implementing...")
 		emitTurnCompleted(100, 20)
@@ -121,6 +126,20 @@ func runExec() {
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
 	}
+}
+
+func runCodexTestScenario(scenario string) bool {
+	switch scenario {
+	case "test_verdict_pass":
+		runCodexTestVerdictPass()
+	case "test_verdict_pass_with_receipt_preamble":
+		runCodexTestVerdictPassWithReceiptPreamble()
+	case "test_verdict_fail":
+		runCodexTestVerdictFail()
+	default:
+		return false
+	}
+	return true
 }
 
 func runCodexTestVerdictPass() {
@@ -158,6 +177,11 @@ func runCodexTestVerdictPass() {
 		"unable_to_run_reason": "",
 	})
 	emitTurnCompleted(100, 20)
+}
+
+func runCodexTestVerdictPassWithReceiptPreamble() {
+	emitAgentMessage(withReceiptFromArgs(os.Args, "Followed the mandatory skill before returning structured output."))
+	runCodexTestVerdictPass()
 }
 
 func runCodexTestVerdictFail() {
@@ -391,6 +415,14 @@ func runCodexMalformedPR() {
 // extracts the import-sidecar path from the prompt and writes a stub so
 // the engine can ingest it for the workflow step's import_sidecar.
 func runCodexWriteSidecarSuccess(taskID string) {
+	emitAgentMessage(withReceiptFromArgs(os.Args, "Writing fake sidecar..."))
+	for _, path := range extractSidecarPaths(os.Args) {
+		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-codex")), 0o644)
+	}
+	emitTurnCompleted(100, 20)
+}
+
+func runCodexWriteSidecarSuccessNoReceipt(taskID string) {
 	emitAgentMessage("Writing fake sidecar...")
 	for _, path := range extractSidecarPaths(os.Args) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-codex")), 0o644)
@@ -455,6 +487,15 @@ func emit(event map[string]any) {
 }
 
 var taskIDRe = regexp.MustCompile(`\b([a-f0-9]{8})\b`)
+var receiptMarkerRe = regexp.MustCompile(`<!-- sybra-skill-receipt [^>]+ -->`)
+
+func withReceiptFromArgs(args []string, text string) string {
+	marker := receiptMarkerRe.FindString(strings.Join(args, "\n"))
+	if marker == "" {
+		return text
+	}
+	return text + "\n" + marker
+}
 
 func extractTaskID(args []string) string {
 	for i, arg := range args {

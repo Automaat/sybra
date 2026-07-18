@@ -20,6 +20,18 @@ func init() {
 
 func (claudeProvider) Name() string { return "claude" }
 
+// HonorsAllowedTools is true here alone: claudePermissionArgs turns the list
+// into --allowedTools. Every other provider inherits the false default.
+func (claudeProvider) HonorsAllowedTools() bool { return true }
+
+// SupportsOutputSchema is true: claude receives OutputSchema inline via
+// --json-schema (BuildHeadlessInvocation), forcing schema-valid JSON output.
+func (claudeProvider) SupportsOutputSchema() bool { return true }
+
+// EnforcesOutputSchema mirrors SupportsOutputSchema: claude forwards
+// OutputSchema to the CLI, forcing schema-valid JSON output.
+func (claudeProvider) EnforcesOutputSchema() bool { return true }
+
 func (claudeProvider) NormalizeModel(model string) string {
 	// [1m] is a Claude-Code-only context marker. Fable 5 ships a 1M context
 	// window by default, so CC 2.1.173 strips the redundant suffix; Sybra
@@ -38,6 +50,9 @@ func (claudeProvider) BuildCommand(cfg RunConfig, model string) string {
 }
 
 func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
+	// Claude invokes skills natively via its own slash syntax — no rewrite
+	// happens on this path.
+	a.SetPromptRender("none", nil, nil)
 	var args []string
 	if cfg.HeadlessSteerable {
 		// Mirrors buildConvoArgs: the prompt is delivered over stdin (as the

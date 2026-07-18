@@ -204,6 +204,15 @@ func (c *Config) DefaultRequirePermissions() bool {
 	return true
 }
 
+// ReviewUntilClean reports whether simple-task-review re-reviews after each
+// fix until the verdict is CLEAN. Defaults to true when unset.
+func (c *Config) ReviewUntilClean() bool {
+	if c != nil && c.Agent.ReviewUntilClean != nil {
+		return *c.Agent.ReviewUntilClean
+	}
+	return true
+}
+
 // PromptLabAutoApprove reports whether a filed Prompt Lab proposal may start
 // its authoring workflow without a human click. Defaults to true, but is
 // hard-gated on evaluation.offline.enabled regardless of the setting.
@@ -381,10 +390,15 @@ const (
 	DefaultReviewsFastSeconds           = 120 // was 60
 	DefaultReviewsSlowSeconds           = 600 // was 300
 	DefaultReviewsMaxPRsPerTick         = 25
+	DefaultReviewRoundsPerHour          = 3
 	DefaultReviewsStableBackoffMaxTicks = 8
 	DefaultIssuesSeconds                = 600 // was 300
 	DefaultRenovateFastSeconds          = 120 // was 60
 	DefaultRenovateSlowSeconds          = 600 // was 300
+	// DefaultFlakySuccessThreshold is the fallback same-check success rate
+	// (0-1) above which a currently-failing gating check is classified
+	// flaky rather than deterministic. See GitHubConfig.FlakyThreshold.
+	DefaultFlakySuccessThreshold = 0.75
 )
 
 // RunsSearchPollers reports whether this machine owns the periodic GitHub
@@ -404,6 +418,15 @@ func (c GitHubConfig) RunsIssuesFetcher() bool {
 // the top-level kill-switch AND the reviews-specific sub-toggle.
 func (c GitHubConfig) RunsReviewer() bool {
 	return c.Enabled && c.ReviewsEnabled
+}
+
+// ReviewRoundsPerHourLimit resolves the per-PR review rate cap. 0 means unset
+// (use the default); a negative value disables the cap entirely.
+func (c GitHubConfig) ReviewRoundsPerHourLimit() int {
+	if c.ReviewRoundsPerHour == 0 {
+		return DefaultReviewRoundsPerHour
+	}
+	return c.ReviewRoundsPerHour
 }
 
 func (c GitHubConfig) reviewsFast() time.Duration {
@@ -461,6 +484,16 @@ func (c GitHubConfig) RenovateFast() time.Duration {
 }
 func (c GitHubConfig) RenovateSlow() time.Duration {
 	return secsOr(c.RenovateSlowSeconds, DefaultRenovateSlowSeconds)
+}
+
+// FlakyThreshold resolves the configured same-check success-rate threshold
+// for flaky classification. Non-positive (unset) falls back to
+// DefaultFlakySuccessThreshold.
+func (c GitHubConfig) FlakyThreshold() float64 {
+	if c.FlakySuccessThreshold <= 0 {
+		return DefaultFlakySuccessThreshold
+	}
+	return c.FlakySuccessThreshold
 }
 
 func secsOr(v, def int) time.Duration {

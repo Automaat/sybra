@@ -1,6 +1,9 @@
 package github
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // informationalCheckPrefixes lists check-name prefixes that report on
 // codebase health (coverage, code-quality scans) but do not gate
@@ -151,6 +154,92 @@ func effectiveCheckState(c gqlCheckContext) string {
 		}
 		return ""
 	}
+}
+
+// flakyOnlyFailure reports whether every gating workflow/check with a FAILURE
+// outcome was superseded by a *later re-run attempt* that succeeded — i.e. the
+// check is intermittently failing, not consistently broken. GitHub's
+// statusCheckRollup carries one context per check *name* per commit, so a
+// same-SHA mixed outcome shows up in different situations, and only one of them
+// is flaky:
+//
+//   - A manual re-run (`gh run rerun --failed`): the earlier failed attempt
+//     lingers in the contexts list alongside the re-run's success. The re-run
+//     is dispatched *after* the operator sees the failure, so its SUCCESS
+//     STARTED after the FAILURE COMPLETED. This is genuinely flaky.
+//   - Multiple gating jobs that share a check name (e.g. two matrix legs both
+//     reporting as `e2e`). They can start together or one can sit queued until
+//     after its sibling finishes, so timestamps alone do not prove a re-run.
+//     This is a deterministic regression and must NOT be masked as flaky.
+//
+// A name is flaky only if, for its latest FAILURE, some SUCCESS both started
+// strictly after that failure finished and belongs to an Actions workflow
+// attempt after the first one. Missing timestamps or attempt metadata fail the
+// test, so the check falls through to the deterministic fix path rather than
+// being wrongly rerun. Returns false when there is no FAILURE at all.
+func flakyOnlyFailure(contexts []gqlCheckContext) bool {
+	type bucketKey struct {
+		name          string
+		workflowRunID string
+	}
+	type success struct {
+		start      time.Time
+		runAttempt int
+	}
+	type outcome struct {
+		hasFailure        bool
+		latestFailureDone time.Time
+		successes         []success
+	}
+	byWorkflowCheck := make(map[bucketKey]*outcome, len(contexts))
+	for i := range contexts {
+		name := contexts[i].effectiveName()
+		if isNonGatingCheck(name) {
+			continue
+		}
+		key := bucketKey{name: name, workflowRunID: contexts[i].workflowRunID()}
+		o := byWorkflowCheck[key]
+		if o == nil {
+			o = &outcome{}
+			byWorkflowCheck[key] = o
+		}
+		switch effectiveCheckState(contexts[i]) {
+		case "FAILURE":
+			o.hasFailure = true
+			if done := contexts[i].completedTime(); done.After(o.latestFailureDone) {
+				o.latestFailureDone = done
+			}
+		case "SUCCESS":
+			o.successes = append(o.successes, success{
+				start:      contexts[i].startedTime(),
+				runAttempt: contexts[i].workflowRunAttempt(),
+			})
+		}
+	}
+
+	sawFailure := false
+	for key, o := range byWorkflowCheck {
+		if !o.hasFailure {
+			continue
+		}
+		sawFailure = true
+		// A consistently-broken check (or one whose timestamps/attempt we
+		// can't read) has no later re-run success after its latest failure.
+		if key.workflowRunID == "" || o.latestFailureDone.IsZero() {
+			return false
+		}
+		superseded := false
+		for _, s := range o.successes {
+			if s.runAttempt > 1 && !s.start.IsZero() && s.start.After(o.latestFailureDone) {
+				superseded = true
+				break
+			}
+		}
+		if !superseded {
+			return false
+		}
+	}
+	return sawFailure
 }
 
 // rollupFromContexts computes (ciStatus, hasPendingChecks) ignoring

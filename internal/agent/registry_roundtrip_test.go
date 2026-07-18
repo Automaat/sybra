@@ -35,6 +35,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		AssignmentUnit:           "task",
 		AssignmentKey:            "task-1",
 		ReasoningEffort:          "high",
+		skillRecoveryAttempt:     true,
 		MaxTurns:                 12,
 		sessionCWD:               "/tmp/worktree",
 		sandboxHomeDir:           "/tmp/sandbox",
@@ -71,58 +72,60 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 	afterRehydrate := time.Now().UTC()
 
 	got := persistedAgentFields{
-		ID:                 rehydrated.ID,
-		TaskID:             rehydrated.TaskID,
-		Name:               rehydrated.Name,
-		Mode:               rehydrated.Mode,
-		Provider:           rehydrated.Provider,
-		Model:              rehydrated.Model,
-		ExperimentID:       rehydrated.ExperimentID,
-		VariantID:          rehydrated.VariantID,
-		AssignmentUnit:     rehydrated.AssignmentUnit,
-		AssignmentKey:      rehydrated.AssignmentKey,
-		PID:                rehydrated.PID,
-		SessionID:          rehydrated.SessionID,
-		LogPath:            rehydrated.LogPath,
-		SessionCWD:         rehydrated.sessionCWD,
-		SandboxHomeDir:     rehydrated.sandboxHomeDir,
-		StartedAt:          rehydrated.StartedAt,
-		StdinPath:          rehydrated.GetStdinPath(),
-		OneShot:            rehydrated.oneShot,
-		MaxTurns:           rehydrated.MaxTurns,
-		RequirePermissions: rehydrated.requirePermissions,
-		SandboxMode:        rehydrated.sandboxMode,
-		ReasoningEffort:    rehydrated.ReasoningEffort,
-		PostResultReason:   rehydrated.postResultWaitReason,
-		PostResultSince:    rehydrated.postResultWaitSince,
-		ForkSubagent:       rehydrated.forkSubagent,
+		ID:                   rehydrated.ID,
+		TaskID:               rehydrated.TaskID,
+		Name:                 rehydrated.Name,
+		Mode:                 rehydrated.Mode,
+		Provider:             rehydrated.Provider,
+		Model:                rehydrated.Model,
+		ExperimentID:         rehydrated.ExperimentID,
+		VariantID:            rehydrated.VariantID,
+		AssignmentUnit:       rehydrated.AssignmentUnit,
+		AssignmentKey:        rehydrated.AssignmentKey,
+		PID:                  rehydrated.PID,
+		SessionID:            rehydrated.SessionID,
+		LogPath:              rehydrated.LogPath,
+		SessionCWD:           rehydrated.sessionCWD,
+		SandboxHomeDir:       rehydrated.sandboxHomeDir,
+		StartedAt:            rehydrated.StartedAt,
+		StdinPath:            rehydrated.GetStdinPath(),
+		OneShot:              rehydrated.oneShot,
+		MaxTurns:             rehydrated.MaxTurns,
+		RequirePermissions:   rehydrated.requirePermissions,
+		SandboxMode:          rehydrated.sandboxMode,
+		ReasoningEffort:      rehydrated.ReasoningEffort,
+		SkillRecoveryAttempt: rehydrated.IsSkillRecoveryAttempt(),
+		PostResultReason:     rehydrated.postResultWaitReason,
+		PostResultSince:      rehydrated.postResultWaitSince,
+		ForkSubagent:         rehydrated.forkSubagent,
 	}
 	want := persistedAgentFields{
-		ID:                 original.ID,
-		TaskID:             original.TaskID,
-		Name:               original.Name,
-		Mode:               original.Mode,
-		Provider:           original.Provider,
-		Model:              original.Model,
-		ExperimentID:       original.ExperimentID,
-		VariantID:          original.VariantID,
-		AssignmentUnit:     original.AssignmentUnit,
-		AssignmentKey:      original.AssignmentKey,
-		PID:                original.PID,
-		SessionID:          original.SessionID,
-		LogPath:            original.LogPath,
-		SessionCWD:         original.sessionCWD,
-		SandboxHomeDir:     original.sandboxHomeDir,
-		StartedAt:          original.StartedAt,
-		StdinPath:          original.GetStdinPath(),
-		OneShot:            original.oneShot,
-		MaxTurns:           original.MaxTurns,
-		RequirePermissions: original.requirePermissions,
-		SandboxMode:        original.sandboxMode,
-		ReasoningEffort:    original.ReasoningEffort,
-		PostResultReason:   original.postResultWaitReason,
-		PostResultSince:    original.postResultWaitSince,
-		ForkSubagent:       original.forkSubagent,
+		ID:                   original.ID,
+		TaskID:               original.TaskID,
+		Name:                 original.Name,
+		Mode:                 original.Mode,
+		Provider:             original.Provider,
+		Model:                original.Model,
+		ExperimentID:         original.ExperimentID,
+		VariantID:            original.VariantID,
+		AssignmentUnit:       original.AssignmentUnit,
+		AssignmentKey:        original.AssignmentKey,
+		PID:                  original.PID,
+		SessionID:            original.SessionID,
+		LogPath:              original.LogPath,
+		SessionCWD:           original.sessionCWD,
+		SandboxHomeDir:       original.sandboxHomeDir,
+		StartedAt:            original.StartedAt,
+		StdinPath:            original.GetStdinPath(),
+		OneShot:              original.oneShot,
+		MaxTurns:             original.MaxTurns,
+		RequirePermissions:   original.requirePermissions,
+		SandboxMode:          original.sandboxMode,
+		ReasoningEffort:      original.ReasoningEffort,
+		SkillRecoveryAttempt: original.IsSkillRecoveryAttempt(),
+		PostResultReason:     original.postResultWaitReason,
+		PostResultSince:      original.postResultWaitSince,
+		ForkSubagent:         original.forkSubagent,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("persisted fields mismatch\ngot:  %#v\nwant: %#v", got, want)
@@ -210,29 +213,30 @@ func TestRegistryStore_ConcurrentSaveDeleteList(t *testing.T) {
 }
 
 type persistedAgentFields struct {
-	ID                 string
-	TaskID             string
-	Name               string
-	Mode               string
-	Provider           string
-	Model              string
-	ExperimentID       string
-	VariantID          string
-	AssignmentUnit     string
-	AssignmentKey      string
-	PID                int
-	SessionID          string
-	LogPath            string
-	SessionCWD         string
-	SandboxHomeDir     string
-	StartedAt          time.Time
-	StdinPath          string
-	OneShot            bool
-	MaxTurns           int
-	RequirePermissions bool
-	SandboxMode        string
-	ReasoningEffort    string
-	PostResultReason   string
-	PostResultSince    time.Time
-	ForkSubagent       bool
+	ID                   string
+	TaskID               string
+	Name                 string
+	Mode                 string
+	Provider             string
+	Model                string
+	ExperimentID         string
+	VariantID            string
+	AssignmentUnit       string
+	AssignmentKey        string
+	PID                  int
+	SessionID            string
+	LogPath              string
+	SessionCWD           string
+	SandboxHomeDir       string
+	StartedAt            time.Time
+	StdinPath            string
+	OneShot              bool
+	MaxTurns             int
+	RequirePermissions   bool
+	SandboxMode          string
+	ReasoningEffort      string
+	SkillRecoveryAttempt bool
+	PostResultReason     string
+	PostResultSince      time.Time
+	ForkSubagent         bool
 }

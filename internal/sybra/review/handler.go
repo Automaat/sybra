@@ -27,11 +27,6 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-const (
-	reviewSmallAdditions = 40
-	reviewSmallFiles     = 5
-)
-
 const TransientFetchWarnThreshold = 3
 
 // readyPRState is a cached "confirmed ready to merge" snapshot for a task's
@@ -76,6 +71,9 @@ type Handler struct {
 	// global-search fetch path (pollAndMonitorPRs) and backs off instead of
 	// retrying at pollFast cadence once tripped. See poll.AuthCircuit.
 	authCircuit *poll.AuthCircuit
+	// reconcileFailures tracks consecutive non-transient phase-reconcile
+	// failures per task ID, escalating at reconcileFailureLimit (#2164).
+	reconcileFailures map[string]int
 	// wtFailures tracks consecutive worktree-creation failures per task ID.
 	// Once a task hits wtFailureLimit, it is escalated to human-required.
 	wtFailures map[string]int
@@ -95,6 +93,11 @@ type Handler struct {
 	// rerunFailedChecks requests a rerun of the failed checks on a PR;
 	// overridable in tests. nil falls back to github.RerunFailedChecks.
 	rerunFailedChecks func(repo string, number int) error
+	// classifyFlakiness classifies whether a lone ci_failure's gating checks
+	// are all flaky on the head commit; overridable in tests. nil falls back
+	// to github.ClassifyCIFlakiness. Only consulted when
+	// cfg.GitHub.FlakyDetection is enabled.
+	classifyFlakiness func(repo, sha string, threshold float64) (allFlaky bool, flakyChecks []string, err error)
 	// enableAutoMergeFn arms GitHub's native auto-merge on a PR; overridable in
 	// tests. nil falls back to github.EnableAutoMerge.
 	enableAutoMergeFn func(repo string, number int) error
@@ -135,6 +138,9 @@ type Handler struct {
 	// search polling to the primary instance. Overridable in tests; nil falls
 	// back to github.FetchPRsForMonitor.
 	fetchKnownPRsFn func(refs []github.PRRef) []github.MonitorPRResult
+	// fetchPRStatsFn reads the linked PR's size stats for inbound review triage.
+	// Overridable in tests; nil falls back to github.FetchPRStats.
+	fetchPRStatsFn func(repo string, number int) (github.PRStats, error)
 	// fetchHeadStateFn cheaply probes a PR's current head SHA, open/closed
 	// state, and updatedAt timestamp, used to validate (or invalidate) a
 	// readyPRCache entry without doing a full per-PR fetch. Overridable in
@@ -149,6 +155,10 @@ type Handler struct {
 	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
 	// falls back to github.FetchReviews.
 	fetchReviewsFn func() (github.ReviewSummary, error)
+	// fetchMyReviewStateFn reads the viewer's own review state on a PR — the
+	// signal that decides whether a review task still needs an agent.
+	// Overridable in tests; nil falls back to github.FetchMyReviewState.
+	fetchMyReviewStateFn func(repo string, number int) (github.MyReviewState, error)
 	// viewerLoginFn returns the authenticated GitHub login (the identity the fix
 	// agent posts as), used to tell the agent's own thread replies from a human
 	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.
@@ -158,9 +168,12 @@ type Handler struct {
 	// Overridable in tests.
 	findMergedPRFn func(repo, branch string) (int, error)
 	// triageReviewFn dispatches a review agent for a newly-created review task
-	// (or routes it to human-required for small PRs). Overridable in tests;
-	// nil falls back to r.triageReview.
+	// after any inbound setup. Overridable in tests; nil falls back to
+	// r.triageReview.
 	triageReviewFn func(task.Task)
+	// startReviewAgentFn launches the inbound review agent. Overridable in
+	// tests; nil falls back to r.StartReviewAgent.
+	startReviewAgentFn func(task.Task, bool) error
 	// lastRevertScan rate-limits the default-branch revert scan (revertScanInterval).
 	lastRevertScan time.Time
 	// tryCleanMergeFn attempts the deterministic clean-merge fast-path before a
@@ -177,11 +190,11 @@ type Handler struct {
 }
 
 // agentLogin returns the GitHub login the fix agent posts as.
-func (r *Handler) agentLogin() string {
+func (r *Handler) agentLogin(ctx context.Context) string {
 	if r.viewerLoginFn != nil {
 		return r.viewerLoginFn()
 	}
-	return github.ViewerLogin()
+	return github.ViewerLoginCtx(ctx)
 }
 
 // pollFast/pollSlow resolve the review poll cadence from config (github.*),
@@ -229,6 +242,7 @@ func New(
 		authCircuit:         poll.NewAuthCircuit("reviews", logger),
 		mergePR:             github.MergePR,
 		rerunFailedChecks:   github.RerunFailedChecks,
+		classifyFlakiness:   github.ClassifyCIFlakiness,
 		enableAutoMergeFn:   github.EnableAutoMerge,
 		supportsAutoMergeFn: github.SupportsNativeAutoMerge,
 		mergePRViaREST:      github.MergePRViaREST,
@@ -331,7 +345,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	}
 
 	r.scanForReverts(ctx, tasks)
-	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
+	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.reconcilePRPhases(tasks, monitoredPRs)
 	r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
 	r.closeFinishedReviewTasks(tasks, nil)
@@ -453,7 +467,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	}
 
 	r.scanForReverts(ctx, tasks)
-	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
+	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
 	// reconcileReviewTask's gh calls (FetchMyReviewState, FetchPRState,
 	// FetchPRHeadSHA) use the package's legacy ctx-less runGHAPIWith path,
@@ -518,9 +532,10 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 			switch matched[i].Kind {
 			case github.PRIssueConflict, github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueCIFailure, github.PRIssueReadyToMerge:
 				handled = append(handled, matched[i])
-			case github.PRIssueComments:
+			case github.PRIssueComments, github.PRIssueCIFlake:
 				// REST exposes no thread-resolution data; comments stay
-				// dropped until GraphQL recovers.
+				// dropped until GraphQL recovers. ci_flake is tracker-only
+				// and is never emitted by MatchTaskPRs.
 			}
 		}
 		if r.prTracker != nil {
@@ -592,9 +607,21 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	var (
 		toHandle  []github.PRIssue
 		exhausted *github.PRIssue
+		flaky     *github.PRIssue
 		merge     *github.PRIssue
 	)
 	for i := range issues {
+		// A ci_failure whose failing checks are flaky (mixed pass/fail on this
+		// head SHA) never touches the deterministic ci_failure retry budget —
+		// it is handled separately (log + rerun, escalate only once the
+		// rerun budget itself is exhausted) so it can never be mistaken for a
+		// deterministic regression and burn the fix-agent budget below.
+		if issues[i].Kind == github.PRIssueCIFailure && issues[i].PR.CIFlaky {
+			if flaky == nil {
+				flaky = &issues[i]
+			}
+			continue
+		}
 		// Only the comments kind carries a feedback fingerprint; conflict,
 		// ci_failure, and ready_to_merge fall back to SHA-only gating.
 		var sig string
@@ -625,16 +652,22 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	// Prefer making progress: dispatch every handleable fix in one agent. Only
 	// escalate when nothing is handleable and a fix budget is spent — escalating
 	// flips the task to human-required and would strand a still-fixable sibling.
+	// A flaky ci_failure is lower priority than any deterministic work: it
+	// never blocks progress on a sibling issue, and only gets its own dispatch
+	// turn once there is nothing else to do.
 	r.logger.Info("reviews.dispatch.decision",
 		"task_id", taskID,
 		"to_handle", len(toHandle),
 		"exhausted", exhausted != nil,
+		"flaky", flaky != nil,
 		"merge", merge != nil)
 	switch {
 	case len(toHandle) > 0:
 		r.dispatchFixIssues(ctx, taskID, toHandle)
 	case exhausted != nil:
 		r.escalateExhaustedFix(*exhausted)
+	case flaky != nil:
+		r.handleFlakyCI(*flaky)
 	case merge != nil:
 		r.handleAutoMerge(*merge)
 	}

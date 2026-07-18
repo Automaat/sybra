@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os/exec"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,32 +53,76 @@ type Agent struct {
 	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
 	// PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
 	// raw count alongside the estimated USD equivalent persisted on task runs.
-	PremiumRequests    float64   `json:"premiumRequests,omitempty"`
-	StartedAt          time.Time `json:"startedAt"`
-	LastEventAt        time.Time `json:"lastEventAt"`
-	LogPath            string    `json:"logPath,omitempty"`
-	External           bool      `json:"external"`
-	PID                int       `json:"pid,omitempty"`
-	Command            string    `json:"command,omitempty"`
-	Name               string    `json:"name,omitempty"`
-	Project            string    `json:"project,omitempty"`
-	Provider           string    `json:"provider,omitempty"`
-	Node               string    `json:"node,omitempty"`
-	Model              string    `json:"model,omitempty"`
-	ExperimentID       string    `json:"experimentId,omitempty"`
-	VariantID          string    `json:"variantId,omitempty"`
-	AssignmentUnit     string    `json:"assignmentUnit,omitempty"`
-	AssignmentKey      string    `json:"assignmentKey,omitempty"`
-	ReasoningEffort    string    `json:"reasoningEffort,omitempty"`
-	SkillExecutionMode string    `json:"skillExecutionMode,omitempty"`
-	Prompt             string    `json:"prompt,omitempty"`
+	PremiumRequests         float64   `json:"premiumRequests,omitempty"`
+	StartedAt               time.Time `json:"startedAt"`
+	LastEventAt             time.Time `json:"lastEventAt"`
+	LogPath                 string    `json:"logPath,omitempty"`
+	External                bool      `json:"external"`
+	PID                     int       `json:"pid,omitempty"`
+	Command                 string    `json:"command,omitempty"`
+	Name                    string    `json:"name,omitempty"`
+	Project                 string    `json:"project,omitempty"`
+	Provider                string    `json:"provider,omitempty"`
+	Node                    string    `json:"node,omitempty"`
+	Model                   string    `json:"model,omitempty"`
+	ExperimentID            string    `json:"experimentId,omitempty"`
+	VariantID               string    `json:"variantId,omitempty"`
+	AssignmentUnit          string    `json:"assignmentUnit,omitempty"`
+	AssignmentKey           string    `json:"assignmentKey,omitempty"`
+	ReasoningEffort         string    `json:"reasoningEffort,omitempty"`
+	RequestedSkill          string    `json:"requestedSkill,omitempty"`
+	SkillExecutionMode      string    `json:"skillExecutionMode,omitempty"`
+	ResolvedSkillSourceHash string    `json:"resolvedSkillSourceHash,omitempty"`
+	SkillConformance        string    `json:"skillConformance,omitempty"`
+	// OutputSchema mirrors RunConfig.OutputSchema. Non-empty means completion
+	// must not require a skill-receipt marker: a schema-constrained final
+	// response has no room for one.
+	OutputSchema string `json:"outputSchema,omitempty"`
+	Prompt       string `json:"prompt,omitempty"`
+	// skillRecoveryAttempt marks the automatic receipt-recovery rerun for a
+	// mandatory workflow skill. Completion upgrades a verified retry to
+	// ConformanceRecovered so stats do not conflate it with a first-pass exact
+	// or fallback run.
+	skillRecoveryAttempt bool
+
+	// hasOutputSchema records whether this run enforced a provider output
+	// schema (--json-schema / --output-schema). It is true only when the
+	// provider actually forwards OutputSchema to its CLI (Provider.
+	// EnforcesOutputSchema) — copilot/opencode silently ignore the schema, so
+	// their runs stay false even with OutputSchema set. A schema-enforced run
+	// must return schema-valid JSON and so cannot also close with the trailing
+	// skill-conformance receipt line; completion skips receipt verification
+	// for these runs rather than downgrading a valid JSON result to
+	// unverified and self-escalating the task to human-required.
+	hasOutputSchema bool
+
+	// promptHash is a privacy-safe hash of the canonical (pre-render) prompt
+	// dispatched for this run, correlating the dispatch (agent.started) and
+	// completion (agent.prompt_rendered) audit records without persisting
+	// prompt text in either.
+	promptHash string
+	// renderedSyntax records how RequestedSkill invocations were rewritten
+	// for the active provider at BuildHeadlessInvocation time:
+	// "slash-to-dollar" (codex), "slash-stripped" (copilot/opencode), or
+	// "none" (claude, which invokes skills natively and rewrites nothing).
+	renderedSyntax string
+	// renderedSkills are invoked skill names the provider rewriter actually
+	// knew about and rewrote/stripped.
+	renderedSkills []string
+	// unrenderedSkills are invoked skill names the provider rewriter did not
+	// recognize and so left untouched in the prompt — a genuine rewrite
+	// failure the headless runner logs explicitly.
+	unrenderedSkills []string
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// ToolCalls counts tool_use blocks observed across the run. Persisted to
 	// stats.RunRecord at completion so efficiency (tools per turn, tools per
 	// landed PR) can be measured. Tracked in-memory during the run.
 	ToolCalls int `json:"toolCalls,omitempty"`
-	loops     loopDetector
+	// SubagentCallCount counts distinct Claude parent_tool_use_id fan-outs
+	// observed during the run.
+	SubagentCallCount int `json:"subagentCallCount,omitempty"`
+	loops             loopDetector
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
 	MaxTurns int `json:"maxTurns,omitempty"`
 	// oneShot marks workflow-owned interactive runs that must complete after
@@ -211,6 +256,9 @@ type Agent struct {
 	// toolUsesByID keeps recent tool_use metadata long enough to correlate a
 	// malformed tool_result back to the original tool name + input.
 	toolUsesByID map[string]trackedToolUse
+	// subagentToolUseIDs dedupes Claude parent_tool_use_id values so repeated
+	// child turns from the same spawned subagent only count once.
+	subagentToolUseIDs map[string]struct{}
 	// malformedToolCalls accumulates corrected vs unrecoverable malformed
 	// tool-call outcomes observed during the run. Flushed to audit in OnComplete.
 	malformedToolCalls []MalformedToolCall
@@ -278,9 +326,13 @@ type View struct {
 	AssignmentKey            string    `json:"assignmentKey,omitempty"`
 	ReasoningEffort          string    `json:"reasoningEffort,omitempty"`
 	SkillExecutionMode       string    `json:"skillExecutionMode,omitempty"`
+	RequestedSkill           string    `json:"requestedSkill,omitempty"`
+	ResolvedSkillSourceHash  string    `json:"resolvedSkillSourceHash,omitempty"`
+	SkillConformance         string    `json:"skillConformance,omitempty"`
 	Prompt                   string    `json:"prompt,omitempty"`
 	TurnCount                int       `json:"turnCount,omitempty"`
 	ToolCalls                int       `json:"toolCalls,omitempty"`
+	SubagentCallCount        int       `json:"subagentCallCount,omitempty"`
 	MaxTurns                 int       `json:"maxTurns,omitempty"`
 	PluginErrors             []string  `json:"pluginErrors,omitempty"`
 	EscalationReason         string    `json:"escalationReason,omitempty"`
@@ -332,9 +384,13 @@ func (a *Agent) viewLocked(hasStdinPipe bool) View {
 		AssignmentKey:            a.AssignmentKey,
 		ReasoningEffort:          a.ReasoningEffort,
 		SkillExecutionMode:       a.SkillExecutionMode,
+		RequestedSkill:           a.RequestedSkill,
+		ResolvedSkillSourceHash:  a.ResolvedSkillSourceHash,
+		SkillConformance:         a.SkillConformance,
 		Prompt:                   a.Prompt,
 		TurnCount:                a.TurnCount,
 		ToolCalls:                a.ToolCalls,
+		SubagentCallCount:        a.SubagentCallCount,
 		MaxTurns:                 a.MaxTurns,
 		PluginErrors:             slices.Clone(a.PluginErrors),
 		EscalationReason:         a.EscalationReason,
@@ -390,33 +446,43 @@ func (a *Agent) toRecord() Record {
 	defer a.mu.RUnlock()
 	pendingPrompts := slices.Clone(a.convo.pendingPrompts)
 	return Record{
-		ID:                   a.ID,
-		TaskID:               a.TaskID,
-		Name:                 a.Name,
-		Mode:                 a.Mode,
-		Provider:             a.Provider,
-		Model:                a.Model,
-		ExperimentID:         a.ExperimentID,
-		VariantID:            a.VariantID,
-		AssignmentUnit:       a.AssignmentUnit,
-		AssignmentKey:        a.AssignmentKey,
-		PID:                  a.PID,
-		SessionID:            a.SessionID,
-		LogPath:              a.LogPath,
-		CWD:                  a.sessionCWD,
-		SandboxHomeDir:       a.sandboxHomeDir,
-		StartedAt:            a.StartedAt,
-		StdinPath:            a.convo.stdinPath,
-		PendingPrompts:       pendingPrompts,
-		OneShot:              a.oneShot,
-		MaxTurns:             a.MaxTurns,
-		RequirePermissions:   a.requirePermissions,
-		SandboxMode:          a.sandboxMode,
-		ReasoningEffort:      a.ReasoningEffort,
-		SkillExecutionMode:   a.SkillExecutionMode,
-		PostResultWaitReason: a.postResultWaitReason,
-		PostResultWaitSince:  a.postResultWaitSince,
-		ForkSubagent:         a.forkSubagent,
+		ID:                      a.ID,
+		TaskID:                  a.TaskID,
+		Name:                    a.Name,
+		Mode:                    a.Mode,
+		Provider:                a.Provider,
+		Model:                   a.Model,
+		ExperimentID:            a.ExperimentID,
+		VariantID:               a.VariantID,
+		AssignmentUnit:          a.AssignmentUnit,
+		AssignmentKey:           a.AssignmentKey,
+		PID:                     a.PID,
+		SessionID:               a.SessionID,
+		LogPath:                 a.LogPath,
+		CWD:                     a.sessionCWD,
+		SandboxHomeDir:          a.sandboxHomeDir,
+		StartedAt:               a.StartedAt,
+		StdinPath:               a.convo.stdinPath,
+		PendingPrompts:          pendingPrompts,
+		OneShot:                 a.oneShot,
+		MaxTurns:                a.MaxTurns,
+		RequirePermissions:      a.requirePermissions,
+		SandboxMode:             a.sandboxMode,
+		ReasoningEffort:         a.ReasoningEffort,
+		RequestedSkill:          a.RequestedSkill,
+		SkillExecutionMode:      a.SkillExecutionMode,
+		ResolvedSkillSourceHash: a.ResolvedSkillSourceHash,
+		SkillConformance:        a.SkillConformance,
+		OutputSchema:            a.OutputSchema,
+		SkillRecoveryAttempt:    a.skillRecoveryAttempt,
+		HasOutputSchema:         a.hasOutputSchema,
+		PostResultWaitReason:    a.postResultWaitReason,
+		PostResultWaitSince:     a.postResultWaitSince,
+		ForkSubagent:            a.forkSubagent,
+		PromptHash:              a.promptHash,
+		RenderedSyntax:          a.renderedSyntax,
+		RenderedSkills:          slices.Clone(a.renderedSkills),
+		UnrenderedSkills:        slices.Clone(a.unrenderedSkills),
 	}
 }
 
@@ -424,35 +490,45 @@ func (a *Agent) toRecord() Record {
 // Reattach callers own runtime wiring such as cancel, done, cmd, and promptCh.
 func fromRecord(r Record) *Agent {
 	return &Agent{
-		ID:                   r.ID,
-		TaskID:               r.TaskID,
-		Name:                 r.Name,
-		Mode:                 r.Mode,
-		Provider:             r.Provider,
-		Model:                r.Model,
-		ExperimentID:         r.ExperimentID,
-		VariantID:            r.VariantID,
-		AssignmentUnit:       r.AssignmentUnit,
-		AssignmentKey:        r.AssignmentKey,
-		PID:                  r.PID,
-		SessionID:            r.SessionID,
-		LogPath:              r.LogPath,
-		sessionCWD:           r.CWD,
-		sandboxHomeDir:       r.SandboxHomeDir,
-		StartedAt:            r.StartedAt,
-		LastEventAt:          time.Now().UTC(),
-		State:                StateRunning,
-		MaxTurns:             r.MaxTurns,
-		oneShot:              r.OneShot,
-		convo:                convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
-		requirePermissions:   r.RequirePermissions,
-		sandboxMode:          r.SandboxMode,
-		ReasoningEffort:      r.ReasoningEffort,
-		SkillExecutionMode:   r.SkillExecutionMode,
-		postResultWaitReason: r.PostResultWaitReason,
-		postResultWaitSince:  r.PostResultWaitSince,
-		forkSubagent:         r.ForkSubagent,
-		detached:             true,
+		ID:                      r.ID,
+		TaskID:                  r.TaskID,
+		Name:                    r.Name,
+		Mode:                    r.Mode,
+		Provider:                r.Provider,
+		Model:                   r.Model,
+		ExperimentID:            r.ExperimentID,
+		VariantID:               r.VariantID,
+		AssignmentUnit:          r.AssignmentUnit,
+		AssignmentKey:           r.AssignmentKey,
+		PID:                     r.PID,
+		SessionID:               r.SessionID,
+		LogPath:                 r.LogPath,
+		sessionCWD:              r.CWD,
+		sandboxHomeDir:          r.SandboxHomeDir,
+		StartedAt:               r.StartedAt,
+		LastEventAt:             time.Now().UTC(),
+		State:                   StateRunning,
+		MaxTurns:                r.MaxTurns,
+		oneShot:                 r.OneShot,
+		convo:                   convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
+		requirePermissions:      r.RequirePermissions,
+		sandboxMode:             r.SandboxMode,
+		ReasoningEffort:         r.ReasoningEffort,
+		RequestedSkill:          r.RequestedSkill,
+		SkillExecutionMode:      r.SkillExecutionMode,
+		ResolvedSkillSourceHash: r.ResolvedSkillSourceHash,
+		SkillConformance:        r.SkillConformance,
+		OutputSchema:            r.OutputSchema,
+		skillRecoveryAttempt:    r.SkillRecoveryAttempt,
+		hasOutputSchema:         r.HasOutputSchema,
+		postResultWaitReason:    r.PostResultWaitReason,
+		postResultWaitSince:     r.PostResultWaitSince,
+		forkSubagent:            r.ForkSubagent,
+		promptHash:              r.PromptHash,
+		renderedSyntax:          r.RenderedSyntax,
+		renderedSkills:          slices.Clone(r.RenderedSkills),
+		unrenderedSkills:        slices.Clone(r.UnrenderedSkills),
+		detached:                true,
 	}
 }
 
@@ -573,6 +649,59 @@ func (a *Agent) GetSessionID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.SessionID
+}
+
+// SetPromptHash records the privacy-safe hash of this run's canonical prompt,
+// correlating the dispatch and completion audit records.
+func (a *Agent) SetPromptHash(hash string) {
+	a.mu.Lock()
+	a.promptHash = hash
+	a.mu.Unlock()
+}
+
+// GetPromptHash returns the recorded prompt hash, if any.
+func (a *Agent) GetPromptHash() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.promptHash
+}
+
+// HasOutputSchema reports whether this run enforced a provider output schema.
+// Completion consults it to skip the skill-conformance receipt check, which is
+// unsatisfiable when the provider forces schema-valid JSON output.
+func (a *Agent) HasOutputSchema() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.hasOutputSchema
+}
+
+// SetHasOutputSchema records whether this run enforced a provider output
+// schema. Production sets it once at construction from RunConfig.OutputSchema;
+// it is exported for out-of-package tests that build Agent values directly.
+func (a *Agent) SetHasOutputSchema(v bool) {
+	a.mu.Lock()
+	a.hasOutputSchema = v
+	a.mu.Unlock()
+}
+
+// SetPromptRender records how provider-specific skill invocation syntax was
+// rendered for this run's prompt: syntax names the rewrite scheme
+// ("slash-to-dollar", "slash-stripped", or "none"), rendered lists invoked
+// skill names actually rewritten/stripped, and unrendered lists invoked
+// skill names left untouched (a genuine rewrite failure).
+func (a *Agent) SetPromptRender(syntax string, rendered, unrendered []string) {
+	a.mu.Lock()
+	a.renderedSyntax = syntax
+	a.renderedSkills = slices.Clone(rendered)
+	a.unrenderedSkills = slices.Clone(unrendered)
+	a.mu.Unlock()
+}
+
+// GetPromptRender returns the recorded provider render summary for this run.
+func (a *Agent) GetPromptRender() (syntax string, rendered, unrendered []string) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.renderedSyntax, slices.Clone(a.renderedSkills), slices.Clone(a.unrenderedSkills)
 }
 
 // GetStartedAt returns the agent's recorded start time.
@@ -780,6 +909,32 @@ func (a *Agent) GetToolCalls() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.ToolCalls
+}
+
+// NoteSubagentCall records one distinct Claude parent_tool_use_id. Repeated
+// events for the same child call do not increment the exposed count.
+func (a *Agent) NoteSubagentCall(parentToolUseID string) {
+	if strings.TrimSpace(parentToolUseID) == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.subagentToolUseIDs == nil {
+		a.subagentToolUseIDs = make(map[string]struct{}, 4)
+	}
+	if _, ok := a.subagentToolUseIDs[parentToolUseID]; ok {
+		return
+	}
+	a.subagentToolUseIDs[parentToolUseID] = struct{}{}
+	a.SubagentCallCount++
+}
+
+// GetSubagentCallCount returns the number of distinct forked subagent calls
+// observed so far.
+func (a *Agent) GetSubagentCallCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.SubagentCallCount
 }
 
 // NoteToolSignature feeds the next assistant event's tool-call signature into
@@ -1230,6 +1385,20 @@ func (a *Agent) TerminalResultIdle(grace time.Duration) bool {
 	return time.Since(a.LastEventAt) >= grace
 }
 
+// HadTerminalError reports whether the headless stream buffer contains a
+// terminal result event that ended in an error (e.g. a CLI-level
+// error_during_execution, distinct from a provider rate-limit/auth signal
+// classified via SetError/GetErrorKind). Callers use this to tell "the agent
+// crashed before producing any usable output" apart from "the agent finished
+// and returned text that just didn't parse the way we expected" — the two
+// need different recovery treatment.
+func (a *Agent) HadTerminalError() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	found, isError := bufferedResultEvent(a.outputBuffer)
+	return found && isError
+}
+
 // bufferedResultEvent scans the full event slice for the last "result" event,
 // regardless of whether it is the final element — unlike
 // lastHeadlessResultEvent, which requires the result to be strictly last.
@@ -1277,6 +1446,22 @@ func (a *Agent) UsesForkSubagent() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.forkSubagent
+}
+
+// IsSkillRecoveryAttempt reports whether this run is the workflow engine's
+// automatic second-chance retry after a missing mandatory-skill receipt.
+func (a *Agent) IsSkillRecoveryAttempt() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.skillRecoveryAttempt
+}
+
+// SetSkillRecoveryAttempt records whether this run is the workflow engine's
+// automatic second-chance retry after a missing mandatory-skill receipt.
+func (a *Agent) SetSkillRecoveryAttempt(enabled bool) {
+	a.mu.Lock()
+	a.skillRecoveryAttempt = enabled
+	a.mu.Unlock()
 }
 
 // SetBackgroundTaskIDs replaces the agent's tracked set of live CLI
@@ -1510,10 +1695,15 @@ func (a *Agent) Output() []StreamEvent {
 
 // RunConfig is the single entry point for starting any agent.
 type RunConfig struct {
-	TaskID             string
-	Name               string
-	Mode               string // "headless", "interactive", or "conversational"
-	Prompt             string
+	TaskID string
+	Name   string
+	Mode   string // "headless", "interactive", or "conversational"
+	Prompt string
+	// AllowedTools is honoured only by providers whose HonorsAllowedTools()
+	// reports true — claude alone today. Elsewhere it is silently ignored, and
+	// warnUnenforceableAllowedTools says so at dispatch, since ab/cross choose
+	// the provider long after the step declared its list. Treat it as advisory:
+	// only the OS-level sandbox binds a run on every provider.
 	AllowedTools       []string
 	Dir                string
 	Provider           string // "claude", "codex", or "copilot"
@@ -1588,9 +1778,23 @@ type RunConfig struct {
 	// visibility or inject the resolved instructions.
 	RequestedSkill string
 	// SkillExecutionMode records how RequestedSkill actually ran after provider
-	// preparation: native invocation, injected SKILL.md, bundled fallback, or
-	// unavailable. Empty means this run did not carry a mandatory workflow skill.
+	// preparation: none, native invocation, injected SKILL.md, bundled
+	// fallback, or unavailable. Legacy empty values normalize to unknown.
 	SkillExecutionMode string
+	// ResolvedSkillSourceHash is the privacy-safe hash of the resolved local or
+	// bundled skill source identifier. Empty when no external source was used.
+	ResolvedSkillSourceHash string
+	// SkillConformance records whether the executed skill path exactly matched
+	// the requested skill, fell back, was unavailable, or had no skill at all.
+	SkillConformance string
+	// ForceInjectedSkill skips native skill delivery even when the provider can
+	// see the skill, forcing the deterministic injected SKILL.md/bundled path.
+	// Used by the workflow engine's receipt-recovery retry.
+	ForceInjectedSkill bool
+	// SkillRecoveryAttempt marks the automatic second-chance run fired after a
+	// missing mandatory-skill receipt. When the retry emits a valid receipt,
+	// completion records ConformanceRecovered instead of exact/fallback.
+	SkillRecoveryAttempt bool
 	// SeedWorkingMemory, when true, inlines the worktree's NOTES.md scratchpad
 	// into the prompt (read/maintain instruction + current contents). Set only
 	// for code-author roles (see Role.AuthorsCode): verifier roles share the

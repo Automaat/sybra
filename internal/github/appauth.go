@@ -38,6 +38,7 @@ type appTokenSource struct {
 	mu      sync.RWMutex
 	token   string
 	expires time.Time
+	slug    string
 }
 
 const appTokenRenewBefore = 5 * time.Minute
@@ -73,6 +74,10 @@ func EnableAppAuth(creds AppCredentials) error {
 	appSourceMu.Lock()
 	appSource = src
 	appSourceMu.Unlock()
+	// The viewer identity is auth-mode-dependent (<slug>[bot] under App auth,
+	// the /user login otherwise), so a mode switch must not inherit the
+	// previous mode's cached login.
+	resetCachedViewer()
 	return nil
 }
 
@@ -82,6 +87,7 @@ func DisableAppAuth() {
 	appSourceMu.Lock()
 	appSource = nil
 	appSourceMu.Unlock()
+	resetCachedViewer()
 }
 
 func currentAppSource() *appTokenSource {
@@ -195,6 +201,65 @@ func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string) 
 		expires = time.Now().Add(50 * time.Minute)
 	}
 	return body.Token, expires, nil
+}
+
+// appLogin returns the App's bot login as it appears on GitHub artifacts —
+// "<slug>[bot]", e.g. "sybra-app[bot]". This is the App-auth answer to "who am
+// I?": /user (see ViewerLogin) is a user-to-server endpoint and always 403s for
+// installation tokens, so it can never identify an App. GET /app is JWT-authed
+// and returns the slug, which is immutable for the lifetime of the App and so
+// is cached indefinitely.
+func (s *appTokenSource) appLogin(ctx context.Context) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("app login: app auth is disabled")
+	}
+	s.mu.RLock()
+	slug := s.slug
+	s.mu.RUnlock()
+	if slug != "" {
+		return slug + "[bot]", nil
+	}
+
+	jwt, err := s.signJWT(time.Now())
+	if err != nil {
+		return "", err
+	}
+	slug, err = s.fetchAppSlug(ctx, jwt)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.slug = slug
+	s.mu.Unlock()
+	return slug + "[bot]", nil
+}
+
+func (s *appTokenSource) fetchAppSlug(ctx context.Context, jwt string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, appAPIBaseURL+"/app", http.NoBody)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch app slug: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var body struct {
+		Slug    string `json:"slug"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", fmt.Errorf("decode app slug: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK || body.Slug == "" {
+		return "", fmt.Errorf("fetch app slug: HTTP %d: %s", resp.StatusCode, body.Message)
+	}
+	return body.Slug, nil
 }
 
 func loadPrivateKey(path string) (*rsa.PrivateKey, error) {

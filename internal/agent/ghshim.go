@@ -35,14 +35,41 @@ if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
 	done
 fi
 if [ "$1" = "api" ]; then
+	sawinput=0
+	sawreviews=0
 	for arg in "$@"; do
 		case "$arg" in
 		*[Ee][Vv][Ee][Nn][Tt]*[Aa][Pp][Pp][Rr][Oo][Vv][Ee]*)
 			printf '%%s\n' '%[1]s' >&2
 			exit 1
 			;;
+		# The review mutation can carry its event in a GraphQL variable, so argv
+		# never sees APPROVE beside EVENT. Nothing legitimate needs the mutation:
+		# gh pr review --comment/--request-changes covers every sanctioned review.
+		*[Aa][Dd][Dd][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]*)
+			printf '%%s\n' '%[1]s' >&2
+			exit 1
+			;;
+		esac
+		# A payload read from stdin or a file is invisible to argv, so an approval
+		# can be posted with no matching arg at all. --input carries a whole
+		# body; -F/--field key=@path pulls a single value the same way, which is
+		# enough to hide a whole GraphQL mutation.
+		case "$arg" in
+		--input | --input=* | *=@*)
+			sawinput=1
+			;;
+		esac
+		# graphql counts as review-capable: addPullRequestReview reaches the same
+		# place as POST /pulls/N/reviews.
+		case "$arg" in
+		[Gg][Rr][Aa][Pp][Hh][Qq][Ll] | *[Pp][Uu][Ll][Ll][Ss]/*/[Rr][Ee][Vv][Ii][Ee][Ww][Ss]* | */[Rr][Ee][Vv][Ii][Ee][Ww][Ss])
+			sawreviews=1
+			;;
 		esac
 	done
+	# Refuse a review payload we cannot inspect rather than assume it is benign.
+	[ "$sawinput$sawreviews" = "11" ] && printf '%%s\n' '%[1]s' >&2 && exit 1
 fi
 exec '%[2]s' "$@"
 `

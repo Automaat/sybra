@@ -105,6 +105,19 @@ func newTestStoreWith(t *testing.T, files ...string) *Store {
 	return store
 }
 
+func newInlineTestStore(t *testing.T, name, yaml string) *Store {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write inline workflow %s: %v", name, err)
+	}
+	return store
+}
+
 // --- In-memory TaskProvider ---
 
 type memTasks struct {
@@ -1780,6 +1793,66 @@ func TestCancelWorkflow(t *testing.T) {
 	}
 }
 
+func TestStartWorkflowRejectsTamperFlaggedRestart(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	originalWorkflow := &Execution{
+		WorkflowID: "simple-task-implement",
+		State:      ExecCompleted,
+		Variables:  map[string]string{tamperDeletionAllowlistVar: `{"exact_paths":{},"basenames":{}}`},
+	}
+	tasks.Put(TaskInfo{
+		ID:           "tamper",
+		Status:       "human-required",
+		StatusReason: TamperFlaggedReasonPrefix + " removed tests/foo_test.go",
+		Tags:         []string{TamperBlessedTag},
+		Workflow:     originalWorkflow,
+	})
+
+	err := engine.StartWorkflow("tamper", "test-simple")
+	if !errors.Is(err, ErrTamperBlessRequired) {
+		t.Fatalf("StartWorkflow err = %v, want ErrTamperBlessRequired", err)
+	}
+	got, getErr := tasks.GetTask("tamper")
+	if getErr != nil {
+		t.Fatalf("get task: %v", getErr)
+	}
+	if got.Workflow.WorkflowID != originalWorkflow.WorkflowID ||
+		got.Workflow.State != originalWorkflow.State ||
+		got.Workflow.CurrentStep != originalWorkflow.CurrentStep {
+		t.Fatalf("workflow changed: %+v, want original %+v", got.Workflow, originalWorkflow)
+	}
+	if agents.HasRunningAgent("tamper") {
+		t.Fatal("StartWorkflow launched an agent for a tamper-flagged task")
+	}
+}
+
+func TestStartWorkflowAllowsNonTamperHumanRequiredRestart(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "human",
+		Status:       "human-required",
+		StatusReason: "operator needs more context",
+		Workflow:     &Execution{WorkflowID: "old", State: ExecCompleted},
+	})
+
+	if err := engine.StartWorkflow("human", "test-simple"); err != nil {
+		t.Fatalf("StartWorkflow err = %v, want nil", err)
+	}
+	if !agents.HasRunningAgent("human") {
+		t.Fatal("StartWorkflow did not launch an agent for non-tamper human-required task")
+	}
+}
+
 func TestMatchWorkflow_PriorityTieBreak(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -2932,9 +3005,9 @@ func TestResumeStalled_SkipWaitHuman(t *testing.T) {
 }
 
 // TestResumeStalled_SkipsHumanRequired reproduces the post-restart dispatch bug
-// where a review task was set to human-required by inline triage (small PR)
-// but ResumeStalled re-dispatched its workflow's run_agent step after restart,
-// overriding the triage verdict.
+// where a review task was parked on human-required but ResumeStalled
+// re-dispatched its workflow's run_agent step after restart, overriding the
+// triage verdict.
 func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -2942,8 +3015,8 @@ func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
 	// Simulate a review task whose pr-review workflow is at the implement
-	// (run_agent) step but whose status was flipped to human-required by the
-	// inline triage path before the restart.
+	// (run_agent) step but whose status was flipped to human-required before
+	// the restart.
 	tasks.Put(TaskInfo{
 		ID:        "t1",
 		Status:    "human-required",
@@ -4266,7 +4339,7 @@ func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) 
 	// Once the pending start clears (StartAgent returned and registered the real
 	// agent), a genuinely untracked completion for THIS step still falls back
 	// to crediting the current step, as designed for manual/recovery agents.
-	engine.unmarkStepStarting("t1", "implement")
+	engine.unmarkStepStartingAndTakePending("t1", "implement")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
 
 	tiFinal, _ := tasks.GetTask("t1")
@@ -4338,7 +4411,7 @@ func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 	// must not clear the winner's in-flight claim.
 	engine.markStepStarting("t1", "implement")
 	engine.markStepStarting("t1", "implement")
-	engine.unmarkStepStarting("t1", "implement")
+	engine.unmarkStepStartingAndTakePending("t1", "implement")
 
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
 
@@ -4348,12 +4421,273 @@ func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 			tiAfter.Workflow.CurrentStep)
 	}
 
-	engine.unmarkStepStarting("t1", "implement")
+	engine.unmarkStepStartingAndTakePending("t1", "implement")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
 
 	tiFinal, _ := tasks.GetTask("t1")
 	if tiFinal.Workflow.CurrentStep == "implement" {
 		t.Fatalf("CurrentStep still implement — claim should clear after final unmark")
+	}
+}
+
+func TestHandleAgentComplete_UnverifiedSkillRetriesWithInjectedSkill(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /sybra-test now."
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-plan-{{.Task.ID}}.md'
+        kind: plan
+        required: true
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	recorder := &recordingArtifactRecorder{}
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetArtifactRecorder(recorder)
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Plan:      "# fake first pass\n",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir: t.TempDir(),
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-1",
+			Role:               "plan-critic",
+			Provider:           "codex",
+			RequestedSkill:     "sybra-test",
+			SkillExecutionMode: "native",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Result: "done", Success: true})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ti.Workflow.CurrentStep; got != "run" {
+		t.Fatalf("CurrentStep = %q, want run", got)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "1" {
+		t.Fatalf("skill receipt retry var = %q, want 1", got)
+	}
+	if len(ti.Workflow.StepHistory) != 0 {
+		t.Fatalf("StepHistory = %+v, want no recorded completion before retry", ti.Workflow.StepHistory)
+	}
+	if len(agents.calls) != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1 retry", len(agents.calls))
+	}
+	if !agents.calls[0].Assignment.ForceInjectedSkill {
+		t.Fatal("retry assignment did not force injected skill delivery")
+	}
+	if !agents.calls[0].Assignment.SkillRecoveryAttempt {
+		t.Fatal("retry assignment missing recovery-attempt marker")
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.puts) != 1 {
+		t.Fatalf("diagnostic artifacts = %+v, want one preserved first-pass sidecar", recorder.puts)
+	}
+	if recorder.puts[0].name != "skill-receipt-first-run-plan.md" {
+		t.Fatalf("diagnostic artifact name = %q, want skill-receipt-first-run-plan.md", recorder.puts[0].name)
+	}
+	if recorder.puts[0].content != "# fake first pass\n" {
+		t.Fatalf("diagnostic artifact content = %q, want first-pass plan", recorder.puts[0].content)
+	}
+}
+
+func TestHandleAgentComplete_UnverifiedSkillAfterRetryEscalatesHumanRequired(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /sybra-test now."
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) {
+		completed = append(completed, info)
+	})
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				skillReceiptRecoveryKey("run"): "1",
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-2",
+			Role:               "plan-critic",
+			Provider:           "codex",
+			RequestedSkill:     "sybra-test",
+			SkillExecutionMode: "injected",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "agent-2",
+		Result: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\nClassification: product_bug: repo does not compile\n\nObserved output:\n` +
+			"```text\npkg/api-server/resource_inspect_endpoints.go:14: dangling import\n```" +
+			`"}`,
+		Success: true,
+	})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "no conformance receipt after automatic recovery retry") {
+		t.Fatalf("StatusReason = %q, want receipt-retry exhaustion", ti.StatusReason)
+	}
+	if !strings.Contains(ti.StatusReason, "product_bug: repo does not compile") {
+		t.Fatalf("StatusReason = %q, want parsed verdict summary", ti.StatusReason)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("skill receipt retry var = %q, want cleared after exhaustion", got)
+	}
+	if len(agents.calls) != 0 {
+		t.Fatalf("StartAgent calls = %d, want no third attempt", len(agents.calls))
+	}
+	if ti.Workflow.State != ExecCompleted {
+		t.Fatalf("Workflow.State = %q, want %q so a later recovery trigger is not blocked by ErrWorkflowAlreadyActive", ti.Workflow.State, ExecCompleted)
+	}
+	if ti.Workflow.CurrentStep != "" {
+		t.Fatalf("Workflow.CurrentStep = %q, want empty", ti.Workflow.CurrentStep)
+	}
+	if len(completed) != 1 {
+		t.Fatalf("workflow completion callbacks = %d, want 1 exhausted completion for downstream recovery", len(completed))
+	}
+	if completed[0].TaskID != "t1" || completed[0].WorkflowID != "skill-receipt" {
+		t.Fatalf("completion = %+v, want task/workflow ids for exhausted run", completed[0])
+	}
+	if got := completed[0].Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("completion retry var = %q, want cleared before downstream recovery sees completion", got)
+	}
+}
+
+// TestHandleAgentComplete_UnverifiedSkillExhaustionAllowsFreshWorkflowStart
+// covers the human-review recovery handoff: once skill-receipt exhaustion
+// marks a task human-required, a subsequent recovery attempt must be able to
+// start a fresh workflow instance rather than fail with
+// ErrWorkflowAlreadyActive against the exhausted, never-finalized Execution
+// (the bug in #5ba88ecc — a later genuinely passing run stayed parked at
+// human-required because the stale Execution was still "active").
+func TestHandleAgentComplete_UnverifiedSkillExhaustionAllowsFreshWorkflowStart(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /sybra-test now."
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				skillReceiptRecoveryKey("run"): "1",
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-2",
+			Role:               "plan-critic",
+			Provider:           "codex",
+			RequestedSkill:     "sybra-test",
+			SkillExecutionMode: "injected",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-2", Result: "still no receipt", Success: true})
+
+	if err := engine.StartWorkflow("t1", "skill-receipt"); err != nil {
+		t.Fatalf("StartWorkflow after exhaustion = %v, want nil (fresh recovery trigger must not be rejected as already active)", err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("skill receipt retry var = %q, want a fresh budget on the new Execution", got)
+	}
+	if ti.Workflow.State == ExecCompleted {
+		t.Fatalf("Workflow.State = %q, want the fresh restart to be running/waiting again", ti.Workflow.State)
 	}
 }
 
@@ -7097,6 +7431,150 @@ func TestExecRequireSidecar_EmptySidecarConfigErrors(t *testing.T) {
 	_, err := engine.execRequireSidecar("t1", newRequireSidecarStep(""), TaskInfo{ID: "t1"})
 	if err == nil {
 		t.Fatal("expected error for empty sidecar config, got nil")
+	}
+}
+
+// --- flag_plan_critique step ---
+
+func newFlagPlanCritiqueStep() *Step {
+	return &Step{ID: "flag_plan_critique_verdict", Type: StepFlagPlanCritique}
+}
+
+func TestParsePlanCritiqueVerdict(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"approve", "# Plan Review: APPROVE\n\n## Verdict\n\nLooks good.", "APPROVE"},
+		{"refine", "# Plan Review: REFINE\n\n## Findings\n\n- missing file", "REFINE"},
+		{"reject", "# Plan Review: REJECT\n\nToo vague.", "REJECT"},
+		{"lowercase verdict word", "# plan review: refine\n", "REFINE"},
+		{"leading blank line", "\n# Plan Review: REFINE\n", "REFINE"},
+		{"mention in prose is not the verdict line", "# Plan Review: APPROVE\n\nNo REFINE needed here.", "APPROVE"},
+		{"no marker at all", "Looks fine to me.", ""},
+		{"empty", "", ""},
+		{
+			"bare title falls back to Verdict section prose",
+			"# Plan Review\n\n## Verdict\n\nThis plan needs REFINE — the rollback step is missing and the test command doesn't match the project.",
+			"REFINE",
+		},
+		{
+			"verdict section fallback is bounded to that section",
+			"# Plan Review\n\n## Verdict\n\nSound overall.\n\n## Findings\n\n- [nit] refine the error message wording",
+			"",
+		},
+		{
+			"inflected verdict word still resolves to its base form",
+			"# Plan Review: REJECTED\n\n## Verdict\n\nThis plan is rejected due to missing rollback safety verification steps.",
+			"REJECT",
+		},
+		{
+			"heading-level drift on the title line still matches",
+			"## Plan Review: REFINE\n\n## Verdict\n\nSeveral steps need adjustment.",
+			"REFINE",
+		},
+		{
+			"a longer unrelated word is not a boundary-crossing false match",
+			"# Plan Review\n\n## Verdict\n\nNo concerns; this is not a rejectionist take, just a sanity check.",
+			"",
+		},
+		{
+			"current skill contract: verdict on the Verdict heading line",
+			"# Plan Review\n\n## Verdict: REFINE\n\n**One-line summary:** Missing rollback step.\n\n## Findings\n\n- [high] no rollback",
+			"REFINE",
+		},
+		{
+			"current skill contract: APPROVE on the Verdict heading line",
+			"# Plan Review\n\n## Verdict: APPROVE\n\n**One-line summary:** Looks executable as-is.",
+			"APPROVE",
+		},
+		{
+			"current skill contract: unrendered template brackets still resolve",
+			"# Plan Review\n\n## Verdict: [REJECT]\n\n**One-line summary:** Too vague to execute.",
+			"REJECT",
+		},
+		{
+			"colon-line format takes priority over a conflicting title line",
+			"# Plan Review: APPROVE\n\n## Verdict: REFINE\n\n**One-line summary:** Needs edits despite the stale title.",
+			"REFINE",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parsePlanCritiqueVerdict(tt.content); got != tt.want {
+				t.Errorf("parsePlanCritiqueVerdict(%q) = %q, want %q", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecFlagPlanCritique_ApproveDoesNotAppendNote(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: APPROVE\n\nLooks good."})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "# Plan Review: APPROVE\n\nLooks good."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if strings.Contains(ti.Body, "Plan Critic Verdict") {
+		t.Errorf("APPROVE should not append a verdict note; body = %q", ti.Body)
+	}
+}
+
+func TestExecFlagPlanCritique_RefineAppendsDistinguishableNote(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: REFINE\n\n## Findings\n\n- [high] missing file"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "# Plan Review: REFINE\n\n## Findings\n\n- [high] missing file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "REFINE") {
+		t.Errorf("Output = %q, want it to report the REFINE verdict", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if !strings.Contains(ti.Body, "Plan Critic Verdict: REFINE") {
+		t.Errorf("expected a distinguishable REFINE note in body; got:\n%s", ti.Body)
+	}
+	if ti.Status == "human-required" {
+		t.Error("flag_plan_critique must not block progression by itself")
+	}
+}
+
+func TestExecFlagPlanCritique_RejectAppendsDistinguishableNote(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: REJECT\n\nToo vague."})
+	engine := newEngineForEval(t, tasks)
+
+	_, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "# Plan Review: REJECT\n\nToo vague."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if !strings.Contains(ti.Body, "Plan Critic Verdict: REJECT") {
+		t.Errorf("expected a distinguishable REJECT note in body; got:\n%s", ti.Body)
+	}
+}
+
+func TestExecFlagPlanCritique_UnparseableVerdictDoesNotAppendNote(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "Some free-form text with no verdict marker."})
+	engine := newEngineForEval(t, tasks)
+
+	_, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "Some free-form text with no verdict marker."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if strings.Contains(ti.Body, "Plan Critic Verdict") {
+		t.Errorf("an unparseable verdict should behave like APPROVE (no note); body = %q", ti.Body)
 	}
 }
 

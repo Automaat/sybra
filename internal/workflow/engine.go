@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 )
 
@@ -78,6 +79,9 @@ type AgentRunInfo struct {
 	AgentID                string
 	Role                   string
 	Provider               string
+	RequestedSkill         string
+	SkillExecutionMode     string
+	SkillConformance       string
 	StartedAt              time.Time
 	ProtocolViolation      string
 	TestOutcome            string
@@ -155,6 +159,7 @@ type CheckConfigGetter interface {
 	CodegenCommands(ctx context.Context, taskID string) []string
 	VerifyCommands(ctx context.Context, taskID string) []string
 	SetupCommands(ctx context.Context, taskID string) []string
+	FocusedChecks(ctx context.Context, taskID string) []project.FocusedCheck
 }
 
 // ManualTestConfigGetter resolves repo/project-declared black-box testing hints.
@@ -319,17 +324,30 @@ type Engine struct {
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
-	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
-	dispatching      map[string]struct{}        // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
-	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
-	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
-	agentRoutes      map[string]agentRoute      // agentID → {taskID, stepID}
-	pendingStepStart map[string]int             // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
-	cascadeDepth     map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
-	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
-	resumeError      *logging.ErrorThrottle
-	demotionThrottle *logging.ErrorThrottle
-	maxTestAttempts  int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
+	inflightMutexes  map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
+	dispatching      map[string]struct{}    // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
+	starting         map[string]struct{}    // taskID → StartWorkflowWithVars in progress
+	humanAction      map[string]struct{}    // taskID → HandleHumanAction in progress
+	agentRoutes      map[string]agentRoute  // agentID → {taskID, stepID}
+	pendingStepStart map[string]int         // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
+	// pendingCompletions holds an agent completion that arrived while its own
+	// step's start was still registering (see resolveCompletionRoute). Keyed
+	// like pendingStepStart; execRunAgent's deferred cleanup always pops and
+	// redelivers it via unmarkStepStartingAndTakePending — if the route ended
+	// up registered, that redelivery is a normal tracked completion; if the
+	// underlying StartAgent call had failed instead, it falls through to the
+	// usual untracked-completion handling (dropped as a phantom, or credited
+	// to the current step for a role match) rather than being silently lost.
+	pendingCompletions map[string][]AgentCompletion
+	cascadeDepth       map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
+	pendingRecovery    map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
+	resumeError        *logging.ErrorThrottle
+	demotionThrottle   *logging.ErrorThrottle
+	maxTestAttempts    int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
+	// reviewLoopDisabled: see SetReviewUntilClean. Inverted so the zero value
+	// keeps the review→fix→review cycle running, matching
+	// config.ReviewUntilClean's default of true.
+	reviewLoopDisabled bool
 	// openPROnUnrunnableGate: see SetOpenPROnUnrunnableGate. Defaults to true
 	// (set in NewEngine), matching config.TestingOpenPROnUnrunnableGateEnabled's
 	// nil-is-true default.
@@ -380,6 +398,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		humanAction:            make(map[string]struct{}),
 		agentRoutes:            make(map[string]agentRoute),
 		pendingStepStart:       make(map[string]int),
+		pendingCompletions:     make(map[string][]AgentCompletion),
 		cascadeDepth:           make(map[string]int),
 		pendingRecovery:        make(map[string]pendingRecovery),
 		resumeError:            logging.NewErrorThrottle(),
@@ -533,6 +552,12 @@ func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
 // fingerprints still escalate independently of this count. Values <= 0 fall
 // back to defaultTestAttempts.
 func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
+
+// SetReviewUntilClean controls whether simple-task-review re-reviews after
+// every fix until the verdict is CLEAN (true, the default) or runs a single
+// review pass per task (false). The cycle has no round cap; false is the way
+// to bound it when a per-task cost ceiling is not configured.
+func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
 
 // SetOpenPROnUnrunnableGate controls whether execRouteTestResult opens a PR
 // (ready-pr) instead of escalating to human-required once a testing cycle

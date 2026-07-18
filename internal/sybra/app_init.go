@@ -485,7 +485,9 @@ func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerCo
 		Image:     cfg.Image,
 		Command:   cfg.Command,
 		TTL:       cfg.TTL,
+		FailedTTL: cfg.FailedTTL,
 		Mode:      cfg.Mode,
+		CreatePR:  cfg.CreatePR,
 	}
 	for _, e := range cfg.Env {
 		out.Env = append(out.Env, agent.K8sJobEnvVar{Name: e.Name, Value: e.Value})
@@ -876,8 +878,7 @@ func expectedHumanKind(t task.Task) string {
 	case t.ReviewPhase == review.ReviewPhaseDrafted ||
 		strings.HasPrefix(t.StatusReason, "Draft review ready"):
 		return "review_draft"
-	case t.ReviewPhase == review.ReviewPhaseManual ||
-		strings.HasPrefix(t.StatusReason, "PR too small for agent review"):
+	case t.ReviewPhase == review.ReviewPhaseManual:
 		return "review_manual"
 	default:
 		return ""
@@ -1258,7 +1259,28 @@ func (a *App) getDiskReclaimer() *diskreclaim.Reclaimer {
 // funlen cap).
 func (a *App) configureTestingEscalation() {
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
+	a.workflowEngine.SetReviewUntilClean(a.cfg.ReviewUntilClean())
 	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
+	a.warnUnboundedReviewLoop()
+}
+
+// warnUnboundedReviewLoop surfaces the one posture where the review→fix cycle
+// has no stopping condition at all. The cycle has no round cap by design, so
+// agent.max_task_cost_usd is its only bound — and that guardrail is disabled at
+// its default of 0 (enforceTaskCostBudget returns early on <= 0). Stock config
+// therefore pairs an uncapped loop with no ceiling, which a reviewer and fixer
+// that disagree can ride indefinitely. Operators should not have to read the
+// workflow YAML to discover that.
+func (a *App) warnUnboundedReviewLoop() {
+	if !a.cfg.ReviewUntilClean() || a.cfg.Agent.MaxTaskCostUSD > 0 {
+		return
+	}
+	a.logger.Warn("review.loop.unbounded",
+		"review_until_clean", true,
+		"max_task_cost_usd", 0,
+		"detail", "review→fix cycles until CLEAN with no round cap and no cost ceiling; "+
+			"set agent.max_task_cost_usd to bound it, or agent.review_until_clean: false for a single review pass",
+	)
 }
 
 func (a *App) initAgentConfig() {

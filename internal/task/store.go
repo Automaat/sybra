@@ -585,16 +585,66 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 // it here, and the follower's file watcher then dispatches it through the
 // normal workflow. Marshal persists frontmatter + body; sidecars are not
 // written by this path.
+// Put is a blind, verbatim upsert used by the cluster leader/follower mirror
+// — most fields are trusted from the caller with no merge logic. Its #2203
+// stale-status guard reads the existing on-disk task under s.lockTask, so
+// concurrent Puts for the same ID are race-safe on their own; go through
+// Manager.Put instead when the caller also needs Manager's lifecycle side
+// effects (status-change hooks, created/updated events).
 func (s *Store) Put(t Task) (Task, error) {
 	if err := ValidateID(t.ID); err != nil {
 		return Task{}, err
 	}
+	unlock, err := s.lockTask(t.ID)
+	if err != nil {
+		return Task{}, err
+	}
+	defer unlock()
 	now := time.Now().UTC()
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
 	}
 	if t.UpdatedAt.IsZero() {
 		t.UpdatedAt = now
+	}
+	// A status change whose UpdatedAt doesn't strictly advance past what's
+	// already on disk is a stale snapshot, not a real update (#2203).
+	// Fabricating a fresh timestamp on top of it would let the stale status
+	// masquerade as the latest legitimate state to a consumer like the
+	// cluster mirror's Merge — discard it instead and keep what's on disk.
+	//
+	// A mirror-applied task (MirrorUpdatedAt set, only by clusterlead.Merge)
+	// proves freshness via MirrorRev instead: Merge runs fully serialized,
+	// so an incoming MirrorRev past the on-disk value is race-free proof
+	// even if an unrelated edit bumped UpdatedAt in the gap between Merge's
+	// snapshot and this write reaching the lock above.
+	if existing, err := s.read(t.ID); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Default().Warn("task.store.put.read_existing_failed", "id", t.ID, "err", err)
+		}
+	} else if existing.Status != t.Status {
+		if t.MirrorUpdatedAt != nil && t.MirrorRev > existing.MirrorRev {
+			if !t.UpdatedAt.After(existing.UpdatedAt) {
+				// now alone isn't guaranteed to advance past existing.UpdatedAt
+				// (a prior genuinely-advancing Put can carry a caller-supplied
+				// timestamp ahead of this process's wall clock) — fall back to
+				// one tick past it so this write is never itself non-monotonic.
+				t.UpdatedAt = existing.UpdatedAt.Add(time.Nanosecond)
+				if now.After(t.UpdatedAt) {
+					t.UpdatedAt = now
+				}
+			}
+		} else if !t.UpdatedAt.After(existing.UpdatedAt) {
+			t.Status = existing.Status
+			t.UpdatedAt = existing.UpdatedAt
+			t.StatusChangedAt = existing.StatusChangedAt
+			// A rejected write's MirrorRev/MirrorUpdatedAt must not reach
+			// disk either — otherwise a stale/duplicate push regresses the
+			// mirror bookkeeping this same guard relies on to judge freshness
+			// on the next mirror-authoritative Put for this task.
+			t.MirrorRev = existing.MirrorRev
+			t.MirrorUpdatedAt = existing.MirrorUpdatedAt
+		}
 	}
 	if t.StatusChangedAt.IsZero() {
 		t.StatusChangedAt = t.UpdatedAt
@@ -1183,6 +1233,12 @@ func applyReviewFields(t *Task, u Update) {
 	if u.ReviewPhase != nil {
 		t.ReviewPhase = *u.ReviewPhase
 	}
+	if u.ReviewedHeadSHA != nil {
+		t.ReviewedHeadSHA = *u.ReviewedHeadSHA
+	}
+	if u.ReviewedHeadAttempts != nil {
+		t.ReviewedHeadAttempts = *u.ReviewedHeadAttempts
+	}
 	if u.PRPhase != nil {
 		t.PRPhase = *u.PRPhase
 	}
@@ -1687,15 +1743,19 @@ type RunPatch struct {
 	ProtocolViolation      *string
 
 	// Identity
-	Provider           *string
-	Model              *string
-	ExperimentID       *string
-	VariantID          *string
-	AssignmentUnit     *string
-	AssignmentKey      *string
-	ReasoningEffort    *string
-	SkillExecutionMode *string
-	SessionID          *string
+	Provider                *string
+	Model                   *string
+	ExperimentID            *string
+	VariantID               *string
+	AssignmentUnit          *string
+	AssignmentKey           *string
+	ReasoningEffort         *string
+	RequestedSkill          *string
+	SkillExecutionMode      *string
+	ResolvedSkillSourceHash *string
+	SkillConformance        *string
+	SessionID               *string
+	SubagentCallCount       *int
 }
 
 func applyRunLifecycle(run *AgentRun, p RunPatch) {
@@ -1771,11 +1831,23 @@ func applyRunIdentity(run *AgentRun, p RunPatch) {
 	if p.ReasoningEffort != nil {
 		run.ReasoningEffort = *p.ReasoningEffort
 	}
+	if p.RequestedSkill != nil {
+		run.RequestedSkill = *p.RequestedSkill
+	}
 	if p.SkillExecutionMode != nil {
 		run.SkillExecutionMode = *p.SkillExecutionMode
 	}
+	if p.ResolvedSkillSourceHash != nil {
+		run.ResolvedSkillSourceHash = *p.ResolvedSkillSourceHash
+	}
+	if p.SkillConformance != nil {
+		run.SkillConformance = *p.SkillConformance
+	}
 	if p.SessionID != nil && *p.SessionID != "" {
 		run.SessionID = *p.SessionID
+	}
+	if p.SubagentCallCount != nil {
+		run.SubagentCallCount = *p.SubagentCallCount
 	}
 }
 

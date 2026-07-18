@@ -17,6 +17,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     baseRefName: 'main',
     autoMergeEnabled: false,
     ciStatus: '',
+    ciFlaky: false,
     hasPendingChecks: false,
     reviewDecision: '',
     mergeable: '',

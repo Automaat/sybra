@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	bundledskills "github.com/Automaat/sybra/internal/skills"
 	"gopkg.in/yaml.v3"
@@ -32,12 +33,33 @@ func stripSkillInvocations(prompt string, skillNames []string) string {
 	return skillinvoke.StripInvocations(prompt, skillNames)
 }
 
-const (
-	skillExecutionModeNative      = "native"
-	skillExecutionModeInjected    = "injected"
-	skillExecutionModeFallback    = "fallback"
-	skillExecutionModeUnavailable = "unavailable"
-)
+// computeSkillRender partitions every slash-invoked skill name found in orig
+// against skillNames (the set the provider's rewriter/stripper actually
+// knows about): a name present in skillNames was rewritten/stripped for the
+// provider (rendered); a name absent from it passed through untouched — a
+// genuine rewrite failure the caller should log (unrendered).
+func computeSkillRender(orig string, skillNames []string) (rendered, unrendered []string) {
+	invoked := skillinvoke.InvokedNames(orig)
+	if len(invoked) == 0 {
+		return nil, nil
+	}
+	known := make(map[string]struct{}, len(skillNames))
+	for _, name := range skillNames {
+		normalized, ok := skillinvoke.NormalizeName(name)
+		if !ok {
+			continue
+		}
+		known[normalized] = struct{}{}
+	}
+	for _, name := range invoked {
+		if _, ok := known[name]; ok {
+			rendered = append(rendered, name)
+		} else {
+			unrendered = append(unrendered, name)
+		}
+	}
+	return rendered, unrendered
+}
 
 type workflowSkillResolution struct {
 	name          string
@@ -45,40 +67,95 @@ type workflowSkillResolution struct {
 	text          string
 	nativeVisible bool
 	mode          string
+	sourceHash    string
+	sourceLabel   string
+	conformance   string
 }
 
-func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string) error {
+func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, prov Provider) error {
+	providerName := prov.Name()
 	name, ok := skillinvoke.NormalizeName(cfg.RequestedSkill)
 	if !ok {
 		cfg.RequestedSkill = ""
-		cfg.SkillExecutionMode = ""
+		cfg.SkillExecutionMode = skillattr.ExecutionModeNone
+		cfg.ResolvedSkillSourceHash = ""
+		cfg.SkillConformance = skillattr.ConformanceNone
 		return nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
 	}
-	resolution := resolveWorkflowSkill(home, providerName, name)
+	resolution := resolveWorkflowSkill(home, providerName, name, cfg.ForceInjectedSkill)
 	cfg.RequestedSkill = resolution.name
 	cfg.SkillExecutionMode = resolution.mode
+	cfg.ResolvedSkillSourceHash = resolution.sourceHash
+	cfg.SkillConformance = resolution.conformance
+	// A trailing conformance receipt is unsatisfiable when the provider is
+	// forced to emit schema-valid JSON (--json-schema / --output-schema): the
+	// LAST line cannot be an HTML comment. Skip the receipt only for runs the
+	// provider actually schema-enforces; completion mirrors this exact
+	// condition via Agent.HasOutputSchema. Providers that ignore OutputSchema
+	// (copilot/opencode) never receive the flag, so the receipt stays
+	// satisfiable and must still be appended and verified for them. The skill
+	// content is delivered regardless.
+	wantReceipt := cfg.OutputSchema == "" || !prov.EnforcesOutputSchema()
 	switch resolution.mode {
-	case skillExecutionModeNative:
-		return nil
-	case skillExecutionModeInjected, skillExecutionModeFallback:
+	case skillattr.ExecutionModeNative:
+		// The skill runs natively, but native invocation alone doesn't prove
+		// the model actually followed it — append the same deterministic
+		// receipt instruction injected/fallback runs get, so completion can
+		// verify conformance from the transcript rather than trusting
+		// delivery mode alone.
+		if wantReceipt {
+			cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+		}
+	case skillattr.ExecutionModeInjected, skillattr.ExecutionModeFallback:
 		cfg.Prompt = injectWorkflowSkillPrompt(cfg.Prompt, providerName, resolution)
+		if wantReceipt {
+			cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+		}
 	default:
 		cfg.Prompt = unavailableWorkflowSkillPrompt(cfg.Prompt, providerName, resolution.name)
 	}
 	return nil
 }
 
-func resolveWorkflowSkill(home, providerName, skillName string) workflowSkillResolution {
+// ProviderSupportsOutputSchema reports whether providerName's resolved
+// Provider actually applies RunConfig.OutputSchema. An empty or unresolvable
+// name falls back to false — the same fail-closed default baseProvider
+// uses. Checked explicitly rather than delegating an empty name to
+// lookupProvider, whose own empty-defaults-to-claude fallback exists for a
+// different purpose (a legacy caller that never set Provider) and would
+// otherwise silently resolve to true here.
+func ProviderSupportsOutputSchema(providerName string) bool {
+	if strings.TrimSpace(providerName) == "" {
+		return false
+	}
+	prov, err := lookupProvider(providerName)
+	if err != nil {
+		return false
+	}
+	return prov.SupportsOutputSchema()
+}
+
+// appendSkillReceiptInstruction appends the deterministic conformance-receipt
+// instruction (skillattr.ReceiptInstruction) to prompt. Called for every
+// mode that actually hands the model mandatory-skill instructions (native,
+// injected, fallback) — never for "unavailable", where there is nothing to
+// receipt-check.
+func appendSkillReceiptInstruction(prompt string, resolution workflowSkillResolution) string {
+	return prompt + "\n\n" + skillattr.ReceiptInstruction(resolution.name, resolution.sourceHash)
+}
+
+func resolveWorkflowSkill(home, providerName, skillName string, forceInjected bool) workflowSkillResolution {
 	resolution := workflowSkillResolution{
 		name:          skillName,
 		nativeVisible: providerSkillVisible(providerName, home, skillName),
 	}
-	if resolution.nativeVisible {
-		resolution.mode = skillExecutionModeNative
+	if resolution.nativeVisible && !forceInjected {
+		resolution.mode = skillattr.ExecutionModeNative
+		resolution.conformance = skillattr.ConformanceExact
 		return resolution
 	}
 	resolution.path = findSkillPathInHome(home, skillName)
@@ -86,16 +163,23 @@ func resolveWorkflowSkill(home, providerName, skillName string) workflowSkillRes
 		data, err := os.ReadFile(resolution.path)
 		if err == nil {
 			resolution.text = string(data)
-			resolution.mode = skillExecutionModeInjected
+			resolution.mode = skillattr.ExecutionModeInjected
+			resolution.sourceHash = skillattr.HashSourceID("file:" + resolution.path)
+			resolution.sourceLabel = "local skill source"
+			resolution.conformance = skillattr.ConformanceExact
 			return resolution
 		}
 	}
 	if data, err := bundledskills.FS.ReadFile("data/" + skillName + ".md"); err == nil {
 		resolution.text = string(data)
-		resolution.mode = skillExecutionModeFallback
+		resolution.mode = skillattr.ExecutionModeFallback
+		resolution.sourceHash = skillattr.HashSourceID("bundled:" + skillName)
+		resolution.sourceLabel = "bundled skill fallback"
+		resolution.conformance = skillattr.ConformanceFallback
 		return resolution
 	}
-	resolution.mode = skillExecutionModeUnavailable
+	resolution.mode = skillattr.ExecutionModeUnavailable
+	resolution.conformance = skillattr.ConformanceUnavailable
 	return resolution
 }
 
@@ -119,9 +203,12 @@ func providerSkillVisible(providerName, home, skillName string) bool {
 
 func injectWorkflowSkillPrompt(prompt, providerName string, resolution workflowSkillResolution) string {
 	basePrompt := stripSkillInvocations(prompt, []string{resolution.name})
-	source := resolution.path
+	source := resolution.sourceLabel
 	if source == "" {
-		source = "bundled skill fallback"
+		source = "resolved skill source"
+	}
+	if resolution.sourceHash != "" {
+		source += " #" + resolution.sourceHash
 	}
 	return fmt.Sprintf(
 		"Mandatory workflow skill %q is not natively visible to provider %s. Follow the injected instructions below instead of invoking the skill directly.\n\n--- BEGIN INJECTED SKILL: %s (%s) ---\n%s\n--- END INJECTED SKILL: %s ---\n\n%s",
@@ -266,6 +353,21 @@ func cloneSkillNames(names []string) []string {
 }
 
 func discoverCopilotSkills() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return discoverCopilotSkillsInHome(home)
+}
+
+// discoverOpencodeSkills returns the skill names Sybra strips from opencode
+// prompts. opencode has no native slash-skill support (providerSkillVisible
+// returns false for it, so workflow skills are always injected), and Sybra
+// syncs no dedicated ~/.opencode/skills dir — so it reuses the same generic
+// cross-provider skill set copilot strips against. Without stripping, a stray
+// Claude-style /skill invocation would be handed to opencode verbatim and run
+// as a shell path.
+func discoverOpencodeSkills() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil

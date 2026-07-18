@@ -257,23 +257,29 @@ func TestAggregateByProjectType(t *testing.T) {
 	byProject := []stats.GroupedStat{
 		{Key: "Automaat/sybra", Stats: stats.Summary{
 			TotalCostUSD: 1.0, TotalRuns: 4, TotalDurationS: 200,
+			FailedRuns:       1,
 			TotalInputTokens: 1000, TotalOutputTokens: 500,
 			TotalCacheCreationInputTokens: 300, TotalCacheReadInputTokens: 400,
 			TotalPremiumRequests: 2.5,
+			OutcomeCounts:        map[string]int{"completed": 3, "failed": 1},
 			AvgCostPerRun:        0.25, AvgDurationS: 50,
 		}},
 		{Key: "Automaat/zsh-clean-history", Stats: stats.Summary{
 			TotalCostUSD: 0.5, TotalRuns: 2, TotalDurationS: 100,
 			TotalCacheCreationInputTokens: 30, TotalCacheReadInputTokens: 40,
 			TotalPremiumRequests: 1.5,
+			OutcomeCounts:        map[string]int{"completed": 2},
 			AvgCostPerRun:        0.25, AvgDurationS: 50,
 		}},
 		{Key: "kumahq/kuma", Stats: stats.Summary{
 			TotalCostUSD: 3.0, TotalRuns: 6, TotalDurationS: 600,
+			FailedRuns:    2,
+			OutcomeCounts: map[string]int{"completed": 4, "failed": 2},
 			AvgCostPerRun: 0.5, AvgDurationS: 100,
 		}},
 		{Key: "no/such-project", Stats: stats.Summary{
 			TotalCostUSD: 0.1, TotalRuns: 1, TotalDurationS: 10,
+			OutcomeCounts: map[string]int{"completed": 1},
 			AvgCostPerRun: 0.1, AvgDurationS: 10,
 		}},
 	}
@@ -298,6 +304,9 @@ func TestAggregateByProjectType(t *testing.T) {
 	if pet.TotalRuns != 6 {
 		t.Errorf("pet.totalRuns: got %d, want 6", pet.TotalRuns)
 	}
+	if pet.FailedRuns != 1 {
+		t.Errorf("pet.failedRuns: got %d, want 1", pet.FailedRuns)
+	}
 	if !nearly(pet.TotalCostUSD, 1.5) {
 		t.Errorf("pet.totalCost: got %f, want 1.5", pet.TotalCostUSD)
 	}
@@ -316,10 +325,16 @@ func TestAggregateByProjectType(t *testing.T) {
 	if !nearly(pet.TotalPremiumRequests, 4.0) {
 		t.Errorf("pet premium requests: got %f, want 4.0", pet.TotalPremiumRequests)
 	}
+	if pet.OutcomeCounts["completed"] != 5 || pet.OutcomeCounts["failed"] != 1 {
+		t.Errorf("pet outcome counts: got %+v, want completed=5 failed=1", pet.OutcomeCounts)
+	}
 
 	work := find(t, out, "work")
 	if work.TotalRuns != 6 || !nearly(work.TotalCostUSD, 3.0) {
 		t.Errorf("work bucket wrong: %+v", work)
+	}
+	if work.FailedRuns != 2 || work.OutcomeCounts["failed"] != 2 {
+		t.Errorf("work failure counts wrong: %+v", work)
 	}
 
 	unknown := find(t, out, "(unknown)")
@@ -347,7 +362,8 @@ func TestAggregateByProjectType_SkipsZeroBuckets(t *testing.T) {
 
 func find(t *testing.T, gs []stats.GroupedStat, key string) stats.Summary {
 	t.Helper()
-	for _, g := range gs {
+	for i := range gs {
+		g := gs[i]
 		if g.Key == key {
 			return g.Stats
 		}

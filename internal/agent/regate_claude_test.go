@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/limits"
 )
 
 // TestRegateBeforeClaudeTurn_HealthyClaudeNoOp verifies that when Claude
@@ -105,6 +107,43 @@ func TestRegateBeforeClaudeTurn_NoPeerRejected(t *testing.T) {
 	}
 	if a.GetErrorKind() != "rate_limit" {
 		t.Errorf("expected rate_limit error kind, got %q", a.GetErrorKind())
+	}
+}
+
+// TestRegateBeforeClaudeTurn_SoftThresholdLastResort pins that the soft-
+// threshold last resort does not require the current provider to be per-turn-
+// capable. Claude never is (UsesPerTurnConvo() is false), so a check written
+// against the per-turn caller alone would strand every soft-capped claude
+// session — the same stranding the per-turn path suffered (#2150), just
+// arriving through regateBeforeClaudeTurn instead.
+func TestRegateBeforeClaudeTurn_SoftThresholdLastResort(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "claude",
+		LimitGate: &fakeLimitGate{
+			available:  map[string]bool{"claude": false},
+			reasons:    map[string]string{"claude": "session limit near threshold"},
+			chooseNone: true,
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{ID: "cn4", Provider: "claude"}
+	got, switched, err := m.regateBeforeClaudeTurn(t.Context(), a, RunConfig{Provider: "claude", TaskID: "tcn4"})
+	if err != nil {
+		t.Fatalf("soft threshold with no peer must not block claude's turn: %v", err)
+	}
+	if switched {
+		t.Error("switched = true, want false: there is no peer to switch to")
+	}
+	if got.Provider != "claude" {
+		t.Errorf("cfg.Provider = %q, want claude (spend the remaining budget)", got.Provider)
+	}
+	if a.GetErrorKind() != "" {
+		t.Errorf("error kind = %q, want empty: a soft threshold is not a rate-limit failure", a.GetErrorKind())
 	}
 }
 

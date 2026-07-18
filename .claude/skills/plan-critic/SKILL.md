@@ -18,11 +18,12 @@ Critique an implementation plan **before** any code is written. The cost of revi
 
 **Core principle:** A plan that names files generically has not been read. A plan that references `verify_jwt_token` at `auth/middleware.go:42` has been read. The job of this skill is to tell those apart and force the second.
 
-**Sybra contract rule:** Sybra stores research/council evidence separately from
-the canonical plan. Treat the canonical plan as a compact execution contract:
-approve it when it names the decision, scope, files, ordered steps,
-verification, and stop conditions. Do not require council synthesis, critique
-history, persona names, or long rationale inside the execution contract.
+**Sybra contract rule:** Sybra stores research evidence — including the
+planner's scrutiny answers — separately from the canonical plan. Treat the
+canonical plan as a compact execution contract: approve it when it names the
+decision, scope, files, ordered steps, verification, and stop conditions. Do
+not require scrutiny answers, critique history, or long rationale inside the
+execution contract; flag them as bloat when they appear there.
 
 ## Arguments
 
@@ -104,7 +105,7 @@ The Grounding agent must:
 
 ### Phase 3: Persona Review (parallel subagents when available)
 
-Read [references/personas.md](references/personas.md) in full before spawning Phase 3 agents — it contains the exact instruction blocks for each persona.
+Read [references/personas.md](references/personas.md) in full before spawning Phase 3 agents — it contains the exact instruction blocks for each persona. If that file is not present (e.g. an embedded-only deployment with no repo checkout), use the three one-line persona descriptions below as the prompts instead.
 
 Spawn three subagents **in parallel** when the runtime supports it, using the prompts in personas.md. Claude uses `Agent`; Codex uses its available subagent tool. If subagents are unavailable, run the three reviews locally as separate sections:
 
@@ -132,7 +133,7 @@ After synthesis, act on the verdict before producing output. This is a hard requ
 
 **1. Auto-apply (only on REFINE verdict):**
 
-- If the plan was given as a **file path** → use `Edit` to modify the plan file in place. Apply each refinement directly: add missing steps, correct file/symbol references using the Grounding Brief, insert verification criteria, update caller lists. Preserve the plan's original compact execution-contract structure and voice. Do not paste the review's forensic evidence, critique history, or council rationale into the plan.
+- If the plan was given as a **file path** → use `Edit` to modify the plan file in place. Apply each refinement directly: add missing steps, correct file/symbol references using the Grounding Brief, insert verification criteria, update caller lists. Preserve the plan's original compact execution-contract structure and voice. Do not paste the review's forensic evidence, critique history, or scrutiny answers into the plan.
 - If the plan was **inline** or **`--from-conversation`** → output the refined plan as a fenced markdown block in the final report under a `## Refined Plan` section. The user can copy it into wherever they manage plans.
 - On **APPROVE** → nothing to apply.
 - On **REJECT** → nothing to apply (plan needs re-doing from scratch). Do not attempt to fix a rejected plan.

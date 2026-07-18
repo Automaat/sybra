@@ -509,6 +509,15 @@ func (s *TaskService) AssignTask(t task.Task) error {
 		s.logger.Debug("cluster.task.assign.noop", "task", current.ID, "assigned_node", current.AssignedNode, "status", string(current.Status))
 		return nil
 	}
+	// Leader-owned mirror bookkeeping (see normalizeAssignedTaskForCompare)
+	// must never reach the local store: Assigner.Route forwards the leader's
+	// canonical copy as-is, so a task re-routed after prior mirror cycles
+	// still carries a stale MirrorRev/MirrorUpdatedAt here. Store.Put reads
+	// those fields as proof this Put came through Merge; left untouched,
+	// this write would masquerade as mirror-authoritative and bypass its
+	// plain staleness guard.
+	t.MirrorRev = 0
+	t.MirrorUpdatedAt = nil
 	saved, created, err := s.tasks.Put(t)
 	if err != nil {
 		return fmt.Errorf("assign task: %w", err)
@@ -967,6 +976,13 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 		return
 	}
 	viewer := s.viewerLoginFunc()()
+	if viewer == "" {
+		// Guessing "not mine" is irreversible: it points a review agent at our
+		// own PR and, via u.Tags, drops the enrich-pending marker reconcile
+		// retries on. Bail before any Update so the retry survives.
+		s.logger.Warn("enrich-pr.no-viewer", "task_id", taskID, "repo", repo, "number", number)
+		return
+	}
 
 	slug := task.Slugify(pr.Title)
 	u := task.Update{
@@ -985,7 +1001,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	labels := pr.Labels
 	u.Tags = &labels
 
-	isMyPR := viewer != "" && strings.EqualFold(pr.Author, viewer)
+	isMyPR := strings.EqualFold(pr.Author, viewer)
 	if isMyPR {
 		u.Status = task.Ptr(task.StatusInReview)
 		if _, err := s.tasks.Update(taskID, u); err != nil {

@@ -1051,6 +1051,7 @@ func TestMergeChecks(t *testing.T) {
 		wantPrePush   []string
 		wantCodegen   []string
 		wantVerify    []string
+		wantFocused   []FocusedCheck
 		wantNil       bool
 	}{
 		{
@@ -1106,9 +1107,41 @@ func TestMergeChecks(t *testing.T) {
 			wantCodegen:   []string{"app fmt"},
 		},
 		{
+			name: "repo wins focused",
+			repo: &ChecksConfig{Focused: []FocusedCheck{{
+				Name:     "repo",
+				Packages: []string{"./internal/workflow/..."},
+				Commands: []string{"go test ./internal/workflow/..."},
+			}}},
+			app: &ChecksConfig{Focused: []FocusedCheck{{
+				Name:     "app",
+				Paths:    []string{"internal/project/**"},
+				Commands: []string{"go test ./internal/project/..."},
+			}}},
+			wantFocused: []FocusedCheck{{
+				Name:     "repo",
+				Packages: []string{"./internal/workflow/..."},
+				Commands: []string{"go test ./internal/workflow/..."},
+			}},
+		},
+		{
 			name:    "empty codegen-only config collapses to nil",
 			repo:    &ChecksConfig{Codegen: []string{}},
 			wantNil: true,
+		},
+		{
+			name: "empty repo focused falls back to app",
+			repo: &ChecksConfig{Focused: []FocusedCheck{}},
+			app: &ChecksConfig{Focused: []FocusedCheck{{
+				Name:     "app",
+				Paths:    []string{"internal/project/**"},
+				Commands: []string{"go test ./internal/project/..."},
+			}}},
+			wantFocused: []FocusedCheck{{
+				Name:     "app",
+				Paths:    []string{"internal/project/**"},
+				Commands: []string{"go test ./internal/project/..."},
+			}},
 		},
 		{
 			name:       "verify only repo is non-nil",
@@ -1155,6 +1188,23 @@ func TestMergeChecks(t *testing.T) {
 			if !slicesEqual(got.Verify, tt.wantVerify) {
 				t.Errorf("Verify = %v, want %v", got.Verify, tt.wantVerify)
 			}
+			if len(got.Focused) != len(tt.wantFocused) {
+				t.Fatalf("Focused len = %d, want %d", len(got.Focused), len(tt.wantFocused))
+			}
+			for i := range got.Focused {
+				if got.Focused[i].Name != tt.wantFocused[i].Name {
+					t.Fatalf("Focused[%d].Name = %q, want %q", i, got.Focused[i].Name, tt.wantFocused[i].Name)
+				}
+				if !slicesEqual(got.Focused[i].Paths, tt.wantFocused[i].Paths) {
+					t.Fatalf("Focused[%d].Paths = %v, want %v", i, got.Focused[i].Paths, tt.wantFocused[i].Paths)
+				}
+				if !slicesEqual(got.Focused[i].Packages, tt.wantFocused[i].Packages) {
+					t.Fatalf("Focused[%d].Packages = %v, want %v", i, got.Focused[i].Packages, tt.wantFocused[i].Packages)
+				}
+				if !slicesEqual(got.Focused[i].Commands, tt.wantFocused[i].Commands) {
+					t.Fatalf("Focused[%d].Commands = %v, want %v", i, got.Focused[i].Commands, tt.wantFocused[i].Commands)
+				}
+			}
 		})
 	}
 }
@@ -1186,7 +1236,7 @@ func TestLoadRepoConfig_Missing(t *testing.T) {
 func TestLoadRepoConfig_Valid(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	content := "checks:\n  pre_commit:\n    - echo hello\n  pre_push:\n    - echo world\n"
+	content := "checks:\n  pre_commit:\n    - echo hello\n  pre_push:\n    - echo world\n  focused:\n    - name: workflow\n      paths:\n        - internal/workflow/**\n      packages:\n        - ./internal/workflow/...\n      commands:\n        - go test ./internal/workflow/...\n"
 	if err := os.WriteFile(filepath.Join(dir, ".sybra.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1202,6 +1252,15 @@ func TestLoadRepoConfig_Valid(t *testing.T) {
 	}
 	if len(cfg.Checks.PrePush) != 1 || cfg.Checks.PrePush[0] != "echo world" {
 		t.Errorf("PrePush = %v", cfg.Checks.PrePush)
+	}
+	if len(cfg.Checks.Focused) != 1 {
+		t.Fatalf("Focused len = %d, want 1", len(cfg.Checks.Focused))
+	}
+	if got := cfg.Checks.Focused[0]; got.Name != "workflow" ||
+		len(got.Paths) != 1 || got.Paths[0] != "internal/workflow/**" ||
+		len(got.Packages) != 1 || got.Packages[0] != "./internal/workflow/..." ||
+		len(got.Commands) != 1 || got.Commands[0] != "go test ./internal/workflow/..." {
+		t.Fatalf("Focused[0] = %#v", got)
 	}
 }
 

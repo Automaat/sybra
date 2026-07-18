@@ -312,6 +312,9 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			AgentID:                runs[i].AgentID,
 			Role:                   runs[i].Role,
 			Provider:               runs[i].Provider,
+			RequestedSkill:         runs[i].RequestedSkill,
+			SkillExecutionMode:     runs[i].SkillExecutionMode,
+			SkillConformance:       runs[i].SkillConformance,
 			StartedAt:              runs[i].StartedAt,
 			ProtocolViolation:      runs[i].ProtocolViolation,
 			TestOutcome:            runs[i].TestOutcome,
@@ -508,6 +511,26 @@ func (a *checkConfigGetterAdapter) VerifyCommands(ctx context.Context, taskID st
 	return merged.Verify
 }
 
+func (a *checkConfigGetterAdapter) FocusedChecks(ctx context.Context, taskID string) []project.FocusedCheck {
+	merged := a.mergedChecks(ctx, taskID)
+	if merged == nil {
+		return nil
+	}
+	return merged.Focused
+}
+
+func (a *checkConfigGetterAdapter) WorktreeBaseRef(ctx context.Context, taskID string) string {
+	t, err := a.tasks.Get(taskID)
+	if err != nil || t.ProjectID == "" || a.projects == nil {
+		return project.WorktreeBaseRefFresh
+	}
+	p, err := a.projects.Get(t.ProjectID)
+	if err != nil || p.WorktreeBaseRef != project.WorktreeBaseRefHead {
+		return project.WorktreeBaseRefFresh
+	}
+	return project.WorktreeBaseRefHead
+}
+
 func (a *checkConfigGetterAdapter) mergedChecks(ctx context.Context, taskID string) *project.ChecksConfig {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
@@ -522,7 +545,7 @@ func (a *checkConfigGetterAdapter) mergedChecks(ctx context.Context, taskID stri
 	if t.ProjectID != "" {
 		if p, pErr := a.projects.Get(t.ProjectID); pErr == nil {
 			appChecks = p.Checks
-			// Read checks.{codegen,verify} from the project's trusted default
+			// Read checks.{codegen,verify,focused} from the project's trusted default
 			// branch, never the checked-out worktree: the worktree's own
 			// .sybra.yaml may carry malicious commands planted by a
 			// compromised or prompt-injected agent, and these commands run
@@ -618,7 +641,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// agent.ErrMaxConcurrentReached into workflow.ErrAgentPoolBusy at the
 		// source, so every caller (this adapter, recovery.Recovery) sees the
 		// same benign sentinel without needing its own wrap here.
-		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, assignment)
+		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, outputSchema, assignment)
 		if err != nil {
 			return "", "", "", err
 		}
@@ -678,6 +701,8 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		OneShot:                 oneShot,
 		IgnoreConcurrencyLimit:  mode == "interactive",
 		RequestedSkill:          workflowRequestedSkill(prompt),
+		ForceInjectedSkill:      assignment.ForceInjectedSkill,
+		SkillRecoveryAttempt:    assignment.SkillRecoveryAttempt,
 		MaxTurns:                t.MaxTurns,
 		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode:  posture,
@@ -860,21 +885,24 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
 	if addErr := a.tasks.AddRunWithStatus(taskID, task.AgentRun{
-		AgentID:            ag.ID,
-		Role:               role,
-		Mode:               mode,
-		Provider:           ag.Provider,
-		Model:              ag.Model,
-		ExperimentID:       ag.ExperimentID,
-		VariantID:          ag.VariantID,
-		AssignmentUnit:     ag.AssignmentUnit,
-		AssignmentKey:      ag.AssignmentKey,
-		ReasoningEffort:    ag.ReasoningEffort,
-		SkillExecutionMode: ag.SkillExecutionMode,
-		OneShot:            cfg.OneShot,
-		State:              string(agent.StateRunning),
-		StartedAt:          ag.StartedAt,
-		Prompt:             cfg.Prompt,
+		AgentID:                 ag.ID,
+		Role:                    role,
+		Mode:                    mode,
+		Provider:                ag.Provider,
+		Model:                   ag.Model,
+		ExperimentID:            ag.ExperimentID,
+		VariantID:               ag.VariantID,
+		AssignmentUnit:          ag.AssignmentUnit,
+		AssignmentKey:           ag.AssignmentKey,
+		ReasoningEffort:         ag.ReasoningEffort,
+		RequestedSkill:          ag.RequestedSkill,
+		SkillExecutionMode:      ag.SkillExecutionMode,
+		ResolvedSkillSourceHash: ag.ResolvedSkillSourceHash,
+		SkillConformance:        ag.SkillConformance,
+		OneShot:                 cfg.OneShot,
+		State:                   string(agent.StateRunning),
+		StartedAt:               ag.StartedAt,
+		Prompt:                  cfg.Prompt,
 	}, nextStatus); addErr != nil {
 		if errors.Is(addErr, os.ErrNotExist) {
 			// A stale workflow dispatcher can lose the task underneath it

@@ -529,10 +529,21 @@ export class StepConfig {
     "model": string;
 
     /**
-     * "", "claude", "codex", "copilot", "cross"
+     * "", "claude", "codex", "copilot", "opencode", "cross", "ab"
      */
     "provider": string;
     "prompt": string;
+
+    /**
+     * AllowedTools is advisory, not a capability boundary. Only claude enforces
+     * it (as --allowedTools); codex has no per-tool allowlist at all, and
+     * copilot spawns with --allow-all-tools. Since provider: ab / cross pick the
+     * provider at dispatch, the same step is enforced on a claude spawn and
+     * unenforced on the copilot spawn beside it — dispatch logs
+     * agent.run.allowed_tools.unenforced whenever that happens. For containment
+     * that binds every provider, rely on the OS-level sandbox instead (see
+     * internal/agent/procsandbox_*.go).
+     */
     "allowedTools": string[];
     "needsWorktree": boolean;
 
@@ -584,6 +595,26 @@ export class StepConfig {
      * warning output instead of flipping the task to human-required.
      */
     "allowMissing": boolean;
+
+    /**
+     * clear_plan_artifacts: which sidecars to clear before the cycle that
+     * follows. Same values as Sidecar.
+     */
+    "clearSidecars"?: string[];
+
+    /**
+     * ClearWorktreeGlobs names the agent-written files to unlink, relative to
+     * the worktree. Each entry must be a bare filename pattern: no absolute
+     * path, no "..", no path separator — clearWorktreeGlob rejects anything
+     * that would let a pattern escape the worktree. Every sidecar in
+     * ClearSidecars needs its file covered by one of these, since either half
+     * alone still serves the previous cycle's content: a surviving file is
+     * exactly what the next import reads back, and a surviving sidecar is
+     * exactly what an absent file leaves untouched (#2191). Note the families
+     * do not share a prefix — plan_critique's file is .sybra-critique-<id>.md,
+     * not .sybra-plan-*.
+     */
+    "clearWorktreeGlobs"?: string[];
 
     /**
      * run_agent: when set, the engine ingests a file produced by the agent
@@ -718,9 +749,11 @@ export class StepConfig {
         const $$createField5_0 = $$createType24;
         const $$createField7_0 = $$createType24;
         const $$createField10_0 = $$createType26;
-        const $$createField18_0 = $$createType28;
-        const $$createField19_0 = $$createType29;
-        const $$createField22_0 = $$createType24;
+        const $$createField18_0 = $$createType24;
+        const $$createField19_0 = $$createType24;
+        const $$createField20_0 = $$createType28;
+        const $$createField21_0 = $$createType29;
+        const $$createField24_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField5_0($$parsedSource["allowedTools"]);
@@ -731,14 +764,20 @@ export class StepConfig {
         if ("check" in $$parsedSource) {
             $$parsedSource["check"] = $$createField10_0($$parsedSource["check"]);
         }
+        if ("clearSidecars" in $$parsedSource) {
+            $$parsedSource["clearSidecars"] = $$createField18_0($$parsedSource["clearSidecars"]);
+        }
+        if ("clearWorktreeGlobs" in $$parsedSource) {
+            $$parsedSource["clearWorktreeGlobs"] = $$createField19_0($$parsedSource["clearWorktreeGlobs"]);
+        }
         if ("importSidecar" in $$parsedSource) {
-            $$parsedSource["importSidecar"] = $$createField18_0($$parsedSource["importSidecar"]);
+            $$parsedSource["importSidecar"] = $$createField20_0($$parsedSource["importSidecar"]);
         }
         if ("importSidecars" in $$parsedSource) {
-            $$parsedSource["importSidecars"] = $$createField19_0($$parsedSource["importSidecars"]);
+            $$parsedSource["importSidecars"] = $$createField21_0($$parsedSource["importSidecars"]);
         }
         if ("attemptProviders" in $$parsedSource) {
-            $$parsedSource["attemptProviders"] = $$createField22_0($$parsedSource["attemptProviders"]);
+            $$parsedSource["attemptProviders"] = $$createField24_0($$parsedSource["attemptProviders"]);
         }
         return new StepConfig($$parsedSource as Partial<StepConfig>);
     }
@@ -814,9 +853,30 @@ export enum StepType {
     StepLinkPRAndReview = "link_pr_and_review",
     StepEvaluate = "evaluate",
     StepRequireSidecar = "require_sidecar",
+
+    /**
+     * StepClearPlanArtifacts wipes a planning cycle's outputs — both the task
+     * sidecars and the agent-written files in the worktree — so that every
+     * artifact the next cycle presents was written by the planner that owns it.
+     * A replan reuses the same worktree and the files are git-excluded rather
+     * than deleted, so without this the next cycle re-imports the last one's
+     * bytes and the require_sidecar guards pass on them: they assert non-empty,
+     * and stale content is non-empty (#2191).
+     */
+    StepClearPlanArtifacts = "clear_plan_artifacts",
     StepValidatePlan = "validate_plan",
     StepValidatePlanContract = "validate_plan_contract",
     StepTriageReview = "triage_review",
+
+    /**
+     * StepFlagPlanCritique reads the plan-critic verdict (the "## Verdict:
+     * APPROVE|REFINE|REJECT" line, per the /plan-critic skill's Phase 6
+     * contract) and, on REFINE/REJECT, appends a note to the task body so
+     * the verdict is impossible to miss at the review_plan approval gate.
+     * Never blocks progression itself — review_plan's human approve/reject
+     * step already runs every time regardless of verdict.
+     */
+    StepFlagPlanCritique = "flag_plan_critique",
 
     /**
      * StepDetectTampering inspects the worktree diff for reward-hacking /
@@ -835,6 +895,13 @@ export enum StepType {
      * incomplete/broken work committed without the suite passing.
      */
     StepVerifyChecks = "verify_checks",
+
+    /**
+     * StepFocusedChecks runs cheap changed-surface checks selected from the
+     * project's configured checks.focused mappings. It is an author-loop speed
+     * gate only; the final full project contract remains verify_checks.
+     */
+    StepFocusedChecks = "focused_checks",
 
     /**
      * StepRoutePRFixResult inspects the completed pr-fix agent output before

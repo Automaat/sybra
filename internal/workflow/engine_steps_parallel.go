@@ -129,6 +129,7 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	if err != nil {
 		return err
 	}
+	applySkillReceiptRecoveryAssignment(child.ID, wfExec, &assignment)
 
 	prompt, err := e.renderAssignedPrompt(taskID, child, childCtx, assignment, "workflow.parallel.consume-steer")
 	if err != nil {

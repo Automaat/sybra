@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 func TestRunJSONFallsBackOnRateLimit(t *testing.T) {
@@ -363,5 +365,36 @@ func writeExe(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestRunJSONWithNilHealthChecker is the regression test for the config
+// docs/manual-testing.md recommends: providers.health_check.enabled=false.
+//
+// App.initProviderHealth leaves the checker nil there and callers box it into
+// Options.Gate, so `opts.Gate != nil` below is TRUE for a nil *Checker and the
+// IsHealthy call went straight into a nil dereference — crashing planning,
+// triage, PR content, umbrella expansion, and the digest, all of which reach
+// RunJSON through this line.
+func TestRunJSONWithNilHealthChecker(t *testing.T) {
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+printf '%s\n' '{"type":"result","subtype":"success","result":"{\"ok\":true}","total_cost_usd":0.01}'
+`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Exactly what the disabled-health-check path hands callers: a nil
+	// *provider.Checker in a non-nil provider.HealthGate interface.
+	var gate provider.HealthGate = (*provider.Checker)(nil)
+
+	res, err := RunJSON(context.Background(), "hi", Options{Provider: "claude", Gate: gate})
+	if err != nil {
+		t.Fatalf("RunJSON with health checks disabled: %v", err)
+	}
+	if res.Provider != "claude" {
+		t.Errorf("Provider = %q, want claude: an absent gate must block nothing", res.Provider)
+	}
+	if !strings.Contains(res.Text, `"ok"`) {
+		t.Errorf("Text = %q, want the provider's payload", res.Text)
 	}
 }

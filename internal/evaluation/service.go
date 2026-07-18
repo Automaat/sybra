@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 )
 
@@ -165,20 +166,13 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		Overall:     Compute(recs, evts, since, now),
 		ByProvider:  BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Provider }),
 		ByRole:      BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Role }),
-		ByAgentModel: CompareByLatestAuthor(recs, evts, since, now, 20, func(r stats.RunRecord) string {
-			if r.Provider == "" || r.Model == "" {
-				return ""
-			}
-			return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
+		BySkillExecutionMode: BreakdownBy(recs, since, now, func(r stats.RunRecord) string {
+			return skillattr.NormalizeExecutionMode(r.SkillExecutionMode)
 		}),
-		ByAgentModelContribution: CompareByContribution(recs, evts, since, now, 20, func(r stats.RunRecord) string {
-			if r.Provider == "" || r.Model == "" {
-				return ""
-			}
-			return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
-		}),
-		ByExperimentKind: GroupByKind(byVariant, byVariantContribution, s.abTesting.Experiments),
-		Notes:            reportNotes(recs, since, now),
+		ByAgentModel:             CompareByLatestAuthor(recs, evts, since, now, 20, agentModelCohortKey),
+		ByAgentModelContribution: CompareByContribution(recs, evts, since, now, 20, agentModelCohortKey),
+		ByExperimentKind:         GroupByKind(byVariant, byVariantContribution, s.abTesting.Experiments),
+		Notes:                    reportNotes(recs, since, now),
 	}
 	rep.Weaknesses = Weaknesses(rep)
 	return rep, nil

@@ -34,6 +34,8 @@ type Update struct {
 	RunRole               *string
 	SupervisorSteer       *string
 	ReviewPhase           *string
+	ReviewedHeadSHA       *string
+	ReviewedHeadAttempts  *int
 	PRPhase               *string
 	TodoistID             *string
 	Priority              *Priority
@@ -90,7 +92,7 @@ func applyMapField(u *Update, k string, v any) error {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "todoist_id", "plan", "plan_critique",
 		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
-		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
+		"review_phase", "reviewed_head_sha", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
 	case "depends_on":
 		return applyDependsOnField(u, k, v)
@@ -108,6 +110,8 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyTagsField(u, k, v)
 	case "pr_number":
 		return applyPRNumberField(u, k, v)
+	case "reviewed_head_attempts":
+		return applyReviewedHeadAttemptsField(u, k, v)
 	case "max_turns":
 		return applyMaxTurnsField(u, v)
 	case "fork_subagent":
@@ -202,6 +206,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.CodeReview = &s
 	case "review_phase":
 		u.ReviewPhase = &s
+	case "reviewed_head_sha":
+		u.ReviewedHeadSHA = &s
 	case "pr_phase":
 		u.PRPhase = &s
 	case "outcome":
@@ -332,6 +338,19 @@ func applyDependsOnField(u *Update, k string, v any) error {
 		u.DependsOn = &parts
 	default:
 		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
+	}
+	return nil
+}
+
+func applyReviewedHeadAttemptsField(u *Update, k string, v any) error {
+	switch n := v.(type) {
+	case int:
+		u.ReviewedHeadAttempts = &n
+	case float64:
+		i := int(n)
+		u.ReviewedHeadAttempts = &i
+	default:
+		return fmt.Errorf("field %q: want int or float64, got %T", k, v)
 	}
 	return nil
 }

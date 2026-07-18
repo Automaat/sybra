@@ -739,3 +739,36 @@ func TestFailover_BothUnhealthySymmetric(t *testing.T) {
 		t.Errorf("Failover(claude) after codex recovery = %q, want codex", peer)
 	}
 }
+
+// TestNilChecker_IsAnAbsentGateNotAPanic pins the nil-receiver contract of the
+// HealthGate surface.
+//
+// providers.health_check.enabled=false leaves App.providerHealth nil, and every
+// caller boxes it into a provider.HealthGate. An interface holding a nil
+// pointer is not itself nil, so the callers' `if gate != nil` guards cannot
+// catch it — these methods are reached with c == nil and must answer as the
+// absent gate the disabled config promises. Before this, they panicked and took
+// planning, triage, PR content, umbrella expansion, and the digest with them.
+func TestNilChecker_IsAnAbsentGateNotAPanic(t *testing.T) {
+	t.Parallel()
+
+	// govet's nilness proves `gate == nil` is impossible here, which is the
+	// whole trap in one line: a caller's nil check cannot save it either, and
+	// the compiler will not warn them across a function boundary.
+	var gate HealthGate = (*Checker)(nil)
+
+	if !gate.IsHealthy("codex") {
+		t.Error("IsHealthy = false; an absent gate blocks nothing")
+	}
+	if gate.RateLimited("codex") {
+		t.Error("RateLimited = true; an absent gate knows of no cooldown")
+	}
+	if got := gate.Reason("codex"); got != "" {
+		t.Errorf("Reason = %q, want empty", got)
+	}
+	if got := gate.Failover("codex"); got != "" {
+		t.Errorf("Failover = %q, want empty: an absent gate has no view to fail over with", got)
+	}
+	gate.ReportAuthFailure("codex", "logged_out")
+	gate.ReportRateLimit("codex", time.Minute, "429")
+}

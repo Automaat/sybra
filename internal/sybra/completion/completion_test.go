@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -165,6 +166,199 @@ func TestIsRateLimitedRun(t *testing.T) {
 				t.Errorf("isRateLimitedRun = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildRunPatchIncludesSkillAttributionMetadata(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleImplementation.AgentName("Impl"),
+		Model:                   "gpt-5",
+		Provider:                "codex",
+		LogPath:                 "/tmp/agent.log",
+		RequestedSkill:          "sybra-test",
+		SkillExecutionMode:      skillattr.ExecutionModeInjected,
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceExact,
+	}
+	ag.SetSessionID("sess-1")
+	ag.NoteSubagentCall("tool-1")
+	ag.NoteSubagentCall("tool-1")
+	ag.NoteSubagentCall("tool-2")
+
+	resultWithReceipt := "done\n" + skillattr.ReceiptMarker("sybra-test", "deadbeefcafebabe")
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 1.25, 0, resultWithReceipt, nil)
+
+	if patch.RequestedSkill == nil || *patch.RequestedSkill != "sybra-test" {
+		t.Fatalf("RequestedSkill = %v, want sybra-test", patch.RequestedSkill)
+	}
+	if patch.SkillExecutionMode == nil || *patch.SkillExecutionMode != skillattr.ExecutionModeInjected {
+		t.Fatalf("SkillExecutionMode = %v, want %q", patch.SkillExecutionMode, skillattr.ExecutionModeInjected)
+	}
+	if patch.ResolvedSkillSourceHash == nil || *patch.ResolvedSkillSourceHash != "deadbeefcafebabe" {
+		t.Fatalf("ResolvedSkillSourceHash = %v, want deadbeefcafebabe", patch.ResolvedSkillSourceHash)
+	}
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceExact {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceExact)
+	}
+	if patch.SubagentCallCount == nil || *patch.SubagentCallCount != 2 {
+		t.Fatalf("SubagentCallCount = %v, want 2 distinct parents", patch.SubagentCallCount)
+	}
+}
+
+// TestBuildRunPatchDowngradesConformanceWhenReceiptMissing covers #2009: a
+// process can exit cleanly and produce a plausible result without the
+// mandatory workflow skill's transcript ever proving it was followed. The
+// pre-execution ConformanceExact/ConformanceFallback classification (set by
+// resolveWorkflowSkillPrompt before the agent ran) must be downgraded to
+// ConformanceUnverified when the result carries no matching receipt, so a
+// fake/incomplete artifact can never be recorded as a first-pass conformant
+// run.
+func TestBuildRunPatchDowngradesConformanceWhenReceiptMissing(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		conformance string
+	}{
+		{"exact_without_receipt", skillattr.ConformanceExact},
+		{"fallback_without_receipt", skillattr.ConformanceFallback},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ag := &agent.Agent{
+				ID:                      "ag-1",
+				TaskID:                  "task-1",
+				Name:                    agent.RoleImplementation.AgentName("Impl"),
+				RequestedSkill:          "sybra-test",
+				ResolvedSkillSourceHash: "deadbeefcafebabe",
+				SkillConformance:        tc.conformance,
+			}
+			patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "looks done, no receipt here", nil)
+			if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceUnverified {
+				t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceUnverified)
+			}
+		})
+	}
+}
+
+// TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema is the regression
+// guard for #2235: a step enforcing OutputSchema constrains the agent's
+// final response to a structured payload with no room for a trailing
+// receipt line, so resolveWorkflowSkillPrompt never asks for one there. A
+// result with no receipt marker must not be downgraded to
+// ConformanceUnverified in that case — the schema enforcement itself stands
+// in as the conformance signal. Provider is pinned to "claude" explicitly
+// (rather than left empty) so this asserts the real provider-capability
+// gate rather than incidentally passing via lookupProvider's unrelated
+// empty-defaults-to-claude fallback — see
+// TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema for the
+// sibling case that would catch a provider actually ignoring the schema.
+func TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		conformance string
+	}{
+		{"exact_without_receipt", skillattr.ConformanceExact},
+		{"fallback_without_receipt", skillattr.ConformanceFallback},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ag := &agent.Agent{
+				ID:                      "ag-1",
+				TaskID:                  "task-1",
+				Name:                    agent.RoleTestRunner.AgentName("Test"),
+				Provider:                "claude",
+				RequestedSkill:          "sybra-test",
+				ResolvedSkillSourceHash: "deadbeefcafebabe",
+				SkillConformance:        tc.conformance,
+				OutputSchema:            `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+			}
+			patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS"}`, nil)
+			if patch.SkillConformance == nil || *patch.SkillConformance != tc.conformance {
+				t.Fatalf("SkillConformance = %v, want unchanged %q", patch.SkillConformance, tc.conformance)
+			}
+		})
+	}
+}
+
+// TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema guards the
+// adversarial-review follow-up to #2235: copilot never applies
+// RunConfig.OutputSchema, so a run routed to it under cross-provider
+// failover still got the receipt instruction (resolveWorkflowSkillPrompt)
+// and must still be verified here. Gating on OutputSchema's mere presence
+// instead of the real provider would wrongly skip the downgrade and record a
+// copilot run that ignored the skill as falsely conformant.
+func TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleTestRunner.AgentName("Test"),
+		Provider:                "copilot",
+		RequestedSkill:          "sybra-test",
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceFallback,
+		OutputSchema:            `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+	}
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "TEST_VERDICT: PASS", nil)
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceUnverified {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceUnverified)
+	}
+}
+
+func TestBuildRunPatchMarksVerifiedRecoveryAsRecovered(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleImplementation.AgentName("Impl"),
+		RequestedSkill:          "sybra-test",
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceExact,
+	}
+	ag.SetSkillRecoveryAttempt(true)
+
+	result := "done\n" + skillattr.ReceiptMarker("sybra-test", "deadbeefcafebabe")
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, result, nil)
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceRecovered {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceRecovered)
+	}
+}
+
+func TestBuildRunPatchFindsReceiptInEarlierAssistantMessage(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleTestRunner.AgentName("Test"),
+		RequestedSkill:          "sybra-test",
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceExact,
+	}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: "Followed the skill.\n" + skillattr.ReceiptMarker("sybra-test", "deadbeefcafebabe"),
+	})
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"verdict":"PASS","outcome":"pass"}`,
+	})
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: ""})
+
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS","outcome":"pass"}`, nil)
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceExact {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceExact)
 	}
 }
 

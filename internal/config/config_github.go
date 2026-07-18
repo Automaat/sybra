@@ -26,7 +26,14 @@ type GitHubConfig struct {
 	// default. Raised defaults (vs. the original 1m/5m) cut steady-state request
 	// volume; lower them only on a high-limit (App-token) instance.
 	ReviewsFastSeconds int `yaml:"reviews_fast_seconds" json:"reviewsFastSeconds"`
-	ReviewsSlowSeconds int `yaml:"reviews_slow_seconds" json:"reviewsSlowSeconds"`
+	// ReviewRoundsPerHour caps automated review runs one PR may receive in a
+	// rolling hour before the task is parked for a human. 0 uses the default;
+	// negative disables the cap. Rate-based rather than a lifetime total so a
+	// long-lived PR that is legitimately re-reviewed after each push is never
+	// blocked, while a runaway loop is stopped within the hour (#2164 sustained
+	// ~5/hour for 23 hours).
+	ReviewRoundsPerHour int `yaml:"review_rounds_per_hour" json:"reviewRoundsPerHour"`
+	ReviewsSlowSeconds  int `yaml:"reviews_slow_seconds" json:"reviewsSlowSeconds"`
 	// ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR
 	// poller fetches in one tick. Zero falls back to the built-in default;
 	// resolved non-positive values mean "unlimited".
@@ -58,6 +65,19 @@ type GitHubConfig struct {
 	// no agent is spawned; conflicts, no-op merges, and errors still fall
 	// through to the agent-assisted path. Default off (zero value = false).
 	AutoResolveCleanMerges bool `yaml:"auto_resolve_clean_merges" json:"autoResolveCleanMerges"`
+	// FlakyDetection is a kill-switch for same-commit CI flakiness
+	// classification. When true, a lone ci_failure issue is classified via
+	// ClassifyCIFlakiness (the head commit's full check-run history, not just
+	// the latest attempt) before it is escalated to a fix agent or a human: a
+	// check that both passed and failed on the same SHA at or above
+	// FlakySuccessThreshold is flaky, and gets a targeted rerun plus a
+	// distinct audit event instead. Default off (zero value = false).
+	FlakyDetection bool `yaml:"flaky_detection" json:"flakyDetection"`
+	// FlakySuccessThreshold is the minimum same-check success rate (0-1) for
+	// a currently-failing gating check to be classified flaky rather than
+	// deterministic. Zero falls back to the built-in default; see
+	// GitHubConfig.FlakyThreshold().
+	FlakySuccessThreshold float64 `yaml:"flaky_success_threshold" json:"flakySuccessThreshold"`
 }
 
 // GitHubAppConfig holds GitHub App installation-token credentials. The private
