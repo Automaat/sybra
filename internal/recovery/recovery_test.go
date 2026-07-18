@@ -1111,6 +1111,83 @@ func TestRestartStalePRFixRebaseFailedFlipsToHumanRequired(t *testing.T) {
 	}
 }
 
+// TestRestartStaleShutdownCancellationSuppressed is a regression guard for
+// sybra#2291's own reproduction: the incident's log line was literally
+// "restart-stale.failed", emitted by this package's StartAgent dispatch on
+// this exact code path. A graceful server shutdown cancels the context this
+// sweep runs under mid-dispatch, so StartAgent returns a context.Canceled
+// error for a task that has nothing wrong with it. Recovery.surfaceStartFailure
+// must recognize that shape (via workflow.IsShutdownCancellation) and leave
+// the task alone — no StatusReason overwrite, no status change — rather than
+// writing a misleading "agent start failed: ...context canceled..." reason on
+// every stale-restart sweep tick until the new instance resumes dispatching.
+func TestRestartStaleShutdownCancellationSuppressed(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agentsCtx, cancelAgents := context.WithCancel(t.Context())
+	t.Cleanup(cancelAgents)
+	agents := newTestAgentManager(t, agentsCtx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("shutdown-cancelled stale restart", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	projID := "owner/repo"
+	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{
+		startErr: fmt.Errorf("worktree required for project task: %w",
+			fmt.Errorf("fetch origin: git fetch origin +refs/heads/*:refs/remotes/origin/*: %w", context.Canceled)),
+	}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Projects:     stubProjects{},
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+	}
+
+	// The sweep's own context is already cancelled — simulating the exact
+	// moment a graceful shutdown fires mid-sweep.
+	shutdownCtx, cancelShutdown := context.WithCancel(context.Background())
+	cancelShutdown()
+	r.RestartStaleInProgress(shutdownCtx)
+	wg.Wait()
+
+	if stub.startCalls != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1", stub.startCalls)
+	}
+	updated, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInProgress {
+		t.Errorf("status = %s, want unchanged %s", updated.Status, task.StatusInProgress)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status reason = %q, want empty (shutdown cancellation must not surface a reason)", updated.StatusReason)
+	}
+}
+
 // stubWorkflowEngine implements recovery.WorkflowRestarter for tests that need
 // a non-nil engine without a real workflow store.
 type stubWorkflowEngine struct {

@@ -646,6 +646,51 @@ func TestSurfaceStartFailure_ShutdownCancellationDoesNotTripBreaker(t *testing.T
 	}
 }
 
+// TestSurfaceStartFailure_ShutdownCancellationSkipsConflictRecoveryToo is a
+// regression guard for a gap an adversarial review found in the initial fix
+// for sybra#2291: reconcileAndRebase's ReconcileWithRemote step wraps a
+// shutdown-cancelled fetch in ErrRebaseFailed rather than ErrTransientFetch
+// (project.IsTransientNetworkError doesn't recognize "context canceled" as a
+// transient network blip). A shutdown-cancellation check placed only inside
+// surfaceStartFailureClassified would miss this shape entirely: the
+// ErrRebaseFailed match in surfaceStartFailure fires FIRST and dispatches a
+// real autonomous branch-conflict-recovery agent for a branch that has no
+// actual conflict — work that is itself guaranteed to be cancelled by the
+// same shutdown, on top of the circuit-breaker mass-trip the primary fix
+// targets. The shutdown-cancellation gate must run ahead of the
+// conflict-recovery branch so this shape is suppressed too.
+func TestSurfaceStartFailure_ShutdownCancellationSkipsConflictRecoveryToo(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate the app context already cancelled by graceful shutdown
+	engine.SetContext(shutdownCtx)
+
+	var recoveryCalled bool
+	engine.SetConflictRecovery(func(string) bool {
+		recoveryCalled = true
+		return true
+	})
+
+	// Same wrapping shape reconcileAndRebase produces when ReconcileWithRemote
+	// hits a shutdown-cancelled fetch: ErrRebaseFailed wrapping context.Canceled,
+	// not ErrTransientFetch.
+	wrapped := fmt.Errorf("%w: reconcile branch with remote: %w", worktreeerr.ErrRebaseFailed, context.Canceled)
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "implement")
+
+	if recoveryCalled {
+		t.Fatal("shutdown cancellation wrapped in ErrRebaseFailed triggered branch-conflict recovery")
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status == "human-required" {
+		t.Fatal("shutdown cancellation wrapped in ErrRebaseFailed escalated task to human-required")
+	}
+	if reason := tasks.Reason("t1"); reason != "" {
+		t.Errorf("shutdown cancellation wrote status_reason %q, want none", reason)
+	}
+}
+
 // TestSurfaceStartFailure_ContextCanceledStillTripsBreakerWhenNotShuttingDown
 // guards the flip side of the shutdown-cancellation suppression above: a
 // context.Canceled error must still feed the circuit breaker normally when
