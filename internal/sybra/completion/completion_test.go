@@ -686,6 +686,17 @@ func TestLastAssistantText(t *testing.T) {
 		}
 	})
 
+	t.Run("skips_trailing_empty_assistant", func(t *testing.T) {
+		ag := makeAgent(
+			agent.StreamEvent{Type: "assistant", Content: `{"verdict":"FAIL"}`},
+			agent.StreamEvent{Type: "assistant", Content: ""},
+		)
+		got := lastAssistantText(ag)
+		if got != `{"verdict":"FAIL"}` {
+			t.Errorf("lastAssistantText = %q, want JSON verdict", got)
+		}
+	})
+
 	// B3 fallback: result event empty → falls back to last assistant text.
 	t.Run("b3_fallback_result_empty", func(t *testing.T) {
 		ag := makeAgent(
