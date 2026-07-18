@@ -127,6 +127,9 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 // added to the sandbox's writable roots under enforce, so the default
 // `--ro-bind / /` keeps it read-only regardless of RequirePermissions.
 func TestInjectProcessSandbox_ReadOnlyDirNeverBindsDirWritable(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("bwrap not installed; enforce path unexercised on this host")
+	}
 	m := newPostureManager("enforce")
 
 	dir := t.TempDir()
@@ -164,6 +167,9 @@ func TestInjectProcessSandbox_ReadOnlyDirNeverBindsDirWritable(t *testing.T) {
 	// (tmp/sandboxHome/sharedCache) to win when readOnlyDir sits inside one
 	// of them, e.g. a manual-test rig staging everything under one /tmp
 	// sandbox (the exact shape that shipped this bug).
+	if args == nil {
+		t.Fatalf("wrapInvocation returned nil args")
+	}
 	sep := slices.Index(args, "--")
 	if sep < 3 || args[sep-3] != "--ro-bind" || args[sep-2] != canonDir || args[sep-1] != canonDir {
 		t.Fatalf("ReadOnlyDir re-lock must be the last bind before the -- separator: %v", args)
