@@ -1041,11 +1041,13 @@ func (h *humanReviewHandler) releaseReservedSlot(taskID string, reservedAt time.
 	h.mu.Lock()
 	delete(h.inflight, taskID)
 	h.recent = removeOneTimestamp(h.recent, reservedAt)
-	taskRecent := removeOneTimestamp(h.perTask[taskID], reservedAt)
-	if len(taskRecent) == 0 {
-		delete(h.perTask, taskID)
-	} else {
-		h.perTask[taskID] = taskRecent
+	if taskRecent, ok := h.perTask[taskID]; ok {
+		taskRecent = removeOneTimestamp(taskRecent, reservedAt)
+		if len(taskRecent) == 0 {
+			delete(h.perTask, taskID)
+		} else {
+			h.perTask[taskID] = taskRecent
+		}
 	}
 	h.mu.Unlock()
 }
