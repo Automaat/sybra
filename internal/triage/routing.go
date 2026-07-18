@@ -28,9 +28,8 @@ func RouteStatus(size, taskType, projectType string) task.Status {
 // RouteMode returns the mode to persist for a triaged task. The LLM's pick is
 // currently passed through unchanged; headless is the preferred execution mode
 // (see the interactive-removal umbrella), so no project type is forced to
-// interactive.
+// interactive. taskType/projectType are retained in the signature for callers
+// and future routing.
 func RouteMode(llmMode, taskType, projectType string) string {
-	_ = taskType
-	_ = projectType
 	return llmMode
 }
