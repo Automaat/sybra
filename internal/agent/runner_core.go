@@ -49,14 +49,21 @@ type sandboxSpec struct {
 	// validated and logged by injectProcessSandbox but always stored as "off"
 	// so a profile/SBPL defect can only affect an explicit enforce posture,
 	// never the default rollout posture.
-	mode         string
-	worktree     string
-	gitMetadata  []string
-	gitShared    []string
-	gitReadonly  []string
-	sandboxHome  string
-	tmp          string
-	sharedCache  string
+	mode        string
+	worktree    string
+	gitMetadata []string
+	gitShared   []string
+	gitReadonly []string
+	sandboxHome string
+	tmp         string
+	sharedCache string
+	// readOnlyDir, when non-empty, is re-locked read-only after every writable
+	// root above is bound — see wrapInvocation. It must never be granted
+	// through worktree/sandboxHome/tmp/sharedCache: those are broad roots (tmp
+	// in particular is the whole system temp dir) that can legitimately
+	// contain readOnlyDir as a subdirectory, and a bind mount only shadows an
+	// ancestor's mount for paths bound *after* it.
+	readOnlyDir  string
 	profilePath  string
 	gitAdminDir  string
 	gitCommonDir string

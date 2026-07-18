@@ -52,6 +52,54 @@ func TestSandboxEnforce_FencesWritesToAllowlist(t *testing.T) {
 	}
 }
 
+// TestSandboxEnforce_ReadOnlyDirDeniesWritesEvenNestedInTmp reproduces the
+// manual-test failure from #1925: a human-review fallback checkout staged
+// under the system temp dir (as any manual/CI rig using one isolated /tmp
+// sandbox does) must still be write-denied under enforce, even though tmp
+// itself is one of the sandbox's writable roots.
+func TestSandboxEnforce_ReadOnlyDirDeniesWritesEvenNestedInTmp(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("bwrap not installed; enforce path unexercised on this host")
+	}
+
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	readOnlyDir, err := os.MkdirTemp(tmp, "human-review-src-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	sandboxHome, err := os.MkdirTemp(tmp, "sandbox-home-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxHome, nil },
+	})
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-human-review",
+		Mode:        "headless",
+		Dir:         readOnlyDir,
+		ReadOnlyDir: true,
+		SandboxMode: "enforce",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+
+	script := "(touch " + filepath.Join(readOnlyDir, "write-probe.txt") + " 2>/dev/null && echo WROTE) || echo DENIED"
+	cmd := newProviderCmd(context.Background(), &cfg, false, "sh", "-c", script)
+	cmd.Dir = readOnlyDir
+	out, runErr := cmd.CombinedOutput()
+	got := string(out)
+	if strings.Contains(got, "WROTE") || !strings.Contains(got, "DENIED") {
+		t.Fatalf("read-only fallback checkout must be write-denied even nested under tmp (err=%v): %q", runErr, got)
+	}
+	if _, statErr := os.Stat(filepath.Join(readOnlyDir, "write-probe.txt")); statErr == nil {
+		t.Fatalf("write-probe.txt exists — read-only fallback checkout was writable")
+	}
+}
+
 func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("bwrap not installed; enforce path unexercised on this host")
