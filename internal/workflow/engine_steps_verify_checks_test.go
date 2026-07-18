@@ -19,6 +19,7 @@ import (
 
 type fakeCheckGetter struct {
 	cmds            []string
+	cmdsByTask      map[string][]string
 	codegen         []string
 	setup           []string
 	focused         []project.FocusedCheck
@@ -27,7 +28,12 @@ type fakeCheckGetter struct {
 
 func (f *fakeCheckGetter) CodegenCommands(context.Context, string) []string { return f.codegen }
 
-func (f *fakeCheckGetter) VerifyCommands(context.Context, string) []string { return f.cmds }
+func (f *fakeCheckGetter) VerifyCommands(_ context.Context, taskID string) []string {
+	if f.cmdsByTask != nil {
+		return f.cmdsByTask[taskID]
+	}
+	return f.cmds
+}
 
 func (f *fakeCheckGetter) SetupCommands(context.Context, string) []string { return f.setup }
 
@@ -352,6 +358,132 @@ func TestExecVerifyChecks_TimeoutRetryAbsorbsLoadSpike(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged (retry passed, no human-required)", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T) {
+	wt1 := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	wt2 := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	blocking := "touch .verify-entered; while [ ! -f .verify-release ]; do sleep 0.05; done"
+
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "wf2",
+		Name: "verify checks retry",
+		Steps: []Step{
+			{ID: "verify_checks", Type: StepVerifyChecks, Next: []Transition{{GoTo: ""}}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	engine := NewEngine(store, newMemTasks(), newMockAgents(), slog.New(slog.NewTextHandler(&logs, nil)))
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{
+		ok: true,
+		paths: map[string]string{
+			"t1": wt1,
+			"t2": wt2,
+		},
+	})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{cmdsByTask: map[string][]string{
+		"t1": {blocking},
+		"t2": {"true"},
+	}})
+	tasks := engine.tasks.(*memTasks)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{ID: "t2", Status: "in-progress"})
+
+	type result struct {
+		out StepOutput
+		err error
+	}
+	firstDone := make(chan result, 1)
+	go func() {
+		out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(),
+			&Execution{WorkflowID: "wf1", CurrentStep: "verify_checks", State: ExecRunning, Variables: map[string]string{}},
+			TaskInfo{ID: "t1", Status: "in-progress"})
+		firstDone <- result{out: out, err: err}
+	}()
+
+	waitForFile := func(path string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", path)
+	}
+	waitForFile(filepath.Join(wt1, ".verify-entered"))
+
+	wf2 := &Execution{WorkflowID: "wf2", CurrentStep: "verify_checks", State: ExecRunning, Variables: map[string]string{}}
+	out, err := engine.execVerifyChecks("t2", newVerifyChecksStep(), wf2, TaskInfo{ID: "t2", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("out = %+v, want zero StepOutput when parked", out)
+	}
+	if wf2.CurrentStep != "verify_checks" {
+		t.Fatalf("CurrentStep = %q, want verify_checks", wf2.CurrentStep)
+	}
+	if wf2.State != ExecWaiting {
+		t.Fatalf("State = %q, want ExecWaiting", wf2.State)
+	}
+	if _, ok := workflowRetryAfter(wf2); !ok {
+		t.Fatalf("%s not set to a valid retry timestamp", workflowRetryAfterVar)
+	}
+	if got := tasks.Reason("t2"); got != verifyChecksBusyReason {
+		t.Fatalf("reason = %q, want %q", got, verifyChecksBusyReason)
+	}
+
+	if err := os.WriteFile(filepath.Join(wt1, ".verify-release"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-firstDone:
+		if got.err != nil {
+			t.Fatalf("first verify err = %v", got.err)
+		}
+		if got.out.Output != "clean" {
+			t.Fatalf("first verify output = %q, want clean", got.out.Output)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first verify to finish")
+	}
+	if got := len(engine.verifyChecksSlot()); got != 0 {
+		t.Fatalf("verify slot still occupied after first verify finished: len=%d", got)
+	}
+
+	ti2, err := tasks.GetTask("t2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ti2.Workflow.SetVar(workflowRetryAfterVar, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	if err := tasks.SetWorkflow("t2", ti2.Workflow); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.ResumeStalled()
+
+	ti2, err = tasks.GetTask("t2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti2.Workflow == nil {
+		t.Fatal("workflow missing after ResumeStalled")
+	}
+	if ti2.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want completed - parked verify_checks was not resumed (reason=%q)\nlogs:\n%s",
+			ti2.Workflow.State, tasks.Reason("t2"), logs.String())
+	}
+	if ti2.Workflow.CurrentStep != "" {
+		t.Fatalf("CurrentStep = %q, want empty after resumed verify completes", ti2.Workflow.CurrentStep)
+	}
+	if got := ti2.Workflow.LastRecord(); got == nil || got.StepID != "verify_checks" || got.Output != "clean" {
+		t.Fatalf("last step = %+v, want verify_checks clean", got)
 	}
 }
 
@@ -994,6 +1126,111 @@ func TestRepairCorruptedNodeModules_RepairsPartialInstall(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(nm, ".package-lock.json")); err != nil {
 		t.Errorf("expected node_modules/.package-lock.json to be repaired: %v", err)
+	}
+}
+
+func TestExecVerifyChecks_NodeModulesRepairFailureFlags(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
+	writeTestFile(t, filepath.Join(frontend, "package-lock.json"), "{}")
+
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte("#!/bin/sh\nexit 42\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{"true"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if got := tasks.Reason("t1"); !strings.Contains(got, "could not repair corrupted node_modules") {
+		t.Fatalf("reason = %q, want node_modules repair failure", got)
+	}
+}
+
+func TestVerifyTaskNow_NodeModulesRepairFailureIsNotVerified(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
+	writeTestFile(t, filepath.Join(frontend, "package-lock.json"), "{}")
+
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte("#!/bin/sh\nexit 42\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine, _ := newVerifyChecksEngine(t, wt, []string{"true"})
+	verified, passed, _, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err == nil {
+		t.Fatal("expected repair error")
+	}
+	if verified || passed {
+		t.Fatalf("verified=%v passed=%v, want verified=false passed=false", verified, passed)
+	}
+	if output != "node_modules repair failed" {
+		t.Fatalf("output = %q, want node_modules repair failed", output)
+	}
+}
+
+func TestRepairCorruptedNodeModules_UsesSubdirMiseConfig(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
+	writeTestFile(t, filepath.Join(frontend, "package-lock.json"), "{}")
+	writeTestFile(t, filepath.Join(frontend, "mise.toml"), "[tools]\nnode = \"24\"\n")
+
+	fakeBin := t.TempDir()
+	miseScript := "#!/bin/sh\n" +
+		"test \"$1\" = exec || exit 41\n" +
+		"test \"$2\" = -- || exit 42\n" +
+		"shift 2\n" +
+		"FROM_MISE=1 exec \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "mise"), []byte(miseScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	npmScript := "#!/bin/sh\n" +
+		"test \"$FROM_MISE\" = 1 || exit 43\n" +
+		"mkdir -p node_modules/.bin\n" +
+		"touch node_modules/.package-lock.json\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(npmScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	if failed := engine.repairCorruptedNodeModules(context.Background(), "t1", wt); failed {
+		t.Fatal("repairCorruptedNodeModules reported failure; want subdir mise config to drive npm repair")
+	}
+	if _, err := os.Stat(filepath.Join(frontend, "node_modules", ".bin")); err != nil {
+		t.Fatalf("node_modules/.bin missing after repair: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(frontend, "node_modules", ".package-lock.json")); err != nil {
+		t.Fatalf("node_modules/.package-lock.json missing after repair: %v", err)
 	}
 }
 
