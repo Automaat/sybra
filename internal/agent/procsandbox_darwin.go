@@ -102,12 +102,19 @@ func sandboxRootOr(root, fallback string) string {
 	return root
 }
 
+// unusedReadOnlyDirSentinel is READONLY_DIR's value on every run that isn't
+// RunConfig.ReadOnlyDir: the profile's READONLY_DIR deny rule is
+// unconditional, so it always needs a value, and this one is a fixed,
+// reserved macOS path no writable root is ever configured under — a deny on
+// its subpath can never shadow a legitimate write.
+const unusedReadOnlyDirSentinel = "/private/var/empty/sybra-sandbox-readonly-unused"
+
 func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName string, wrappedArgs []string) {
 	if cfg == nil || cfg.sandbox.mode != "enforce" {
 		return name, args
 	}
 	home := cfg.sandbox.sandboxHome
-	wrapped := make([]string, 0, len(args)+19)
+	wrapped := make([]string, 0, len(args)+21)
 	wrapped = append(wrapped,
 		"-f", cfg.sandbox.profilePath,
 		"-D", "WORKTREE="+cfg.sandbox.worktree,
@@ -119,6 +126,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		"-D", "COPILOT_STATE="+sandboxRootOr(cfg.sandbox.copilotState, home),
 		"-D", "OPENCODE_STATE="+sandboxRootOr(cfg.sandbox.opencodeState, home),
 		"-D", "TOOL_CACHE="+sandboxRootOr(cfg.sandbox.toolCache, home),
+		"-D", "READONLY_DIR="+sandboxRootOr(cfg.sandbox.readOnlyDir, unusedReadOnlyDirSentinel),
 		name,
 	)
 	wrapped = append(wrapped, args...)

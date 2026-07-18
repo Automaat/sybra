@@ -155,13 +155,19 @@ func (a *App) initHumanReview() {
 // when the task has no worktree yet (e.g. it never made it past triage), or
 // when the recorded worktree no longer exists on disk (e.g. cleaned up) —
 // diagnosing Sybra's own source is still this agent's primary mission.
-func humanReviewDispatchDir(t task.Task, sybraRepoDir string) string {
-	if dir := strings.TrimSpace(t.WorktreeDir); dir != "" {
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			return dir
+//
+// readOnly reports whether the fallback branch was taken: the Sybra source
+// checkout is a diagnostic-only Read/Grep/Glob target, never a place this
+// agent should write to (unlike a task's own worktree, which it may fix,
+// commit, and push per writeAutonomyMandate phase 2) — callers must feed it
+// into RunConfig.ReadOnlyDir so the process sandbox denies writes there.
+func humanReviewDispatchDir(t task.Task, sybraRepoDir string) (dir string, readOnly bool) {
+	if d := strings.TrimSpace(t.WorktreeDir); d != "" {
+		if info, err := os.Stat(d); err == nil && info.IsDir() {
+			return d, false
 		}
 	}
-	return sybraRepoDir
+	return sybraRepoDir, true
 }
 
 // maybeSpawn is called from the status hook when a task lands in
@@ -191,7 +197,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 	// against an already-recovered task would race the recovery flow and let
 	// the agent's unblock actions rewrite the task to the wrong state.
 	if t.Status != task.StatusHumanRequired {
-		h.skip(taskID, "status_"+string(t.Status))
+		h.skip(taskID, "stale_status_"+string(t.Status))
 		return false
 	}
 	// Idempotency gate: a prior run already produced a verdict — re-spawning
@@ -236,7 +242,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 	h.perTask[taskID] = append(h.perTask[taskID], now)
 	h.mu.Unlock()
 
-	dir := humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
+	dir, readOnlyDir := humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
 	prompt := h.buildPrompt(t, dir, wctx)
 	cfg := h.agents.ApplyABVariant(agent.RunConfig{
 		TaskID:                 taskID,
@@ -245,6 +251,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		Model:                  h.cfg.HumanReviewModel(),
 		Prompt:                 prompt,
 		Dir:                    dir,
+		ReadOnlyDir:            readOnlyDir,
 		RequirePermissions:     false,
 		OneShot:                true,
 		OutputSchema:           verdict.Schema,

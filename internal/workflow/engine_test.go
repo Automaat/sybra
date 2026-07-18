@@ -1093,6 +1093,113 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_WatchdogHangExhaustedRunTestOpensPR(t *testing.T) {
+	store := newInlineTestStore(t, "testing-task", `
+id: testing-task
+steps:
+  - id: run_test
+    type: run_agent
+    config:
+      role: test-runner
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "testing",
+		StatusReason: "watchdog hang: no stream activity",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "testing-task",
+			CurrentStep: "run_test",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				watchdogHangRetryKey("run_test"): strconv.Itoa(maxWatchdogHangRetries),
+			},
+			StartedAt: time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", got.Status)
+	}
+	if got.StatusReason != "manual testing stalled under watchdog after clean retries (no evidenced verdict) — opening PR for CI and human review" {
+		t.Fatalf("status_reason = %q", got.StatusReason)
+	}
+	if got.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want %q", got.Workflow.State, ExecCompleted)
+	}
+	if got.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow current_step = %q, want empty", got.Workflow.CurrentStep)
+	}
+	if len(completed) != 1 {
+		t.Fatalf("workflow completions = %d, want 1", len(completed))
+	}
+	if completed[0].WorkflowID != "testing-task" {
+		t.Fatalf("completion workflow = %q, want testing-task", completed[0].WorkflowID)
+	}
+}
+
+func TestResumeStalled_WatchdogHangExhaustedRunTestHumanRequiredWhenOpenPRDisabled(t *testing.T) {
+	store := newInlineTestStore(t, "testing-task", `
+id: testing-task
+steps:
+  - id: run_test
+    type: run_agent
+    config:
+      role: test-runner
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetOpenPROnUnrunnableGate(false)
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "testing",
+		StatusReason: "watchdog hang: no stream activity",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "testing-task",
+			CurrentStep: "run_test",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				watchdogHangRetryKey("run_test"): strconv.Itoa(maxWatchdogHangRetries),
+			},
+			StartedAt: time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.Workflow.State != ExecFailed {
+		t.Fatalf("workflow state = %q, want %q", got.Workflow.State, ExecFailed)
+	}
+	if len(completed) != 0 {
+		t.Fatalf("workflow completions = %d, want 0", len(completed))
+	}
+}
+
 func TestResumeStalled_WatchdogLoopHumanRequiredDoesNotRetry(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

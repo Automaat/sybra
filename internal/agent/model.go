@@ -1704,8 +1704,19 @@ type RunConfig struct {
 	// warnUnenforceableAllowedTools says so at dispatch, since ab/cross choose
 	// the provider long after the step declared its list. Treat it as advisory:
 	// only the OS-level sandbox binds a run on every provider.
-	AllowedTools       []string
-	Dir                string
+	AllowedTools []string
+	Dir          string
+	// ReadOnlyDir, when true, tells injectProcessSandbox to never add Dir (or
+	// its git metadata) to the sandbox's writable roots under enforce, and to
+	// additionally re-bind Dir read-only as the last bind in the sandbox
+	// wrapper — see injectReadOnlyProcessSandbox — so it stays read-only even
+	// if it happens to sit inside a broader writable root such as tmp. Set
+	// this for diagnostic-only runs whose Dir is not a task worktree the
+	// agent is meant to modify (e.g. human-review falling back to the Sybra
+	// source checkout when the task has no worktree of its own) so a live
+	// deploy/build checkout can never be written to by that run. Ignored
+	// outside sandbox enforce mode.
+	ReadOnlyDir        bool
 	Provider           string // "claude", "codex", or "copilot"
 	Model              string // "opus", "sonnet", or full model ID
 	ExperimentID       string
