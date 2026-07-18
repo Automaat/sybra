@@ -223,6 +223,18 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 	if step == nil || step.Type != StepRunAgent {
 		return
 	}
+	if comp, recovered, err := e.maybeRecoverHumanRequiredByOpeningPR(taskID, step, t.Workflow, t, StepOutput{
+		StepID: step.ID,
+		Status: "completed",
+		Output: t.StatusReason,
+	}); recovered {
+		if err != nil {
+			e.logger.Error("workflow.status-recover.err", "task_id", taskID, "step", step.ID, "status", newStatus, "err", err)
+			return
+		}
+		e.fireComplete(comp)
+		return
+	}
 	if step.Config.WaitForStatus == "" || step.Config.WaitForStatus != newStatus {
 		return
 	}

@@ -636,6 +636,14 @@ func (a *App) initStatusHook() {
 		if local && a.workflowEngine != nil {
 			a.workflowEngine.HandleStatusChange(taskID, to)
 		}
+		if to == string(task.StatusHumanRequired) {
+			if t, err := a.tasks.Get(taskID); err == nil && t.Status != task.StatusHumanRequired {
+				if local && releaseTaskAgents {
+					a.releaseTaskAgents(taskID)
+				}
+				return
+			}
+		}
 		if local && releaseTaskAgents {
 			a.releaseTaskAgents(taskID)
 		}
