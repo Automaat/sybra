@@ -34,6 +34,37 @@ func newOutboundTestHandler(t *testing.T) (*Handler, *task.Manager) {
 	return r, tasks
 }
 
+func newOutboundWorkflowTestHandler(t *testing.T) (*Handler, *task.Manager) {
+	t.Helper()
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agents, tasks: tasks},
+		logger,
+	)
+	r := &Handler{
+		logger:         logger,
+		tasks:          tasks,
+		agents:         agents,
+		WorkflowEngine: engine,
+	}
+	return r, tasks
+}
+
 // mkOwnPRTask creates a task and drives it to in-review with a linked PR.
 func mkOwnPRTask(t *testing.T, tasks *task.Manager, prNumber int, tags []string) task.Task {
 	t.Helper()
@@ -51,6 +82,159 @@ func mkOwnPRTask(t *testing.T, tasks *task.Manager, prNumber int, tags []string)
 		t.Fatalf("update: %v", err)
 	}
 	return updated
+}
+
+func TestCancelSettledImplementationWorkflows(t *testing.T) {
+	t.Run("linked green pr cancels stale implement workflow", func(t *testing.T) {
+		r, tasks := newOutboundWorkflowTestHandler(t)
+
+		created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wf := &workflow.Execution{
+			WorkflowID:  "simple-task-implement",
+			CurrentStep: "implement",
+			State:       workflow.ExecWaiting,
+		}
+		reason := "watchdog hang: no stream activity"
+		if _, err := tasks.Update(created.ID, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: &reason,
+			ProjectID:    task.Ptr("Automaat/sybra"),
+			PRNumber:     task.Ptr(42),
+			Branch:       task.Ptr("feat/watchdog-pr"),
+			Workflow:     &wf,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		all, err := tasks.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+			Number:      42,
+			Repository:  "Automaat/sybra",
+			HeadRefName: "feat/watchdog-pr",
+			Mergeable:   "MERGEABLE",
+			CIStatus:    "SUCCESS",
+		}})
+
+		got, err := tasks.Get(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != task.StatusInReview {
+			t.Fatalf("status = %q, want in-review", got.Status)
+		}
+		if got.StatusReason != "" {
+			t.Fatalf("statusReason = %q, want cleared", got.StatusReason)
+		}
+		if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted || got.Workflow.CurrentStep != "" {
+			t.Fatalf("workflow = %+v, want completed with empty current step", got.Workflow)
+		}
+	})
+
+	t.Run("branch matched green pr adopts number before cancel", func(t *testing.T) {
+		r, tasks := newOutboundWorkflowTestHandler(t)
+
+		created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wf := &workflow.Execution{
+			WorkflowID:  "simple-task-implement",
+			CurrentStep: "implement",
+			State:       workflow.ExecWaiting,
+		}
+		if _, err := tasks.Update(created.ID, task.Update{
+			Status:    task.Ptr(task.StatusInProgress),
+			ProjectID: task.Ptr("Automaat/sybra"),
+			Branch:    task.Ptr("feat/branch-only"),
+			Workflow:  &wf,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		all, err := tasks.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+			Number:      77,
+			Repository:  "Automaat/sybra",
+			HeadRefName: "feat/branch-only",
+			Mergeable:   "MERGEABLE",
+			CIStatus:    "SUCCESS",
+		}})
+
+		got, err := tasks.Get(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.PRNumber != 77 {
+			t.Fatalf("PRNumber = %d, want 77", got.PRNumber)
+		}
+		if got.Status != task.StatusInReview {
+			t.Fatalf("status = %q, want in-review", got.Status)
+		}
+		if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
+			t.Fatalf("workflow = %+v, want completed", got.Workflow)
+		}
+	})
+
+	t.Run("pending checks keep implement workflow live", func(t *testing.T) {
+		r, tasks := newOutboundWorkflowTestHandler(t)
+
+		created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wf := &workflow.Execution{
+			WorkflowID:  "simple-task-implement",
+			CurrentStep: "implement",
+			State:       workflow.ExecWaiting,
+		}
+		reason := "watchdog hang: no stream activity"
+		if _, err := tasks.Update(created.ID, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: &reason,
+			ProjectID:    task.Ptr("Automaat/sybra"),
+			PRNumber:     task.Ptr(55),
+			Branch:       task.Ptr("feat/not-green"),
+			Workflow:     &wf,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		all, err := tasks.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+			Number:           55,
+			Repository:       "Automaat/sybra",
+			HeadRefName:      "feat/not-green",
+			Mergeable:        "MERGEABLE",
+			CIStatus:         "PENDING",
+			HasPendingChecks: true,
+		}})
+
+		got, err := tasks.Get(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != task.StatusInProgress {
+			t.Fatalf("status = %q, want in-progress", got.Status)
+		}
+		if got.StatusReason != reason {
+			t.Fatalf("statusReason = %q, want %q", got.StatusReason, reason)
+		}
+		if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting || got.Workflow.CurrentStep != "implement" {
+			t.Fatalf("workflow = %+v, want waiting on implement", got.Workflow)
+		}
+	})
 }
 
 func TestReconcilePRPhases(t *testing.T) {
