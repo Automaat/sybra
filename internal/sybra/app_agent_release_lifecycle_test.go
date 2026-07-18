@@ -103,8 +103,14 @@ func startIdleInteractiveAgent(t *testing.T, a *App, taskID string) (ag *agent.A
 	}
 	// Detached agents are exempt from Manager.Shutdown's own cleanup by
 	// design (restart survival), so a failed assertion before the release
-	// path runs would otherwise leave this process orphaned.
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	// path runs would otherwise leave this process orphaned. Guard on
+	// liveness first — the pid may already be gone (and reused by an
+	// unrelated process) by the time cleanup runs on a passing test.
+	t.Cleanup(func() {
+		if processAliveForTest(pid) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
 	return ag, pid
 }
 
