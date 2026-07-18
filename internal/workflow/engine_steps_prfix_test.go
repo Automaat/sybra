@@ -238,6 +238,7 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	t.Parallel()
 
 	bare, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-recovery")
+	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
