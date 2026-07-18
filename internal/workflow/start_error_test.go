@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -601,6 +602,80 @@ func TestSurfaceStartFailure_CircuitBreakerResetsAfterWindow(t *testing.T) {
 	}
 	if got := wf.Variables[circuitBreakerFailureKey("run_test")]; got != "1" {
 		t.Errorf("failure count = %q, want reset to 1", got)
+	}
+}
+
+// TestSurfaceStartFailure_ShutdownCancellationDoesNotTripBreaker is a
+// regression guard for sybra#2291: a graceful server shutdown cancels every
+// in-flight git/agent operation across every concurrently-dispatching task at
+// once, so a naive circuit breaker sees a burst of simultaneous "failures"
+// and mass-escalates unrelated, perfectly healthy tasks to human-required. A
+// context.Canceled error that traces back to the engine's own shutdown
+// context (bound via SetContext, mirroring App.Startup -> Engine.SetContext
+// -> agentorch.Orchestrator.SetContext all sharing one root context) must
+// never feed the breaker or touch the task, no matter how many times it
+// repeats — simulating several concurrently-dispatching tasks all hitting the
+// same shutdown-induced cancellation within the same circuit-breaker window.
+func TestSurfaceStartFailure_ShutdownCancellationDoesNotTripBreaker(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate the app context already cancelled by graceful shutdown
+	engine.SetContext(shutdownCtx)
+
+	wrapped := fmt.Errorf("worktree required for project task: %w",
+		fmt.Errorf("fetch origin: git fetch origin +refs/heads/*:refs/remotes/origin/*: %w", context.Canceled))
+	wf := &Execution{CurrentStep: "implement", State: ExecRunning, Variables: map[string]string{}}
+
+	for i := range maxCircuitBreakerFailures + 5 {
+		engine.surfaceStartFailure("t1", "in-progress", wrapped, wf, "implement")
+		if wf.State == ExecFailed {
+			t.Fatalf("shutdown cancellation tripped the breaker on attempt %d", i+1)
+		}
+	}
+	if _, recorded := wf.Variables[circuitBreakerFailureKey("implement")]; recorded {
+		t.Fatalf("shutdown cancellation recorded a breaker failure: %v", wf.Variables)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status == "human-required" {
+		t.Fatal("shutdown cancellation escalated task to human-required")
+	}
+	if reason := tasks.Reason("t1"); reason != "" {
+		t.Errorf("shutdown cancellation wrote status_reason %q, want none", reason)
+	}
+}
+
+// TestSurfaceStartFailure_ContextCanceledStillTripsBreakerWhenNotShuttingDown
+// guards the flip side of the shutdown-cancellation suppression above: a
+// context.Canceled error must still feed the circuit breaker normally when
+// the engine's own context is healthy (not shutting down) — e.g. a per-call
+// timeout or an unrelated cancellation elsewhere in the chain. The
+// suppression is scoped to an actual shutdown, not to context.Canceled in
+// general.
+func TestSurfaceStartFailure_ContextCanceledStillTripsBreakerWhenNotShuttingDown(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine.SetContext(context.Background()) // healthy, not cancelled
+
+	wrapped := fmt.Errorf("fetch origin: %w", context.Canceled)
+	wf := &Execution{CurrentStep: "implement", State: ExecRunning, Variables: map[string]string{}}
+
+	for i := range maxCircuitBreakerFailures - 1 {
+		engine.surfaceStartFailure("t1", "todo", wrapped, wf, "implement")
+		if wf.State == ExecFailed {
+			t.Fatalf("breaker tripped early on attempt %d, want after %d", i+1, maxCircuitBreakerFailures)
+		}
+	}
+	engine.surfaceStartFailure("t1", "todo", wrapped, wf, "implement")
+
+	if wf.State != ExecFailed {
+		t.Errorf("wf.State = %q, want ExecFailed after %d failures", wf.State, maxCircuitBreakerFailures)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", got.Status)
 	}
 }
 

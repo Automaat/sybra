@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -1554,6 +1555,22 @@ func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf
 }
 
 func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err error, wf *Execution, stepID string) {
+	// A context cancellation that traces back to the engine's own shutdown
+	// context (e.ctx, bound via SetContext from the app's root context) is
+	// not a task-attributable dispatch failure — a single graceful restart
+	// cancels every in-flight git/agent operation across every
+	// concurrently-dispatching task at once. Counting it toward the circuit
+	// breaker lets one restart mass-trip an unbounded number of breakers and
+	// park otherwise-healthy tasks to human-required for routine deploy
+	// churn that self-heals the moment the new instance resumes dispatching
+	// (sybra#2291). Suppressed exactly like the other benign dispatch-plumbing
+	// sentinels below (ErrDispatchInFlight et al.): no status write, no
+	// breaker increment.
+	if e.isShutdownCancellation(err) {
+		e.logger.Info("workflow.start-failure.shutdown-cancellation.suppress",
+			"task_id", taskID, "step", stepID)
+		return
+	}
 	reason, permanent := ClassifyAgentStartError(err)
 	if reason == "" {
 		return
@@ -1604,6 +1621,20 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 	if uErr := e.tasks.UpdateTaskStatus(taskID, target, reason); uErr != nil {
 		e.logger.Error("workflow.resume-stalled.surface", "task_id", taskID, "err", uErr)
 	}
+}
+
+// isShutdownCancellation reports whether err is a context.Canceled that
+// traces back to the engine's own shutdown context rather than some
+// unrelated per-call cancellation. e.ctx is bound exactly once, from the
+// app's root context (App.Startup -> Engine.SetContext), and is the same
+// context object agentorch.Orchestrator uses to cancel worktree/git
+// operations on shutdown — so e.ctx.Err() != nil at the moment a dispatch
+// error is classified is a reliable signal that this particular
+// context.Canceled came from that shutdown, not from an unrelated timeout or
+// a different context in the chain (which would surface as
+// context.DeadlineExceeded or a non-context error instead).
+func (e *Engine) isShutdownCancellation(err error) bool {
+	return e.ctx != nil && e.ctx.Err() != nil && errors.Is(err, context.Canceled)
 }
 
 func circuitBreakerFailureKey(stepID string) string { return circuitBreakerFailureVarPrefix + stepID }
