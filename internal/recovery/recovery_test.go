@@ -1802,6 +1802,88 @@ func TestRestartStaleRecoverCompletedHeadlessRunKeysOnOutcome(t *testing.T) {
 	}
 }
 
+// TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag proves
+// the fast-completion reconciliation path (a headless run that reached a
+// definitive terminal outcome but whose workflow step was never recorded, due
+// to the callback being lost across an app restart) fires for any run_agent
+// step, not only tasks tagged "review". Before this generalization a
+// non-review task in this exact shape fell through to the generic
+// stale-restart path instead and was silently re-implemented from scratch.
+func TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("implement feature", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		State:       workflow.ExecRunning,
+		CurrentStep: "implement",
+		StartedAt:   time.Now(),
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   &status,
+		Workflow: &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-impl",
+		Role:      "implementation",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		Outcome:   task.RunOutcomeSuccess,
+		Result:    "implementation done",
+		StartedAt: time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.completions) != 1 {
+		t.Fatalf("HandleAgentComplete called %d times; want 1 (non-review task must recover too)", len(wfStub.completions))
+	}
+	if !wfStub.completions[0].Success {
+		t.Errorf("Success = false, want true")
+	}
+	if stub.startCalls != 0 {
+		t.Errorf("StartAgent called %d times; want 0 (recovered via completion, not a bare respawn)", stub.startCalls)
+	}
+}
+
 type stubOrchestrator struct {
 	startCalls    int
 	prFixCalls    int

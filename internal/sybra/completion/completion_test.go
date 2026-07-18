@@ -644,7 +644,7 @@ func TestSalvageInterruptedReviewKeepsExistingReview(t *testing.T) {
 }
 
 // TestLastAssistantText verifies that lastAssistantText returns the last
-// assistant-typed event's content without sybra-verdict gating, and that
+// non-empty assistant event's content without sybra-verdict gating, and that
 // a populated result event is preferred when present (guards against the
 // fallback overriding a real result).
 func TestLastAssistantText(t *testing.T) {
@@ -669,6 +669,29 @@ func TestLastAssistantText(t *testing.T) {
 		}
 	})
 
+	t.Run("skips_trailing_empty_assistant", func(t *testing.T) {
+		ag := makeAgent(
+			agent.StreamEvent{Type: "assistant", Content: `{"verdict":"PASS"}`},
+			agent.StreamEvent{Type: "assistant", Content: ""},
+		)
+		got := lastAssistantText(ag)
+		if got != `{"verdict":"PASS"}` {
+			t.Errorf("lastAssistantText = %q, want JSON verdict", got)
+		}
+	})
+
+	t.Run("terminal_result_fallback_skips_trailing_empty_assistant", func(t *testing.T) {
+		ag := makeAgent(
+			agent.StreamEvent{Type: "assistant", Content: `{"verdict":"PASS"}`},
+			agent.StreamEvent{Type: "assistant", Content: ""},
+			agent.StreamEvent{Type: "result", Content: ""},
+		)
+		got := terminalResultContent(ag)
+		if got != `{"verdict":"PASS"}` {
+			t.Errorf("terminalResultContent = %q, want JSON verdict", got)
+		}
+	})
+
 	t.Run("no_assistant_events_returns_empty", func(t *testing.T) {
 		ag := makeAgent(
 			agent.StreamEvent{Type: "result", Content: "some result"},
@@ -683,6 +706,17 @@ func TestLastAssistantText(t *testing.T) {
 		ag := &agent.Agent{}
 		if got := lastAssistantText(ag); got != "" {
 			t.Errorf("lastAssistantText = %q, want empty", got)
+		}
+	})
+
+	t.Run("skips_trailing_empty_assistant", func(t *testing.T) {
+		ag := makeAgent(
+			agent.StreamEvent{Type: "assistant", Content: `{"verdict":"FAIL"}`},
+			agent.StreamEvent{Type: "assistant", Content: ""},
+		)
+		got := lastAssistantText(ag)
+		if got != `{"verdict":"FAIL"}` {
+			t.Errorf("lastAssistantText = %q, want JSON verdict", got)
 		}
 	})
 

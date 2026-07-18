@@ -75,9 +75,14 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 		return stepDone(step, "skipped: no safe focused mapping matched changed files")
 	}
 
-	timeout := e.verifyTimeout
-	if timeout <= 0 {
-		timeout = verifyChecksDefaultTimeout
+	timeout := resolveWorkflowCheckTimeout(e.verifyTimeout)
+	if timeout != e.verifyTimeout && e.verifyTimeout > 0 {
+		e.logger.Info("workflow.focused-checks.timeout-scaled",
+			"task_id", taskID, "base", e.verifyTimeout.String(), "effective", timeout.String())
+	}
+	if e.verifyTimeout <= 0 && timeout != verifyChecksDefaultTimeout {
+		e.logger.Info("workflow.focused-checks.timeout-scaled",
+			"task_id", taskID, "base", verifyChecksDefaultTimeout.String(), "effective", timeout.String())
 	}
 	ctx, cancel := context.WithTimeout(e.ctx, timeout)
 	defer cancel()

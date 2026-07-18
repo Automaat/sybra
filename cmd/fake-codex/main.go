@@ -132,10 +132,14 @@ func runCodexTestScenario(scenario string) bool {
 	switch scenario {
 	case "test_verdict_pass":
 		runCodexTestVerdictPass()
+	case "test_verdict_pass_trailing_empty_item":
+		runCodexTestVerdictPassWithTrailingEmptyItem()
 	case "test_verdict_pass_with_receipt_preamble":
 		runCodexTestVerdictPassWithReceiptPreamble()
 	case "test_verdict_fail":
 		runCodexTestVerdictFail()
+	case "test_verdict_fail_with_trailing_reasoning_item":
+		runCodexTestVerdictFailWithTrailingReasoningItem()
 	default:
 		return false
 	}
@@ -143,45 +147,25 @@ func runCodexTestScenario(scenario string) bool {
 }
 
 func runCodexTestVerdictPass() {
-	emitSchemaValidAgentMessage(map[string]any{
-		"verdict":           "PASS",
-		"outcome":           "pass",
-		"failures_markdown": "",
-		"surface_kind":      "cli",
-		"app_started":       true,
-		"start_command":     "sybra-cli --json list",
-		"readiness_probe": map[string]any{
-			"command":  "sybra-cli --json list",
-			"expected": "returns JSON task list",
-			"actual":   "",
-			"observed": "",
-			"output":   "[]",
-			"status":   "returned JSON task list",
-			"url":      "",
-		},
-		"manual_probes": []map[string]string{{
-			"command":  "sybra-cli --json list",
-			"expected": "returns JSON task list",
-			"actual":   "",
-			"observed": "",
-			"output":   "[]",
-			"status":   "pass",
-		}},
-		"automated_checks": []map[string]string{{
-			"command":  "go test ./internal/workflow",
-			"actual":   "",
-			"observed": "",
-			"output":   "ok",
-			"status":   "pass",
-		}},
-		"unable_to_run_reason": "",
-	})
+	emitSchemaValidAgentMessage(testVerdictPassPayload())
 	emitTurnCompleted(100, 20)
 }
 
 func runCodexTestVerdictPassWithReceiptPreamble() {
 	emitAgentMessage(withReceiptFromArgs(os.Args, "Followed the mandatory skill before returning structured output."))
 	runCodexTestVerdictPass()
+}
+
+func runCodexTestVerdictPassWithTrailingEmptyItem() {
+	emitSchemaValidAgentMessage(testVerdictPassPayload())
+	emit(map[string]any{
+		"type": "item.completed",
+		"item": map[string]any{
+			"id":   "item_1",
+			"type": "reasoning",
+		},
+	})
+	emitTurnCompleted(100, 20)
 }
 
 func runCodexTestVerdictFail() {
@@ -221,6 +205,51 @@ func runCodexTestVerdictFail() {
 	emitTurnCompleted(100, 20)
 }
 
+func runCodexTestVerdictFailWithTrailingReasoningItem() {
+	emitSchemaValidAgentMessage(map[string]any{
+		"verdict":           "FAIL",
+		"outcome":           "product_bug",
+		"failures_markdown": testFailureReport(),
+		"surface_kind":      "server",
+		"app_started":       true,
+		"start_command":     "go run ./cmd/test-server",
+		"readiness_probe": map[string]any{
+			"command":  "curl /status",
+			"expected": "HTTP 200",
+			"actual":   "HTTP 500",
+			"observed": "",
+			"output":   "HTTP 500",
+			"status":   "fail",
+			"url":      "",
+		},
+		"manual_probes": []map[string]string{{
+			"command":  "curl /status",
+			"expected": "expected output",
+			"actual":   "wrong output",
+			"observed": "",
+			"output":   "wrong output",
+			"status":   "fail",
+		}},
+		"automated_checks": []map[string]string{{
+			"command":  "go test ./internal/workflow",
+			"actual":   "",
+			"observed": "",
+			"output":   "ok",
+			"status":   "pass",
+		}},
+		"unable_to_run_reason": "",
+	})
+	emit(map[string]any{
+		"type": "item.completed",
+		"item": map[string]any{
+			"id":   "item_reasoning_0",
+			"type": "reasoning",
+			"text": "",
+		},
+	})
+	emitTurnCompleted(100, 20)
+}
+
 func emitSchemaValidAgentMessage(payload map[string]any) {
 	text := mustJSON(payload)
 	if err := validateAgainstOutputSchema(os.Args, []byte(text)); err != nil {
@@ -228,6 +257,42 @@ func emitSchemaValidAgentMessage(payload map[string]any) {
 		os.Exit(2)
 	}
 	emitAgentMessage(text)
+}
+
+func testVerdictPassPayload() map[string]any {
+	return map[string]any{
+		"verdict":           "PASS",
+		"outcome":           "pass",
+		"failures_markdown": "",
+		"surface_kind":      "cli",
+		"app_started":       true,
+		"start_command":     "sybra-cli --json list",
+		"readiness_probe": map[string]any{
+			"command":  "sybra-cli --json list",
+			"expected": "returns JSON task list",
+			"actual":   "",
+			"observed": "",
+			"output":   "[]",
+			"status":   "returned JSON task list",
+			"url":      "",
+		},
+		"manual_probes": []map[string]string{{
+			"command":  "sybra-cli --json list",
+			"expected": "returns JSON task list",
+			"actual":   "",
+			"observed": "",
+			"output":   "[]",
+			"status":   "pass",
+		}},
+		"automated_checks": []map[string]string{{
+			"command":  "go test ./internal/workflow",
+			"actual":   "",
+			"observed": "",
+			"output":   "ok",
+			"status":   "pass",
+		}},
+		"unable_to_run_reason": "",
+	}
 }
 
 func validateAgainstOutputSchema(args []string, payload []byte) error {
