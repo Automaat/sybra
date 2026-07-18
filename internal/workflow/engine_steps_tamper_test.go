@@ -108,6 +108,16 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: nil,
 		},
 		{
+			name:      "goos_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" {\n+\t\tt.Skip(\"linux-only process enumeration test\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "goarch_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestARM(t *testing.T) {\n+\tif runtime.GOARCH != \"arm64\" {\n+\t\tt.Skip(\"arm64-only test\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
 			name:      "unconditional_skip_after_guard_window_still_flags",
 			patch:     "@@ @@\n func TestX(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\treturn\n+\t}\n+\tsetup()\n+\tvalidate()\n+\tt.Skip(\"flaky\")\n",
 			wantRules: []string{"added-skip"},
@@ -891,6 +901,64 @@ func TestExecDetectTampering_AddedSkipFlags(t *testing.T) {
 	}
 	if reason := tasks.Reason("t1"); reason == "" {
 		t.Errorf("expected a non-empty status reason")
+	}
+}
+
+func TestExecDetectTampering_PlatformGuardedSkipDoesNotFlag(t *testing.T) {
+	t.Parallel()
+	base := "package agent\n\nimport (\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                   "init\n",
+		"internal/agent/reap.go":      "package agent\n\nfunc Reap() {}\n",
+		"internal/agent/reap_test.go": base,
+	})
+	// A skip guarded by runtime.GOOS is a platform guard, not tampering — see
+	// https://github.com/Automaat/sybra/issues/2038.
+	tampered := "package agent\n\nimport (\n\t\"runtime\"\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif runtime.GOOS != \"linux\" {\n\t\tt.Skip(\"linux-only process enumeration test\")\n\t}\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	writeRepoFile(t, wt, "internal/agent/reap_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: skip TestReap on non-linux")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output == "flagged" {
+		t.Fatalf("Output = %q, want not flagged (platform-guarded skip)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_UnguardedSkipStillFlags(t *testing.T) {
+	t.Parallel()
+	base := "package agent\n\nimport (\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                   "init\n",
+		"internal/agent/reap.go":      "package agent\n\nfunc Reap() {}\n",
+		"internal/agent/reap_test.go": base,
+	})
+	// An unconditional skip — not guarded by any platform/capability check —
+	// must still be flagged as tampering.
+	tampered := "package agent\n\nimport (\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tt.Skip(\"linux-only process enumeration test\")\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	writeRepoFile(t, wt, "internal/agent/reap_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: unconditionally skip TestReap")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
 	}
 }
 

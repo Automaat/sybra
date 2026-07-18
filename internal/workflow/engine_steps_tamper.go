@@ -168,7 +168,7 @@ var (
 	tamperCapabilityGuardRe = regexp.MustCompile(
 		`\b(os\.Symlink|os\.Link|os\.Readlink|filepath\.EvalSymlinks|` +
 			`exec\.LookPath|LookPath|user\.Current|user\.Lookup|` +
-			`net\.Listen|net\.Dial)\b|testing\.Short\s*\(\s*\)`)
+			`net\.Listen|net\.Dial|runtime\.GOOS|runtime\.GOARCH)\b|testing\.Short\s*\(\s*\)`)
 	tamperAddedExitRe = regexp.MustCompile(
 		`\bos\.Exit\s*\(\s*0\s*\)|\bsys\.exit\s*\(\s*0\s*\)|\bprocess\.exit\s*\(\s*0\s*\)|(^|[^.\w])exit\s*\(\s*0\s*\)`)
 	// tamperBuildIgnoreRe matches an added Go build-ignore tag (excludes the
