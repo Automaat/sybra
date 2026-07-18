@@ -204,7 +204,7 @@ test.describe('Create Task', () => {
     await page.getByPlaceholder('Task title...').fill('E2E Test Task')
     await page.getByPlaceholder('Task description (markdown)...').fill('Created by Playwright e2e test')
 
-    // Interactive is the default mode (headless is opt-in checkbox)
+    // Headless is the default mode (checkbox defaults on)
 
     // Submit
     await page.getByRole('button', { name: 'Create' }).click()
@@ -213,9 +213,9 @@ test.describe('Create Task', () => {
     await expect(page.locator('h1', { hasText: 'E2E Test Task' })).toBeVisible({ timeout: 5_000 })
     await expect(page.getByText('Created by Playwright e2e test')).toBeVisible()
 
-    // Agent mode should show interactive in the detail metadata (Mode row)
+    // Agent mode should show headless in the detail metadata (Mode row)
     const main = page.getByRole('main')
-    await expect(main.getByText('Mode', { exact: true }).locator('..').getByText('interactive')).toBeVisible()
+    await expect(main.getByText('Mode', { exact: true }).locator('..').getByText('headless')).toBeVisible()
 
     // Go back — new task should appear in list
     await page.getByText('Back to tasks').click()

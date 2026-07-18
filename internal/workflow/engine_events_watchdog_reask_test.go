@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/github"
 )
 
 func TestHandleWatchdogHangRetry_SetsReaskNoteOnRetry(t *testing.T) {
@@ -150,6 +152,44 @@ func TestHandleWatchdogHangRetry_RunTestPrioritizesManualTestSurface(t *testing.
 	}
 }
 
+func TestHandleWatchdogHangRetry_NonReadyPRStillRetries(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetPRStateFetcher(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "CONFLICTING"}})
+	wf := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog hang: no stream activity",
+		ProjectID:    "owner/repo",
+		PRNumber:     42,
+		Workflow:     wf,
+	})
+	ti := TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog hang: no stream activity",
+		ProjectID:    "owner/repo",
+		PRNumber:     42,
+		Workflow:     wf,
+	}
+
+	escalated := engine.handleWatchdogHangRetry(&ti, &Step{ID: "implement", Type: StepRunAgent})
+	if escalated {
+		t.Fatal("non-ready PR should fall back to the normal retry path")
+	}
+	if got := wf.Variables[watchdogHangRetryKey("implement")]; got != "1" {
+		t.Fatalf("hang retry var = %q, want %q", got, "1")
+	}
+}
+
 func TestHandleWatchdogHangRetry_RunTestExhaustionOpensPRGate(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
@@ -191,6 +231,68 @@ func TestHandleWatchdogHangRetry_RunTestExhaustionOpensPRGate(t *testing.T) {
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "harness/infra limitation") {
 		t.Fatalf("reason = %q, want unrunnable gate reason", reason)
+	}
+}
+
+func TestResumeStalled_WatchdogHangReadyPRSkipsRedispatch(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(newStoreWithBuiltin(t, "simple-task-implement"), tasks, agents, discardLogger())
+	engine.SetPRStateFetcher(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
+	wf := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+		Variables: map[string]string{
+			watchdogReaskNoteVar: "stale watchdog retry note",
+		},
+		StartedAt: time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog hang: no stream activity",
+		ProjectID:    "owner/repo",
+		PRNumber:     42,
+		Workflow:     wf,
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "in-review" {
+		t.Fatalf("status = %q, want %q", got.Status, "in-review")
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want empty", got.StatusReason)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow = nil, want completed workflow persisted")
+	}
+	if got.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want %q", got.Workflow.State, ExecCompleted)
+	}
+	if got.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow current_step = %q, want empty", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.CompletedAt == nil {
+		t.Fatal("workflow completed_at not set")
+	}
+	if got.Workflow.Variables[watchdogHangRetryKey("implement")] != "" {
+		t.Fatalf("hang retry var = %q, want empty (no redispatch budget consumed)", got.Workflow.Variables[watchdogHangRetryKey("implement")])
+	}
+	if got.Workflow.Variables[watchdogReaskNoteVar] != "" {
+		t.Fatalf("watchdog note = %q, want cleared", got.Workflow.Variables[watchdogReaskNoteVar])
+	}
+	if got.Workflow.Variables["cancel_reason"] != "watchdog hang: implementation superseded by linked PR already open and green" {
+		t.Fatalf("cancel_reason = %q", got.Workflow.Variables["cancel_reason"])
 	}
 }
 

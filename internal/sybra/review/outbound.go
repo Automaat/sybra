@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -61,6 +63,133 @@ func (r *Handler) reconcilePRPhases(tasks []task.Task, monitoredPRs []github.Pul
 			ActionableCount:  pr.ActionableCount,
 		}))
 	}
+}
+
+// cancelSettledImplementationWorkflows terminates a stale simple-task-implement
+// workflow once the task's branch already has an open, green PR. Without this,
+// ResumeStalled keeps re-dispatching the implement step even though ownership
+// of the work already moved to the PR monitor / in-review lane.
+//
+// Intentionally scoped to the implement step itself. A workflow parked on later
+// deterministic gates (verify_checks, etc.) still owns meaningful work and must
+// not be short-circuited just because an older PR snapshot looks green.
+func (r *Handler) cancelSettledImplementationWorkflows(tasks []task.Task, monitoredPRs []github.PullRequest) {
+	if r.WorkflowEngine == nil {
+		return
+	}
+	byNumber, byBranch := indexMonitoredPRs(monitoredPRs)
+
+	for i := range tasks {
+		t := &tasks[i]
+		if !staleImplementationWorkflowEligible(t) {
+			continue
+		}
+		if r.hasRunningAgentForTask(t.ID) {
+			continue
+		}
+		pr := matchingPR(t, byNumber, byBranch)
+		if pr == nil || !settledOwnPR(*pr) {
+			continue
+		}
+
+		step, err := r.WorkflowEngine.CancelWorkflow(t.ID, "pr-monitor: implementation superseded by settled PR")
+		if err != nil {
+			r.logger.Error("pr-monitor.cancel-implement", "task_id", t.ID, "pr", pr.Number, "err", err)
+			continue
+		}
+
+		upd := task.Update{
+			Status:       task.Ptr(task.StatusInReview),
+			StatusReason: task.Ptr(""),
+		}
+		if t.PRNumber == 0 && pr.Number > 0 {
+			upd.PRNumber = task.Ptr(pr.Number)
+		}
+		updated, err := r.tasks.Update(t.ID, upd)
+		if err != nil {
+			r.logger.Error("pr-monitor.cancel-implement.status", "task_id", t.ID, "pr", pr.Number, "err", err)
+			continue
+		}
+		tasks[i] = updated
+		r.logger.Info("pr-monitor.cancel-implement", "task_id", t.ID, "pr", pr.Number, "step", step)
+	}
+}
+
+func (r *Handler) settledImplementationFetchMatchers(ctx context.Context, tasks []task.Task) []github.TaskMatcher {
+	matchers := make([]github.TaskMatcher, 0)
+	for i := range tasks {
+		t := &tasks[i]
+		if !staleImplementationWorkflowEligible(t) || t.ProjectID == "" {
+			continue
+		}
+		if r.hasRunningAgentForTask(t.ID) {
+			continue
+		}
+		m := github.TaskMatcher{
+			ID:        t.ID,
+			PRNumber:  t.PRNumber,
+			Branch:    t.Branch,
+			ProjectID: t.ProjectID,
+		}
+		if m.PRNumber != 0 {
+			matchers = append(matchers, m)
+			continue
+		}
+		if m.Branch == "" {
+			continue
+		}
+		head, ok := r.settledImplementationPRHead(ctx, t)
+		if !ok {
+			continue
+		}
+		number, found, err := r.findOpenPRForBranch(ctx, m.ProjectID, head)
+		if err != nil {
+			if r.logger != nil {
+				r.logger.Warn("pr-monitor.cancel-implement.find-pr", "task_id", m.ID, "repo", m.ProjectID, "head", head, "err", err)
+			}
+			continue
+		}
+		if !found {
+			continue
+		}
+		m.PRNumber = number
+		matchers = append(matchers, m)
+	}
+	return matchers
+}
+
+func (r *Handler) settledImplementationPRHead(ctx context.Context, t *task.Task) (string, bool) {
+	if t == nil || strings.TrimSpace(t.Branch) == "" {
+		return "", false
+	}
+	if r.worktrees == nil {
+		return t.Branch, true
+	}
+	if !r.worktrees.Exists(*t) {
+		if r.logger != nil {
+			r.logger.Warn("pr-monitor.cancel-implement.no-worktree", "task_id", t.ID, "branch", t.Branch)
+		}
+		return "", false
+	}
+	head, err := project.HeadArg(ctx, r.worktrees.PathFor(*t), t.Branch)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("pr-monitor.cancel-implement.head", "task_id", t.ID, "branch", t.Branch, "err", err)
+		}
+		return "", false
+	}
+	return head, true
+}
+
+func (r *Handler) findOpenPRForBranch(ctx context.Context, repo, branch string) (number int, found bool, err error) {
+	if r.findOpenPRForBranchFn != nil {
+		return r.findOpenPRForBranchFn(ctx, repo, branch)
+	}
+	return github.FindPRForBranch(ctx, repo, branch)
+}
+
+func (r *Handler) hasRunningAgentForTask(taskID string) bool {
+	return r != nil && r.agents != nil && r.agents.HasRunningAgentForTask(taskID)
 }
 
 // indexMonitoredPRs builds the by-number and by-branch lookup maps shared by
@@ -142,6 +271,31 @@ func linkedOwnPRHumanRequiredDrift(t *task.Task, livePR bool) bool {
 		return false
 	}
 	return completedAt.Sub(t.UpdatedAt) <= linkedPRDriftWindow
+}
+
+func staleImplementationWorkflowEligible(t *task.Task) bool {
+	if t == nil || t.Workflow == nil {
+		return false
+	}
+	switch t.Status {
+	case task.StatusInProgress, task.StatusInReview, task.StatusReadyReview:
+	default:
+		return false
+	}
+	return t.Workflow.WorkflowID == "simple-task-implement" &&
+		t.Workflow.CurrentStep == "implement" &&
+		t.Workflow.State != workflow.ExecCompleted &&
+		t.Workflow.State != workflow.ExecFailed
+}
+
+func settledOwnPR(pr github.PullRequest) bool {
+	if pr.IsDraft || pr.Mergeable != "MERGEABLE" || pr.HasPendingChecks {
+		return false
+	}
+	if pr.SourcedViaREST && !pr.RESTCIFetched {
+		return false
+	}
+	return pr.CIStatus == "SUCCESS" || pr.CIStatus == ""
 }
 
 // ownPRColumnTask reports whether a task is one of the user's own PRs shown in

@@ -454,12 +454,12 @@ func (s *Store) safePath(id string) (string, error) {
 }
 
 // Create writes a new task file with a fresh 8-char ID, status "todo", and
-// type "normal". mode defaults to AgentModeInteractive when empty and is
+// type "normal". mode defaults to AgentModeHeadless when empty and is
 // validated via ValidateAgentMode. Use CreateFull to set additional fields
 // (tags, project, priority, ...) atomically at creation time.
 func (s *Store) Create(title, body, mode string) (Task, error) {
 	if mode == "" {
-		mode = AgentModeInteractive
+		mode = AgentModeHeadless
 	}
 	if _, err := ValidateAgentMode(mode); err != nil {
 		return Task{}, err
@@ -501,7 +501,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 // Update applies.
 func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) {
 	if mode == "" {
-		mode = AgentModeInteractive
+		mode = AgentModeHeadless
 	}
 	if _, err := ValidateAgentMode(mode); err != nil {
 		return Task{}, err
