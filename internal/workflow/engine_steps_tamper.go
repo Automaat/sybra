@@ -10,6 +10,7 @@ import (
 	pathpkg "path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -169,10 +170,22 @@ var (
 		`\b(os\.Symlink|os\.Link|os\.Readlink|filepath\.EvalSymlinks|` +
 			`exec\.LookPath|LookPath|user\.Current|user\.Lookup|` +
 			`net\.Listen|net\.Dial)\b|testing\.Short\s*\(\s*\)`)
-	// tamperPlatformGuardRe requires a branch on a platform constant; a bare
-	// runtime.GOOS/GOARCH reference must not suppress a later skip.
-	tamperPlatformGuardRe = regexp.MustCompile(
-		`\bif\b.*\bruntime\.(GOOS|GOARCH)\s*(==|!=)\s*("[^"]+"|` + "`[^`]+`" + `|\w+).*\{`)
+	// tamperPlatformGuardLineRe requires a branch block; bare runtime.GOOS /
+	// GOARCH references must not suppress a later skip.
+	tamperPlatformGuardLineRe = regexp.MustCompile(`\bif\b.*\{`)
+	tamperPlatformCompareRe   = regexp.MustCompile(
+		`\bruntime\.(GOOS|GOARCH)\s*(==|!=)\s*("(?:[^"\\]|\\.)*"|` + "`[^`]*`" + `)`)
+	tamperPlatformAnyCompareRe = regexp.MustCompile(`\bruntime\.(GOOS|GOARCH)\s*(==|!=)`)
+	tamperValidGOOS            = map[string]struct{}{
+		"aix": {}, "android": {}, "darwin": {}, "dragonfly": {}, "freebsd": {}, "illumos": {},
+		"ios": {}, "js": {}, "linux": {}, "netbsd": {}, "openbsd": {}, "plan9": {}, "solaris": {},
+		"wasip1": {}, "windows": {},
+	}
+	tamperValidGOARCH = map[string]struct{}{
+		"386": {}, "amd64": {}, "arm": {}, "arm64": {}, "loong64": {}, "mips": {}, "mips64": {},
+		"mips64le": {}, "mipsle": {}, "ppc64": {}, "ppc64le": {}, "riscv64": {}, "s390x": {},
+		"wasm": {},
+	}
 	// tamperAddedExitRe matches an added forced success exit.
 	tamperAddedExitRe = regexp.MustCompile(
 		`\bos\.Exit\s*\(\s*0\s*\)|\bsys\.exit\s*\(\s*0\s*\)|\bprocess\.exit\s*\(\s*0\s*\)|(^|[^.\w])exit\s*\(\s*0\s*\)`)
@@ -427,7 +440,7 @@ func (s *tamperScan) feedAdded(content string) {
 		return
 	}
 	isCapabilityGuard := tamperCapabilityGuardRe.MatchString(content)
-	isPlatformGuard := tamperPlatformGuardRe.MatchString(content)
+	isPlatformGuard := isPlatformGuard(content)
 	guarded := isCapabilityGuard || isPlatformGuard || s.guardWindow > 0 || s.platformGuardDepth > 0
 	if isCapabilityGuard {
 		s.guardWindow = tamperGuardWindowLines
@@ -464,22 +477,93 @@ func (s *tamperScan) feedAdded(content string) {
 }
 
 func (s *tamperScan) updatePlatformGuardDepth(content string, startsGuard bool) {
-	if startsGuard {
-		if s.platformGuardDepth > 0 {
-			s.platformGuardDepth += strings.Count(content, "{") - strings.Count(content, "}")
-		} else {
-			afterOpen := content
-			if _, after, ok := strings.Cut(content, "{"); ok {
-				afterOpen = after
-			}
-			s.platformGuardDepth = 1 + strings.Count(afterOpen, "{") - strings.Count(afterOpen, "}")
-		}
-	} else if s.platformGuardDepth > 0 {
-		s.platformGuardDepth += strings.Count(content, "{") - strings.Count(content, "}")
+	if startsGuard || s.platformGuardDepth > 0 {
+		s.platformGuardDepth += codeBraceDelta(content)
 	}
 	if s.platformGuardDepth < 0 {
 		s.platformGuardDepth = 0
 	}
+}
+
+func isPlatformGuard(content string) bool {
+	if !tamperPlatformGuardLineRe.MatchString(content) {
+		return false
+	}
+	matches := tamperPlatformCompareRe.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 || len(matches) != len(tamperPlatformAnyCompareRe.FindAllString(content, -1)) {
+		return false
+	}
+	for _, match := range matches {
+		if len(match) < 4 {
+			return false
+		}
+		value, err := strconv.Unquote(match[3])
+		if err != nil {
+			return false
+		}
+		switch match[1] {
+		case "GOOS":
+			if _, ok := tamperValidGOOS[value]; !ok {
+				return false
+			}
+		case "GOARCH":
+			if _, ok := tamperValidGOARCH[value]; !ok {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func codeBraceDelta(content string) int {
+	delta := 0
+	var quote byte
+	escaped := false
+	inBlockComment := false
+	for i := 0; i < len(content); i++ {
+		ch := content[i]
+		if inBlockComment {
+			if ch == '*' && i+1 < len(content) && content[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			switch {
+			case quote == '`' && ch == '`':
+				quote = 0
+			case quote != '`' && escaped:
+				escaped = false
+			case quote != '`' && ch == '\\':
+				escaped = true
+			case quote != '`' && ch == quote:
+				quote = 0
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(content) {
+			switch content[i+1] {
+			case '/':
+				return delta
+			case '*':
+				inBlockComment = true
+				i++
+				continue
+			}
+		}
+		switch ch {
+		case '"', '\'', '`':
+			quote = ch
+		case '{':
+			delta++
+		case '}':
+			delta--
+		}
+	}
+	return delta
 }
 
 func (s *tamperScan) consumeMergedUpstreamSkip(content string) bool {

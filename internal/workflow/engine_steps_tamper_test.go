@@ -118,8 +118,23 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: nil,
 		},
 		{
+			name:      "unknown_goos_guarded_skip_still_flags",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"not-a-real-os\" {\n+\t\tt.Skip(\"flaky\")\n+\t}\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "identifier_goos_guarded_skip_still_flags",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != targetOS {\n+\t\tt.Skip(\"flaky\")\n+\t}\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:      "unconditional_skip_after_platform_guard_still_flags",
 			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" {\n+\t\tsetup()\n+\t}\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "skip_message_brace_does_not_extend_platform_guard",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" {\n+\t\tt.Skip(\"only works on {legacy} platform\")\n+\t}\n+\tt.Skip(\"flaky\")\n",
 			wantRules: []string{"added-skip"},
 		},
 		{
