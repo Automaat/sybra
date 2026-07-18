@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -3401,6 +3402,111 @@ func TestCloneBare_InstallsSignoffHook(t *testing.T) {
 	}
 	if want := "Signed-off-by: Agent <agent@example.com>"; !strings.Contains(string(out), want) {
 		t.Errorf("CloneBare worktree commit missing DCO trailer, got:\n%s", out)
+	}
+}
+
+func setGitHubOriginPushURL(t *testing.T, wtPath string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", wtPath, "remote", "set-url", "--push", "origin", "https://github.com/owner/repo.git")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("set push url: %v: %s", err, out)
+	}
+}
+
+// writeFakeGhFailingNTimes installs a `gh` on dir that fails its first
+// failCount invocations (as `gh auth status` would on a bad/rotating
+// credential) and succeeds on every call after that. Call count persists in a
+// sibling file since each invocation is a separate process.
+func writeFakeGhFailingNTimes(t *testing.T, dir string, failCount int) {
+	t.Helper()
+	counterFile := filepath.Join(dir, "gh-calls")
+	if err := os.WriteFile(counterFile, []byte("0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\nn=$(cat %s)\nn=$((n+1))\necho \"$n\" > %s\nif [ \"$n\" -le %d ]; then\n  echo 'Bad credentials' >&2\n  exit 1\nfi\nexit 0\n",
+		counterFile, counterFile, failCount)
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readGhCallCount(t *testing.T, dir string) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "gh-calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// stubPushPreflightRetry replaces the retry-loop's sleep and force-refresh
+// hooks with fast, counting fakes and restores the originals on cleanup.
+func stubPushPreflightRetry(t *testing.T) (refreshCalls *int) {
+	t.Helper()
+	origSleep := pushPreflightRetrySleep
+	pushPreflightRetrySleep = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() { pushPreflightRetrySleep = origSleep })
+
+	origRefresh := forceRefreshAppToken
+	calls := 0
+	forceRefreshAppToken = func(context.Context) error { calls++; return nil }
+	t.Cleanup(func() { forceRefreshAppToken = origRefresh })
+	return &calls
+}
+
+func TestPreflightPushCredentials_NonGitHubRemoteSkipsAuthCheck(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	// origin stays a local bare-repo path (not github.com) — the auth check
+	// must never run and never shell out to `gh` at all.
+
+	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
+		t.Fatalf("PreflightPushCredentials = %v, want nil for non-GitHub remote", err)
+	}
+}
+
+func TestPreflightPushCredentials_RetriesTransientFailureThenSucceeds(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	setGitHubOriginPushURL(t, wtPath)
+
+	dir := t.TempDir()
+	writeFakeGhFailingNTimes(t, dir, 1)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	refreshCalls := stubPushPreflightRetry(t)
+
+	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
+		t.Fatalf("PreflightPushCredentials = %v, want nil after retry succeeds", err)
+	}
+	if got := readGhCallCount(t, dir); got != 2 {
+		t.Fatalf("gh invoked %d times, want 2 (1 failure + 1 retry)", got)
+	}
+	if *refreshCalls != 1 {
+		t.Fatalf("forceRefreshAppToken called %d times, want 1", *refreshCalls)
+	}
+}
+
+func TestPreflightPushCredentials_ExhaustsRetriesReturnsError(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	setGitHubOriginPushURL(t, wtPath)
+
+	dir := t.TempDir()
+	writeFakeGhFailingNTimes(t, dir, 100)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	refreshCalls := stubPushPreflightRetry(t)
+
+	err := PreflightPushCredentials(context.Background(), wtPath)
+	if !errors.Is(err, ErrPushAuthPreflight) {
+		t.Fatalf("PreflightPushCredentials error = %v, want ErrPushAuthPreflight", err)
+	}
+	wantCalls := len(pushPreflightRetryBackoffs) + 1
+	if got := readGhCallCount(t, dir); got != wantCalls {
+		t.Fatalf("gh invoked %d times, want %d (1 initial + %d retries)", got, wantCalls, len(pushPreflightRetryBackoffs))
+	}
+	if *refreshCalls != len(pushPreflightRetryBackoffs) {
+		t.Fatalf("forceRefreshAppToken called %d times, want %d", *refreshCalls, len(pushPreflightRetryBackoffs))
 	}
 }
 
