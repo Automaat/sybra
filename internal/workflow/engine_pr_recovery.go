@@ -56,14 +56,29 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 		return nil, false, nil
 	}
 
+	localSHA, err := project.CurrentCommit(ctx, wtPath)
+	if err != nil {
+		e.logger.Warn("workflow.human-required.pr-recovery.local-head", "task_id", taskID, "err", err)
+		return nil, false, nil
+	}
+
 	status := "ready-pr"
 	reason := readyPRRecoveryReason
-	if existing, found := e.findExistingPRForBranch(t.ProjectID, headArg); found {
-		if err := e.tasks.UpdateTaskPR(taskID, existing); err != nil {
-			return nil, false, err
+	// Only take the link-existing-PR -> in-review shortcut when the local HEAD
+	// being recovered is the exact commit already on the remote branch. If new
+	// local commits are ahead of (or diverged from) the pushed branch, an
+	// existing PR still points at the stale head; linking it and moving to
+	// in-review would skip the push that the PR flow performs, so the new HEAD
+	// would never reach the PR. Fall through to ready-pr in that case so
+	// simple-task-pr pushes the current HEAD before linking.
+	if remoteSHA == localSHA {
+		if existing, found := e.findExistingPRForBranch(t.ProjectID, headArg); found {
+			if err := e.tasks.UpdateTaskPR(taskID, existing); err != nil {
+				return nil, false, err
+			}
+			status = "in-review"
+			reason = ""
 		}
-		status = "in-review"
-		reason = ""
 	}
 	if err := e.tasks.UpdateTaskStatus(taskID, status, reason); err != nil {
 		return nil, false, err
