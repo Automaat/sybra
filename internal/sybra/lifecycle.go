@@ -282,6 +282,9 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 		PollInterval:   time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
 		RequestRestart: a.requestRestart,
 	}, a.logger)
+	if a.reviewer != nil {
+		a.reviewer.SetAutoMergeAppliedHook(runner.TriggerCheck)
+	}
 	a.wg.Go(func() { runner.Run(ctx) })
 }
 
