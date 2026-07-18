@@ -98,13 +98,12 @@ const (
 	StepValidatePlan         StepType = "validate_plan"
 	StepValidatePlanContract StepType = "validate_plan_contract"
 	StepTriageReview         StepType = "triage_review"
-	// StepFlagPlanCritique reads the plan-critic verdict (# Plan Review:
-	// APPROVE|REFINE|REJECT, the /plan-critic skill's required first line)
-	// and, on REFINE/REJECT, appends a prominent note to the task body so the
-	// verdict is impossible to miss at the review_plan human-approval gate.
-	// Never blocks progression itself — a human still approves/rejects every
-	// time regardless of verdict; this only ensures they can't miss that the
-	// critic asked for changes without opening the full critique sidecar.
+	// StepFlagPlanCritique reads the plan-critic verdict (the "## Verdict:
+	// APPROVE|REFINE|REJECT" line, per the /plan-critic skill's Phase 6
+	// contract) and, on REFINE/REJECT, appends a note to the task body so
+	// the verdict is impossible to miss at the review_plan approval gate.
+	// Never blocks progression itself — review_plan's human approve/reject
+	// step already runs every time regardless of verdict.
 	StepFlagPlanCritique StepType = "flag_plan_critique"
 	// StepDetectTampering inspects the worktree diff for reward-hacking /
 	// test-tampering signals (deleted assertions, added skip/xfail markers,

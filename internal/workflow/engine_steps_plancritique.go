@@ -38,14 +38,22 @@ func (e *Engine) execFlagPlanCritique(taskID string, step *Step, t TaskInfo) (St
 // ("this plan is rejected") still resolves to the base verdict.
 var verdictWordRe = regexp.MustCompile(`(?i)\b(APPROV(?:E|ES|ED|ING)|REFIN(?:E|ES|ED|ING)|REJECT(?:S|ED|ING)?)\b`)
 
-// planReviewTitleRe matches the /plan-critic skill's required title line,
-// "# Plan Review: <VERDICT>", within the first few lines of the sidecar.
-// Tolerates 1-6 leading `#`s (a critic that titles at ## instead of #).
+// verdictColonLineRe matches the /plan-critic skill's current output
+// contract (internal/skills/data/plan-critic.md, Phase 6): a bare
+// "# Plan Review" title followed by "## Verdict: <VERDICT>" — the verdict
+// sits on the Verdict heading's own line, not in prose below it. Tolerates
+// 1-6 leading `#`s and captures the rest of that line for verdictWordRe.
+var verdictColonLineRe = regexp.MustCompile(`(?im)^#{1,6}\s*Verdict:\s*(.*)$`)
+
+// planReviewTitleRe matches the skill's older title-line contract,
+// "# Plan Review: <VERDICT>", kept as a fallback for critiques produced
+// before the Phase 6 format above, or a critic that reverts to it.
 var planReviewTitleRe = regexp.MustCompile(`(?im)^#{1,6}\s*Plan Review:?\s*([A-Z]*)`)
 
-// verdictSectionRe isolates the skill's "## Verdict" section (its prose
-// body, up to the next heading or end of content) as a fallback location.
-// Tolerates 1-6 leading `#`s, same as planReviewTitleRe.
+// verdictSectionRe isolates the "## Verdict" section's prose body (up to the
+// next heading or end of content) as a last-resort fallback for a critic
+// that drifted from both contract shapes above and only states the verdict
+// in a full sentence beneath the heading.
 var verdictSectionRe = regexp.MustCompile(`(?is)#{1,6}\s*Verdict\s*\n(.*?)(\n#{1,6}\s|\z)`)
 
 // canonicalVerdict maps a matched inflected verdict word (APPROVED,
@@ -65,24 +73,21 @@ func canonicalVerdict(word string) string {
 }
 
 // parsePlanCritiqueVerdict extracts the verdict word from a plan-critique
-// sidecar. The /plan-critic skill's output contract states the verdict twice
-// — the "# Plan Review: <VERDICT>" title line, and again in prose inside the
-// "## Verdict" section — so this checks the title line first (the more
-// precise, contract-exact location) and falls back to the Verdict section
-// when a critic drifts from the exact title format (e.g. a bare "# Plan
-// Review" heading with the actual verdict stated only in the section below).
+// sidecar, checking three locations in order of how closely they match the
+// skill's actual current contract: the "## Verdict: <VERDICT>" line
+// (current), the older "# Plan Review: <VERDICT>" title line, and finally
+// the "## Verdict" section's prose body for a critic that drifted from both.
 // Deliberately does not scan the rest of the document (findings, required
 // changes, etc.), where REFINE/REJECT can appear in unrelated prose. Returns
-// "" — treated identically to APPROVE by the caller — when neither location
-// yields a recognizable verdict, preserving today's "any non-empty sidecar
-// is fine" behavior for critics that don't follow the contract at all.
+// "" — treated identically to APPROVE by the caller — when none of the three
+// yield a recognizable verdict, preserving today's "any non-empty sidecar is
+// fine" behavior for critics that don't follow the contract at all.
 func parsePlanCritiqueVerdict(content string) string {
-	if m := planReviewTitleRe.FindStringSubmatch(content); m != nil {
-		if v := canonicalVerdict(verdictWordRe.FindString(m[1])); v != "" {
-			return v
+	for _, re := range []*regexp.Regexp{verdictColonLineRe, planReviewTitleRe, verdictSectionRe} {
+		m := re.FindStringSubmatch(content)
+		if m == nil {
+			continue
 		}
-	}
-	if m := verdictSectionRe.FindStringSubmatch(content); m != nil {
 		if v := canonicalVerdict(verdictWordRe.FindString(m[1])); v != "" {
 			return v
 		}

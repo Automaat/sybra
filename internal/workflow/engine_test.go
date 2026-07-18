@@ -7479,6 +7479,26 @@ func TestParsePlanCritiqueVerdict(t *testing.T) {
 			"# Plan Review\n\n## Verdict\n\nNo concerns; this is not a rejectionist take, just a sanity check.",
 			"",
 		},
+		{
+			"current skill contract: verdict on the Verdict heading line",
+			"# Plan Review\n\n## Verdict: REFINE\n\n**One-line summary:** Missing rollback step.\n\n## Findings\n\n- [high] no rollback",
+			"REFINE",
+		},
+		{
+			"current skill contract: APPROVE on the Verdict heading line",
+			"# Plan Review\n\n## Verdict: APPROVE\n\n**One-line summary:** Looks executable as-is.",
+			"APPROVE",
+		},
+		{
+			"current skill contract: unrendered template brackets still resolve",
+			"# Plan Review\n\n## Verdict: [REJECT]\n\n**One-line summary:** Too vague to execute.",
+			"REJECT",
+		},
+		{
+			"colon-line format takes priority over a conflicting title line",
+			"# Plan Review: APPROVE\n\n## Verdict: REFINE\n\n**One-line summary:** Needs edits despite the stale title.",
+			"REFINE",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
