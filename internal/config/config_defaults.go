@@ -887,13 +887,21 @@ func load(opts loadOptions) (*Config, error) {
 	applyHarnessEvolveDefaults(cfg)
 	applyPromptLabDefaults(cfg)
 	applyExperienceDefaults(cfg)
+	// Snapshot ab_testing exactly as parsed from disk before the reconcile
+	// mutates it in memory. When load() has to persist a freshly generated
+	// server auth token, it writes this on-disk snapshot back (not the
+	// reconciled set) so the token-persist can't reintroduce builtin drift
+	// into a declaratively-managed config.yaml. applyABTestingDefaults only
+	// ever reassigns these fields (never mutates through the slice/pointer),
+	// so a shallow struct copy is a stable snapshot.
+	abTestingOnDisk := cfg.ABTesting
 	applyABTestingDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 	applyReviewHoldDefaults(cfg)
 	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
 
-	persistLoadReconciles(cfg, opts, serverTokenGenerated)
+	persistLoadReconciles(cfg, opts, serverTokenGenerated, abTestingOnDisk)
 
 	return cfg, nil
 }
@@ -912,11 +920,22 @@ func load(opts loadOptions) (*Config, error) {
 // fought any external tool that renders config.yaml declaratively (Ansible,
 // Nix, Chezmoi): Sybra would expand the operator's file on every restart, the
 // tool would see drift and re-render it, Sybra would expand it again.
-func persistLoadReconciles(cfg *Config, opts loadOptions, serverTokenGenerated bool) {
-	if opts.persistLoadReconciles && serverTokenGenerated {
-		if saveErr := cfg.Save(); saveErr != nil {
-			slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
-		}
+//
+// Because Save() marshals the entire in-memory config, the token-persist here
+// would otherwise drag the reconciled ab_testing set to disk as a side effect
+// on the first restart after upgrade (existing config, no auth_token, stale
+// builtins). To keep the two concerns separate, restore the on-disk ab_testing
+// snapshot for the write and re-apply the reconciled set afterwards, so only
+// the token — never the derived builtins — lands on disk.
+func persistLoadReconciles(cfg *Config, opts loadOptions, serverTokenGenerated bool, abTestingOnDisk abtest.Config) {
+	if !opts.persistLoadReconciles || !serverTokenGenerated {
+		return
+	}
+	reconciled := cfg.ABTesting
+	cfg.ABTesting = abTestingOnDisk
+	defer func() { cfg.ABTesting = reconciled }()
+	if saveErr := cfg.Save(); saveErr != nil {
+		slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
 	}
 }
 
