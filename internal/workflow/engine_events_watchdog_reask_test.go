@@ -44,6 +44,60 @@ func TestHandleWatchdogHangRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	}
 }
 
+func TestHandleWatchdogHangRetry_RunTestPrioritizesManualTestSurface(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "testing",
+		StatusReason: "watchdog hang: no stream activity",
+		Workflow:     wf,
+		ManualTest: ManualTestInfo{
+			Kind:          "server",
+			Command:       "go run ./cmd/sybra-server",
+			HealthURL:     "http://127.0.0.1:8080/health",
+			ProbeCommands: []string{"curl -fsS http://127.0.0.1:8080/health"},
+		},
+	})
+	ti := TaskInfo{
+		ID:           "t1",
+		Status:       "testing",
+		StatusReason: "watchdog hang: no stream activity",
+		Workflow:     wf,
+		ManualTest: ManualTestInfo{
+			Kind:          "server",
+			Command:       "go run ./cmd/sybra-server",
+			HealthURL:     "http://127.0.0.1:8080/health",
+			ProbeCommands: []string{"curl -fsS http://127.0.0.1:8080/health"},
+		},
+	}
+
+	escalated := engine.handleWatchdogHangRetry(&ti, &Step{ID: testVerdictSourceStep, Type: StepRunAgent, Config: StepConfig{Role: testRunnerRole}})
+	if escalated {
+		t.Fatal("first run_test hang should retry, not escalate")
+	}
+	note := wf.Variables[watchdogReaskNoteVar]
+	for _, want := range []string{
+		"manual_test surface",
+		"go run ./cmd/sybra-server",
+		"http://127.0.0.1:8080/health",
+		"curl -fsS http://127.0.0.1:8080/health",
+		"Before any further repo reading",
+	} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("reask note missing %q:\n%s", want, note)
+		}
+	}
+}
+
 func TestBuildWatchdogReaskNote_AttemptCount(t *testing.T) {
 	t.Parallel()
 	if got := buildWatchdogReaskNote(2); !strings.Contains(got, "attempt 2 of 2") {
