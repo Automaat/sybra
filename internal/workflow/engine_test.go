@@ -7434,6 +7434,150 @@ func TestExecRequireSidecar_EmptySidecarConfigErrors(t *testing.T) {
 	}
 }
 
+// --- flag_plan_critique step ---
+
+func newFlagPlanCritiqueStep() *Step {
+	return &Step{ID: "flag_plan_critique_verdict", Type: StepFlagPlanCritique}
+}
+
+func TestParsePlanCritiqueVerdict(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"approve", "# Plan Review: APPROVE\n\n## Verdict\n\nLooks good.", "APPROVE"},
+		{"refine", "# Plan Review: REFINE\n\n## Findings\n\n- missing file", "REFINE"},
+		{"reject", "# Plan Review: REJECT\n\nToo vague.", "REJECT"},
+		{"lowercase verdict word", "# plan review: refine\n", "REFINE"},
+		{"leading blank line", "\n# Plan Review: REFINE\n", "REFINE"},
+		{"mention in prose is not the verdict line", "# Plan Review: APPROVE\n\nNo REFINE needed here.", "APPROVE"},
+		{"no marker at all", "Looks fine to me.", ""},
+		{"empty", "", ""},
+		{
+			"bare title falls back to Verdict section prose",
+			"# Plan Review\n\n## Verdict\n\nThis plan needs REFINE — the rollback step is missing and the test command doesn't match the project.",
+			"REFINE",
+		},
+		{
+			"verdict section fallback is bounded to that section",
+			"# Plan Review\n\n## Verdict\n\nSound overall.\n\n## Findings\n\n- [nit] refine the error message wording",
+			"",
+		},
+		{
+			"inflected verdict word still resolves to its base form",
+			"# Plan Review: REJECTED\n\n## Verdict\n\nThis plan is rejected due to missing rollback safety verification steps.",
+			"REJECT",
+		},
+		{
+			"heading-level drift on the title line still matches",
+			"## Plan Review: REFINE\n\n## Verdict\n\nSeveral steps need adjustment.",
+			"REFINE",
+		},
+		{
+			"a longer unrelated word is not a boundary-crossing false match",
+			"# Plan Review\n\n## Verdict\n\nNo concerns; this is not a rejectionist take, just a sanity check.",
+			"",
+		},
+		{
+			"current skill contract: verdict on the Verdict heading line",
+			"# Plan Review\n\n## Verdict: REFINE\n\n**One-line summary:** Missing rollback step.\n\n## Findings\n\n- [high] no rollback",
+			"REFINE",
+		},
+		{
+			"current skill contract: APPROVE on the Verdict heading line",
+			"# Plan Review\n\n## Verdict: APPROVE\n\n**One-line summary:** Looks executable as-is.",
+			"APPROVE",
+		},
+		{
+			"current skill contract: unrendered template brackets still resolve",
+			"# Plan Review\n\n## Verdict: [REJECT]\n\n**One-line summary:** Too vague to execute.",
+			"REJECT",
+		},
+		{
+			"colon-line format takes priority over a conflicting title line",
+			"# Plan Review: APPROVE\n\n## Verdict: REFINE\n\n**One-line summary:** Needs edits despite the stale title.",
+			"REFINE",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parsePlanCritiqueVerdict(tt.content); got != tt.want {
+				t.Errorf("parsePlanCritiqueVerdict(%q) = %q, want %q", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecFlagPlanCritique_ApproveDoesNotAppendNote(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: APPROVE\n\nLooks good."})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "# Plan Review: APPROVE\n\nLooks good."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if strings.Contains(ti.Body, "Plan Critic Verdict") {
+		t.Errorf("APPROVE should not append a verdict note; body = %q", ti.Body)
+	}
+}
+
+func TestExecFlagPlanCritique_RefineAppendsDistinguishableNote(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: REFINE\n\n## Findings\n\n- [high] missing file"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "# Plan Review: REFINE\n\n## Findings\n\n- [high] missing file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "REFINE") {
+		t.Errorf("Output = %q, want it to report the REFINE verdict", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if !strings.Contains(ti.Body, "Plan Critic Verdict: REFINE") {
+		t.Errorf("expected a distinguishable REFINE note in body; got:\n%s", ti.Body)
+	}
+	if ti.Status == "human-required" {
+		t.Error("flag_plan_critique must not block progression by itself")
+	}
+}
+
+func TestExecFlagPlanCritique_RejectAppendsDistinguishableNote(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: REJECT\n\nToo vague."})
+	engine := newEngineForEval(t, tasks)
+
+	_, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "# Plan Review: REJECT\n\nToo vague."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if !strings.Contains(ti.Body, "Plan Critic Verdict: REJECT") {
+		t.Errorf("expected a distinguishable REJECT note in body; got:\n%s", ti.Body)
+	}
+}
+
+func TestExecFlagPlanCritique_UnparseableVerdictDoesNotAppendNote(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "Some free-form text with no verdict marker."})
+	engine := newEngineForEval(t, tasks)
+
+	_, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "Some free-form text with no verdict marker."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if strings.Contains(ti.Body, "Plan Critic Verdict") {
+		t.Errorf("an unparseable verdict should behave like APPROVE (no note); body = %q", ti.Body)
+	}
+}
+
 // --- evaluate step ---
 
 func newEvaluateStep() *Step {

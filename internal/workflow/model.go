@@ -98,6 +98,13 @@ const (
 	StepValidatePlan         StepType = "validate_plan"
 	StepValidatePlanContract StepType = "validate_plan_contract"
 	StepTriageReview         StepType = "triage_review"
+	// StepFlagPlanCritique reads the plan-critic verdict (the "## Verdict:
+	// APPROVE|REFINE|REJECT" line, per the /plan-critic skill's Phase 6
+	// contract) and, on REFINE/REJECT, appends a note to the task body so
+	// the verdict is impossible to miss at the review_plan approval gate.
+	// Never blocks progression itself — review_plan's human approve/reject
+	// step already runs every time regardless of verdict.
+	StepFlagPlanCritique StepType = "flag_plan_critique"
 	// StepDetectTampering inspects the worktree diff for reward-hacking /
 	// test-tampering signals (deleted assertions, added skip/xfail markers,
 	// deleted test files, neutered CI). A high-severity finding flips the task
