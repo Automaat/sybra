@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,45 @@ func TestHandleWatchdogHangRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	}
 	if !strings.Contains(note, "human-required") {
 		t.Fatalf("reask note should offer the human-required escape hatch:\n%s", note)
+	}
+}
+
+func TestResumeStalled_WatchdogHangRunTestRendersTestingReaskNote(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "testing-task")); err != nil {
+		t.Fatalf("save testing-task: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "testing",
+		StatusReason: "watchdog hang: no stream activity",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "testing-task",
+			CurrentStep: testVerdictSourceStep,
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1", got)
+	}
+	prompt := agents.calls[0].Prompt
+	if !strings.Contains(prompt, "RETRY GUIDANCE") {
+		t.Fatalf("run_test prompt missing retry guidance marker:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "watchdog hang") {
+		t.Fatalf("run_test prompt missing watchdog hang context:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "attempt 1 of 2") {
+		t.Fatalf("run_test prompt missing watchdog attempt count:\n%s", prompt)
 	}
 }
 
@@ -147,6 +187,50 @@ func TestHandleWatchdogHangRetry_NonReadyPRStillRetries(t *testing.T) {
 	}
 	if got := wf.Variables[watchdogHangRetryKey("implement")]; got != "1" {
 		t.Fatalf("hang retry var = %q, want %q", got, "1")
+	}
+}
+
+func TestHandleWatchdogHangRetry_RunTestExhaustionOpensPRGate(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{watchdogHangRetryKey(testVerdictSourceStep): strconv.Itoa(maxWatchdogHangRetries)},
+		StartedAt:   time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "testing",
+		StatusReason: "watchdog hang: no stream activity",
+		Workflow:     wf,
+	})
+	ti := TaskInfo{ID: "t1", Status: "testing", StatusReason: "watchdog hang: no stream activity", Workflow: wf}
+
+	handled := engine.handleWatchdogHangRetry(&ti, &Step{ID: testVerdictSourceStep, Type: StepRunAgent})
+	if !handled {
+		t.Fatal("exhausted run_test watchdog retry should be handled")
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", got.Status)
+	}
+	if got.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want ExecCompleted", got.Workflow.State)
+	}
+	if got.Workflow.CurrentStep != "" {
+		t.Fatalf("current step = %q, want empty", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.CompletedAt == nil {
+		t.Fatal("completed_at should be set for exhausted run_test open-pr path")
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "harness/infra limitation") {
+		t.Fatalf("reason = %q, want unrunnable gate reason", reason)
 	}
 }
 

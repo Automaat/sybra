@@ -32,16 +32,21 @@ import (
 
 // TaskService exposes task CRUD operations as Wails-bound methods.
 type TaskService struct {
-	tasks               *task.Manager
-	agents              *agent.Manager
-	workflowEngine      *workflow.Engine
-	worktrees           *worktree.Manager
-	sandboxes           *sandbox.Manager
-	artifacts           *artifact.Store
-	wg                  *sync.WaitGroup
-	logger              *slog.Logger
-	audit               *audit.Logger
-	cfg                 *config.Config
+	tasks          *task.Manager
+	agents         *agent.Manager
+	workflowEngine *workflow.Engine
+	worktrees      *worktree.Manager
+	sandboxes      *sandbox.Manager
+	artifacts      *artifact.Store
+	wg             *sync.WaitGroup
+	logger         *slog.Logger
+	audit          *audit.Logger
+	cfg            *config.Config
+	// ctx is the app's root context (wireTaskService sets it from a.ctx), used
+	// only where a Wails-bound method has no request-scoped context of its own
+	// to thread through — see RecoverLostAgent. nil in tests that construct
+	// TaskService directly; recoveryCtx falls back to context.Background().
+	ctx                 context.Context
 	recoverLostAgent    func(context.Context, string) error
 	fetchPR             func(repo string, number int) (github.PullRequest, error)
 	fetchIssue          func(repo string, number int) (github.Issue, error)
@@ -596,7 +601,24 @@ func (s *TaskService) RecoverLostAgent(taskID string) error {
 			break
 		}
 	}
-	return s.recoverLostAgent(context.Background(), taskID)
+	return s.recoverLostAgent(s.recoveryCtx(), taskID)
+}
+
+// recoveryCtx is the context RecoverLostAgent hands to recovery.
+// RecoverLostAgent is a Wails-bound method with no request-scoped context of
+// its own — s.ctx (the app's root context, set once by wireTaskService) lets
+// a follower's shutdown-cancellation reach the same
+// workflow.IsShutdownCancellation check Recovery.surfaceStartFailure applies
+// on the local maintenance-sweep path (sybra#2291): without this, an
+// in-flight leader→follower RecoverLostAgent RPC racing a follower's
+// graceful shutdown would fall back to context.Background() (never done),
+// so the check could never recognize the cancellation as shutdown-induced
+// and would still surface a misleading status_reason / feed the breaker.
+func (s *TaskService) recoveryCtx() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
 }
 
 func assignedTaskNoOp(current, pushed task.Task) bool {

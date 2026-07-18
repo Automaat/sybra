@@ -7,6 +7,7 @@ import (
 )
 
 func (a *App) wireTaskService() {
+	a.taskSvc.ctx = a.ctx
 	a.taskSvc.tasks = a.tasks
 	a.taskSvc.agents = a.agents
 	a.taskSvc.workflowEngine = a.workflowEngine
