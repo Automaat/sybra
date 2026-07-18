@@ -106,12 +106,13 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			"last_run_age_s", time.Since(lr.StartedAt).Seconds())
 		return
 	}
-	// Tasks whose last agent was a pr-fix should not be re-implemented.
-	// Move them back to in-review so the reviews poller can re-detect
-	// and fix. handlePRIssue spawns pr-fix agents directly without
-	// registering a workflow, so onAgentComplete can't advance the task
-	// back to in-review itself.
-	if lastRun := lastAgentRun(&t); lastRun != nil && lastRun.Role == "pr-fix" {
+	// Tasks whose last agent was a pr-fix (or its scoped test-fix follow-up,
+	// see pr-fix.yaml's test_fix step) should not be re-implemented. Move
+	// them back to in-review so the reviews poller can re-detect and fix.
+	// handlePRIssue spawns pr-fix agents directly without registering a
+	// workflow, so onAgentComplete can't advance the task back to in-review
+	// itself.
+	if lastRun := lastAgentRun(&t); lastRun != nil && (lastRun.Role == "pr-fix" || lastRun.Role == "test-fix") {
 		r.Logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
 		if _, updErr := r.Tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); updErr != nil {
 			r.Logger.Error("restart-stale.revert", "task_id", t.ID, "err", updErr)

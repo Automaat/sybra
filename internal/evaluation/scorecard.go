@@ -1459,7 +1459,7 @@ func taskHasRework(s *taskSignals) bool {
 
 func isAuthorRole(role string) bool {
 	switch normalizedRole(role) {
-	case "implementation", "fix-review", "pr-fix":
+	case "implementation", "fix-review", "pr-fix", "test-fix":
 		return true
 	default:
 		return false

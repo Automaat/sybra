@@ -82,7 +82,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 			}
 		}
 	}
-	if output.Status == "completed" && currentStep.Config.Role == "pr-fix" {
+	// test-fix reuses pr-fix's sentinel contract and step-var namespace (see
+	// pr-fix.yaml's test_fix step), so its completions must be classified the
+	// same way — otherwise prFixFailingTests' fallback re-parses raw output
+	// truncated to 4000 chars instead of reading the untruncated value this
+	// records, silently reintroducing the truncation issue #2223 fixed.
+	if output.Status == "completed" && (currentStep.Config.Role == "pr-fix" || currentStep.Config.Role == "test-fix") {
 		recordPRFixVars(wfExec, output.StepID, output.Output)
 	}
 

@@ -14,6 +14,7 @@ func TestRole_AgentName(t *testing.T) {
 		{RolePlanCritic, "Critique Plan", "plan-critic:Critique Plan"},
 		{RoleEval, "Evaluate", "eval:Evaluate"},
 		{RolePRFix, "Fix PR", "pr-fix:Fix PR"},
+		{RoleTestFix, "Fix Test", "test-fix:Fix Test"},
 		{RoleReview, "Review Code", "review:Review Code"},
 		{RoleFixReview, "Fix Review", "fix-review:Fix Review"},
 		{RoleTestRunner, "Run Tests", "test-runner:Run Tests"},
@@ -45,6 +46,7 @@ func TestRole_DefaultReasoningEffort(t *testing.T) {
 		{RoleImplementation, "high"},
 		{RoleFixReview, "high"},
 		{RolePRFix, "high"},
+		{RoleTestFix, "high"},
 		{RolePlan, ""},
 		{RoleReview, ""},
 		{RoleTestRunner, ""},
@@ -73,6 +75,7 @@ func TestRole_IsSystem(t *testing.T) {
 		{RolePlanCritic, true},
 		{RolePlan, false},
 		{RolePRFix, false},
+		{RoleTestFix, false},
 		{RoleReview, false},
 		{RoleFixReview, false},
 		{RoleTestRunner, false},
@@ -108,6 +111,7 @@ func TestRole_SupportsHeadlessSteer(t *testing.T) {
 		{RoleImplementation, true},
 		{RolePlan, true},
 		{RolePRFix, true},
+		{RoleTestFix, true},
 		{Role(""), true}, // empty maps to implementation
 	}
 
@@ -131,6 +135,7 @@ func TestRole_AuthorsCode(t *testing.T) {
 		{RoleImplementation, true},
 		{RoleFixReview, true},
 		{RolePRFix, true},
+		{RoleTestFix, true},
 		{Role(""), true}, // empty maps to implementation
 		// Independent verifiers — must NOT inherit the implementer's scratchpad,
 		// or the reward-hacking defense is silently weakened.
@@ -164,6 +169,7 @@ func TestRoleFromName(t *testing.T) {
 		{"plan-critic:Critique Plan", RolePlanCritic},
 		{"eval:Evaluate", RoleEval},
 		{"pr-fix:Fix PR", RolePRFix},
+		{"test-fix:Fix Test", RoleTestFix},
 		{"review:Code Review", RoleReview},
 		{"fix-review:Fix Review", RoleFixReview},
 		{"test-runner:Run Tests", RoleTestRunner},
@@ -193,6 +199,8 @@ func TestParseRoleFromName(t *testing.T) {
 		wantOK bool
 	}{
 		{"test-runner:Run Tests", RoleTestRunner, true},
+		{"pr-fix:Fix PR", RolePRFix, true},
+		{"test-fix:Fix Test", RoleTestFix, true},
 		{"implementation:Impl", RoleImplementation, true},
 		{"unknown:something", RoleImplementation, false},
 		{"no-colon", RoleImplementation, false},

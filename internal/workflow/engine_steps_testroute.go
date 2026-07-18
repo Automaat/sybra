@@ -2803,7 +2803,7 @@ func hasInterveningCodeAuthorRun(runs []AgentRunInfo, prev, current int) bool {
 
 func isCodeAuthorRun(run AgentRunInfo) bool {
 	switch run.Role {
-	case "", "implementation", "fix-review", "pr-fix":
+	case "", "implementation", "fix-review", "pr-fix", "test-fix":
 		return true
 	default:
 		return false

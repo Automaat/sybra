@@ -16,6 +16,11 @@ const (
 	RoleTestRunner     Role = "test-runner"
 	RoleImplementation Role = "implementation"
 	RoleHumanReview    Role = "human-review"
+	// RoleTestFix is pr-fix's bounded follow-up: given the specific failing
+	// tests pr-fix already found (PRFixVerdictVar's sibling failing-tests
+	// var), fix only those and nothing else. Dispatched at most once per
+	// pr-fix run — see pr-fix.yaml's test_fix/route_test_fix_result steps.
+	RoleTestFix Role = "test-fix"
 )
 
 // AgentName returns the prefixed name used when launching an agent
@@ -31,7 +36,7 @@ func (r Role) AgentName(title string) string { return string(r) + ":" + title }
 // implementation, matching RoleFromName.
 func (r Role) AuthorsCode() bool {
 	switch r {
-	case RoleImplementation, RoleFixReview, RolePRFix, "":
+	case RoleImplementation, RoleFixReview, RolePRFix, RoleTestFix, "":
 		return true
 	default:
 		return false
@@ -86,7 +91,7 @@ func ParseRoleFromName(name string) (Role, bool) {
 	}
 	r := Role(prefix)
 	switch r {
-	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation, RoleHumanReview:
+	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation, RoleHumanReview, RoleTestFix:
 		return r, true
 	default:
 		return RoleImplementation, false
@@ -111,7 +116,7 @@ func (r Role) DefaultReasoningEffort() string {
 	switch r {
 	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview:
 		return "low"
-	case RoleImplementation, RoleFixReview, RolePRFix:
+	case RoleImplementation, RoleFixReview, RolePRFix, RoleTestFix:
 		return "high"
 	default:
 		return ""

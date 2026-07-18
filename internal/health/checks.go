@@ -11,11 +11,12 @@ import (
 
 // costThresholds per agent role. Empty string key covers implementation agents.
 var costThresholds = map[string]float64{
-	"eval":   0.50,
-	"triage": 0.50,
-	"plan":   2.00,
-	"":       15.00,
-	"pr-fix": 5.00,
+	"eval":     0.50,
+	"triage":   0.50,
+	"plan":     2.00,
+	"":         15.00,
+	"pr-fix":   5.00,
+	"test-fix": 5.00,
 }
 
 const (

@@ -85,7 +85,7 @@ func TestStoreProviderAvailableAndChooseProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 	policy := DefaultPolicy()
 
@@ -185,7 +185,7 @@ func TestStoreProviderAvailable_IgnoresExpiredQuotaCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderCodex,
@@ -221,7 +221,7 @@ func TestChooseProvider_SkipsPolicyDisabledCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderClaude,
@@ -322,7 +322,7 @@ func TestSummary_PrefersSessionFileUsageCountersButKeepsRunSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 
 	if err := s.RecordUsage(UsageEvent{
@@ -463,7 +463,7 @@ func TestRecordUsageCrossProcessSimulatesConcurrentWriters(t *testing.T) {
 }
 
 func TestSessionImport_DedupesEventsAndKeepsLatestSnapshot(t *testing.T) {
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	batch := newSessionImport()
 
 	batch.addEvent(UsageEvent{ID: "event-1", Provider: ProviderClaude, Source: SourceSessionFiles, InputTokens: 1})
