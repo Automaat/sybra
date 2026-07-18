@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -320,6 +321,87 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	}
 	if remoteSHA := strings.TrimSpace(string(remoteSHAOut)); remoteSHA != localSHA {
 		t.Fatalf("remote SHA = %q, want pushed local SHA %q", remoteSHA, localSHA)
+	}
+}
+
+func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *testing.T) {
+	t.Parallel()
+
+	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-retry")
+	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	preflight := &fakePushPreflighter{errs: []error{errors.New("i/o timeout")}}
+	engine.SetPushCredentialPreflighter(preflight)
+
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved on disk but merge not finalized.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: git still reports an unmerged path\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	task := TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2234,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-retry",
+		Workflow:  wf,
+	}
+	tasks.Put(task)
+
+	_, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, task)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("first execRoutePRFixResult err = %v, want errStepParked", err)
+	}
+	if got := wf.Variables[resolvedMergeCheckpointVar("route_pr_fix_result")]; got != "true" {
+		t.Fatalf("checkpoint marker = %q, want true", got)
+	}
+	resolved, err := project.ResolvedUnmergedPaths(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("ResolvedUnmergedPaths after checkpoint: %v", err)
+	}
+	if len(resolved) != 0 {
+		t.Fatalf("resolved paths after checkpoint = %v, want none", resolved)
+	}
+
+	resumedTask, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, resumedTask.Workflow, resumedTask)
+	if err != nil {
+		t.Fatalf("resumed execRoutePRFixResult: %v", err)
+	}
+	if out.Output != "continue" {
+		t.Fatalf("resumed output = %q, want continue", out.Output)
+	}
+	if preflight.calls != 2 {
+		t.Fatalf("preflight calls = %d, want 2", preflight.calls)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == "human-required" {
+		t.Fatalf("status = human-required after retry: %s", tasks.Reason("t1"))
 	}
 }
 

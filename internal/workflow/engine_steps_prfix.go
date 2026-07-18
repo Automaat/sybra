@@ -46,6 +46,8 @@ const routePRFixResultStepID = "route_pr_fix_result"
 // `next` transitions can branch on it with a single equality check.
 const prFixTestFixEligibleVar = "pr_fix_test_fix_eligible"
 
+const resolvedMergeCheckpointedVar = "resolved_merge_checkpointed"
+
 const resolvedMergeCheckpointMessage = "fix(recovery): finalize merge resolution\n\nroute_pr_fix_result recovered a marker-free merge the pr-fix agent resolved on disk but never staged/committed."
 
 // PRFixVerdict is the outcome a pr-fix agent reported via its SYBRA_PR_FIX_RESULT sentinel.
@@ -161,11 +163,17 @@ func prFixAllowsResolvedMergeRecovery(reason string) bool {
 }
 
 func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error, bool) {
-	if e.worktrees == nil || e.checks == nil {
+	if e.worktrees == nil {
 		return StepOutput{}, nil, false
 	}
 	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
 	if !ok {
+		return StepOutput{}, nil, false
+	}
+	if wfExec != nil && wfExec.Variables[resolvedMergeCheckpointVar(step.ID)] == "true" {
+		return e.pushRecoveredResolvedMergeCommit(taskID, step, wfExec, t, wtPath)
+	}
+	if e.checks == nil {
 		return StepOutput{}, nil, false
 	}
 
@@ -234,10 +242,24 @@ func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Exec
 		out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict left no checkpointable changes after recovery")
 		return out, err, true
 	}
+	if wfExec != nil {
+		wfExec.SetVar(resolvedMergeCheckpointVar(step.ID), "true")
+		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+			out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict commit landed but recovery state could not be persisted: "+trimDiffLine(err.Error()))
+			return out, err, true
+		}
+	}
 
+	return e.pushRecoveredResolvedMergeCommit(taskID, step, wfExec, t, wtPath)
+}
+
+func (e *Engine) pushRecoveredResolvedMergeCommit(taskID string, step *Step, wfExec *Execution, t TaskInfo, wtPath string) (StepOutput, error, bool) {
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
 	branch := t.Branch
 	if branch == "" {
-		branch, err = project.CurrentBranch(commitCtx, wtPath)
+		var err error
+		branch, err = project.CurrentBranch(ctx, wtPath)
 		if err != nil || branch == "" {
 			reason := "resolved merge conflict commit landed but the task branch could not be determined"
 			if err != nil {
@@ -253,8 +275,12 @@ func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Exec
 	if e.prHeads != nil && t.PRNumber > 0 && t.ProjectID != "" {
 		e.verifyPushedHead(taskID, wtPath, t)
 	}
-	e.logger.Info("workflow.pr-fix.recovered-resolved-merge", "task_id", taskID, "paths", resolved, "commands", cmds)
+	e.logger.Info("workflow.pr-fix.recovered-resolved-merge", "task_id", taskID, "branch", branch)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil, true
+}
+
+func resolvedMergeCheckpointVar(stepID string) string {
+	return "step." + stepID + "." + resolvedMergeCheckpointedVar
 }
 
 func (e *Engine) rejectUnexpectedResolvedMergeDirtyPaths(taskID string, step *Step, wtPath string, checkedFiles []string) (StepOutput, error, bool) {
