@@ -641,6 +641,62 @@ func TestHandleAutoMerge_REST_AuditPayload(t *testing.T) {
 	}
 }
 
+func TestHandleAutoMerge_FiresAppliedHook(t *testing.T) {
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(41),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	hookCalls := 0
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: github.NewIssueTracker(time.Minute),
+		mergePR: func(repo string, number int) error {
+			return nil
+		},
+		onAutoMergeApplied: func() {
+			hookCalls++
+		},
+	}
+
+	r.handleAutoMerge(github.PRIssue{
+		Kind:   github.PRIssueReadyToMerge,
+		TaskID: created.ID,
+		PR: github.PullRequest{
+			Repository:      "pet-owner/pet-repo",
+			Number:          41,
+			Mergeable:       "MERGEABLE",
+			CIStatus:        "SUCCESS",
+			CopilotReviewed: true,
+		},
+	})
+
+	if hookCalls != 1 {
+		t.Fatalf("hookCalls = %d, want 1", hookCalls)
+	}
+}
+
 // TestHandleKnownPRConflictsViaREST_RoutesReadyToMerge verifies the
 // budget-exhausted REST-only pass now routes a ready_to_merge issue through
 // to handleAutoMerge (and its REST merge), where it used to be dropped

@@ -69,6 +69,15 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		StartedAt: now,
 		EndedAt:   now,
 	})
+	if output.Status == "completed" {
+		// A clean completion means this fix_review round is done — the
+		// review-finding the retry pointed at got fixed. Drop the retry
+		// counter so a reward_hacking stop on a LATER, unrelated fix_review
+		// round (reached only after a fresh code_review cycle re-enters this
+		// same step ID) starts from a full budget instead of inheriting an
+		// already-exhausted counter from a prior round (#2229 stop-and-reset).
+		clearWatchdogRewardHackingRetry(wfExec, output.StepID)
+	}
 	if output.Output != "" {
 		wfExec.SetVar("step."+output.StepID+".output", truncate(output.Output, 2000))
 		// Extract the adversarial test verdict from the UNtruncated output and
@@ -98,23 +107,8 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return nil
 	}
 
-	// Retry failed steps if max_retries configured and not exhausted.
-	if output.Status == "failed" && currentStep.Config.MaxRetries > 0 && ctx.Task.Status != "human-required" {
-		retries := wfExec.CountStep(output.StepID)
-		if retries <= currentStep.Config.MaxRetries {
-			e.logger.Info("workflow.retry", "task_id", taskID, "step", output.StepID,
-				"attempt", retries, "max", currentStep.Config.MaxRetries)
-			if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-				return err
-			}
-			release()
-			return e.executeNextSteps(taskID, &def, currentStep, wfExec)
-		}
-		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
-			"attempts", retries)
-		if done, bErr := e.blockRetryExhaustedTriageIfNeeded(taskID, currentStep, wfExec, output.Output); done || bErr != nil {
-			return bErr
-		}
+	if handled, rErr := e.retryFailedStepIfConfigured(taskID, &def, currentStep, wfExec, ctx.Task, output, release); handled {
+		return rErr
 	}
 
 	// Mark task reviewed after a review-role step succeeds.
@@ -148,6 +142,33 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
 	release()
 	return e.executeNextSteps(taskID, &def, nextStep, wfExec)
+}
+
+// retryFailedStepIfConfigured re-dispatches a failed step when max_retries is
+// configured and not yet exhausted. handled=true means the caller must return
+// err immediately (either a fresh dispatch or a retry-exhausted block);
+// handled=false means the step isn't retryable (or retries are exhausted
+// without blocking) and AdvanceStep should keep resolving the next edge.
+func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, currentStep *Step, wfExec *Execution, task TaskInfo, output StepOutput, release func()) (handled bool, err error) {
+	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == "human-required" {
+		return false, nil
+	}
+	retries := wfExec.CountStep(output.StepID)
+	if retries <= currentStep.Config.MaxRetries {
+		e.logger.Info("workflow.retry", "task_id", taskID, "step", output.StepID,
+			"attempt", retries, "max", currentStep.Config.MaxRetries)
+		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+			return true, err
+		}
+		release()
+		return true, e.executeNextSteps(taskID, def, currentStep, wfExec)
+	}
+	e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
+		"attempts", retries)
+	if done, bErr := e.blockRetryExhaustedTriageIfNeeded(taskID, currentStep, wfExec, output.Output); done || bErr != nil {
+		return true, bErr
+	}
+	return false, nil
 }
 
 // reloadTaskAndCheckImplementRetry re-reads task state after a step
