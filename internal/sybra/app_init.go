@@ -1408,6 +1408,12 @@ func (a *App) newRecovery() *recovery.Recovery {
 		OrphanRoots: []string{
 			filepath.Join(config.HomeDir(), "sandboxes"),
 			filepath.Join(config.HomeDir(), "worktrees"),
+			// The /sybra-test skill's fake-provider harness spawns its
+			// subject process directly under a fresh os.TempDir()/sybra-test-*
+			// sandbox, outside the normal task/worktree/sandbox lifecycle
+			// (sybra#2210) — glob-expanded fresh on every sweep since each
+			// test run gets its own directory.
+			filepath.Join(os.TempDir(), "sybra-test-*"),
 		},
 		// Also gate on the instance role: RunStartupCleanup calls
 		// RestartStaleInProgress outside the (gated) maintenance pass, so an
