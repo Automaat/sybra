@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
@@ -37,6 +38,25 @@ func (f *fakeIssueSink) SubmitIssue(_ context.Context, title, body string, label
 	f.gotBody = body
 	f.gotLabels = labels
 	return f.created, f.url, f.err
+}
+
+type fakeHumanReviewAgentRunner struct {
+	apply func(agent.RunConfig) agent.RunConfig
+	run   func(agent.RunConfig) (*agent.Agent, error)
+}
+
+func (f *fakeHumanReviewAgentRunner) ApplyABVariant(cfg agent.RunConfig, _ abtest.Config, _, _ string) agent.RunConfig {
+	if f != nil && f.apply != nil {
+		return f.apply(cfg)
+	}
+	return cfg
+}
+
+func (f *fakeHumanReviewAgentRunner) Run(cfg agent.RunConfig) (*agent.Agent, error) {
+	if f != nil && f.run != nil {
+		return f.run(cfg)
+	}
+	return &agent.Agent{ID: "fake-human-review", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
 }
 
 func newReviewTestEnv(t *testing.T) (*humanReviewHandler, *task.Manager, *fakeIssueSink, func()) {
@@ -1293,6 +1313,63 @@ func TestMaybeSpawn_SkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
 	h.mu.Unlock()
 	if busy {
 		t.Error("expected no inflight entry — stale hook should skip the spawn")
+	}
+}
+
+func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
+	t.Parallel()
+
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Racey hook task", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+
+	runner := &fakeHumanReviewAgentRunner{}
+	runCalls := 0
+	runner.apply = func(cfg agent.RunConfig) agent.RunConfig {
+		if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusBlocked)}); err != nil {
+			t.Fatalf("advance task before run: %v", err)
+		}
+		return cfg
+	}
+	runner.run = func(cfg agent.RunConfig) (*agent.Agent, error) {
+		runCalls++
+		return &agent.Agent{ID: "should-not-run", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}
+	h.agents = runner
+
+	if spawned := h.maybeSpawn(tk.ID, string(task.StatusTodo)); spawned {
+		t.Fatal("maybeSpawn = true, want false after task left human-required before Run")
+	}
+	if runCalls != 0 {
+		t.Fatalf("Run called %d times, want 0", runCalls)
+	}
+
+	h.mu.Lock()
+	_, busy := h.inflight[tk.ID]
+	h.mu.Unlock()
+	if busy {
+		t.Fatal("expected no inflight entry after stale pre-run recheck")
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
+	}
+	if len(got.AgentRuns) != 0 {
+		t.Fatalf("agent runs = %d, want 0", len(got.AgentRuns))
 	}
 }
 
