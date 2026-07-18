@@ -1,11 +1,16 @@
 package workflow
 
 import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 // scriptedPRStateFetcher returns a fixed state or error for every probe,
@@ -226,6 +231,130 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "Human review is required") {
 		t.Errorf("reason = %q, want agent output excerpt", reason)
+	}
+}
+
+func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
+	t.Parallel()
+
+	bare, wtPath := newPRWorktree(t, "feat/conflict-recovery")
+	conflictPath := filepath.Join("internal", "workflow", "engine_advance.go")
+	if err := os.MkdirAll(filepath.Join(wtPath, "internal", "workflow"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, conflictPath), []byte("feature branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtPath, "add", conflictPath)
+	runGitAt(t, wtPath, "commit", "-m", "feat: branch side")
+	if err := project.PushSync(context.Background(), wtPath, "feat/conflict-recovery"); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	baseWT := filepath.Join(t.TempDir(), "base")
+	if err := project.CreateWorktreeExisting(context.Background(), bare, baseWT, "main"); err != nil {
+		t.Fatalf("CreateWorktreeExisting(main): %v", err)
+	}
+	runGitAt(t, baseWT, "config", "user.email", "test@test.com")
+	runGitAt(t, baseWT, "config", "user.name", "Test")
+	if err := os.MkdirAll(filepath.Join(baseWT, "internal", "workflow"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(baseWT, conflictPath), []byte("main branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, baseWT, "add", conflictPath)
+	runGitAt(t, baseWT, "commit", "-m", "feat: base side")
+
+	cmd := exec.Command("git", "merge", "refs/heads/main")
+	cmd.Dir = wtPath
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("git merge unexpectedly succeeded: %s", out)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, conflictPath), []byte("feature branch\nmain branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved on disk but merge not finalized.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: git still reports an unmerged path\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2230,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-recovery",
+		Workflow:  wf,
+	})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2230,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-recovery",
+	})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output != "continue" {
+		t.Fatalf("output = %q, want continue", out.Output)
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want unchanged in-progress", got.Status)
+	}
+
+	statusOut, err := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v: %s", err, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("worktree not clean after recovery: %s", statusOut)
+	}
+
+	subject, err := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%s").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git log: %v: %s", err, subject)
+	}
+	if got := strings.TrimSpace(string(subject)); got != "fix(recovery): finalize merge resolution" {
+		t.Fatalf("last subject = %q, want recovery commit", got)
+	}
+
+	localSHA := headSHA(t, wtPath)
+	remoteSHAOut, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "rev-parse", "refs/heads/feat/conflict-recovery").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse remote branch: %v: %s", err, remoteSHAOut)
+	}
+	if remoteSHA := strings.TrimSpace(string(remoteSHAOut)); remoteSHA != localSHA {
+		t.Fatalf("remote SHA = %q, want pushed local SHA %q", remoteSHA, localSHA)
 	}
 }
 
