@@ -37,8 +37,13 @@ type Store struct {
 	locker        *fsutil.KeyedLocker
 	cacheMu       sync.RWMutex
 	listCache     []Task
-	listSnapshot  []listCacheFile
 	listValid     bool
+	listSnapshot  map[string]listFileState
+}
+
+type listFileState struct {
+	size    int64
+	modTime time.Time
 }
 
 // NewStore creates dir if it does not exist and returns a Store rooted
@@ -202,6 +207,7 @@ func (s *Store) List() ([]Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read tasks dir: %w", err)
 	}
+	startSnapshot, hasStartSnapshot := s.listSnapshotFromEntries(entries)
 
 	// Bucket entries in one pass so we don't ReadDir per-task in the
 	// PlanDraftStore.List path (was N²) or stat-via-ENOENT 3 sidecars per
@@ -261,15 +267,13 @@ func (s *Store) List() ([]Task, error) {
 		tasks = append(tasks, t)
 	}
 	if !parseErr {
-		s.storeListCache(tasks, entries)
+		if hasStartSnapshot {
+			s.storeListCacheIfSnapshotFresh(tasks, startSnapshot)
+		} else {
+			s.invalidateListCache()
+		}
 	}
 	return tasks, nil
-}
-
-type listCacheFile struct {
-	name    string
-	size    int64
-	modTime time.Time
 }
 
 // sidecarIndex holds sidecar contents loaded in a single ReadDir pass,
@@ -1478,34 +1482,42 @@ func (s *Store) refreshCachedTask(id string) {
 }
 
 func (s *Store) cachedList() ([]Task, bool) {
+	snapshot, ok := s.currentListSnapshot()
+	if !ok {
+		s.invalidateListCache()
+		return nil, false
+	}
+
 	s.cacheMu.RLock()
-	defer s.cacheMu.RUnlock()
-	if !s.listValid {
+	if !s.listValid || !sameListSnapshot(s.listSnapshot, snapshot) {
+		s.cacheMu.RUnlock()
 		return nil, false
 	}
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		return nil, false
-	}
-	snapshot, ok := listCacheSnapshot(entries)
-	if !ok || !slices.Equal(snapshot, s.listSnapshot) {
-		return nil, false
-	}
-	return cloneTasks(s.listCache), true
+	tasks := cloneTasks(s.listCache)
+	s.cacheMu.RUnlock()
+	return tasks, true
 }
 
-func (s *Store) storeListCache(tasks []Task, entries []os.DirEntry) {
+func (s *Store) storeListCache(tasks []Task, snapshot map[string]listFileState) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
-	snapshot, ok := listCacheSnapshot(entries)
-	if !ok {
-		s.listValid = false
-		s.listSnapshot = nil
-		return
-	}
 	s.listCache = cloneTasks(tasks)
-	s.listSnapshot = snapshot
 	s.listValid = true
+	s.listSnapshot = cloneListSnapshot(snapshot)
+}
+
+func (s *Store) storeListCacheIfSnapshotFresh(tasks []Task, startSnapshot map[string]listFileState) bool {
+	snapshot, ok := s.currentListSnapshot()
+	if !ok {
+		s.invalidateListCache()
+		return false
+	}
+	if !sameListSnapshot(startSnapshot, snapshot) {
+		s.invalidateListCache()
+		return false
+	}
+	s.storeListCache(tasks, startSnapshot)
+	return true
 }
 
 func (s *Store) storeTaskCache(t Task) {
@@ -1520,11 +1532,11 @@ func (s *Store) storeTaskCache(t Task) {
 			continue
 		}
 		s.listCache[i] = cloned
-		s.refreshListSnapshotLocked()
+		s.refreshListSnapshotLocked(t.ID)
 		return
 	}
 	s.listCache = append(s.listCache, cloned)
-	s.refreshListSnapshotLocked()
+	s.refreshListSnapshotLocked(t.ID)
 }
 
 func (s *Store) deleteCachedTask(id string) {
@@ -1538,10 +1550,10 @@ func (s *Store) deleteCachedTask(id string) {
 			continue
 		}
 		s.listCache = append(s.listCache[:i], s.listCache[i+1:]...)
-		s.refreshListSnapshotLocked()
+		s.refreshListSnapshotLocked(id)
 		return
 	}
-	s.refreshListSnapshotLocked()
+	s.refreshListSnapshotLocked(id)
 }
 
 func (s *Store) invalidateListCache() {
@@ -1551,48 +1563,106 @@ func (s *Store) invalidateListCache() {
 	s.listSnapshot = nil
 }
 
-func (s *Store) refreshListSnapshotLocked() {
+func (s *Store) currentListSnapshot() (map[string]listFileState, bool) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
-		s.listValid = false
-		s.listSnapshot = nil
-		return
+		return nil, false
 	}
-	snapshot, ok := listCacheSnapshot(entries)
-	if !ok {
-		s.listValid = false
-		s.listSnapshot = nil
-		return
-	}
-	s.listSnapshot = snapshot
-	s.listValid = true
+	return s.listSnapshotFromEntries(entries)
 }
 
-func listCacheSnapshot(entries []os.DirEntry) ([]listCacheFile, bool) {
-	snapshot := make([]listCacheFile, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
+func (s *Store) listSnapshotFromEntries(entries []os.DirEntry) (map[string]listFileState, bool) {
+	snapshot := map[string]listFileState{}
+	for _, e := range entries {
+		if e.IsDir() {
 			continue
 		}
-		base := entry.Name()
-		if !listCacheRelevantFile(base) {
+		base := e.Name()
+		if !isListCacheFile(base) {
 			continue
 		}
-		info, err := entry.Info()
+		info, err := e.Info()
 		if err != nil {
 			return nil, false
 		}
-		snapshot = append(snapshot, listCacheFile{
-			name:    base,
+		snapshot[base] = listFileState{
 			size:    info.Size(),
 			modTime: info.ModTime(),
-		})
+		}
 	}
 	return snapshot, true
 }
 
-func listCacheRelevantFile(base string) bool {
-	return strings.HasSuffix(base, ".md") || IsSidecarFile(base)
+func isListCacheFile(base string) bool {
+	if IsSidecarFile(base) {
+		return true
+	}
+	return strings.HasSuffix(base, ".md")
+}
+
+func sameListSnapshot(a, b map[string]listFileState) bool {
+	return sameListSnapshotExceptOwned(a, b, "")
+}
+
+func sameListSnapshotExceptOwned(a, b map[string]listFileState, id string) bool {
+	for base, state := range a {
+		if isOwnedListCacheFile(base, id) {
+			continue
+		}
+		other, ok := b[base]
+		if !ok || !sameListFileState(state, other) {
+			return false
+		}
+	}
+	for base := range b {
+		if isOwnedListCacheFile(base, id) {
+			continue
+		}
+		if _, ok := a[base]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func sameListFileState(a, b listFileState) bool {
+	return a.size == b.size && a.modTime.Equal(b.modTime)
+}
+
+func isOwnedListCacheFile(base, id string) bool {
+	if id == "" {
+		return false
+	}
+	if base == id+".md" || strings.HasPrefix(base, id+PlanDraftSidecarPrefix) {
+		return true
+	}
+	for _, suffix := range sidecarFileSuffixes {
+		if base == id+suffix {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneListSnapshot(snapshot map[string]listFileState) map[string]listFileState {
+	if snapshot == nil {
+		return nil
+	}
+	return maps.Clone(snapshot)
+}
+
+func (s *Store) refreshListSnapshotLocked(id string) {
+	if snapshot, ok := s.currentListSnapshot(); ok {
+		if !sameListSnapshotExceptOwned(s.listSnapshot, snapshot, id) {
+			s.listValid = false
+			s.listSnapshot = nil
+			return
+		}
+		s.listSnapshot = snapshot
+		return
+	}
+	s.listValid = false
+	s.listSnapshot = nil
 }
 
 func cloneTasks(tasks []Task) []Task {

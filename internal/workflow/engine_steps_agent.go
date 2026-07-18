@@ -44,9 +44,6 @@ func (e *Engine) importSidecarIfConfiguredFromDef(taskID, stepID string, info Ta
 		return
 	}
 	for _, cfg := range step.Config.sidecarImports() {
-		if latest, gErr := e.tasks.GetTask(taskID); gErr == nil && latest.Workflow != nil {
-			info = latest
-		}
 		e.importOneSidecar(taskID, stepID, step, info, cfg)
 	}
 }
@@ -75,29 +72,32 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 	}
 	content, readErr := os.ReadFile(path)
 	if readErr != nil {
-		if recoveredPath, recoveredContent, ok := e.recoverImportedSidecarFromWorktree(taskID, stepID, step, info, cfg); ok {
-			path = recoveredPath
-			content = recoveredContent
-			readErr = nil
-		}
-	}
-	if readErr != nil {
-		e.logger.Warn("workflow.import-sidecar.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
-		if cfg.Required {
-			// A template referencing the reserved worktree-dir var that
-			// rendered empty (e.g. "/.sybra-review-<id>.md" instead of
-			// "<worktree>/.sybra-review-<id>.md") means the engine lost
-			// track of the agent's working directory, not that the agent
-			// never produced the artifact — the file may well exist in the
-			// worktree the agent actually ran in. Surface this distinctly so
-			// it isn't misread as "review missing" when investigating.
-			if worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == "" {
-				e.failRequiredImport(taskID, stepID, cfg.Kind, "unresolved: worktree dir variable was empty at render time")
-			} else {
-				e.failRequiredImport(taskID, stepID, cfg.Kind, "missing")
+		dirVarUnresolved := worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == ""
+		if dirVarUnresolved {
+			// The engine lost track of the agent's working directory (e.g. a
+			// restart/reattach reloaded workflow state without _dir), not
+			// necessarily that the agent never produced the artifact — the
+			// file may well exist in the worktree the agent actually ran in.
+			// Before escalating, try to recover the real worktree dir from
+			// task metadata (the same lookup verify_checks/tamper/etc. use)
+			// and retry against it. See sybra#1988.
+			if recoveredPath, recoveredContent, ok := e.recoverSidecarFromTaskWorktree(taskID, stepID, step, info, cfg); ok {
+				path, content, readErr = recoveredPath, recoveredContent, nil
 			}
 		}
-		return
+		if readErr != nil {
+			e.logger.Warn("workflow.import-sidecar.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
+			if cfg.Required {
+				// Surface the empty-dir-var case distinctly so it isn't
+				// misread as "review missing" when investigating.
+				if dirVarUnresolved {
+					e.failRequiredImport(taskID, stepID, cfg.Kind, "unresolved: worktree dir variable was empty at render time")
+				} else {
+					e.failRequiredImport(taskID, stepID, cfg.Kind, "missing")
+				}
+			}
+			return
+		}
 	}
 	if cfg.Required && strings.TrimSpace(string(content)) == "" {
 		e.failRequiredImport(taskID, stepID, cfg.Kind, "empty")
@@ -135,39 +135,47 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 	}
 }
 
-func (e *Engine) recoverImportedSidecarFromWorktree(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) (path string, content []byte, ok bool) {
-	if !worktreeDirTemplatePattern.MatchString(cfg.From) || strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) != "" || e.worktrees == nil {
+// recoverSidecarFromTaskWorktree resolves the task's worktree dir from task
+// metadata (the same WorktreeGetter lookup verify_checks/tamper/codegen use,
+// independent of the workflow's own _dir variable) and retries rendering +
+// reading cfg.From against it. On success it also persists the recovered dir
+// back into the workflow's _dir variable so later sidecar imports and steps
+// in the same run don't repeat the same lost-variable failure. Returns
+// ok=false if no WorktreeGetter is wired, no worktree is found for the task,
+// or the file still doesn't exist at the recovered path — callers fall
+// through to the ordinary escalation path in that case.
+func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) (path string, content []byte, ok bool) {
+	if e.worktrees == nil {
 		return "", nil, false
 	}
-	worktreePath, ok := e.worktrees.GetWorktreePath(taskID)
-	if !ok || strings.TrimSpace(worktreePath) == "" {
+	wtPath, found := e.worktrees.GetWorktreePath(taskID)
+	if !found || strings.TrimSpace(wtPath) == "" {
 		return "", nil, false
 	}
-	recoveredWorkflow := *info.Workflow
-	recoveredWorkflow.Variables = maps.Clone(info.Workflow.Variables)
-	recoveredWorkflow.SetVar(WorkflowVarDir, worktreePath)
-	path, rErr := RenderTemplate(cfg.From, TemplateContext{
+	vars := maps.Clone(info.Workflow.Variables)
+	if vars == nil {
+		vars = map[string]string{}
+	}
+	vars[WorkflowVarDir] = wtPath
+	recoveredPath, rErr := RenderTemplate(cfg.From, TemplateContext{
 		Task:     info,
 		Step:     *step,
-		Vars:     recoveredWorkflow.Variables,
-		Workflow: &recoveredWorkflow,
+		Vars:     vars,
+		Workflow: info.Workflow,
 	})
 	if rErr != nil {
-		e.logger.Warn("workflow.import-sidecar.recover.render", "task_id", taskID, "step", stepID, "err", rErr)
 		return "", nil, false
 	}
-	content, readErr := os.ReadFile(path)
+	data, readErr := os.ReadFile(recoveredPath)
 	if readErr != nil {
-		e.logger.Warn("workflow.import-sidecar.recover.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
 		return "", nil, false
 	}
-	info.Workflow.SetVar(WorkflowVarDir, worktreePath)
-	if err := e.tasks.SetWorkflow(taskID, info.Workflow); err != nil {
-		e.logger.Warn("workflow.import-sidecar.recover.persist", "task_id", taskID, "step", stepID, "path", path, "err", err)
-		return "", nil, false
+	info.Workflow.SetVar(WorkflowVarDir, wtPath)
+	if setErr := e.tasks.SetWorkflow(taskID, info.Workflow); setErr != nil {
+		e.logger.Warn("workflow.import-sidecar.recover.persist", "task_id", taskID, "step", stepID, "err", setErr)
 	}
-	e.logger.Info("workflow.import-sidecar.recover", "task_id", taskID, "step", stepID, "path", path, "bytes", len(content))
-	return path, content, true
+	e.logger.Info("workflow.import-sidecar.recovered-dir", "task_id", taskID, "step", stepID, "dir", wtPath)
+	return recoveredPath, data, true
 }
 
 func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
