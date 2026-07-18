@@ -135,7 +135,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 		}
 		if err := e.spawnBestOfNAttempt(taskID, step, wfExec, ctx, id, status); err != nil {
 			e.logger.Error("workflow.best-of-n.spawn", "task_id", taskID, "parent", step.ID, "attempt", id, "err", err)
-			if transientAgentStartError(err) {
+			if e.transientOrShutdownStartError(err) {
 				status.Status = "pending"
 				status.Output = "spawn blocked: " + err.Error()
 				e.surfaceStartFailure(taskID, ctx.Task.Status, err, wfExec, bestOfNAttemptStepKey(step.ID, id))

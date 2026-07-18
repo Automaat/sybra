@@ -1658,6 +1658,19 @@ func IsShutdownCancellation(ctx context.Context, err error) bool {
 	return ctx != nil && ctx.Err() != nil && errors.Is(err, context.Canceled)
 }
 
+// transientOrShutdownStartError reports whether a fan-out attempt/child spawn
+// error (best-of-n, parallel) should park the attempt as retryable ("pending")
+// rather than permanently "failed". transientAgentStartError alone doesn't
+// recognize context.Canceled, so a shutdown-cancelled spawn used to fall
+// straight to a hard "failed" that finalizeBestOfNParent/finalizeParallelParent
+// would then escalate the whole task to human-required for — the exact
+// mass-park symptom sybra#2291 targets, reached through a code path the
+// primary surfaceStartFailure fix doesn't gate on its own, since these two
+// call sites only invoke surfaceStartFailure inside the transient branch.
+func (e *Engine) transientOrShutdownStartError(err error) bool {
+	return transientAgentStartError(err) || e.isShutdownCancellation(err)
+}
+
 func circuitBreakerFailureKey(stepID string) string { return circuitBreakerFailureVarPrefix + stepID }
 func circuitBreakerFirstKey(stepID string) string   { return circuitBreakerFirstVarPrefix + stepID }
 
