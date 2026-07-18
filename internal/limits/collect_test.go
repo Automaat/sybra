@@ -85,7 +85,7 @@ func TestStoreProviderAvailableAndChooseProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 	policy := DefaultPolicy()
 
@@ -185,7 +185,7 @@ func TestStoreProviderAvailable_IgnoresExpiredQuotaCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderCodex,
@@ -221,7 +221,7 @@ func TestChooseProvider_SkipsPolicyDisabledCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderClaude,
@@ -322,7 +322,7 @@ func TestSummary_PrefersSessionFileUsageCountersButKeepsRunSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 
 	if err := s.RecordUsage(UsageEvent{
@@ -380,7 +380,13 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	// reopened below (see NewStore) has no way to inherit s.now, so its own
+	// reloadLocked always uses the real clock. A fixed historical date here
+	// would drift more than eventMaxAge (21d) past that real clock over
+	// time, silently filtering the fixture events out as stale — this test
+	// failed for exactly that reason. time.Now() keeps both clocks aligned
+	// no matter when the test runs.
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 
 	if err := s.Import(
@@ -457,7 +463,7 @@ func TestRecordUsageCrossProcessSimulatesConcurrentWriters(t *testing.T) {
 }
 
 func TestSessionImport_DedupesEventsAndKeepsLatestSnapshot(t *testing.T) {
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	batch := newSessionImport()
 
 	batch.addEvent(UsageEvent{ID: "event-1", Provider: ProviderClaude, Source: SourceSessionFiles, InputTokens: 1})
