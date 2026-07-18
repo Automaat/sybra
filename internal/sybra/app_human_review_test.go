@@ -1488,6 +1488,32 @@ func TestMaybeSpawn_SkipsProjectlessTask(t *testing.T) {
 	}
 }
 
+func TestMaybeSpawn_SkipsStaleNonHumanRequiredTask(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Already handled task", "queued", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusBlocked),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to blocked: %v", err)
+	}
+
+	h.maybeSpawn(tk.ID, string(task.StatusHumanRequired))
+
+	h.mu.Lock()
+	_, busy := h.inflight[tk.ID]
+	h.mu.Unlock()
+	if busy {
+		t.Error("expected no inflight entry - stale non-human-required task must not spawn a review agent")
+	}
+}
+
 func TestOnComplete_SetsVerdictRendered(t *testing.T) {
 	t.Parallel()
 	// Verifies that onComplete sets VerdictRendered on the matching AgentRun so

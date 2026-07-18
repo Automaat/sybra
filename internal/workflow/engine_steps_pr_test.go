@@ -124,6 +124,7 @@ func (f *fakePRContentGenerator) GeneratePRContent(context.Context, string, stri
 
 type fakePushPreflighter struct {
 	err   error
+	errs  []error
 	calls int
 	paths []string
 }
@@ -131,6 +132,9 @@ type fakePushPreflighter struct {
 func (f *fakePushPreflighter) PreflightPushCredentials(_ context.Context, wtPath string) error {
 	f.calls++
 	f.paths = append(f.paths, wtPath)
+	if f.calls <= len(f.errs) {
+		return f.errs[f.calls-1]
+	}
 	return f.err
 }
 
