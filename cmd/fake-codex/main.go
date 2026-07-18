@@ -117,6 +117,8 @@ func runExec() {
 	case "pr_created":
 		emitAgentMessage("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
 		emitTurnCompleted(100, 20)
+	case "human_review_unblocked_ready_pr":
+		runCodexHumanReviewUnblockedReadyPR()
 	case "auth_error":
 		emitError("Authentication failed")
 		os.Exit(1)
@@ -148,6 +150,19 @@ func runCodexTestScenario(scenario string) bool {
 
 func runCodexTestVerdictPass() {
 	emitSchemaValidAgentMessage(testVerdictPassPayload())
+	emitTurnCompleted(100, 20)
+}
+
+func runCodexHumanReviewUnblockedReadyPR() {
+	emitSchemaValidAgentMessage(map[string]any{
+		"decision":           "unblocked",
+		"reason":             "opened the PR and the host should resume review",
+		"recoverable_action": "ready-pr",
+		"confidence":         "high",
+		"issue_title":        nil,
+		"issue_body":         nil,
+		"issue_labels":       nil,
+	})
 	emitTurnCompleted(100, 20)
 }
 
