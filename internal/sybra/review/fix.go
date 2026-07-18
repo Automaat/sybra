@@ -469,7 +469,7 @@ func ciFailurePrompt(pr github.PullRequest) string {
 		pr.HeadRefName, pr.Number,
 		ciFailureDiagnosisRules(pr.BaseRefName),
 		prFixTamperingRules,
-		prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true),
+		prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
 	)
 }
 
@@ -509,9 +509,13 @@ const prFixTamperingRules = "Never weaken, skip, delete, or hardcode tests, " +
 
 // prFixPushPrompt renders the create-pr-equivalent push snippet for a pr-fix
 // agent. When fenced is true it emits a standalone ```sh block (optionally
-// preceded by intro); when false it emits only the three command lines so the
-// caller can splice them into an already-open code fence without nesting.
-func prFixPushPrompt(branch, intro string, fenced bool) string {
+// preceded by intro); when false it emits only the command lines so the caller
+// can splice them into an already-open code fence without nesting.
+//
+// allowHistoryRewrite is only for no-PR recovery paths, where a rebase and
+// force-with-lease are safe because no external PR depends on the branch shape
+// yet.
+func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) string {
 	var b strings.Builder
 	if fenced && intro != "" {
 		b.WriteString(intro)
@@ -525,6 +529,9 @@ func prFixPushPrompt(branch, intro string, fenced bool) string {
 	b.WriteString("PUSH_URL=$(git remote get-url --push \"$PUSH_REMOTE\")\n")
 	b.WriteString("case \"$PUSH_URL\" in https://github.com/*|http://github.com/*|https://github.com:[0-9]*/*|http://github.com:[0-9]*/*) gh auth status --hostname github.com >/dev/null ;; esac\n")
 	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
+	if allowHistoryRewrite {
+		fmt.Fprintf(&b, "\n# If you rebased or otherwise rewrote this branch's history, use lease-protected force-push instead.\ngit push --force-with-lease \"$PUSH_REMOTE\" HEAD:%s", branch)
+	}
 	if fenced {
 		b.WriteString("\n```")
 	}
@@ -1136,11 +1143,10 @@ func (r *Handler) prFixParkedOnConflict(taskID string) bool {
 // recoverBranchConflictNoPR is the no-PR sibling of RecoverStaleBranchConflict:
 // the task has no linked PR yet (still in implementation/review/testing, or
 // at create_pr), so there is no PR head to check out. Instead it resolves the
-// task's OWN branch by name (PrepareForBranchFix), merges base into it via a
-// bounded headless pr-fix sub-run (branch-conflict-fix workflow — a merge,
-// never a rebase, so a plain push always succeeds), and on success resumes
-// the task's original interrupted workflow/stage rather than jumping to a
-// terminal status.
+// task's OWN branch by name (PrepareForBranchFix), resolves the branch via a
+// bounded headless pr-fix sub-run (branch-conflict-fix workflow), and on
+// success resumes the task's original interrupted workflow/stage rather than
+// jumping to a terminal status.
 //
 // Guards fail closed exactly like the PR-numbered path: a missing dependency,
 // an exhausted no-PR branch-conflict retry budget, or an already-in-flight
@@ -1550,8 +1556,9 @@ func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 
 // branchConflictPrompt is the no-PR analog of buildConflictPrompt: there is no
 // PR head to reference, so it resolves the task's own branch (t.Branch, set
-// by PrepareForBranchFix before this is called) and instructs a plain merge
-// (never a rebase, so a plain push is always expected to succeed).
+// by PrepareForBranchFix before this is called). Unlike the PR-backed conflict
+// prompt, this path may allow a rebase plus force-with-lease because no PR
+// exists yet.
 func branchConflictPrompt(t task.Task, base string) string {
 	branch := t.Branch
 	if branch == "" {
@@ -1570,18 +1577,21 @@ func branchConflictPrompt(t task.Task, base string) string {
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
 			"# will fail with \"nothing to commit\".\n"+
+			"# If a merge becomes too tangled, you may instead rebase onto\n"+
+			"# refs/remotes/origin/%s, resolve the conflicts there, and finish with a\n"+
+			"# lease-protected force-push because no PR exists yet.\n"+
 			"%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
 			"- Use `refs/remotes/origin/%s` (not `origin/%s`) to avoid ambiguous refs\n"+
 			"- Push to `fork` (not `origin`) when a `fork` remote exists — the branch was opened from the fork\n"+
-			"- Do not force-push or rewrite existing commits — this is a merge, never a rebase; a plain push is always expected to succeed\n"+
+			"- Prefer a merge; if you must rebase before the first PR exists, push the rewritten branch back with `--force-with-lease`\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
 			"- Before pushing, run tests for touched code as a single blocking foreground command (e.g. `go test ./pkg/foo/...`) and wait for it to exit — never background a test run or narrate/poll its progress; if it has not finished within a couple of minutes, stop and report a blocker instead of waiting indefinitely\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes",
-		branch, base, prFixPushPrompt(branch, "", false), base, base,
+		branch, base, base, prFixPushPrompt(branch, "", false, true), base, base,
 	)
 }
 
@@ -1656,7 +1666,7 @@ func commentsPrompt(ctx context.Context, pr github.PullRequest) string {
 			"`fix(review): address PR review comments` (type(scope) required by "+
 			"repo hooks). Sign the commit with `git commit %s`.\n\n"+
 			"%s",
-		pr.URL, pr.Number, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true),
+		pr.URL, pr.Number, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
 	)
 }
 
@@ -1707,6 +1717,6 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
-		pr.HeadRefName, pr.Number, baseRef, prFixPushPrompt(pr.HeadRefName, "", false), baseRef, filesCtx,
+		pr.HeadRefName, pr.Number, baseRef, prFixPushPrompt(pr.HeadRefName, "", false, false), baseRef, filesCtx,
 	)
 }

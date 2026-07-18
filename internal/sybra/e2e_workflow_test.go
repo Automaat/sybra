@@ -2906,6 +2906,39 @@ func TestE2E_Codex_TestVerdict_Fail_JSON(t *testing.T) {
 	}
 }
 
+// TestE2E_Codex_TestVerdict_Fail_JSON_WithTrailingReasoningItem reproduces
+// #1665: Codex can emit a trailing non-message item after the structured FAIL
+// verdict. The completion fallback must skip that empty assistant tail and
+// still route on the earlier JSON verdict.
+func TestE2E_Codex_TestVerdict_Fail_JSON_WithTrailingReasoningItem(t *testing.T) {
+	env := setupE2EMultiProvider(t, "codex", []string{"test_verdict_fail_with_trailing_reasoning_item"})
+	installTestingTaskWithOutputSchemaWorkflow(t, env)
+
+	created, err := env.tasks.Create("codex json verdict fail trailing reasoning item", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusInProgress {
+		t.Errorf("status after JSON FAIL with trailing reasoning item = %q, want %q", tk.Status, task.StatusInProgress)
+	}
+}
+
 func TestE2E_Codex_TestVerdict_Pass_JSON_WithMandatorySkillReceiptPreamble(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

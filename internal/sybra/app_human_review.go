@@ -191,7 +191,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 	// against an already-recovered task would race the recovery flow and let
 	// the agent's unblock actions rewrite the task to the wrong state.
 	if t.Status != task.StatusHumanRequired {
-		h.skip(taskID, "status_not_human_required")
+		h.skip(taskID, "status_"+string(t.Status))
 		return false
 	}
 	// Idempotency gate: a prior run already produced a verdict — re-spawning

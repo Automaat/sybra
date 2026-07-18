@@ -60,8 +60,26 @@ func hardDeadlineBreach(ag *agent.Agent, stall, total, stallLim, budget time.Dur
 	}
 }
 
+// testRunnerStallLimit and testRunnerBudget give RoleTestRunner its own
+// event-gap and total-runtime ceilings, independent of the task's size tag.
+// Test-runner's job — start a real server, drive targeted + adversarial
+// probes, restore the worktree — is inherently slower and burstier than
+// other roles: long stretches of tool use can produce no new stream events
+// while still making real progress (a `go run ./cmd/sybra-server` + curl
+// probe loop, or a single long-running verify command). A "small" task's
+// 10m stall/budget ceiling fires on this legitimate work before it ever
+// reaches a verdict, killing it mid-investigation and burning the retry
+// budget on a from-scratch redispatch instead of letting it finish (#1664).
+const (
+	testRunnerStallLimit = 45 * time.Minute
+	testRunnerBudget     = 90 * time.Minute
+)
+
 // stallLimit returns the max event-gap before triggering inspection.
-func stallLimit(tags []string) time.Duration {
+func stallLimit(role agent.Role, tags []string) time.Duration {
+	if role == agent.RoleTestRunner {
+		return testRunnerStallLimit
+	}
 	switch {
 	case slices.Contains(tags, "large"):
 		return 45 * time.Minute
@@ -73,8 +91,12 @@ func stallLimit(tags []string) time.Duration {
 }
 
 // sizeBudget returns the maximum total runtime for a headless agent based on
-// its task's size tag. Trigger inspection once total runtime exceeds this.
-func sizeBudget(tags []string) time.Duration {
+// its task's size tag (or its role, for RoleTestRunner). Trigger inspection
+// once total runtime exceeds this.
+func sizeBudget(role agent.Role, tags []string) time.Duration {
+	if role == agent.RoleTestRunner {
+		return testRunnerBudget
+	}
 	switch {
 	case slices.Contains(tags, "large"):
 		return 3 * time.Hour
@@ -319,14 +341,15 @@ func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time,
 	stall := now.Sub(ag.GetLastEventAt())
 	total := now.Sub(ag.StartedAt)
 
+	role := agent.RoleFromName(ag.Name)
 	t, err := w.tasks.Get(ag.TaskID)
 	var budget, sl time.Duration
 	if err == nil {
-		budget = sizeBudget(t.Tags)
-		sl = stallLimit(t.Tags)
+		budget = sizeBudget(role, t.Tags)
+		sl = stallLimit(role, t.Tags)
 	} else {
-		budget = sizeBudget(nil)
-		sl = stallLimit(nil)
+		budget = sizeBudget(role, nil)
+		sl = stallLimit(role, nil)
 	}
 
 	if reason := hardDeadlineBreach(ag, stall, total, sl, budget); reason != "" {
@@ -501,7 +524,8 @@ func (w *Watchdog) reapIdleInteractive(ag *agent.Agent, now time.Time) {
 	}
 	stall := now.Sub(ag.GetLastEventAt())
 	total := now.Sub(ag.StartedAt)
-	if reason := hardDeadlineBreach(ag, stall, total, stallLimit(t.Tags), sizeBudget(t.Tags)); reason != "" {
+	role := agent.RoleFromName(ag.Name)
+	if reason := hardDeadlineBreach(ag, stall, total, stallLimit(role, t.Tags), sizeBudget(role, t.Tags)); reason != "" {
 		w.hardStop(ag, reason, stall, total)
 	}
 }
