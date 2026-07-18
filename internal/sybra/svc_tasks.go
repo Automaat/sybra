@@ -872,7 +872,7 @@ var dispatchTargets = map[string]dispatchTargetSpec{
 	string(task.StatusInReview):   {requiresPR: true, dispatches: false},
 }
 
-func readyPRNoWorkflowAllowed(role string, target string) bool {
+func readyPRNoWorkflowAllowed(role, target string) bool {
 	if target != string(task.StatusReadyPR) {
 		return false
 	}
