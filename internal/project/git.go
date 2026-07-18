@@ -1,6 +1,7 @@
 package project
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -317,10 +318,35 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	if err := InstallSignoffHook(ctx, destPath); err != nil {
 		return fmt.Errorf("install signoff hook: %w", err)
 	}
+	if err := configureCommitIdentity(ctx, destPath); err != nil {
+		return fmt.Errorf("configure commit identity: %w", err)
+	}
 	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
 	// origin` becomes a no-op against refs/remotes/origin/*. Configure the
 	// standard refspec so fetches actually update tracking refs.
 	return runBare(ctx, destPath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+}
+
+// configureCommitIdentity sets an explicit git identity on the bare clone.
+// Headless/interactive agent commits are made by the agent's own bash tool
+// calls, not orchestrated Go code, so they inherit whatever identity is
+// already configured on the clone — an empty one fails every commit with
+// "empty ident name", and any stray local override (however it got there)
+// silently becomes the permanent author of every real commit. Setting it
+// explicitly at clone time means neither can happen by accident.
+// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL let an operator brand commits (e.g. as
+// their own GitHub App bot); the default matches the identity
+// internal/agent/k8s_job_runner.go already falls back to.
+func configureCommitIdentity(ctx context.Context, barePath string) error {
+	name := cmp.Or(os.Getenv("GIT_AUTHOR_NAME"), "Sybra Agent")
+	email := cmp.Or(os.Getenv("GIT_AUTHOR_EMAIL"), "sybra-agent@example.invalid")
+	if err := runBare(ctx, barePath, "config", "user.name", name); err != nil {
+		return fmt.Errorf("set user.name: %w", err)
+	}
+	if err := runBare(ctx, barePath, "config", "user.email", email); err != nil {
+		return fmt.Errorf("set user.email: %w", err)
+	}
+	return nil
 }
 
 // DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
