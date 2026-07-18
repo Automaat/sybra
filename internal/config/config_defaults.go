@@ -810,7 +810,6 @@ func load(opts loadOptions) (*Config, error) {
 		if writeErr := writeDefaultConfig(path); writeErr != nil {
 			return nil, writeErr
 		}
-		data = defaultConfigStub
 	}
 	if opts.persistLoadReconciles {
 		tightenConfigPerms(path, existingFile)
@@ -892,107 +891,70 @@ func load(opts loadOptions) (*Config, error) {
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 	applyReviewHoldDefaults(cfg)
-	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
-
-	persistLoadReconciles(data, cfg, opts, serverTokenGenerated)
+	applyServerDefaults(cfg, opts.persistLoadReconciles)
 
 	return cfg, nil
 }
 
-// persistLoadReconciles writes back the one in-memory-only change made during
-// load() that must survive a restart: a freshly generated server auth token
-// (even for a brand-new install — sybra-server reads Server.AuthToken once at
-// startup, so an unsaved token would silently rotate on every restart and
-// lock operators out).
-//
-// No other reconcile persists here — not ab_testing builtins, not any of the
-// defaults load() fills in for logging/agent/etc. All of those are fully
-// derived from code and cheap to recompute, so they're re-applied to the
-// in-memory config on every load instead of being written back. Doing that
-// via Save() (which marshals the *entire* in-memory config) fought any
-// external tool that renders config.yaml declaratively (Ansible, Nix,
-// Chezmoi): a missing token forced a write, and that write materialized
-// every default onto disk, turning the operator's minimal file into a fully
-// expanded one. The tool would then see drift, re-render its own file, and
-// Sybra would expand it again on the next restart.
-//
-// Instead, the token is merged directly into docBefore — the exact bytes
-// load() read from disk (or the stub written for a brand-new install) —
-// leaving every other key, comment, and formatting choice untouched. Only
-// server.auth_token is added or updated.
-func persistLoadReconciles(docBefore []byte, cfg *Config, opts loadOptions, serverTokenGenerated bool) {
-	if !opts.persistLoadReconciles || !serverTokenGenerated {
-		return
-	}
-	merged, err := setYAMLPath(docBefore, cfg.Server.AuthToken, "server", "auth_token")
+// AuthTokenPath is where sybra-server's generated bearer token is persisted
+// when config.yaml does not declare server.auth_token itself. Keeping the
+// generated secret out of config.yaml means an externally-rendered file
+// (Ansible, Nix, Chezmoi, a git-tracked file) is never written to just to
+// carry state Sybra invented at runtime — see #2180. An operator who wants
+// the token declared in config.yaml (e.g. pinned from a secrets manager)
+// can still set server.auth_token there directly; it always wins over this
+// file.
+func AuthTokenPath() string {
+	return filepath.Join(HomeDir(), "server_auth_token")
+}
+
+// readAuthTokenFile returns the token persisted at AuthTokenPath(), or "" if
+// it's absent or unreadable.
+func readAuthTokenFile() string {
+	data, err := os.ReadFile(AuthTokenPath())
 	if err != nil {
-		slog.Warn("config: failed to persist generated server auth token", "err", err)
-		return
+		return ""
 	}
-	if err := WriteRawConfig(merged); err != nil {
-		slog.Warn("config: failed to persist generated server auth token", "err", err)
-	}
+	return strings.TrimSpace(string(data))
 }
 
-// setYAMLPath returns doc with the scalar string at the given key path set to
-// value, creating any missing mapping levels. Existing content, comments, and
-// formatting elsewhere in the document are preserved via yaml.Node
-// round-tripping — this is a surgical single-field edit, not a re-marshal of
-// a Go struct.
-func setYAMLPath(doc []byte, value string, path ...string) ([]byte, error) {
-	var root yaml.Node
-	if len(doc) > 0 {
-		if err := yaml.Unmarshal(doc, &root); err != nil {
-			return nil, err
-		}
+// writeAuthTokenFile persists token to AuthTokenPath() via temp file + rename,
+// mirroring WriteRawConfig's crash-safety, but targeting the dedicated token
+// file instead of config.yaml.
+func writeAuthTokenFile(token string) error {
+	path := AuthTokenPath()
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
+		return err
 	}
-	if root.Kind == 0 {
-		root = yaml.Node{Kind: yaml.DocumentNode}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".server_auth_token-*.tmp")
+	if err != nil {
+		return err
 	}
-	if len(root.Content) == 0 {
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // harmless once the rename below consumes it
+	if _, err := tmp.WriteString(token + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
 	}
-	node := root.Content[0]
-	if node.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("config: expected mapping at document root, got kind %d", node.Kind)
+	if err := tmp.Chmod(configFilePerm); err != nil {
+		_ = tmp.Close()
+		return err
 	}
-	for i, key := range path {
-		last := i == len(path)-1
-		var target *yaml.Node
-		for j := 0; j+1 < len(node.Content); j += 2 {
-			if node.Content[j].Value == key {
-				target = node.Content[j+1]
-				break
-			}
-		}
-		switch {
-		case target == nil:
-			valNode := &yaml.Node{Kind: yaml.MappingNode}
-			if last {
-				valNode = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
-			}
-			node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, valNode)
-			target = valNode
-		case last:
-			target.Kind = yaml.ScalarNode
-			target.Tag = "!!str"
-			target.Value = value
-			target.Content = nil
-		case target.Kind != yaml.MappingNode:
-			return nil, fmt.Errorf("config: expected mapping at %q, got kind %d", key, target.Kind)
-		}
-		node = target
+	if err := tmp.Close(); err != nil {
+		return err
 	}
-	return yaml.Marshal(&root)
+	return os.Rename(tmpName, path)
 }
 
-// applyServerDefaults resolves sybra-server's auth token and CORS allowlist:
-// env vars win when set, otherwise a missing token is auto-generated so the
-// HTTP control plane always fails closed instead of silently running
-// unauthenticated. Returns true when a new token was generated (the caller
-// must persist it — see load()). Read-only config loads pass allowGenerate=false
-// so they never invent an in-memory-only secret that diverges from disk.
-func applyServerDefaults(cfg *Config, allowGenerate bool) bool {
+// applyServerDefaults resolves sybra-server's auth token and CORS allowlist.
+// Precedence for the token: SYBRA_AUTH_TOKEN env var, then an explicit
+// server.auth_token in config.yaml, then a token previously persisted at
+// AuthTokenPath(), then (when allowGenerate) a freshly generated one written
+// to AuthTokenPath() — never to config.yaml, so an externally-rendered
+// config.yaml never gains state Sybra invents at runtime (see #2180).
+// Read-only config loads pass allowGenerate=false so they never invent an
+// in-memory-only secret that diverges from disk.
+func applyServerDefaults(cfg *Config, allowGenerate bool) {
 	if v := os.Getenv("SYBRA_AUTH_TOKEN"); v != "" {
 		cfg.Server.AuthToken = v
 	}
@@ -1004,18 +966,25 @@ func applyServerDefaults(cfg *Config, allowGenerate bool) bool {
 		cfg.Server.AllowedOrigins = origins
 	}
 	if cfg.Server.AuthToken != "" {
-		return false
+		return
+	}
+	if token := readAuthTokenFile(); token != "" {
+		cfg.Server.AuthToken = token
+		return
 	}
 	if !allowGenerate {
-		return false
+		return
 	}
 	token, err := generateAuthToken()
 	if err != nil {
 		slog.Warn("config: failed to generate server auth token", "err", err)
-		return false
+		return
+	}
+	if err := writeAuthTokenFile(token); err != nil {
+		slog.Warn("config: failed to persist generated server auth token", "err", err)
+		return
 	}
 	cfg.Server.AuthToken = token
-	return true
 }
 
 // generateAuthToken returns a random 256-bit hex-encoded shared secret for
@@ -1507,8 +1476,6 @@ const (
 )
 
 // defaultConfigStub is the minimal document written for a brand-new install.
-// load() reuses it as the "on-disk" document when persisting a freshly
-// generated server auth token, without a second disk read.
 var defaultConfigStub = []byte("# Sybra configuration\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n")
 
 func writeDefaultConfig(path string) error {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -1925,11 +1926,11 @@ func TestLoadReconcileSurvivesExternalToolReRenderingStaleVersion(t *testing.T) 
 
 // TestLoadPersistsTokenWithoutReconciledBuiltins is the real upgrade case the
 // headline fix must hold on: an existing config with stale ab_testing builtins
-// and NO server.auth_token. Load() legitimately generates+persists a token,
-// but because Save() marshals the whole in-memory config that write must not
-// also drag the reconciled builtins to disk — otherwise the first restart
-// after upgrade reintroduces exactly the drift this change removes. The token
-// lands; the on-disk ab_testing stays byte-for-byte the operator's own.
+// and NO server.auth_token. Load() legitimately generates+persists a token to
+// AuthTokenPath(), but config.yaml itself — including the operator's
+// ab_testing block — must stay byte-for-byte untouched: a generated secret
+// and reconciled-in-memory builtins are both derived state, never written
+// into the file the operator owns (see #2180).
 func TestLoadPersistsTokenWithoutReconciledBuiltins(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
@@ -1960,52 +1961,33 @@ func TestLoadPersistsTokenWithoutReconciledBuiltins(t *testing.T) {
 	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
 		t.Fatalf("in-memory BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
 	}
+	if cfg.Server.AuthToken == "" {
+		t.Fatal("Load did not generate a server auth token")
+	}
+
+	// The generated token must land at AuthTokenPath(), not config.yaml.
+	tokenFile, err := os.ReadFile(AuthTokenPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(tokenFile)) != cfg.Server.AuthToken {
+		t.Fatal("Load did not persist the generated server auth token to AuthTokenPath()")
+	}
 
 	persisted, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reloaded Config
-	if err := yamlv3.Unmarshal(persisted, &reloaded); err != nil {
-		t.Fatal(err)
-	}
-
-	// The generated token must have been written back...
-	if reloaded.Server.AuthToken == "" {
-		t.Fatal("Load did not persist the generated server auth token")
-	}
-	if reloaded.Server.AuthToken != cfg.Server.AuthToken {
-		t.Fatal("persisted auth token differs from the in-memory token (would rotate on restart)")
-	}
-	// ...but the reconciled builtins must NOT have leaked onto disk.
-	if regexp.MustCompile(`builtin_version:`).Match(persisted) {
-		t.Fatal("token-persist leaked the reconciled ab_testing builtin_version to disk")
-	}
-	if got := len(reloaded.ABTesting.Experiments); got != len(oldShapeABTestingExperiments()) {
-		t.Fatalf("persisted experiment count = %d, want %d (on-disk ab_testing must be untouched)", got, len(oldShapeABTestingExperiments()))
-	}
-	staleWeightKept := false
-	for _, exp := range reloaded.ABTesting.Experiments {
-		if exp.ID != "code-author-cheap" {
-			continue
-		}
-		for _, v := range exp.Variants {
-			if v.ID == "claude-sonnet" && v.Weight == 99 {
-				staleWeightKept = true
-			}
-		}
-	}
-	if !staleWeightKept {
-		t.Fatal("token-persist rewrote the operator's ab_testing experiments (stale on-disk weight was lost)")
+	if !bytes.Equal(persisted, data) {
+		t.Fatalf("Load rewrote config.yaml while only persisting a generated token; diff:\nbefore:\n%s\nafter:\n%s", data, persisted)
 	}
 }
 
 // TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults is the #2180 repro:
-// an externally-rendered config.yaml with no server.auth_token must gain only
-// the generated token on disk, not every other default Load() fills in
-// in-memory (logging, agent, providers, ...). Before the fix, the missing
-// token forced a full Save() of the reconciled in-memory config, turning a
-// minimal operator-authored file into a fully expanded document.
+// an externally-rendered config.yaml with no server.auth_token must stay
+// byte-for-byte unchanged on disk — the generated token belongs at
+// AuthTokenPath(), never mixed into the operator's file alongside every other
+// default Load() fills in in-memory (logging, agent, providers, ...).
 func TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults(t *testing.T) {
 	dir := t.TempDir()
 	isolateServerEnv(t)
@@ -2028,16 +2010,59 @@ func TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, unrelated := range []string{"logging:", "agent:", "providers:", "cluster:", "orchestrator:"} {
-		if bytes.Contains(persisted, []byte(unrelated)) {
-			t.Fatalf("persisted config.yaml leaked unrelated default block %q:\n%s", unrelated, persisted)
+	if !bytes.Equal(persisted, minimal) {
+		t.Fatalf("Load rewrote an externally-rendered config.yaml while persisting a generated token; diff:\nbefore:\n%s\nafter:\n%s", minimal, persisted)
+	}
+
+	tokenFile, err := os.ReadFile(AuthTokenPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(tokenFile)) != cfg.Server.AuthToken {
+		t.Fatalf("persisted AuthTokenPath() missing the generated auth token:\n%s", tokenFile)
+	}
+}
+
+// TestLoadRerenderedConfigStaysByteStableAcrossRestarts is the exact
+// adversarial-test repro from #2180: an external tool re-renders config.yaml
+// on every deploy without ever learning the generated server.auth_token, and
+// Sybra restarts on every deploy. Because the token now lives at
+// AuthTokenPath() instead of config.yaml, the second (and every subsequent)
+// restart must reuse the same token without touching config.yaml at all.
+func TestLoadRerenderedConfigStaysByteStableAcrossRestarts(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	rendered := []byte("ab_testing:\n  enabled: true\n  min_samples_per_variant: 20\n  experiments:\n    - id: my-custom-experiment\n      enabled: true\n      assignment_unit: stage\n      roles: [implementation]\n      variants:\n        - id: custom-v1\n          provider: claude\n          model: sonnet\n          weight: 1\n")
+
+	var firstToken string
+	for restart := range 2 {
+		// Simulate the external tool re-rendering its owned file exactly as
+		// authored, every restart, unaware server.auth_token even exists.
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), rendered, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("restart %d: %v", restart, err)
+		}
+		if cfg.Server.AuthToken == "" {
+			t.Fatalf("restart %d: no server auth token resolved", restart)
+		}
+		if restart == 0 {
+			firstToken = cfg.Server.AuthToken
+		} else if cfg.Server.AuthToken != firstToken {
+			t.Fatalf("restart %d: auth token rotated (%q != %q)", restart, cfg.Server.AuthToken, firstToken)
 		}
 	}
-	if !bytes.Contains(persisted, []byte("my-custom-experiment")) {
-		t.Fatalf("persisted config.yaml lost the operator's ab_testing experiment:\n%s", persisted)
+
+	afterAllRestarts, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !bytes.Contains(persisted, []byte(cfg.Server.AuthToken)) {
-		t.Fatalf("persisted config.yaml missing the generated auth token:\n%s", persisted)
+	if !bytes.Equal(afterAllRestarts, rendered) {
+		t.Fatal("config.yaml drifted from what the external tool rendered across repeated restarts")
 	}
 }
 
