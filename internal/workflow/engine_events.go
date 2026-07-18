@@ -1635,9 +1635,9 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 	}
 }
 
-// isShutdownCancellation reports whether err is a context.Canceled that
-// traces back to the engine's own shutdown context rather than some
-// unrelated per-call cancellation. e.ctx is bound exactly once, from the
+// isShutdownCancellation applies IsShutdownCancellation's correlation
+// heuristic against e.ctx: err wraps context.Canceled while the engine's own
+// shutdown context is currently done. e.ctx is bound exactly once, from the
 // app's root context (App.Startup -> Engine.SetContext), and is the same
 // context object agentorch.Orchestrator uses to cancel worktree/git
 // operations on shutdown.
@@ -1645,15 +1645,19 @@ func (e *Engine) isShutdownCancellation(err error) bool {
 	return IsShutdownCancellation(e.ctx, err)
 }
 
-// IsShutdownCancellation reports whether err is a context.Canceled that
-// traces back to ctx being done rather than some unrelated per-call
-// cancellation (a different, unrelated context's timeout would surface as
-// context.DeadlineExceeded or a non-context error instead). Exported so
-// internal/recovery's independent stale-task restart path — which surfaces
-// dispatch failures through its own Recovery.surfaceStartFailure rather than
-// going through Engine — can apply the identical shutdown-vs-genuine-failure
-// heuristic to the "restart-stale.failed" log line named in sybra#2291,
-// rather than maintaining a second, drifting copy of this logic.
+// IsShutdownCancellation is a correlation heuristic, not causality proof: it
+// reports whether ctx is currently done AND err wraps context.Canceled. It
+// cannot verify err's cancellation actually originated from ctx specifically
+// (vs. some other cancelled context in the same call chain) — but a
+// different, unrelated context's own timeout would surface as
+// context.DeadlineExceeded or a non-context error instead, so in practice
+// this reliably distinguishes "we are shutting down" from a genuine failure.
+// Exported so internal/recovery's independent stale-task restart path —
+// which surfaces dispatch failures through its own
+// Recovery.surfaceStartFailure rather than going through Engine — can apply
+// the identical shutdown-vs-genuine-failure heuristic to the
+// "restart-stale.failed" log line named in sybra#2291, rather than
+// maintaining a second, drifting copy of this logic.
 func IsShutdownCancellation(ctx context.Context, err error) bool {
 	return ctx != nil && ctx.Err() != nil && errors.Is(err, context.Canceled)
 }
