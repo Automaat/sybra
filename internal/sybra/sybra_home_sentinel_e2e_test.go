@@ -62,14 +62,14 @@ func TestSybraHomeSentinel_DefaultLandsInSandbox_ControlHomeReachesRealStore(t *
 	t.Setenv("SYBRA_HOME", filepath.Join(t.TempDir(), "ambient-should-not-be-used"))
 	t.Setenv("SYBRA_TASKS_DIR", "")
 
-	logger := e2eLogger()
+	logger := e2eLogger(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	logDir, err := os.MkdirTemp("", "sybra-e2e-logs-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
+	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
 		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: "claude"},

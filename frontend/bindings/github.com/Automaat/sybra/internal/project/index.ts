@@ -3,6 +3,7 @@
 
 export {
     ChecksConfig,
+    FocusedCheck,
     ManualTestConfig,
     ManualTestKind,
     Project,

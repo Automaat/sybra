@@ -124,13 +124,13 @@ func TestManualProbe_NestedFixDispatchActuallyStarts(t *testing.T) {
 		// Re-enter the SAME choke point for the SAME task — this mirrors the
 		// production "fix" step's own StartAgentWithAssignment call nested
 		// inside the still-executing outer call.
-		ag, _, err := o.StartAgentWithAssignment(taskID, "headless", "fix it", false, true, "", workflow.AgentAssignment{})
+		ag, _, err := o.StartAgentWithAssignment(taskID, "headless", "fix it", false, true, "", "", workflow.AgentAssignment{})
 		nestedErr = err
 		nestedAgentStarted = ag != nil
 		return err == nil
 	})
 
-	_, _, err = o.StartAgentWithAssignment(tk.ID, "headless", "prompt", false, false, "", workflow.AgentAssignment{})
+	_, _, err = o.StartAgentWithAssignment(tk.ID, "headless", "prompt", false, false, "", "", workflow.AgentAssignment{})
 	t.Logf("outer StartAgentWithAssignment err = %v", err)
 	t.Logf("nested (fix-step) dispatch err = %v, agentStarted = %v", nestedErr, nestedAgentStarted)
 

@@ -105,7 +105,7 @@ The Grounding agent must:
 
 ### Phase 3: Persona Review (parallel subagents when available)
 
-Read [references/personas.md](references/personas.md) in full before spawning Phase 3 agents — it contains the exact instruction blocks for each persona.
+Read [references/personas.md](references/personas.md) in full before spawning Phase 3 agents — it contains the exact instruction blocks for each persona. If that file is not present (e.g. an embedded-only deployment with no repo checkout), use the three one-line persona descriptions below as the prompts instead.
 
 Spawn three subagents **in parallel** when the runtime supports it, using the prompts in personas.md. Claude uses `Agent`; Codex uses its available subagent tool. If subagents are unavailable, run the three reviews locally as separate sections:
 

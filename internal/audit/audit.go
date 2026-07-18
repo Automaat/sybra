@@ -25,13 +25,19 @@ const (
 	EventOrchestratorStop     = "orchestrator.stopped"
 	EventPRConflictDetected   = "pr_monitor.conflict_detected"
 	EventPRCIFailureDetected  = "pr_monitor.ci_failure_detected"
-	EventPRCommentsDetected   = "pr_monitor.comments_detected"
-	EventPRFixAgentStarted    = "pr_monitor.fix_agent_started"
-	EventPRFixExhausted       = "pr_monitor.fix_exhausted"
-	EventPRCIFailureRerun     = "pr_monitor.ci_failure_rerun"
-	EventPRMerged             = "pr_monitor.merged"
-	EventPRClosed             = "pr_monitor.closed"
-	EventPRAutoMerged         = "pr_monitor.auto_merged"
+	// EventPRCIFlakyDetected records that a ci_failure issue's failing check
+	// names all also show a passing outcome for the same head commit (see
+	// github.flakyOnlyFailure) — noise, not a deterministic regression. The
+	// task is not escalated to human-required on this signal; a rerun is
+	// attempted instead (see EventPRCIFailureRerun).
+	EventPRCIFlakyDetected  = "pr_monitor.ci_flaky_detected"
+	EventPRCommentsDetected = "pr_monitor.comments_detected"
+	EventPRFixAgentStarted  = "pr_monitor.fix_agent_started"
+	EventPRFixExhausted     = "pr_monitor.fix_exhausted"
+	EventPRCIFailureRerun   = "pr_monitor.ci_failure_rerun"
+	EventPRMerged           = "pr_monitor.merged"
+	EventPRClosed           = "pr_monitor.closed"
+	EventPRAutoMerged       = "pr_monitor.auto_merged"
 	// EventAutoMergeEnabled records that GitHub's native auto-merge was armed
 	// on a PR (the pr_monitor.merged/auto_merged events cover the eventual
 	// terminal merge itself, whichever path lands it).
@@ -106,6 +112,13 @@ const (
 	// Data.reason distinguishes a committed handoff ("checkpoint") from a
 	// failed commit ("checkpoint_failed").
 	EventAgentCheckpoint = "agent.checkpoint"
+	// EventAgentPromptRendered records, at completion, how a headless run's
+	// canonical prompt was rendered for its provider (rewritten skill
+	// syntax, invoked skills the rewriter recognized vs. left untouched).
+	// Data.prompt_hash matches the same field on that run's agent.started
+	// event, correlating dispatch and completion without ever persisting
+	// prompt text in either.
+	EventAgentPromptRendered = "agent.prompt_rendered"
 
 	// Codex lifecycle hook events — emitted by the sybra-cli hook fast-path
 	// when codex fires its session/subagent lifecycle hooks. Distinct from the

@@ -154,14 +154,14 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 
-	logger := e2eLogger()
+	logger := e2eLogger(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	logDir, err := os.MkdirTemp("", "sybra-e2e-bestofn-logs-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
+	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
 	bare := bestOfNE2EBareRepo(t)
 	projectsDir, err := os.MkdirTemp("", "sybra-e2e-bestofn-projects-*")

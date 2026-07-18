@@ -450,8 +450,9 @@ func TestBuiltinPromptLabAuthor_OwnsPromptLabImplementation(t *testing.T) {
 
 // TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation pins the
 // implementation workflow ordering: verify_commits flows into codegen_gate,
-// which must run before detect_tampering and verify_checks so downstream
-// review/testing validate the final committed branch content.
+// then focused_checks, which must still run before detect_tampering and
+// verify_checks so downstream review/testing validate the final committed
+// branch content.
 func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	t.Parallel()
 
@@ -484,6 +485,20 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 		t.Fatalf("verify_commits clean goto = %q, err=%v; want codegen_gate", got, err)
 	}
 
+	focused := impl.StepByID("focused_checks")
+	if focused == nil {
+		t.Fatal("focused_checks step not found in simple-task-implement")
+	}
+	if focused.Type != StepFocusedChecks {
+		t.Fatalf("focused_checks type = %q, want %q", focused.Type, StepFocusedChecks)
+	}
+	if got, err := ResolveTransition(focused.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
+		t.Fatalf("focused_checks human-required goto = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(focused.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "detect_tampering" {
+		t.Fatalf("focused_checks clean goto = %q, err=%v; want detect_tampering", got, err)
+	}
+
 	codegen := impl.StepByID("codegen_gate")
 	if codegen == nil {
 		t.Fatal("codegen_gate step not found in simple-task-implement")
@@ -494,8 +509,8 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
 		t.Fatalf("codegen_gate human-required goto = %q, err=%v; want end", got, err)
 	}
-	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "detect_tampering" {
-		t.Fatalf("codegen_gate clean goto = %q, err=%v; want detect_tampering", got, err)
+	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "focused_checks" {
+		t.Fatalf("codegen_gate clean goto = %q, err=%v; want focused_checks", got, err)
 	}
 
 	detect := impl.StepByID("detect_tampering")
@@ -504,6 +519,51 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	}
 	if got, err := ResolveTransition(detect.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "verify_checks" {
 		t.Fatalf("detect_tampering clean goto = %q, err=%v; want verify_checks", got, err)
+	}
+}
+
+// TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview pins the fix for
+// a re-fix cycle orphaning at ready-review: simple-task-review's own trigger
+// refuses pr_number != "", so verify_checks must route a PR-having task to
+// in-review directly rather than a status nothing dispatches.
+func TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var impl *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-implement" {
+			impl = &defs[i]
+			break
+		}
+	}
+	if impl == nil {
+		t.Fatal("simple-task-implement builtin definition not found")
+	}
+	verifyChecks := impl.StepByID("verify_checks")
+	if verifyChecks == nil {
+		t.Fatal("verify_checks step not found in simple-task-implement")
+	}
+
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "set_ready_review" {
+		t.Fatalf("verify_checks no-PR goto = %q, err=%v; want set_ready_review", got, err)
+	}
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "in-progress", "task.pr_number": "17478"}); err != nil || got != "set_ready_pr_existing" {
+		t.Fatalf("verify_checks existing-PR goto = %q, err=%v; want set_ready_pr_existing", got, err)
+	}
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "human-required", "task.pr_number": "17478"}); err != nil || got != "" {
+		t.Fatalf("verify_checks human-required goto = %q, err=%v; want end (wins over PR routing)", got, err)
+	}
+
+	existingPR := impl.StepByID("set_ready_pr_existing")
+	if existingPR == nil {
+		t.Fatal("set_ready_pr_existing step not found in simple-task-implement")
+	}
+	if existingPR.Type != StepSetStatus || existingPR.Config.Status != "in-review" {
+		t.Fatalf("set_ready_pr_existing = type %q status %q; want set_status in-review", existingPR.Type, existingPR.Config.Status)
 	}
 }
 

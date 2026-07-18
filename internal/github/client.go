@@ -216,7 +216,14 @@ const prQuery = `query($q: String!) {
                 contexts(first: 50) {
                   nodes {
                     __typename
-                    ... on CheckRun { name status conclusion }
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                      startedAt
+                      completedAt
+                      checkSuite { workflowRun { id runAttempt } }
+                    }
                     ... on StatusContext { name: context state }
                   }
                 }
@@ -247,12 +254,20 @@ const prQuery = `query($q: String!) {
 // source. Only `CheckRun` populates status/conclusion, so callers must
 // dispatch on Typename.
 type gqlCheckContext struct {
-	Typename   string `json:"__typename"`
-	Name       string `json:"name"`
-	Context    string `json:"context"`    // StatusContext, non-GraphQL-aliased sources only
-	Status     string `json:"status"`     // CheckRun only: QUEUED|IN_PROGRESS|COMPLETED|...
-	Conclusion string `json:"conclusion"` // CheckRun only: SUCCESS|FAILURE|NEUTRAL|...
-	State      string `json:"state"`      // StatusContext only: PENDING|SUCCESS|FAILURE|ERROR|EXPECTED
+	Typename    string `json:"__typename"`
+	Name        string `json:"name"`
+	Context     string `json:"context"`     // StatusContext, non-GraphQL-aliased sources only
+	Status      string `json:"status"`      // CheckRun only: QUEUED|IN_PROGRESS|COMPLETED|...
+	Conclusion  string `json:"conclusion"`  // CheckRun only: SUCCESS|FAILURE|NEUTRAL|...
+	State       string `json:"state"`       // StatusContext only: PENDING|SUCCESS|FAILURE|ERROR|EXPECTED
+	StartedAt   string `json:"startedAt"`   // CheckRun only: RFC3339, when the run began
+	CompletedAt string `json:"completedAt"` // CheckRun only: RFC3339, when the run finished
+	CheckSuite  struct {
+		WorkflowRun *struct {
+			ID         string `json:"id"`
+			RunAttempt int    `json:"runAttempt"`
+		} `json:"workflowRun"`
+	} `json:"checkSuite"` // GitHub Actions only; nil for non-Actions checks
 }
 
 // effectiveName returns the check's display name regardless of which JSON
@@ -262,6 +277,39 @@ func (c gqlCheckContext) effectiveName() string {
 		return c.Name
 	}
 	return c.Context
+}
+
+// startedTime / completedTime parse the RFC3339 CheckRun timestamps, returning
+// the zero time when absent or unparseable (StatusContext, older gh shapes).
+// flakyOnlyFailure treats a zero time as "unknown" and refuses to classify the
+// check as flaky, so a missing timestamp fails safe toward the deterministic
+// fix path.
+func (c gqlCheckContext) startedTime() time.Time   { return parseCheckTime(c.StartedAt) }
+func (c gqlCheckContext) completedTime() time.Time { return parseCheckTime(c.CompletedAt) }
+
+func (c gqlCheckContext) workflowRunAttempt() int {
+	if c.CheckSuite.WorkflowRun == nil {
+		return 0
+	}
+	return c.CheckSuite.WorkflowRun.RunAttempt
+}
+
+func (c gqlCheckContext) workflowRunID() string {
+	if c.CheckSuite.WorkflowRun == nil {
+		return ""
+	}
+	return c.CheckSuite.WorkflowRun.ID
+}
+
+func parseCheckTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 type gqlStatusCheckRollup struct {
@@ -377,7 +425,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 	}
 
 	var ciStatus string
-	var hasPendingChecks bool
+	var hasPendingChecks, ciFlaky bool
 	var headSHA string
 	if len(n.Commits.Nodes) > 0 {
 		headSHA = n.Commits.Nodes[0].Commit.OID
@@ -392,13 +440,14 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 				hasPendingChecks = filteredPending
 			} else {
 				ciStatus = rollup.State
-				for _, ctx := range rollup.Contexts.Nodes {
-					if ctx.Status != "" && ctx.Status != "COMPLETED" {
+				for i := range rollup.Contexts.Nodes {
+					if s := rollup.Contexts.Nodes[i].Status; s != "" && s != "COMPLETED" {
 						hasPendingChecks = true
 						break
 					}
 				}
 			}
+			ciFlaky = ciStatus == "FAILURE" && flakyOnlyFailure(rollup.Contexts.Nodes)
 		}
 	}
 
@@ -460,6 +509,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		Labels:            labels,
 		CIStatus:          ciStatus,
 		HasPendingChecks:  hasPendingChecks,
+		CIFlaky:           ciFlaky,
 		ReviewDecision:    n.ReviewDecision,
 		UnresolvedCount:   unresolved,
 		ActionableCount:   actionable,

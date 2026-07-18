@@ -68,6 +68,10 @@ steps:
 
         {{getvar .Vars "verify_reask_note"}}
         {{- end}}
+        {{- if getvar .Vars "focused_checks_reask_note"}}
+
+        {{getvar .Vars "focused_checks_reask_note"}}
+        {{- end}}
         {{- if getvar .Vars "watchdog_reask_note"}}
 
         {{getvar .Vars "watchdog_reask_note"}}
@@ -140,14 +144,31 @@ steps:
       - goto: codegen_gate
 
   # Mechanical mutation pass (no LLM): run the project's configured
-  # format/codegen commands before tamper detection, verify_checks, review,
-  # and testing so any generated drift is committed inside every downstream
-  # validation boundary. A clean tree is a no-op; command failure, missing
-  # toolchain, timeout, or checkpoint-commit failure flips the task to
-  # human-required.
+  # format/codegen commands before focused checks, tamper detection,
+  # verify_checks, review, and testing so any generated drift is committed
+  # inside every downstream validation boundary. A clean tree is a no-op;
+  # command failure, missing toolchain, timeout, or checkpoint-commit failure
+  # flips the task to human-required.
   - id: codegen_gate
     name: Codegen Gate
     type: codegen_gate
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: focused_checks
+
+  # Mechanical changed-surface gate (no LLM): run configured focused checks
+  # derived from the committed diff after codegen has handled deterministic
+  # mutation such as go mod tidy. Failures re-enter implementation with
+  # surface-linked context until the retry cap parks the task human-required;
+  # unmatched diffs skip this step and still run the downstream verify_checks
+  # gate.
+  - id: focused_checks
+    name: Focused Checks
+    type: focused_checks
     next:
       - when:
           field: task.status
@@ -190,6 +211,11 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - when:
+          field: task.pr_number
+          operator: not_equals
+          value: ""
+        goto: set_ready_pr_existing
       - goto: set_ready_review
 
   # Terminal hand-off to simple-task-review: flip status to ready-review
@@ -200,5 +226,14 @@ steps:
     type: set_status
     config:
       status: ready-review
+    next:
+      - goto: ""
+
+  # simple-task-review skips pr_number != "", so this avoids orphaning a re-fix cycle at an undispatched status. The fix cycle already verified itself; land straight on the PR's own review lane instead of re-running local review/testing.
+  - id: set_ready_pr_existing
+    name: Hand Off to In-Review (existing PR)
+    type: set_status
+    config:
+      status: in-review
     next:
       - goto: ""

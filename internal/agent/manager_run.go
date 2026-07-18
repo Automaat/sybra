@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/google/uuid"
 )
 
@@ -102,6 +103,31 @@ func (m *Manager) jitterDispatchContext(ctx context.Context) error {
 	}
 }
 
+// warnUnenforceableAllowedTools reports a step whose allowed_tools list the
+// resolved provider cannot enforce.
+//
+// The check lives here rather than in Definition.Validate because `ab` and
+// `cross` pick the provider at dispatch: the same step is enforced on a claude
+// spawn and unenforced on the copilot spawn beside it, so which guarantee you
+// get depends on where the run landed. Nothing surfaced that before.
+//
+// It warns rather than refusing or re-routing. Excluding providers that cannot
+// enforce would silently narrow failover and strand a step whenever claude is
+// capped — the stranding shape that produced #2150's spin loop — and refusing
+// outright would break every step that has always used the list as an allowance
+// rather than a fence. The OS-level process sandbox (procsandbox_*.go) is the
+// boundary that actually binds every provider; allowed_tools is advisory
+// wherever this warns.
+func (m *Manager) warnUnenforceableAllowedTools(cfg RunConfig, prov Provider) {
+	if len(cfg.AllowedTools) == 0 || prov.HonorsAllowedTools() {
+		return
+	}
+	m.logger.Warn("agent.run.allowed_tools.unenforced",
+		"task_id", cfg.TaskID, "name", cfg.Name, "provider", prov.Name(),
+		"allowed_tools", strings.Join(cfg.AllowedTools, ","),
+		"detail", "provider ignores allowed_tools; the agent runs with its default tool reach and only the prompt and the process sandbox constrain it")
+}
+
 func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := validateRunDir(cfg.Dir); err != nil {
 		return cfg, nil, err
@@ -118,10 +144,11 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if providerErr != nil {
 		return cfg, nil, providerErr
 	}
-	if err := m.resolveWorkflowSkillPrompt(&cfg, prov.Name()); err != nil {
+	if err := m.resolveWorkflowSkillPrompt(&cfg, prov); err != nil {
 		return cfg, nil, err
 	}
 	cfg.provider = prov
+	m.warnUnenforceableAllowedTools(cfg, prov)
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 	if cfg.Mode == "headless" {
 		m.mu.RLock()
@@ -644,19 +671,33 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		SkillExecutionMode:      cfg.SkillExecutionMode,
 		ResolvedSkillSourceHash: cfg.ResolvedSkillSourceHash,
 		SkillConformance:        cfg.SkillConformance,
+		OutputSchema:            cfg.OutputSchema,
 		skillRecoveryAttempt:    cfg.SkillRecoveryAttempt,
-		Prompt:                  cfg.Prompt,
-		State:                   StateRunning,
-		StartedAt:               now,
-		LastEventAt:             now,
-		cancel:                  cancel,
-		sessionCWD:              cfg.Dir,
-		sandboxHomeDir:          cfg.resolvedSandboxHome,
-		MaxTurns:                cfg.MaxTurns,
-		oneShot:                 cfg.OneShot,
-		requirePermissions:      cfg.RequirePermissions,
-		sandboxMode:             cfg.SandboxMode,
-		headlessPermissionMode:  cfg.HeadlessPermissionMode,
+		// Only a provider that actually forwards OutputSchema to its CLI makes
+		// the conformance receipt unsatisfiable; copilot/opencode ignore it, so
+		// their runs still get (and must pass) receipt verification. Mirror the
+		// exact wantReceipt condition in resolveWorkflowSkillPrompt.
+		hasOutputSchema: cfg.OutputSchema != "" && prov.EnforcesOutputSchema(),
+		Prompt:          cfg.Prompt,
+		// Stamp the canonical dispatch prompt hash centrally for every run
+		// (all providers, all roles, both modes). cfg.Prompt is the fully
+		// prepared prompt (post NOTES.md/guardrail/skill preparation) — the
+		// same value recordImplAgentStart hashes. Stamping here (not only in
+		// the implementation-only dispatch path) is what lets completion emit
+		// agent.prompt_rendered for review/fix-review/pr-fix/human-review/
+		// workflow runs, which also record provider render summaries.
+		promptHash:             skillattr.HashSourceID(cfg.Prompt),
+		State:                  StateRunning,
+		StartedAt:              now,
+		LastEventAt:            now,
+		cancel:                 cancel,
+		sessionCWD:             cfg.Dir,
+		sandboxHomeDir:         cfg.resolvedSandboxHome,
+		MaxTurns:               cfg.MaxTurns,
+		oneShot:                cfg.OneShot,
+		requirePermissions:     cfg.RequirePermissions,
+		sandboxMode:            cfg.SandboxMode,
+		headlessPermissionMode: cfg.HeadlessPermissionMode,
 	}
 	if cfg.ResumeSessionID != "" {
 		a.SetSessionID(cfg.ResumeSessionID)

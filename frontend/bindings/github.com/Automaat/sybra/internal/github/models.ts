@@ -139,6 +139,16 @@ export class PullRequest {
     "hasPendingChecks": boolean;
 
     /**
+     * CIFlaky reports whether every gating workflow/check in CIStatus's FAILURE
+     * verdict was superseded by a later Actions re-run attempt that succeeded
+     * (see flakyOnlyFailure) — an intermittent failure rather than a
+     * deterministic one. Same-name checks from distinct workflows are not
+     * treated as flaky. Only meaningful when CIStatus == "FAILURE"; zero value
+     * otherwise.
+     */
+    "ciFlaky": boolean;
+
+    /**
      * APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
      */
     "reviewDecision": string;
@@ -265,6 +275,9 @@ export class PullRequest {
         if (!("hasPendingChecks" in $$source)) {
             this["hasPendingChecks"] = false;
         }
+        if (!("ciFlaky" in $$source)) {
+            this["ciFlaky"] = false;
+        }
         if (!("reviewDecision" in $$source)) {
             this["reviewDecision"] = "";
         }
@@ -354,6 +367,16 @@ export class RenovatePR {
      * true when any check is still in-progress/queued
      */
     "hasPendingChecks": boolean;
+
+    /**
+     * CIFlaky reports whether every gating workflow/check in CIStatus's FAILURE
+     * verdict was superseded by a later Actions re-run attempt that succeeded
+     * (see flakyOnlyFailure) — an intermittent failure rather than a
+     * deterministic one. Same-name checks from distinct workflows are not
+     * treated as flaky. Only meaningful when CIStatus == "FAILURE"; zero value
+     * otherwise.
+     */
+    "ciFlaky": boolean;
 
     /**
      * APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
@@ -484,6 +507,9 @@ export class RenovatePR {
         if (!("hasPendingChecks" in $$source)) {
             this["hasPendingChecks"] = false;
         }
+        if (!("ciFlaky" in $$source)) {
+            this["ciFlaky"] = false;
+        }
         if (!("reviewDecision" in $$source)) {
             this["reviewDecision"] = "";
         }
@@ -547,13 +573,13 @@ export class RenovatePR {
      */
     static createFrom($$source: any = {}): RenovatePR {
         const $$createField7_0 = $$createType0;
-        const $$createField28_0 = $$createType2;
+        const $$createField29_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("labels" in $$parsedSource) {
             $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
         }
         if ("checkRuns" in $$parsedSource) {
-            $$parsedSource["checkRuns"] = $$createField28_0($$parsedSource["checkRuns"]);
+            $$parsedSource["checkRuns"] = $$createField29_0($$parsedSource["checkRuns"]);
         }
         return new RenovatePR($$parsedSource as Partial<RenovatePR>);
     }

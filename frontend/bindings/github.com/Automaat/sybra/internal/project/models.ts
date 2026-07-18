@@ -30,6 +30,12 @@ export class ChecksConfig {
      */
     "verify"?: string[];
 
+    /**
+     * Focused maps changed-file surfaces to cheap static commands the
+     * implementation workflow can run before the final full verify suite.
+     */
+    "focused"?: FocusedCheck[];
+
     /** Creates a new ChecksConfig instance. */
     constructor($$source: Partial<ChecksConfig> = {}) {
 
@@ -44,6 +50,7 @@ export class ChecksConfig {
         const $$createField1_0 = $$createType0;
         const $$createField2_0 = $$createType0;
         const $$createField3_0 = $$createType0;
+        const $$createField4_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("preCommit" in $$parsedSource) {
             $$parsedSource["preCommit"] = $$createField0_0($$parsedSource["preCommit"]);
@@ -57,7 +64,47 @@ export class ChecksConfig {
         if ("verify" in $$parsedSource) {
             $$parsedSource["verify"] = $$createField3_0($$parsedSource["verify"]);
         }
+        if ("focused" in $$parsedSource) {
+            $$parsedSource["focused"] = $$createField4_0($$parsedSource["focused"]);
+        }
         return new ChecksConfig($$parsedSource as Partial<ChecksConfig>);
+    }
+}
+
+/**
+ * FocusedCheck maps repo-relative paths and/or packages to cheap commands.
+ * Selectors are static repo config, never derived from untrusted branch input.
+ */
+export class FocusedCheck {
+    "name"?: string;
+    "paths"?: string[];
+    "packages"?: string[];
+    "commands"?: string[];
+
+    /** Creates a new FocusedCheck instance. */
+    constructor($$source: Partial<FocusedCheck> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FocusedCheck instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FocusedCheck {
+        const $$createField1_0 = $$createType0;
+        const $$createField2_0 = $$createType0;
+        const $$createField3_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("paths" in $$parsedSource) {
+            $$parsedSource["paths"] = $$createField1_0($$parsedSource["paths"]);
+        }
+        if ("packages" in $$parsedSource) {
+            $$parsedSource["packages"] = $$createField2_0($$parsedSource["packages"]);
+        }
+        if ("commands" in $$parsedSource) {
+            $$parsedSource["commands"] = $$createField3_0($$parsedSource["commands"]);
+        }
+        return new FocusedCheck($$parsedSource as Partial<FocusedCheck>);
     }
 }
 
@@ -182,9 +229,9 @@ export class Project {
      */
     static createFrom($$source: any = {}): Project {
         const $$createField8_0 = $$createType0;
-        const $$createField9_0 = $$createType2;
-        const $$createField10_0 = $$createType4;
-        const $$createField11_0 = $$createType6;
+        const $$createField9_0 = $$createType4;
+        const $$createField10_0 = $$createType6;
+        const $$createField11_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("setupCommands" in $$parsedSource) {
             $$parsedSource["setupCommands"] = $$createField8_0($$parsedSource["setupCommands"]);
@@ -287,7 +334,7 @@ export class SandboxConfig {
      */
     static createFrom($$source: any = {}): SandboxConfig {
         const $$createField2_0 = $$createType0;
-        const $$createField6_0 = $$createType7;
+        const $$createField6_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("with" in $$parsedSource) {
             $$parsedSource["with"] = $$createField2_0($$parsedSource["with"]);
@@ -338,10 +385,12 @@ export class Worktree {
 
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = SandboxConfig.createFrom;
-const $$createType2 = $Create.Nullable($$createType1);
-const $$createType3 = ChecksConfig.createFrom;
+const $$createType1 = FocusedCheck.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = SandboxConfig.createFrom;
 const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = ManualTestConfig.createFrom;
+const $$createType5 = ChecksConfig.createFrom;
 const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = $Create.Map($Create.Any, $Create.Any);
+const $$createType7 = ManualTestConfig.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = $Create.Map($Create.Any, $Create.Any);

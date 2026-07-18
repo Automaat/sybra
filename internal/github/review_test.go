@@ -223,7 +223,7 @@ func TestFetchReviewsWith_actionableReviewThreads(t *testing.T) {
 	}
 }
 
-func TestFetchReviewSearchWith_queryRequestsActionableThreadSignals(t *testing.T) {
+func TestFetchReviewSearchWith_queryRequestsActionableThreadSignalsAndRunAttempts(t *testing.T) {
 	t.Parallel()
 	fe := &recordingExecer{output: []byte(`{
 		"data": {
@@ -250,6 +250,10 @@ func TestFetchReviewSearchWith_queryRequestsActionableThreadSignals(t *testing.T
 	want := "reviewThreads(first: 100) { nodes { id isResolved comments(last: 1) { nodes { author { login } } } } }"
 	if !strings.Contains(normalized, want) {
 		t.Errorf("reviewThreads selection missing actionable thread signals\nwant fragment: %s\nquery: %s", want, normalized)
+	}
+	want = "checkSuite { workflowRun { id runAttempt } }"
+	if !strings.Contains(normalized, want) {
+		t.Errorf("CheckRun selection missing workflow run attempt\nwant fragment: %s\nquery: %s", want, normalized)
 	}
 }
 
@@ -369,6 +373,112 @@ func TestFetchPRsForMonitorWith_batchesIntoOneCall(t *testing.T) {
 	}
 	if results[1].Err != nil || results[1].Open {
 		t.Fatalf("results[1] = %+v, want closed PR with no error", results[1])
+	}
+}
+
+func TestFetchPRsForMonitorWith_queryRequestsRunAttempts(t *testing.T) {
+	t.Parallel()
+	fe := &recordingExecer{output: []byte(`{
+		"data": {
+			"viewer": {"login": "me"},
+			"repo0": {
+				"pullRequest": {
+					"number": 1,
+					"title": "one",
+					"url": "https://github.com/o/r/pull/1",
+					"state": "OPEN",
+					"author": {"login": "me", "type": "User"},
+					"repository": {"name": "r", "nameWithOwner": "o/r"},
+					"labels": {"nodes": []},
+					"commits": {"nodes": []},
+					"reviewThreads": {"nodes": []},
+					"latestReviews": {"nodes": []}
+				}
+			}
+		}
+	}`)}
+
+	results := fetchPRsForMonitorWith(fe, []PRRef{{Repo: "o/r", Number: 1}})
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("results = %+v, want successful monitor fetch", results)
+	}
+
+	var query string
+	for _, arg := range fe.lastArgs {
+		if after, ok := strings.CutPrefix(arg, "query="); ok {
+			query = after
+			break
+		}
+	}
+	if query == "" {
+		t.Fatal("graphql query argument not captured")
+	}
+	normalized := strings.Join(strings.Fields(query), " ")
+	want := "checkSuite { workflowRun { id runAttempt } }"
+	if !strings.Contains(normalized, want) {
+		t.Errorf("monitor CheckRun selection missing workflow run attempt\nwant fragment: %s\nquery: %s", want, normalized)
+	}
+}
+
+func TestFetchPRsForMonitorWith_flakyRerunFromGraphQL(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte(`{
+		"data": {
+			"viewer": {"login": "me"},
+			"repo0": {
+				"pullRequest": {
+					"number": 1,
+					"title": "one",
+					"url": "https://github.com/o/r/pull/1",
+					"state": "OPEN",
+					"author": {"login": "me", "type": "User"},
+					"repository": {"name": "r", "nameWithOwner": "o/r"},
+					"labels": {"nodes": []},
+					"commits": {"nodes": [{
+						"commit": {
+							"oid": "sha",
+							"statusCheckRollup": {
+								"state": "FAILURE",
+								"contexts": {"nodes": [
+									{
+										"__typename": "CheckRun",
+										"name": "e2e",
+										"status": "COMPLETED",
+										"conclusion": "FAILURE",
+										"startedAt": "2026-01-01T00:00:00Z",
+										"completedAt": "2026-01-01T00:05:00Z",
+										"checkSuite": {"workflowRun": {"id": "workflow-a", "runAttempt": 1}}
+									},
+									{
+										"__typename": "CheckRun",
+										"name": "e2e",
+										"status": "COMPLETED",
+										"conclusion": "SUCCESS",
+										"startedAt": "2026-01-01T00:10:00Z",
+										"completedAt": "2026-01-01T00:15:00Z",
+										"checkSuite": {"workflowRun": {"id": "workflow-a", "runAttempt": 2}}
+									}
+								]}
+							}
+						}
+					}]},
+					"reviewThreads": {"nodes": []},
+					"latestReviews": {"nodes": []}
+				}
+			}
+		}
+	}`)}
+
+	results := fetchPRsForMonitorWith(fe, []PRRef{{Repo: "o/r", Number: 1}})
+	if len(results) != 1 || results[0].Err != nil || !results[0].Open {
+		t.Fatalf("results = %+v, want open PR with no fetch error", results)
+	}
+	pr := results[0].PR
+	if pr.CIStatus != "FAILURE" {
+		t.Fatalf("CIStatus = %q, want FAILURE", pr.CIStatus)
+	}
+	if !pr.CIFlaky {
+		t.Fatal("CIFlaky = false, want true for later successful rerun attempt")
 	}
 }
 

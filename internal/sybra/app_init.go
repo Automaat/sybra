@@ -877,8 +877,7 @@ func expectedHumanKind(t task.Task) string {
 	case t.ReviewPhase == review.ReviewPhaseDrafted ||
 		strings.HasPrefix(t.StatusReason, "Draft review ready"):
 		return "review_draft"
-	case t.ReviewPhase == review.ReviewPhaseManual ||
-		strings.HasPrefix(t.StatusReason, "PR too small for agent review"):
+	case t.ReviewPhase == review.ReviewPhaseManual:
 		return "review_manual"
 	default:
 		return ""
