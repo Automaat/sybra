@@ -1164,7 +1164,7 @@ func TestExecVerifyChecks_NodeModulesRepairFailureFlags(t *testing.T) {
 	}
 }
 
-func TestVerifyTaskNow_NodeModulesRepairFailureIsVerifiedFailure(t *testing.T) {
+func TestVerifyTaskNow_NodeModulesRepairFailureIsNotVerified(t *testing.T) {
 	wt := t.TempDir()
 	frontend := filepath.Join(wt, "frontend")
 	nm := filepath.Join(frontend, "node_modules")
@@ -1185,11 +1185,52 @@ func TestVerifyTaskNow_NodeModulesRepairFailureIsVerifiedFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected repair error")
 	}
-	if !verified || passed {
-		t.Fatalf("verified=%v passed=%v, want verified=true passed=false", verified, passed)
+	if verified || passed {
+		t.Fatalf("verified=%v passed=%v, want verified=false passed=false", verified, passed)
 	}
 	if output != "node_modules repair failed" {
 		t.Fatalf("output = %q, want node_modules repair failed", output)
+	}
+}
+
+func TestRepairCorruptedNodeModules_UsesSubdirMiseConfig(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
+	writeTestFile(t, filepath.Join(frontend, "package-lock.json"), "{}")
+	writeTestFile(t, filepath.Join(frontend, "mise.toml"), "[tools]\nnode = \"24\"\n")
+
+	fakeBin := t.TempDir()
+	miseScript := "#!/bin/sh\n" +
+		"test \"$1\" = exec || exit 41\n" +
+		"test \"$2\" = -- || exit 42\n" +
+		"shift 2\n" +
+		"FROM_MISE=1 exec \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "mise"), []byte(miseScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	npmScript := "#!/bin/sh\n" +
+		"test \"$FROM_MISE\" = 1 || exit 43\n" +
+		"mkdir -p node_modules/.bin\n" +
+		"touch node_modules/.package-lock.json\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(npmScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	if failed := engine.repairCorruptedNodeModules(context.Background(), "t1", wt); failed {
+		t.Fatal("repairCorruptedNodeModules reported failure; want subdir mise config to drive npm repair")
+	}
+	if _, err := os.Stat(filepath.Join(frontend, "node_modules", ".bin")); err != nil {
+		t.Fatalf("node_modules/.bin missing after repair: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(frontend, "node_modules", ".package-lock.json")); err != nil {
+		t.Fatalf("node_modules/.package-lock.json missing after repair: %v", err)
 	}
 }
 

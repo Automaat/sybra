@@ -138,29 +138,9 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 		e.logger.Info("workflow.verify-checks.blessed", "task_id", taskID)
 		return stepDone(step, "blessed")
 	}
-	if e.checks == nil {
-		return stepDone(step, "skipped: no check config getter")
-	}
-
-	timeout := resolveWorkflowCheckTimeout(e.verifyTimeout)
-	cmds := e.checks.VerifyCommands(e.ctx, taskID)
-	if len(cmds) == 0 {
-		return stepDone(step, "skipped: no verify commands configured")
-	}
-	if e.worktrees == nil {
-		return stepDone(step, "skipped: no worktree getter configured")
-	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
-	if !ok {
-		return stepDone(step, "skipped: no worktree for task")
-	}
-	if timeout != e.verifyTimeout && e.verifyTimeout > 0 {
-		e.logger.Info("workflow.verify-checks.timeout-scaled",
-			"task_id", taskID, "base", e.verifyTimeout.String(), "effective", timeout.String())
-	}
-	if e.verifyTimeout <= 0 && timeout != verifyChecksDefaultTimeout {
-		e.logger.Info("workflow.verify-checks.timeout-scaled",
-			"task_id", taskID, "base", verifyChecksDefaultTimeout.String(), "effective", timeout.String())
+	cmds, wtPath, timeout, skip := e.loadVerifyChecksInputs(taskID)
+	if skip != "" {
+		return stepDone(step, skip)
 	}
 	slot := e.verifyChecksSlot()
 	releaseVerifySlot, ok := e.acquireVerifyChecksSlot(slot)
@@ -248,6 +228,39 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	return stepDone(step, "clean")
 }
 
+func (e *Engine) loadVerifyChecksInputs(taskID string) (cmds []string, wtPath string, timeout time.Duration, skip string) {
+	if e.checks == nil {
+		return nil, "", 0, "skipped: no check config getter"
+	}
+	timeout = resolveWorkflowCheckTimeout(e.verifyTimeout)
+	cmds = e.checks.VerifyCommands(e.ctx, taskID)
+	if len(cmds) == 0 {
+		return nil, "", 0, "skipped: no verify commands configured"
+	}
+	if e.worktrees == nil {
+		return nil, "", 0, "skipped: no worktree getter configured"
+	}
+	var ok bool
+	wtPath, ok = e.worktrees.GetWorktreePath(taskID)
+	if !ok {
+		return nil, "", 0, "skipped: no worktree for task"
+	}
+	e.logVerifyChecksTimeout(taskID, timeout)
+	return cmds, wtPath, timeout, ""
+}
+
+func (e *Engine) logVerifyChecksTimeout(taskID string, timeout time.Duration) {
+	base := e.verifyTimeout
+	if base <= 0 {
+		base = verifyChecksDefaultTimeout
+	}
+	if timeout == base {
+		return
+	}
+	e.logger.Info("workflow.verify-checks.timeout-scaled",
+		"task_id", taskID, "base", base.String(), "effective", timeout.String())
+}
+
 func (e *Engine) verifyChecksSlot() chan struct{} {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -286,9 +299,9 @@ func (e *Engine) parkVerifyChecksForBackpressure(taskID string, step *Step, wfEx
 // from a stale/false-positive loop-stop verdict before escalating to
 // human-required (#2155). verified is false whenever nothing could actually
 // be checked (no CheckConfigGetter/WorktreeGetter wired, no verify commands
-// configured, or no worktree yet); callers must treat that the same as
-// "could not verify" and fall back to their own default behavior rather than
-// treat it as a pass.
+// configured, no worktree yet, or preflight toolchain repair failed); callers
+// must treat that the same as "could not verify" and fall back to their own
+// default behavior rather than treat it as a pass.
 func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
 	if e.checks == nil || e.worktrees == nil {
 		return false, false, "", "", nil
@@ -302,7 +315,7 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, pa
 		return false, false, "", "", nil
 	}
 	if e.repairCorruptedNodeModules(ctx, taskID, wtPath) {
-		return true, false, "", "node_modules repair failed", errors.New("verify: node_modules repair failed")
+		return false, false, "", "node_modules repair failed", errors.New("verify: node_modules repair failed")
 	}
 	e.repairTornNodeModules(ctx, taskID, wtPath)
 
@@ -791,16 +804,16 @@ func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir
 		return // toolchain looks intact
 	}
 
-	reinstall := npmReinstallCommand(wtPath)
+	reinstall := npmReinstallCommand(dir, wtPath)
 	e.logger.Warn("workflow.verify-checks.toolchain-corrupt", "task_id", taskID, "dir", dir)
 	_, _ = fmt.Fprintf(tail,
 		"[verify] node_modules/.bin in %s looks missing or corrupt — re-running %q\n", dir, reinstall)
 
 	repairCtx, cancel := context.WithTimeout(ctx, npmReinstallTimeout)
 	defer cancel()
-	maybeMiseTrust(repairCtx, wtPath) // npmReinstallCommand resolves the mise config from wtPath, not dir
+	maybeMiseTrust(repairCtx, wtPath)
 	if dir != wtPath {
-		maybeMiseTrust(repairCtx, dir) // a subdirectory (e.g. frontend/) can carry its own mise config too
+		maybeMiseTrust(repairCtx, dir)
 	}
 	cmd := exec.CommandContext(repairCtx, "sh", "-c", reinstall)
 	cmd.Dir = dir
@@ -815,15 +828,16 @@ func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir
 	_, _ = io.WriteString(tail, "[verify] npm ci repair completed\n")
 }
 
-// npmReinstallCommand routes the repair through `mise exec --` when the
-// worktree carries a mise config, mirroring the setup/verify convention: the
-// server container ships mise only, so bare `npm` is not guaranteed on PATH
-// outside a mise-wrapped invocation. Falls back to bare `npm ci` when there is
-// no mise config to resolve the toolchain from.
-func npmReinstallCommand(wtPath string) string {
-	for _, name := range miseConfigNames {
-		if _, err := os.Stat(filepath.Join(wtPath, name)); err == nil {
-			return "mise exec -- npm ci"
+// npmReinstallCommand routes the repair through `mise exec --` when either the
+// repaired dir or the worktree root carries a mise config. Some repos keep the
+// config in `frontend/` only; falling back to the repair dir avoids a false
+// bare `npm ci` on hosts where npm is available only through mise.
+func npmReinstallCommand(paths ...string) string {
+	for _, dir := range paths {
+		for _, name := range miseConfigNames {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				return "mise exec -- npm ci"
+			}
 		}
 	}
 	return "npm ci"
@@ -880,7 +894,7 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 		if dir != wtPath {
 			maybeMiseTrust(repairCtx, dir)
 		}
-		reinstall := npmReinstallCommand(wtPath)
+		reinstall := npmReinstallCommand(dir, wtPath)
 		cmd := exec.CommandContext(repairCtx, "sh", "-c", reinstall)
 		cmd.Dir = dir
 		repairErr := cmd.Run()
