@@ -636,6 +636,14 @@ func (a *App) initStatusHook() {
 		if local && a.workflowEngine != nil {
 			a.workflowEngine.HandleStatusChange(taskID, to)
 		}
+		if to == string(task.StatusHumanRequired) {
+			if t, err := a.tasks.Get(taskID); err == nil && t.Status != task.StatusHumanRequired {
+				if local && releaseTaskAgents {
+					a.releaseTaskAgents(taskID)
+				}
+				return
+			}
+		}
 		if local && releaseTaskAgents {
 			a.releaseTaskAgents(taskID)
 		}
@@ -746,8 +754,19 @@ func (a *App) releaseTaskAgents(taskID string) {
 	if len(filtered) == 0 {
 		return
 	}
-	go func(agentsToStop []*agent.Agent) {
-		for _, ag := range agentsToStop {
+	// Tracked by a.wg (not a bare `go func`): App.Shutdown waits on a.wg
+	// before calling agents.Shutdown, which explicitly skips detached agents
+	// so they survive a restart. A task landing (e.g. its own PR merging)
+	// commonly races the very redeploy that lands it, so an untracked
+	// goroutine here can be starved of scheduler time entirely — the process
+	// exits before ever sending the stop signal, and a detached interactive
+	// agent (a never-EOF stdin FIFO) then idles forever holding a
+	// concurrency slot until happenstance reaps it on some later restart.
+	// Tracking it here only needs to guarantee the signal is sent — once
+	// StopAgent's SIGINT/SIGKILL reaches the OS, delivery no longer depends
+	// on this process staying alive.
+	a.wg.Go(func() {
+		for _, ag := range filtered {
 			var err error
 			if ag.Mode == "headless" && ag.CompletedSuccessfully() {
 				err = a.agents.StopCompletedAgent(ag.ID)
@@ -758,7 +777,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 				a.logger.Warn("task.status.release-agent", "task_id", taskID, "agent_id", ag.ID, "err", err)
 			}
 		}
-	}(filtered)
+	})
 }
 
 func (a *App) runsTaskLocally(t task.Task) bool {
@@ -1397,6 +1416,12 @@ func (a *App) newRecovery() *recovery.Recovery {
 		OrphanRoots: []string{
 			filepath.Join(config.HomeDir(), "sandboxes"),
 			filepath.Join(config.HomeDir(), "worktrees"),
+			// The /sybra-test skill's fake-provider harness spawns its
+			// subject process directly under a fresh os.TempDir()/sybra-test-*
+			// sandbox, outside the normal task/worktree/sandbox lifecycle
+			// (sybra#2210) — glob-expanded fresh on every sweep since each
+			// test run gets its own directory.
+			filepath.Join(os.TempDir(), "sybra-test-*"),
 		},
 		// Also gate on the instance role: RunStartupCleanup calls
 		// RestartStaleInProgress outside the (gated) maintenance pass, so an

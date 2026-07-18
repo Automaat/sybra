@@ -152,6 +152,19 @@ export function ListTasks(): $CancellablePromise<task$0.Task[]> {
 }
 
 /**
+ * ListTasksForNode returns the subset of the board relevant to a cluster
+ * follower's mirror: tasks assigned to that node, excluding chat tasks and
+ * terminal tasks closed longer than mirrorStaleTerminalWindow ago. Unlike
+ * ListTasks, this is sized for repeated polling rather than a one-off full
+ * board read.
+ */
+export function ListTasksForNode(node: string): $CancellablePromise<task$0.Task[]> {
+    return $Call.ByID(844621143, node).then(($result: any) => {
+        return $$createType9($result);
+    });
+}
+
+/**
  * ReconcilePendingEnrichment re-attempts GitHub enrichment for URL stubs whose
  * initial async enrichment never completed. A stub is created with the raw URL
  * as its title and the enrich-pending marker; enrichment then runs in a

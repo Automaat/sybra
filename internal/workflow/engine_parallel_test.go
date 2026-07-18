@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -477,6 +479,46 @@ func TestParallel_AllSpawnsFail_AdvancesParent(t *testing.T) {
 	}
 	if got := agents.CallCount(); got != 0 {
 		t.Errorf("recorded successful StartAgent calls = %d, want 0 (spawn was armed to fail)", got)
+	}
+}
+
+// TestParallel_ShutdownCancellationDuringSpawnDoesNotFailParent is the
+// parallel-step sibling of the best-of-n regression guard for sybra#2291's
+// fix: spawnParallelChild's error branch (engine_steps_parallel.go) only
+// routes through surfaceStartFailure's shutdown-cancellation gate when
+// transientAgentStartError(err) recognizes the error — a fixed sentinel list
+// that does not include a bare context.Canceled. A shutdown-cancelled child
+// spawn used to mark every child permanently "failed" and let
+// finalizeParallelParent fail the whole parent step, escalating the task —
+// the same mass-park symptom the primary fix targets, reached via a spawn
+// path outside surfaceStartFailure's direct control.
+func TestParallel_ShutdownCancellationDuringSpawnDoesNotFailParent(t *testing.T) {
+	store := newTestStoreWith(t, "test-parallel-terminal.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
+
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate the app context already cancelled by graceful shutdown
+	engine.SetContext(shutdownCtx)
+
+	agents.SetFailSpawn(fmt.Errorf("worktree required for project task: fetch origin: git fetch origin +refs/heads/*:refs/remotes/origin/*: %w", context.Canceled))
+
+	if err := engine.StartWorkflow("t1", "test-parallel-terminal"); err != nil {
+		t.Fatalf("StartWorkflow returned err = %v", err)
+	}
+
+	ti := mustTaskInfo(t, tasks, "t1")
+	if ti.Status == "human-required" {
+		t.Fatalf("shutdown-cancelled spawn escalated task to human-required: reason=%q", ti.StatusReason)
+	}
+	if ti.StatusReason != "" {
+		t.Fatalf("shutdown-cancelled spawn wrote status_reason %q, want none", ti.StatusReason)
+	}
+	wf := mustWorkflow(t, tasks, "t1")
+	if rec := findStepRecord(wf, "plan"); rec != nil && rec.Status == "failed" {
+		t.Errorf("parent step marked failed for a shutdown-cancelled spawn, want left pending/retryable")
 	}
 }
 

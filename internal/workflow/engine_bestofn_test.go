@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -411,6 +413,41 @@ func TestBestOfN_AllAttemptsFail_HumanRequiredDistinctReason(t *testing.T) {
 	}
 	if got := attemptWt.cleanupCalls[len(attemptWt.cleanupCalls)-1]; len(got) != 2 {
 		t.Fatalf("cleanup ids = %v, want both attempts", got)
+	}
+}
+
+// TestBestOfN_ShutdownCancellationDuringSpawnDoesNotEscalate is a regression
+// guard for a gap an adversarial manual test found in sybra#2291's fix: the
+// best-of-n fan-out loop (execBestOfN in engine_steps_bestofn.go) only routed
+// a spawn-time error through surfaceStartFailure's shutdown-cancellation gate
+// when transientAgentStartError(err) recognized it — a fixed sentinel list
+// that does NOT include a bare context.Canceled. A shutdown-cancelled
+// PrepareAttempt (the exact shape logged in the production incident:
+// "worktree required for project task: fetch origin: ...: context canceled")
+// used to fall straight to the non-transient branch, marking every attempt
+// permanently "failed" and letting finalizeBestOfNParent escalate the whole
+// task to human-required — reproducing the issue's mass-park symptom via a
+// path the primary fix's surfaceStartFailure gate never even ran on.
+func TestBestOfN_ShutdownCancellationDuringSpawnDoesNotEscalate(t *testing.T) {
+	engine, tasks, _, attemptWt, _ := newBestOfNTestEngine(t, 2)
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate the app context already cancelled by graceful shutdown
+	engine.SetContext(shutdownCtx)
+
+	shutdownErr := fmt.Errorf("worktree required for project task: fetch origin: git fetch origin +refs/heads/*:refs/remotes/origin/*: %w", context.Canceled)
+	attemptWt.prepareErr[bestOfNAttemptID(1)] = shutdownErr
+	attemptWt.prepareErr[bestOfNAttemptID(2)] = shutdownErr
+
+	if err := engine.StartWorkflow("t1", "bestofn-test"); err != nil {
+		t.Fatal(err)
+	}
+
+	ti := mustTaskInfo(t, tasks, "t1")
+	if ti.Status == "human-required" {
+		t.Fatalf("shutdown-cancelled spawn escalated task to human-required: reason=%q", ti.StatusReason)
+	}
+	if ti.StatusReason != "" {
+		t.Fatalf("shutdown-cancelled spawn wrote status_reason %q, want none", ti.StatusReason)
 	}
 }
 

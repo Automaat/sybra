@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,45 @@ func TestHandleWatchdogHangRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	}
 	if !strings.Contains(note, "human-required") {
 		t.Fatalf("reask note should offer the human-required escape hatch:\n%s", note)
+	}
+}
+
+func TestResumeStalled_WatchdogHangRunTestRendersTestingReaskNote(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "testing-task")); err != nil {
+		t.Fatalf("save testing-task: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "testing",
+		StatusReason: "watchdog hang: no stream activity",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "testing-task",
+			CurrentStep: testVerdictSourceStep,
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1", got)
+	}
+	prompt := agents.calls[0].Prompt
+	if !strings.Contains(prompt, "RETRY GUIDANCE") {
+		t.Fatalf("run_test prompt missing retry guidance marker:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "watchdog hang") {
+		t.Fatalf("run_test prompt missing watchdog hang context:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "attempt 1 of 2") {
+		t.Fatalf("run_test prompt missing watchdog attempt count:\n%s", prompt)
 	}
 }
 
@@ -150,6 +190,50 @@ func TestHandleWatchdogHangRetry_NonReadyPRStillRetries(t *testing.T) {
 	}
 }
 
+func TestHandleWatchdogHangRetry_RunTestExhaustionOpensPRGate(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{watchdogHangRetryKey(testVerdictSourceStep): strconv.Itoa(maxWatchdogHangRetries)},
+		StartedAt:   time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "testing",
+		StatusReason: "watchdog hang: no stream activity",
+		Workflow:     wf,
+	})
+	ti := TaskInfo{ID: "t1", Status: "testing", StatusReason: "watchdog hang: no stream activity", Workflow: wf}
+
+	handled := engine.handleWatchdogHangRetry(&ti, &Step{ID: testVerdictSourceStep, Type: StepRunAgent})
+	if !handled {
+		t.Fatal("exhausted run_test watchdog retry should be handled")
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", got.Status)
+	}
+	if got.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want ExecCompleted", got.Workflow.State)
+	}
+	if got.Workflow.CurrentStep != "" {
+		t.Fatalf("current step = %q, want empty", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.CompletedAt == nil {
+		t.Fatal("completed_at should be set for exhausted run_test open-pr path")
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "harness/infra limitation") {
+		t.Fatalf("reason = %q, want unrunnable gate reason", reason)
+	}
+}
+
 func TestResumeStalled_WatchdogHangReadyPRSkipsRedispatch(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
@@ -216,6 +300,173 @@ func TestBuildWatchdogReaskNote_AttemptCount(t *testing.T) {
 	t.Parallel()
 	if got := buildWatchdogReaskNote(2); !strings.Contains(got, "attempt 2 of 2") {
 		t.Fatalf("buildWatchdogReaskNote(2) = %q", got)
+	}
+}
+
+func TestHandleWatchdogRewardHackingRetry_SetsReaskNoteOnRetry(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "fix_review",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: reward-hacking retry: repeating file reads without editing",
+		Workflow:     wf,
+	})
+	ti := TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: reward-hacking retry: repeating file reads without editing",
+		Workflow:     wf,
+	}
+
+	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent})
+	if escalated {
+		t.Fatal("first reward-hacking stop should retry, not escalate")
+	}
+	note := wf.Variables[watchdogReaskNoteVar]
+	if !strings.Contains(note, "reward-hacking") {
+		t.Fatalf("reask note missing reward-hacking context:\n%s", note)
+	}
+	if !strings.Contains(note, "attempt 1 of 1") {
+		t.Fatalf("reask note missing attempt count:\n%s", note)
+	}
+	if !strings.Contains(note, "sidecar already") {
+		t.Fatalf("reask note should point at the sidecar's named location:\n%s", note)
+	}
+	if !strings.Contains(note, "human-required") {
+		t.Fatalf("reask note should offer the human-required escape hatch:\n%s", note)
+	}
+
+	fresh, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if fresh.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared so the workflow resumes cleanly", fresh.StatusReason)
+	}
+}
+
+func TestHandleWatchdogRewardHackingRetry_ExhaustedBudgetEscalates(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "fix_review",
+		State:       ExecWaiting,
+		Variables:   map[string]string{watchdogRewardHackingRetryKey("fix_review"): "1"},
+		StartedAt:   time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: reward-hacking retry: still looping",
+		Workflow:     wf,
+	})
+	ti := TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: reward-hacking retry: still looping",
+		Workflow:     wf,
+	}
+
+	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent})
+	if !escalated {
+		t.Fatal("exhausted reward-hacking retry budget should escalate")
+	}
+	fresh, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if fresh.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", fresh.Status)
+	}
+	if !strings.Contains(fresh.StatusReason, "retry budget exhausted") {
+		t.Fatalf("status_reason = %q, want budget-exhausted explanation", fresh.StatusReason)
+	}
+	if wf.State != ExecFailed {
+		t.Fatalf("workflow state = %q, want ExecFailed", wf.State)
+	}
+}
+
+func TestBuildRewardHackingReaskNote_AttemptCount(t *testing.T) {
+	t.Parallel()
+	if got := buildRewardHackingReaskNote(1); !strings.Contains(got, "attempt 1 of 1") {
+		t.Fatalf("buildRewardHackingReaskNote(1) = %q", got)
+	}
+}
+
+// TestAdvanceStep_ClearsRewardHackingRetryOnFixReviewSuccess covers #2229's
+// stop-and-reset promise: the retry counter must NOT survive a fix_review
+// step that completes cleanly, since fix_review is re-entered fresh at the
+// start of every subsequent review round (simple-task-review.yaml loops
+// fix_review -> detect_tampering -> ... -> code_review -> fix_review). A
+// reward_hacking stop on a later, unrelated round must retry once, not
+// inherit an already-exhausted counter from an earlier round.
+func TestAdvanceStep_ClearsRewardHackingRetryOnFixReviewSuccess(t *testing.T) {
+	t.Parallel()
+	const yaml = `
+id: test-fixreview-reset
+name: Test Fix Review Reset
+trigger:
+  on: task.status_changed
+steps:
+  - id: fix_review
+    name: Fix Review
+    type: run_agent
+    config:
+      role: fix-review
+      mode: headless
+    next:
+      - goto: ""
+`
+	store := newInlineTestStore(t, "test-fixreview-reset", yaml)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wf := &Execution{
+		WorkflowID:  "test-fixreview-reset",
+		CurrentStep: "fix_review",
+		State:       ExecWaiting,
+		Variables: map[string]string{
+			// Budget already spent by an earlier reward-hacking retry round.
+			watchdogRewardHackingRetryKey("fix_review"): "1",
+		},
+		StartedAt: time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf})
+
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "fix_review", Status: "completed", Output: "fixed"}); err != nil {
+		t.Fatalf("advance step: %v", err)
+	}
+
+	fresh, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if _, ok := fresh.Workflow.Variables[watchdogRewardHackingRetryKey("fix_review")]; ok {
+		t.Fatal("reward-hacking retry counter should be cleared after a clean fix_review completion")
+	}
+
+	// A reward_hacking stop on a later round of the same step must retry
+	// once, not escalate as if the budget were already exhausted.
+	ti := TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: reward-hacking retry: still looping",
+		Workflow:     fresh.Workflow,
+	}
+	if escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent}); escalated {
+		t.Fatal("reward-hacking retry budget should have reset after a successful round, not escalate immediately")
 	}
 }
 

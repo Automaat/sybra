@@ -1,7 +1,6 @@
 package config
 
 import (
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,9 +47,7 @@ type ResolveOptions struct {
 }
 
 type ResolveResult struct {
-	Config               *ResolvedConfig
-	ABTestingReconciled  bool
-	ServerTokenGenerated bool
+	Config *ResolvedConfig
 }
 
 // Resolve converts optional file input into the concrete runtime config used by
@@ -74,17 +71,12 @@ func Resolve(file *FileConfig, env Environment, opts ResolveOptions) (*ResolveRe
 
 	applyEnvironmentOverrides(cfg, env)
 	applyResolvedDefaults(cfg, file)
-	abTestingReconciled := applyABTestingDefaults(cfg, opts.ExistingFile && opts.GenerateSecrets)
-	serverTokenGenerated := applyServerDefaultsFromEnvironment(cfg, env, opts.GenerateSecrets)
+	applyABTestingDefaults(cfg)
 
 	if err := ValidateResolvedConfig(cfg); err != nil {
 		return nil, err
 	}
-	return &ResolveResult{
-		Config:               cfg,
-		ABTestingReconciled:  abTestingReconciled,
-		ServerTokenGenerated: serverTokenGenerated,
-	}, nil
+	return &ResolveResult{Config: cfg}, nil
 }
 
 func applyEnvironmentOverrides(cfg *ResolvedConfig, env Environment) {
@@ -160,26 +152,4 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 	applyReviewHoldDefaults(cfg)
-}
-
-func applyServerDefaultsFromEnvironment(cfg *ResolvedConfig, env Environment, allowGenerate bool) bool {
-	if env.AuthToken != "" {
-		cfg.Server.AuthToken = env.AuthToken
-	}
-	if len(env.AllowedOrigins) > 0 {
-		cfg.Server.AllowedOrigins = append([]string(nil), env.AllowedOrigins...)
-	}
-	if cfg.Server.AuthToken != "" {
-		return false
-	}
-	if !allowGenerate {
-		return false
-	}
-	token, err := generateAuthToken()
-	if err != nil {
-		slog.Warn("config: failed to generate server auth token", "err", err)
-		return false
-	}
-	cfg.Server.AuthToken = token
-	return true
 }

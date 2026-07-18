@@ -61,6 +61,16 @@ func TestTaskFields_PlanCritiqueAndReplanCount(t *testing.T) {
 	})
 }
 
+func TestTaskFields_Role(t *testing.T) {
+	t.Parallel()
+
+	ti := TaskInfo{ID: "t1", Role: "review"}
+	fields := taskFields(ti)
+	if got := fields["task.role"]; got != ti.Role {
+		t.Fatalf("task.role = %q, want %q", got, ti.Role)
+	}
+}
+
 // --- Test helpers ---
 
 func init() {
@@ -1135,7 +1145,7 @@ steps:
 	if got.Status != "ready-pr" {
 		t.Fatalf("status = %q, want ready-pr", got.Status)
 	}
-	if got.StatusReason != "manual testing stalled under watchdog after clean retries (no evidenced verdict) — opening PR for CI and human review" {
+	if got.StatusReason != "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review" {
 		t.Fatalf("status_reason = %q", got.StatusReason)
 	}
 	if got.Workflow.State != ExecCompleted {
@@ -1611,6 +1621,161 @@ steps:
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "in-review" {
+		t.Fatalf("status = %q, want in-review", ti.Status)
+	}
+	if ti.StatusReason != "" {
+		t.Fatalf("status reason = %q, want empty", ti.StatusReason)
+	}
+	if ti.PRNumber != 42 {
+		t.Fatalf("pr number = %d, want 42", ti.PRNumber)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestHandleStatusChange_ManualVerificationBlockerRoutesToReadyPR(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	_, wtPath := newPRWorktree(t, "feat/live-proof")
+	commitFile(t, wtPath, "proof.txt", "proof")
+	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
+
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+		Branch:    "feat/live-proof",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.HandleStatusChange("t1", "human-required")
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
+	}
+	if ti.StatusReason != readyPRRecoveryReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, readyPRRecoveryReason)
+	}
+	if ti.PRNumber != 0 {
+		t.Fatalf("pr number = %d, want 0", ti.PRNumber)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestHandleStatusChange_ManualVerificationBlockerLinksExistingPR(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	_, wtPath := newPRWorktree(t, "feat/live-proof")
+	commitFile(t, wtPath, "proof.txt", "proof")
+	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
+
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRFinder(&fakePRFinder{number: 42, found: true})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+		Branch:    "feat/live-proof",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.HandleStatusChange("t1", "human-required")
 
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
@@ -6703,11 +6868,16 @@ func TestExecuteSteps_CycleDetection(t *testing.T) {
 
 // fakeWorktreeGetter is a scripted WorktreeGetter for tests.
 type fakeWorktreeGetter struct {
-	path string
-	ok   bool
+	path  string
+	ok    bool
+	paths map[string]string
 }
 
-func (f *fakeWorktreeGetter) GetWorktreePath(_ string) (string, bool) {
+func (f *fakeWorktreeGetter) GetWorktreePath(taskID string) (string, bool) {
+	if f.paths != nil {
+		path, ok := f.paths[taskID]
+		return path, ok
+	}
 	return f.path, f.ok
 }
 

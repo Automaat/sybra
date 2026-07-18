@@ -291,6 +291,9 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	}
 	r.logAudit(audit.EventPRAutoMerged, t.ID, "", auditData)
 	r.logger.Info("auto-merge.merged", "task_id", t.ID, "pr", issue.PR.Number)
+	if r.onAutoMergeApplied != nil {
+		r.onAutoMergeApplied()
+	}
 }
 
 // escalateExhaustedFix parks a task whose pr-fix retry budget is spent. Trying

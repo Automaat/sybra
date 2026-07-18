@@ -38,15 +38,20 @@ type Result struct {
 }
 
 type Runner struct {
-	cfg    Config
-	logger *slog.Logger
+	cfg      Config
+	logger   *slog.Logger
+	checkNow chan struct{}
 }
 
 func New(cfg Config, logger *slog.Logger) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{cfg: cfg.withDefaults(), logger: logger}
+	return &Runner{
+		cfg:      cfg.withDefaults(),
+		logger:   logger,
+		checkNow: make(chan struct{}, 1),
+	}
 }
 
 func RestartMarkerPath(homeDir string) string {
@@ -84,9 +89,22 @@ func (r *Runner) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-r.checkNow:
+			r.check(ctx)
 		case <-ticker.C:
 			r.check(ctx)
 		}
+	}
+}
+
+// TriggerCheck coalesces an on-demand autoupdate check into the run loop.
+func (r *Runner) TriggerCheck() {
+	if r == nil || !r.cfg.Enabled {
+		return
+	}
+	select {
+	case r.checkNow <- struct{}{}:
+	default:
 	}
 }
 
