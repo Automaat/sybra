@@ -1268,6 +1268,34 @@ func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	}
 }
 
+func TestMaybeSpawn_SkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
+	t.Parallel()
+	// h.agents is nil in newReviewTestEnv — a stale human-required hook must
+	// exit before attempting a real spawn.
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Stale hook task", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusBlocked),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	h.maybeSpawn(tk.ID, string(task.StatusTodo))
+
+	h.mu.Lock()
+	_, busy := h.inflight[tk.ID]
+	h.mu.Unlock()
+	if busy {
+		t.Error("expected no inflight entry — stale hook should skip the spawn")
+	}
+}
+
 func TestMaybeSpawn_IdempotencyGate_IgnoresRenderedVerdictBeforeTestingCycle(t *testing.T) {
 	t.Parallel()
 	h, tasks, _, cleanup := newReviewTestEnv(t)
