@@ -3,23 +3,14 @@ package sybra
 import (
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sync"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
-	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
 )
-
-// modelNameRe restricts the agent model identifier to characters safe to embed
-// on a CLI argument without quoting. Compiled once — recompiling per call
-// allocates ~1KB of regex state each time UpdateSettings runs.
-var modelNameRe = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // ConfigService exposes settings read/write as Wails-bound methods.
 type ConfigService struct {
@@ -109,17 +100,12 @@ func (s *ConfigService) GetRawConfig() (string, error) {
 // formatting and comments), then hot-reloads. Invalid YAML or a value that
 // fails validation is rejected without touching disk.
 func (s *ConfigService) SaveRawConfig(raw string) error {
-	parsed := config.DefaultConfig()
-	if err := yaml.Unmarshal([]byte(raw), parsed); err != nil {
-		return validationError(fmt.Sprintf("invalid YAML: %s", err))
-	}
-	// validateSettings reads s.cfg (stored-token check); guard it. ReloadFromDisk
-	// below takes the write lock itself, so release before calling it.
-	s.mu.RLock()
-	err := s.validateSettings(configToSettings(parsed))
-	s.mu.RUnlock()
+	fileCfg, err := config.ParseFileConfig([]byte(raw))
 	if err != nil {
-		return err
+		return validationError(fmt.Sprintf("invalid config: %s", err))
+	}
+	if _, err := config.ResolveFromCurrentEnvironment(fileCfg, config.ResolveOptions{}); err != nil {
+		return validationError(err.Error())
 	}
 	if err := config.WriteRawConfig([]byte(raw)); err != nil {
 		return err
@@ -144,53 +130,12 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) error {
 
 // validateSettings checks all editable fields for validity.
 func (s *ConfigService) validateSettings(settings AppSettings) error {
-	if settings.Agent.Provider != "" && !providerid.IsKnown(settings.Agent.Provider) {
-		return validationError(fmt.Sprintf("invalid provider: %q", settings.Agent.Provider))
+	next := settingsToConfig(s.cfg, settings)
+	if next.Todoist.PollSeconds == 0 {
+		next.Todoist.PollSeconds = 120
 	}
-	if settings.Agent.Model != "" && !modelNameRe.MatchString(settings.Agent.Model) {
-		return validationError(fmt.Sprintf("invalid model: %q", settings.Agent.Model))
-	}
-	if settings.Agent.FallbackModel != "" && !modelNameRe.MatchString(settings.Agent.FallbackModel) {
-		return validationError(fmt.Sprintf("invalid fallback model: %q", settings.Agent.FallbackModel))
-	}
-	validModes := map[string]bool{"": true, "headless": true, "interactive": true}
-	if !validModes[settings.Agent.Mode] {
-		return validationError(fmt.Sprintf("invalid mode: %q", settings.Agent.Mode))
-	}
-	if settings.Agent.MaxConcurrent < 1 || settings.Agent.MaxConcurrent > 100 {
-		return validationError("maxConcurrent must be 1–100")
-	}
-	if settings.Agent.LogRetentionDays < -1 {
-		return validationError("logRetentionDays must be -1 or greater")
-	}
-	if settings.Agent.LogGzipAfterDays < -1 {
-		return validationError("logGzipAfterDays must be -1 or greater")
-	}
-	if settings.Agent.LogRetentionMaxSizeMB < -1 {
-		return validationError("logRetentionMaxSizeMb must be -1 or greater")
-	}
-	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
-	if !validLevels[settings.Logging.Level] {
-		return validationError(fmt.Sprintf("invalid log level: %q", settings.Logging.Level))
-	}
-	if settings.Logging.MaxSizeMB < 1 || settings.Logging.MaxSizeMB > 500 {
-		return validationError("maxSizeMB must be 1–500")
-	}
-	if settings.Logging.MaxFiles < 1 || settings.Logging.MaxFiles > 50 {
-		return validationError("maxFiles must be 1–50")
-	}
-	if settings.Audit.RetentionDays < 1 || settings.Audit.RetentionDays > 365 {
-		return validationError("retentionDays must be 1–365")
-	}
-	if settings.Todoist.Enabled && settings.Todoist.APIToken == "" && s.cfg.Todoist.APIToken == "" {
-		return validationError("todoist API token required when enabled")
-	}
-	// 0 means "use the default" (config.Load coerces it to 120); any other
-	// out-of-range value is rejected. AppSettings is passed by value, so we
-	// cannot silently coerce here — the caller would never see the change.
-	if settings.Todoist.PollSeconds != 0 &&
-		(settings.Todoist.PollSeconds < 30 || settings.Todoist.PollSeconds > 3600) {
-		return validationError("todoist poll interval must be 30–3600 seconds")
+	if err := config.ValidateResolvedConfig(&next); err != nil {
+		return validationError(err.Error())
 	}
 	return nil
 }

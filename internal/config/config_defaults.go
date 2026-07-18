@@ -577,7 +577,8 @@ func HomeDir() string {
 }
 
 func DefaultConfig() *Config {
-	return &Config{
+	cfg := &Config{
+		SchemaVersion: CurrentSchemaVersion,
 		Logging: LoggingConfig{
 			Level:     "info",
 			Dir:       defaultLogDir(),
@@ -667,6 +668,8 @@ func DefaultConfig() *Config {
 		},
 		TasksDir: defaultTasksDir(),
 	}
+	applyResolvedDefaults(cfg, nil)
+	return cfg
 }
 
 func (c *Config) AuditDir() string {
@@ -777,14 +780,14 @@ func (c *Config) ExperiencesDir() string {
 	return filepath.Join(HomeDir(), "experience")
 }
 
-func Load() (*Config, error) {
+func Load() (*ResolvedConfig, error) {
 	return load(loadOptions{persistLoadReconciles: true})
 }
 
 // LoadNoPersist reads config.yaml and applies in-memory defaults/reconciles
 // without writing any migration back to disk. Reload paths use this to keep
 // their read-only contract and to preserve raw-editor formatting/comments.
-func LoadNoPersist() (*Config, error) {
+func LoadNoPersist() (*ResolvedConfig, error) {
 	return load(loadOptions{})
 }
 
@@ -792,110 +795,35 @@ type loadOptions struct {
 	persistLoadReconciles bool
 }
 
-func load(opts loadOptions) (*Config, error) {
-	cfg := DefaultConfig()
-
+func load(opts loadOptions) (*ResolvedConfig, error) {
 	path := configPath()
 	data, err := os.ReadFile(path)
 	existingFile := err == nil
+	var fileCfg *FileConfig
 	if existingFile {
-		// Keep the rest of DefaultConfig pre-seeded, but let builtin_version
-		// reflect the document exactly: nil means "key absent" on older files.
-		cfg.ABTesting.BuiltinVersion = nil
-		if err := yaml.Unmarshal(data, cfg); err != nil {
+		fileCfg, err = ParseFileConfig(data)
+		if err != nil {
 			return nil, err
 		}
-		applyLegacyGitHubDefault(data, cfg)
 	} else if os.IsNotExist(err) {
 		if writeErr := writeDefaultConfig(path); writeErr != nil {
 			return nil, writeErr
 		}
+	} else if err != nil {
+		return nil, err
 	}
 	if opts.persistLoadReconciles {
 		tightenConfigPerms(path, existingFile)
 	}
-
-	if v := os.Getenv("SYBRA_LOG_LEVEL"); v != "" {
-		cfg.Logging.Level = v
+	resolved, err := Resolve(fileCfg, environmentFromOS(), ResolveOptions{
+		GenerateSecrets: opts.persistLoadReconciles,
+		ExistingFile:    existingFile,
+	})
+	if err != nil {
+		return nil, err
 	}
-	if v := os.Getenv("SYBRA_LOG_DIR"); v != "" {
-		cfg.Logging.Dir = v
-	}
-
-	if cfg.Logging.Dir == "" {
-		cfg.Logging.Dir = defaultLogDir()
-	}
-	if cfg.TasksDir == "" {
-		cfg.TasksDir = defaultTasksDir()
-	}
-	if v := os.Getenv("SYBRA_TASKS_DIR"); v != "" {
-		cfg.TasksDir = v
-	}
-
-	if cfg.SkillsDir == "" {
-		cfg.SkillsDir = defaultSkillsDir()
-	}
-
-	// Migration: previous releases defaulted to ~/.sybra/skills which Claude
-	// Code never reads. Silently retarget the old default so users with stale
-	// configs get the fix without manual intervention. cdb6dc5 changed the
-	// default but did not migrate persisted overrides.
-	if cfg.SkillsDir == filepath.Join(HomeDir(), "skills") {
-		cfg.SkillsDir = defaultSkillsDir()
-	}
-	if cfg.ProjectsDir == "" {
-		cfg.ProjectsDir = defaultProjectsDir()
-	}
-	if cfg.ClonesDir == "" {
-		cfg.ClonesDir = defaultClonesDir()
-	}
-	if cfg.WorktreesDir == "" {
-		cfg.WorktreesDir = defaultWorktreesDir()
-	}
-	if cfg.LoopAgentsDir == "" {
-		cfg.LoopAgentsDir = defaultLoopAgentsDir()
-	}
-
-	if v := os.Getenv("SYBRA_TODOIST_TOKEN"); v != "" {
-		cfg.Todoist.APIToken = v
-	}
-	if cfg.Todoist.PollSeconds <= 0 {
-		cfg.Todoist.PollSeconds = 120
-	}
-
-	if cfg.Renovate.Author == "" {
-		cfg.Renovate.Author = "app/renovate"
-	}
-	if cfg.Triage.PollSeconds <= 0 {
-		cfg.Triage.PollSeconds = 60
-	}
-	// Triage.Model intentionally has no default override here: an empty
-	// model lets triage.FallbackClassifier fall through to its llmjob.SuperCheap
-	// tier (haiku), which is ~10x cheaper than sonnet for a structured
-	// classification job. A non-empty value (set explicitly by a user)
-	// still overrides the tier via claudeModelOverride.
-	if cfg.Agent.Provider == "" {
-		cfg.Agent.Provider = "claude"
-	}
-
-	applyProvidersDefaults(cfg)
-	applyMonitorDefaults(cfg)
-	applyWatchdogDefaults(cfg)
-	applySelfMonitorDefaults(cfg)
-	applyEvaluationDefaults(cfg)
-	applyLearningDigestDefaults(cfg)
-	applyHarnessEvolveDefaults(cfg)
-	applyPromptLabDefaults(cfg)
-	applyExperienceDefaults(cfg)
-	abTestingReconciled := applyABTestingDefaults(cfg, opts.persistLoadReconciles)
-	applyOrchestratorDefaults(cfg)
-	applyAutoUpdateDefaults(cfg)
-	applyReviewHoldDefaults(cfg)
-	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
-
-	persistLoadReconciles(cfg, opts, existingFile, abTestingReconciled, serverTokenGenerated)
-
-	return cfg, nil
+	persistLoadReconciles(resolved.Config, opts, existingFile, resolved.ABTestingReconciled, resolved.ServerTokenGenerated)
+	return resolved.Config, nil
 }
 
 // persistLoadReconciles writes back in-memory-only changes made during load()
@@ -915,38 +843,6 @@ func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestin
 			slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
 		}
 	}
-}
-
-// applyServerDefaults resolves sybra-server's auth token and CORS allowlist:
-// env vars win when set, otherwise a missing token is auto-generated so the
-// HTTP control plane always fails closed instead of silently running
-// unauthenticated. Returns true when a new token was generated (the caller
-// must persist it — see load()). Read-only config loads pass allowGenerate=false
-// so they never invent an in-memory-only secret that diverges from disk.
-func applyServerDefaults(cfg *Config, allowGenerate bool) bool {
-	if v := os.Getenv("SYBRA_AUTH_TOKEN"); v != "" {
-		cfg.Server.AuthToken = v
-	}
-	if v := os.Getenv("SYBRA_ALLOWED_ORIGINS"); v != "" {
-		origins := strings.Split(v, ",")
-		for i := range origins {
-			origins[i] = strings.TrimSpace(origins[i])
-		}
-		cfg.Server.AllowedOrigins = origins
-	}
-	if cfg.Server.AuthToken != "" {
-		return false
-	}
-	if !allowGenerate {
-		return false
-	}
-	token, err := generateAuthToken()
-	if err != nil {
-		slog.Warn("config: failed to generate server auth token", "err", err)
-		return false
-	}
-	cfg.Server.AuthToken = token
-	return true
 }
 
 // generateAuthToken returns a random 256-bit hex-encoded shared secret for
@@ -976,7 +872,7 @@ func applyReviewHoldDefaults(cfg *Config) {
 	if !cfg.ReviewHold.Enabled {
 		return
 	}
-	if !validReviewHoldMode(cfg.ReviewHold.Mode) {
+	if cfg.ReviewHold.Mode == "" {
 		cfg.ReviewHold.Mode = DefaultReviewHoldMode
 	}
 	if cfg.ReviewHold.NitMaxLines <= 0 {
@@ -1269,7 +1165,7 @@ func applyPromptLabDefaults(cfg *Config) {
 // applySelfMonitorDefaults fills zero values for the SelfMonitor block so
 // older configs behave deterministically and the service can rely on every
 // field. Enabled stays false until operators opt in.
-func applySelfMonitorDefaults(cfg *Config) {
+func applySelfMonitorDefaults(cfg *Config, file *FileConfig) {
 	s := &cfg.SelfMonitor
 	if s.IntervalHours < 1 {
 		s.IntervalHours = 6
@@ -1302,14 +1198,15 @@ func applySelfMonitorDefaults(cfg *Config) {
 	// when none of the user-facing knobs were set. This avoids silently
 	// re-enabling DryRun on an operator who explicitly disabled it.
 	//
-	// Proxy for "freshly populated": IssueLabel is the last field the
-	// operator typically edits; if it's empty after the above defaults
-	// ran, we know nothing in the block was user-specified.
+	// With FileConfig we can check the field directly instead of guessing via
+	// a later sibling's zero value.
 	if s.IssueCooldownHours <= 0 {
 		s.IssueCooldownHours = 24
 	}
 	if s.IssueLabel == "" {
 		s.IssueLabel = "selfmonitor"
+	}
+	if file == nil || !file.Has("self_monitor", "dry_run") {
 		s.DryRun = true
 	}
 	if s.MaxCostPerTickUSD <= 0 {
@@ -1365,7 +1262,7 @@ func applyPressureDefaults(cfg *Config) {
 // applyMonitorDefaults fills zero values for the Monitor block so older
 // configs behave deterministically and the service can rely on every field.
 // Enabled stays false until users opt in.
-func applyMonitorDefaults(cfg *Config) {
+func applyMonitorDefaults(cfg *Config, file *FileConfig) {
 	if cfg.Monitor.IntervalSeconds < 60 {
 		cfg.Monitor.IntervalSeconds = 300
 	}
@@ -1377,7 +1274,9 @@ func applyMonitorDefaults(cfg *Config) {
 	if cfg.Monitor.IssueCooldownMinutes <= 0 {
 		cfg.Monitor.IssueCooldownMinutes = 30
 	}
-	if cfg.Monitor.DispatchLimit <= 0 {
+	if file == nil || !file.Has("monitor", "dispatch_limit") {
+		cfg.Monitor.DispatchLimit = cfg.Agent.MaxConcurrent
+	} else if cfg.Monitor.DispatchLimit <= 0 {
 		cfg.Monitor.DispatchLimit = cfg.Agent.MaxConcurrent
 	}
 	if cfg.Monitor.StuckHumanHours <= 0 {
@@ -1470,7 +1369,7 @@ func writeDefaultConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Sybra configuration\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n"), configFilePerm)
+	return os.WriteFile(path, []byte("# Sybra configuration\nschema_version: 2\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n"), configFilePerm)
 }
 
 // tightenConfigPerms retrofits the config directory and file to 0o700/0o600
