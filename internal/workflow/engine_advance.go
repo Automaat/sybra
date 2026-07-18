@@ -83,10 +83,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		}
 	}
 	if output.Status == "completed" && currentStep.Config.Role == "pr-fix" {
-		verdict, reason := classifyPRFixResult(output.Output)
-		wfExec.SetVar("step."+output.StepID+"."+PRFixVerdictVar, string(verdict))
-		wfExec.SetVar("step."+output.StepID+".pr_fix_requires_human", strconv.FormatBool(verdict == PRFixHuman))
-		wfExec.SetVar("step."+output.StepID+".pr_fix_reason", reason)
+		recordPRFixVars(wfExec, output.StepID, output.Output)
 	}
 
 	if output.TerminalStatus != "" {

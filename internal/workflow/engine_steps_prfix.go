@@ -3,11 +3,18 @@ package workflow
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 var prFixSentinelRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_RESULT:\s*([a-z_-]+)\s*$`)
 var prFixReasonRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_REASON:\s*(.+?)\s*$`)
+
+// prFixFailingTestRe matches each repeated SYBRA_PR_FIX_FAILING_TEST: line a
+// pr-fix agent emits alongside a human-required verdict for non-merge test
+// failures it already found while investigating. One sentinel per test,
+// unlike RESULT/REASON, so every named test survives — not just the last.
+var prFixFailingTestRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_FAILING_TEST:\s*(.+?)\s*$`)
 
 // ReviewHoldParkVar, when set to "true" on the execution, forces the pr-fix
 // result to human-required regardless of the agent's sentinel. It's a
@@ -78,6 +85,21 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)
 	}
 	e.logger.Warn("workflow.pr-fix.human-required", "task_id", taskID, "reason", reason)
+	// Best-effort, after the status update: the failing-tests note is a
+	// supplement to a park that has already happened, not a precondition for
+	// it, so a store failure here must never leave the task un-parked or
+	// re-append the note on a retry of this step. reviewHoldForced means the
+	// agent's own verdict was continue/flake — any SYBRA_PR_FIX_FAILING_TEST:
+	// lines in its output describe tests it already dealt with, not the
+	// reason for this park, so they must not be attributed to it.
+	if !reviewHoldForced {
+		if tests := prFixFailingTests(wfExec); len(tests) > 0 {
+			note := "## PR-Fix: Failing Tests\n\n" + reason + "\n\n- " + strings.Join(tests, "\n- ")
+			if err := e.tasks.AppendTaskBody(taskID, note); err != nil {
+				e.logger.Warn("workflow.pr-fix.failing-tests.append", "task_id", taskID, "err", err)
+			}
+		}
+	}
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
 }
 
@@ -103,6 +125,26 @@ func (e *Engine) checkPRAlreadyResolved(taskID string, t TaskInfo, agentReason s
 		agentReason = "pr-fix agent requested human review"
 	}
 	return fmt.Sprintf("pr-fix skipped park: PR #%d already resolved on remote (agent reported: %s)", t.PRNumber, agentReason), true
+}
+
+// recordPRFixVars classifies a just-completed pr-fix agent's raw output and
+// stashes the verdict/reason/failing-tests as step vars, so prFixVerdict and
+// prFixFailingTests can resolve them without re-classifying on every lookup.
+// Split out of AdvanceStep to keep that function under the funlen limit.
+func recordPRFixVars(wfExec *Execution, stepID, output string) {
+	verdict, reason := classifyPRFixResult(output)
+	wfExec.SetVar("step."+stepID+"."+PRFixVerdictVar, string(verdict))
+	wfExec.SetVar("step."+stepID+".pr_fix_requires_human", strconv.FormatBool(verdict == PRFixHuman))
+	wfExec.SetVar("step."+stepID+".pr_fix_reason", reason)
+	// Always set (possibly to ""), never skip: a stale value from an earlier
+	// completion of this same step ID must not survive to be misread as this
+	// attempt's failing tests by prFixFailingTests. See prFixFailingTests'
+	// ok-but-empty branch, which depends on this var actually being present.
+	var failingTests string
+	if verdict == PRFixHuman {
+		failingTests = strings.Join(extractPRFixFailingTests(output), "\n")
+	}
+	wfExec.SetVar("step."+stepID+".pr_fix_failing_tests", failingTests)
 }
 
 func prFixVerdict(wfExec *Execution) (verdict PRFixVerdict, reason string) {
@@ -131,6 +173,31 @@ func prFixVerdict(wfExec *Execution) (verdict PRFixVerdict, reason string) {
 		}
 	}
 	return classifyPRFixResult(lastPRFixOutput(wfExec, stepID))
+}
+
+// prFixFailingTests returns the specific failing tests a pr-fix agent named
+// via repeated SYBRA_PR_FIX_FAILING_TEST: lines alongside a human-required
+// verdict — the concrete repro info a human (or a future scoped test-fix
+// follow-up) needs, instead of just the free-text reason, which truncate()s
+// to 200 chars and would otherwise drop it. Mirrors prFixVerdict's own
+// var-first-then-reclassify lookup so both stay consistent across a resume.
+func prFixFailingTests(wfExec *Execution) []string {
+	if wfExec == nil {
+		return nil
+	}
+	stepID := wfExec.LastAgentStepID()
+	if stepID == "" {
+		return nil
+	}
+	if wfExec.Variables != nil {
+		if v, ok := wfExec.Variables["step."+stepID+".pr_fix_failing_tests"]; ok {
+			if v == "" {
+				return nil
+			}
+			return strings.Split(v, "\n")
+		}
+	}
+	return extractPRFixFailingTests(lastPRFixOutput(wfExec, stepID))
 }
 
 func lastPRFixOutput(wfExec *Execution, stepID string) string {
@@ -215,6 +282,19 @@ func extractPRFixReason(output string) string {
 		return reason
 	}
 	return "pr-fix agent requested human review"
+}
+
+// extractPRFixFailingTests collects every SYBRA_PR_FIX_FAILING_TEST: line
+// from a pr-fix agent's output, in the order emitted, untruncated.
+func extractPRFixFailingTests(output string) []string {
+	matches := prFixFailingTestRe.FindAllStringSubmatch(output, -1)
+	tests := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if t := strings.TrimSpace(m[1]); t != "" {
+			tests = append(tests, t)
+		}
+	}
+	return tests
 }
 
 func firstNonEmptyLine(s string) string {

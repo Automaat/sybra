@@ -111,6 +111,80 @@ func TestClassifyPRFixResult(t *testing.T) {
 	}
 }
 
+func TestExtractPRFixFailingTests(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		output string
+		want   []string
+	}{
+		{
+			name: "collects every failing-test line in order",
+			output: "SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: targeted tests still fail after the merge\n" +
+				"SYBRA_PR_FIX_FAILING_TEST: pkg/foo/bar_test.go:113 TestBootstrap/gateway\n" +
+				"SYBRA_PR_FIX_FAILING_TEST: pkg/foo/baz_test.go:49 TestSnapshot\n",
+			want: []string{
+				"pkg/foo/bar_test.go:113 TestBootstrap/gateway",
+				"pkg/foo/baz_test.go:49 TestSnapshot",
+			},
+		},
+		{
+			name:   "none reported yields nil",
+			output: "SYBRA_PR_FIX_RESULT: human-required\nSYBRA_PR_FIX_REASON: missing credential\n",
+			want:   nil,
+		},
+		{
+			name:   "empty output yields nil",
+			output: "",
+			want:   nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := extractPRFixFailingTests(tc.output)
+			if len(got) != len(tc.want) {
+				t.Fatalf("extractPRFixFailingTests(%q) = %v, want %v", tc.output, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("test[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// A second recordPRFixVars call for the same step ID (e.g. a re-armed retry)
+// whose output has no failing-test sentinels must clear any failing-tests
+// var a prior completion of that same step left behind — otherwise
+// prFixFailingTests would resurface a stale, unrelated attempt's tests as if
+// they belonged to this one.
+func TestRecordPRFixVars_ClearsStaleFailingTestsOnRetry(t *testing.T) {
+	t.Parallel()
+
+	wf := &Execution{}
+	wf.StepHistory = append(wf.StepHistory, StepRecord{StepID: "fix", Status: "completed", AgentID: "agent-1"})
+	recordPRFixVars(wf, "fix", "SYBRA_PR_FIX_RESULT: human-required\n"+
+		"SYBRA_PR_FIX_REASON: first attempt found a failing test\n"+
+		"SYBRA_PR_FIX_FAILING_TEST: pkg/a_test.go:1 TestA\n")
+	if got := prFixFailingTests(wf); len(got) != 1 || got[0] != "pkg/a_test.go:1 TestA" {
+		t.Fatalf("after first attempt: prFixFailingTests = %v, want [pkg/a_test.go:1 TestA]", got)
+	}
+
+	// A re-armed retry of the same step ID: a second StepRecord for "fix"
+	// whose output has no failing-test sentinels this time.
+	wf.StepHistory = append(wf.StepHistory, StepRecord{StepID: "fix", Status: "completed", AgentID: "agent-2"})
+	recordPRFixVars(wf, "fix", "SYBRA_PR_FIX_RESULT: human-required\n"+
+		"SYBRA_PR_FIX_REASON: missing deploy credential this time\n")
+	if got := prFixFailingTests(wf); len(got) != 0 {
+		t.Fatalf("after second attempt (no tests reported): prFixFailingTests = %v, want none — stale value from the first attempt leaked", got)
+	}
+}
+
 func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 	t.Parallel()
 
@@ -152,6 +226,91 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "Human review is required") {
 		t.Errorf("reason = %q, want agent output excerpt", reason)
+	}
+}
+
+// A human-required verdict carrying SYBRA_PR_FIX_FAILING_TEST: lines must
+// append the full, untruncated list to the task body — not just the
+// 200-char-truncated reason — so a human or a future scoped follow-up gets
+// exact repro info instead of having to rediscover the failing tests.
+func TestExecRoutePRFixResult_HumanRequiredWithFailingTestsAppendsNote(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Merged cleanly but targeted tests still fail.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: branch merge is local-only; targeted tests still fail\n" +
+				"SYBRA_PR_FIX_FAILING_TEST: pkg/xds/bootstrap/generator_test.go:113 TestBootstrap/gateway_settings\n" +
+				"SYBRA_PR_FIX_FAILING_TEST: pkg/xds/sync/proxy_builder_test.go:49 panics during spec construction\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 1178, Workflow: wf})
+
+	if _, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", PRNumber: 1178}); err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	for _, want := range []string{
+		"## PR-Fix: Failing Tests",
+		"pkg/xds/bootstrap/generator_test.go:113 TestBootstrap/gateway_settings",
+		"pkg/xds/sync/proxy_builder_test.go:49 panics during spec construction",
+	} {
+		if !strings.Contains(got.Body, want) {
+			t.Errorf("body missing %q; got:\n%s", want, got.Body)
+		}
+	}
+}
+
+// A human-required verdict with no SYBRA_PR_FIX_FAILING_TEST: lines (e.g. a
+// missing-credential or ambiguous-scope reason) must not append a failing
+// tests section at all — the note would be actively misleading if empty.
+func TestExecRoutePRFixResult_HumanRequiredWithoutFailingTestsNoNote(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: missing deploy credential, cannot verify\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 1178, Workflow: wf})
+
+	if _, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", PRNumber: 1178}); err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got.Body, "PR-Fix: Failing Tests") {
+		t.Errorf("expected no failing-tests section without any reported tests; got body:\n%s", got.Body)
 	}
 }
 
@@ -352,6 +511,48 @@ func TestExecRoutePRFixResult_ReviewHoldParkWinsOverContinue(t *testing.T) {
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+}
+
+// A review-hold park is forced from a `continue` verdict — the agent already
+// pushed successfully. Any SYBRA_PR_FIX_FAILING_TEST: line in that output
+// describes a test the agent already dealt with, not the reason for this
+// park, and must never be attributed to it via the failing-tests note.
+func TestExecRoutePRFixResult_ReviewHoldParkIgnoresFailingTestLines(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Pushed the fix.\n" +
+				"SYBRA_PR_FIX_FAILING_TEST: pkg/foo_test.go:42 TestBar (was failing before my fix)\n" +
+				"SYBRA_PR_FIX_RESULT: continue",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{ReviewHoldParkVar: "true"},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 1446, Workflow: wf})
+
+	if _, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", PRNumber: 1446}); err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if strings.Contains(got.Body, "PR-Fix: Failing Tests") {
+		t.Errorf("review-hold park must not carry a failing-tests note misattributed from a continue verdict; got body:\n%s", got.Body)
 	}
 }
 
