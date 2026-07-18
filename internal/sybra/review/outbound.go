@@ -9,6 +9,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -137,10 +138,14 @@ func (r *Handler) settledImplementationFetchMatchers(ctx context.Context, tasks 
 		if m.Branch == "" {
 			continue
 		}
-		number, found, err := r.findOpenPRForBranch(ctx, m.ProjectID, m.Branch)
+		head, ok := r.settledImplementationPRHead(ctx, t)
+		if !ok {
+			continue
+		}
+		number, found, err := r.findOpenPRForBranch(ctx, m.ProjectID, head)
 		if err != nil {
 			if r.logger != nil {
-				r.logger.Warn("pr-monitor.cancel-implement.find-pr", "task_id", m.ID, "repo", m.ProjectID, "branch", m.Branch, "err", err)
+				r.logger.Warn("pr-monitor.cancel-implement.find-pr", "task_id", m.ID, "repo", m.ProjectID, "head", head, "err", err)
 			}
 			continue
 		}
@@ -151,6 +156,29 @@ func (r *Handler) settledImplementationFetchMatchers(ctx context.Context, tasks 
 		matchers = append(matchers, m)
 	}
 	return matchers
+}
+
+func (r *Handler) settledImplementationPRHead(ctx context.Context, t *task.Task) (string, bool) {
+	if t == nil || strings.TrimSpace(t.Branch) == "" {
+		return "", false
+	}
+	if r.worktrees == nil {
+		return t.Branch, true
+	}
+	if !r.worktrees.Exists(*t) {
+		if r.logger != nil {
+			r.logger.Warn("pr-monitor.cancel-implement.no-worktree", "task_id", t.ID, "branch", t.Branch)
+		}
+		return "", false
+	}
+	head, err := project.HeadArg(ctx, r.worktrees.PathFor(*t), t.Branch)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("pr-monitor.cancel-implement.head", "task_id", t.ID, "branch", t.Branch, "err", err)
+		}
+		return "", false
+	}
+	return head, true
 }
 
 func (r *Handler) findOpenPRForBranch(ctx context.Context, repo, branch string) (number int, found bool, err error) {

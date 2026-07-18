@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 // newOutboundTestHandler builds a Handler backed by a temp task store and
@@ -499,6 +501,58 @@ func TestHandleKnownPRConflictsViaREST_CancelsBranchOnlySettledImplementationWor
 	}
 }
 
+func TestSettledImplementationFetchMatchers_QualifiesForkHead(t *testing.T) {
+	r, tasks := newOutboundWorkflowTestHandler(t)
+	wtPath := initReviewGitWorktree(t)
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "add", "fork", "git@github.com:someuser/sybra.git").CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+	r.worktrees = worktree.New(worktree.Config{
+		WorktreesDir: filepath.Join(t.TempDir(), "worktrees"),
+		Projects:     r.projects,
+		Tasks:        tasks,
+		Logger:       r.logger,
+	})
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       workflow.ExecWaiting,
+	}
+	updated, err := tasks.Update(created.ID, task.Update{
+		Status:      task.Ptr(task.StatusInProgress),
+		ProjectID:   task.Ptr("Automaat/sybra"),
+		Branch:      task.Ptr("feat/shared-name"),
+		WorktreeDir: task.Ptr(wtPath),
+		Workflow:    &wf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var lookedUpHead string
+	r.findOpenPRForBranchFn = func(_ context.Context, repo, head string) (int, bool, error) {
+		if repo != "Automaat/sybra" {
+			t.Fatalf("repo = %q, want Automaat/sybra", repo)
+		}
+		lookedUpHead = head
+		return 123, true, nil
+	}
+
+	matchers := r.settledImplementationFetchMatchers(context.Background(), []task.Task{updated})
+
+	if lookedUpHead != "someuser:feat/shared-name" {
+		t.Fatalf("looked up head = %q, want fork-qualified head", lookedUpHead)
+	}
+	if len(matchers) != 1 || matchers[0].PRNumber != 123 {
+		t.Fatalf("matchers = %+v, want PR #123", matchers)
+	}
+}
+
 func TestReconcilePRPhases(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 
@@ -532,6 +586,15 @@ func TestReconcilePRPhases(t *testing.T) {
 	if gotReview.PRPhase != "" {
 		t.Errorf("review task PRPhase = %q, want empty", gotReview.PRPhase)
 	}
+}
+
+func initReviewGitWorktree(t *testing.T) string {
+	t.Helper()
+	wtPath := t.TempDir()
+	if out, err := exec.Command("git", "-C", wtPath, "init", "-b", "main").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	return wtPath
 }
 
 func TestReconcilePRPhasesClearsStaleWhenIneligible(t *testing.T) {
