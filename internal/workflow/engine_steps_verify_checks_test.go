@@ -19,6 +19,7 @@ import (
 
 type fakeCheckGetter struct {
 	cmds            []string
+	cmdsByTask      map[string][]string
 	codegen         []string
 	setup           []string
 	focused         []project.FocusedCheck
@@ -27,7 +28,12 @@ type fakeCheckGetter struct {
 
 func (f *fakeCheckGetter) CodegenCommands(context.Context, string) []string { return f.codegen }
 
-func (f *fakeCheckGetter) VerifyCommands(context.Context, string) []string { return f.cmds }
+func (f *fakeCheckGetter) VerifyCommands(_ context.Context, taskID string) []string {
+	if f.cmdsByTask != nil {
+		return f.cmdsByTask[taskID]
+	}
+	return f.cmds
+}
 
 func (f *fakeCheckGetter) SetupCommands(context.Context, string) []string { return f.setup }
 
@@ -352,6 +358,89 @@ func TestExecVerifyChecks_TimeoutRetryAbsorbsLoadSpike(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged (retry passed, no human-required)", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T) {
+	wt1 := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	wt2 := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	blocking := "touch .verify-entered; while [ ! -f .verify-release ]; do sleep 0.05; done"
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{
+		ok: true,
+		paths: map[string]string{
+			"t1": wt1,
+			"t2": wt2,
+		},
+	})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{cmdsByTask: map[string][]string{
+		"t1": {blocking},
+		"t2": {"true"},
+	}})
+	tasks := engine.tasks.(*memTasks)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{ID: "t2", Status: "in-progress"})
+
+	type result struct {
+		out StepOutput
+		err error
+	}
+	firstDone := make(chan result, 1)
+	go func() {
+		out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(),
+			&Execution{WorkflowID: "wf1", CurrentStep: "verify_checks", State: ExecRunning, Variables: map[string]string{}},
+			TaskInfo{ID: "t1", Status: "in-progress"})
+		firstDone <- result{out: out, err: err}
+	}()
+
+	waitForFile := func(path string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", path)
+	}
+	waitForFile(filepath.Join(wt1, ".verify-entered"))
+
+	wf2 := &Execution{WorkflowID: "wf2", CurrentStep: "verify_checks", State: ExecRunning, Variables: map[string]string{}}
+	out, err := engine.execVerifyChecks("t2", newVerifyChecksStep(), wf2, TaskInfo{ID: "t2", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("out = %+v, want zero StepOutput when parked", out)
+	}
+	if wf2.CurrentStep != "verify_checks" {
+		t.Fatalf("CurrentStep = %q, want verify_checks", wf2.CurrentStep)
+	}
+	if wf2.State != ExecWaiting {
+		t.Fatalf("State = %q, want ExecWaiting", wf2.State)
+	}
+	if _, ok := workflowRetryAfter(wf2); !ok {
+		t.Fatalf("%s not set to a valid retry timestamp", workflowRetryAfterVar)
+	}
+	if got := tasks.Reason("t2"); got != verifyChecksBusyReason {
+		t.Fatalf("reason = %q, want %q", got, verifyChecksBusyReason)
+	}
+
+	if err := os.WriteFile(filepath.Join(wt1, ".verify-release"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-firstDone:
+		if got.err != nil {
+			t.Fatalf("first verify err = %v", got.err)
+		}
+		if got.out.Output != "clean" {
+			t.Fatalf("first verify output = %q, want clean", got.out.Output)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first verify to finish")
 	}
 }
 

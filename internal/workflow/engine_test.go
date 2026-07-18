@@ -6418,11 +6418,16 @@ func TestExecuteSteps_CycleDetection(t *testing.T) {
 
 // fakeWorktreeGetter is a scripted WorktreeGetter for tests.
 type fakeWorktreeGetter struct {
-	path string
-	ok   bool
+	path  string
+	ok    bool
+	paths map[string]string
 }
 
-func (f *fakeWorktreeGetter) GetWorktreePath(_ string) (string, bool) {
+func (f *fakeWorktreeGetter) GetWorktreePath(taskID string) (string, bool) {
+	if f.paths != nil {
+		path, ok := f.paths[taskID]
+		return path, ok
+	}
 	return f.path, f.ok
 }
 

@@ -41,7 +41,14 @@ const (
 	verifyReaskNoteVar         = "verify_reask_note"
 	verifyChecksAutoFixCap     = 2
 	verifyChecksAutoFixBackoff = 90 * time.Second
+	// Full verify suites are CPU-heavy and already serialized by workflow
+	// retries; a single local slot prevents one saturated host from piling
+	// multiple suites on top of each other and timing them all out.
+	verifyChecksBackoff       = 1 * time.Minute
+	verifyChecksMaxConcurrent = 1
 )
+
+const verifyChecksBusyReason = "verify suite deferred: another local verify run is already in flight"
 
 // verifyChecksFlakeRetries is how many extra times a failed verify command is
 // re-run before the gate blocks. A single retry absorbs a nondeterministic
@@ -141,6 +148,22 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 		e.logger.Info("workflow.verify-checks.timeout-scaled",
 			"task_id", taskID, "base", verifyChecksDefaultTimeout.String(), "effective", timeout.String())
 	}
+	slot := e.verifyChecksSlot()
+	releaseVerifySlot, ok := e.acquireVerifyChecksSlot(slot)
+	if !ok {
+		if wfExec == nil {
+			select {
+			case slot <- struct{}{}:
+				releaseVerifySlot = func() { <-slot }
+			case <-e.ctx.Done():
+				e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", e.ctx.Err())
+				return stepDone(step, "skipped: context canceled")
+			}
+		} else {
+			return e.parkVerifyChecksForBackpressure(taskID, step, wfExec, t)
+		}
+	}
+	defer releaseVerifySlot()
 
 	if e.repairCorruptedNodeModules(e.ctx, taskID, wtPath) {
 		// Corruption was detected but the repair itself failed (e.g. `npm ci`
@@ -200,6 +223,38 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 
 	e.logger.Info("workflow.verify-checks.clean", "task_id", taskID, "commands", len(cmds))
 	return stepDone(step, "clean")
+}
+
+func (e *Engine) verifyChecksSlot() chan struct{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.verifyChecksSlots == nil {
+		e.verifyChecksSlots = make(chan struct{}, verifyChecksMaxConcurrent)
+	}
+	return e.verifyChecksSlots
+}
+
+func (e *Engine) acquireVerifyChecksSlot(slot chan struct{}) (release func(), ok bool) {
+	select {
+	case slot <- struct{}{}:
+		return func() { <-slot }, true
+	default:
+		return nil, false
+	}
+}
+
+func (e *Engine) parkVerifyChecksForBackpressure(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	wfExec.CurrentStep = step.ID
+	wfExec.State = ExecWaiting
+	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksBackoff).Format(time.RFC3339))
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return StepOutput{}, err
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, verifyChecksBusyReason); err != nil {
+		return StepOutput{}, err
+	}
+	e.logger.Warn("workflow.verify-checks.backpressure", "task_id", taskID, "step", step.ID)
+	return StepOutput{}, errStepParked
 }
 
 // VerifyTaskNow re-runs a task's configured verify commands against its
