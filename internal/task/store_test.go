@@ -1500,6 +1500,68 @@ func TestStoreListRebuildsWarmCacheAfterExternalDeleteWithoutInvalidate(t *testi
 	}
 }
 
+func TestStoreListCacheSkipsSnapshotWhenDirChangedDuringBuild(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := store.Create("Alpha", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleTasks, err := store.List()
+	if err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	startDirModTime, ok := store.dirModTime()
+	if !ok {
+		t.Fatal("stat tasks dir")
+	}
+
+	now := time.Now().UTC()
+	external := Task{
+		ID:              "extern01",
+		Slug:            "external",
+		Title:           "External",
+		Status:          StatusTodo,
+		TaskType:        TaskTypeNormal,
+		AgentMode:       AgentModeHeadless,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		StatusChangedAt: now,
+		FilePath:        filepath.Join(dir, "extern01.md"),
+	}
+	data, err := Marshal(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(external.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(dir, startDirModTime.Add(2*time.Second), startDirModTime.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	if store.storeListCacheIfDirFresh(staleTasks, startDirModTime) {
+		t.Fatal("stale snapshot was stored as a valid list cache")
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tk := range tasks {
+		seen[tk.ID] = true
+	}
+	if !seen[a.ID] || !seen[external.ID] {
+		t.Fatalf("List IDs = %v, want %q and %q", seen, a.ID, external.ID)
+	}
+}
+
 // TestStoreConcurrentCreate verifies that N goroutines calling Create in
 // parallel each produce a distinct, readable task — no ID collision,
 // no lost writes, no race in the list cache. Run with -race to catch

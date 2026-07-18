@@ -198,6 +198,7 @@ func (s *Store) List() ([]Task, error) {
 		return tasks, nil
 	}
 
+	startDirModTime, hasStartDirModTime := s.dirModTime()
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, fmt.Errorf("read tasks dir: %w", err)
@@ -261,8 +262,8 @@ func (s *Store) List() ([]Task, error) {
 		tasks = append(tasks, t)
 	}
 	if !parseErr {
-		if dirModTime, ok := s.dirModTime(); ok {
-			s.storeListCache(tasks, dirModTime)
+		if hasStartDirModTime {
+			s.storeListCacheIfDirFresh(tasks, startDirModTime)
 		} else {
 			s.invalidateListCache()
 		}
@@ -1518,6 +1519,20 @@ func (s *Store) storeListCache(tasks []Task, dirModTime time.Time) {
 	s.listCache = cloneTasks(tasks)
 	s.listValid = true
 	s.listDirModTime = dirModTime
+}
+
+func (s *Store) storeListCacheIfDirFresh(tasks []Task, startDirModTime time.Time) bool {
+	dirModTime, ok := s.dirModTime()
+	if !ok {
+		s.invalidateListCache()
+		return false
+	}
+	if !dirModTime.Equal(startDirModTime) {
+		s.invalidateListCache()
+		return false
+	}
+	s.storeListCache(tasks, startDirModTime)
+	return true
 }
 
 func (s *Store) storeTaskCache(t Task) {
