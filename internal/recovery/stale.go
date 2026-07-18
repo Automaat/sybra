@@ -74,11 +74,11 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			"task_id", t.ID, "reason", "provider_rate_limited", "provider", lr.Provider)
 		return
 	}
-	if slices.Contains(t.Tags, "review") && r.recoverCompletedHeadlessRun(&t) {
+	if r.recoverCompletedHeadlessRun(&t) {
 		// recoverCompletedHeadlessRun handled this task (last headless run
 		// completed but workflow step was never recorded). Skip the generic
 		// stale-restart path only when it actually fired HandleAgentComplete;
-		// unmatched review tasks (running agent, empty result, missing workflow,
+		// unmatched tasks (running agent, empty result, missing workflow,
 		// etc.) fall through so they can still be restarted.
 		return
 	}
