@@ -380,7 +380,13 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	// A hardcoded calendar date here is a time bomb: reopening below builds a
+	// second Store whose clock is the real wall clock (nothing overrides it
+	// before its own reloadLocked prunes on construction), so once real time
+	// drifts eventMaxAge past a fixed date the just-persisted events get
+	// pruned as stale on reload. Anchor to the real clock instead so the
+	// fixture stays valid indefinitely.
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 
 	if err := s.Import(
