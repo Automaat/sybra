@@ -18,19 +18,46 @@ import (
 func TestStallLimit(t *testing.T) {
 	tests := []struct {
 		name string
+		role agent.Role
 		tags []string
 		want time.Duration
 	}{
-		{"small", []string{"small"}, 10 * time.Minute},
-		{"medium", []string{"medium"}, 15 * time.Minute},
-		{"unset", nil, 15 * time.Minute},
-		{"large", []string{"large"}, 45 * time.Minute},
+		{"small", "", []string{"small"}, 10 * time.Minute},
+		{"medium", "", []string{"medium"}, 15 * time.Minute},
+		{"unset", "", nil, 15 * time.Minute},
+		{"large", "", []string{"large"}, 45 * time.Minute},
+		{"test-runner ignores small tag", agent.RoleTestRunner, []string{"small"}, testRunnerStallLimit},
+		{"test-runner ignores large tag", agent.RoleTestRunner, []string{"large"}, testRunnerStallLimit},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := stallLimit(tc.tags)
+			got := stallLimit(tc.role, tc.tags)
 			if got != tc.want {
-				t.Fatalf("stallLimit(%v) = %v, want %v", tc.tags, got, tc.want)
+				t.Fatalf("stallLimit(%v, %v) = %v, want %v", tc.role, tc.tags, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSizeBudget(t *testing.T) {
+	tests := []struct {
+		name string
+		role agent.Role
+		tags []string
+		want time.Duration
+	}{
+		{"small", "", []string{"small"}, 10 * time.Minute},
+		{"medium", "", []string{"medium"}, 45 * time.Minute},
+		{"unset", "", nil, 45 * time.Minute},
+		{"large", "", []string{"large"}, 3 * time.Hour},
+		{"test-runner ignores small tag", agent.RoleTestRunner, []string{"small"}, testRunnerBudget},
+		{"test-runner ignores large tag", agent.RoleTestRunner, []string{"large"}, testRunnerBudget},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sizeBudget(tc.role, tc.tags)
+			if got != tc.want {
+				t.Fatalf("sizeBudget(%v, %v) = %v, want %v", tc.role, tc.tags, got, tc.want)
 			}
 		})
 	}
@@ -1020,6 +1047,54 @@ func TestInspectHeadless_MidRunStallStillUsesJudge(t *testing.T) {
 
 	if !judgeCalled {
 		t.Fatal("LLM judge not invoked for a genuine mid-run stall")
+	}
+}
+
+// TestInspectHeadless_TestRunnerRoleSurvivesStallThatWouldKillOtherRoles
+// covers #1664: a test-runner drives a real server + adversarial probes and
+// can go quiet on the stream for far longer than a "small" task's 10m
+// stallLimit without being stuck. The role-aware override in stallLimit must
+// win over the task's size tag so the judge (and, transitively, the hard
+// stop) is not triggered on this legitimate silence.
+func TestInspectHeadless_TestRunnerRoleSurvivesStallThatWouldKillOtherRoles(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	if _, err := tasks.Update(tk.ID, task.Update{Tags: task.Ptr([]string{"small"})}); err != nil {
+		t.Fatalf("tag task small: %v", err)
+	}
+
+	judgeCalled := false
+	w := &Watchdog{
+		tasks:  tasks,
+		logger: slog.New(slog.DiscardHandler),
+		emit:   func(string, any) {},
+		wg:     &sync.WaitGroup{},
+		inspectAgent: func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error) {
+			judgeCalled = true
+			return agent.InspectorVerdict{Recommendation: "continue"}, nil
+		},
+		stopAgent: func(string) error { return nil },
+	}
+
+	// 20m of stream silence: past the "small" tag's 10m stallLimit, well
+	// under test-runner's 45m stallLimit and its 90m hardIdleLimit.
+	started := time.Now().Add(-20 * time.Minute)
+	ag := &agent.Agent{
+		ID:        "a1",
+		Name:      "test-runner:watchdog test",
+		TaskID:    tk.ID,
+		Provider:  "claude",
+		Mode:      "headless",
+		StartedAt: started,
+		LogPath:   "/tmp/does-not-matter.ndjson",
+	}
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant"})
+	ag.SetLastEventAt(started)
+
+	w.inspectHeadless(context.Background(), newState(), time.Now(), ag)
+	w.wg.Wait()
+
+	if judgeCalled {
+		t.Fatal("LLM judge invoked for a test-runner stall within its role-aware limit")
 	}
 }
 
