@@ -366,7 +366,18 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 	wt2 := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	blocking := "touch .verify-entered; while [ ! -f .verify-release ]; do sleep 0.05; done"
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "wf2",
+		Name: "verify checks retry",
+		Steps: []Step{
+			{ID: "verify_checks", Type: StepVerifyChecks, Next: []Transition{{GoTo: ""}}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	engine := NewEngine(store, newMemTasks(), newMockAgents(), slog.New(slog.NewTextHandler(&logs, nil)))
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{
 		ok: true,
 		paths: map[string]string{
@@ -441,6 +452,38 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for first verify to finish")
+	}
+	if got := len(engine.verifyChecksSlot()); got != 0 {
+		t.Fatalf("verify slot still occupied after first verify finished: len=%d", got)
+	}
+
+	ti2, err := tasks.GetTask("t2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ti2.Workflow.SetVar(workflowRetryAfterVar, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	if err := tasks.SetWorkflow("t2", ti2.Workflow); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.ResumeStalled()
+
+	ti2, err = tasks.GetTask("t2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti2.Workflow == nil {
+		t.Fatal("workflow missing after ResumeStalled")
+	}
+	if ti2.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want completed - parked verify_checks was not resumed (reason=%q)\nlogs:\n%s",
+			ti2.Workflow.State, tasks.Reason("t2"), logs.String())
+	}
+	if ti2.Workflow.CurrentStep != "" {
+		t.Fatalf("CurrentStep = %q, want empty after resumed verify completes", ti2.Workflow.CurrentStep)
+	}
+	if got := ti2.Workflow.LastRecord(); got == nil || got.StepID != "verify_checks" || got.Output != "clean" {
+		t.Fatalf("last step = %+v, want verify_checks clean", got)
 	}
 }
 

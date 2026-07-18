@@ -958,7 +958,7 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 
 func isResumableStepType(t StepType) bool {
 	switch t {
-	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepCreatePR, StepPushBranch, StepPromoteBestOfN:
+	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN:
 		return true
 	default:
 		return false
@@ -1212,10 +1212,8 @@ func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *S
 	e.logger.Info("workflow.resume-stalled", "task_id", taskID, "step", step.ID)
 	comp, rErr := e.executeSteps(taskID, def, step, wf)
 	e.clearResumeDispatching(taskID)
-	// ResumeStalled only resumes async run_agent steps, so comp is normally
-	// nil (fireComplete no-ops). Kept defensive so the day a sync step
-	// becomes resumable its completion cascades correctly instead of being
-	// silently dropped.
+	// Most resumable steps dispatch async work and return nil; sync retry steps
+	// such as verify_checks can finish the workflow here.
 	e.fireComplete(comp)
 	e.drainPendingConflictRecovery(taskID)
 	e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", taskID, rErr, "task_id", taskID)
