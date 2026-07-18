@@ -125,6 +125,36 @@ func TestExecFocusedChecks_PassIsClean(t *testing.T) {
 	}
 }
 
+func TestExecFocusedChecks_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
+	orig := workflowCheckLoadPerCPU
+	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+
+	engine, tasks, _ := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"sleep 0.2"},
+	}}, nil)
+	engine.SetVerifyTimeout(100 * time.Millisecond)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (scaled timeout should cover host oversubscription)", out.Output)
+	}
+	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want unchanged", ti.Status)
+	}
+}
+
 func TestExecFocusedChecks_UnmappedChangesSkipWithoutVerifyFallback(t *testing.T) {
 	t.Parallel()
 

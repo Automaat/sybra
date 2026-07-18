@@ -666,6 +666,29 @@ func TestApplyVerdict_EmptyReasonKindSkipsVerifyWhenKillTimesOut(t *testing.T) {
 	}
 }
 
+func TestVerdictStatusFromVerifyDoesNotImposeFixedTimeout(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	w := &Watchdog{
+		verifyNow: func(ctx context.Context, taskID string) (bool, bool, string, string, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("verify context has no parent deadline")
+			}
+			if remaining := time.Until(deadline); remaining < 9*time.Minute {
+				t.Fatalf("verify context deadline = %s remaining, want the caller deadline without the old 5m watchdog cap", remaining)
+			}
+			return true, true, "", "", nil
+		},
+	}
+
+	status, reason := w.verdictStatusFromVerify(parent, "t1", "watchdog: agent stuck")
+	if status != task.StatusInProgress {
+		t.Fatalf("status = %q reason = %q, want in-progress", status, reason)
+	}
+}
+
 func TestTrimTail(t *testing.T) {
 	if got := trimTail("go test ./...", "", 10); got != "go test ./..." {
 		t.Fatalf("trimTail with empty output = %q, want just failedCmd", got)
