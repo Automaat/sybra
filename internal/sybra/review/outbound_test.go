@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/poll"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -51,6 +53,13 @@ func newOutboundWorkflowTestHandler(t *testing.T) (*Handler, *task.Manager) {
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
 	}
+	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projects.CreateMeta("https://github.com/Automaat/sybra", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
 	engine := workflow.NewEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agents, tasks: tasks},
@@ -59,6 +68,7 @@ func newOutboundWorkflowTestHandler(t *testing.T) (*Handler, *task.Manager) {
 	r := &Handler{
 		logger:         logger,
 		tasks:          tasks,
+		projects:       projects,
 		agents:         agents,
 		WorkflowEngine: engine,
 	}
@@ -235,6 +245,145 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 			t.Fatalf("workflow = %+v, want waiting on implement", got.Workflow)
 		}
 	})
+}
+
+func TestPollKnownTaskPRs_CancelsBranchOnlySettledImplementationWorkflow(t *testing.T) {
+	r, tasks := newOutboundWorkflowTestHandler(t)
+	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
+	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       workflow.ExecWaiting,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInProgress),
+		ProjectID: task.Ptr("Automaat/sybra"),
+		Branch:    task.Ptr("feat/branch-only-secondary"),
+		Workflow:  &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r.findOpenPRForBranchFn = func(_ context.Context, repo, branch string) (int, bool, error) {
+		if repo != "Automaat/sybra" || branch != "feat/branch-only-secondary" {
+			t.Fatalf("find branch = %s %s, want Automaat/sybra feat/branch-only-secondary", repo, branch)
+		}
+		return 77, true, nil
+	}
+	var fetched []github.PRRef
+	r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+		fetched = refs
+		results := make([]github.MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			results[i] = github.MonitorPRResult{
+				Repo: ref.Repo, Number: ref.Number, Open: true,
+				PR: github.PullRequest{
+					Number:      ref.Number,
+					Repository:  ref.Repo,
+					HeadRefName: "feat/branch-only-secondary",
+					Mergeable:   "MERGEABLE",
+					CIStatus:    "SUCCESS",
+				},
+			}
+		}
+		return results
+	}
+
+	r.Poll(context.Background())
+
+	if len(fetched) != 1 || fetched[0].Repo != "Automaat/sybra" || fetched[0].Number != 77 {
+		t.Fatalf("fetched refs = %+v, want Automaat/sybra#77", fetched)
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PRNumber != 77 {
+		t.Fatalf("PRNumber = %d, want 77", got.PRNumber)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want in-review", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", got.Workflow)
+	}
+}
+
+func TestHandleKnownPRConflictsViaREST_CancelsBranchOnlySettledImplementationWorkflow(t *testing.T) {
+	r, tasks := newOutboundWorkflowTestHandler(t)
+	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       workflow.ExecWaiting,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInProgress),
+		ProjectID: task.Ptr("Automaat/sybra"),
+		Branch:    task.Ptr("feat/branch-only-rest"),
+		Workflow:  &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r.findOpenPRForBranchFn = func(_ context.Context, repo, branch string) (int, bool, error) {
+		if repo != "Automaat/sybra" || branch != "feat/branch-only-rest" {
+			t.Fatalf("find branch = %s %s, want Automaat/sybra feat/branch-only-rest", repo, branch)
+		}
+		return 88, true, nil
+	}
+	var fetched []github.PRRef
+	r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+		fetched = refs
+		results := make([]github.MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			results[i] = github.MonitorPRResult{
+				Repo: ref.Repo, Number: ref.Number, Open: true,
+				PR: github.PullRequest{
+					Number:      ref.Number,
+					Repository:  ref.Repo,
+					HeadRefName: "feat/branch-only-rest",
+					Mergeable:   "MERGEABLE",
+					CIStatus:    "SUCCESS",
+				},
+			}
+		}
+		return results
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.handleKnownPRConflictsViaREST(context.Background(), all)
+
+	if len(fetched) != 1 || fetched[0].Repo != "Automaat/sybra" || fetched[0].Number != 88 {
+		t.Fatalf("fetched refs = %+v, want Automaat/sybra#88", fetched)
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PRNumber != 88 {
+		t.Fatalf("PRNumber = %d, want 88", got.PRNumber)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want in-review", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", got.Workflow)
+	}
 }
 
 func TestReconcilePRPhases(t *testing.T) {

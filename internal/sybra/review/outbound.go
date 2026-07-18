@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -108,6 +109,49 @@ func (r *Handler) cancelSettledImplementationWorkflows(tasks []task.Task, monito
 		tasks[i] = updated
 		r.logger.Info("pr-monitor.cancel-implement", "task_id", t.ID, "pr", pr.Number, "step", step)
 	}
+}
+
+func (r *Handler) settledImplementationFetchMatchers(ctx context.Context, tasks []task.Task) []github.TaskMatcher {
+	matchers := make([]github.TaskMatcher, 0)
+	for i := range tasks {
+		t := &tasks[i]
+		if !staleImplementationWorkflowEligible(t) || t.ProjectID == "" {
+			continue
+		}
+		m := github.TaskMatcher{
+			ID:        t.ID,
+			PRNumber:  t.PRNumber,
+			Branch:    t.Branch,
+			ProjectID: t.ProjectID,
+		}
+		if m.PRNumber != 0 {
+			matchers = append(matchers, m)
+			continue
+		}
+		if m.Branch == "" {
+			continue
+		}
+		number, found, err := r.findOpenPRForBranch(ctx, m.ProjectID, m.Branch)
+		if err != nil {
+			if r.logger != nil {
+				r.logger.Warn("pr-monitor.cancel-implement.find-pr", "task_id", m.ID, "repo", m.ProjectID, "branch", m.Branch, "err", err)
+			}
+			continue
+		}
+		if !found {
+			continue
+		}
+		m.PRNumber = number
+		matchers = append(matchers, m)
+	}
+	return matchers
+}
+
+func (r *Handler) findOpenPRForBranch(ctx context.Context, repo, branch string) (number int, found bool, err error) {
+	if r.findOpenPRForBranchFn != nil {
+		return r.findOpenPRForBranchFn(ctx, repo, branch)
+	}
+	return github.FindPRForBranch(ctx, repo, branch)
 }
 
 // indexMonitoredPRs builds the by-number and by-branch lookup maps shared by
