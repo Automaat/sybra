@@ -457,7 +457,7 @@ func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 	ag.AppendOutput(agent.StreamEvent{
 		Type: "assistant",
 		Content: "```sybra-verdict\n" +
-			`{"decision":"unblocked","summary":"fixed lint, pushed, advanced to ready-pr"}` +
+			`{"decision":"unblocked","reason":"fixed lint, pushed, advanced to ready-pr","recoverable_action":"none","confidence":"high"}` +
 			"\n```\n",
 	})
 	h.inflight[tk.ID] = "agent-1"
@@ -481,6 +481,60 @@ func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 	}
 	if _, busy := h.inflight[tk.ID]; busy {
 		t.Errorf("inflight should be cleared after onComplete")
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-action"
+	tk, err := tasks.Create("Recover task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"opened the PR and the host should resume review","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusReadyPR {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyPR)
+	}
+	if !strings.Contains(got.StatusReason, "auto-review recovery") {
+		t.Fatalf("status_reason = %q, want auto-review recovery note", got.StatusReason)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("expected unblocked note in body; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("sink calls = %d, want 0", sink.calls)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
 	}
 }
 
@@ -1139,6 +1193,160 @@ func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {
 	}
 	if sink.calls != 0 {
 		t.Errorf("sink should not be called on malformed verdict; calls=%d", sink.calls)
+	}
+}
+
+func TestOnComplete_StructuredVerdictFailure_RetriesAlternateProvider(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const firstAgentID = "hr-structured-1"
+	tk, err := tasks.Create("Retry structured review", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("owner/repo"),
+	}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:   firstAgentID,
+		Role:      string(agent.RoleHumanReview),
+		Mode:      "headless",
+		Provider:  "claude",
+		Model:     "claude-haiku-4-5-20251001",
+		State:     "running",
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	runner := &fakeHumanReviewAgentRunner{
+		apply: func(cfg agent.RunConfig) agent.RunConfig { return cfg },
+		run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+			if cfg.Provider != "codex" {
+				t.Fatalf("fallback provider = %q, want codex", cfg.Provider)
+			}
+			if cfg.Model != "haiku" {
+				t.Fatalf("fallback model = %q, want haiku alias", cfg.Model)
+			}
+			return &agent.Agent{
+				ID:        "hr-structured-2",
+				TaskID:    cfg.TaskID,
+				Provider:  "codex",
+				Model:     "gpt-5.4-mini",
+				StartedAt: time.Now().UTC(),
+			}, nil
+		},
+	}
+	h.agents = runner
+
+	ag := &agent.Agent{
+		ID:       firstAgentID,
+		TaskID:   tk.ID,
+		Name:     agent.RoleHumanReview.AgentName(tk.Title),
+		Provider: "claude",
+		Model:    "claude-haiku-4-5-20251001",
+	}
+	ag.SetHasOutputSchema(true)
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: `{"decision":"human","reason":"","recoverable_action":"none","confidence":"high"}`})
+	h.inflight[tk.ID] = firstAgentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if len(got.AgentRuns) != 2 {
+		t.Fatalf("agent runs = %d, want 2 (failed structured run + fallback run)", len(got.AgentRuns))
+	}
+	if !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("first run not rendered: %+v", got.AgentRuns[0])
+	}
+	if got.AgentRuns[1].Provider != "codex" || got.AgentRuns[1].Model != "gpt-5.4-mini" {
+		t.Fatalf("fallback run = %+v, want codex/gpt-5.4-mini", got.AgentRuns[1])
+	}
+	if _, busy := h.inflight[tk.ID]; !busy {
+		t.Fatal("fallback retry should keep the replacement run inflight")
+	}
+	if strings.Contains(got.Body, "unparseable verdict") {
+		t.Fatalf("fallback spawn should not append a terminal note yet; body:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("sink calls = %d, want 0", sink.calls)
+	}
+}
+
+func TestOnComplete_StructuredVerdictFailure_SecondFailureRendersDurableNote(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const currentAgentID = "hr-structured-2"
+	tk, err := tasks.Create("Retry exhausted structured review", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("owner/repo"),
+	}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+	start := time.Now().UTC()
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         "hr-structured-1",
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		Provider:        "claude",
+		Model:           "claude-haiku-4-5-20251001",
+		State:           "stopped",
+		StartedAt:       start.Add(-time.Minute),
+		VerdictRendered: true,
+	}); err != nil {
+		t.Fatalf("add first run: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:   currentAgentID,
+		Role:      string(agent.RoleHumanReview),
+		Mode:      "headless",
+		Provider:  "codex",
+		Model:     "gpt-5.4-mini",
+		State:     "running",
+		StartedAt: start,
+	}); err != nil {
+		t.Fatalf("add second run: %v", err)
+	}
+
+	ag := &agent.Agent{
+		ID:       currentAgentID,
+		TaskID:   tk.ID,
+		Name:     agent.RoleHumanReview.AgentName(tk.Title),
+		Provider: "codex",
+		Model:    "gpt-5.4-mini",
+	}
+	ag.SetHasOutputSchema(true)
+	h.inflight[tk.ID] = currentAgentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if len(got.AgentRuns) != 2 {
+		t.Fatalf("agent runs = %d, want no third retry", len(got.AgentRuns))
+	}
+	if !got.AgentRuns[1].VerdictRendered {
+		t.Fatalf("second run not rendered: %+v", got.AgentRuns[1])
+	}
+	if !strings.Contains(got.Body, "did not return a usable structured verdict") {
+		t.Fatalf("expected durable structured-verdict note; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("sink calls = %d, want 0", sink.calls)
 	}
 }
 

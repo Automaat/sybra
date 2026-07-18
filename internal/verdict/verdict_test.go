@@ -16,16 +16,17 @@ func TestParse(t *testing.T) {
 	}{
 		{
 			name:       "bare json human",
-			input:      `{"decision":"human","summary":"needs scope clarification"}`,
-			want:       Decision{Decision: "human", Summary: "needs scope clarification"},
+			input:      `{"decision":"human","reason":"needs scope clarification","recoverable_action":"none","confidence":"high"}`,
+			want:       Decision{Decision: "human", Reason: "needs scope clarification", Summary: "needs scope clarification", RecoverableAction: "none", Confidence: "high"},
 			wantSource: SourceJSON,
 		},
 		{
 			name: "bare json sybra_bug",
-			input: `{"decision":"sybra_bug","summary":"verify_commits flipped despite push",` +
+			input: `{"decision":"sybra_bug","reason":"verify_commits flipped despite push","recoverable_action":"none","confidence":"medium",` +
 				`"issue_title":"fix(workflow): verify_commits race","issue_body":"## What\nrace","issue_labels":["workflow"]}`,
 			want: Decision{
-				Decision: "sybra_bug", Summary: "verify_commits flipped despite push",
+				Decision: "sybra_bug", Reason: "verify_commits flipped despite push", Summary: "verify_commits flipped despite push",
+				RecoverableAction: "none", Confidence: "medium",
 				IssueTitle: "fix(workflow): verify_commits race", IssueBody: "## What\nrace",
 				IssueLabels: []string{"workflow"},
 			},
@@ -33,8 +34,8 @@ func TestParse(t *testing.T) {
 		},
 		{
 			name:       "bare json with trailing prose",
-			input:      `{"decision":"human","summary":"ok"}` + "\n\nThanks for checking!",
-			want:       Decision{Decision: "human", Summary: "ok"},
+			input:      `{"decision":"human","reason":"ok","recoverable_action":"none","confidence":"medium"}` + "\n\nThanks for checking!",
+			want:       Decision{Decision: "human", Reason: "ok", Summary: "ok", RecoverableAction: "none", Confidence: "medium"},
 			wantSource: SourceJSON,
 		},
 		{
@@ -42,58 +43,75 @@ func TestParse(t *testing.T) {
 			input: "Looks like a real ambiguity.\n\n```sybra-verdict\n" +
 				`{"decision":"human","summary":"needs scope clarification"}` +
 				"\n```\n",
-			want:       Decision{Decision: "human", Summary: "needs scope clarification"},
+			want:       Decision{Decision: "human", Reason: "needs scope clarification", Summary: "needs scope clarification", RecoverableAction: "none", Confidence: "medium"},
 			wantSource: SourceFence,
 		},
 		{
 			name: "bare json precedence over fenced block",
-			input: `{"decision":"human","summary":"bare wins"}` +
+			input: `{"decision":"human","reason":"bare wins","recoverable_action":"none","confidence":"medium"}` +
 				"\n\n```sybra-verdict\n" +
 				`{"decision":"sybra_bug","summary":"fenced loses"}` +
 				"\n```\n",
-			want:       Decision{Decision: "human", Summary: "bare wins"},
+			want:       Decision{Decision: "human", Reason: "bare wins", Summary: "bare wins", RecoverableAction: "none", Confidence: "medium"},
 			wantSource: SourceJSON,
 		},
 		{
 			name:       "case-mismatched decision normalizes",
-			input:      `{"decision":"HUMAN","summary":"still valid"}`,
-			want:       Decision{Decision: "human", Summary: "still valid"},
+			input:      `{"decision":"HUMAN","reason":"still valid","recoverable_action":"none","confidence":"LOW"}`,
+			want:       Decision{Decision: "human", Reason: "still valid", Summary: "still valid", RecoverableAction: "none", Confidence: "low"},
 			wantSource: SourceJSON,
 		},
 		{
 			name:       "unblocked decision valid",
-			input:      `{"decision":"unblocked","summary":"fixed lint, pushed, advanced to ready-pr"}`,
-			want:       Decision{Decision: "unblocked", Summary: "fixed lint, pushed, advanced to ready-pr"},
+			input:      `{"decision":"unblocked","reason":"fixed lint, pushed, advanced to ready-pr","recoverable_action":"ready-pr","confidence":"high"}`,
+			want:       Decision{Decision: "unblocked", Reason: "fixed lint, pushed, advanced to ready-pr", Summary: "fixed lint, pushed, advanced to ready-pr", RecoverableAction: "ready-pr", Confidence: "high"},
+			wantSource: SourceJSON,
+		},
+		{
+			name:       "legacy summary defaults action and confidence",
+			input:      `{"decision":"human","summary":"legacy output"}`,
+			want:       Decision{Decision: "human", Reason: "legacy output", Summary: "legacy output", RecoverableAction: "none", Confidence: "medium"},
 			wantSource: SourceJSON,
 		},
 		{
 			name:    "invalid decision value",
-			input:   `{"decision":"maybe","summary":"x"}`,
+			input:   `{"decision":"maybe","reason":"x","recoverable_action":"none","confidence":"medium"}`,
 			wantErr: true,
 		},
 		{
 			name:    "empty summary",
-			input:   `{"decision":"human","summary":""}`,
+			input:   `{"decision":"human","reason":"","recoverable_action":"none","confidence":"medium"}`,
 			wantErr: true,
 		},
 		{
 			name:    "whitespace summary",
-			input:   `{"decision":"human","summary":"   "}`,
+			input:   `{"decision":"human","reason":"   ","recoverable_action":"none","confidence":"medium"}`,
 			wantErr: true,
 		},
 		{
 			name:    "issue_labels wrong type",
-			input:   `{"decision":"sybra_bug","summary":"x","issue_labels":[1,2,3]}`,
+			input:   `{"decision":"sybra_bug","reason":"x","recoverable_action":"none","confidence":"medium","issue_labels":[1,2,3]}`,
 			wantErr: true,
 		},
 		{
 			name:  "issue_labels trimmed and blanks dropped",
-			input: `{"decision":"sybra_bug","summary":"x","issue_labels":[" workflow ","",  "  ","bug"]}`,
+			input: `{"decision":"sybra_bug","reason":"x","recoverable_action":"none","confidence":"medium","issue_labels":[" workflow ","",  "  ","bug"]}`,
 			want: Decision{
-				Decision: "sybra_bug", Summary: "x",
+				Decision: "sybra_bug", Reason: "x", Summary: "x",
+				RecoverableAction: "none", Confidence: "medium",
 				IssueLabels: []string{"workflow", "bug"},
 			},
 			wantSource: SourceJSON,
+		},
+		{
+			name:    "invalid recoverable action",
+			input:   `{"decision":"unblocked","reason":"x","recoverable_action":"blocked","confidence":"medium"}`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid confidence",
+			input:   `{"decision":"human","reason":"x","recoverable_action":"none","confidence":"certain"}`,
+			wantErr: true,
 		},
 		{
 			name:    "empty input",
@@ -117,26 +135,27 @@ func TestParse(t *testing.T) {
 		},
 		{
 			name:    "placeholder summary fails closed",
-			input:   `{"decision":"sybra_bug","summary":"test","issue_title":"test title","issue_body":"test body"}`,
+			input:   `{"decision":"sybra_bug","reason":"test","recoverable_action":"none","confidence":"medium","issue_title":"test title","issue_body":"test body"}`,
 			wantErr: true,
 		},
 		{
 			name:    "placeholder summary case-insensitive fails closed",
-			input:   `{"decision":"human","summary":"  Test  "}`,
+			input:   `{"decision":"human","reason":"  Test  ","recoverable_action":"none","confidence":"medium"}`,
 			wantErr: true,
 		},
 		{
 			name: "placeholder issue title fails closed even with real summary",
-			input: `{"decision":"sybra_bug","summary":"verify_commits flipped despite push",` +
+			input: `{"decision":"sybra_bug","reason":"verify_commits flipped despite push","recoverable_action":"none","confidence":"medium",` +
 				`"issue_title":"test title","issue_body":"real body"}`,
 			wantErr: true,
 		},
 		{
 			name: "summary merely mentioning test is not a placeholder",
-			input: `{"decision":"sybra_bug","summary":"the test suite is flaky",` +
+			input: `{"decision":"sybra_bug","reason":"the test suite is flaky","recoverable_action":"none","confidence":"medium",` +
 				`"issue_title":"fix(ci): flaky test","issue_body":"real body"}`,
 			want: Decision{
-				Decision: "sybra_bug", Summary: "the test suite is flaky",
+				Decision: "sybra_bug", Reason: "the test suite is flaky", Summary: "the test suite is flaky",
+				RecoverableAction: "none", Confidence: "medium",
 				IssueTitle: "fix(ci): flaky test", IssueBody: "real body",
 			},
 			wantSource: SourceJSON,
@@ -153,7 +172,7 @@ func TestParse(t *testing.T) {
 		},
 		{
 			name:    "schema placeholder sybra bug fails closed",
-			input:   `{"decision":"sybra_bug","summary":"test","issue_title":"test title","issue_body":"test body"}`,
+			input:   `{"decision":"sybra_bug","reason":"test","recoverable_action":"none","confidence":"medium","issue_title":"test title","issue_body":"test body"}`,
 			wantErr: true,
 		},
 	}
@@ -170,8 +189,11 @@ func TestParse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
 			}
-			if got.Decision != tc.want.Decision || got.Summary != tc.want.Summary {
+			if got.Decision != tc.want.Decision || got.Summary != tc.want.Summary || got.Reason != tc.want.Reason {
 				t.Errorf("decision/summary: got %+v want %+v", got, tc.want)
+			}
+			if got.RecoverableAction != tc.want.RecoverableAction || got.Confidence != tc.want.Confidence {
+				t.Errorf("recovery/confidence: got %+v want %+v", got, tc.want)
 			}
 			if got.IssueTitle != tc.want.IssueTitle || got.IssueBody != tc.want.IssueBody {
 				t.Errorf("issue: got %+v want %+v", got, tc.want)
