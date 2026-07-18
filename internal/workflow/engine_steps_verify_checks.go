@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
@@ -173,18 +174,18 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 	e.repairTornNodeModules(e.ctx, taskID, wtPath)
 
-	failedCmd, output, _, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
+	failedCmd, output, commandErr, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
 
 	if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {
-		if healed, fc, out, _, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
-			failedCmd, output, runErr = fc, out, rErr
+		if healed, fc, out, cErr, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
+			failedCmd, output, commandErr, runErr = fc, out, cErr, rErr
 		}
 	}
 
 	report := verifyChecksReport{
 		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
 	}
-	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output)
+	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output, commandErr)
 	if classification != nil {
 		report.Classification = classification.Kind
 		report.FailedPackages = classification.FailedPackages
@@ -259,7 +260,7 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (VerifyTaskNo
 	}
 	e.repairTornNodeModules(ctx, taskID, wtPath)
 	maybeMiseTrust(ctx, wtPath)
-	failedCmd, output, _, err := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+	failedCmd, output, commandErr, err := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 	result := VerifyTaskNowResult{
 		Verified:  true,
 		Passed:    failedCmd == "",
@@ -270,7 +271,7 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (VerifyTaskNo
 		result.Passed = false
 		return result, err
 	}
-	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output)
+	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output, commandErr)
 	if classification != nil {
 		result.ClassificationKind = classification.Kind
 		result.ClassificationReason = classification.Reason
@@ -338,11 +339,11 @@ func (e *Engine) blockVerifyChecks(taskID string, step *Step, reason, detail str
 	return stepDone(step, "blocked")
 }
 
-func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string) *verifyFailureClassification {
+func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string, commandErr error) *verifyFailureClassification {
 	if failedCmd == "" {
 		return nil
 	}
-	if verifyGoInfraFailure(output) {
+	if verifyGoInfraFailure(output, commandErr) {
 		return &verifyFailureClassification{
 			Kind:   "infra_failure",
 			Reason: "verify suite hit Go toolchain/build-cache instability (linker terminated or cache artifacts vanished) — blocked as verifier infrastructure, not an implementation failure",
@@ -360,13 +361,25 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 	}
 }
 
-func verifyGoInfraFailure(output string) bool {
+func verifyGoInfraFailure(output string, commandErr error) bool {
+	if !verifyCommandTerminated(commandErr) {
+		return false
+	}
 	for _, re := range verifyGoInfraFailureRes {
 		if re.MatchString(output) {
 			return true
 		}
 	}
 	return false
+}
+
+func verifyCommandTerminated(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled() && status.Signal() == syscall.SIGTERM
 }
 
 func classifyUnrelatedVerifyGoFailure(

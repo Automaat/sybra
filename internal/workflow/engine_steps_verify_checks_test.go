@@ -391,7 +391,7 @@ func TestExecVerifyChecks_GoInfraFailureBlocks(t *testing.T) {
 	}
 }
 
-func TestExecVerifyChecks_GoInfraTextOnlyFailureBlocks(t *testing.T) {
+func TestExecVerifyChecks_GoInfraTextOnlyFailureAutoFixes(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{`echo "link: signal: terminated" >&2; exit 1`})
@@ -399,25 +399,25 @@ func TestExecVerifyChecks_GoInfraTextOnlyFailureBlocks(t *testing.T) {
 
 	wf := implementedExec()
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
 	}
-	if out.Output != "blocked" {
-		t.Fatalf("Output = %q, want blocked", out.Output)
+	if out.StepID != "" || out.Status != "" {
+		t.Fatalf("parked output should be zero, got %+v", out)
 	}
 	ti := mustGetTaskInfo(t, tasks, "t1")
-	if ti.Status != "blocked" {
-		t.Fatalf("status = %q, want blocked", ti.Status)
+	if ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", ti.Status)
 	}
-	if !strings.Contains(ti.StatusReason, "verifier infrastructure") {
-		t.Fatalf("reason = %q, want verifier-infrastructure classification", ti.StatusReason)
+	if strings.Contains(ti.StatusReason, "verifier infrastructure") {
+		t.Fatalf("reason = %q, want no verifier-infrastructure classification", ti.StatusReason)
 	}
-	if wf.Variables["step.verify_checks.auto_fix"] != "" {
-		t.Fatalf("auto-fix counter = %q, want empty for blocked infra failure", wf.Variables["step.verify_checks.auto_fix"])
+	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
+		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
 	}
 }
 
-func TestExecVerifyChecks_GoInfraChildExitStatusBlocks(t *testing.T) {
+func TestExecVerifyChecks_GoInfraChildExitStatusAutoFixes(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{`sh -c 'echo "link: signal: terminated" >&2; exit 143'`})
@@ -425,28 +425,28 @@ func TestExecVerifyChecks_GoInfraChildExitStatusBlocks(t *testing.T) {
 
 	wf := implementedExec()
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
 	}
-	if out.Output != "blocked" {
-		t.Fatalf("Output = %q, want blocked", out.Output)
+	if out.StepID != "" || out.Status != "" {
+		t.Fatalf("parked output should be zero, got %+v", out)
 	}
 	ti := mustGetTaskInfo(t, tasks, "t1")
-	if ti.Status != "blocked" {
-		t.Fatalf("status = %q, want blocked", ti.Status)
+	if ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", ti.Status)
 	}
-	if !strings.Contains(ti.StatusReason, "verifier infrastructure") {
-		t.Fatalf("reason = %q, want verifier-infrastructure classification", ti.StatusReason)
+	if strings.Contains(ti.StatusReason, "verifier infrastructure") {
+		t.Fatalf("reason = %q, want no verifier-infrastructure classification", ti.StatusReason)
 	}
-	if wf.Variables["step.verify_checks.auto_fix"] != "" {
-		t.Fatalf("auto-fix counter = %q, want empty for blocked infra failure", wf.Variables["step.verify_checks.auto_fix"])
+	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
+		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
 	}
 }
 
 func TestVerifyTaskNow_ClassifiesGoInfraFailure(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
-	engine, _ := newVerifyChecksEngine(t, wt, []string{`echo "can't open import: /tmp/go-build123/b001/_pkg_.a: no such file or directory" >&2; exit 1`})
+	engine, _ := newVerifyChecksEngine(t, wt, []string{`echo "can't open import: /tmp/go-build123/b001/_pkg_.a: no such file or directory" >&2; kill -TERM $$`})
 
 	result, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
