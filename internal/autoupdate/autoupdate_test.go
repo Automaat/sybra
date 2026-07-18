@@ -1,6 +1,7 @@
 package autoupdate
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +58,57 @@ func TestRunRequestsRestartAfterAutoApply(t *testing.T) {
 	r.check(t.Context())
 	if !restarted {
 		t.Fatal("restart was not requested after auto apply")
+	}
+}
+
+func TestRunTriggerCheckAppliesImmediately(t *testing.T) {
+	upstream, work := seedRepos(t)
+
+	restarted := make(chan struct{}, 1)
+	r := New(Config{
+		Enabled:      true,
+		RepoDir:      work,
+		Remote:       "origin",
+		Branch:       "main",
+		Mode:         ModeAuto,
+		PollInterval: time.Hour,
+		RequestRestart: func() {
+			select {
+			case restarted <- struct{}{}:
+			default:
+			}
+		},
+	}, nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(ctx)
+	}()
+
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	r.TriggerCheck()
+
+	select {
+	case <-restarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("triggered check did not request restart")
+	}
+
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); err != nil {
+		t.Fatalf("feature.txt missing after triggered auto update: %v", err)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not stop")
 	}
 }
 
