@@ -75,7 +75,12 @@ const PRFixResultContract = "\n\nBefore your final response, decide the outcome:
 	"evidence is a complete and successful outcome. It is always the right answer " +
 	"over inventing a change you cannot causally justify.\n" +
 	"- If you intentionally stopped because the PR needs a human, end with " +
-	"`SYBRA_PR_FIX_RESULT: human-required` and `SYBRA_PR_FIX_REASON: <short reason>`."
+	"`SYBRA_PR_FIX_RESULT: human-required` and `SYBRA_PR_FIX_REASON: <short reason>`. " +
+	"If the reason is specific test failures you already found while " +
+	"investigating (not e.g. a missing credential or an ambiguous scope " +
+	"decision), also emit one `SYBRA_PR_FIX_FAILING_TEST: <package/file:line " +
+	"test-name>` line per failing test, so the next agent to pick this up " +
+	"gets exact repro info instead of having to rediscover it."
 
 // readyForCopilotAutoMerge reports whether a pet PR satisfies the Copilot
 // auto-merge policy: mechanically mergeable, CI green (or no checks), GitHub
