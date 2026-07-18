@@ -180,6 +180,10 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	defer prepared.cleanup()
 	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == "claude")
 
+	if _, _, unrendered := a.GetPromptRender(); len(unrendered) > 0 {
+		m.logger.Warn("agent.headless.skill_unrendered", "id", a.ID, "provider", prepared.inv.name, "skills", unrendered)
+	}
+
 	if m.survives() && a.Mode == "headless" {
 		inv := prepared.inv
 		return m.runHeadlessAttemptSurvive(ctx, a, prepared.cfg, outFile, tailOffset, inv.name, inv.args, inv.env, inv.command)

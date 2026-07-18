@@ -83,7 +83,7 @@ func TestComputeReviewPhase(t *testing.T) {
 			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusInReview, Reason: "Author updated PR — do a final review & approve"},
 		},
 		{
-			name: "no agent, no draft, not submitted → manual (small-PR punt)",
+			name: "no agent, no draft, not submitted → manual follow-up",
 			sig:  reviewSignals{ReRequested: true, HeadSHA: "sha1"},
 			want: reviewPhaseResult{Phase: ReviewPhaseManual, Status: task.StatusHumanRequired},
 		},

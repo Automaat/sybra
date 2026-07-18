@@ -55,9 +55,11 @@ type restPR struct {
 
 type restCheckRuns struct {
 	CheckRuns []struct {
-		Name       string `json:"name"`
-		Status     string `json:"status"`     // queued | in_progress | completed
-		Conclusion string `json:"conclusion"` // success | failure | ...
+		Name        string `json:"name"`
+		Status      string `json:"status"`       // queued | in_progress | completed
+		Conclusion  string `json:"conclusion"`   // success | failure | ...
+		StartedAt   string `json:"started_at"`   // RFC3339
+		CompletedAt string `json:"completed_at"` // RFC3339
 	} `json:"check_runs"`
 }
 
@@ -97,7 +99,7 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		return PullRequest{}, false, nil
 	}
 
-	ci, pending, ciFetchOK := fetchCIStatusViaREST(e, owner, name, pr.Head.SHA)
+	ci, pending, flaky, ciFetchOK := fetchCIStatusViaREST(e, owner, name, pr.Head.SHA)
 
 	out := PullRequest{
 		Number:             pr.Number,
@@ -113,6 +115,7 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		Mergeable:          restMergeable(pr.MergeableState),
 		CIStatus:           ci,
 		HasPendingChecks:   pending,
+		CIFlaky:            flaky,
 		AutoMergeEnabled:   pr.AutoMerge != nil,
 		CreatedAt:          pr.CreatedAt,
 		UpdatedAt:          pr.UpdatedAt,
@@ -210,10 +213,12 @@ func fetchCheckRunsWith(e execer, owner, name, sha, filter string) (runs restChe
 // cancelled-check handling stay identical across both paths. ok reports
 // whether both legs were fetched and parsed successfully — false distinguishes
 // a failed fetch from a genuinely check-free commit, so callers never read an
-// empty CIStatus caused by a failed fetch as green.
-func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pending, ok bool) {
+// empty CIStatus caused by a failed fetch as green. flaky mirrors CIFlaky, but
+// the REST check-runs payload has no workflow-attempt discriminator, so mixed
+// same-name outcomes fail closed to deterministic CI failure.
+func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pending, flaky, ok bool) {
 	if sha == "" {
-		return "", false, false
+		return "", false, false, false
 	}
 	contexts := make([]gqlCheckContext, 0)
 	ok = true
@@ -223,10 +228,12 @@ func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pen
 	} else {
 		for _, c := range runs.CheckRuns {
 			contexts = append(contexts, gqlCheckContext{
-				Typename:   "CheckRun",
-				Name:       c.Name,
-				Status:     strings.ToUpper(c.Status),
-				Conclusion: strings.ToUpper(c.Conclusion),
+				Typename:    "CheckRun",
+				Name:        c.Name,
+				Status:      strings.ToUpper(c.Status),
+				Conclusion:  strings.ToUpper(c.Conclusion),
+				StartedAt:   c.StartedAt,
+				CompletedAt: c.CompletedAt,
 			})
 		}
 	}
@@ -250,5 +257,6 @@ func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pen
 	}
 
 	st, pend := rollupFromContexts(contexts)
-	return st, pend, ok
+	flaky = st == "FAILURE" && flakyOnlyFailure(contexts)
+	return st, pend, flaky, ok
 }

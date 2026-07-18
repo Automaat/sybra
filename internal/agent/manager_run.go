@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/google/uuid"
 )
 
@@ -143,7 +144,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if providerErr != nil {
 		return cfg, nil, providerErr
 	}
-	if err := m.resolveWorkflowSkillPrompt(&cfg, prov.Name()); err != nil {
+	if err := m.resolveWorkflowSkillPrompt(&cfg, prov); err != nil {
 		return cfg, nil, err
 	}
 	cfg.provider = prov
@@ -670,19 +671,33 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		SkillExecutionMode:      cfg.SkillExecutionMode,
 		ResolvedSkillSourceHash: cfg.ResolvedSkillSourceHash,
 		SkillConformance:        cfg.SkillConformance,
+		OutputSchema:            cfg.OutputSchema,
 		skillRecoveryAttempt:    cfg.SkillRecoveryAttempt,
-		Prompt:                  cfg.Prompt,
-		State:                   StateRunning,
-		StartedAt:               now,
-		LastEventAt:             now,
-		cancel:                  cancel,
-		sessionCWD:              cfg.Dir,
-		sandboxHomeDir:          cfg.resolvedSandboxHome,
-		MaxTurns:                cfg.MaxTurns,
-		oneShot:                 cfg.OneShot,
-		requirePermissions:      cfg.RequirePermissions,
-		sandboxMode:             cfg.SandboxMode,
-		headlessPermissionMode:  cfg.HeadlessPermissionMode,
+		// Only a provider that actually forwards OutputSchema to its CLI makes
+		// the conformance receipt unsatisfiable; copilot/opencode ignore it, so
+		// their runs still get (and must pass) receipt verification. Mirror the
+		// exact wantReceipt condition in resolveWorkflowSkillPrompt.
+		hasOutputSchema: cfg.OutputSchema != "" && prov.EnforcesOutputSchema(),
+		Prompt:          cfg.Prompt,
+		// Stamp the canonical dispatch prompt hash centrally for every run
+		// (all providers, all roles, both modes). cfg.Prompt is the fully
+		// prepared prompt (post NOTES.md/guardrail/skill preparation) — the
+		// same value recordImplAgentStart hashes. Stamping here (not only in
+		// the implementation-only dispatch path) is what lets completion emit
+		// agent.prompt_rendered for review/fix-review/pr-fix/human-review/
+		// workflow runs, which also record provider render summaries.
+		promptHash:             skillattr.HashSourceID(cfg.Prompt),
+		State:                  StateRunning,
+		StartedAt:              now,
+		LastEventAt:            now,
+		cancel:                 cancel,
+		sessionCWD:             cfg.Dir,
+		sandboxHomeDir:         cfg.resolvedSandboxHome,
+		MaxTurns:               cfg.MaxTurns,
+		oneShot:                cfg.OneShot,
+		requirePermissions:     cfg.RequirePermissions,
+		sandboxMode:            cfg.SandboxMode,
+		headlessPermissionMode: cfg.HeadlessPermissionMode,
 	}
 	if cfg.ResumeSessionID != "" {
 		a.SetSessionID(cfg.ResumeSessionID)

@@ -211,6 +211,11 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - when:
+          field: task.pr_number
+          operator: not_equals
+          value: ""
+        goto: set_ready_pr_existing
       - goto: set_ready_review
 
   # Terminal hand-off to simple-task-review: flip status to ready-review
@@ -221,5 +226,14 @@ steps:
     type: set_status
     config:
       status: ready-review
+    next:
+      - goto: ""
+
+  # simple-task-review skips pr_number != "", so this avoids orphaning a re-fix cycle at an undispatched status. The fix cycle already verified itself; land straight on the PR's own review lane instead of re-running local review/testing.
+  - id: set_ready_pr_existing
+    name: Hand Off to In-Review (existing PR)
+    type: set_status
+    config:
+      status: in-review
     next:
       - goto: ""

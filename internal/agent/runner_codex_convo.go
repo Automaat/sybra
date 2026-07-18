@@ -411,6 +411,8 @@ func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
 func buildCodexConvoArgsWithProvider(a *Agent, cfg RunConfig, prompt string, provider Provider) []string {
 	skillNames := discoverCodexSkills()
 	rewrittenPrompt := rewriteSkillInvocations(prompt, skillNames)
+	rendered, unrendered := computeSkillRender(prompt, skillNames)
+	a.SetPromptRender("slash-to-dollar", rendered, unrendered)
 	args := codexExecBaseArgs(rewrittenPrompt != prompt)
 	// headless=false: interactive (conversational) mode has a human present
 	// who can approve sandbox prompts via the UI.
@@ -434,7 +436,10 @@ func buildCodexConvoArgsWithProvider(a *Agent, cfg RunConfig, prompt string, pro
 // first turn captures a session id (result event), subsequent turns pass
 // --session-id to resume the same conversation.
 func buildCopilotConvoArgs(a *Agent, prompt string) []string {
-	prompt = stripSkillInvocations(prompt, discoverCopilotSkills())
+	skillNames := discoverCopilotSkills()
+	rendered, unrendered := computeSkillRender(prompt, skillNames)
+	a.SetPromptRender("slash-stripped", rendered, unrendered)
+	prompt = stripSkillInvocations(prompt, skillNames)
 	args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
 	args = append(args, effortArgs(a.ReasoningEffort)...)
 	if a.Model != "" {

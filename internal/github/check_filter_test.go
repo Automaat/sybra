@@ -388,6 +388,137 @@ func TestConvertPRs_emptyContextsFallsBackToRollupState(t *testing.T) {
 	}
 }
 
+func TestFlakyOnlyFailure(t *testing.T) {
+	t.Parallel()
+	checkRun := func(name, status, conclusion string) gqlCheckContext {
+		return gqlCheckContext{Typename: "CheckRun", Name: name, Status: status, Conclusion: conclusion}
+	}
+	// checkRunAt is checkRun with the CheckRun timestamps flakyOnlyFailure uses
+	// to tell a later re-run (success starts after the failure finished) from
+	// concurrent same-named jobs (started together).
+	checkRunAt := func(name, status, conclusion, startedAt, completedAt string) gqlCheckContext {
+		c := checkRun(name, status, conclusion)
+		c.StartedAt = startedAt
+		c.CompletedAt = completedAt
+		return c
+	}
+	checkRunAttemptAt := func(name, status, conclusion, startedAt, completedAt, workflowRunID string, runAttempt int) gqlCheckContext {
+		c := checkRunAt(name, status, conclusion, startedAt, completedAt)
+		c.CheckSuite.WorkflowRun = &struct {
+			ID         string `json:"id"`
+			RunAttempt int    `json:"runAttempt"`
+		}{ID: workflowRunID, RunAttempt: runAttempt}
+		return c
+	}
+
+	tests := []struct {
+		name     string
+		contexts []gqlCheckContext
+		want     bool
+	}{
+		{
+			name: "rerun succeeded after failure finished -> flaky",
+			contexts: []gqlCheckContext{
+				checkRunAttemptAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", "workflow-a", 1),
+				checkRunAttemptAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z", "workflow-a", 2),
+			},
+			want: true,
+		},
+		{
+			name: "concurrent matrix legs, one consistently red -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRunAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
+				checkRunAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:01Z", "2026-01-01T00:06:00Z"),
+			},
+			want: false,
+		},
+		{
+			name: "queued same-name matrix leg starts after failure -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRunAttemptAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", "workflow-a", 1),
+				checkRunAttemptAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:06:00Z", "2026-01-01T00:12:00Z", "workflow-a", 1),
+			},
+			want: false,
+		},
+		{
+			name: "same-named checks from different workflows do not supersede each other",
+			contexts: []gqlCheckContext{
+				checkRunAttemptAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", "workflow-a", 1),
+				checkRunAttemptAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", "workflow-b", 1),
+				checkRunAttemptAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z", "workflow-a", 2),
+			},
+			want: false,
+		},
+		{
+			name: "later success without attempt metadata -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRunAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
+				checkRunAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z"),
+			},
+			want: false,
+		},
+		{
+			name: "mixed outcome but no timestamps -> not flaky (can't confirm rerun)",
+			contexts: []gqlCheckContext{
+				checkRun("e2e", "COMPLETED", "FAILURE"),
+				checkRun("e2e", "COMPLETED", "SUCCESS"),
+			},
+			want: false,
+		},
+		{
+			name: "all-failure name -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRun("e2e", "COMPLETED", "FAILURE"),
+			},
+			want: false,
+		},
+		{
+			name: "failure plus pending (no success) -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRun("e2e", "COMPLETED", "FAILURE"),
+				checkRun("e2e", "IN_PROGRESS", ""),
+			},
+			want: false,
+		},
+		{
+			name: "non-gating-only failure -> not flaky (no gating failure at all)",
+			contexts: []gqlCheckContext{
+				checkRun("codecov/patch", "COMPLETED", "FAILURE"),
+			},
+			want: false,
+		},
+		{
+			name: "one flaky name, one consistently-broken name -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRunAttemptAt("e2e", "COMPLETED", "FAILURE", "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", "workflow-a", 1),
+				checkRunAttemptAt("e2e", "COMPLETED", "SUCCESS", "2026-01-01T00:10:00Z", "2026-01-01T00:15:00Z", "workflow-a", 2),
+				checkRun("build", "COMPLETED", "FAILURE"),
+			},
+			want: false,
+		},
+		{
+			name: "no failure at all -> not flaky",
+			contexts: []gqlCheckContext{
+				checkRun("build", "COMPLETED", "SUCCESS"),
+			},
+			want: false,
+		},
+		{
+			name:     "empty -> not flaky",
+			contexts: nil,
+			want:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := flakyOnlyFailure(tt.contexts); got != tt.want {
+				t.Errorf("flakyOnlyFailure() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsStabilityCheck(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

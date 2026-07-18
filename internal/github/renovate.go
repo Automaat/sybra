@@ -177,7 +177,8 @@ func convertRenovatePRs(nodes []gqlPR, viewer string) []RenovatePR {
 		if len(n.Commits.Nodes) > 0 {
 			if rollup := n.Commits.Nodes[0].Commit.StatusCheckRollup; rollup != nil {
 				waitingForStability = renovateWaitingForStability(rollup.Contexts.Nodes)
-				for _, ctx := range rollup.Contexts.Nodes {
+				for i := range rollup.Contexts.Nodes {
+					ctx := &rollup.Contexts.Nodes[i]
 					if ctx.Name == "" {
 						continue
 					}

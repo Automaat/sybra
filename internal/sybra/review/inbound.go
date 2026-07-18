@@ -44,21 +44,23 @@ func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID st
 	go triage(t)
 }
 
-// triageReviewSmall returns true when the PR is below both size thresholds and
-// should be routed to human-required rather than dispatched to a review agent.
-func triageReviewSmall(additions, changedFiles int) bool {
-	return additions < reviewSmallAdditions && changedFiles < reviewSmallFiles
-}
-
 func (r *Handler) triageReview(t task.Task) {
-	stats, err := github.FetchPRStats(t.ProjectID, t.PRNumber)
+	start := r.startReviewAgentFn
+	if start == nil {
+		start = r.StartReviewAgent
+	}
+	statsFn := r.fetchPRStatsFn
+	if statsFn == nil {
+		statsFn = github.FetchPRStats
+	}
+	stats, err := statsFn(t.ProjectID, t.PRNumber)
 	if err != nil {
 		r.logger.Warn("review.triage.stats", "task_id", t.ID, "err", err)
 		// fallback: start agent when we can't determine size
 		if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 			r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 		}
-		if err := r.StartReviewAgent(t, false); err != nil {
+		if err := start(t, false); err != nil {
 			r.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
 		}
 		return
@@ -66,22 +68,10 @@ func (r *Handler) triageReview(t task.Task) {
 
 	r.logger.Info("review.triage", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
 
-	if triageReviewSmall(stats.Additions, stats.ChangedFiles) {
-		reason := fmt.Sprintf("PR too small for agent review (%d additions, %d files)", stats.Additions, stats.ChangedFiles)
-		if _, err := r.tasks.Update(t.ID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: &reason,
-		}); err != nil {
-			r.logger.Error("review.triage.human", "task_id", t.ID, "err", err)
-		}
-		r.logger.Info("review.triage.small", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
-		return
-	}
-
 	if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 		r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 	}
-	if err := r.StartReviewAgent(t, false); err != nil {
+	if err := start(t, false); err != nil {
 		r.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
 	}
 }
@@ -132,7 +122,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	}); err != nil {
 		r.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
-	r.logAudit(audit.EventFixReviewStarted, t.ID, ag.ID, map[string]any{"pr": t.PRNumber})
+	r.logAudit(audit.EventFixReviewStarted, t.ID, ag.ID, map[string]any{"pr": t.PRNumber, "prompt_hash": ag.GetPromptHash()})
 	r.logger.Info("fix-review.agent-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
 	return nil
 }
@@ -199,7 +189,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		}
 		return fmt.Errorf("record review run: %w", err)
 	}
-	r.logAudit(audit.EventReviewStarted, current.ID, ag.ID, map[string]any{"pr": current.PRNumber})
+	r.logAudit(audit.EventReviewStarted, current.ID, ag.ID, map[string]any{"pr": current.PRNumber, "prompt_hash": ag.GetPromptHash()})
 	r.logger.Info("review.agent-started", "task_id", current.ID, "agent_id", ag.ID, "pr", current.PRNumber)
 	return nil
 }

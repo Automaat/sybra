@@ -125,6 +125,157 @@ func TestOnComplete_EmitsPermissionDeniedAuditEvents(t *testing.T) {
 	}
 }
 
+func TestOnComplete_EmitsPromptRenderedAuditEvent(t *testing.T) {
+	t.Parallel()
+
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = al.Close() })
+
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("rendered task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "agent-rendered",
+		Role:    "implementation",
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(Config{Audit: al, Logger: discardLogger(), Tasks: taskMgr})
+
+	ag := &agent.Agent{TaskID: tk.ID, ID: "agent-rendered", Provider: "codex", Mode: "headless"}
+	ag.SetPromptHash("deadbeef01234567")
+	ag.SetPromptRender("slash-to-dollar", []string{"plan-critic"}, []string{"some-unknown-skill"})
+
+	h.OnComplete(ag)
+	_ = al.Close()
+
+	events := readAuditEvents(t, auditDir)
+	var rendered []audit.Event
+	for _, ev := range events {
+		if ev.Type == audit.EventAgentPromptRendered {
+			rendered = append(rendered, ev)
+		}
+	}
+	if len(rendered) != 1 {
+		t.Fatalf("expected 1 prompt_rendered event, got %d (all events: %v)", len(rendered), events)
+	}
+
+	ev := rendered[0]
+	if ev.TaskID != tk.ID {
+		t.Errorf("TaskID = %q, want %q", ev.TaskID, tk.ID)
+	}
+	if ev.Data["prompt_hash"] != "deadbeef01234567" {
+		t.Errorf("prompt_hash = %v, want deadbeef01234567", ev.Data["prompt_hash"])
+	}
+	if ev.Data["provider"] != "codex" {
+		t.Errorf("provider = %v, want codex", ev.Data["provider"])
+	}
+	if ev.Data["rendered_syntax"] != "slash-to-dollar" {
+		t.Errorf("rendered_syntax = %v, want slash-to-dollar", ev.Data["rendered_syntax"])
+	}
+
+	allowedKeys := map[string]bool{
+		"prompt_hash": true, "provider": true, "rendered_syntax": true,
+		"rendered_skills": true, "unrendered_skills": true, "requested_skills": true,
+	}
+	for key, val := range ev.Data {
+		if !allowedKeys[key] {
+			t.Errorf("unexpected data key %q = %v — possible prompt-text leak", key, val)
+		}
+	}
+}
+
+func TestOnComplete_SkipsPromptRenderedForInteractiveMode(t *testing.T) {
+	t.Parallel()
+
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = al.Close() })
+
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("interactive task", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "agent-interactive",
+		Role:    "implementation",
+		Mode:    "interactive",
+		State:   "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(Config{Audit: al, Logger: discardLogger(), Tasks: taskMgr})
+
+	// Interactive conversational sessions re-render per turn while prompt_hash
+	// stays pinned to turn 1 — emitting would join turn 1's hash to a later
+	// turn's render (false audit data), so no prompt_rendered must be emitted.
+	ag := &agent.Agent{TaskID: tk.ID, ID: "agent-interactive", Provider: "codex", Mode: "interactive"}
+	ag.SetPromptHash("deadbeef01234567")
+	ag.SetPromptRender("slash-to-dollar", []string{"plan-critic"}, nil)
+
+	h.OnComplete(ag)
+	_ = al.Close()
+
+	events := readAuditEvents(t, auditDir)
+	for _, ev := range events {
+		if ev.Type == audit.EventAgentPromptRendered {
+			t.Errorf("unexpected prompt_rendered event for interactive mode: %+v", ev)
+		}
+	}
+}
+
+func TestOnComplete_NoPromptHashNoPromptRenderedEvent(t *testing.T) {
+	t.Parallel()
+
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = al.Close() })
+
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("unrendered task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "agent-no-hash",
+		Role:    "implementation",
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(Config{Audit: al, Logger: discardLogger(), Tasks: taskMgr})
+
+	ag := &agent.Agent{TaskID: tk.ID, ID: "agent-no-hash"}
+	h.OnComplete(ag)
+	_ = al.Close()
+
+	events := readAuditEvents(t, auditDir)
+	for _, ev := range events {
+		if ev.Type == audit.EventAgentPromptRendered {
+			t.Errorf("unexpected prompt_rendered event with no prompt hash stamped: %+v", ev)
+		}
+	}
+}
+
 func TestOnComplete_NoDenialsNoPermissionDeniedEvents(t *testing.T) {
 	t.Parallel()
 

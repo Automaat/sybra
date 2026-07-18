@@ -408,12 +408,12 @@ func TestFetchCIStatusViaREST_OK(t *testing.T) {
 		"repos/o/r/commits/sha/check-runs": `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
 		"repos/o/r/commits/sha/status":     `{"statuses":[]}`,
 	}}
-	status, pending, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	status, pending, flaky, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
 	if !ok {
 		t.Error("ok must be true when both legs fetch cleanly")
 	}
-	if status != "SUCCESS" || pending {
-		t.Errorf("status=%q pending=%v, want SUCCESS/false", status, pending)
+	if status != "SUCCESS" || pending || flaky {
+		t.Errorf("status=%q pending=%v flaky=%v, want SUCCESS/false/false", status, pending, flaky)
 	}
 }
 
@@ -422,7 +422,7 @@ func TestFetchCIStatusViaREST_CheckRunsLegErrors(t *testing.T) {
 	e := &pathExecer{responses: map[string]string{
 		"repos/o/r/commits/sha/status": `{"statuses":[]}`,
 	}}
-	_, _, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	_, _, _, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
 	if ok {
 		t.Error("ok must be false when the check-runs leg errors")
 	}
@@ -431,9 +431,66 @@ func TestFetchCIStatusViaREST_CheckRunsLegErrors(t *testing.T) {
 func TestFetchCIStatusViaREST_EmptySHA(t *testing.T) {
 	t.Parallel()
 	e := &pathExecer{}
-	_, _, ok := fetchCIStatusViaREST(e, "o", "r", "")
+	_, _, _, ok := fetchCIStatusViaREST(e, "o", "r", "")
 	if ok {
 		t.Error("ok must be false for an empty sha (nothing was actually fetched)")
+	}
+}
+
+func TestFetchCIStatusViaREST_MixedOutcomeWithoutAttemptIsNotFlaky(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/sha/check-runs": `{"check_runs":[
+			{"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-01T00:05:00Z"},
+			{"name":"e2e","status":"completed","conclusion":"success","started_at":"2026-01-01T00:10:00Z","completed_at":"2026-01-01T00:15:00Z"}
+		]}`,
+		"repos/o/r/commits/sha/status": `{"statuses":[]}`,
+	}}
+	status, _, flaky, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if !ok {
+		t.Fatal("ok must be true when both legs fetch cleanly")
+	}
+	if status != "FAILURE" || flaky {
+		t.Errorf("status=%q flaky=%v, want FAILURE/false", status, flaky)
+	}
+}
+
+// TestFetchCIStatusViaREST_ConcurrentMatrixLegs guards the regression where two
+// gating jobs sharing a check name (one consistently red) were misread as
+// flaky. Both start together, so the red leg is a deterministic failure.
+func TestFetchCIStatusViaREST_ConcurrentMatrixLegs(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/sha/check-runs": `{"check_runs":[
+			{"name":"e2e","status":"completed","conclusion":"success","started_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-01T00:05:00Z"},
+			{"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-01-01T00:00:01Z","completed_at":"2026-01-01T00:06:00Z"}
+		]}`,
+		"repos/o/r/commits/sha/status": `{"statuses":[]}`,
+	}}
+	status, _, flaky, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if !ok {
+		t.Fatal("ok must be true when both legs fetch cleanly")
+	}
+	if status != "FAILURE" || flaky {
+		t.Errorf("status=%q flaky=%v, want FAILURE/false", status, flaky)
+	}
+}
+
+func TestFetchCIStatusViaREST_QueuedSameNameMatrixLegs(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/sha/check-runs": `{"check_runs":[
+			{"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-01T00:05:00Z"},
+			{"name":"e2e","status":"completed","conclusion":"success","started_at":"2026-01-01T00:06:00Z","completed_at":"2026-01-01T00:12:00Z"}
+		]}`,
+		"repos/o/r/commits/sha/status": `{"statuses":[]}`,
+	}}
+	status, _, flaky, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if !ok {
+		t.Fatal("ok must be true when both legs fetch cleanly")
+	}
+	if status != "FAILURE" || flaky {
+		t.Errorf("status=%q flaky=%v, want FAILURE/false", status, flaky)
 	}
 }
 

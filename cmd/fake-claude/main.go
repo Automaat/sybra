@@ -259,14 +259,12 @@ func runBestOfNAttempt() {
 		emitResult("best_of_n_attempt: write failed: " + err.Error())
 		os.Exit(1)
 	}
-	for _, args := range [][]string{
-		{"config", "user.email", "fake-claude@test.local"},
-		{"config", "user.name", "Fake Claude"},
-		{"add", fname},
-		{"commit", "-m", "best-of-n attempt work: " + name},
-	} {
-		runGitIn(cwd, args...)
-	}
+	runGitIn(cwd, "add", fname)
+	runGitIn(cwd,
+		"-c", "user.email=fake-claude@test.local",
+		"-c", "user.name=Fake Claude",
+		"commit", "-m", "best-of-n attempt work: "+name,
+	)
 	emitAssistant("Implemented attempt in " + name)
 	emitResult("Implementation done for " + name + ". Committed, did not push.")
 }

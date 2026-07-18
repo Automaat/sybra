@@ -27,11 +27,6 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-const (
-	reviewSmallAdditions = 40
-	reviewSmallFiles     = 5
-)
-
 const TransientFetchWarnThreshold = 3
 
 // readyPRState is a cached "confirmed ready to merge" snapshot for a task's
@@ -143,6 +138,9 @@ type Handler struct {
 	// search polling to the primary instance. Overridable in tests; nil falls
 	// back to github.FetchPRsForMonitor.
 	fetchKnownPRsFn func(refs []github.PRRef) []github.MonitorPRResult
+	// fetchPRStatsFn reads the linked PR's size stats for inbound review triage.
+	// Overridable in tests; nil falls back to github.FetchPRStats.
+	fetchPRStatsFn func(repo string, number int) (github.PRStats, error)
 	// fetchHeadStateFn cheaply probes a PR's current head SHA, open/closed
 	// state, and updatedAt timestamp, used to validate (or invalidate) a
 	// readyPRCache entry without doing a full per-PR fetch. Overridable in
@@ -170,9 +168,12 @@ type Handler struct {
 	// Overridable in tests.
 	findMergedPRFn func(repo, branch string) (int, error)
 	// triageReviewFn dispatches a review agent for a newly-created review task
-	// (or routes it to human-required for small PRs). Overridable in tests;
-	// nil falls back to r.triageReview.
+	// after any inbound setup. Overridable in tests; nil falls back to
+	// r.triageReview.
 	triageReviewFn func(task.Task)
+	// startReviewAgentFn launches the inbound review agent. Overridable in
+	// tests; nil falls back to r.StartReviewAgent.
+	startReviewAgentFn func(task.Task, bool) error
 	// lastRevertScan rate-limits the default-branch revert scan (revertScanInterval).
 	lastRevertScan time.Time
 	// tryCleanMergeFn attempts the deterministic clean-merge fast-path before a
@@ -606,9 +607,21 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	var (
 		toHandle  []github.PRIssue
 		exhausted *github.PRIssue
+		flaky     *github.PRIssue
 		merge     *github.PRIssue
 	)
 	for i := range issues {
+		// A ci_failure whose failing checks are flaky (mixed pass/fail on this
+		// head SHA) never touches the deterministic ci_failure retry budget —
+		// it is handled separately (log + rerun, escalate only once the
+		// rerun budget itself is exhausted) so it can never be mistaken for a
+		// deterministic regression and burn the fix-agent budget below.
+		if issues[i].Kind == github.PRIssueCIFailure && issues[i].PR.CIFlaky {
+			if flaky == nil {
+				flaky = &issues[i]
+			}
+			continue
+		}
 		// Only the comments kind carries a feedback fingerprint; conflict,
 		// ci_failure, and ready_to_merge fall back to SHA-only gating.
 		var sig string
@@ -639,16 +652,22 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	// Prefer making progress: dispatch every handleable fix in one agent. Only
 	// escalate when nothing is handleable and a fix budget is spent — escalating
 	// flips the task to human-required and would strand a still-fixable sibling.
+	// A flaky ci_failure is lower priority than any deterministic work: it
+	// never blocks progress on a sibling issue, and only gets its own dispatch
+	// turn once there is nothing else to do.
 	r.logger.Info("reviews.dispatch.decision",
 		"task_id", taskID,
 		"to_handle", len(toHandle),
 		"exhausted", exhausted != nil,
+		"flaky", flaky != nil,
 		"merge", merge != nil)
 	switch {
 	case len(toHandle) > 0:
 		r.dispatchFixIssues(ctx, taskID, toHandle)
 	case exhausted != nil:
 		r.escalateExhaustedFix(*exhausted)
+	case flaky != nil:
+		r.handleFlakyCI(*flaky)
 	case merge != nil:
 		r.handleAutoMerge(*merge)
 	}
