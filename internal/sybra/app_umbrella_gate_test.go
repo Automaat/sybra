@@ -118,6 +118,37 @@ func TestReleaseUnblockedChildren_StuckChildDoesNotConsumeParallelSlot(t *testin
 	}
 }
 
+func TestReleaseUnblockedChildren_RetryableWatchdogStopKeepsTrackerInProgress(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 2)
+
+	stopped, err := m.CreateFull("stopped", "", task.AgentModeHeadless, task.Update{
+		Issue:         task.Ptr("Automaat/sybra#1"),
+		UmbrellaIssue: task.Ptr(umb),
+		Status:        task.Ptr(task.StatusHumanRequired),
+		StatusReason:  task.Ptr("watchdog: Agent re-running failing test `go test ./cmd/sybra-cli` despite no code change"),
+	})
+	if err != nil {
+		t.Fatalf("create stopped child: %v", err)
+	}
+	ready := mkChild(t, m, "ready", "Automaat/sybra#2", umb, nil, task.StatusTodo)
+
+	app.releaseUnblockedChildren()
+
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusInProgress {
+		t.Fatalf("tracker = %q, want in-progress while watchdog-stopped child is still recoverable", got)
+	}
+	if got := mustStatus(t, m, stopped.ID); got != task.StatusHumanRequired {
+		t.Fatalf("stopped child = %q, want human-required until workflow requeues it", got)
+	}
+	readyTask := mustTask(t, m, ready.ID)
+	if readyTask.Status != task.StatusTodo || slices.Contains(readyTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("ready child was not released alongside retryable watchdog stop: status=%q tags=%v", readyTask.Status, readyTask.Tags)
+	}
+}
+
 // TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates covers the
 // stall this fix closes: a human-review flip of one child to `blocked`
 // (without the umbrella-gated tag) must not freeze the whole sub-DAG at
