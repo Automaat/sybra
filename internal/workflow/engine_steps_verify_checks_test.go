@@ -417,7 +417,7 @@ func TestExecVerifyChecks_GoInfraTextOnlyFailureAutoFixes(t *testing.T) {
 	}
 }
 
-func TestExecVerifyChecks_GoInfraChildExitStatusAutoFixes(t *testing.T) {
+func TestExecVerifyChecks_GoInfraChildExitStatusBlocks(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{`sh -c 'echo "link: signal: terminated" >&2; exit 143'`})
@@ -425,21 +425,47 @@ func TestExecVerifyChecks_GoInfraChildExitStatusAutoFixes(t *testing.T) {
 
 	wf := implementedExec()
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
-	if !errors.Is(err, errStepParked) {
-		t.Fatalf("err = %v, want errStepParked", err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.StepID != "" || out.Status != "" {
-		t.Fatalf("parked output should be zero, got %+v", out)
+	if out.Output != "blocked" {
+		t.Fatalf("Output = %q, want blocked", out.Output)
 	}
 	ti := mustGetTaskInfo(t, tasks, "t1")
-	if ti.Status != "in-progress" {
-		t.Fatalf("status = %q, want in-progress", ti.Status)
+	if ti.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", ti.Status)
 	}
-	if strings.Contains(ti.StatusReason, "verifier infrastructure") {
-		t.Fatalf("reason = %q, want no verifier-infrastructure classification", ti.StatusReason)
+	if !strings.Contains(ti.StatusReason, "verifier infrastructure") {
+		t.Fatalf("reason = %q, want verifier-infrastructure classification", ti.StatusReason)
 	}
-	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
-		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
+	if wf.Variables["step.verify_checks.auto_fix"] != "" {
+		t.Fatalf("auto-fix counter = %q, want empty for blocked infra failure", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
+func TestExecVerifyChecks_GoInfraGoCommandExitOneBlocks(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"go.mod": "module example.com/verifyrepo\n\ngo 1.26.5\n"})
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{`go test ./... >/dev/null 2>&1 || true; echo "link: signal: terminated" >&2; exit 1`})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "blocked" {
+		t.Fatalf("Output = %q, want blocked", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "verifier infrastructure") {
+		t.Fatalf("reason = %q, want verifier-infrastructure classification", ti.StatusReason)
+	}
+	if wf.Variables["step.verify_checks.auto_fix"] != "" {
+		t.Fatalf("auto-fix counter = %q, want empty for blocked infra failure", wf.Variables["step.verify_checks.auto_fix"])
 	}
 }
 
@@ -492,6 +518,32 @@ func TestVerifyTaskNow_ClassifiesUnrelatedGoPackageFailure(t *testing.T) {
 	}
 	if !strings.Contains(result.ClassificationReason, "untouched Go package(s): internal/agent") {
 		t.Fatalf("classification reason = %q, want untouched-package reason", result.ClassificationReason)
+	}
+}
+
+func TestClassifyVerifyFailure_UsesCallerContext(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"go.mod":                          "module example.com/verifyrepo\n\ngo 1.26.5\n",
+		"internal/agent/agent.go":         "package agent\n\nfunc Ready() bool { return true }\n",
+		"internal/promptlab/promptlab.go": "package promptlab\n\nfunc Title() string { return \"a\" }\n",
+	})
+	writeRepoFile(t, wt, "internal/promptlab/promptlab.go", "package promptlab\n\nfunc Title() string { return \"b\" }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: change promptlab")
+
+	cmd := "go test ./..."
+	output := "# example.com/verifyrepo/internal/agent\n--- FAIL: TestUnrelated (0.00s)\nFAIL\texample.com/verifyrepo/internal/agent\t0.004s\nFAIL\n"
+	engine, _ := newVerifyChecksEngine(t, wt, nil)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if got := engine.classifyVerifyFailure(canceled, "t1", wt, cmd, output, errors.New("exit status 1")); got != nil {
+		t.Fatalf("classification with canceled caller context = %+v, want nil", got)
+	}
+	got := engine.classifyVerifyFailure(context.Background(), "t1", wt, cmd, output, errors.New("exit status 1"))
+	if got == nil || got.Kind != "unrelated_failure" {
+		t.Fatalf("classification with live context = %+v, want unrelated_failure", got)
 	}
 }
 

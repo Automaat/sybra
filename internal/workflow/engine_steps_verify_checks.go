@@ -88,9 +88,11 @@ var verifyMissingToolchainRe = regexp.MustCompile(
 	`(?i)command not found|executable file not found|not found in \$?PATH|[\w./-]+: not found`)
 
 var verifyGoInfraFailureRes = []*regexp.Regexp{
-	regexp.MustCompile(`(?m)\blink: signal: terminated\b`),
+	regexp.MustCompile(`(?m)\blink: signal: (?:killed|terminated)\b`),
 	regexp.MustCompile(`(?mi)(?:can't open import:.*go-build|go-build[\\/].*no such file or directory)`),
 }
+
+var verifyGoCommandRe = regexp.MustCompile(`(?:^|[\s;&|()])go\s+(?:test|build|list|run|vet)\b`)
 
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
@@ -185,7 +187,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	report := verifyChecksReport{
 		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
 	}
-	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output, commandErr)
+	classification := e.classifyVerifyFailure(e.ctx, taskID, wtPath, failedCmd, output, commandErr)
 	if classification != nil {
 		report.Classification = classification.Kind
 		report.FailedPackages = classification.FailedPackages
@@ -271,7 +273,7 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (VerifyTaskNo
 		result.Passed = false
 		return result, err
 	}
-	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output, commandErr)
+	classification := e.classifyVerifyFailure(ctx, taskID, wtPath, failedCmd, output, commandErr)
 	if classification != nil {
 		result.ClassificationKind = classification.Kind
 		result.ClassificationReason = classification.Reason
@@ -339,17 +341,17 @@ func (e *Engine) blockVerifyChecks(taskID string, step *Step, reason, detail str
 	return stepDone(step, "blocked")
 }
 
-func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string, commandErr error) *verifyFailureClassification {
+func (e *Engine) classifyVerifyFailure(ctx context.Context, taskID, wtPath, failedCmd, output string, commandErr error) *verifyFailureClassification {
 	if failedCmd == "" {
 		return nil
 	}
-	if verifyGoInfraFailure(output, commandErr) {
+	if verifyGoInfraFailure(failedCmd, output, commandErr) {
 		return &verifyFailureClassification{
 			Kind:   "infra_failure",
-			Reason: "verify suite hit Go toolchain/build-cache instability (linker terminated or cache artifacts vanished) — blocked as verifier infrastructure, not an implementation failure",
+			Reason: "verify suite hit Go toolchain/build-cache instability (linker killed/terminated or cache artifacts vanished) — blocked as verifier infrastructure, not an implementation failure",
 		}
 	}
-	pkgs, changedFiles, ok := classifyUnrelatedVerifyGoFailure(e.ctx, taskID, wtPath, failedCmd, output, e.focusedChecksBaseRef(taskID))
+	pkgs, changedFiles, ok := classifyUnrelatedVerifyGoFailure(ctx, taskID, wtPath, failedCmd, output, e.focusedChecksBaseRef(taskID))
 	if !ok {
 		return nil
 	}
@@ -361,13 +363,10 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string,
 	}
 }
 
-func verifyGoInfraFailure(output string, commandErr error) bool {
-	if !verifyCommandTerminated(commandErr) {
-		return false
-	}
+func verifyGoInfraFailure(failedCmd, output string, commandErr error) bool {
 	for _, re := range verifyGoInfraFailureRes {
 		if re.MatchString(output) {
-			return true
+			return verifyCommandTerminated(commandErr) || verifyCommandRunsGo(failedCmd)
 		}
 	}
 	return false
@@ -379,7 +378,22 @@ func verifyCommandTerminated(err error) bool {
 		return false
 	}
 	status, ok := exitErr.Sys().(syscall.WaitStatus)
-	return ok && status.Signaled() && status.Signal() == syscall.SIGTERM
+	if !ok {
+		return false
+	}
+	if status.Signaled() {
+		return status.Signal() == syscall.SIGKILL || status.Signal() == syscall.SIGTERM
+	}
+	switch status.ExitStatus() {
+	case 128 + int(syscall.SIGKILL), 128 + int(syscall.SIGTERM):
+		return true
+	default:
+		return false
+	}
+}
+
+func verifyCommandRunsGo(cmd string) bool {
+	return verifyGoCommandRe.MatchString(cmd)
 }
 
 func classifyUnrelatedVerifyGoFailure(
