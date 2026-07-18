@@ -159,7 +159,7 @@ func ensureServerAuthTokenInRawConfig(raw []byte, token string) ([]byte, error) 
 	return insertServerAuthTokenLine(raw, keyNode, token)
 }
 
-func yamlTopLevelField(root *yaml.Node, key string) (*yaml.Node, *yaml.Node, bool) {
+func yamlTopLevelField(root *yaml.Node, key string) (keyNode, valueNode *yaml.Node, ok bool) {
 	node := root
 	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
 		node = node.Content[0]
