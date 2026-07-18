@@ -1226,6 +1226,88 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 	}
 }
 
+// TestRestartStaleTestFixRevertsToInReview pins that a task whose last agent
+// was pr-fix's scoped test-fix follow-up (pr-fix.yaml's test_fix step) gets
+// the exact same stale-recovery treatment as a bare pr-fix agent: revert to
+// in-review so the reviews poller re-detects it, never the generic
+// "Continue implementing this task" respawn — that respawn is workflow-
+// untracked and would leave t.Workflow stuck at CurrentStep=test_fix forever
+// since nothing would ever call AdvanceStep for it again.
+func TestRestartStaleTestFixRevertsToInReview(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("stale test-fix", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "test_fix",
+		State:       workflow.ExecRunning,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Status: &status, Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-test-fix",
+		Role:      "test-fix",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		StartedAt: time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if stub.startCalls != 0 || stub.prFixCalls != 0 {
+		t.Errorf("orchestrator called (start=%d prFix=%d); want 0 — a generic respawn leaves the stuck workflow orphaned", stub.startCalls, stub.prFixCalls)
+	}
+	if wfStub.startWorkflowCalls != 0 {
+		t.Errorf("WorkflowEngine.StartWorkflow called %d times; want 0", wfStub.startWorkflowCalls)
+	}
+
+	updated, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInReview {
+		t.Errorf("task status = %s; want %s", updated.Status, task.StatusInReview)
+	}
+}
+
 // newReviewTaskOnPlanWorkflow reproduces the create-before-tag race from
 // createReviewTaskWithTriage (internal/sybra/review/inbound.go): a review
 // task whose task.created dispatch lost to simple-task-plan before the

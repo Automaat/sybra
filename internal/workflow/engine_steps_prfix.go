@@ -27,6 +27,17 @@ const ReviewHoldParkVar = "review_hold_park"
 
 const reviewHoldParkReason = "review-hold: replies drafted as a pending review — verify & submit on GitHub"
 
+// routePRFixResultStepID is pr-fix.yaml's (and branch-conflict-fix.yaml's)
+// step ID for the original router — the only one allowed to redirect to
+// test_fix, so route_test_fix_result's own routing of test_fix's completion
+// can never loop back into another test-fix attempt.
+const routePRFixResultStepID = "route_pr_fix_result"
+
+// prFixTestFixEligibleVar is the step var routePRFixResultStepID sets to
+// "true" when redirecting to test_fix instead of parking, so pr-fix.yaml's
+// `next` transitions can branch on it with a single equality check.
+const prFixTestFixEligibleVar = "pr_fix_test_fix_eligible"
+
 // PRFixVerdict is the outcome a pr-fix agent reported via its SYBRA_PR_FIX_RESULT sentinel.
 type PRFixVerdict string
 
@@ -80,6 +91,19 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	}
 	if reason == "" {
 		reason = "pr-fix agent requested human review"
+	}
+	// A bounded, single-shot follow-up: only route_pr_fix_result (the
+	// original router, gated by step ID so route_test_fix_result's own
+	// human-required outcome — test_fix's own attempt — can never loop back
+	// here) offers the scoped test_fix step a shot at the specific failing
+	// tests pr-fix already found, before parking a human. reviewHoldForced
+	// still bypasses this: a pending review draft needs a human regardless.
+	if !reviewHoldForced && step.ID == routePRFixResultStepID {
+		if tests := prFixFailingTests(wfExec); len(tests) > 0 {
+			wfExec.SetVar("step."+step.ID+"."+prFixTestFixEligibleVar, "true")
+			e.logger.Info("workflow.pr-fix.test-fix-eligible", "task_id", taskID, "pr", t.PRNumber, "test_count", len(tests))
+			return StepOutput{StepID: step.ID, Status: "completed", Output: "routing to scoped test-fix: " + reason}, nil
+		}
 	}
 	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)

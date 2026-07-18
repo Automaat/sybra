@@ -538,7 +538,7 @@ func lastCodeAuthorProvider(runs []AgentRunInfo) string {
 
 func isCodeAuthorRole(role string) bool {
 	switch role {
-	case "", "implementation", "fix-review", "pr-fix":
+	case "", "implementation", "fix-review", "pr-fix", "test-fix":
 		return true
 	default:
 		return false

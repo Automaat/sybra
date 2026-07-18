@@ -1505,3 +1505,13 @@ func TestReportNotesOmitsSkillParityNoteWhenAllConformanceKnown(t *testing.T) {
 		}
 	}
 }
+
+// test-fix is pr-fix's scoped code-authoring follow-up (pr-fix.yaml's
+// test_fix step) — it must count as an author role for revert-tracking and
+// A/B credit, same as pr-fix itself, or a task whose last authoring run was
+// test_fix silently loses credit as if no author touched it.
+func TestIsAuthorRole_IncludesTestFix(t *testing.T) {
+	if !isAuthorRole("test-fix") {
+		t.Error("isAuthorRole(\"test-fix\") = false, want true")
+	}
+}

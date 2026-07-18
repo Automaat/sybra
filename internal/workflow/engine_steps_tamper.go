@@ -789,7 +789,7 @@ func captureTamperDeletionAllowlist(wfExec *Execution, stepID, role string, t Ta
 
 func tamperCodeAuthorRole(role string) bool {
 	switch role {
-	case "", "implementation", "fix-review", "pr-fix":
+	case "", "implementation", "fix-review", "pr-fix", "test-fix":
 		return true
 	default:
 		return false
