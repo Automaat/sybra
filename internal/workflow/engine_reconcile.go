@@ -21,39 +21,48 @@ func (e *Engine) transitionFields(t TaskInfo, wf *Execution) map[string]string {
 // findReachableWaitHumanByStatus walks the current workflow path without
 // executing steps, stopping at the first async boundary. Used when a human or
 // external tool already moved task.Status to the downstream wait_human gate.
-func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, t TaskInfo, status string) (*Step, error) {
+func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, t TaskInfo, status string) (*Step, bool, error) {
 	if current == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	fields := e.transitionFields(t, t.Workflow)
 	nextID, err := ResolveTransition(current.Next, fields)
 	if err != nil || nextID == "" {
-		return nil, err
+		return nil, false, err
 	}
 	for range maxSyncSteps {
 		step := def.StepByID(nextID)
 		if step == nil {
-			return nil, nil
+			return nil, false, nil
 		}
 		switch step.Type {
 		case StepWaitHuman:
 			if step.Config.Status == status {
-				return step, nil
+				return step, true, nil
 			}
-			return nil, nil
+			return nil, false, nil
 		case StepRunAgent, StepParallel, StepBestOfN:
-			return nil, nil
+			return nil, false, nil
 		case StepSetStatus:
 			if step.Config.Status != "" {
 				fields["task.status"] = step.Config.Status
 			}
+		case StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution,
+			StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate,
+			StepRequireSidecar, StepClearPlanArtifacts, StepValidatePlan,
+			StepValidatePlanContract, StepTriageReview, StepFlagPlanCritique,
+			StepDetectTampering, StepVerifyChecks, StepFocusedChecks,
+			StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch,
+			StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch,
+			StepCreatePR, StepClassifyTask:
+			// Purely synchronous step: keep walking the declared transitions.
 		}
 		nextID, err = ResolveTransition(step.Next, fields)
 		if err != nil || nextID == "" {
-			return nil, err
+			return nil, false, err
 		}
 	}
-	return nil, nil
+	return nil, false, nil
 }
 
 func (e *Engine) reconcileCurrentStepFromStatus(taskID string, t TaskInfo, def *Definition, status string) (TaskInfo, bool, error) {
@@ -61,8 +70,8 @@ func (e *Engine) reconcileCurrentStepFromStatus(taskID string, t TaskInfo, def *
 		return t, false, nil
 	}
 	current := def.StepByID(t.Workflow.CurrentStep)
-	target, err := e.findReachableWaitHumanByStatus(def, current, t, status)
-	if err != nil || target == nil || target.ID == t.Workflow.CurrentStep {
+	target, found, err := e.findReachableWaitHumanByStatus(def, current, t, status)
+	if err != nil || !found || target.ID == t.Workflow.CurrentStep {
 		return t, false, err
 	}
 

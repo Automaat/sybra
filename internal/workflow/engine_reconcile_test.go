@@ -166,6 +166,45 @@ func TestResumeStalled_ReconcilesCurrentStepToVisibleWaitHuman(t *testing.T) {
 	}
 }
 
+func TestHandleHumanAction_ReconcilesCurrentStepToVisibleWaitHuman(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newPlanCritiqueReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "plan-review",
+		Workflow: &Execution{
+			WorkflowID:  "plan-critique-reconcile",
+			CurrentStep: "critique_plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	if err := engine.HandleHumanAction("t1", "approve", nil); err != nil {
+		t.Fatalf("HandleHumanAction: %v", err)
+	}
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "" {
+		t.Fatalf("CurrentStep = %q, want empty", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.State != ExecCompleted {
+		t.Fatalf("State = %q, want %q", got.Workflow.State, ExecCompleted)
+	}
+	if got.Status != "plan-review" {
+		t.Fatalf("Status = %q, want plan-review", got.Status)
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("StartAgent called %d times, want 0", agents.CallCount())
+	}
+}
+
 func TestResumeStalled_RechecksPriorConditionBeforeReDispatch(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.Save(newMaybeCritiqueResumeDef()); err != nil {

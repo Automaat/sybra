@@ -142,10 +142,10 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 	})
 }
 
-// advanceSatisfiedWaitForStatus repairs the common "missed watcher event"
-// state where a run_agent step is waiting for a status that the task already
-// has. This lets human approve/reject clicks reconcile the workflow before
-// validating that the current step is wait_human.
+// advanceSatisfiedWaitForStatus repairs stale workflow position before a human
+// action. First it reconciles a direct task.Status write onto any downstream
+// visible wait_human gate, then it falls back to the narrower "run_agent
+// already has its wait_for_status" repair for missed status-hook events.
 func (e *Engine) advanceSatisfiedWaitForStatus(taskID string, t TaskInfo) (TaskInfo, error) {
 	if t.Workflow == nil || t.Workflow.CurrentStep == "" {
 		return t, nil
@@ -157,6 +157,11 @@ func (e *Engine) advanceSatisfiedWaitForStatus(taskID string, t TaskInfo) (TaskI
 	def, err := e.store.Get(t.Workflow.WorkflowID)
 	if err != nil {
 		return t, err
+	}
+	if fresh, reconciled, rErr := e.reconcileCurrentStepFromStatus(taskID, t, &def, t.Status); rErr != nil {
+		return t, rErr
+	} else if reconciled {
+		return fresh, nil
 	}
 	step := def.StepByID(t.Workflow.CurrentStep)
 	if step == nil {
@@ -1126,117 +1131,131 @@ func (e *Engine) ResumeStalled() {
 	}
 
 	for i := range tasks {
-		t := &tasks[i]
-		if t.Workflow == nil || t.Workflow.CurrentStep == "" {
-			continue
-		}
-		if e.dispatchGate != nil && !e.dispatchGate(*t) {
-			continue
-		}
-		switch t.Workflow.State {
-		case ExecCompleted, ExecFailed:
-			continue
-		case ExecRunning, ExecWaiting:
-			// fall through to resume logic
-		}
+		e.resumeStalledTask(&tasks[i])
+	}
+}
 
-		def, dErr := e.store.Get(t.Workflow.WorkflowID)
-		if dErr != nil {
-			continue
-		}
-		step := def.StepByID(t.Workflow.CurrentStep)
-		if step == nil {
-			e.handleMissingStep(t)
-			continue
-		}
-		if _, reconciled, rErr := e.reconcileCurrentStepFromStatus(t.ID, *t, &def, t.Status); rErr != nil {
-			e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-status-step", t.ID, rErr, "task_id", t.ID)
-			continue
-		} else if reconciled {
-			continue
-		}
+func (e *Engine) resumeStalledTask(t *TaskInfo) {
+	if t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		return
+	}
+	if e.dispatchGate != nil && !e.dispatchGate(*t) {
+		return
+	}
+	switch t.Workflow.State {
+	case ExecCompleted, ExecFailed:
+		return
+	case ExecRunning, ExecWaiting:
+		// fall through to resume logic
+	}
 
-		if _, waitSkip := resumeSkipReasonForStatus(t.Status); step.Type == StepWaitHuman && !waitSkip && step.Config.Status != "" && t.Status != step.Config.Status {
-			if err := e.tasks.UpdateTaskStatus(t.ID, step.Config.Status, step.Config.StatusReason); err != nil {
-				e.logger.Warn("workflow.resume-stalled.reconcile-status", "task_id", t.ID, "step", step.ID, "err", err)
-			} else {
-				e.logger.Info("workflow.resume-stalled.reconcile-status",
-					"task_id", t.ID, "step", step.ID, "from", t.Status, "to", step.Config.Status)
-			}
-		}
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil {
+		e.handleMissingStep(t)
+		return
+	}
+	if e.resumeStalledReconciledStatus(*t, &def) {
+		return
+	}
 
-		if !isResumableStepType(step.Type) {
-			continue
-		}
-		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
-			retryAtStr := retryAt.Format(time.RFC3339)
-			e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
-				"retry_after|"+step.ID+"|"+retryAtStr,
-				"task_id", t.ID, "reason", "retry_after", "retry_after", retryAtStr, "step", step.ID)
-			continue
-		}
-		if reason, skip := resumeSkipReasonForStatus(t.Status); skip {
-			e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
-				reason+"|"+t.Status+"|"+step.ID,
-				"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)
-			continue
-		}
-		if e.agents.HasRunningAgent(t.ID) {
-			continue
-		}
-		if e.shouldSkipResumeForRateLimitedProvider(t, step) {
-			continue
-		}
-		if e.handleWatchdogHangRetry(t, step) {
-			continue
-		}
-		reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
-		if !acquired {
-			e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
-				reason+"|"+step.ID,
-				"task_id", t.ID, "reason", reason, "step", step.ID)
-			continue
-		}
+	e.resumeStalledReconcileWaitHumanStatus(*t, step)
 
-		// handleTransientFetchRetry runs only after the resume preflight passes,
-		// so the retry budget tracks actual restart attempts —
-		// a tick that loses the claim to a concurrent goroutine (already
-		// claimed/advancing) never burns budget for a retry that didn't
-		// happen.
-		if e.handleTransientFetchRetry(t, step) {
-			e.clearResumeDispatching(t.ID)
-			continue
-		}
+	if !isResumableStepType(step.Type) {
+		return
+	}
+	if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
+		retryAtStr := retryAt.Format(time.RFC3339)
+		e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
+			"retry_after|"+step.ID+"|"+retryAtStr,
+			"task_id", t.ID, "reason", "retry_after", "retry_after", retryAtStr, "step", step.ID)
+		return
+	}
+	if reason, skip := resumeSkipReasonForStatus(t.Status); skip {
+		e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
+			reason+"|"+t.Status+"|"+step.ID,
+			"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)
+		return
+	}
+	if e.agents.HasRunningAgent(t.ID) {
+		return
+	}
+	if e.shouldSkipResumeForRateLimitedProvider(t, step) {
+		return
+	}
+	if e.handleWatchdogHangRetry(t, step) {
+		return
+	}
+	reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
+	if !acquired {
+		e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
+			reason+"|"+step.ID,
+			"task_id", t.ID, "reason", reason, "step", step.ID)
+		return
+	}
 
-		// Re-read to guard against stale snapshots from concurrent ResumeStalled
-		// calls: by the time we pass the preflight, a prior goroutine may have
-		// already advanced the workflow past this step.
-		fresh, skip := e.shouldSkipResumeAfterFreshRead(t.ID, t.Workflow)
-		if skip {
-			e.clearResumeDispatching(t.ID)
-			continue
-		}
-		if _, reconciled, rErr := e.reconcileCurrentStepFromStatus(t.ID, fresh, &def, fresh.Status); rErr != nil {
-			e.clearResumeDispatching(t.ID)
-			e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-status-step", t.ID, rErr, "task_id", t.ID)
-			continue
-		} else if reconciled {
-			e.clearResumeDispatching(t.ID)
-			continue
-		}
-		nextFresh, reconciled, rErr := e.reconcileCurrentStepFromPriorCondition(t.ID, fresh, &def)
-		if rErr != nil {
-			e.clearResumeDispatching(t.ID)
-			e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-condition", t.ID, rErr, "task_id", t.ID)
-			continue
-		}
-		if reconciled {
-			e.clearResumeDispatching(t.ID)
-			continue
-		}
-		fresh = nextFresh
+	// handleTransientFetchRetry runs only after the resume preflight passes,
+	// so the retry budget tracks actual restart attempts —
+	// a tick that loses the claim to a concurrent goroutine (already
+	// claimed/advancing) never burns budget for a retry that didn't
+	// happen.
+	if e.handleTransientFetchRetry(t, step) {
+		e.clearResumeDispatching(t.ID)
+		return
+	}
 
-		e.finishResumeStalledStep(t.ID, &def, step, t.Workflow, fresh)
+	// Re-read to guard against stale snapshots from concurrent ResumeStalled
+	// calls: by the time we pass the preflight, a prior goroutine may have
+	// already advanced the workflow past this step.
+	fresh, skip := e.shouldSkipResumeAfterFreshRead(t.ID, t.Workflow)
+	if skip {
+		e.clearResumeDispatching(t.ID)
+		return
+	}
+	if _, reconciled, rErr := e.reconcileCurrentStepFromStatus(t.ID, fresh, &def, fresh.Status); rErr != nil {
+		e.clearResumeDispatching(t.ID)
+		e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-status-step", t.ID, rErr, "task_id", t.ID)
+		return
+	} else if reconciled {
+		e.clearResumeDispatching(t.ID)
+		return
+	}
+	nextFresh, reconciled, rErr := e.reconcileCurrentStepFromPriorCondition(t.ID, fresh, &def)
+	if rErr != nil {
+		e.clearResumeDispatching(t.ID)
+		e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-condition", t.ID, rErr, "task_id", t.ID)
+		return
+	}
+	if reconciled {
+		e.clearResumeDispatching(t.ID)
+		return
+	}
+	fresh = nextFresh
+
+	e.finishResumeStalledStep(t.ID, &def, step, t.Workflow, fresh)
+}
+
+func (e *Engine) resumeStalledReconciledStatus(t TaskInfo, def *Definition) bool {
+	if _, reconciled, err := e.reconcileCurrentStepFromStatus(t.ID, t, def, t.Status); err != nil {
+		e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-status-step", t.ID, err, "task_id", t.ID)
+		return true
+	} else if reconciled {
+		return true
+	}
+	return false
+}
+
+func (e *Engine) resumeStalledReconcileWaitHumanStatus(t TaskInfo, step *Step) {
+	if _, waitSkip := resumeSkipReasonForStatus(t.Status); step.Type == StepWaitHuman && !waitSkip && step.Config.Status != "" && t.Status != step.Config.Status {
+		if err := e.tasks.UpdateTaskStatus(t.ID, step.Config.Status, step.Config.StatusReason); err != nil {
+			e.logger.Warn("workflow.resume-stalled.reconcile-status", "task_id", t.ID, "step", step.ID, "err", err)
+		} else {
+			e.logger.Info("workflow.resume-stalled.reconcile-status",
+				"task_id", t.ID, "step", step.ID, "from", t.Status, "to", step.Config.Status)
+		}
 	}
 }
 
