@@ -167,6 +167,10 @@ type Handler struct {
 	// Returns the PR number (0 = none or ambiguous). nil falls back to gh-based implementation.
 	// Overridable in tests.
 	findMergedPRFn func(repo, branch string) (int, error)
+	// findOpenPRForBranchFn looks up an open PR by head branch in a project repo.
+	// Used only to reconcile stale branch-only implementation workflows into
+	// the linked-PR lane. Overridable in tests; nil falls back to github.FindPRForBranch.
+	findOpenPRForBranchFn func(ctx context.Context, repo, branch string) (int, bool, error)
 	// triageReviewFn dispatches a review agent for a newly-created review task
 	// after any inbound setup. Overridable in tests; nil falls back to
 	// r.triageReview.
@@ -320,6 +324,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	if len(reconcileMatchers) > 0 {
 		fetchMatchers = append(fetchMatchers, reconcileMatchers...)
 	}
+	fetchMatchers = append(fetchMatchers, r.settledImplementationFetchMatchers(ctx, selection.tasks)...)
 	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers)
 	// fetchKnownTaskPRs records auth failures on the shared circuit. Once it
 	// trips, back off like pollAndMonitorPRs instead of re-hammering a dead
@@ -328,15 +333,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	if r.authCircuit.Open() {
 		return poll.AuthCircuitBackoff
 	}
-	var issues []github.PRIssue
-	if len(matchers) > 0 {
-		issues = github.MatchTaskPRs(monitoredPRs, matchers)
-		if r.prTracker != nil {
-			r.prTracker.Cleanup()
-		}
-		r.cancelResolvedPRFixWorkflows(tasks, issues, github.MatchTaskPRIndex(monitoredPRs, matchers))
-		r.handleMatchedPRIssues(ctx, issues)
-	}
+	issues := r.handleMatchedOwnPRs(ctx, tasks, monitoredPRs, matchers)
 
 	r.logPollSummary(monitoredPRs, len(matchers), len(issues))
 
@@ -450,15 +447,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 		}
 	}
 
-	var issues []github.PRIssue
-	if len(matchers) > 0 {
-		issues = github.MatchTaskPRs(monitoredPRs, matchers)
-		if r.prTracker != nil {
-			r.prTracker.Cleanup()
-		}
-		r.cancelResolvedPRFixWorkflows(tasks, issues, github.MatchTaskPRIndex(monitoredPRs, matchers))
-		r.handleMatchedPRIssues(ctx, issues)
-	}
+	issues := r.handleMatchedOwnPRs(ctx, tasks, monitoredPRs, matchers)
 
 	r.logPollSummary(monitoredPRs, len(matchers), len(issues))
 
@@ -520,11 +509,14 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 			closedMatchers = append(closedMatchers, m)
 		}
 	}
-	if len(matchers) == 0 && len(closedMatchers) == 0 {
+	settledImplementMatchers := r.settledImplementationFetchMatchers(ctx, selection.tasks)
+	if len(matchers) == 0 && len(closedMatchers) == 0 && len(settledImplementMatchers) == 0 {
 		return
 	}
 
-	monitoredPRs := r.fetchKnownTaskPRs(matchers)
+	fetchMatchers := append([]github.TaskMatcher{}, matchers...)
+	fetchMatchers = append(fetchMatchers, settledImplementMatchers...)
+	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers)
 	if len(matchers) > 0 {
 		var handled []github.PRIssue
 		matched := github.MatchTaskPRs(monitoredPRs, matchers)
@@ -543,6 +535,7 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 		}
 		r.handleMatchedPRIssues(ctx, handled)
 	}
+	r.cancelSettledImplementationWorkflows(tasks, monitoredPRs)
 	if len(closedMatchers) > 0 {
 		fetchState := github.FetchPRStateViaREST
 		if r.fetchPRStateFn != nil {
@@ -550,6 +543,20 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 		}
 		r.advanceClosedTaskPRsWithFetch(ctx, monitoredPRs, closedMatchers, fetchState)
 	}
+}
+
+func (r *Handler) handleMatchedOwnPRs(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest, matchers []github.TaskMatcher) []github.PRIssue {
+	var issues []github.PRIssue
+	if len(matchers) > 0 {
+		issues = github.MatchTaskPRs(monitoredPRs, matchers)
+		if r.prTracker != nil {
+			r.prTracker.Cleanup()
+		}
+		r.cancelResolvedPRFixWorkflows(tasks, issues, github.MatchTaskPRIndex(monitoredPRs, matchers))
+		r.handleMatchedPRIssues(ctx, issues)
+	}
+	r.cancelSettledImplementationWorkflows(tasks, monitoredPRs)
+	return issues
 }
 
 func (r *Handler) handleMatchedPRIssues(ctx context.Context, issues []github.PRIssue) {

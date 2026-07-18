@@ -1243,6 +1243,9 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 	if e.hasTrackedAgentForTaskStep(t.ID, step.ID) {
 		return false
 	}
+	if e.handleWatchdogHangReadyPR(t, step) {
+		return true
+	}
 	retryKey := watchdogHangRetryKey(step.ID)
 	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
 	if attempts >= maxWatchdogHangRetries {
@@ -1291,6 +1294,43 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 	e.logger.Info("workflow.watchdog-hang.retry",
 		"task_id", t.ID, "step", step.ID, "attempt", attempts+1, "max", maxWatchdogHangRetries)
 	return false
+}
+
+func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
+	if e.prStates == nil || t == nil || t.Workflow == nil || step == nil {
+		return false
+	}
+	if t.ProjectID == "" || t.PRNumber <= 0 {
+		return false
+	}
+	if t.Workflow.WorkflowID != "simple-task-implement" || step.ID != "implement" {
+		return false
+	}
+	state, err := e.prStates.FetchPRState(t.ProjectID, t.PRNumber)
+	if err != nil {
+		e.logger.Warn("workflow.watchdog-hang.ready-pr.fetch", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+		return false
+	}
+	if !state.ReadyToMerge() {
+		return false
+	}
+
+	delete(t.Workflow.Variables, watchdogReaskNoteVar)
+	now := time.Now().UTC()
+	t.Workflow.State = ExecCompleted
+	t.Workflow.CompletedAt = &now
+	t.Workflow.CurrentStep = ""
+	t.Workflow.SetVar("cancel_reason", "watchdog hang: implementation superseded by linked PR already open and green")
+	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		e.logger.Error("workflow.watchdog-hang.ready-pr.persist", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "err", err)
+		return true
+	}
+	if err := e.tasks.UpdateTaskStatus(t.ID, "in-review", ""); err != nil {
+		e.logger.Error("workflow.watchdog-hang.ready-pr.status", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "err", err)
+		return true
+	}
+	e.logger.Info("workflow.watchdog-hang.ready-pr", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "ci_status", state.CIStatus())
+	return true
 }
 
 func isWatchdogHangReason(reason string) bool {
