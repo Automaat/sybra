@@ -958,7 +958,7 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 
 func isResumableStepType(t StepType) bool {
 	switch t {
-	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepCreatePR, StepPushBranch:
+	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepCreatePR, StepPushBranch, StepPromoteBestOfN:
 		return true
 	default:
 		return false
@@ -1156,12 +1156,15 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
-			e.logger.Debug("workflow.resume-stalled.skip",
-				"task_id", t.ID, "reason", "retry_after", "retry_after", retryAt.Format(time.RFC3339), "step", step.ID)
+			retryAtStr := retryAt.Format(time.RFC3339)
+			e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
+				"retry_after|"+step.ID+"|"+retryAtStr,
+				"task_id", t.ID, "reason", "retry_after", "retry_after", retryAtStr, "step", step.ID)
 			continue
 		}
 		if reason, skip := resumeSkipReasonForStatus(t.Status); skip {
-			e.logger.Debug("workflow.resume-stalled.skip",
+			e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
+				reason+"|"+t.Status+"|"+step.ID,
 				"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)
 			continue
 		}
@@ -1176,7 +1179,8 @@ func (e *Engine) ResumeStalled() {
 		}
 		reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
 		if !acquired {
-			e.logger.Debug("workflow.resume-stalled.skip",
+			e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
+				reason+"|"+step.ID,
 				"task_id", t.ID, "reason", reason, "step", step.ID)
 			continue
 		}
