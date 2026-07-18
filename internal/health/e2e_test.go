@@ -350,6 +350,83 @@ func TestE2E_SandboxCleanupFailureSurfacesHealthFinding(t *testing.T) {
 	}
 }
 
+func TestE2E_PressureTelemetryPersistsLastReclaim(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	auditDir := filepath.Join(home, "audit")
+	tasksDir := filepath.Join(home, "tasks")
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	ranAt := time.Date(2026, 7, 16, 21, 0, 0, 0, time.UTC)
+	c := New(auditDir, tasks, home, slog.New(slog.DiscardHandler), nil, nil)
+	c.SetPressureStatus(func() *PressureStatus {
+		return &PressureStatus{
+			DiskFreePct:         12.5,
+			MemAvailablePct:     38.0,
+			LoadPerCPU:          1.75,
+			WarningDiskFreePct:  15,
+			CriticalDiskFreePct: 5,
+			LastReclaim: &ReclaimStatus{
+				RanAt:              ranAt,
+				ReclaimedBytes:     4 << 30,
+				UnreclaimableBytes: 18 << 30,
+				Errors:             0,
+			},
+		}
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	c.Run(ctx)
+
+	report := c.LatestReport()
+	if report == nil || report.Pressure == nil || report.Pressure.LastReclaim == nil {
+		t.Fatalf("LatestReport pressure telemetry missing: %+v", report)
+	}
+	if report.Pressure.DiskFreePct != 12.5 || report.Pressure.LastReclaim.ReclaimedBytes != 4<<30 {
+		t.Fatalf("Pressure = %+v", *report.Pressure)
+	}
+
+	persistedData, err := os.ReadFile(filepath.Join(home, "health-report.json"))
+	if err != nil {
+		t.Fatalf("read persisted report: %v", err)
+	}
+	var persisted struct {
+		Pressure *struct {
+			DiskFreePct         float64 `json:"diskFreePct"`
+			WarningDiskFreePct  float64 `json:"warningDiskFreePct"`
+			CriticalDiskFreePct float64 `json:"criticalDiskFreePct"`
+			LastReclaim         *struct {
+				RanAt              string `json:"ranAt"`
+				ReclaimedBytes     int64  `json:"reclaimedBytes"`
+				UnreclaimableBytes int64  `json:"unreclaimableBytes"`
+				Errors             int    `json:"errors"`
+			} `json:"lastReclaim"`
+		} `json:"pressure"`
+	}
+	if err := json.Unmarshal(persistedData, &persisted); err != nil {
+		t.Fatalf("parse persisted report: %v", err)
+	}
+	if persisted.Pressure == nil || persisted.Pressure.LastReclaim == nil {
+		t.Fatalf("persisted pressure telemetry missing: %+v", persisted.Pressure)
+	}
+	if persisted.Pressure.DiskFreePct != 12.5 || persisted.Pressure.WarningDiskFreePct != 15 || persisted.Pressure.CriticalDiskFreePct != 5 {
+		t.Fatalf("persisted pressure = %+v", *persisted.Pressure)
+	}
+	if persisted.Pressure.LastReclaim.RanAt != ranAt.Format(time.RFC3339) {
+		t.Fatalf("persisted ranAt = %q, want %q", persisted.Pressure.LastReclaim.RanAt, ranAt.Format(time.RFC3339))
+	}
+	if persisted.Pressure.LastReclaim.ReclaimedBytes != 4<<30 || persisted.Pressure.LastReclaim.UnreclaimableBytes != 18<<30 || persisted.Pressure.LastReclaim.Errors != 0 {
+		t.Fatalf("persisted last reclaim = %+v", *persisted.Pressure.LastReclaim)
+	}
+}
+
 func findingCategories(findings []Finding) []string {
 	out := make([]string, len(findings))
 	for i := range findings {

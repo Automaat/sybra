@@ -271,6 +271,19 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
     "manualCommand":"docker system prune",
     "sampledAt":"2026-07-13T20:00:00Z"
   },
+  "pressure":{
+    "diskFreePct":12.5,
+    "memAvailablePct":41.0,
+    "loadPerCpu":1.25,
+    "warningDiskFreePct":15,
+    "criticalDiskFreePct":5,
+    "lastReclaim":{
+      "ranAt":"2026-07-13T19:55:00Z",
+      "reclaimedBytes":3221225472,
+      "unreclaimableBytes":21474836480,
+      "errors":1
+    }
+  },
   "processes":{
     "topCpu":[{"pid":123,"name":"sybra-server","cpuPercent":18.5,"memPercent":4.2,"owned":true}],
     "topMem":[{"pid":456,"name":"browser","cpuPercent":2.0,"memPercent":11.4,"owned":false}],
@@ -286,7 +299,7 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("health exit %d: %s", code, out)
 	}
-	for _, want := range []string{"Docker:", "Reclaimable: 25.0GiB", "Total: 30.0GiB", "Manual cleanup: docker system prune", "Top CPU:", "Top Memory:", "[sybra]", "[ext]", "sybra-server", "browser"} {
+	for _, want := range []string{"Docker:", "Reclaimable: 25.0GiB", "Total: 30.0GiB", "Manual cleanup: docker system prune", "Pressure:", "Disk free: 12.5% (warning 15.0%, critical 5.0%)", "Memory available: 41.0%", "Load per CPU: 1.25", "Last reclaim: 3.0GiB reclaimed, 20.0GiB unreclaimable, errors 1 at 2026-07-13T19:55:00Z", "Top CPU:", "Top Memory:", "[sybra]", "[ext]", "sybra-server", "browser"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("health output missing %q:\n%s", want, out)
 		}
@@ -301,6 +314,14 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
 			ReclaimableBytes int64  `json:"reclaimableBytes"`
 			ManualCommand    string `json:"manualCommand"`
 		} `json:"docker"`
+		Pressure struct {
+			DiskFreePct float64 `json:"diskFreePct"`
+			LastReclaim struct {
+				ReclaimedBytes     int64 `json:"reclaimedBytes"`
+				UnreclaimableBytes int64 `json:"unreclaimableBytes"`
+				Errors             int   `json:"errors"`
+			} `json:"lastReclaim"`
+		} `json:"pressure"`
 		Processes struct {
 			TopCPU []struct {
 				PID   int  `json:"pid"`
@@ -311,6 +332,9 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
 	mustUnmarshal(t, out, &got)
 	if got.Docker.ReclaimableBytes != 26_843_545_600 || got.Docker.ManualCommand != "docker system prune" {
 		t.Fatalf("json health docker = %+v", got.Docker)
+	}
+	if got.Pressure.DiskFreePct != 12.5 || got.Pressure.LastReclaim.ReclaimedBytes != 3<<30 || got.Pressure.LastReclaim.UnreclaimableBytes != 20<<30 || got.Pressure.LastReclaim.Errors != 1 {
+		t.Fatalf("json health pressure = %+v", got.Pressure)
 	}
 	if len(got.Processes.TopCPU) != 1 || got.Processes.TopCPU[0].PID != 123 || !got.Processes.TopCPU[0].Owned {
 		t.Fatalf("json health processes = %+v", got.Processes)

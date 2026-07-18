@@ -77,6 +77,31 @@ type DockerDiskUsage struct {
 	SampledAt        time.Time `json:"sampledAt"`
 }
 
+// ReclaimStatus summarizes the last automatic safe-cache reclaim pass.
+type ReclaimStatus struct {
+	RanAt              time.Time `json:"ranAt"`
+	ReclaimedBytes     int64     `json:"reclaimedBytes"`
+	UnreclaimableBytes int64     `json:"unreclaimableBytes"`
+	Errors             int       `json:"errors"`
+}
+
+// PressureStatus captures the current pressure sample plus the most recent
+// automatic safe-cache reclaim pass, if any.
+type PressureStatus struct {
+	// DiskFreePct, MemAvailablePct, and LoadPerCPU are -1 when the
+	// underlying signal could not be sampled (see
+	// internal/pressure.Sample). The source reading is NaN in that case,
+	// but encoding/json cannot marshal NaN — the Checker sanitizes it to
+	// -1 (never a legitimate value for these fields) before persisting so
+	// one unreadable signal can't blackhole the whole report.
+	DiskFreePct         float64        `json:"diskFreePct"`
+	MemAvailablePct     float64        `json:"memAvailablePct"`
+	LoadPerCPU          float64        `json:"loadPerCpu"`
+	WarningDiskFreePct  float64        `json:"warningDiskFreePct"`
+	CriticalDiskFreePct float64        `json:"criticalDiskFreePct"`
+	LastReclaim         *ReclaimStatus `json:"lastReclaim,omitempty"`
+}
+
 // Report is the output of a single health check run.
 type Report struct {
 	GeneratedAt time.Time         `json:"generatedAt"`
@@ -86,6 +111,7 @@ type Report struct {
 	Findings    []Finding         `json:"findings"`
 	Stats       Stats             `json:"stats"`
 	Docker      *DockerDiskUsage  `json:"docker,omitempty"`
+	Pressure    *PressureStatus   `json:"pressure,omitempty"`
 	Processes   *procstat.Summary `json:"processes,omitempty"`
 }
 

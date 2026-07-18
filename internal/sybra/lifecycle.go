@@ -86,6 +86,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	if a.sandboxes != nil {
 		hcheck.SetSandboxQuarantine(a.sandboxes.QuarantinedEntries)
 	}
+	hcheck.SetPressureStatus(a.healthPressureStatus)
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
 	lm.startMonitorService(ctx, emit)
@@ -199,6 +200,39 @@ func runsGitHubRateBudgetLoop(cfg *config.Config) bool {
 		return false
 	}
 	return cfg.GitHub.RunsIssuesFetcher() || cfg.Renovate.Enabled
+}
+
+func (a *App) healthPressureStatus() *health.PressureStatus {
+	gate := a.getPressureGate()
+	status := &health.PressureStatus{
+		DiskFreePct:     -1,
+		MemAvailablePct: -1,
+		LoadPerCPU:      -1,
+	}
+	if gate != nil {
+		sample := gate.Status()
+		warning, critical := gate.Thresholds()
+		status.DiskFreePct = sample.DiskFreePct
+		status.MemAvailablePct = sample.MemAvailablePct
+		status.LoadPerCPU = sample.LoadPerCPU
+		status.WarningDiskFreePct = warning
+		status.CriticalDiskFreePct = critical
+	}
+	if reclaimer := a.getDiskReclaimer(); reclaimer != nil {
+		outcome := reclaimer.LastOutcome()
+		if !outcome.RanAt.IsZero() || outcome.ReclaimedBytes != 0 || outcome.UnreclaimableBytes != 0 || outcome.Errors != 0 {
+			status.LastReclaim = &health.ReclaimStatus{
+				RanAt:              outcome.RanAt,
+				ReclaimedBytes:     outcome.ReclaimedBytes,
+				UnreclaimableBytes: outcome.UnreclaimableBytes,
+				Errors:             outcome.Errors,
+			}
+		}
+	}
+	if gate == nil && status.LastReclaim == nil {
+		return nil
+	}
+	return status
 }
 
 // StartWatchers launches the config-file hot-reload watcher.
