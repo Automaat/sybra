@@ -132,6 +132,8 @@ func TestRepairBareClone_DeletesRefStillCheckedOutByDeadWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
+		{"-C", wtPath, "config", "user.email", "test@test.com"},
+		{"-C", wtPath, "config", "user.name", "Test"},
 		{"-C", wtPath, "add", "."},
 		{"-C", wtPath, "commit", "-m", "extra"},
 	} {
