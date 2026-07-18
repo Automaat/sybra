@@ -86,11 +86,26 @@ const verifyChecksNodeModulesRepairTimeout = 5 * time.Minute
 var verifyMissingToolchainRe = regexp.MustCompile(
 	`(?i)command not found|executable file not found|not found in \$?PATH|[\w./-]+: not found`)
 
+var verifyGoInfraFailureRes = []*regexp.Regexp{
+	regexp.MustCompile(`(?m)\blink: signal: terminated\b`),
+	regexp.MustCompile(`(?mi)(?:can't open import:.*go-build|go-build[\\/].*no such file or directory)`),
+}
+
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
-	Commands   []string `json:"commands"`
-	FailedCmd  string   `json:"failedCmd,omitempty"`
-	OutputTail string   `json:"outputTail,omitempty"`
+	Commands       []string `json:"commands"`
+	FailedCmd      string   `json:"failedCmd,omitempty"`
+	OutputTail     string   `json:"outputTail,omitempty"`
+	Classification string   `json:"classification,omitempty"`
+	FailedPackages []string `json:"failedPackages,omitempty"`
+	ChangedFiles   []string `json:"changedFiles,omitempty"`
+}
+
+type verifyFailureClassification struct {
+	Kind           string
+	Reason         string
+	FailedPackages []string
+	ChangedFiles   []string
 }
 
 // execVerifyChecks runs the project's deterministic verify suite
@@ -160,6 +175,12 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	report := verifyChecksReport{
 		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
 	}
+	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output)
+	if classification != nil {
+		report.Classification = classification.Kind
+		report.FailedPackages = classification.FailedPackages
+		report.ChangedFiles = classification.ChangedFiles
+	}
 	if e.recorder != nil {
 		if data, mErr := json.MarshalIndent(report, "", "  "); mErr == nil {
 			if recErr := e.recorder.PutGeneric(taskID, "verify-checks.json", step.ID, string(data)); recErr != nil {
@@ -188,6 +209,9 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 
 	if failedCmd != "" {
+		if classification != nil {
+			return e.blockVerifyChecks(taskID, step, classification.Reason, classification.Kind)
+		}
 		reason := "implementation does not pass the project verify suite: " + trimDiffLine(failedCmd) +
 			" — fix the code, or add the `verify-blessed` tag to override (e.g. a known-flaky suite)"
 		return e.autoFixOrFlagVerifyChecks(taskID, step, wfExec, t, reason, failedCmd, output)
@@ -283,6 +307,201 @@ func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail stri
 	}
 	e.logger.Warn("workflow.verify-checks.flagged", "task_id", taskID, "detail", detail)
 	return stepDone(step, "flagged")
+}
+
+func (e *Engine) blockVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, "blocked", reason); statusErr != nil {
+		return StepOutput{}, fmt.Errorf("verify-checks: set blocked: %w", statusErr)
+	}
+	e.logger.Warn("workflow.verify-checks.blocked", "task_id", taskID, "detail", detail)
+	return stepDone(step, "blocked")
+}
+
+func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string) *verifyFailureClassification {
+	if failedCmd == "" {
+		return nil
+	}
+	if verifyGoInfraFailure(output) {
+		return &verifyFailureClassification{
+			Kind:   "infra_failure",
+			Reason: "verify suite hit Go toolchain/build-cache instability (linker terminated or cache artifacts vanished) — blocked as verifier infrastructure, not an implementation failure",
+		}
+	}
+	pkgs, changedFiles, ok := classifyUnrelatedVerifyGoFailure(e.ctx, taskID, wtPath, failedCmd, output, e.focusedChecksBaseRef(taskID))
+	if !ok {
+		return nil
+	}
+	return &verifyFailureClassification{
+		Kind:           "unrelated_failure",
+		Reason:         "verify suite failed only in untouched Go package(s): " + strings.Join(pkgs, ", ") + " — blocked as a pre-existing/unrelated verifier failure, not this diff",
+		FailedPackages: pkgs,
+		ChangedFiles:   changedFiles,
+	}
+}
+
+func verifyGoInfraFailure(output string) bool {
+	for _, re := range verifyGoInfraFailureRes {
+		if re.MatchString(output) {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyUnrelatedVerifyGoFailure(
+	parentCtx context.Context,
+	taskID, wtPath, failedCmd, output, worktreeBaseRef string,
+) (failedPackages, changedFiles []string, ok bool) {
+	if !strings.Contains(failedCmd, "go test") {
+		return nil, nil, false
+	}
+	changedFiles, err := changedFilesSinceProjectBase(parentCtx, wtPath, worktreeBaseRef)
+	if err != nil || hasGlobalGoSurfaceChange(changedFiles) {
+		return nil, nil, false
+	}
+	modulePath := goModulePath(wtPath)
+	failedPackages = parseFailedGoPackages(output, modulePath)
+	if len(failedPackages) == 0 {
+		return nil, changedFiles, false
+	}
+	changedPkgs := changedGoPackages(changedFiles)
+	for _, pkg := range failedPackages {
+		affected, err := goPackageAffectedByChanges(parentCtx, taskID, wtPath, pkg, changedPkgs, modulePath)
+		if err != nil || affected {
+			return nil, changedFiles, false
+		}
+	}
+	return failedPackages, changedFiles, true
+}
+
+func hasGlobalGoSurfaceChange(changedFiles []string) bool {
+	for _, file := range changedFiles {
+		switch file {
+		case "go.mod", "go.sum", "go.work", "go.work.sum":
+			return true
+		}
+	}
+	return false
+}
+
+func goModulePath(wtPath string) string {
+	data, err := os.ReadFile(filepath.Join(wtPath, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for raw := range strings.SplitSeq(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if moduleLine, ok := strings.CutPrefix(line, "module "); ok {
+			return strings.TrimSpace(moduleLine)
+		}
+	}
+	return ""
+}
+
+func parseFailedGoPackages(output, modulePath string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for raw := range strings.SplitSeq(output, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "# "):
+			pkg := normalizeFailedGoPackage(strings.TrimSpace(strings.TrimPrefix(line, "# ")), modulePath)
+			if pkg != "" && !seen[pkg] {
+				seen[pkg] = true
+				out = append(out, pkg)
+			}
+		case strings.HasPrefix(line, "FAIL"):
+			fields := strings.Fields(line)
+			if len(fields) < 2 || fields[0] != "FAIL" {
+				continue
+			}
+			pkg := normalizeFailedGoPackage(fields[1], modulePath)
+			if pkg != "" && !seen[pkg] {
+				seen[pkg] = true
+				out = append(out, pkg)
+			}
+		}
+	}
+	return out
+}
+
+func normalizeFailedGoPackage(pkg, modulePath string) string {
+	pkg = strings.TrimSpace(strings.TrimSuffix(pkg, ":"))
+	if pkg == "" || strings.Contains(pkg, "[") {
+		return ""
+	}
+	if modulePath != "" {
+		if pkg == modulePath {
+			return "."
+		}
+		if rel, ok := strings.CutPrefix(pkg, modulePath+"/"); ok {
+			return filepath.ToSlash(rel)
+		}
+	}
+	if strings.HasPrefix(pkg, "./") {
+		return strings.TrimPrefix(filepath.ToSlash(filepath.Clean(pkg)), "./")
+	}
+	if strings.HasPrefix(pkg, "internal/") || strings.HasPrefix(pkg, "cmd/") {
+		return filepath.ToSlash(filepath.Clean(pkg))
+	}
+	return ""
+}
+
+func changedGoPackages(changedFiles []string) map[string]bool {
+	out := map[string]bool{}
+	for _, file := range changedFiles {
+		if filepath.Ext(file) != ".go" {
+			continue
+		}
+		dir := filepath.ToSlash(filepath.Dir(file))
+		if dir == "." {
+			out["."] = true
+			continue
+		}
+		out[dir] = true
+	}
+	return out
+}
+
+func goPackageAffectedByChanges(
+	parentCtx context.Context,
+	taskID, wtPath, failedPkg string,
+	changedPkgs map[string]bool,
+	modulePath string,
+) (bool, error) {
+	if failedPkg == "." || changedPkgs[failedPkg] {
+		return true, nil
+	}
+	if len(changedPkgs) == 0 {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
+	defer cancel()
+	target := "."
+	if failedPkg != "." {
+		target = "./" + failedPkg
+	}
+	cmd := exec.CommandContext(ctx, "go", "list", "-deps", target)
+	cmd.Dir = wtPath
+	env, err := verifyCommandEnv(taskID)
+	if err != nil {
+		return false, err
+	}
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+	for raw := range strings.SplitSeq(string(out), "\n") {
+		pkg := normalizeFailedGoPackage(raw, modulePath)
+		if pkg != "" && changedPkgs[pkg] {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo, reason, failedCmd, output string) (StepOutput, error) {
