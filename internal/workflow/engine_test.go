@@ -1093,6 +1093,113 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_WatchdogHangExhaustedRunTestOpensPR(t *testing.T) {
+	store := newInlineTestStore(t, "testing-task", `
+id: testing-task
+steps:
+  - id: run_test
+    type: run_agent
+    config:
+      role: test-runner
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "testing",
+		StatusReason: "watchdog hang: no stream activity",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "testing-task",
+			CurrentStep: "run_test",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				watchdogHangRetryKey("run_test"): strconv.Itoa(maxWatchdogHangRetries),
+			},
+			StartedAt: time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", got.Status)
+	}
+	if got.StatusReason != "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review" {
+		t.Fatalf("status_reason = %q", got.StatusReason)
+	}
+	if got.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want %q", got.Workflow.State, ExecCompleted)
+	}
+	if got.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow current_step = %q, want empty", got.Workflow.CurrentStep)
+	}
+	if len(completed) != 1 {
+		t.Fatalf("workflow completions = %d, want 1", len(completed))
+	}
+	if completed[0].WorkflowID != "testing-task" {
+		t.Fatalf("completion workflow = %q, want testing-task", completed[0].WorkflowID)
+	}
+}
+
+func TestResumeStalled_WatchdogHangExhaustedRunTestHumanRequiredWhenOpenPRDisabled(t *testing.T) {
+	store := newInlineTestStore(t, "testing-task", `
+id: testing-task
+steps:
+  - id: run_test
+    type: run_agent
+    config:
+      role: test-runner
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetOpenPROnUnrunnableGate(false)
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "testing",
+		StatusReason: "watchdog hang: no stream activity",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "testing-task",
+			CurrentStep: "run_test",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				watchdogHangRetryKey("run_test"): strconv.Itoa(maxWatchdogHangRetries),
+			},
+			StartedAt: time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.Workflow.State != ExecFailed {
+		t.Fatalf("workflow state = %q, want %q", got.Workflow.State, ExecFailed)
+	}
+	if len(completed) != 0 {
+		t.Fatalf("workflow completions = %d, want 0", len(completed))
+	}
+}
+
 func TestResumeStalled_WatchdogLoopHumanRequiredDoesNotRetry(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -1346,6 +1453,184 @@ func startTestSimpleImplement(t *testing.T) (*Store, *memTasks, *mockAgents, *En
 		t.Fatalf("last agent role = %q, want implementation", got)
 	}
 	return store, tasks, agents, engine
+}
+
+const missingLivePRProofReason = "manual verification blocker: no current open PR could be verified as allFlaky for the required live pr-monitor proof"
+
+func TestAdvanceStep_ManualVerificationBlockerRoutesToReadyPR(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	_, wtPath := newPRWorktree(t, "feat/live-proof")
+	commitFile(t, wtPath, "proof.txt", "proof")
+	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
+
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+		Branch:    "feat/live-proof",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  missingLivePRProofReason,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
+	}
+	if ti.StatusReason != readyPRRecoveryReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, readyPRRecoveryReason)
+	}
+	if ti.PRNumber != 0 {
+		t.Fatalf("pr number = %d, want 0", ti.PRNumber)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
+	}
+	if ti.Workflow.CurrentStep != "" {
+		t.Fatalf("current step = %q, want empty", ti.Workflow.CurrentStep)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestAdvanceStep_ManualVerificationBlockerLinksExistingPR(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	_, wtPath := newPRWorktree(t, "feat/live-proof")
+	commitFile(t, wtPath, "proof.txt", "proof")
+	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
+
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRFinder(&fakePRFinder{number: 42, found: true})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+		Branch:    "feat/live-proof",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  missingLivePRProofReason,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "in-review" {
+		t.Fatalf("status = %q, want in-review", ti.Status)
+	}
+	if ti.StatusReason != "" {
+		t.Fatalf("status reason = %q, want empty", ti.StatusReason)
+	}
+	if ti.PRNumber != 42 {
+		t.Fatalf("pr number = %d, want 42", ti.PRNumber)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
 }
 
 // TestRetry_SupersededAgentLateCompletionDropped reproduces the production bug

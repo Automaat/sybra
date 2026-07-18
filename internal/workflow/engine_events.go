@@ -1244,18 +1244,27 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 	retryKey := watchdogHangRetryKey(step.ID)
 	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
 	if attempts >= maxWatchdogHangRetries {
-		if e.handleWatchdogRunTestExhausted(t, step, attempts) {
-			return true
-		}
-		reason := fmt.Sprintf("watchdog hang: retry budget exhausted after %d clean re-dispatches", attempts)
-		t.Workflow.State = ExecFailed
+		targetStatus, reason, terminalState := watchdogHangExhaustionResolution(*t, step, attempts, e.openPROnUnrunnableGate)
+		now := time.Now().UTC()
+		t.Workflow.State = terminalState
+		t.Workflow.CompletedAt = &now
+		t.Workflow.CurrentStep = ""
 		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 			e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
 		}
-		if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason); err != nil {
 			e.logger.Error("workflow.watchdog-hang.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 		} else {
-			e.logger.Warn("workflow.watchdog-hang.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+			if targetStatus == "ready-pr" {
+				e.logger.Warn("workflow.watchdog-hang.exhausted.open-pr", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+				e.fireComplete(&CompletionInfo{
+					TaskID:     t.ID,
+					WorkflowID: t.Workflow.WorkflowID,
+					Variables:  t.Workflow.Variables,
+				})
+			} else {
+				e.logger.Warn("workflow.watchdog-hang.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+			}
 		}
 		return true
 	}
@@ -1265,11 +1274,10 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 		cleanRef = "HEAD"
 	}
 	t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
-	note := buildWatchdogReaskNote(attempts + 1)
-	t.Workflow.SetVar(watchdogReaskNoteVar, note)
-	if step.ID == testVerdictSourceStep {
-		t.Workflow.SetVar(testingReaskNoteVar, note)
-	}
+	// ListTasks/taskToInfo never populates ManualTest; hydrate here so the
+	// specialized run_test reask note carries the concrete command/health/probe
+	// details instead of degrading to the empty-surface fallback.
+	t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogReaskNoteForStep(e.withManualTestConfig(*t), step, attempts+1))
 	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 		e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
 		return true
@@ -1281,32 +1289,6 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 	e.logger.Info("workflow.watchdog-hang.retry",
 		"task_id", t.ID, "step", step.ID, "attempt", attempts+1, "max", maxWatchdogHangRetries)
 	return false
-}
-
-func (e *Engine) handleWatchdogRunTestExhausted(t *TaskInfo, step *Step, attempts int) bool {
-	if step.ID != testVerdictSourceStep || t.Workflow.WorkflowID != "testing-task" {
-		return false
-	}
-	t.Workflow.State = ExecFailed
-	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-		e.logger.Error("workflow.watchdog-hang.testing.persist", "task_id", t.ID, "step", step.ID, "err", err)
-		return true
-	}
-	if e.openPROnUnrunnableGate {
-		if _, err := e.openPRForUnrunnableTestingGate(t.ID, step.ID); err != nil {
-			e.logger.Error("workflow.watchdog-hang.testing.open-pr", "task_id", t.ID, "step", step.ID, "err", err)
-		} else {
-			e.logger.Warn("workflow.watchdog-hang.testing.exhausted-open-pr", "task_id", t.ID, "step", step.ID, "attempts", attempts)
-		}
-		return true
-	}
-	reason := fmt.Sprintf("watchdog hang: run_test retry budget exhausted after %d clean re-dispatches", attempts)
-	if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
-		e.logger.Error("workflow.watchdog-hang.testing.escalate", "task_id", t.ID, "step", step.ID, "err", err)
-	} else {
-		e.logger.Warn("workflow.watchdog-hang.testing.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
-	}
-	return true
 }
 
 func isWatchdogHangReason(reason string) bool {
@@ -1330,6 +1312,70 @@ func buildWatchdogReaskNote(attempt int) string {
 	b.WriteString("- If you are genuinely blocked, STOP and mark the task human-required with the specific " +
 		"blocker instead of looping.")
 	return b.String()
+}
+
+func buildWatchdogReaskNoteForStep(t TaskInfo, step *Step, attempt int) string {
+	if !isTestRunnerWatchdogStep(step) {
+		return buildWatchdogReaskNote(attempt)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️ Your previous adversarial test run was TERMINATED for watchdog hang before it produced a verdict — attempt %d of %d.\n\n",
+		attempt, maxWatchdogHangRetries)
+	b.WriteString("Before any further repo reading, start the declared manual_test surface and prove it is live.\n")
+	if t.ManualTest.Kind != "" {
+		fmt.Fprintf(&b, "- manual_test kind: %s\n", t.ManualTest.Kind)
+	}
+	if cmd := strings.TrimSpace(t.ManualTest.Command); cmd != "" {
+		fmt.Fprintf(&b, "- Start it first with: %s\n", cmd)
+	}
+	if url := strings.TrimSpace(t.ManualTest.HealthURL); url != "" {
+		fmt.Fprintf(&b, "- Wait for health on: %s\n", url)
+	}
+	for _, probe := range t.ManualTest.ProbeCommands {
+		if probe = strings.TrimSpace(probe); probe != "" {
+			fmt.Fprintf(&b, "- Run probe: %s\n", probe)
+		}
+	}
+	b.WriteString("- Do NOT spend another turn only reading implementation files before you have started the surface and captured at least one probe result.\n")
+	b.WriteString("- Background long-running servers, bound every command, and avoid the full suite (`mise run verify`, `go test ./...`, full `npm` builds).\n")
+	b.WriteString("- If the manual-testing surface itself is unrunnable, say exactly why in the final report instead of looping.\n")
+	return b.String()
+}
+
+// watchdogReaskNoteVarForStep routes the hang-retry note to the workflow
+// variable the step's own prompt consumes: the test-runner (run_test) prompt in
+// testing-task.yaml reads testing_reask_note, while implementation prompts read
+// watchdog_reask_note. Writing to the wrong channel means the guidance never
+// reaches the retried agent (see the manual-test-surface note built for
+// run_test hangs).
+func watchdogReaskNoteVarForStep(step *Step) string {
+	if isTestRunnerWatchdogStep(step) {
+		return testingReaskNoteVar
+	}
+	return watchdogReaskNoteVar
+}
+
+func isTestRunnerWatchdogStep(step *Step) bool {
+	if step == nil || step.Type != StepRunAgent {
+		return false
+	}
+	return step.ID == testVerdictSourceStep || step.Config.Role == testRunnerRole
+}
+
+func watchdogHangExhaustionResolution(t TaskInfo, step *Step, attempts int, openPROnUnrunnableGate bool) (status, reason string, terminalState ExecState) {
+	if t.Status == "testing" && isTestRunnerWatchdogStep(step) {
+		if openPROnUnrunnableGate {
+			return "ready-pr",
+				"manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review",
+				ExecCompleted
+		}
+		return "human-required",
+			fmt.Sprintf("watchdog hang: run_test retry budget exhausted after %d clean re-dispatches", attempts),
+			ExecFailed
+	}
+	return "human-required",
+		fmt.Sprintf("watchdog hang: retry budget exhausted after %d clean re-dispatches", attempts),
+		ExecFailed
 }
 
 func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
