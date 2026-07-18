@@ -556,6 +556,15 @@ export class GitHubConfig {
      */
     "reviewsStableBackoffMaxTicks": number;
     "issuesSeconds": number;
+
+    /**
+     * MentionTriggerPhrase, when set, gates a comment-mention search alongside
+     * the existing assigned/labeled issue paths: an open issue whose comments
+     * contain this phrase (e.g. "@sybra") gets a task via the same
+     * dedup/creation path. Empty (default) disables the feature — existing
+     * installs see no behavior change.
+     */
+    "mentionTriggerPhrase": string;
     "renovateFastSeconds": number;
     "renovateSlowSeconds": number;
 
@@ -638,6 +647,9 @@ export class GitHubConfig {
         if (!("issuesSeconds" in $$source)) {
             this["issuesSeconds"] = 0;
         }
+        if (!("mentionTriggerPhrase" in $$source)) {
+            this["mentionTriggerPhrase"] = "";
+        }
         if (!("renovateFastSeconds" in $$source)) {
             this["renovateFastSeconds"] = 0;
         }
@@ -667,10 +679,10 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField12_0 = $$createType4;
+        const $$createField13_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField12_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField13_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
     }
