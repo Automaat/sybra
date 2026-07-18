@@ -108,6 +108,40 @@ func TestVerdictDecisionIsSharedParserType(t *testing.T) {
 	}
 }
 
+// TestHumanReviewDispatchDir_ReadOnlyFallback pins that dispatching into the
+// configured Sybra source checkout (no task worktree, or one that no longer
+// exists on disk) reports readOnly=true — callers must feed this into
+// RunConfig.ReadOnlyDir so the process sandbox never grants that checkout
+// write access. Dispatching into a real task worktree must report
+// readOnly=false, since UNBLOCK actions there (fix/commit/push) are expected.
+func TestHumanReviewDispatchDir_ReadOnlyFallback(t *testing.T) {
+	sybraRepoDir := t.TempDir()
+
+	t.Run("no worktree", func(t *testing.T) {
+		dir, readOnly := humanReviewDispatchDir(task.Task{}, sybraRepoDir)
+		if dir != sybraRepoDir || !readOnly {
+			t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=true", dir, readOnly, sybraRepoDir)
+		}
+	})
+
+	t.Run("worktree missing on disk", func(t *testing.T) {
+		tk := task.Task{WorktreeDir: filepath.Join(t.TempDir(), "does-not-exist")}
+		dir, readOnly := humanReviewDispatchDir(tk, sybraRepoDir)
+		if dir != sybraRepoDir || !readOnly {
+			t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=true", dir, readOnly, sybraRepoDir)
+		}
+	})
+
+	t.Run("worktree present", func(t *testing.T) {
+		worktreeDir := t.TempDir()
+		tk := task.Task{WorktreeDir: worktreeDir}
+		dir, readOnly := humanReviewDispatchDir(tk, sybraRepoDir)
+		if dir != worktreeDir || readOnly {
+			t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=false", dir, readOnly, worktreeDir)
+		}
+	})
+}
+
 // TestBuildPrompt_NoFencedVerdictInstruction pins that the prompt no longer
 // tells the agent to emit a fenced ```sybra-verdict``` block — the schema is
 // now enforced out-of-band via RunConfig.OutputSchema/--json-schema, and the
@@ -122,7 +156,8 @@ func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
+	prompt := h.buildPrompt(tk, dir, nil)
 	if strings.Contains(prompt, "sybra-verdict") {
 		t.Errorf("prompt still instructs a fenced sybra-verdict block:\n%s", prompt)
 	}
@@ -145,7 +180,8 @@ func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
+	prompt := h.buildPrompt(tk, dir, nil)
 	if !strings.Contains(prompt, "actually re-run the exact failing command") {
 		t.Errorf("prompt does not require re-running the failing command before calling it transient:\n%s", prompt)
 	}
@@ -175,7 +211,8 @@ func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
 		t.Fatalf("seed draft-review task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
+	prompt := h.buildPrompt(tk, dir, nil)
 	for _, want := range []string{
 		"pre-flight the draft before submitting anything",
 		"APPROVE drafts must NEVER be auto-submitted",
@@ -204,7 +241,8 @@ func TestBuildPrompt_RequiresRecheckingSupersededFailures(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
+	prompt := h.buildPrompt(tk, dir, nil)
 	if !strings.Contains(prompt, "supersedes the wording the failure quotes") {
 		t.Errorf("prompt does not require rechecking superseded test-runner FAILs:\n%s", prompt)
 	}
@@ -455,7 +493,8 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 		ID: "t1", Title: "x", Status: task.StatusHumanRequired,
 		Branch: "feat/queue", WorktreeDir: "/data/worktrees/queue",
 	}
-	p := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
+	p := h.buildPrompt(tk, dir, nil)
 	for _, want := range []string{
 		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
 		"never fabricate", "/data/worktrees/queue", "feat/queue",
