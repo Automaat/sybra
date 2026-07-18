@@ -444,13 +444,17 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsAndLogsFlakeEvent(t *testing.T) {
 	}
 
 	events := readExperienceAuditEvents(t, auditDir)
-	idx := slices.IndexFunc(events, func(e audit.Event) bool {
-		return e.Type == audit.EventPRCIFlakeDetected
-	})
-	if idx < 0 {
+	var flakeEvent *audit.Event
+	for i := range events {
+		if events[i].Type == audit.EventPRCIFlakeDetected {
+			flakeEvent = &events[i]
+			break
+		}
+	}
+	if flakeEvent == nil {
 		t.Fatal("missing pr_monitor.ci_flake_detected audit event")
 	}
-	data := events[idx].Data
+	data := flakeEvent.Data
 	if got := data["repo"]; got != "o/r" {
 		t.Errorf("flake event repo = %v, want o/r", got)
 	}
