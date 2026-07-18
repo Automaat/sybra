@@ -61,6 +61,23 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("staged deletion resolution is recoverable", func(t *testing.T) {
+		t.Parallel()
+		wtPath := newConflictedWorktree(t)
+		if err := os.Remove(filepath.Join(wtPath, "README.md")); err != nil {
+			t.Fatal(err)
+		}
+		runGitInDir(t, wtPath, "add", "-A")
+
+		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
+		if err != nil {
+			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+		}
+		if !slices.Equal(got, []string{"README.md"}) {
+			t.Fatalf("paths = %v, want [README.md] when the deletion was staged", got)
+		}
+	})
+
 	t.Run("marker-free binary conflict is not recoverable", func(t *testing.T) {
 		t.Parallel()
 		wtPath := newBinaryConflictedWorktree(t)

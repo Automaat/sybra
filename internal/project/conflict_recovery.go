@@ -22,7 +22,8 @@ var conflictMarkerPrefixes = [][]byte{
 // ever run. This covers both an agent that resolved a conflict on disk but
 // never staged it (path still listed by `git ls-files -u`, the "resolved but
 // unstaged" case) and one that staged the resolution but never committed
-// (path staged, index already clean of unmerged stages). Returns nil when
+// (path staged, index already clean of unmerged stages) — including a
+// resolution that staged a deletion of the conflicted file. Returns nil when
 // the tree has no merge to finish, when any conflicted path is binary
 // (binary conflicts leave one side's content in place with no markers to
 // verify against, so content inspection alone can't confirm a real
@@ -62,22 +63,45 @@ func ResolvedUnmergedPaths(ctx context.Context, wtPath string) ([]string, error)
 		resolved = append(resolved, path)
 	}
 
-	// `git diff --cached --name-only` also reports still-unmerged paths (their
-	// index entries differ from HEAD), so skip anything the loop above already
-	// classified to avoid double-reporting the same path.
-	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--name-only", "-z")
+	// `git diff --cached` also reports still-unmerged paths (their index entries
+	// differ from HEAD), so skip anything the loop above already classified to
+	// avoid double-reporting the same path. `--name-status` lets us tell a
+	// staged deletion (an explicit, marker-free resolution with no working-tree
+	// file to inspect) apart from a staged add/modify whose file happens to be
+	// missing on disk.
+	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--name-status", "-z")
 	cmd.Dir = wtPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		detail := strings.TrimSpace(string(out))
 		if detail == "" {
-			return nil, fmt.Errorf("git diff --cached --name-only -z: %w", err)
+			return nil, fmt.Errorf("git diff --cached --name-status -z: %w", err)
 		}
-		return nil, fmt.Errorf("git diff --cached --name-only -z: %w: %s", err, detail)
+		return nil, fmt.Errorf("git diff --cached --name-status -z: %w: %s", err, detail)
 	}
 
-	for raw := range bytes.SplitSeq(out, []byte{0}) {
-		path := string(raw)
+	fields := bytes.Split(out, []byte{0})
+	for i := 0; i < len(fields); i++ {
+		status := fields[i]
+		if len(status) == 0 {
+			continue
+		}
+		// Rename/copy entries carry two NUL-separated paths (old then new); the
+		// resulting file is the second one. Every other status carries one path.
+		var path string
+		if status[0] == 'R' || status[0] == 'C' {
+			if i+2 >= len(fields) {
+				return nil, fmt.Errorf("parse git diff --cached --name-status -z entry %q", string(status))
+			}
+			path = string(fields[i+2])
+			i += 2
+		} else {
+			if i+1 >= len(fields) {
+				return nil, fmt.Errorf("parse git diff --cached --name-status -z entry %q", string(status))
+			}
+			path = string(fields[i+1])
+			i++
+		}
 		if path == "" {
 			continue
 		}
@@ -87,9 +111,17 @@ func ResolvedUnmergedPaths(ctx context.Context, wtPath string) ([]string, error)
 		if !isSafeProtectedPath(path) {
 			return nil, fmt.Errorf("unsafe merge path %q", path)
 		}
+		if status[0] == 'D' {
+			// The resolution staged a deletion — an unambiguous, marker-free
+			// decision with no working-tree content left to verify.
+			resolved = append(resolved, path)
+			continue
+		}
 		data, readErr := os.ReadFile(filepath.Join(wtPath, filepath.FromSlash(path)))
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
+				// Staged as add/modify yet absent on disk: an inconsistent
+				// state, not a resolution git can finish. Don't guess intent.
 				continue
 			}
 			return nil, fmt.Errorf("read unmerged path %s: %w", path, readErr)
