@@ -462,6 +462,51 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview pins the fix for
+// a re-fix cycle orphaning at ready-review: simple-task-review's own trigger
+// refuses pr_number != "", so verify_checks must route a PR-having task to
+// in-review directly rather than a status nothing dispatches.
+func TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var impl *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-implement" {
+			impl = &defs[i]
+			break
+		}
+	}
+	if impl == nil {
+		t.Fatal("simple-task-implement builtin definition not found")
+	}
+	verifyChecks := impl.StepByID("verify_checks")
+	if verifyChecks == nil {
+		t.Fatal("verify_checks step not found in simple-task-implement")
+	}
+
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "set_ready_review" {
+		t.Fatalf("verify_checks no-PR goto = %q, err=%v; want set_ready_review", got, err)
+	}
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "in-progress", "task.pr_number": "17478"}); err != nil || got != "set_ready_pr_existing" {
+		t.Fatalf("verify_checks existing-PR goto = %q, err=%v; want set_ready_pr_existing", got, err)
+	}
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "human-required", "task.pr_number": "17478"}); err != nil || got != "" {
+		t.Fatalf("verify_checks human-required goto = %q, err=%v; want end (wins over PR routing)", got, err)
+	}
+
+	existingPR := impl.StepByID("set_ready_pr_existing")
+	if existingPR == nil {
+		t.Fatal("set_ready_pr_existing step not found in simple-task-implement")
+	}
+	if existingPR.Type != StepSetStatus || existingPR.Config.Status != "in-review" {
+		t.Fatalf("set_ready_pr_existing = type %q status %q; want set_status in-review", existingPR.Type, existingPR.Config.Status)
+	}
+}
+
 // TestBuiltinSimpleTask_TriageNoplanRouting locks the noplan escape hatch in
 // the triage step's transition table: a noplan tag routes straight to
 // implement (winning over a planning status), terminal statuses still win over
