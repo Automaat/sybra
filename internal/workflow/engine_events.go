@@ -959,7 +959,7 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 
 func isResumableStepType(t StepType) bool {
 	switch t {
-	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepCreatePR, StepPushBranch, StepPromoteBestOfN:
+	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN:
 		return true
 	default:
 		return false
@@ -1213,10 +1213,8 @@ func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *S
 	e.logger.Info("workflow.resume-stalled", "task_id", taskID, "step", step.ID)
 	comp, rErr := e.executeSteps(taskID, def, step, wf)
 	e.clearResumeDispatching(taskID)
-	// ResumeStalled only resumes async run_agent steps, so comp is normally
-	// nil (fireComplete no-ops). Kept defensive so the day a sync step
-	// becomes resumable its completion cascades correctly instead of being
-	// silently dropped.
+	// Most resumable steps dispatch async work and return nil; sync retry steps
+	// such as verify_checks can finish the workflow here.
 	e.fireComplete(comp)
 	e.drainPendingConflictRecovery(taskID)
 	e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", taskID, rErr, "task_id", taskID)
@@ -1406,10 +1404,15 @@ func isTestRunnerWatchdogStep(step *Step) bool {
 }
 
 func watchdogHangExhaustionResolution(t TaskInfo, step *Step, attempts int, openPROnUnrunnableGate bool) (status, reason string, terminalState ExecState) {
-	if openPROnUnrunnableGate && t.Status == "testing" && isTestRunnerWatchdogStep(step) {
-		return "ready-pr",
-			"manual testing stalled under watchdog after clean retries (no evidenced verdict) — opening PR for CI and human review",
-			ExecCompleted
+	if t.Status == "testing" && isTestRunnerWatchdogStep(step) {
+		if openPROnUnrunnableGate {
+			return "ready-pr",
+				"manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review",
+				ExecCompleted
+		}
+		return "human-required",
+			fmt.Sprintf("watchdog hang: run_test retry budget exhausted after %d clean re-dispatches", attempts),
+			ExecFailed
 	}
 	return "human-required",
 		fmt.Sprintf("watchdog hang: retry budget exhausted after %d clean re-dispatches", attempts),

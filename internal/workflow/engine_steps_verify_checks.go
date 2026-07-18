@@ -41,7 +41,14 @@ const (
 	verifyReaskNoteVar         = "verify_reask_note"
 	verifyChecksAutoFixCap     = 2
 	verifyChecksAutoFixBackoff = 90 * time.Second
+	// Full verify suites are CPU-heavy and already serialized by workflow
+	// retries; a single local slot prevents one saturated host from piling
+	// multiple suites on top of each other and timing them all out.
+	verifyChecksBackoff       = 1 * time.Minute
+	verifyChecksMaxConcurrent = 1
 )
+
+const verifyChecksBusyReason = "verify suite deferred: another local verify run is already in flight"
 
 // verifyChecksFlakeRetries is how many extra times a failed verify command is
 // re-run before the gate blocks. A single retry absorbs a nondeterministic
@@ -121,51 +128,46 @@ type verifyFailureClassification struct {
 // toolchain (mise) resolves identically.
 //
 // Short-circuits (no block): the verify-blessed tag, no CheckConfigGetter, no
-// verify commands configured, no worktree, or a detected-but-unrepairable
-// corrupted node_modules (broken toolchain state, not the diff — see
-// repairCorruptedNodeModules). A genuine command failure — or the suite
-// exceeding the time budget (an agent could hang a test to dodge) — blocks.
-// Only engine-shutdown cancellation and the node_modules case fail open, so a
-// harness/infra problem never strands or misattributes work.
+// verify commands configured, or no worktree. A genuine command failure, an
+// unrepaired corrupted node_modules, or the suite exceeding the time budget
+// (an agent could hang a test to dodge) blocks.
+// Only engine-shutdown cancellation fails open, so an implementation cannot
+// skip verification by leaving the toolchain in an unrepaired bad state.
 func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	if slices.Contains(t.Tags, verifyBlessedTag) {
 		e.logger.Info("workflow.verify-checks.blessed", "task_id", taskID)
 		return stepDone(step, "blessed")
 	}
-	if e.checks == nil {
-		return stepDone(step, "skipped: no check config getter")
+	cmds, wtPath, timeout, skip := e.loadVerifyChecksInputs(taskID)
+	if skip != "" {
+		return stepDone(step, skip)
 	}
-
-	timeout := resolveWorkflowCheckTimeout(e.verifyTimeout)
-	cmds := e.checks.VerifyCommands(e.ctx, taskID)
-	if len(cmds) == 0 {
-		return stepDone(step, "skipped: no verify commands configured")
-	}
-	if e.worktrees == nil {
-		return stepDone(step, "skipped: no worktree getter configured")
-	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	slot := e.verifyChecksSlot()
+	releaseVerifySlot, ok := e.acquireVerifyChecksSlot(slot)
 	if !ok {
-		return stepDone(step, "skipped: no worktree for task")
+		if wfExec == nil {
+			select {
+			case slot <- struct{}{}:
+				releaseVerifySlot = func() { <-slot }
+			case <-e.ctx.Done():
+				e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", e.ctx.Err())
+				return stepDone(step, "skipped: context canceled")
+			}
+		} else {
+			return e.parkVerifyChecksForBackpressure(taskID, step, wfExec, t)
+		}
 	}
-	if timeout != e.verifyTimeout && e.verifyTimeout > 0 {
-		e.logger.Info("workflow.verify-checks.timeout-scaled",
-			"task_id", taskID, "base", e.verifyTimeout.String(), "effective", timeout.String())
-	}
-	if e.verifyTimeout <= 0 && timeout != verifyChecksDefaultTimeout {
-		e.logger.Info("workflow.verify-checks.timeout-scaled",
-			"task_id", taskID, "base", verifyChecksDefaultTimeout.String(), "effective", timeout.String())
-	}
+	defer releaseVerifySlot()
 
 	if e.repairCorruptedNodeModules(e.ctx, taskID, wtPath) {
 		// Corruption was detected but the repair itself failed (e.g. `npm ci`
-		// killed again, or no network) — the toolchain is still broken, not
-		// the diff. Running verify against a known-corrupt install would
-		// deterministically fail and misattribute an infra problem to the
-		// implementation, so skip verify entirely rather than flag
-		// human-required.
+		// killed again, or no network). Do not continue into verify with a
+		// known-corrupt install, and do not mark the gate skipped: an agent
+		// could otherwise leave node_modules broken to bypass the suite.
 		e.logger.Warn("workflow.verify-checks.node-modules-repair-unresolved", "task_id", taskID)
-		return stepDone(step, "skipped: node_modules repair failed — broken toolchain state, not a product failure")
+		return e.flagVerifyChecks(taskID, step,
+			"verify suite could not repair corrupted node_modules before running checks — rerun setup or fix the toolchain state",
+			"node_modules-repair")
 	}
 	e.repairTornNodeModules(e.ctx, taskID, wtPath)
 
@@ -226,15 +228,80 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	return stepDone(step, "clean")
 }
 
+func (e *Engine) loadVerifyChecksInputs(taskID string) (cmds []string, wtPath string, timeout time.Duration, skip string) {
+	if e.checks == nil {
+		return nil, "", 0, "skipped: no check config getter"
+	}
+	timeout = resolveWorkflowCheckTimeout(e.verifyTimeout)
+	cmds = e.checks.VerifyCommands(e.ctx, taskID)
+	if len(cmds) == 0 {
+		return nil, "", 0, "skipped: no verify commands configured"
+	}
+	if e.worktrees == nil {
+		return nil, "", 0, "skipped: no worktree getter configured"
+	}
+	var ok bool
+	wtPath, ok = e.worktrees.GetWorktreePath(taskID)
+	if !ok {
+		return nil, "", 0, "skipped: no worktree for task"
+	}
+	e.logVerifyChecksTimeout(taskID, timeout)
+	return cmds, wtPath, timeout, ""
+}
+
+func (e *Engine) logVerifyChecksTimeout(taskID string, timeout time.Duration) {
+	base := e.verifyTimeout
+	if base <= 0 {
+		base = verifyChecksDefaultTimeout
+	}
+	if timeout == base {
+		return
+	}
+	e.logger.Info("workflow.verify-checks.timeout-scaled",
+		"task_id", taskID, "base", base.String(), "effective", timeout.String())
+}
+
+func (e *Engine) verifyChecksSlot() chan struct{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.verifyChecksSlots == nil {
+		e.verifyChecksSlots = make(chan struct{}, verifyChecksMaxConcurrent)
+	}
+	return e.verifyChecksSlots
+}
+
+func (e *Engine) acquireVerifyChecksSlot(slot chan struct{}) (release func(), ok bool) {
+	select {
+	case slot <- struct{}{}:
+		return func() { <-slot }, true
+	default:
+		return nil, false
+	}
+}
+
+func (e *Engine) parkVerifyChecksForBackpressure(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	wfExec.CurrentStep = step.ID
+	wfExec.State = ExecWaiting
+	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksBackoff).Format(time.RFC3339))
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return StepOutput{}, err
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, verifyChecksBusyReason); err != nil {
+		return StepOutput{}, err
+	}
+	e.logger.Warn("workflow.verify-checks.backpressure", "task_id", taskID, "step", step.ID)
+	return StepOutput{}, errStepParked
+}
+
 // VerifyTaskNow re-runs a task's configured verify commands against its
 // current worktree state on demand, outside the normal verify_checks step —
 // used by internal/watchdog to distinguish a genuine implementation defect
 // from a stale/false-positive loop-stop verdict before escalating to
 // human-required (#2155). verified is false whenever nothing could actually
 // be checked (no CheckConfigGetter/WorktreeGetter wired, no verify commands
-// configured, or no worktree yet); callers must treat that the same as
-// "could not verify" and fall back to their own default behavior rather than
-// treat it as a pass.
+// configured, no worktree yet, or preflight toolchain repair failed); callers
+// must treat that the same as "could not verify" and fall back to their own
+// default behavior rather than treat it as a pass.
 func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
 	if e.checks == nil || e.worktrees == nil {
 		return false, false, "", "", nil
@@ -248,10 +315,7 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, pa
 		return false, false, "", "", nil
 	}
 	if e.repairCorruptedNodeModules(ctx, taskID, wtPath) {
-		// Same as execVerifyChecks: an unrepairable corrupt install would
-		// deterministically fail verify and misattribute a toolchain problem
-		// to the diff — nothing was actually verified either way.
-		return false, false, "", "", nil
+		return false, false, "", "node_modules repair failed", errors.New("verify: node_modules repair failed")
 	}
 	e.repairTornNodeModules(ctx, taskID, wtPath)
 
@@ -740,16 +804,16 @@ func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir
 		return // toolchain looks intact
 	}
 
-	reinstall := npmReinstallCommand(wtPath)
+	reinstall := npmReinstallCommand(dir, wtPath)
 	e.logger.Warn("workflow.verify-checks.toolchain-corrupt", "task_id", taskID, "dir", dir)
 	_, _ = fmt.Fprintf(tail,
 		"[verify] node_modules/.bin in %s looks missing or corrupt — re-running %q\n", dir, reinstall)
 
 	repairCtx, cancel := context.WithTimeout(ctx, npmReinstallTimeout)
 	defer cancel()
-	maybeMiseTrust(repairCtx, wtPath) // npmReinstallCommand resolves the mise config from wtPath, not dir
+	maybeMiseTrust(repairCtx, wtPath)
 	if dir != wtPath {
-		maybeMiseTrust(repairCtx, dir) // a subdirectory (e.g. frontend/) can carry its own mise config too
+		maybeMiseTrust(repairCtx, dir)
 	}
 	cmd := exec.CommandContext(repairCtx, "sh", "-c", reinstall)
 	cmd.Dir = dir
@@ -764,15 +828,16 @@ func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir
 	_, _ = io.WriteString(tail, "[verify] npm ci repair completed\n")
 }
 
-// npmReinstallCommand routes the repair through `mise exec --` when the
-// worktree carries a mise config, mirroring the setup/verify convention: the
-// server container ships mise only, so bare `npm` is not guaranteed on PATH
-// outside a mise-wrapped invocation. Falls back to bare `npm ci` when there is
-// no mise config to resolve the toolchain from.
-func npmReinstallCommand(wtPath string) string {
-	for _, name := range miseConfigNames {
-		if _, err := os.Stat(filepath.Join(wtPath, name)); err == nil {
-			return "mise exec -- npm ci"
+// npmReinstallCommand routes the repair through `mise exec --` when either the
+// repaired dir or the worktree root carries a mise config. Some repos keep the
+// config in `frontend/` only; falling back to the repair dir avoids a false
+// bare `npm ci` on hosts where npm is available only through mise.
+func npmReinstallCommand(paths ...string) string {
+	for _, dir := range paths {
+		for _, name := range miseConfigNames {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				return "mise exec -- npm ci"
+			}
 		}
 	}
 	return "npm ci"
@@ -825,13 +890,18 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 		}
 		e.logger.Warn("workflow.verify-checks.node-modules-repair", "task_id", taskID, "dir", dir)
 		repairCtx, cancel := context.WithTimeout(ctx, verifyChecksNodeModulesRepairTimeout)
-		cmd := exec.CommandContext(repairCtx, "npm", "ci")
+		maybeMiseTrust(repairCtx, wtPath)
+		if dir != wtPath {
+			maybeMiseTrust(repairCtx, dir)
+		}
+		reinstall := npmReinstallCommand(dir, wtPath)
+		cmd := exec.CommandContext(repairCtx, "sh", "-c", reinstall)
 		cmd.Dir = dir
 		repairErr := cmd.Run()
 		cancel()
 		if repairErr != nil {
 			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
-				"task_id", taskID, "dir", dir, "err", repairErr)
+				"task_id", taskID, "dir", dir, "cmd", reinstall, "err", repairErr)
 			repairFailed = true
 		}
 	}
