@@ -1276,7 +1276,7 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 		cleanRef = "HEAD"
 	}
 	t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
-	t.Workflow.SetVar(watchdogReaskNoteVar, buildWatchdogReaskNoteForStep(*t, step, attempts+1))
+	t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogReaskNoteForStep(*t, step, attempts+1))
 	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 		e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
 		return true
@@ -1339,6 +1339,19 @@ func buildWatchdogReaskNoteForStep(t TaskInfo, step *Step, attempt int) string {
 	b.WriteString("- Background long-running servers, bound every command, and avoid the full suite (`mise run verify`, `go test ./...`, full `npm` builds).\n")
 	b.WriteString("- If the manual-testing surface itself is unrunnable, say exactly why in the final report instead of looping.\n")
 	return b.String()
+}
+
+// watchdogReaskNoteVarForStep routes the hang-retry note to the workflow
+// variable the step's own prompt consumes: the test-runner (run_test) prompt in
+// testing-task.yaml reads testing_reask_note, while implementation prompts read
+// watchdog_reask_note. Writing to the wrong channel means the guidance never
+// reaches the retried agent (see the manual-test-surface note built for
+// run_test hangs).
+func watchdogReaskNoteVarForStep(step *Step) string {
+	if isTestRunnerWatchdogStep(step) {
+		return testingReaskNoteVar
+	}
+	return watchdogReaskNoteVar
 }
 
 func isTestRunnerWatchdogStep(step *Step) bool {

@@ -84,7 +84,13 @@ func TestHandleWatchdogHangRetry_RunTestPrioritizesManualTestSurface(t *testing.
 	if escalated {
 		t.Fatal("first run_test hang should retry, not escalate")
 	}
-	note := wf.Variables[watchdogReaskNoteVar]
+	// The run_test prompt (testing-task.yaml) reads testing_reask_note, so the
+	// hang guidance must land there — not in watchdog_reask_note, which only the
+	// implementation prompt consumes.
+	if stray := wf.Variables[watchdogReaskNoteVar]; stray != "" {
+		t.Fatalf("run_test hang note must not land in watchdog_reask_note:\n%s", stray)
+	}
+	note := wf.Variables[testingReaskNoteVar]
 	for _, want := range []string{
 		"manual_test surface",
 		"go run ./cmd/sybra-server",
