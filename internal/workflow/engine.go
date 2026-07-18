@@ -343,6 +343,7 @@ type Engine struct {
 	pendingRecovery    map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError        *logging.ErrorThrottle
 	demotionThrottle   *logging.ErrorThrottle
+	resumeSkip         *logging.InfoThrottle
 	maxTestAttempts    int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
 	// reviewLoopDisabled: see SetReviewUntilClean. Inverted so the zero value
 	// keeps the review→fix→review cycle running, matching
@@ -403,6 +404,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		pendingRecovery:        make(map[string]pendingRecovery),
 		resumeError:            logging.NewErrorThrottle(),
 		demotionThrottle:       logging.NewErrorThrottle(),
+		resumeSkip:             logging.NewInfoThrottle(),
 		openPROnUnrunnableGate: true,
 	}
 }

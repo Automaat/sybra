@@ -202,6 +202,58 @@ func TestCloneBareInvalidURL(t *testing.T) {
 	}
 }
 
+func TestCloneBare_SetsCommitIdentity(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	name, err := outputBare(context.Background(), bare, "config", "user.name")
+	if err != nil {
+		t.Fatalf("read user.name: %v", err)
+	}
+	if got := strings.TrimSpace(name); got != "Sybra Agent" {
+		t.Errorf("user.name = %q, want %q", got, "Sybra Agent")
+	}
+
+	email, err := outputBare(context.Background(), bare, "config", "user.email")
+	if err != nil {
+		t.Fatalf("read user.email: %v", err)
+	}
+	if got := strings.TrimSpace(email); got != "sybra-agent@example.invalid" {
+		t.Errorf("user.email = %q, want %q", got, "sybra-agent@example.invalid")
+	}
+}
+
+func TestCloneBare_CommitIdentityRespectsEnvOverride(t *testing.T) {
+	t.Setenv("GIT_AUTHOR_NAME", "Custom Bot")
+	t.Setenv("GIT_AUTHOR_EMAIL", "custom-bot@example.com")
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	name, err := outputBare(context.Background(), bare, "config", "user.name")
+	if err != nil {
+		t.Fatalf("read user.name: %v", err)
+	}
+	if got := strings.TrimSpace(name); got != "Custom Bot" {
+		t.Errorf("user.name = %q, want %q", got, "Custom Bot")
+	}
+
+	email, err := outputBare(context.Background(), bare, "config", "user.email")
+	if err != nil {
+		t.Fatalf("read user.email: %v", err)
+	}
+	if got := strings.TrimSpace(email); got != "custom-bot@example.com" {
+		t.Errorf("user.email = %q, want %q", got, "custom-bot@example.com")
+	}
+}
+
 func TestDefaultBranch(t *testing.T) {
 	t.Parallel()
 	bare := initBareRepo(t)
