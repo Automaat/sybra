@@ -26,6 +26,7 @@ type TaskInfo struct {
 	Title        string
 	Status       string
 	StatusReason string
+	Role         string
 	Tags         []string
 	AgentMode    string
 	// Priority mirrors task.Priority ("", "low", "medium", "high", "urgent").

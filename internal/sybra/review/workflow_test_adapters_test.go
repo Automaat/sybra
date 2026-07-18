@@ -3,6 +3,7 @@ package review
 import (
 	"fmt"
 	"strings"
+	"testing"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/project"
@@ -140,6 +141,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Title:                 t.Title,
 		Status:                string(t.Status),
 		StatusReason:          t.StatusReason,
+		Role:                  t.RunRole,
 		Tags:                  t.Tags,
 		AgentMode:             t.AgentMode,
 		ProjectID:             t.ProjectID,
@@ -160,6 +162,13 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Workflow:              t.Workflow,
 		AgentRuns:             toRunInfos(t.AgentRuns),
 		TestingCycleStartedAt: t.TestingCycleStartedAt,
+	}
+}
+
+func TestTaskToInfo_PreservesRunRole(t *testing.T) {
+	info := taskToInfo(task.Task{ID: "t1", RunRole: "review"})
+	if info.Role != "review" {
+		t.Fatalf("Role = %q, want review", info.Role)
 	}
 }
 

@@ -330,6 +330,44 @@ func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
 	})
 }
 
+func TestDispatchFromHumanRequired_ReadyPRAllowsNoMatchForReviewOnlyRoles(t *testing.T) {
+	for _, role := range []string{
+		string(agent.RoleHumanReview),
+		string(agent.RoleReview),
+		string(agent.RoleTestRunner),
+	} {
+		t.Run(role, func(t *testing.T) {
+			launcher := &fakeAgentLauncher{}
+			svc, a := setupDispatchTestService(t, launcher)
+			a.workflowEngine = svc.workflowEngine
+			a.initStatusHook()
+
+			tk := newHumanRequiredTask(t, a, 42)
+			_, err := a.tasks.Update(tk.ID, task.Update{RunRole: task.Ptr(role)})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := svc.DispatchFromHumanRequired(tk.ID, "ready-pr", "resume after review")
+			if err != nil {
+				t.Fatalf("DispatchFromHumanRequired: %v", err)
+			}
+			if got.Status != task.StatusReadyPR {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyPR)
+			}
+			if got.StatusReason != "resume after review" {
+				t.Fatalf("status_reason = %q, want operator reason preserved", got.StatusReason)
+			}
+			if got.Workflow != nil {
+				t.Fatalf("workflow = %+v, want nil because review-only roles skip simple-task-pr", got.Workflow)
+			}
+			if launcher.startCalls != 0 {
+				t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
+			}
+		})
+	}
+}
+
 // TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker reproduces the
 // production bug (task 33aa3f62 / issue #2004): app_umbrella_gate.go's
 // rollupTrackers rolls an umbrella tracker back to in-progress (e.g. after a
@@ -752,6 +790,38 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	_, err = svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
 	if err == nil {
 		t.Fatal("expected an error when no workflow matches")
+	}
+
+	got, getErr := a.tasks.Get(tk.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "retry please") {
+		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
+	}
+}
+
+func TestDispatchFromHumanRequired_ReadyPRAuthorStillFailsClosedOnNoMatch(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupTaskService(t)
+	ta := &taskAdapter{tasks: a.tasks}
+	emptyStore, err := workflow.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.workflowEngine = workflow.NewEngine(emptyStore, ta, launcher, a.logger)
+	tk := newHumanRequiredTask(t, a, 42)
+	_, err = a.tasks.Update(tk.ID, task.Update{RunRole: task.Ptr(string(agent.RoleImplementation))})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.DispatchFromHumanRequired(tk.ID, "ready-pr", "retry please")
+	if err == nil {
+		t.Fatal("expected an error when no ready-pr workflow matches for a code-author role")
 	}
 
 	got, getErr := a.tasks.Get(tk.ID)
