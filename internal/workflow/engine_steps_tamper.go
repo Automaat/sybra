@@ -164,11 +164,15 @@ var (
 			`@(unittest\.)?skip(Unless|If)?\s*\(|\braise\s+SkipTest\b|` + // unittest
 			`\b(it|describe|test|context)\.skip\s*\(|\bx(it|describe|test)\s*\(|` + // jest/mocha/vitest
 			`\b(test|it)\.todo\s*\(|@(Ignore|Disabled)\b`) // todo / JUnit
-	// tamperAddedExitRe matches an added forced success exit.
+	// tamperCapabilityGuardRe matches a line that conditions a skip on a missing
+	// runtime capability or an incompatible platform (e.g.
+	// `if runtime.GOOS != "linux" { t.Skip(...) }`). Such skips are legitimate
+	// cross-platform guards, not tampering, so an added skip within the guard
+	// window is exempt.
 	tamperCapabilityGuardRe = regexp.MustCompile(
 		`\b(os\.Symlink|os\.Link|os\.Readlink|filepath\.EvalSymlinks|` +
 			`exec\.LookPath|LookPath|user\.Current|user\.Lookup|` +
-			`net\.Listen|net\.Dial)\b|testing\.Short\s*\(\s*\)`)
+			`net\.Listen|net\.Dial|runtime\.GOOS|runtime\.GOARCH)\b|testing\.Short\s*\(\s*\)`)
 	tamperAddedExitRe = regexp.MustCompile(
 		`\bos\.Exit\s*\(\s*0\s*\)|\bsys\.exit\s*\(\s*0\s*\)|\bprocess\.exit\s*\(\s*0\s*\)|(^|[^.\w])exit\s*\(\s*0\s*\)`)
 	// tamperBuildIgnoreRe matches an added Go build-ignore tag (excludes the
@@ -319,8 +323,13 @@ func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, 
 		switch {
 		case isDiffHeaderLine(line):
 			inHunk = false
+			// A guard and the skip it protects must be adjacent added lines; a
+			// hunk boundary breaks that adjacency, so reset the window rather
+			// than let an earlier guard exempt an unrelated skip in a later hunk.
+			s.guardWindow = 0
 		case strings.HasPrefix(line, "@@"):
 			inHunk = true
+			s.guardWindow = 0
 		case !inHunk && (strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++")):
 			// file header before any hunk; ignore
 		case inHunk && strings.HasPrefix(line, "+"):

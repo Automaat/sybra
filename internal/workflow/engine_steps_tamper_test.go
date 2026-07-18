@@ -113,6 +113,21 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: []string{"added-skip"},
 		},
 		{
+			name:      "platform_guarded_skip_same_line_not_flagged",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" { t.Skip(\"linux-only\") }\n",
+			wantRules: nil,
+		},
+		{
+			name:      "platform_guarded_skip_next_line_not_flagged",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOARCH != \"amd64\" {\n+\t\tt.Skip(\"amd64-only\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "guard_does_not_leak_across_hunks",
+			patch:     "@@ @@\n func TestGuarded(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n@@ @@\n func TestOther(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:  "two_new_identical_skips_same_commit_still_flags",
 			patch: "@@ @@\n func TestFoo(t *testing.T) {\n+\tt.Skip(\"flaky\")\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
 			baseContent: "func TestFoo(t *testing.T) {\n}\n\n" +
