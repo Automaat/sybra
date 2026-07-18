@@ -133,11 +133,15 @@ func recordPRFixVars(wfExec *Execution, stepID, output string) {
 	wfExec.SetVar("step."+stepID+"."+PRFixVerdictVar, string(verdict))
 	wfExec.SetVar("step."+stepID+".pr_fix_requires_human", strconv.FormatBool(verdict == PRFixHuman))
 	wfExec.SetVar("step."+stepID+".pr_fix_reason", reason)
+	// Always set (possibly to ""), never skip: a stale value from an earlier
+	// completion of this same step ID must not survive to be misread as this
+	// attempt's failing tests by prFixFailingTests. See prFixFailingTests'
+	// ok-but-empty branch, which depends on this var actually being present.
+	var failingTests string
 	if verdict == PRFixHuman {
-		if tests := extractPRFixFailingTests(output); len(tests) > 0 {
-			wfExec.SetVar("step."+stepID+".pr_fix_failing_tests", strings.Join(tests, "\n"))
-		}
+		failingTests = strings.Join(extractPRFixFailingTests(output), "\n")
 	}
+	wfExec.SetVar("step."+stepID+".pr_fix_failing_tests", failingTests)
 }
 
 func prFixVerdict(wfExec *Execution) (verdict PRFixVerdict, reason string) {

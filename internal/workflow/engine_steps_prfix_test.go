@@ -158,6 +158,33 @@ func TestExtractPRFixFailingTests(t *testing.T) {
 	}
 }
 
+// A second recordPRFixVars call for the same step ID (e.g. a re-armed retry)
+// whose output has no failing-test sentinels must clear any failing-tests
+// var a prior completion of that same step left behind — otherwise
+// prFixFailingTests would resurface a stale, unrelated attempt's tests as if
+// they belonged to this one.
+func TestRecordPRFixVars_ClearsStaleFailingTestsOnRetry(t *testing.T) {
+	t.Parallel()
+
+	wf := &Execution{}
+	wf.StepHistory = append(wf.StepHistory, StepRecord{StepID: "fix", Status: "completed", AgentID: "agent-1"})
+	recordPRFixVars(wf, "fix", "SYBRA_PR_FIX_RESULT: human-required\n"+
+		"SYBRA_PR_FIX_REASON: first attempt found a failing test\n"+
+		"SYBRA_PR_FIX_FAILING_TEST: pkg/a_test.go:1 TestA\n")
+	if got := prFixFailingTests(wf); len(got) != 1 || got[0] != "pkg/a_test.go:1 TestA" {
+		t.Fatalf("after first attempt: prFixFailingTests = %v, want [pkg/a_test.go:1 TestA]", got)
+	}
+
+	// A re-armed retry of the same step ID: a second StepRecord for "fix"
+	// whose output has no failing-test sentinels this time.
+	wf.StepHistory = append(wf.StepHistory, StepRecord{StepID: "fix", Status: "completed", AgentID: "agent-2"})
+	recordPRFixVars(wf, "fix", "SYBRA_PR_FIX_RESULT: human-required\n"+
+		"SYBRA_PR_FIX_REASON: missing deploy credential this time\n")
+	if got := prFixFailingTests(wf); len(got) != 0 {
+		t.Fatalf("after second attempt (no tests reported): prFixFailingTests = %v, want none — stale value from the first attempt leaked", got)
+	}
+}
+
 func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 	t.Parallel()
 
