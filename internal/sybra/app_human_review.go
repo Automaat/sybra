@@ -184,7 +184,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		return false
 	}
 	if t.Status != task.StatusHumanRequired {
-		h.skip(taskID, "status_"+string(t.Status))
+		h.skip(taskID, "stale_status_"+string(t.Status))
 		return false
 	}
 	// Idempotency gate: a prior run already produced a verdict — re-spawning
