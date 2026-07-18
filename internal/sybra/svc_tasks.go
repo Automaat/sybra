@@ -125,6 +125,41 @@ func (s *TaskService) ListTasks() ([]task.Task, error) {
 	return out, nil
 }
 
+// mirrorStaleTerminalWindow bounds how long a terminal (done/cancelled) task
+// keeps appearing in ListTasksForNode after it closed. The leader's Mirror
+// polls every DefaultReconcileInterval (30s); ten minutes is dozens of cycles
+// of headroom to deliver the final state before the task drops out, so a
+// large closed-task backlog stops being re-serialized (full body/plan/review
+// sidecars) on every reconcile forever — see #2188/#2258.
+const mirrorStaleTerminalWindow = 10 * time.Minute
+
+// ListTasksForNode returns the subset of the board relevant to a cluster
+// follower's mirror: tasks assigned to that node, excluding chat tasks and
+// terminal tasks closed longer than mirrorStaleTerminalWindow ago. Unlike
+// ListTasks, this is sized for repeated polling rather than a one-off full
+// board read.
+func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
+	all, err := s.tasks.List()
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for i := range all {
+		t := all[i]
+		if t.TaskType == task.TaskTypeChat {
+			continue
+		}
+		if t.AssignedNode != node {
+			continue
+		}
+		if task.IsTerminalStatus(t.Status) && t.ClosedAt != nil && time.Since(*t.ClosedAt) > mirrorStaleTerminalWindow {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 // GetTask returns a single task by ID.
 func (s *TaskService) GetTask(id string) (task.Task, error) {
 	t, err := s.tasks.Get(id)

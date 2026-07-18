@@ -162,6 +162,7 @@ export const ListTaskAuditEvents = pick(TaskSvc.ListTaskAuditEvents, http.ListTa
 export const GetTamperReport = pick(TaskSvc.GetTamperReport, http.GetTamperReport)
 export const GetTask = pick(TaskSvc.GetTask, http.GetTask)
 export const ListTasks = pick(TaskSvc.ListTasks, http.ListTasks)
+export const ListTasksForNode = pick(TaskSvc.ListTasksForNode, http.ListTasksForNode)
 export const ListTaskProgress = pick(TaskSvc.ListTaskProgress, http.ListTaskProgress)
 export const UpdateTask = pick(TaskSvc.UpdateTask, http.UpdateTask)
 export const AssignTask = pick(TaskSvc.AssignTask, http.AssignTask)
