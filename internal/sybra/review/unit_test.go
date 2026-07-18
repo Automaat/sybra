@@ -107,6 +107,27 @@ func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 }
 
+func TestBranchConflictPrompt_AllowsRebaseBeforePRExists(t *testing.T) {
+	t.Parallel()
+
+	prompt := branchConflictPrompt(task.Task{Branch: "fix/example"}, "main")
+
+	for _, want := range []string{
+		"git merge refs/remotes/origin/main",
+		"you may instead rebase onto",
+		"refs/remotes/origin/main, resolve the conflicts there",
+		"Prefer a merge; if you must rebase before the first PR exists, push the rewritten branch back with `--force-with-lease`",
+		"git push --force-with-lease \"$PUSH_REMOTE\" HEAD:fix/example",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("branch conflict prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Do not force-push or rewrite existing commits — this is a merge, never a rebase") {
+		t.Fatalf("branch conflict prompt still forbids rebase/force-push before PR creation:\n%s", prompt)
+	}
+}
+
 // A pr-fix agent that backgrounds its test run and then narrates "still
 // waiting" status messages instead of blocking on it trips the watchdog's
 // semantic-loop detector and burns the run for nothing. Both conflict

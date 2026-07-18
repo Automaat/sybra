@@ -138,6 +138,8 @@ func runCodexTestScenario(scenario string) bool {
 		runCodexTestVerdictPassWithReceiptPreamble()
 	case "test_verdict_fail":
 		runCodexTestVerdictFail()
+	case "test_verdict_fail_with_trailing_reasoning_item":
+		runCodexTestVerdictFailWithTrailingReasoningItem()
 	default:
 		return false
 	}
@@ -199,6 +201,51 @@ func runCodexTestVerdictFail() {
 			"status":   "pass",
 		}},
 		"unable_to_run_reason": "",
+	})
+	emitTurnCompleted(100, 20)
+}
+
+func runCodexTestVerdictFailWithTrailingReasoningItem() {
+	emitSchemaValidAgentMessage(map[string]any{
+		"verdict":           "FAIL",
+		"outcome":           "product_bug",
+		"failures_markdown": testFailureReport(),
+		"surface_kind":      "server",
+		"app_started":       true,
+		"start_command":     "go run ./cmd/test-server",
+		"readiness_probe": map[string]any{
+			"command":  "curl /status",
+			"expected": "HTTP 200",
+			"actual":   "HTTP 500",
+			"observed": "",
+			"output":   "HTTP 500",
+			"status":   "fail",
+			"url":      "",
+		},
+		"manual_probes": []map[string]string{{
+			"command":  "curl /status",
+			"expected": "expected output",
+			"actual":   "wrong output",
+			"observed": "",
+			"output":   "wrong output",
+			"status":   "fail",
+		}},
+		"automated_checks": []map[string]string{{
+			"command":  "go test ./internal/workflow",
+			"actual":   "",
+			"observed": "",
+			"output":   "ok",
+			"status":   "pass",
+		}},
+		"unable_to_run_reason": "",
+	})
+	emit(map[string]any{
+		"type": "item.completed",
+		"item": map[string]any{
+			"id":   "item_reasoning_0",
+			"type": "reasoning",
+			"text": "",
+		},
 	})
 	emitTurnCompleted(100, 20)
 }
