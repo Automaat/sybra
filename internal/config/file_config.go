@@ -89,7 +89,7 @@ func ParseFileConfig(data []byte) (*FileConfig, error) {
 	return cfg, nil
 }
 
-func parseSchemaVersion(root *yaml.Node) (int, bool, error) {
+func parseSchemaVersion(root *yaml.Node) (version int, hasVersion bool, err error) {
 	node := root
 	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
 		node = node.Content[0]
@@ -216,7 +216,7 @@ func validateKnownConfigKeys(root *yaml.Node, schemaVersion int) error {
 	if schemaVersion >= CurrentSchemaVersion {
 		aliases = schemaV2Aliases
 	}
-	return validateNodeAgainstType(root, reflect.TypeOf(Config{}), nil, aliases)
+	return validateNodeAgainstType(root, reflect.TypeFor[Config](), nil, aliases)
 }
 
 func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, aliases aliasIndex) error {
@@ -278,6 +278,8 @@ func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, a
 				}
 			}
 		}
+	default:
+		return nil
 	}
 	return nil
 }
@@ -292,8 +294,7 @@ func validateDurationAliasNode(node *yaml.Node, spec durationAliasSpec) error {
 
 func yamlFieldsForType(typ reflect.Type) map[string]reflect.Type {
 	fields := map[string]reflect.Type{}
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
+	for field := range typ.Fields() {
 		if field.PkgPath != "" {
 			continue
 		}
@@ -444,8 +445,7 @@ func convertDurationAliasValue(raw string, unit durationUnit, kind durationKind)
 }
 
 func parseFlexibleDuration(raw string) (time.Duration, error) {
-	if strings.HasSuffix(raw, "d") {
-		v := strings.TrimSuffix(raw, "d")
+	if v, ok := strings.CutSuffix(raw, "d"); ok {
 		days, err := strconv.ParseFloat(v, 64)
 		if err != nil {
 			return 0, fmt.Errorf("invalid duration %q", raw)
