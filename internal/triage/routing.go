@@ -25,11 +25,11 @@ func RouteStatus(size, taskType, projectType string) task.Status {
 	return task.StatusTodo
 }
 
-// RouteMode optionally overrides the LLM's mode pick based on project type.
-// Work projects get forced to interactive unless the task is a PR review.
+// RouteMode returns the mode to persist for a triaged task. The LLM's pick is
+// currently passed through unchanged; headless is the preferred execution mode
+// (see the interactive-removal umbrella), so no project type is forced to
+// interactive. taskType/projectType are retained in the signature for callers
+// and future routing.
 func RouteMode(llmMode, taskType, projectType string) string {
-	if projectType == "work" && taskType != "review" {
-		return task.AgentModeInteractive
-	}
 	return llmMode
 }

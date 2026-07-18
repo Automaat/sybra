@@ -1112,6 +1112,12 @@ func CurrentCommit(ctx context.Context, worktreePath string) (string, error) {
 	return strings.TrimSpace(sha), nil
 }
 
+// RemoteBranchHead returns the live head SHA of branch on remote via
+// `git ls-remote`. Returns ("", nil) when the remote branch does not exist.
+func RemoteBranchHead(ctx context.Context, worktreePath, remote, branch string) (string, error) {
+	return remoteBranchHead(ctx, worktreePath, remote, branch)
+}
+
 // isAncestor reports whether ancestor is reachable from descendant in the
 // worktree's history. Returns false when either ref is unknown.
 func isAncestor(ctx context.Context, worktreePath, ancestor, descendant string) bool {
