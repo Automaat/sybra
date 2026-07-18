@@ -1500,7 +1500,53 @@ func TestStoreListRebuildsWarmCacheAfterExternalDeleteWithoutInvalidate(t *testi
 	}
 }
 
-func TestStoreListCacheSkipsSnapshotWhenDirChangedDuringBuild(t *testing.T) {
+func TestStoreListRebuildsWarmCacheAfterExternalUpdateWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := store.Create("Alpha", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat tasks dir: %v", err)
+	}
+
+	a.Status = StatusHumanRequired
+	a.UpdatedAt = a.UpdatedAt.Add(time.Second)
+	a.StatusChangedAt = a.UpdatedAt
+	data, err := Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(a.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(dir, dirInfo.ModTime(), dirInfo.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("want 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Status != StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", tasks[0].Status, StatusHumanRequired)
+	}
+}
+
+func TestStoreListCacheSkipsSnapshotWhenFilesChangedDuringBuild(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store, err := NewStore(dir)
@@ -1516,9 +1562,13 @@ func TestStoreListCacheSkipsSnapshotWhenDirChangedDuringBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prime cache: %v", err)
 	}
-	startDirModTime, ok := store.dirModTime()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startSnapshot, ok := store.listSnapshotFromEntries(entries)
 	if !ok {
-		t.Fatal("stat tasks dir")
+		t.Fatal("snapshot tasks dir")
 	}
 
 	now := time.Now().UTC()
@@ -1541,11 +1591,8 @@ func TestStoreListCacheSkipsSnapshotWhenDirChangedDuringBuild(t *testing.T) {
 	if err := os.WriteFile(external.FilePath, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chtimes(dir, startDirModTime.Add(2*time.Second), startDirModTime.Add(2*time.Second)); err != nil {
-		t.Fatal(err)
-	}
 
-	if store.storeListCacheIfDirFresh(staleTasks, startDirModTime) {
+	if store.storeListCacheIfSnapshotFresh(staleTasks, startSnapshot) {
 		t.Fatal("stale snapshot was stored as a valid list cache")
 	}
 
@@ -1559,6 +1606,60 @@ func TestStoreListCacheSkipsSnapshotWhenDirChangedDuringBuild(t *testing.T) {
 	}
 	if !seen[a.ID] || !seen[external.ID] {
 		t.Fatalf("List IDs = %v, want %q and %q", seen, a.ID, external.ID)
+	}
+}
+
+func TestStoreCreateInvalidatesWarmCacheAfterExternalAddWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := store.Create("Alpha", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	now := time.Now().UTC()
+	external := Task{
+		ID:              "extern02",
+		Slug:            "external",
+		Title:           "External",
+		Status:          StatusTodo,
+		TaskType:        TaskTypeNormal,
+		AgentMode:       AgentModeHeadless,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		StatusChangedAt: now,
+		FilePath:        filepath.Join(dir, "extern02.md"),
+	}
+	data, err := Marshal(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(external.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := store.Create("Charlie", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tk := range tasks {
+		seen[tk.ID] = true
+	}
+	if !seen[a.ID] || !seen[external.ID] || !seen[c.ID] {
+		t.Fatalf("List IDs = %v, want %q, %q, and %q", seen, a.ID, external.ID, c.ID)
 	}
 }
 
