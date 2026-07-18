@@ -22,10 +22,7 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 		return stepDone(step, "skipped: no check config getter")
 	}
 
-	timeout := e.verifyTimeout
-	if timeout <= 0 {
-		timeout = verifyChecksDefaultTimeout
-	}
+	timeout := resolveWorkflowCheckTimeout(e.verifyTimeout)
 	cmds := e.checks.CodegenCommands(e.ctx, taskID)
 	if len(cmds) == 0 {
 		return stepDone(step, "skipped: no codegen commands configured")
@@ -36,6 +33,14 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return stepDone(step, "skipped: no worktree for task")
+	}
+	if timeout != e.verifyTimeout && e.verifyTimeout > 0 {
+		e.logger.Info("workflow.codegen-gate.timeout-scaled",
+			"task_id", taskID, "base", e.verifyTimeout.String(), "effective", timeout.String())
+	}
+	if e.verifyTimeout <= 0 && timeout != verifyChecksDefaultTimeout {
+		e.logger.Info("workflow.codegen-gate.timeout-scaled",
+			"task_id", taskID, "base", verifyChecksDefaultTimeout.String(), "effective", timeout.String())
 	}
 
 	ctx, cancel := context.WithTimeout(e.ctx, timeout)
