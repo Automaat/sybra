@@ -1293,8 +1293,8 @@ func TestStoreCreateDefaultMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.AgentMode != "interactive" {
-		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "interactive")
+	if created.AgentMode != "headless" {
+		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "headless")
 	}
 }
 
