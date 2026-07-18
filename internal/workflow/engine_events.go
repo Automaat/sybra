@@ -958,7 +958,7 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 
 func isResumableStepType(t StepType) bool {
 	switch t {
-	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepCreatePR, StepPushBranch:
+	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepCreatePR, StepPushBranch, StepPromoteBestOfN:
 		return true
 	default:
 		return false
