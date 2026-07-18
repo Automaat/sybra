@@ -1146,14 +1146,7 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 
-		if _, waitSkip := resumeSkipReasonForStatus(t.Status); step.Type == StepWaitHuman && !waitSkip && step.Config.Status != "" && t.Status != step.Config.Status {
-			if err := e.tasks.UpdateTaskStatus(t.ID, step.Config.Status, step.Config.StatusReason); err != nil {
-				e.logger.Warn("workflow.resume-stalled.reconcile-status", "task_id", t.ID, "step", step.ID, "err", err)
-			} else {
-				e.logger.Info("workflow.resume-stalled.reconcile-status",
-					"task_id", t.ID, "step", step.ID, "from", t.Status, "to", step.Config.Status)
-			}
-		}
+		e.reconcileWaitHumanStatus(t, step)
 
 		if !isResumableStepType(step.Type) {
 			continue
@@ -1212,6 +1205,21 @@ func (e *Engine) ResumeStalled() {
 
 		e.finishResumeStalledStep(t.ID, &def, step, t.Workflow, fresh)
 	}
+}
+
+func (e *Engine) reconcileWaitHumanStatus(t *TaskInfo, step *Step) {
+	if t == nil || step == nil || step.Type != StepWaitHuman || step.Config.Status == "" || t.Status == step.Config.Status {
+		return
+	}
+	if _, waitSkip := resumeSkipReasonForStatus(t.Status); waitSkip {
+		return
+	}
+	if err := e.tasks.UpdateTaskStatus(t.ID, step.Config.Status, step.Config.StatusReason); err != nil {
+		e.logger.Warn("workflow.resume-stalled.reconcile-status", "task_id", t.ID, "step", step.ID, "err", err)
+		return
+	}
+	e.logger.Info("workflow.resume-stalled.reconcile-status",
+		"task_id", t.ID, "step", step.ID, "from", t.Status, "to", step.Config.Status)
 }
 
 func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *Step, wf *Execution, fresh TaskInfo) {

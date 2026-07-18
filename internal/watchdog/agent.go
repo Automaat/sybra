@@ -724,6 +724,8 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 			reason := "watchdog stop"
 			if verdict.Reason != "" {
 				reason = "watchdog: " + verdict.Reason
+			} else if verdict.ReasonKind != "" {
+				reason = "watchdog: " + verdict.ReasonKind
 			}
 			status := task.StatusHumanRequired
 			if trigger == "stall" || ((trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "generic_stall") {

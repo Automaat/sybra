@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
 func TestStallLimit(t *testing.T) {
@@ -473,6 +474,40 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 	}
 	if got.StatusReason != "watchdog: repeating the same failing fix with fabricated progress" {
 		t.Fatalf("status_reason = %q, want watchdog reason", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on reward_hacking loop stop verdict")
+	}
+}
+
+func TestApplyVerdict_LoopStopWithRewardHackingEmptyReasonPersistsKind(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+		Stuck:          true,
+		Recommendation: "stop",
+		ReasonKind:     "reward_hacking",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.StatusReason != "watchdog: reward_hacking" {
+		t.Fatalf("status_reason = %q, want watchdog reason kind", got.StatusReason)
+	}
+	if watchdogreason.IsRetryableStop(got.StatusReason) {
+		t.Fatalf("status_reason %q must not be retryable", got.StatusReason)
 	}
 	if !stopped {
 		t.Fatal("stopAgent not called on reward_hacking loop stop verdict")

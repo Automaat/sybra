@@ -5,6 +5,7 @@ import "strings"
 const (
 	hangPrefix                 = "watchdog hang"
 	rateLimitPrefix            = "watchdog: rate limit"
+	rewardHackingPrefix        = "watchdog: reward_hacking"
 	verifyFailedPrefix         = "watchdog: verify suite still fails after loop stop:"
 	verifyUnconfirmedPrefix    = "watchdog: could not confirm agent stopped before verify"
 	retryBudgetExhaustedPhrase = "retry budget exhausted"
@@ -30,6 +31,9 @@ func IsRetryableStop(reason string) bool {
 		return true
 	}
 	if !strings.HasPrefix(reason, "watchdog:") || IsRateLimit(reason) {
+		return false
+	}
+	if reason == rewardHackingPrefix || strings.HasPrefix(reason, rewardHackingPrefix+":") {
 		return false
 	}
 	if strings.HasPrefix(reason, verifyFailedPrefix) || strings.HasPrefix(reason, verifyUnconfirmedPrefix) {
