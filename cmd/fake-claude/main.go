@@ -176,22 +176,23 @@ var scenarioHandlers = map[string]func(string){
 		emitAssistant("Implementing...")
 		emitResult("Implementation done. PR created")
 	},
-	"interactive_implement": func(string) { runInteractiveImplement() },
-	"evaluate":              runEvaluate,
-	"pr_created":            func(string) { runPRCreated() },
-	"signal_kill":           func(string) { runSignalKill() },
-	"block_silent":          func(string) { _, _ = io.Copy(io.Discard, os.Stdin) },
-	"hang":                  func(string) { runHang() },
-	"success_then_hang":     func(string) { runSuccessThenHang() },
-	"auth_error":            func(string) { emitSystem(); emitAssistant("Authentication failed. Please re-auth."); os.Exit(1) },
-	"malformed_pr_output":   func(string) { runMalformedPROutput() },
-	"perf_stream":           func(string) { runPerfStream() },
-	"perf_burst":            func(string) { runPerfBurst() },
-	"perf_long":             func(string) { runPerfLong() },
-	"sybra_home_sentinel":   runSybraHomeSentinel,
-	"best_of_n_attempt":     func(string) { runBestOfNAttempt() },
-	"best_of_n_judge":       func(string) { runBestOfNJudge() },
-	"k8s_repo_change":       runK8sRepoChange,
+	"interactive_implement":           func(string) { runInteractiveImplement() },
+	"evaluate":                        runEvaluate,
+	"pr_created":                      func(string) { runPRCreated() },
+	"human_review_invalid_structured": func(string) { runHumanReviewInvalidStructured() },
+	"signal_kill":                     func(string) { runSignalKill() },
+	"block_silent":                    func(string) { _, _ = io.Copy(io.Discard, os.Stdin) },
+	"hang":                            func(string) { runHang() },
+	"success_then_hang":               func(string) { runSuccessThenHang() },
+	"auth_error":                      func(string) { emitSystem(); emitAssistant("Authentication failed. Please re-auth."); os.Exit(1) },
+	"malformed_pr_output":             func(string) { runMalformedPROutput() },
+	"perf_stream":                     func(string) { runPerfStream() },
+	"perf_burst":                      func(string) { runPerfBurst() },
+	"perf_long":                       func(string) { runPerfLong() },
+	"sybra_home_sentinel":             runSybraHomeSentinel,
+	"best_of_n_attempt":               func(string) { runBestOfNAttempt() },
+	"best_of_n_judge":                 func(string) { runBestOfNJudge() },
+	"k8s_repo_change":                 runK8sRepoChange,
 }
 
 func scenarioNeedsPromptContext(scenario string) bool {
@@ -461,6 +462,12 @@ func runInteractiveImplement() {
 	emitAssistant("Implementing interactively...")
 	emitResult("Implementation done. PR created")
 	_, _ = io.Copy(io.Discard, os.Stdin)
+}
+
+func runHumanReviewInvalidStructured() {
+	emitSystem()
+	emitAssistant(`{"decision":"human","reason":"","recoverable_action":"none","confidence":"high"}`)
+	emitResult("invalid structured verdict")
 }
 
 // runPRCreated emits an implement result whose text carries a PR URL, so the

@@ -30,6 +30,7 @@ const (
 	humanReviewMaxAgentTurns  = 40
 	humanReviewMaxAgentResult = 4000
 	humanReviewWindow         = time.Hour
+	humanReviewFallbackModel  = "haiku"
 
 	// humanReviewMaxPerTaskPerWindow caps how many times a SINGLE task can
 	// spawn a review agent within humanReviewWindow. The global window
@@ -87,6 +88,14 @@ type humanReviewHandler struct {
 // --json-schema (verdict.Schema) and parsed by verdict.Parse. Aliased here
 // so the rest of this file (and its tests) keep the historical local name.
 type verdictDecision = verdict.Decision
+
+type humanReviewSpawnOptions struct {
+	Provider              string
+	Model                 string
+	IgnoreRenderedVerdict bool
+	SkipABVariant         bool
+	RetryReason           string
+}
 
 func newHumanReviewHandler(
 	cfg *config.Config,
@@ -216,10 +225,15 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.skip(taskID, "no_project")
 		return false
 	}
-	// Work-Data Confidentiality: if the task's project is work-typed, the
-	// review still runs (we want the diagnosis) but the prompt is augmented
-	// with redaction instructions and the verdict is routed to a local
-	// sybra task in onComplete rather than the public GH sink.
+	return h.spawnReview(t, prevStatus, humanReviewSpawnOptions{})
+}
+
+func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts humanReviewSpawnOptions) bool {
+	taskID := t.ID
+	if strings.TrimSpace(t.ProjectID) == "" {
+		h.skip(taskID, "no_project")
+		return false
+	}
 	var wctx *WorkScrubContext
 	if h.workCtx != nil {
 		wctx = h.workCtx(t.ProjectID)
@@ -241,7 +255,6 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.skip(taskID, "task_rate_limited")
 		return false
 	}
-	// Reserve the slot before spawning so a racing second flip is rejected.
 	h.inflight[taskID] = ""
 	now := h.now()
 	h.recent = append(h.recent, now)
@@ -250,11 +263,16 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 
 	dir, readOnlyDir := humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
 	prompt := h.buildPrompt(t, dir, wctx)
-	cfg := h.agents.ApplyABVariant(agent.RunConfig{
+	model := h.cfg.HumanReviewModel()
+	if strings.TrimSpace(opts.Model) != "" {
+		model = opts.Model
+	}
+	cfg := agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RoleHumanReview.AgentName(t.Title),
 		Mode:                   "headless",
-		Model:                  h.cfg.HumanReviewModel(),
+		Provider:               strings.TrimSpace(opts.Provider),
+		Model:                  model,
 		Prompt:                 prompt,
 		Dir:                    dir,
 		ReadOnlyDir:            readOnlyDir,
@@ -262,15 +280,21 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		OneShot:                true,
 		OutputSchema:           verdict.Schema,
 		IgnoreConcurrencyLimit: true,
-	}, h.cfg.ABTesting, taskID, string(agent.RoleHumanReview))
-	if !h.preRunEligible(taskID, now) {
+	}
+	if !opts.SkipABVariant {
+		cfg = h.agents.ApplyABVariant(cfg, h.cfg.ABTesting, taskID, string(agent.RoleHumanReview))
+	}
+	if !h.preRunEligible(taskID, now, opts.IgnoreRenderedVerdict) {
 		return false
 	}
 	ag, err := h.agents.Run(cfg)
 	if err != nil {
 		h.clearInflight(taskID)
-		h.logger.Error("human-review.spawn", "task_id", taskID, "err", err)
-		h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{"reason": "spawn_failed", "err": err.Error()})
+		h.logger.Error("human-review.spawn", "task_id", taskID, "provider", cfg.Provider, "model", cfg.Model, "err", err)
+		h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{
+			"reason": "spawn_failed", "err": err.Error(),
+			"provider": cfg.Provider, "model": cfg.Model, "retry_reason": opts.RetryReason,
+		})
 		return false
 	}
 	h.mu.Lock()
@@ -282,6 +306,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		Role:      string(agent.RoleHumanReview),
 		Mode:      "headless",
 		Provider:  ag.Provider,
+		Model:     ag.Model,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
 		Prompt:    cfg.Prompt,
@@ -289,9 +314,127 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.logger.Error("human-review.add-run", "task_id", taskID, "agent_id", ag.ID, "err", err)
 	}
 	h.logAudit(audit.EventHumanReviewSpawned, taskID, ag.ID, map[string]any{
-		"prev_status": prevStatus, "model": h.cfg.HumanReviewModel(), "prompt_hash": ag.GetPromptHash(),
+		"prev_status":  prevStatus,
+		"provider":     ag.Provider,
+		"model":        ag.Model,
+		"prompt_hash":  ag.GetPromptHash(),
+		"fallback":     opts.RetryReason != "",
+		"retry_reason": opts.RetryReason,
 	})
 	return true
+}
+
+func (h *humanReviewHandler) handleStructuredVerdictFailure(current task.Task, ag *agent.Agent, final string, parseErr error) bool {
+	if !ag.HasOutputSchema() {
+		return false
+	}
+	retryProvider, retryModel, ok := humanReviewFallbackTarget(ag.Provider)
+	if !ok || h.humanReviewCycleRunCount(current) >= humanReviewMaxPerTaskPerWindow {
+		return false
+	}
+	h.markVerdictRendered(current.ID, ag.ID)
+	h.logAudit(audit.EventHumanReviewSkipped, current.ID, ag.ID, map[string]any{
+		"reason":         "structured_verdict_retry",
+		"err":            parseErr.Error(),
+		"provider":       ag.Provider,
+		"model":          ag.Model,
+		"retry_provider": retryProvider,
+		"retry_model":    retryModel,
+		"empty_output":   strings.TrimSpace(final) == "",
+	})
+	h.logger.Warn("human-review.verdict.retry",
+		"task_id", current.ID, "agent_id", ag.ID,
+		"provider", ag.Provider, "model", ag.Model,
+		"retry_provider", retryProvider, "retry_model", retryModel,
+		"err", parseErr)
+	h.mu.Lock()
+	delete(h.inflight, current.ID)
+	h.mu.Unlock()
+	return h.spawnReview(current, string(task.StatusHumanRequired), humanReviewSpawnOptions{
+		Provider:              retryProvider,
+		Model:                 retryModel,
+		IgnoreRenderedVerdict: true,
+		SkipABVariant:         true,
+		RetryReason:           "structured_verdict_failure",
+	})
+}
+
+func humanReviewFallbackTarget(currentProvider string) (provider, model string, ok bool) {
+	currentProvider = strings.TrimSpace(currentProvider)
+	switch currentProvider {
+	case "claude":
+		return "codex", humanReviewFallbackModel, true
+	case "codex":
+		return "claude", humanReviewFallbackModel, true
+	}
+	for _, candidate := range []string{"codex", "claude"} {
+		if candidate == currentProvider || !agent.ProviderSupportsOutputSchema(candidate) {
+			continue
+		}
+		return candidate, humanReviewFallbackModel, true
+	}
+	return "", "", false
+}
+
+func (h *humanReviewHandler) humanReviewCycleRunCount(t task.Task) int {
+	var count int
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if run.Role != string(agent.RoleHumanReview) {
+			continue
+		}
+		if t.TestingCycleStartedAt != nil && run.StartedAt.Before(*t.TestingCycleStartedAt) {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID string, v verdictDecision) {
+	note := h.scrubForTask(current.ProjectID, v.Summary)
+	if status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction); ok && current.Status == task.StatusHumanRequired {
+		newBody := appendSection(current.Body, "Auto-review: unblocked", note)
+		statusReason := "auto-review recovery: " + strings.TrimSpace(v.Summary)
+		if _, err := h.tasks.Update(current.ID, task.Update{
+			Body:         &newBody,
+			Status:       task.Ptr(status),
+			StatusReason: task.Ptr(statusReason),
+		}); err != nil {
+			h.logger.Error("human-review.unblocked.update", "task_id", current.ID, "agent_id", agentID, "status", status, "err", err)
+			return
+		}
+		h.markVerdictRendered(current.ID, agentID)
+		return
+	}
+	if h.appendNote(current.ID, "Auto-review: unblocked", note) {
+		h.markVerdictRendered(current.ID, agentID)
+	}
+}
+
+func safeHumanReviewRecoveryStatus(action string) (task.Status, bool) {
+	switch strings.TrimSpace(action) {
+	case "todo":
+		return task.StatusTodo, true
+	case "planning":
+		return task.StatusPlanning, true
+	case "plan-review":
+		return task.StatusPlanReview, true
+	case "in-progress":
+		return task.StatusInProgress, true
+	case "ready-review":
+		return task.StatusReadyReview, true
+	case "in-review":
+		return task.StatusInReview, true
+	case "testing":
+		return task.StatusTesting, true
+	case "ready-pr":
+		return task.StatusReadyPR, true
+	case "done":
+		return task.StatusDone, true
+	default:
+		return "", false
+	}
 }
 
 // onComplete is the routing target inside App.onAgentComplete for runs whose
@@ -355,11 +498,15 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 			h.handleCrashedVerdict(taskID, ag)
 			return
 		}
+		if h.handleStructuredVerdictFailure(current, ag, final, parseErr) {
+			return
+		}
 		h.handleUnparseableVerdict(ag, current, final, parseErr)
 		return
 	}
 	h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
 		"decision": v.Decision, "summary": v.Summary, "verdict_source": string(source),
+		"recoverable_action": v.RecoverableAction, "confidence": v.Confidence,
 	})
 
 	switch v.Decision {
@@ -403,7 +550,11 @@ func (h *humanReviewHandler) handleUnparseableVerdict(ag *agent.Agent, current t
 		return
 	}
 	h.logger.Warn("human-review.verdict.parse", "task_id", taskID, "agent_id", ag.ID, "err", parseErr)
-	if h.appendNote(taskID, "Auto-review (unparseable verdict)", h.scrubForTask(current.ProjectID, final)) {
+	body := strings.TrimSpace(final)
+	if body == "" {
+		body = "The auto-review agent did not return a usable structured verdict.\n\nError: " + parseErr.Error()
+	}
+	if h.appendNote(taskID, "Auto-review (unparseable verdict)", h.scrubForTask(current.ProjectID, body)) {
 		h.markVerdictRendered(taskID, ag.ID)
 	}
 	h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
@@ -658,11 +809,10 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 func (h *humanReviewHandler) recordUnblocked(current task.Task, agentID string, v verdictDecision, source verdict.Source) {
 	h.logAudit(audit.EventHumanReviewVerdict, current.ID, agentID, map[string]any{
 		"decision": v.Decision, "summary": v.Summary, "verdict_source": string(source),
+		"recoverable_action": v.RecoverableAction, "confidence": v.Confidence,
 	})
 	h.fileAutonomyIssue(current.ID, current.ProjectID, agentID, v)
-	if h.appendNote(current.ID, "Auto-review: unblocked", h.scrubForTask(current.ProjectID, v.Summary)) {
-		h.markVerdictRendered(current.ID, agentID)
-	}
+	h.applyUnblockedRecovery(current, agentID, v)
 }
 
 func (h *humanReviewHandler) workCtxFor(projectID string) *WorkScrubContext {
@@ -1063,7 +1213,7 @@ func (h *humanReviewHandler) releaseReservedSlot(taskID string, reservedAt time.
 // status-hook goroutine can sit behind unrelated work long enough for another
 // actor to move the task off human-required, and launching a reviewer after
 // that only creates a stale run whose completion we later discard.
-func (h *humanReviewHandler) preRunEligible(taskID string, reservedAt time.Time) bool {
+func (h *humanReviewHandler) preRunEligible(taskID string, reservedAt time.Time, ignoreRendered bool) bool {
 	current, err := h.tasks.Get(taskID)
 	if err != nil {
 		h.releaseReservedSlot(taskID, reservedAt)
@@ -1076,7 +1226,7 @@ func (h *humanReviewHandler) preRunEligible(taskID string, reservedAt time.Time)
 		h.skip(taskID, "status_"+string(current.Status))
 		return false
 	}
-	if verdictAlreadyRendered(current) {
+	if !ignoreRendered && verdictAlreadyRendered(current) {
 		h.releaseReservedSlot(taskID, reservedAt)
 		h.skip(taskID, "verdict_rendered")
 		return false
@@ -1215,7 +1365,11 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScru
 	b.WriteString("  - \"unblocked\": you moved the task forward yourself (fixed + pushed, opened/linked a PR, advanced its status) — it is no longer waiting on you.\n")
 	b.WriteString("  - \"human\": a human genuinely must act (scope, creative decision, missing credential, unreachable system); the task stays human-required.\n")
 	b.WriteString("  - \"sybra_bug\": you could not unblock it and the cause is a Sybra defect; the host files the issue and blocks the task pending the fix.\n")
-	b.WriteString("- `summary`: one sentence — what you did to unblock it, what a human must decide, or the diagnosis.\n")
+	b.WriteString("- `reason`: one sentence — what you did to unblock it, what a human must decide, or the diagnosis.\n")
+	b.WriteString("- `recoverable_action`: one of `none`, `todo`, `planning`, `plan-review`, `in-progress`, `ready-review`, `in-review`, `testing`, `ready-pr`, `done`.\n")
+	b.WriteString("  - Use `none` when you already moved the task yourself or when no safe host-side status change applies.\n")
+	b.WriteString("  - For `unblocked`, set this to the target workflow status when the host should move the task back into the pipeline for you.\n")
+	b.WriteString("- `confidence`: `low` | `medium` | `high`.\n")
 	b.WriteString("- `issue_title` / `issue_body` / `issue_labels`: the issue payload. REQUIRED for sybra_bug. For unblocked or human, fill these when there is a real Sybra autonomy gap worth tracking (the host files it) — leave null only when there is genuinely nothing to file. `issue_title` must be conventional-commit format (e.g. fix(workflow): ...); `issue_body` = \"## What happened\\n...\\n\\n## Repro\\n...\\n\\n## Suspected cause\\n...\\n\\n## Autonomy fix\\n...\".\n\n")
 	b.WriteString("Set unused issue_* fields to null (the schema requires the keys to be present).\n")
 	return b.String()
