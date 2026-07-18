@@ -94,7 +94,7 @@ func ResolvedUnmergedPaths(ctx context.Context, wtPath string) ([]string, error)
 			}
 			return nil, fmt.Errorf("read unmerged path %s: %w", path, readErr)
 		}
-		if hasConflictMarker(data) {
+		if isBinaryContent(data) || hasConflictMarker(data) {
 			return nil, nil
 		}
 		resolved = append(resolved, path)
