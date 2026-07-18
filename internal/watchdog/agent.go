@@ -233,7 +233,9 @@ type Watchdog struct {
 
 	// verifyNow re-runs a task's verify suite before applyVerdict escalates an
 	// ambiguous loop-stop, so a stale judge verdict doesn't strand honest work
-	// (#2155). Nil falls through to unconditional escalation.
+	// (#2155). The injected verifier owns its command timeout; this layer must
+	// not impose a smaller generic cap than the workflow check budget. Nil
+	// falls through to unconditional escalation.
 	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
 }
 
@@ -777,12 +779,6 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 	}
 }
 
-// verifyNowTimeout bounds a single on-demand verify re-run triggered by an
-// ambiguous loop/budget stop verdict — generous enough for a real test suite,
-// short enough that a hung verify command cannot indefinitely delay the
-// escalation decision it exists to inform.
-const verifyNowTimeout = 5 * time.Minute
-
 // killForVerifyTimeout bounds how long stopAndVerifyAmbiguousLoop waits for
 // the stopped agent's process to actually exit before re-running verify in
 // its worktree, matching the existing KillAgentsForTask convention used
@@ -846,9 +842,7 @@ func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeRea
 	if w.verifyNow == nil {
 		return task.StatusHumanRequired, judgeReason
 	}
-	vctx, cancel := context.WithTimeout(ctx, verifyNowTimeout)
-	defer cancel()
-	verified, passed, failedCmd, output, err := w.verifyNow(vctx, taskID)
+	verified, passed, failedCmd, output, err := w.verifyNow(ctx, taskID)
 	if !verified || err != nil {
 		return task.StatusHumanRequired, judgeReason
 	}

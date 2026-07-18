@@ -154,7 +154,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 	e.repairTornNodeModules(e.ctx, taskID, wtPath)
 
-	failedCmd, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
+	failedCmd, output, runErr := e.runVerifySuiteWithRetry(e.ctx, taskID, wtPath, cmds, timeout, step.ID)
 
 	if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {
 		if healed, fc, out, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
@@ -230,8 +230,18 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, pa
 		return false, false, "", "", nil
 	}
 	e.repairTornNodeModules(ctx, taskID, wtPath)
-	maybeMiseTrust(ctx, wtPath)
-	failedCmd, output, err = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+
+	timeout := resolveWorkflowCheckTimeout(e.verifyTimeout)
+	if timeout != e.verifyTimeout && e.verifyTimeout > 0 {
+		e.logger.Info("workflow.verify-now.timeout-scaled",
+			"task_id", taskID, "base", e.verifyTimeout.String(), "effective", timeout.String())
+	}
+	if e.verifyTimeout <= 0 && timeout != verifyChecksDefaultTimeout {
+		e.logger.Info("workflow.verify-now.timeout-scaled",
+			"task_id", taskID, "base", verifyChecksDefaultTimeout.String(), "effective", timeout.String())
+	}
+
+	failedCmd, output, err = e.runVerifySuiteWithRetry(ctx, taskID, wtPath, cmds, timeout, "verify_now")
 	if err != nil {
 		return true, false, failedCmd, output, err
 	}
@@ -242,13 +252,13 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, pa
 // returns an error so the workflow stalls instead of advancing past the gate —
 // the YAML transition keys off task.status, so a silently-failed write would
 // otherwise route a failing implementation straight to review.
-func (e *Engine) runVerifySuiteWithRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (failedCmd, output string, runErr error) {
+func (e *Engine) runVerifySuiteWithRetry(parent context.Context, taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (failedCmd, output string, runErr error) {
 	for attempt := 0; attempt <= verifyChecksTimeoutRetries; attempt++ {
-		ctx, cancel := context.WithTimeout(e.ctx, timeout)
+		ctx, cancel := context.WithTimeout(parent, timeout)
 		maybeMiseTrust(ctx, wtPath)
 		failedCmd, output, runErr = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 		cancel()
-		if !errors.Is(runErr, context.DeadlineExceeded) || e.ctx.Err() != nil {
+		if !errors.Is(runErr, context.DeadlineExceeded) || parent.Err() != nil {
 			return failedCmd, output, runErr
 		}
 		if attempt < verifyChecksTimeoutRetries {
@@ -276,7 +286,7 @@ func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, tim
 			"task_id", taskID, "cmd", trimDiffLine(sFailed), "err", sErr, "tail", tailString(sOut, 400))
 		return false, "", "", nil
 	}
-	failedCmd, output, runErr = e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, stepID)
+	failedCmd, output, runErr = e.runVerifySuiteWithRetry(e.ctx, taskID, wtPath, cmds, timeout, stepID)
 	e.logger.Info("workflow.verify-checks.toolchain-heal.reran",
 		"task_id", taskID, "step", stepID, "still_failing", failedCmd != "" || runErr != nil)
 	return true, failedCmd, output, runErr

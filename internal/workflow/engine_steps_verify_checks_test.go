@@ -154,6 +154,42 @@ func TestVerifyTaskNow_CommandFails(t *testing.T) {
 	}
 }
 
+func TestVerifyTaskNow_TimeoutFailsClosed(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, _ := newVerifyChecksEngine(t, wt, []string{"sleep 1"})
+	engine.SetVerifyTimeout(50 * time.Millisecond)
+
+	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if !verified || passed {
+		t.Fatalf("verified=%v passed=%v, want verified=true passed=false", verified, passed)
+	}
+}
+
+func TestVerifyTaskNow_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
+	orig := workflowCheckLoadPerCPU
+	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, _ := newVerifyChecksEngine(t, wt, []string{"sleep 0.2"})
+	engine.SetVerifyTimeout(100 * time.Millisecond)
+
+	verified, passed, failedCmd, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, output)
+	}
+	if !verified || !passed {
+		t.Fatalf("verified=%v passed=%v failedCmd=%q output=%q, want both true", verified, passed, failedCmd, output)
+	}
+}
+
 func TestVerifyTaskNow_RepairsTornNodeModulesBeforeRunning(t *testing.T) {
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	frontend := filepath.Join(wt, "frontend")
