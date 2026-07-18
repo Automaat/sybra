@@ -283,13 +283,17 @@ func hasFixableIssue(issues []github.PRIssue) bool {
 // PR is now clearly open, mergeable, green, and free of every fixable issue
 // kind, the blocker cleared, so the task is reconciled back to in-review,
 // latched against repeat flip-flops, and its retry-tracker entry is cleared so
-// a fresh pr-fix budget is available should the same kind recur.
-func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs []github.PullRequest) {
+// a fresh pr-fix budget is available should the same kind recur. When the live
+// monitored snapshot already carries the PR, return a same-cycle ready_to_merge
+// follow-up so the post-reconcile poll can reuse handleAutoMerge immediately
+// instead of leaving a green reviewed pet PR open until the next tick.
+func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs []github.PullRequest) []github.PRIssue {
 	byNumber, byBranch := indexMonitoredPRs(monitoredPRs)
 	fetchFn := github.FetchPRState
 	if r.fetchPRStateFn != nil {
 		fetchFn = r.fetchPRStateFn
 	}
+	var followups []github.PRIssue
 
 	for i := range tasks {
 		t := &tasks[i]
@@ -354,5 +358,13 @@ func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs
 		})
 		r.logger.Info("pr-monitor.reconcile-blocker",
 			"task_id", t.ID, "pr", t.PRNumber, "kind", kind, "prior_reason", priorReason)
+		if pr := matchingPR(t, byNumber, byBranch); pr != nil {
+			followups = append(followups, github.PRIssue{
+				Kind:   github.PRIssueReadyToMerge,
+				TaskID: t.ID,
+				PR:     *pr,
+			})
+		}
 	}
+	return followups
 }

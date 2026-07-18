@@ -347,7 +347,15 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	r.scanForReverts(ctx, tasks)
 	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.reconcilePRPhases(tasks, monitoredPRs)
-	r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
+	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
+	if r.projects != nil {
+		for i := range reconciledReady {
+			r.handleAutoMerge(reconciledReady[i])
+		}
+		if len(reconciledReady) > 0 {
+			issues = append(issues, reconciledReady...)
+		}
+	}
 	r.closeFinishedReviewTasks(tasks, nil)
 	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 

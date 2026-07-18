@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/poll"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -722,6 +723,73 @@ func TestPollKnownTaskPRs_ReconcilesHumanRequiredBlocker(t *testing.T) {
 	}
 	if got.Status != task.StatusInReview {
 		t.Errorf("status = %q, want in-review", got.Status)
+	}
+}
+
+func TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
+	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+	r.projects = projStore
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	reviewed := true
+	parked, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:     task.Ptr(42),
+		ProjectID:    task.Ptr("pet-owner/pet-repo"),
+		Reviewed:     &reviewed,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var mergedRepo string
+	var mergedNum int
+	r.mergePR = func(repo string, number int) error {
+		mergedRepo, mergedNum = repo, number
+		return nil
+	}
+	r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+		results := make([]github.MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			results[i] = github.MonitorPRResult{
+				Repo: ref.Repo, Number: ref.Number, Open: true,
+				PR: github.PullRequest{
+					Number:     ref.Number,
+					Repository: ref.Repo,
+					HeadSHA:    "sha42",
+					Mergeable:  "MERGEABLE",
+					CIStatus:   "SUCCESS",
+				},
+			}
+		}
+		return results
+	}
+
+	r.Poll(t.Context())
+
+	if mergedRepo != "pet-owner/pet-repo" || mergedNum != 42 {
+		t.Fatalf("merged = %q#%d, want pet-owner/pet-repo#42", mergedRepo, mergedNum)
+	}
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("status = %q, want in-review after reconciliation", got.Status)
 	}
 }
 
