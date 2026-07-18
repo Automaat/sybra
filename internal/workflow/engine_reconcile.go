@@ -31,12 +31,12 @@ func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, 
 		}
 		return nil, false, false, nil
 	}
+	mustExecute := current.Type == StepRequireSidecar || current.Type == StepFlagPlanCritique
 	fields := e.transitionFields(t, t.Workflow)
 	nextID, err := ResolveTransition(current.Next, fields)
 	if err != nil || nextID == "" {
 		return nil, false, false, err
 	}
-	mustExecute := false
 	for range maxSyncSteps {
 		step := def.StepByID(nextID)
 		if step == nil {

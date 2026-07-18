@@ -176,6 +176,46 @@ func TestHandleStatusChange_ReconcileExecutesPlanCritiqueFlag(t *testing.T) {
 	}
 }
 
+func TestHandleStatusChange_ReconcileExecutesCurrentPlanCritiqueFlag(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newPlanCritiqueReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "plan-review",
+		Body:         "original body",
+		PlanCritique: "## Verdict: REJECT\n\nMissing safety analysis.",
+		Workflow: &Execution{
+			WorkflowID:  "plan-critique-reconcile",
+			CurrentStep: "flag_plan_critique_verdict",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	engine.HandleStatusChange("t1", "plan-review")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("CurrentStep = %q, want review_plan", got.Workflow.CurrentStep)
+	}
+	if !strings.Contains(got.Body, "Plan Critic Verdict: REJECT") {
+		t.Fatalf("Body = %q, want critique warning", got.Body)
+	}
+	flagOutput := got.Workflow.Variables["step.flag_plan_critique_verdict.output"]
+	if !strings.Contains(flagOutput, "verdict: REJECT") || !strings.Contains(flagOutput, "flagged") {
+		t.Fatalf("flag output = %q, want flagged verdict", flagOutput)
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("StartAgent called %d times, want 0", agents.CallCount())
+	}
+}
+
 func TestResumeStalled_ReconcilesCurrentStepToVisibleWaitHuman(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.Save(newPlanCritiqueReconcileDef()); err != nil {
