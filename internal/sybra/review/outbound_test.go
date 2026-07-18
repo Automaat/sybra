@@ -194,6 +194,66 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		}
 	})
 
+	t.Run("running implementation keeps workflow live despite settled pr", func(t *testing.T) {
+		r, tasks := newOutboundWorkflowTestHandler(t)
+
+		created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wf := &workflow.Execution{
+			WorkflowID:  "simple-task-implement",
+			CurrentStep: "implement",
+			State:       workflow.ExecRunning,
+		}
+		reason := "manual retry running"
+		if _, err := tasks.Update(created.ID, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: &reason,
+			ProjectID:    task.Ptr("Automaat/sybra"),
+			PRNumber:     task.Ptr(42),
+			Branch:       task.Ptr("feat/watchdog-pr"),
+			Workflow:     &wf,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		claim, ok := r.agents.TryClaimDispatch(created.ID)
+		if !ok {
+			t.Fatal("claim dispatch")
+		}
+		defer claim.Release()
+		if !r.agents.HasRunningAgentForTask(created.ID) {
+			t.Fatal("test setup: task should read as running")
+		}
+
+		all, err := tasks.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+			Number:      42,
+			Repository:  "Automaat/sybra",
+			HeadRefName: "feat/watchdog-pr",
+			Mergeable:   "MERGEABLE",
+			CIStatus:    "SUCCESS",
+		}})
+
+		got, err := tasks.Get(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != task.StatusInProgress {
+			t.Fatalf("status = %q, want in-progress", got.Status)
+		}
+		if got.StatusReason != reason {
+			t.Fatalf("statusReason = %q, want %q", got.StatusReason, reason)
+		}
+		if got.Workflow == nil || got.Workflow.State != workflow.ExecRunning || got.Workflow.CurrentStep != "implement" {
+			t.Fatalf("workflow = %+v, want running on implement", got.Workflow)
+		}
+	})
+
 	t.Run("pending checks keep implement workflow live", func(t *testing.T) {
 		r, tasks := newOutboundWorkflowTestHandler(t)
 

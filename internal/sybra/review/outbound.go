@@ -83,6 +83,9 @@ func (r *Handler) cancelSettledImplementationWorkflows(tasks []task.Task, monito
 		if !staleImplementationWorkflowEligible(t) {
 			continue
 		}
+		if r.hasRunningAgentForTask(t.ID) {
+			continue
+		}
 		pr := matchingPR(t, byNumber, byBranch)
 		if pr == nil || !settledOwnPR(*pr) {
 			continue
@@ -116,6 +119,9 @@ func (r *Handler) settledImplementationFetchMatchers(ctx context.Context, tasks 
 	for i := range tasks {
 		t := &tasks[i]
 		if !staleImplementationWorkflowEligible(t) || t.ProjectID == "" {
+			continue
+		}
+		if r.hasRunningAgentForTask(t.ID) {
 			continue
 		}
 		m := github.TaskMatcher{
@@ -152,6 +158,10 @@ func (r *Handler) findOpenPRForBranch(ctx context.Context, repo, branch string) 
 		return r.findOpenPRForBranchFn(ctx, repo, branch)
 	}
 	return github.FindPRForBranch(ctx, repo, branch)
+}
+
+func (r *Handler) hasRunningAgentForTask(taskID string) bool {
+	return r != nil && r.agents != nil && r.agents.HasRunningAgentForTask(taskID)
 }
 
 // indexMonitoredPRs builds the by-number and by-branch lookup maps shared by
