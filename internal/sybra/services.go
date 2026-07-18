@@ -91,6 +91,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"AssignTask",
 			"BlessTampering",
 			"ListTasks",
+			"ListTasksForNode",
 			"ListTaskArtifacts",
 			"GetTaskSetupLog",
 			"ListTaskAuditEvents",
