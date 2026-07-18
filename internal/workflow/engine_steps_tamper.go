@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"os/exec"
 	pathpkg "path"
@@ -173,10 +176,7 @@ var (
 	// tamperPlatformGuardLineRe requires a branch block; bare runtime.GOOS /
 	// GOARCH references must not suppress a later skip.
 	tamperPlatformGuardLineRe = regexp.MustCompile(`\bif\b.*\{`)
-	tamperPlatformCompareRe   = regexp.MustCompile(
-		`\bruntime\.(GOOS|GOARCH)\s*(==|!=)\s*("(?:[^"\\]|\\.)*"|` + "`[^`]*`" + `)`)
-	tamperPlatformAnyCompareRe = regexp.MustCompile(`\bruntime\.(GOOS|GOARCH)\s*(==|!=)`)
-	tamperValidGOOS            = map[string]struct{}{
+	tamperValidGOOS           = map[string]struct{}{
 		"aix": {}, "android": {}, "darwin": {}, "dragonfly": {}, "freebsd": {}, "illumos": {},
 		"ios": {}, "js": {}, "linux": {}, "netbsd": {}, "openbsd": {}, "plan9": {}, "solaris": {},
 		"wasip1": {}, "windows": {},
@@ -489,32 +489,75 @@ func isPlatformGuard(content string) bool {
 	if !tamperPlatformGuardLineRe.MatchString(content) {
 		return false
 	}
-	matches := tamperPlatformCompareRe.FindAllStringSubmatch(content, -1)
-	if len(matches) == 0 || len(matches) != len(tamperPlatformAnyCompareRe.FindAllString(content, -1)) {
-		return false
+	expr, ok := parsePlatformGuardExpr(content)
+	return ok && isPlatformGuardExpr(expr)
+}
+
+func parsePlatformGuardExpr(content string) (ast.Expr, bool) {
+	braceDelta := codeBraceDelta(content)
+	if braceDelta < 0 {
+		return nil, false
 	}
-	for _, match := range matches {
-		if len(match) < 4 {
-			return false
-		}
-		value, err := strconv.Unquote(match[3])
-		if err != nil {
-			return false
-		}
-		switch match[1] {
-		case "GOOS":
-			if _, ok := tamperValidGOOS[value]; !ok {
-				return false
-			}
-		case "GOARCH":
-			if _, ok := tamperValidGOARCH[value]; !ok {
-				return false
-			}
+	src := "package p\nfunc _(){\n" + content + strings.Repeat("\n}", braceDelta+1)
+	file, err := parser.ParseFile(token.NewFileSet(), "", src, 0)
+	if err != nil || len(file.Decls) != 1 {
+		return nil, false
+	}
+	fn, ok := file.Decls[0].(*ast.FuncDecl)
+	if !ok || fn.Body == nil || len(fn.Body.List) != 1 {
+		return nil, false
+	}
+	stmt, ok := fn.Body.List[0].(*ast.IfStmt)
+	if !ok || stmt.Init != nil || stmt.Cond == nil {
+		return nil, false
+	}
+	return stmt.Cond, true
+}
+
+func isPlatformGuardExpr(expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.ParenExpr:
+		return isPlatformGuardExpr(e.X)
+	case *ast.BinaryExpr:
+		switch e.Op {
+		case token.LAND, token.LOR:
+			return isPlatformGuardExpr(e.X) && isPlatformGuardExpr(e.Y)
+		case token.EQL, token.NEQ:
+			return isPlatformComparison(e.X, e.Y) || isPlatformComparison(e.Y, e.X)
 		default:
 			return false
 		}
+	default:
+		return false
 	}
-	return true
+}
+
+func isPlatformComparison(left, right ast.Expr) bool {
+	sel, ok := left.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok || ident.Name != "runtime" {
+		return false
+	}
+	lit, ok := right.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return false
+	}
+	value, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "GOOS":
+		_, ok = tamperValidGOOS[value]
+	case "GOARCH":
+		_, ok = tamperValidGOARCH[value]
+	default:
+		ok = false
+	}
+	return ok
 }
 
 func codeBraceDelta(content string) int {

@@ -118,6 +118,11 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: nil,
 		},
 		{
+			name:      "composite_platform_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" || runtime.GOARCH != \"amd64\" {\n+\t\tt.Skip(\"linux/amd64-only test\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
 			name:      "unknown_goos_guarded_skip_still_flags",
 			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"not-a-real-os\" {\n+\t\tt.Skip(\"flaky\")\n+\t}\n",
 			wantRules: []string{"added-skip"},
@@ -125,6 +130,11 @@ func TestScanTamperPatch(t *testing.T) {
 		{
 			name:      "identifier_goos_guarded_skip_still_flags",
 			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != targetOS {\n+\t\tt.Skip(\"flaky\")\n+\t}\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "mixed_platform_and_nonplatform_guard_still_flags",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" || flakyEnvironment() {\n+\t\tt.Skip(\"flaky\")\n+\t}\n",
 			wantRules: []string{"added-skip"},
 		},
 		{
