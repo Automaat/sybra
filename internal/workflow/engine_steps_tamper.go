@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	gotoken "go/token"
 	"log/slog"
 	"os/exec"
 	pathpkg "path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -164,15 +168,25 @@ var (
 			`@(unittest\.)?skip(Unless|If)?\s*\(|\braise\s+SkipTest\b|` + // unittest
 			`\b(it|describe|test|context)\.skip\s*\(|\bx(it|describe|test)\s*\(|` + // jest/mocha/vitest
 			`\b(test|it)\.todo\s*\(|@(Ignore|Disabled)\b`) // todo / JUnit
-	// tamperCapabilityGuardRe matches a line that conditions a skip on a missing
-	// runtime capability or an incompatible platform (e.g.
-	// `if runtime.GOOS != "linux" { t.Skip(...) }`). Such skips are legitimate
-	// cross-platform guards, not tampering, so an added skip within the guard
-	// window is exempt.
+	// tamperCapabilityGuardRe matches guards for host-dependent capabilities.
 	tamperCapabilityGuardRe = regexp.MustCompile(
 		`\b(os\.Symlink|os\.Link|os\.Readlink|filepath\.EvalSymlinks|` +
 			`exec\.LookPath|LookPath|user\.Current|user\.Lookup|` +
-			`net\.Listen|net\.Dial|runtime\.GOOS|runtime\.GOARCH)\b|testing\.Short\s*\(\s*\)`)
+			`net\.Listen|net\.Dial)\b|testing\.Short\s*\(\s*\)`)
+	// tamperPlatformGuardLineRe requires a branch block; bare runtime.GOOS /
+	// GOARCH references must not suppress a later skip.
+	tamperPlatformGuardLineRe = regexp.MustCompile(`\bif\b.*\{`)
+	tamperValidGOOS           = map[string]struct{}{
+		"aix": {}, "android": {}, "darwin": {}, "dragonfly": {}, "freebsd": {}, "illumos": {},
+		"ios": {}, "js": {}, "linux": {}, "netbsd": {}, "openbsd": {}, "plan9": {}, "solaris": {},
+		"wasip1": {}, "windows": {},
+	}
+	tamperValidGOARCH = map[string]struct{}{
+		"386": {}, "amd64": {}, "arm": {}, "arm64": {}, "loong64": {}, "mips": {}, "mips64": {},
+		"mips64le": {}, "mipsle": {}, "ppc64": {}, "ppc64le": {}, "riscv64": {}, "s390x": {},
+		"wasm": {},
+	}
+	// tamperAddedExitRe matches an added forced success exit.
 	tamperAddedExitRe = regexp.MustCompile(
 		`\bos\.Exit\s*\(\s*0\s*\)|\bsys\.exit\s*\(\s*0\s*\)|\bprocess\.exit\s*\(\s*0\s*\)|(^|[^.\w])exit\s*\(\s*0\s*\)`)
 	// tamperBuildIgnoreRe matches an added Go build-ignore tag (excludes the
@@ -328,6 +342,7 @@ func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, 
 			// than let an earlier guard exempt an unrelated skip in a later hunk.
 			s.guardWindow = 0
 		case strings.HasPrefix(line, "@@"):
+			s.resetHunkState()
 			inHunk = true
 			s.guardWindow = 0
 		case !inHunk && (strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++")):
@@ -336,6 +351,8 @@ func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, 
 			s.feedAdded(line[1:])
 		case inHunk && strings.HasPrefix(line, "-"):
 			s.feedRemoved(line[1:])
+		case inHunk && strings.HasPrefix(line, " "):
+			s.feedContext(line[1:])
 		}
 	}
 	return s.finalize()
@@ -369,6 +386,7 @@ type tamperScan struct {
 	addRun              int
 	delRun              int
 	guardWindow         int
+	platformGuardDepth  int
 }
 
 const tamperGuardWindowLines = 3
@@ -419,6 +437,14 @@ func (s *tamperScan) add(rule, detail string) {
 	})
 }
 
+func (s *tamperScan) resetHunkState() {
+	s.platformGuardDepth = 0
+}
+
+func (s *tamperScan) feedContext(content string) {
+	s.updatePlatformGuardDepth(content, false)
+}
+
 func (s *tamperScan) feedAdded(content string) {
 	// A build-ignore tag is syntactically a comment but a meaningful directive
 	// that excludes the file from the build — check it before the comment skip.
@@ -429,9 +455,10 @@ func (s *tamperScan) feedAdded(content string) {
 	if looksLikeComment(content) {
 		return
 	}
-	isGuard := tamperCapabilityGuardRe.MatchString(content)
-	guarded := isGuard || s.guardWindow > 0
-	if isGuard {
+	isCapabilityGuard := tamperCapabilityGuardRe.MatchString(content)
+	isPlatformGuard := isPlatformGuard(content)
+	guarded := isCapabilityGuard || isPlatformGuard || s.guardWindow > 0 || s.platformGuardDepth > 0
+	if isCapabilityGuard {
 		s.guardWindow = tamperGuardWindowLines
 	} else if s.guardWindow > 0 {
 		s.guardWindow--
@@ -462,6 +489,143 @@ func (s *tamperScan) feedAdded(content string) {
 	if detectTautology(content) {
 		s.add("tautological-assertion", trimDiffLine(content))
 	}
+	s.updatePlatformGuardDepth(content, isPlatformGuard)
+}
+
+func (s *tamperScan) updatePlatformGuardDepth(content string, startsGuard bool) {
+	if startsGuard || s.platformGuardDepth > 0 {
+		s.platformGuardDepth += codeBraceDelta(content)
+	}
+	if s.platformGuardDepth < 0 {
+		s.platformGuardDepth = 0
+	}
+}
+
+func isPlatformGuard(content string) bool {
+	if !tamperPlatformGuardLineRe.MatchString(content) {
+		return false
+	}
+	expr, ok := parsePlatformGuardExpr(content)
+	if !ok || expr == nil {
+		return false
+	}
+	return isPlatformGuardExpr(expr)
+}
+
+func parsePlatformGuardExpr(content string) (ast.Expr, bool) {
+	braceDelta := codeBraceDelta(content)
+	if braceDelta < 0 {
+		return nil, false
+	}
+	src := "package p\nfunc _(){\n" + content + strings.Repeat("\n}", braceDelta+1)
+	file, err := parser.ParseFile(gotoken.NewFileSet(), "", src, 0)
+	if err != nil || len(file.Decls) != 1 {
+		return nil, false
+	}
+	fn, ok := file.Decls[0].(*ast.FuncDecl)
+	if !ok || fn.Body == nil || len(fn.Body.List) != 1 {
+		return nil, false
+	}
+	stmt, ok := fn.Body.List[0].(*ast.IfStmt)
+	if !ok || stmt.Init != nil || stmt.Cond == nil {
+		return nil, false
+	}
+	return stmt.Cond, true
+}
+
+func isPlatformGuardExpr(expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.ParenExpr:
+		return isPlatformGuardExpr(e.X)
+	case *ast.BinaryExpr:
+		switch e.Op {
+		case gotoken.LAND, gotoken.LOR:
+			return isPlatformGuardExpr(e.X) && isPlatformGuardExpr(e.Y)
+		case gotoken.EQL, gotoken.NEQ:
+			return isPlatformComparison(e.X, e.Y) || isPlatformComparison(e.Y, e.X)
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
+func isPlatformComparison(left, right ast.Expr) bool {
+	sel, ok := left.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok || ident.Name != "runtime" {
+		return false
+	}
+	lit, ok := right.(*ast.BasicLit)
+	if !ok || lit.Kind != gotoken.STRING {
+		return false
+	}
+	value, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "GOOS":
+		_, ok = tamperValidGOOS[value]
+	case "GOARCH":
+		_, ok = tamperValidGOARCH[value]
+	default:
+		ok = false
+	}
+	return ok
+}
+
+func codeBraceDelta(content string) int {
+	delta := 0
+	var quote byte
+	escaped := false
+	inBlockComment := false
+	for i := 0; i < len(content); i++ {
+		ch := content[i]
+		if inBlockComment {
+			if ch == '*' && i+1 < len(content) && content[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			switch {
+			case quote == '`' && ch == '`':
+				quote = 0
+			case quote != '`' && escaped:
+				escaped = false
+			case quote != '`' && ch == '\\':
+				escaped = true
+			case quote != '`' && ch == quote:
+				quote = 0
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(content) {
+			switch content[i+1] {
+			case '/':
+				return delta
+			case '*':
+				inBlockComment = true
+				i++
+				continue
+			}
+		}
+		switch ch {
+		case '"', '\'', '`':
+			quote = ch
+		case '{':
+			delta++
+		case '}':
+			delta--
+		}
+	}
+	return delta
 }
 
 func (s *tamperScan) consumeMergedUpstreamSkip(content string) bool {
