@@ -487,6 +487,48 @@ func TestExecRoutePRFixResult_ReviewHoldParkWinsOverContinue(t *testing.T) {
 	}
 }
 
+// A review-hold park is forced from a `continue` verdict — the agent already
+// pushed successfully. Any SYBRA_PR_FIX_FAILING_TEST: line in that output
+// describes a test the agent already dealt with, not the reason for this
+// park, and must never be attributed to it via the failing-tests note.
+func TestExecRoutePRFixResult_ReviewHoldParkIgnoresFailingTestLines(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Pushed the fix.\n" +
+				"SYBRA_PR_FIX_FAILING_TEST: pkg/foo_test.go:42 TestBar (was failing before my fix)\n" +
+				"SYBRA_PR_FIX_RESULT: continue",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{ReviewHoldParkVar: "true"},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 1446, Workflow: wf})
+
+	if _, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", PRNumber: 1446}); err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if strings.Contains(got.Body, "PR-Fix: Failing Tests") {
+		t.Errorf("review-hold park must not carry a failing-tests note misattributed from a continue verdict; got body:\n%s", got.Body)
+	}
+}
+
 func TestPRFixRequiresHuman_UsesLastAgentStepVars(t *testing.T) {
 	t.Parallel()
 

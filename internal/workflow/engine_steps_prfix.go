@@ -81,10 +81,16 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	if reason == "" {
 		reason = "pr-fix agent requested human review"
 	}
-	if tests := prFixFailingTests(wfExec); len(tests) > 0 {
-		note := "## PR-Fix: Failing Tests\n\n" + reason + "\n\n- " + strings.Join(tests, "\n- ")
-		if err := e.tasks.AppendTaskBody(taskID, note); err != nil {
-			e.logger.Warn("workflow.pr-fix.failing-tests.append", "task_id", taskID, "err", err)
+	// reviewHoldForced means the agent's own verdict was continue/flake — any
+	// SYBRA_PR_FIX_FAILING_TEST: lines in its output describe tests it already
+	// dealt with, not the reason for this park, so they must not be attributed
+	// to the review-hold note.
+	if !reviewHoldForced {
+		if tests := prFixFailingTests(wfExec); len(tests) > 0 {
+			note := "## PR-Fix: Failing Tests\n\n" + reason + "\n\n- " + strings.Join(tests, "\n- ")
+			if err := e.tasks.AppendTaskBody(taskID, note); err != nil {
+				e.logger.Warn("workflow.pr-fix.failing-tests.append", "task_id", taskID, "err", err)
+			}
 		}
 	}
 	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
