@@ -1276,7 +1276,10 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 		cleanRef = "HEAD"
 	}
 	t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
-	t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogReaskNoteForStep(*t, step, attempts+1))
+	// ListTasks/taskToInfo never populates ManualTest; hydrate here so the
+	// specialized run_test reask note carries the concrete command/health/probe
+	// details instead of degrading to the empty-surface fallback.
+	t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogReaskNoteForStep(e.withManualTestConfig(*t), step, attempts+1))
 	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 		e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
 		return true

@@ -44,10 +44,26 @@ func TestHandleWatchdogHangRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	}
 }
 
+// fakeManualTestConfigGetter stands in for the real project/repo resolver so
+// the test exercises the same hydration path ResumeStalled uses in
+// production (taskToInfo never populates ManualTest — only
+// withManualTestConfig does), instead of masking the hydration bug by
+// hand-populating TaskInfo.ManualTest before calling handleWatchdogHangRetry.
+type fakeManualTestConfigGetter map[string]ManualTestInfo
+
+func (f fakeManualTestConfigGetter) ManualTestConfig(taskID string) ManualTestInfo { return f[taskID] }
+
 func TestHandleWatchdogHangRetry_RunTestPrioritizesManualTestSurface(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
 	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	manualTest := ManualTestInfo{
+		Kind:          "server",
+		Command:       "go run ./cmd/sybra-server",
+		HealthURL:     "http://127.0.0.1:8080/health",
+		ProbeCommands: []string{"curl -fsS http://127.0.0.1:8080/health"},
+	}
+	engine.SetManualTestConfigGetter(fakeManualTestConfigGetter{"t1": manualTest})
 	wf := &Execution{
 		WorkflowID:  "testing-task",
 		CurrentStep: testVerdictSourceStep,
@@ -60,24 +76,14 @@ func TestHandleWatchdogHangRetry_RunTestPrioritizesManualTestSurface(t *testing.
 		Status:       "testing",
 		StatusReason: "watchdog hang: no stream activity",
 		Workflow:     wf,
-		ManualTest: ManualTestInfo{
-			Kind:          "server",
-			Command:       "go run ./cmd/sybra-server",
-			HealthURL:     "http://127.0.0.1:8080/health",
-			ProbeCommands: []string{"curl -fsS http://127.0.0.1:8080/health"},
-		},
 	})
+	// Unhydrated, matching what ListTasks/taskToInfo hands ResumeStalled in
+	// production — handleWatchdogHangRetry must hydrate ManualTest itself.
 	ti := TaskInfo{
 		ID:           "t1",
 		Status:       "testing",
 		StatusReason: "watchdog hang: no stream activity",
 		Workflow:     wf,
-		ManualTest: ManualTestInfo{
-			Kind:          "server",
-			Command:       "go run ./cmd/sybra-server",
-			HealthURL:     "http://127.0.0.1:8080/health",
-			ProbeCommands: []string{"curl -fsS http://127.0.0.1:8080/health"},
-		},
 	}
 
 	escalated := engine.handleWatchdogHangRetry(&ti, &Step{ID: testVerdictSourceStep, Type: StepRunAgent, Config: StepConfig{Role: testRunnerRole}})
