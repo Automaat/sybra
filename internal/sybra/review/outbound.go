@@ -254,6 +254,9 @@ func settledOwnPR(pr github.PullRequest) bool {
 	if pr.IsDraft || pr.Mergeable != "MERGEABLE" || pr.HasPendingChecks {
 		return false
 	}
+	if pr.SourcedViaREST && !pr.RESTCIFetched {
+		return false
+	}
 	return pr.CIStatus == "SUCCESS" || pr.CIStatus == ""
 }
 

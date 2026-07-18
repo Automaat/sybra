@@ -245,6 +245,59 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 			t.Fatalf("workflow = %+v, want waiting on implement", got.Workflow)
 		}
 	})
+
+	t.Run("REST unfetched CI keeps implement workflow live", func(t *testing.T) {
+		r, tasks := newOutboundWorkflowTestHandler(t)
+
+		created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wf := &workflow.Execution{
+			WorkflowID:  "simple-task-implement",
+			CurrentStep: "implement",
+			State:       workflow.ExecWaiting,
+		}
+		reason := "watchdog hang: no stream activity"
+		if _, err := tasks.Update(created.ID, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: &reason,
+			ProjectID:    task.Ptr("Automaat/sybra"),
+			PRNumber:     task.Ptr(66),
+			Branch:       task.Ptr("feat/rest-ci-unknown"),
+			Workflow:     &wf,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		all, err := tasks.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+			Number:         66,
+			Repository:     "Automaat/sybra",
+			HeadRefName:    "feat/rest-ci-unknown",
+			Mergeable:      "MERGEABLE",
+			SourcedViaREST: true,
+			RESTCIFetched:  false,
+			CIStatus:       "",
+		}})
+
+		got, err := tasks.Get(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != task.StatusInProgress {
+			t.Fatalf("status = %q, want in-progress", got.Status)
+		}
+		if got.StatusReason != reason {
+			t.Fatalf("statusReason = %q, want %q", got.StatusReason, reason)
+		}
+		if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting || got.Workflow.CurrentStep != "implement" {
+			t.Fatalf("workflow = %+v, want waiting on implement", got.Workflow)
+		}
+	})
 }
 
 func TestPollKnownTaskPRs_CancelsBranchOnlySettledImplementationWorkflow(t *testing.T) {
