@@ -69,6 +69,15 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		StartedAt: now,
 		EndedAt:   now,
 	})
+	if output.Status == "completed" {
+		// A clean completion means this fix_review round is done — the
+		// review-finding the retry pointed at got fixed. Drop the retry
+		// counter so a reward_hacking stop on a LATER, unrelated fix_review
+		// round (reached only after a fresh code_review cycle re-enters this
+		// same step ID) starts from a full budget instead of inheriting an
+		// already-exhausted counter from a prior round (#2229 stop-and-reset).
+		clearWatchdogRewardHackingRetry(wfExec, output.StepID)
+	}
 	if output.Output != "" {
 		wfExec.SetVar("step."+output.StepID+".output", truncate(output.Output, 2000))
 		// Extract the adversarial test verdict from the UNtruncated output and

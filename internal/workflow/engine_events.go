@@ -1391,6 +1391,19 @@ func watchdogRewardHackingRetryKey(stepID string) string {
 	return watchdogRewardHackingRetryVarPrefix + stepID
 }
 
+// clearWatchdogRewardHackingRetry drops the per-step reward-hacking retry
+// counter once that step's run completes cleanly. Without this, the same
+// step ID (e.g. fix_review, which loops back through code_review each
+// round) would carry an already-exhausted counter into a later, unrelated
+// round and escalate to human-required on the very first reward_hacking stop
+// of that round instead of retrying once as designed (#2229).
+func clearWatchdogRewardHackingRetry(wf *Execution, stepID string) {
+	if wf == nil || wf.Variables == nil || stepID == "" {
+		return
+	}
+	delete(wf.Variables, watchdogRewardHackingRetryKey(stepID))
+}
+
 // buildRewardHackingReaskNote builds the steer prepended to a re-dispatched
 // fix-review prompt: the previous attempt looped without editing anything, so
 // point it straight at the finding the reviewer already located instead of

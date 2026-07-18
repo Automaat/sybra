@@ -152,6 +152,72 @@ func TestBuildRewardHackingReaskNote_AttemptCount(t *testing.T) {
 	}
 }
 
+// TestAdvanceStep_ClearsRewardHackingRetryOnFixReviewSuccess covers #2229's
+// stop-and-reset promise: the retry counter must NOT survive a fix_review
+// step that completes cleanly, since fix_review is re-entered fresh at the
+// start of every subsequent review round (simple-task-review.yaml loops
+// fix_review -> detect_tampering -> ... -> code_review -> fix_review). A
+// reward_hacking stop on a later, unrelated round must retry once, not
+// inherit an already-exhausted counter from an earlier round.
+func TestAdvanceStep_ClearsRewardHackingRetryOnFixReviewSuccess(t *testing.T) {
+	t.Parallel()
+	const yaml = `
+id: test-fixreview-reset
+name: Test Fix Review Reset
+trigger:
+  on: task.status_changed
+steps:
+  - id: fix_review
+    name: Fix Review
+    type: run_agent
+    config:
+      role: fix-review
+      mode: headless
+    next:
+      - goto: ""
+`
+	store := newInlineTestStore(t, "test-fixreview-reset", yaml)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wf := &Execution{
+		WorkflowID:  "test-fixreview-reset",
+		CurrentStep: "fix_review",
+		State:       ExecWaiting,
+		Variables: map[string]string{
+			// Budget already spent by an earlier reward-hacking retry round.
+			watchdogRewardHackingRetryKey("fix_review"): "1",
+		},
+		StartedAt: time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf})
+
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "fix_review", Status: "completed", Output: "fixed"}); err != nil {
+		t.Fatalf("advance step: %v", err)
+	}
+
+	fresh, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if _, ok := fresh.Workflow.Variables[watchdogRewardHackingRetryKey("fix_review")]; ok {
+		t.Fatal("reward-hacking retry counter should be cleared after a clean fix_review completion")
+	}
+
+	// A reward_hacking stop on a later round of the same step must retry
+	// once, not escalate as if the budget were already exhausted.
+	ti := TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: reward-hacking retry: still looping",
+		Workflow:     fresh.Workflow,
+	}
+	if escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent}); escalated {
+		t.Fatal("reward-hacking retry budget should have reset after a successful round, not escalate immediately")
+	}
+}
+
 func TestClearWatchdogReaskNote(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
