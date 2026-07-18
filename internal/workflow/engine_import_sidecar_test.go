@@ -155,6 +155,78 @@ func TestImportSidecar_MissingFileWithDirSetStillReportsMissing(t *testing.T) {
 	}
 }
 
+// TestImportSidecar_RecoversFromTaskWorktreeWhenDirVarEmpty proves the
+// sybra#1988 fix: when _dir is lost at render time but the agent's sidecar
+// really was written into the task's worktree, import recovers the worktree
+// dir from task metadata (the same WorktreeGetter lookup verify_checks/
+// tamper/codegen use) instead of escalating to human-required.
+func TestImportSidecar_RecoversFromTaskWorktreeWhenDirVarEmpty(t *testing.T) {
+	store := newTestStoreWith(t, "test-import-required-sidecar-dir.yaml")
+	wt := t.TempDir()
+	body := "# Review\n\nNo findings.\n"
+	if err := os.WriteFile(filepath.Join(wt, "review.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "test-import-required-sidecar-dir",
+			CurrentStep: "review",
+			Variables:   map[string]string{}, // _dir never set
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
+
+	info, _ := tasks.GetTask("t1")
+	engine.importSidecarIfConfigured("t1", "review", info)
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status == "human-required" {
+		t.Fatalf("Status = %q, want task not escalated: reason=%q", got.Status, tasks.Reason("t1"))
+	}
+	if got.PlanContract != body {
+		t.Errorf("PlanContract = %q, want %q", got.PlanContract, body)
+	}
+	if got.Workflow.Variables[WorkflowVarDir] != wt {
+		t.Errorf("_dir = %q, want recovered worktree %q persisted for later steps", got.Workflow.Variables[WorkflowVarDir], wt)
+	}
+}
+
+// TestImportSidecar_RecoveryStillEscalatesWhenFileAlsoMissingInWorktree
+// proves the recovery path doesn't mask a genuine "agent never wrote the
+// file" failure: even after resolving the real worktree dir, a missing file
+// still flips the task to human-required with the original diagnostic.
+func TestImportSidecar_RecoveryStillEscalatesWhenFileAlsoMissingInWorktree(t *testing.T) {
+	store := newTestStoreWith(t, "test-import-required-sidecar-dir.yaml")
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "test-import-required-sidecar-dir",
+			CurrentStep: "review",
+			Variables:   map[string]string{}, // _dir never set
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true}) // no review.md written here
+
+	info, _ := tasks.GetTask("t1")
+	engine.importSidecarIfConfigured("t1", "review", info)
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", got.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "unresolved: worktree dir variable was empty at render time") {
+		t.Fatalf("reason = %q, want empty-dir-var diagnostic, not generic missing", reason)
+	}
+}
+
 func TestImportSidecar_NonReservedDirTemplateStillReportsMissing(t *testing.T) {
 	store := newTestStoreWith(t, "test-import-required-sidecar-nonreserved-dir.yaml")
 	tasks := newMemTasks()
