@@ -8,15 +8,15 @@ Regenerate with `go generate ./internal/config/...` after changing a struct tag 
 
 ## Config
 
-Config is Sybra's top-level configuration, loaded from
-~/.sybra/config.yaml by Load with env-var and default-value fallbacks
-applied per field. See docs/CONFIG.md (generated from this file's
-struct tags and doc comments) for the full reference, or run
-`sybra-cli config dump` to see the resolved, redacted config for this
-machine.
+Config is Sybra's fully resolved runtime configuration. File decoding goes
+through FileConfig + Resolve; runtime code consumes the concrete values here.
+See docs/CONFIG.md (generated from this file's struct tags and doc comments)
+for the full reference, or run `sybra-cli config dump` to see the resolved,
+redacted config for this machine.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
+| `schema_version` | `int` | `2` |  |
 | `logging` | `LoggingConfig` | _(see below)_ |  |
 | `audit` | `AuditConfig` | _(see below)_ |  |
 | `trash` | `TrashConfig` | _(see below)_ |  |
@@ -50,12 +50,12 @@ machine.
 | `browser` | `BrowserConfig` | _(see below)_ |  |
 | `project_types` | `[]string` |  |  |
 | `tasks_dir` | `string` | `~/.sybra/tasks` |  |
-| `skills_dir` | `string` |  |  |
+| `skills_dir` | `string` | `~/.sybra/.claude/skills` |  |
 | `repo_dir` | `string` |  |  |
-| `projects_dir` | `string` |  |  |
-| `clones_dir` | `string` |  |  |
-| `worktrees_dir` | `string` |  |  |
-| `loop_agents_dir` | `string` |  |  |
+| `projects_dir` | `string` | `~/.sybra/projects` |  |
+| `clones_dir` | `string` | `~/.sybra/clones` |  |
+| `worktrees_dir` | `string` | `~/.sybra/worktrees` |  |
+| `loop_agents_dir` | `string` | `~/.sybra/loop-agents` |  |
 
 ## LoggingConfig (`logging`)
 
@@ -240,8 +240,8 @@ agent-only server, a scratch instance) that must not race a full instance.
 | `orchestrator.role` | `string` | `full` | Role declares which self-starting automations this instance owns: "full" (default) or "agent-only". An invalid value falls back to "full" with a warning, so a typo never silently parks an instance that was meant to orchestrate. |
 | `orchestrator.enabled` | `*bool` | _(nil)_ | Enabled overrides Role for the orchestrator brain session — the conversational context auto-started while tasks are active. nil (default) derives from Role. Explicit true re-enables the brain on an agent-only instance; explicit false parks it on a full one. Never gates an operator's manual StartOrchestrator call. |
 | `orchestrator.scheduler_enabled` | `*bool` | _(nil)_ | SchedulerEnabled overrides Role for the auto-dispatch scheduler — the pass that reconciles board tasks, drains the admission queue, releases unblocked children, and restarts stale in-progress agents. nil (default) derives from Role. Maintenance cleanup (orphan worktrees/sandboxes, metrics) always runs, so a parked instance still collects its garbage. |
-| `orchestrator.dispatch_interval_seconds` | `int` |  | DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive dispatch pass (start the orchestrator, release unblocked children). Kept short — and also fired on demand on every status change — so a freshly-ready task is not left idle for a full tick. Default 10. |
-| `orchestrator.maintenance_interval_seconds` | `int` |  | MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup pass (resume stalled workflows, restart stale agents, prune orphan worktrees) which hits git and may spawn agents, so it must not run hot. Default 60. |
+| `orchestrator.dispatch_interval_seconds` | `int` | `10` | DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive dispatch pass (start the orchestrator, release unblocked children). Kept short — and also fired on demand on every status change — so a freshly-ready task is not left idle for a full tick. Default 10. |
+| `orchestrator.maintenance_interval_seconds` | `int` | `60` | MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup pass (resume stalled workflows, restart stale agents, prune orphan worktrees) which hits git and may spawn agents, so it must not run hot. Default 60. |
 | `orchestrator.auto_approve_plans_without_decisions` | `bool` |  | AutoApprovePlansWithoutDecisions lets the workflow engine advance a validated simple-task plan from plan-review to implementation when the planner explicitly recorded that there are no open human decisions. Default false. |
 | `orchestrator.pressure` | `PressureConfig` | _(see below)_ | Pressure configures the local resource-pressure admission gate that defers new agent dispatch while the host is short on disk, memory, or CPU headroom. See internal/pressure. |
 
@@ -271,7 +271,7 @@ requires a restart to take effect (see diffConfig's
 | `todoist.api_token` | `string` | `[redacted]` |  |
 | `todoist.project_id` | `string` |  |  |
 | `todoist.default_project_id` | `string` |  |  |
-| `todoist.poll_seconds` | `int` |  |  |
+| `todoist.poll_seconds` | `int` | `120` |  |
 
 ## RenovateConfig (`renovate`)
 
@@ -284,7 +284,7 @@ requires a restart to take effect (see diffConfig's
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `github.enabled` | `bool` |  | Enabled is the top-level kill-switch: false forces every GitHub automation off regardless of the sub-toggles below. Fresh generated configs set this to false so first-run GitHub polling is opt-in. Legacy configs that omit this key keep the old enabled behavior during load. true defers to IssuesEnabled/ReviewsEnabled. |
+| `github.enabled` | `bool` | `true` | Enabled is the top-level kill-switch: false forces every GitHub automation off regardless of the sub-toggles below. Fresh generated configs set this to false so first-run GitHub polling is opt-in. Legacy configs that omit this key keep the old enabled behavior during load. true defers to IssuesEnabled/ReviewsEnabled. |
 | `github.issues_enabled` | `bool` | `true` | IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && IssuesEnabled — use RunsIssuesFetcher() rather than reading this field directly. |
 | `github.reviews_enabled` | `bool` | `true` | ReviewsEnabled gates PR reviewer poll registration specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this field directly. |
 | `github.poller_role` | `string` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |
@@ -336,7 +336,7 @@ atomically applies the verdict (title, tags, size/type, mode, project).
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `triage.enabled` | `bool` |  |  |
-| `triage.poll_seconds` | `int` |  |  |
+| `triage.poll_seconds` | `int` | `60` |  |
 | `triage.model` | `string` |  |  |
 
 ## HumanReviewConfig (`human_review`)
@@ -389,17 +389,17 @@ focused headless agent for anomalies that need LLM judgment.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `monitor.enabled` | `bool` | `true` |  |
-| `monitor.interval_seconds` | `int` |  |  |
-| `monitor.model` | `string` |  |  |
-| `monitor.issue_cooldown_minutes` | `int` |  |  |
-| `monitor.dispatch_limit` | `int` |  |  |
-| `monitor.stuck_human_hours` | `float64` |  |  |
-| `monitor.lost_agent_minutes` | `int` |  |  |
-| `monitor.pr_gap_grace_minutes` | `int` |  |  |
-| `monitor.failure_rate_threshold` | `float64` |  |  |
+| `monitor.interval_seconds` | `int` | `300` |  |
+| `monitor.model` | `string` | `claude-haiku-4-5-20251001` |  |
+| `monitor.issue_cooldown_minutes` | `int` | `30` |  |
+| `monitor.dispatch_limit` | `int` | `25` |  |
+| `monitor.stuck_human_hours` | `float64` | `8` |  |
+| `monitor.lost_agent_minutes` | `int` | `15` |  |
+| `monitor.pr_gap_grace_minutes` | `int` | `15` |  |
+| `monitor.failure_rate_threshold` | `float64` | `0.3` |  |
 | `monitor.bottleneck_hours` | `map[string]float64` |  |  |
-| `monitor.issue_label` | `string` |  |  |
-| `monitor.issue_repo` | `string` |  |  |
+| `monitor.issue_label` | `string` | `monitor` |  |
+| `monitor.issue_repo` | `string` | `Automaat/sybra` |  |
 
 ## WatchdogConfig (`watchdog`)
 
@@ -418,7 +418,7 @@ that the dwell budget (hours) would only catch much later.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `watchdog.enabled` | `bool` | `true` |  |
-| `watchdog.model` | `string` |  |  |
+| `watchdog.model` | `string` | `claude-haiku-4-5-20251001` |  |
 | `watchdog.loop_threshold` | `int` | `6` |  |
 | `watchdog.max_runs_per_window` | `int` | `30` |  |
 | `watchdog.run_window_minutes` | `int` | `30` |  |
@@ -436,19 +436,19 @@ false until users opt in.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `self_monitor.enabled` | `bool` |  |  |
-| `self_monitor.interval_hours` | `float64` |  |  |
-| `self_monitor.judge_model` | `string` |  |  |
-| `self_monitor.synthesizer_model` | `string` |  |  |
-| `self_monitor.max_issues_per_run` | `int` |  |  |
-| `self_monitor.max_auto_actions_per_day` | `int` |  |  |
+| `self_monitor.interval_hours` | `float64` | `6` |  |
+| `self_monitor.judge_model` | `string` | `claude-haiku-4-5-20251001` |  |
+| `self_monitor.synthesizer_model` | `string` | `claude-sonnet-4-6` |  |
+| `self_monitor.max_issues_per_run` | `int` | `5` |  |
+| `self_monitor.max_auto_actions_per_day` | `int` | `3` |  |
 | `self_monitor.auto_act_categories` | `[]string` |  |  |
-| `self_monitor.dry_run` | `bool` |  |  |
-| `self_monitor.issue_cooldown_hours` | `float64` |  |  |
-| `self_monitor.issue_label` | `string` |  |  |
-| `self_monitor.max_cost_per_tick_usd` | `float64` |  |  |
-| `self_monitor.judge_parallelism` | `int` |  |  |
-| `self_monitor.suppression_days` | `int` |  |  |
-| `self_monitor.suppression_threshold` | `int` |  |  |
+| `self_monitor.dry_run` | `bool` | `true` |  |
+| `self_monitor.issue_cooldown_hours` | `float64` | `24` |  |
+| `self_monitor.issue_label` | `string` | `selfmonitor` |  |
+| `self_monitor.max_cost_per_tick_usd` | `float64` | `2` |  |
+| `self_monitor.judge_parallelism` | `int` | `4` |  |
+| `self_monitor.suppression_days` | `int` | `7` |  |
+| `self_monitor.suppression_threshold` | `int` | `3` |  |
 
 ## EvaluationConfig (`evaluation`)
 
@@ -460,8 +460,8 @@ it needs no project-type routing — each machine scores its own local data.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `evaluation.enabled` | `bool` |  |  |
-| `evaluation.interval_hours` | `float64` |  |  |
-| `evaluation.window_days` | `int` |  |  |
+| `evaluation.interval_hours` | `float64` | `24` |  |
+| `evaluation.window_days` | `int` | `30` |  |
 | `evaluation.offline` | `OfflineEvalConfig` | _(see below)_ |  |
 
 ## OfflineEvalConfig (`evaluation.offline`)
@@ -473,10 +473,10 @@ eligible for online A/B enrollment.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `evaluation.offline.enabled` | `bool` |  |  |
-| `evaluation.offline.runner` | `string` |  | Runner selects the offline runner: "auto" (default, promptfoo if on PATH else native), "promptfoo", or "native". |
+| `evaluation.offline.runner` | `string` | `auto` | Runner selects the offline runner: "auto" (default, promptfoo if on PATH else native), "promptfoo", or "native". |
 | `evaluation.offline.binary_path` | `string` |  |  |
-| `evaluation.offline.min_score` | `float64` |  | MinScore is the minimum Result.Score (0..1) required for a verdict to be scored StatusPass. |
-| `evaluation.offline.unavailable_policy` | `string` |  | UnavailablePolicy is "fail" (default, fail-closed) or "pass" — what AllowEnrollment returns when no verdict is recorded or the runner could not measure a result. |
+| `evaluation.offline.min_score` | `float64` | `1` | MinScore is the minimum Result.Score (0..1) required for a verdict to be scored StatusPass. |
+| `evaluation.offline.unavailable_policy` | `string` | `fail` | UnavailablePolicy is "fail" (default, fail-closed) or "pass" — what AllowEnrollment returns when no verdict is recorded or the runner could not measure a result. |
 | `evaluation.offline.mode` | `string` |  | Mode is reserved for future dry-run/enforce distinctions; currently informational only. |
 
 ## LearningDigestConfig (`learning_digest`)
@@ -490,12 +490,12 @@ explicitly, mirroring EvaluationConfig.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `learning_digest.enabled` | `bool` |  |  |
-| `learning_digest.interval_hours` | `float64` |  |  |
-| `learning_digest.window_days` | `int` |  |  |
-| `learning_digest.max_window_days` | `int` |  | MaxWindowDays caps how far back a cold-start or long-idle window can reach, so a fresh install or resumed-after-months instance never feeds the summarizer an unbounded prompt. |
-| `learning_digest.model` | `string` |  | Model is passed to the claude CLI (the digest summarizer runs claude-only — see internal/learning/digest.go). |
-| `learning_digest.min_runs` | `int` |  | MinRuns and MinLandings gate generation: a digest is only produced when the window has at least this much fresh signal, so an idle fleet does not produce an empty/noisy retrospective. |
-| `learning_digest.min_landings` | `int` |  |  |
+| `learning_digest.interval_hours` | `float64` | `24` |  |
+| `learning_digest.window_days` | `int` | `7` |  |
+| `learning_digest.max_window_days` | `int` | `30` | MaxWindowDays caps how far back a cold-start or long-idle window can reach, so a fresh install or resumed-after-months instance never feeds the summarizer an unbounded prompt. |
+| `learning_digest.model` | `string` | `sonnet` | Model is passed to the claude CLI (the digest summarizer runs claude-only — see internal/learning/digest.go). |
+| `learning_digest.min_runs` | `int` | `20` | MinRuns and MinLandings gate generation: a digest is only produced when the window has at least this much fresh signal, so an idle fleet does not produce an empty/noisy retrospective. |
+| `learning_digest.min_landings` | `int` | `3` |  |
 
 ## HarnessEvolveConfig (`harness_evolution`)
 
@@ -506,10 +506,10 @@ prompt, workflow, permission, retry, validator, or deployment changes itself.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `harness_evolution.enabled` | `bool` | `true` |  |
-| `harness_evolution.interval_hours` | `float64` |  |  |
-| `harness_evolution.lookback_hours` | `float64` |  |  |
-| `harness_evolution.min_cluster_size` | `int` |  |  |
-| `harness_evolution.sink` | `string` |  |  |
+| `harness_evolution.interval_hours` | `float64` | `24` |  |
+| `harness_evolution.lookback_hours` | `float64` | `168` |  |
+| `harness_evolution.min_cluster_size` | `int` | `2` |  |
+| `harness_evolution.sink` | `string` | `local-task` |  |
 
 ## PromptLabConfig (`prompt_lab`)
 
@@ -538,20 +538,20 @@ while never suppressing re-files the same ID every tick. Defaults to 30.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `prompt_lab.enabled` | `bool` |  |  |
-| `prompt_lab.interval_hours` | `float64` |  |  |
-| `prompt_lab.lookback_hours` | `float64` |  |  |
-| `prompt_lab.min_samples` | `int` |  |  |
-| `prompt_lab.min_effect_size` | `float64` |  |  |
-| `prompt_lab.max_proposals_per_run` | `int` |  |  |
+| `prompt_lab.interval_hours` | `float64` | `24` |  |
+| `prompt_lab.lookback_hours` | `float64` | `168` |  |
+| `prompt_lab.min_samples` | `int` | `5` |  |
+| `prompt_lab.min_effect_size` | `float64` | `0.15` |  |
+| `prompt_lab.max_proposals_per_run` | `int` | `3` |  |
 | `prompt_lab.auto_approve` | `*bool` | _(nil)_ |  |
-| `prompt_lab.refile_cooldown_days` | `float64` |  |  |
+| `prompt_lab.refile_cooldown_days` | `float64` | `30` |  |
 
 ## ExperienceConfig (`experience`)
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `experience.enabled` | `bool` |  |  |
-| `experience.max_records` | `int` |  |  |
+| `experience.max_records` | `int` | `5` |  |
 | `experience.ttl_days` | `int` |  | TTLDays expires records older than this many days out of injection — a stale record can otherwise poison a prompt with advice that no longer matches the current codebase. 0 (default) disables expiry, so existing deployments are unaffected until an operator opts in. |
 
 ## ProvidersConfig (`providers`)

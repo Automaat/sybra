@@ -391,6 +391,27 @@ func TestReloadFromDisk_BrowserRestartRequiredWarned(t *testing.T) {
 	}
 }
 
+func TestReloadFromDisk_ServerRestartRequiredWarnedAndSynced(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.cfg.Server.AuthToken = "old-token"
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	next := *svc.cfg
+	next.Server.AuthToken = "new-token"
+	writeConfigYAML(t, cfgPath, &next)
+
+	hot, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if len(hot) != 0 {
+		t.Errorf("expected no hot keys, got %v", hot)
+	}
+	if svc.cfg.Server.AuthToken != "new-token" {
+		t.Fatalf("s.cfg Server.AuthToken = %q, want new-token", svc.cfg.Server.AuthToken)
+	}
+}
+
 func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	limitStore, err := limits.NewStore(filepath.Join(t.TempDir(), "limits.json"))

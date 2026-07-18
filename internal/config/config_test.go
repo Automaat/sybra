@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -32,6 +33,124 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.TasksDir == "" {
 		t.Error("TasksDir should not be empty")
 	}
+	if cfg.Todoist.PollSeconds != 120 {
+		t.Errorf("Todoist.PollSeconds = %d, want 120", cfg.Todoist.PollSeconds)
+	}
+	if cfg.Triage.PollSeconds != 60 {
+		t.Errorf("Triage.PollSeconds = %d, want 60", cfg.Triage.PollSeconds)
+	}
+	if cfg.Monitor.DispatchLimit != cfg.Agent.MaxConcurrent {
+		t.Errorf("Monitor.DispatchLimit = %d, want Agent.MaxConcurrent %d", cfg.Monitor.DispatchLimit, cfg.Agent.MaxConcurrent)
+	}
+}
+
+func TestDefaultConfigMatchesEmptyFileResolution(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DefaultConfig()
+	if diff := cmpConfigSubset(got, want); diff != "" {
+		t.Fatalf("LoadNoPersist(empty file) != DefaultConfig():\n%s", diff)
+	}
+}
+
+func TestParseFileConfigRejectsUnknownKeyWithFullPathAndSuggestion(t *testing.T) {
+	_, err := ParseFileConfig([]byte("monitor:\n  issue_reop: Automaat/sybra\n"))
+	if err == nil {
+		t.Fatal("expected unknown-key error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `unknown config key "monitor.issue_reop"`) {
+		t.Fatalf("error = %q, want full path", msg)
+	}
+	if !strings.Contains(msg, `did you mean "issue_repo"?`) {
+		t.Fatalf("error = %q, want suggestion", msg)
+	}
+}
+
+func TestParseFileConfigRejectsFutureSchemaVersion(t *testing.T) {
+	_, err := ParseFileConfig([]byte("schema_version: 99\n"))
+	if err == nil {
+		t.Fatal("expected future-version error, got nil")
+	}
+	if !strings.Contains(err.Error(), "schema_version 99 is newer") {
+		t.Fatalf("error = %q, want upgrade-oriented schema_version message", err.Error())
+	}
+}
+
+func TestResolveAppliesV2DurationAliases(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(
+		"schema_version: 2\n" +
+			"agent:\n  bash_timeout: 2m\n" +
+			"auto_update:\n  poll: 45s\n" +
+			"monitor:\n  stuck_human: 90m\n",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.BashTimeoutSeconds; got != 120 {
+		t.Fatalf("Agent.BashTimeoutSeconds = %d, want 120", got)
+	}
+	if got := resolved.Config.AutoUpdate.PollSeconds; got != 45 {
+		t.Fatalf("AutoUpdate.PollSeconds = %d, want 45", got)
+	}
+	if got := resolved.Config.Monitor.StuckHumanHours; got != 1.5 {
+		t.Fatalf("Monitor.StuckHumanHours = %v, want 1.5", got)
+	}
+}
+
+func TestResolveRejectsNonIntegralDurationAliasForIntField(t *testing.T) {
+	_, err := ParseFileConfig([]byte("schema_version: 2\nsandbox:\n  retention: 90m\n"))
+	if err == nil {
+		t.Fatal("expected duration validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "sandbox.retention") || !strings.Contains(err.Error(), "whole hour") {
+		t.Fatalf("error = %q, want whole-hour validation on sandbox.retention", err.Error())
+	}
+}
+
+func cmpConfigSubset(got, want *Config) string {
+	var diffs []string
+	if got.SchemaVersion != want.SchemaVersion {
+		diffs = append(diffs, fmt.Sprintf("SchemaVersion: got %d want %d", got.SchemaVersion, want.SchemaVersion))
+	}
+	if got.GitHub.Enabled != want.GitHub.Enabled {
+		diffs = append(diffs, fmt.Sprintf("GitHub.Enabled: got %v want %v", got.GitHub.Enabled, want.GitHub.Enabled))
+	}
+	if got.Todoist.PollSeconds != want.Todoist.PollSeconds {
+		diffs = append(diffs, fmt.Sprintf("Todoist.PollSeconds: got %d want %d", got.Todoist.PollSeconds, want.Todoist.PollSeconds))
+	}
+	if got.Triage.PollSeconds != want.Triage.PollSeconds {
+		diffs = append(diffs, fmt.Sprintf("Triage.PollSeconds: got %d want %d", got.Triage.PollSeconds, want.Triage.PollSeconds))
+	}
+	if got.Monitor.DispatchLimit != want.Monitor.DispatchLimit {
+		diffs = append(diffs, fmt.Sprintf("Monitor.DispatchLimit: got %d want %d", got.Monitor.DispatchLimit, want.Monitor.DispatchLimit))
+	}
+	if got.Monitor.Model != want.Monitor.Model {
+		diffs = append(diffs, fmt.Sprintf("Monitor.Model: got %q want %q", got.Monitor.Model, want.Monitor.Model))
+	}
+	if got.AutoUpdate.PollSeconds != want.AutoUpdate.PollSeconds {
+		diffs = append(diffs, fmt.Sprintf("AutoUpdate.PollSeconds: got %d want %d", got.AutoUpdate.PollSeconds, want.AutoUpdate.PollSeconds))
+	}
+	if got.SkillsDir != want.SkillsDir {
+		diffs = append(diffs, fmt.Sprintf("SkillsDir: got %q want %q", got.SkillsDir, want.SkillsDir))
+	}
+	if got.ProjectsDir != want.ProjectsDir {
+		diffs = append(diffs, fmt.Sprintf("ProjectsDir: got %q want %q", got.ProjectsDir, want.ProjectsDir))
+	}
+	return strings.Join(diffs, "\n")
 }
 
 func TestLoadFromYAML(t *testing.T) {
@@ -454,15 +573,16 @@ func TestLoadPromptLabPreservesExplicitEnabled(t *testing.T) {
 
 func TestHumanReviewSybraBugAction(t *testing.T) {
 	cases := []struct {
-		name string
-		yaml string
-		want string
+		name    string
+		yaml    string
+		want    string
+		wantErr string
 	}{
 		{name: "empty defaults to file_issue", yaml: "human_review:\n  enabled: true\n", want: HumanReviewSybraBugActionFileIssue},
 		{name: "note only", yaml: "human_review:\n  sybra_bug_action: note_only\n", want: HumanReviewSybraBugActionNoteOnly},
 		{name: "block only", yaml: "human_review:\n  sybra_bug_action: block_only\n", want: HumanReviewSybraBugActionBlockOnly},
 		{name: "local task", yaml: "human_review:\n  sybra_bug_action: local_task\n", want: HumanReviewSybraBugActionLocalTask},
-		{name: "invalid falls back", yaml: "human_review:\n  sybra_bug_action: nope\n", want: HumanReviewSybraBugActionFileIssue},
+		{name: "invalid is rejected", yaml: "human_review:\n  sybra_bug_action: nope\n", wantErr: "human_review.sybra_bug_action"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -472,6 +592,12 @@ func TestHumanReviewSybraBugAction(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg, err := Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load() error = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -543,6 +669,7 @@ func TestReviewHoldDefaults(t *testing.T) {
 		wantEnabled bool
 		wantMode    string
 		wantNit     int
+		wantErr     string
 	}{
 		{
 			name:        "absent block is disabled",
@@ -559,11 +686,9 @@ func TestReviewHoldDefaults(t *testing.T) {
 			wantNit:     DefaultReviewHoldNitMaxLines,
 		},
 		{
-			name:        "invalid mode falls back to push",
-			yaml:        "review_hold:\n  enabled: true\n  mode: bogus\n",
-			wantEnabled: true,
-			wantMode:    ReviewHoldModePush,
-			wantNit:     DefaultReviewHoldNitMaxLines,
+			name:    "invalid mode is rejected",
+			yaml:    "review_hold:\n  enabled: true\n  mode: bogus\n",
+			wantErr: "review_hold.mode",
 		},
 		{
 			name:        "push_nits mode preserves an explicit threshold",
@@ -588,6 +713,12 @@ func TestReviewHoldDefaults(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg, err := Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load() error = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -828,11 +959,11 @@ func TestAllowsProjectType(t *testing.T) {
 	}
 }
 
-func TestDefaultGitHubOptIn(t *testing.T) {
+func TestDefaultConfigMatchesLegacyEmptyFileGitHubBehavior(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
-	if cfg.GitHub.Enabled {
-		t.Error("default GitHub.Enabled should be false for first-run opt-in")
+	if !cfg.GitHub.Enabled {
+		t.Error("DefaultConfig GitHub.Enabled should match legacy empty-file resolution")
 	}
 	if !cfg.GitHub.IssuesEnabled {
 		t.Error("default GitHub.IssuesEnabled should be true so github.enabled=true enables issues")
@@ -1673,19 +1804,17 @@ func oldShapeABTestingExperiments() []abtest.Experiment {
 func writeOldShapeConfig(t *testing.T, dir string) {
 	t.Helper()
 	enabled := true
-	cfg := &Config{
-		ABTesting: abtest.Config{
-			Enabled:              &enabled,
-			MinSamplesPerVariant: 20,
-			Experiments:          oldShapeABTestingExperiments(),
-			// BuiltinVersion deliberately left at zero: simulates a config
-			// persisted before builtin_version existed.
-		},
-		// Pinned so Load() never generates+persists a server auth token,
-		// which would otherwise Save() the whole document as a side effect
-		// unrelated to the ab_testing reconcile under test here.
-		Server: ServerConfig{AuthToken: "test-token"},
+	cfg := DefaultConfig()
+	cfg.SchemaVersion = 0 // omit to simulate a pre-versioned config file
+	cfg.ABTesting = abtest.Config{
+		Enabled:              &enabled,
+		MinSamplesPerVariant: 20,
+		Experiments:          oldShapeABTestingExperiments(),
+		// BuiltinVersion deliberately left at zero: simulates a config
+		// persisted before builtin_version existed.
 	}
+	// Pinned so Load() never generates a server auth token as unrelated state.
+	cfg.Server = ServerConfig{AuthToken: "test-token"}
 	data, err := yamlv3.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1794,18 +1923,18 @@ func TestLoadDoesNotReconcileUpToDateBuiltins(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
 	enabled := true
-	cfg := &Config{
-		ABTesting: abtest.Config{
-			Enabled:              &enabled,
-			MinSamplesPerVariant: 20,
-			BuiltinVersion: func() *int {
-				v := abtest.CurrentBuiltinVersion
-				return &v
-			}(),
-			Experiments: abtest.DefaultConfig().Experiments,
-		},
-		Server: ServerConfig{AuthToken: "test-token"},
+	cfg := DefaultConfig()
+	cfg.SchemaVersion = 0
+	cfg.ABTesting = abtest.Config{
+		Enabled:              &enabled,
+		MinSamplesPerVariant: 20,
+		BuiltinVersion: func() *int {
+			v := abtest.CurrentBuiltinVersion
+			return &v
+		}(),
+		Experiments: abtest.DefaultConfig().Experiments,
 	}
+	cfg.Server = ServerConfig{AuthToken: "test-token"}
 	data, err := yamlv3.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1937,13 +2066,14 @@ func TestLoadPersistsTokenWithoutReconciledBuiltins(t *testing.T) {
 
 	enabled := true
 	// Old-shape config WITHOUT a pinned auth token, so Load() must generate one.
-	fixture := &Config{
-		ABTesting: abtest.Config{
-			Enabled:              &enabled,
-			MinSamplesPerVariant: 20,
-			Experiments:          oldShapeABTestingExperiments(),
-			// BuiltinVersion intentionally absent: pre-builtin_version config.
-		},
+	fixture := DefaultConfig()
+	fixture.SchemaVersion = 0
+	fixture.Server = ServerConfig{}
+	fixture.ABTesting = abtest.Config{
+		Enabled:              &enabled,
+		MinSamplesPerVariant: 20,
+		Experiments:          oldShapeABTestingExperiments(),
+		// BuiltinVersion intentionally absent: pre-builtin_version config.
 	}
 	data, err := yamlv3.Marshal(fixture)
 	if err != nil {
