@@ -25,6 +25,12 @@ func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, 
 	if current == nil {
 		return nil, false, nil
 	}
+	if current.Type == StepWaitHuman {
+		if current.Config.Status == status {
+			return current, true, nil
+		}
+		return nil, false, nil
+	}
 	fields := e.transitionFields(t, t.Workflow)
 	nextID, err := ResolveTransition(current.Next, fields)
 	if err != nil || nextID == "" {

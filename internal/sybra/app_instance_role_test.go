@@ -3,6 +3,7 @@ package sybra
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -262,6 +263,21 @@ steps:
 				}
 			})
 		}
+	}
+}
+
+// TestNewRecovery_OrphanRootsIncludesSybraTestTmpGlob guards sybra#2210: the
+// /sybra-test skill's fake-provider harness spawns its subject process
+// directly under a fresh os.TempDir()/sybra-test-* sandbox, outside the
+// normal task/worktree/sandbox lifecycle, so the boot-time orphan sweep must
+// be told about that root explicitly.
+func TestNewRecovery_OrphanRootsIncludesSybraTestTmpGlob(t *testing.T) {
+	a := setupApp(t)
+	rec := a.newRecovery()
+
+	want := filepath.Join(os.TempDir(), "sybra-test-*")
+	if !slices.Contains(rec.OrphanRoots, want) {
+		t.Fatalf("OrphanRoots = %v, want to contain %q", rec.OrphanRoots, want)
 	}
 }
 
