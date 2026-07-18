@@ -113,12 +113,11 @@ type verifyChecksReport struct {
 // toolchain (mise) resolves identically.
 //
 // Short-circuits (no block): the verify-blessed tag, no CheckConfigGetter, no
-// verify commands configured, no worktree, or a detected-but-unrepairable
-// corrupted node_modules (broken toolchain state, not the diff — see
-// repairCorruptedNodeModules). A genuine command failure — or the suite
-// exceeding the time budget (an agent could hang a test to dodge) — blocks.
-// Only engine-shutdown cancellation and the node_modules case fail open, so a
-// harness/infra problem never strands or misattributes work.
+// verify commands configured, or no worktree. A genuine command failure, an
+// unrepaired corrupted node_modules, or the suite exceeding the time budget
+// (an agent could hang a test to dodge) blocks.
+// Only engine-shutdown cancellation fails open, so an implementation cannot
+// skip verification by leaving the toolchain in an unrepaired bad state.
 func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	if slices.Contains(t.Tags, verifyBlessedTag) {
 		e.logger.Info("workflow.verify-checks.blessed", "task_id", taskID)
@@ -167,13 +166,13 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 
 	if e.repairCorruptedNodeModules(e.ctx, taskID, wtPath) {
 		// Corruption was detected but the repair itself failed (e.g. `npm ci`
-		// killed again, or no network) — the toolchain is still broken, not
-		// the diff. Running verify against a known-corrupt install would
-		// deterministically fail and misattribute an infra problem to the
-		// implementation, so skip verify entirely rather than flag
-		// human-required.
+		// killed again, or no network). Do not continue into verify with a
+		// known-corrupt install, and do not mark the gate skipped: an agent
+		// could otherwise leave node_modules broken to bypass the suite.
 		e.logger.Warn("workflow.verify-checks.node-modules-repair-unresolved", "task_id", taskID)
-		return stepDone(step, "skipped: node_modules repair failed — broken toolchain state, not a product failure")
+		return e.flagVerifyChecks(taskID, step,
+			"verify suite could not repair corrupted node_modules before running checks — rerun setup or fix the toolchain state",
+			"node_modules-repair")
 	}
 	e.repairTornNodeModules(e.ctx, taskID, wtPath)
 
@@ -279,10 +278,7 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, pa
 		return false, false, "", "", nil
 	}
 	if e.repairCorruptedNodeModules(ctx, taskID, wtPath) {
-		// Same as execVerifyChecks: an unrepairable corrupt install would
-		// deterministically fail verify and misattribute a toolchain problem
-		// to the diff — nothing was actually verified either way.
-		return false, false, "", "", nil
+		return true, false, "", "node_modules repair failed", errors.New("verify: node_modules repair failed")
 	}
 	e.repairTornNodeModules(ctx, taskID, wtPath)
 
@@ -661,13 +657,18 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 		}
 		e.logger.Warn("workflow.verify-checks.node-modules-repair", "task_id", taskID, "dir", dir)
 		repairCtx, cancel := context.WithTimeout(ctx, verifyChecksNodeModulesRepairTimeout)
-		cmd := exec.CommandContext(repairCtx, "npm", "ci")
+		maybeMiseTrust(repairCtx, wtPath)
+		if dir != wtPath {
+			maybeMiseTrust(repairCtx, dir)
+		}
+		reinstall := npmReinstallCommand(wtPath)
+		cmd := exec.CommandContext(repairCtx, "sh", "-c", reinstall)
 		cmd.Dir = dir
 		repairErr := cmd.Run()
 		cancel()
 		if repairErr != nil {
 			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
-				"task_id", taskID, "dir", dir, "err", repairErr)
+				"task_id", taskID, "dir", dir, "cmd", reinstall, "err", repairErr)
 			repairFailed = true
 		}
 	}

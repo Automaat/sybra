@@ -1036,6 +1036,70 @@ func TestRepairCorruptedNodeModules_RepairsPartialInstall(t *testing.T) {
 	}
 }
 
+func TestExecVerifyChecks_NodeModulesRepairFailureFlags(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
+	writeTestFile(t, filepath.Join(frontend, "package-lock.json"), "{}")
+
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte("#!/bin/sh\nexit 42\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{"true"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if got := tasks.Reason("t1"); !strings.Contains(got, "could not repair corrupted node_modules") {
+		t.Fatalf("reason = %q, want node_modules repair failure", got)
+	}
+}
+
+func TestVerifyTaskNow_NodeModulesRepairFailureIsVerifiedFailure(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
+	writeTestFile(t, filepath.Join(frontend, "package-lock.json"), "{}")
+
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte("#!/bin/sh\nexit 42\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine, _ := newVerifyChecksEngine(t, wt, []string{"true"})
+	verified, passed, _, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err == nil {
+		t.Fatal("expected repair error")
+	}
+	if !verified || passed {
+		t.Fatalf("verified=%v passed=%v, want verified=true passed=false", verified, passed)
+	}
+	if output != "node_modules repair failed" {
+		t.Fatalf("output = %q, want node_modules repair failed", output)
+	}
+}
+
 func TestRepairCorruptedNodeModules_LeavesHealthyInstallAlone(t *testing.T) {
 	wt := t.TempDir()
 	frontend := filepath.Join(wt, "frontend")
