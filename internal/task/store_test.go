@@ -1464,6 +1464,42 @@ func TestStoreListReturnedSliceDoesNotMutateCache(t *testing.T) {
 	}
 }
 
+func TestStoreListRebuildsWarmCacheAfterExternalDeleteWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := store.Create("Alpha", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.Create("Bravo", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	if err := os.Remove(a.FilePath); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("want 1 task remaining after external delete, got %d", len(tasks))
+	}
+	if tasks[0].ID != b.ID {
+		t.Fatalf("remaining task = %q, want %q", tasks[0].ID, b.ID)
+	}
+}
+
 // TestStoreConcurrentCreate verifies that N goroutines calling Create in
 // parallel each produce a distinct, readable task — no ID collision,
 // no lost writes, no race in the list cache. Run with -race to catch

@@ -23,21 +23,22 @@ import (
 // task's own frontmatter+body. Safe for concurrent use within a process; see
 // lockTask for the cross-process locking story.
 type Store struct {
-	dir           string
-	trashDir      string
-	comments      *CommentStore
-	plans         *PlanStore
-	planContracts *PlanningSidecarStore
-	planDrafts    *PlanDraftStore
-	planCritiques *PlanCritiqueStore
-	planResearch  *PlanningSidecarStore
-	planDecisions *PlanningSidecarStore
-	planBrief     *PlanningSidecarStore
-	codeReviews   *CodeReviewStore
-	locker        *fsutil.KeyedLocker
-	cacheMu       sync.RWMutex
-	listCache     []Task
-	listValid     bool
+	dir            string
+	trashDir       string
+	comments       *CommentStore
+	plans          *PlanStore
+	planContracts  *PlanningSidecarStore
+	planDrafts     *PlanDraftStore
+	planCritiques  *PlanCritiqueStore
+	planResearch   *PlanningSidecarStore
+	planDecisions  *PlanningSidecarStore
+	planBrief      *PlanningSidecarStore
+	codeReviews    *CodeReviewStore
+	locker         *fsutil.KeyedLocker
+	cacheMu        sync.RWMutex
+	listCache      []Task
+	listValid      bool
+	listDirModTime time.Time
 }
 
 // NewStore creates dir if it does not exist and returns a Store rooted
@@ -260,7 +261,11 @@ func (s *Store) List() ([]Task, error) {
 		tasks = append(tasks, t)
 	}
 	if !parseErr {
-		s.storeListCache(tasks)
+		if dirModTime, ok := s.dirModTime(); ok {
+			s.storeListCache(tasks, dirModTime)
+		} else {
+			s.invalidateListCache()
+		}
 	}
 	return tasks, nil
 }
@@ -1471,19 +1476,48 @@ func (s *Store) refreshCachedTask(id string) {
 }
 
 func (s *Store) cachedList() ([]Task, bool) {
-	s.cacheMu.RLock()
-	defer s.cacheMu.RUnlock()
-	if !s.listValid {
+	dirModTime, ok := s.dirModTime()
+	if !ok {
+		s.invalidateListCache()
 		return nil, false
 	}
-	return cloneTasks(s.listCache), true
+
+	s.cacheMu.RLock()
+	if !s.listValid || !s.listDirModTime.Equal(dirModTime) {
+		s.cacheMu.RUnlock()
+		return nil, false
+	}
+	tasks := cloneTasks(s.listCache)
+	s.cacheMu.RUnlock()
+	// A missed delete event must not let a vanished task stay board-visible
+	// forever just because the warm cache still holds its last good parse.
+	for i := range tasks {
+		path := tasks[i].FilePath
+		if path == "" {
+			var err error
+			path, err = s.safePath(tasks[i].ID)
+			if err != nil {
+				s.invalidateListCache()
+				return nil, false
+			}
+		}
+		if _, err := os.Stat(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, false
+			}
+			s.invalidateListCache()
+			return nil, false
+		}
+	}
+	return tasks, true
 }
 
-func (s *Store) storeListCache(tasks []Task) {
+func (s *Store) storeListCache(tasks []Task, dirModTime time.Time) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 	s.listCache = cloneTasks(tasks)
 	s.listValid = true
+	s.listDirModTime = dirModTime
 }
 
 func (s *Store) storeTaskCache(t Task) {
@@ -1498,9 +1532,11 @@ func (s *Store) storeTaskCache(t Task) {
 			continue
 		}
 		s.listCache[i] = cloned
+		s.bumpListDirModTimeLocked()
 		return
 	}
 	s.listCache = append(s.listCache, cloned)
+	s.bumpListDirModTimeLocked()
 }
 
 func (s *Store) deleteCachedTask(id string) {
@@ -1514,15 +1550,34 @@ func (s *Store) deleteCachedTask(id string) {
 			continue
 		}
 		s.listCache = append(s.listCache[:i], s.listCache[i+1:]...)
+		s.bumpListDirModTimeLocked()
 		return
 	}
-	s.listValid = true
+	s.bumpListDirModTimeLocked()
 }
 
 func (s *Store) invalidateListCache() {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 	s.listValid = false
+	s.listDirModTime = time.Time{}
+}
+
+func (s *Store) dirModTime() (time.Time, bool) {
+	info, err := os.Stat(s.dir)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
+func (s *Store) bumpListDirModTimeLocked() {
+	if dirModTime, ok := s.dirModTime(); ok {
+		s.listDirModTime = dirModTime
+		return
+	}
+	s.listValid = false
+	s.listDirModTime = time.Time{}
 }
 
 func cloneTasks(tasks []Task) []Task {
