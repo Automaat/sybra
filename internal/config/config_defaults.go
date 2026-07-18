@@ -662,6 +662,7 @@ func DefaultConfig() *Config {
 				MaxLoadPerCPU:          8.0,
 				WarningDiskFreePercent: 15,
 				SampleIntervalSeconds:  15,
+				ReclaimCooldownSeconds: 300,
 			},
 		},
 		TasksDir: defaultTasksDir(),

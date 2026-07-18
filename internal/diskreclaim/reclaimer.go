@@ -115,10 +115,12 @@ func (r *Reclaimer) run() {
 	scanResult, err := r.scanner.Scan(safeOpts)
 	if err != nil {
 		r.logWarn("diskreclaim.scan", err)
+		outcome.Errors++
 	} else {
 		applyResult, err := r.scanner.Apply(scanResult.Buckets, safeOpts)
 		if err != nil {
 			r.logWarn("diskreclaim.apply", err)
+			outcome.Errors++
 		} else {
 			for _, br := range applyResult.Buckets {
 				outcome.ReclaimedBytes += br.ReclaimedBytes
@@ -130,6 +132,7 @@ func (r *Reclaimer) run() {
 	unreclaimOpts := cleanup.Options{Only: unreclaimableBuckets, Worktrees: true, External: true}
 	if unreclaimScan, err := r.scanner.Scan(unreclaimOpts); err != nil {
 		r.logWarn("diskreclaim.scan_unreclaimable", err)
+		outcome.Errors++
 	} else {
 		for _, b := range unreclaimScan.Buckets {
 			outcome.UnreclaimableBytes += b.Bytes
