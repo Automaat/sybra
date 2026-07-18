@@ -1,6 +1,7 @@
 package diskreclaim
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,11 +12,26 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+// TestMain fails the whole package immediately if git is missing, rather
+// than letting individual tests silently t.Skip — a stripped-down test
+// environment should show up as a red CI run, not quietly reduced coverage.
+func TestMain(m *testing.M) {
+	if _, err := exec.LookPath("git"); err != nil {
+		fmt.Fprintln(os.Stderr, "internal/diskreclaim tests require git on PATH:", err)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+
 type fakeLister struct {
 	tasks []task.Task
+	err   error
 }
 
 func (f *fakeLister) List() ([]task.Task, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
 	out := make([]task.Task, len(f.tasks))
 	copy(out, f.tasks)
 	return out, nil
@@ -178,6 +194,19 @@ func TestReclaimerRunIsIdempotent(t *testing.T) {
 	}
 	if second.Errors != 0 {
 		t.Fatalf("second pass Errors = %d, want 0", second.Errors)
+	}
+}
+
+func TestReclaimerRunCountsScanFailureAsError(t *testing.T) {
+	cfg := testConfig(t)
+	lister := &fakeLister{err: fmt.Errorf("boom")}
+
+	r := New(cfg, lister, time.Minute, nil)
+	r.run()
+
+	outcome := r.LastOutcome()
+	if outcome.Errors == 0 {
+		t.Fatal("Errors = 0, want > 0 when the safe-bucket scan fails outright")
 	}
 }
 
