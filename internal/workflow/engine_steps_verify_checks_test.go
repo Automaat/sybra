@@ -433,6 +433,99 @@ func TestExecVerifyChecks_RealFailureSkipsToolchainHeal(t *testing.T) {
 	}
 }
 
+func TestExecVerifyChecks_GoInfraFailureBlocks(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{`echo "link: signal: terminated" >&2; exit 1`})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "blocked" {
+		t.Fatalf("Output = %q, want blocked", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "verifier infrastructure") {
+		t.Fatalf("reason = %q, want verifier-infrastructure classification", ti.StatusReason)
+	}
+	if wf.Variables["step.verify_checks.auto_fix"] != "" {
+		t.Fatalf("auto-fix counter = %q, want empty for blocked infra failure", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
+func TestExecVerifyChecks_UnrelatedGoPackageFailureBlocks(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"go.mod":                          "module example.com/verifyrepo\n\ngo 1.26.5\n",
+		"internal/agent/agent.go":         "package agent\n\nfunc Ready() bool { return true }\n",
+		"internal/promptlab/promptlab.go": "package promptlab\n\nfunc Title() string { return \"a\" }\n",
+	})
+	writeRepoFile(t, wt, "internal/promptlab/promptlab.go", "package promptlab\n\nfunc Title() string { return \"b\" }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: change promptlab")
+
+	cmd := `go test ./... >/dev/null 2>&1; printf '# example.com/verifyrepo/internal/agent\n--- FAIL: TestAdversarial_LiveBackgroundTaskAtResultDoesNotCompleteCleanly (60.00s)\nFAIL\texample.com/verifyrepo/internal/agent\t60.064s\nFAIL\n' >&2; exit 1`
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "blocked" {
+		t.Fatalf("Output = %q, want blocked", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "untouched Go package(s): internal/agent") {
+		t.Fatalf("reason = %q, want untouched package classification", ti.StatusReason)
+	}
+	if wf.Variables["step.verify_checks.auto_fix"] != "" {
+		t.Fatalf("auto-fix counter = %q, want empty for unrelated failure", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
+func TestExecVerifyChecks_DependentGoPackageFailureStillAutoFixes(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"go.mod":                    "module example.com/verifyrepo\n\ngo 1.26.5\n",
+		"internal/shared/shared.go": "package shared\n\nfunc Value() int { return 1 }\n",
+		"internal/agent/agent.go":   "package agent\n\nimport \"example.com/verifyrepo/internal/shared\"\n\nfunc Ready() int { return shared.Value() }\n",
+	})
+	writeRepoFile(t, wt, "internal/shared/shared.go", "package shared\n\nfunc Value() int { return 2 }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: change shared")
+
+	cmd := `go test ./... >/dev/null 2>&1; printf '# example.com/verifyrepo/internal/agent\nFAIL\texample.com/verifyrepo/internal/agent [build failed]\nFAIL\n' >&2; exit 1`
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("parked output = %+v, want zero value", out)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress (related package failure should auto-fix)", ti.Status)
+	}
+	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
+		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
 func TestExecVerifyChecks_FlakeRetryPasses(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -1026,6 +1119,9 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	}
 	if got, _ := ResolveTransition(dt.Next, map[string]string{"task.status": "in-progress"}); got != "verify_checks" {
 		t.Errorf("detect_tampering clean goto = %q, want verify_checks", got)
+	}
+	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "blocked"}); got != "" {
+		t.Errorf("blocked verify_checks goto = %q, want end", got)
 	}
 	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "human-required"}); got != "" {
 		t.Errorf("flagged verify_checks goto = %q, want end", got)
