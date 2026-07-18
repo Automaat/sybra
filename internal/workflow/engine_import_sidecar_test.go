@@ -163,6 +163,76 @@ func TestImportSidecar_EmptyDirVarRecoversViaWorktreeGetter(t *testing.T) {
 	}
 }
 
+func TestImportSidecars_RecoveredDirMakesLaterMissingArtifactPlainMissing(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Save(Definition{
+		ID:   "test-import-multiple-dir-sidecars",
+		Name: "Test Import Multiple Dir Sidecars",
+		Steps: []Step{{
+			ID:   "plan",
+			Type: StepRunAgent,
+			Config: StepConfig{
+				Role:   "plan",
+				Mode:   "headless",
+				Prompt: "plan",
+				ImportSidecars: []ImportSidecar{
+					{
+						Kind:     "plan_research",
+						From:     `{{getvar .Vars "_dir"}}/research.md`,
+						Required: true,
+					},
+					{
+						Kind:     "plan_contract",
+						From:     `{{getvar .Vars "_dir"}}/missing-contract.json`,
+						Required: true,
+					},
+				},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("save workflow: %v", err)
+	}
+
+	worktree := t.TempDir()
+	research := "# Research\n"
+	if err := os.WriteFile(filepath.Join(worktree, "research.md"), []byte(research), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "planning",
+		Workflow: &Execution{
+			WorkflowID:  "test-import-multiple-dir-sidecars",
+			CurrentStep: "plan",
+			Variables:   map[string]string{},
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: worktree, ok: true})
+
+	info, _ := tasks.GetTask("t1")
+	engine.importSidecarIfConfigured("t1", "plan", info)
+
+	got, _ := tasks.GetTask("t1")
+	if got.PlanResearch != research {
+		t.Fatalf("PlanResearch = %q, want recovered first sidecar", got.PlanResearch)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required for missing second sidecar", got.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "required plan contract sidecar missing after step plan") {
+		t.Fatalf("reason = %q, want plain missing sidecar after recovered _dir", reason)
+	}
+	if strings.Contains(reason, "unresolved") {
+		t.Fatalf("reason = %q, must not reuse stale empty-_dir snapshot after recovery", reason)
+	}
+}
+
 // TestImportSidecar_MissingFileWithDirSetStillReportsMissing proves the new
 // empty-_dir diagnostic in importOneSidecar doesn't shadow the ordinary
 // "agent never wrote the file" case once _dir is genuinely populated.

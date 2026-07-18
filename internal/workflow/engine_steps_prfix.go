@@ -112,7 +112,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "routing to scoped test-fix: " + reason}, nil
 		}
 	}
-	if !reviewHoldForced {
+	if !reviewHoldForced && prFixAllowsResolvedMergeRecovery(reason) {
 		if out, err, handled := e.tryRecoverResolvedMerge(taskID, step, wfExec, t); handled {
 			return out, err
 		}
@@ -137,6 +137,24 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		}
 	}
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
+}
+
+func prFixAllowsResolvedMergeRecovery(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return false
+	}
+	for _, blocker := range []string{"approval", "base-only", "no substantive", "do not push", "without pushing", "declining to push"} {
+		if strings.Contains(reason, blocker) {
+			return false
+		}
+	}
+	for _, signal := range []string{"unmerged", "merge not finalized", "merge still", "merge in progress"} {
+		if strings.Contains(reason, signal) {
+			return true
+		}
+	}
+	return strings.Contains(reason, "merge conflict") && strings.Contains(reason, "git")
 }
 
 func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error, bool) {

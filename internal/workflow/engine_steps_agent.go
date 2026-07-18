@@ -44,6 +44,9 @@ func (e *Engine) importSidecarIfConfiguredFromDef(taskID, stepID string, info Ta
 		return
 	}
 	for _, cfg := range step.Config.sidecarImports() {
+		if latest, gErr := e.tasks.GetTask(taskID); gErr == nil && latest.Workflow != nil {
+			info = latest
+		}
 		e.importOneSidecar(taskID, stepID, step, info, cfg)
 	}
 }

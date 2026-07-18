@@ -323,6 +323,76 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	}
 }
 
+func TestExecRoutePRFixResult_HumanRequiredApprovalStopSkipsResolvedMergeRecovery(t *testing.T) {
+	t.Parallel()
+
+	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/approved-noop")
+	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	beforeSHA := headSHA(t, wtPath)
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved locally, but this approved PR needs no substantive fix.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: already approved; no substantive fix needed; clean/base-only merge would only change the merge-base\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2232,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/approved-noop",
+		Workflow:  wf,
+	})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2232,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/approved-noop",
+	})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output == "continue" {
+		t.Fatal("route output = continue, want explicit human-required approval stop")
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got := headSHA(t, wtPath); got != beforeSHA {
+		t.Fatalf("HEAD = %q, want unchanged %q; approval-preservation stop must not checkpoint/push", got, beforeSHA)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "no substantive fix needed") {
+		t.Fatalf("reason = %q, want agent's approval-preservation reason", reason)
+	}
+}
+
 func TestExecRoutePRFixResult_ResolvedUnmergedWithFailingTestsRoutesToTestFix(t *testing.T) {
 	t.Parallel()
 
