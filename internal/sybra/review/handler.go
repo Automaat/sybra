@@ -109,6 +109,9 @@ type Handler struct {
 	// with the observed head SHA); overridable in tests. nil falls back to
 	// github.MergePRViaREST.
 	mergePRViaREST func(repo string, number int, headSHA string) error
+	// onAutoMergeApplied fires after a successful Sybra-authored merge so
+	// callers can react immediately (for example, wake self-autoupdate).
+	onAutoMergeApplied func()
 	// fetchThreads / resolveThread back the Copilot-thread auto-resolver;
 	// overridable in tests. nil falls back to the github package functions.
 	fetchThreads  func(repo string, number int) ([]github.ReviewThread, error)
@@ -269,6 +272,10 @@ func (r *Handler) logAudit(eventType, taskID, agentID string, data map[string]an
 }
 
 func (r *Handler) Name() string { return "reviews" }
+
+func (r *Handler) SetAutoMergeAppliedHook(fn func()) {
+	r.onAutoMergeApplied = fn
+}
 
 // AuthCircuitOpen reports whether repeated GitHub auth failures have
 // tripped this poller's circuit breaker (see poll.AuthCircuit).
