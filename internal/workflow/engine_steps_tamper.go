@@ -365,6 +365,7 @@ type tamperScan struct {
 	addRun              int
 	delRun              int
 	guardWindow         int
+	platformGuardDepth  int
 }
 
 const tamperGuardWindowLines = 3
@@ -425,9 +426,10 @@ func (s *tamperScan) feedAdded(content string) {
 	if looksLikeComment(content) {
 		return
 	}
-	isGuard := tamperCapabilityGuardRe.MatchString(content) || tamperPlatformGuardRe.MatchString(content)
-	guarded := isGuard || s.guardWindow > 0
-	if isGuard {
+	isCapabilityGuard := tamperCapabilityGuardRe.MatchString(content)
+	isPlatformGuard := tamperPlatformGuardRe.MatchString(content)
+	guarded := isCapabilityGuard || isPlatformGuard || s.guardWindow > 0 || s.platformGuardDepth > 0
+	if isCapabilityGuard {
 		s.guardWindow = tamperGuardWindowLines
 	} else if s.guardWindow > 0 {
 		s.guardWindow--
@@ -457,6 +459,26 @@ func (s *tamperScan) feedAdded(content string) {
 	}
 	if detectTautology(content) {
 		s.add("tautological-assertion", trimDiffLine(content))
+	}
+	s.updatePlatformGuardDepth(content, isPlatformGuard)
+}
+
+func (s *tamperScan) updatePlatformGuardDepth(content string, startsGuard bool) {
+	if startsGuard {
+		if s.platformGuardDepth > 0 {
+			s.platformGuardDepth += strings.Count(content, "{") - strings.Count(content, "}")
+		} else {
+			afterOpen := content
+			if _, after, ok := strings.Cut(content, "{"); ok {
+				afterOpen = after
+			}
+			s.platformGuardDepth = 1 + strings.Count(afterOpen, "{") - strings.Count(afterOpen, "}")
+		}
+	} else if s.platformGuardDepth > 0 {
+		s.platformGuardDepth += strings.Count(content, "{") - strings.Count(content, "}")
+	}
+	if s.platformGuardDepth < 0 {
+		s.platformGuardDepth = 0
 	}
 }
 

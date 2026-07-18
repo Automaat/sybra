@@ -118,6 +118,11 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: nil,
 		},
 		{
+			name:      "unconditional_skip_after_platform_guard_still_flags",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" {\n+\t\tsetup()\n+\t}\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:      "bare_goos_reference_does_not_guard_later_skip",
 			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tplatform := runtime.GOOS\n+\t_ = platform\n+\tt.Skip(\"flaky\")\n",
 			wantRules: []string{"added-skip"},
@@ -940,6 +945,33 @@ func TestExecDetectTampering_PlatformGuardedSkipDoesNotFlag(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_SkipAfterPlatformGuardFlags(t *testing.T) {
+	t.Parallel()
+	base := "package agent\n\nimport (\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                   "init\n",
+		"internal/agent/reap.go":      "package agent\n\nfunc Reap() {}\n",
+		"internal/agent/reap_test.go": base,
+	})
+	tampered := "package agent\n\nimport (\n\t\"runtime\"\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif runtime.GOOS != \"linux\" {\n\t\tsetup()\n\t}\n\tt.Skip(\"flaky\")\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	writeRepoFile(t, wt, "internal/agent/reap_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: add unguarded skip after platform check")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
 	}
 }
 
