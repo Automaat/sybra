@@ -79,6 +79,16 @@ func (e *Engine) reconcileCurrentStepFromStatus(taskID string, t TaskInfo, def *
 		return t, false, nil
 	}
 	current := def.StepByID(t.Workflow.CurrentStep)
+	if current != nil && current.Type == StepRunAgent {
+		if current.Config.WaitForStatus == status {
+			return t, false, nil
+		}
+		if e.agents.HasRunningAgent(taskID) {
+			e.logger.Debug("workflow.current-step.reconcile-status.skip",
+				"task_id", taskID, "step", current.ID, "status", status, "reason", "running_agent")
+			return t, false, nil
+		}
+	}
 	target, found, mustExecute, err := e.findReachableWaitHumanByStatus(def, current, t, status)
 	if err != nil || !found || target.ID == t.Workflow.CurrentStep {
 		return t, false, err

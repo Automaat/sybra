@@ -176,6 +176,46 @@ func TestHandleStatusChange_ReconcileExecutesPlanCritiqueFlag(t *testing.T) {
 	}
 }
 
+func TestHandleStatusChange_DoesNotReconcileRunningRunAgentWithoutWaitForStatus(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newPlanCritiqueReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "plan-review",
+		Body:         "original body",
+		PlanCritique: "# Plan Review: REFINE\n\nMissing verification.",
+		Workflow: &Execution{
+			WorkflowID:  "plan-critique-reconcile",
+			CurrentStep: "critique_plan",
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+		},
+	})
+	agents.running["t1"] = "agent-1"
+
+	engine.HandleStatusChange("t1", "plan-review")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "critique_plan" {
+		t.Fatalf("CurrentStep = %q, want critique_plan", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.State != ExecRunning {
+		t.Fatalf("State = %q, want %q", got.Workflow.State, ExecRunning)
+	}
+	if got.Body != "original body" {
+		t.Fatalf("Body = %q, want original body", got.Body)
+	}
+	if _, ok := got.Workflow.Variables["step.flag_plan_critique_verdict.output"]; ok {
+		t.Fatal("flag_plan_critique_verdict output recorded while critique agent was still running")
+	}
+}
+
 func TestHandleStatusChange_ReconcileExecutesCurrentPlanCritiqueFlag(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.Save(newPlanCritiqueReconcileDef()); err != nil {
@@ -213,6 +253,46 @@ func TestHandleStatusChange_ReconcileExecutesCurrentPlanCritiqueFlag(t *testing.
 	}
 	if agents.CallCount() != 0 {
 		t.Fatalf("StartAgent called %d times, want 0", agents.CallCount())
+	}
+}
+
+func TestResumeStalled_DoesNotReconcileRunningRunAgentWithoutWaitForStatus(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newPlanCritiqueReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "plan-review",
+		Body:         "original body",
+		PlanCritique: "# Plan Review: REJECT\n\nMissing safety analysis.",
+		Workflow: &Execution{
+			WorkflowID:  "plan-critique-reconcile",
+			CurrentStep: "critique_plan",
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+		},
+	})
+	agents.running["t1"] = "agent-1"
+
+	engine.ResumeStalled()
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "critique_plan" {
+		t.Fatalf("CurrentStep = %q, want critique_plan", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.State != ExecRunning {
+		t.Fatalf("State = %q, want %q", got.Workflow.State, ExecRunning)
+	}
+	if got.Body != "original body" {
+		t.Fatalf("Body = %q, want original body", got.Body)
+	}
+	if _, ok := got.Workflow.Variables["step.flag_plan_critique_verdict.output"]; ok {
+		t.Fatal("flag_plan_critique_verdict output recorded while critique agent was still running")
 	}
 }
 
