@@ -199,6 +199,7 @@ export function ListTaskAuditEvents(arg1: string, arg2: number): Promise<Array<T
 export function GetTamperReport(arg1: string): Promise<TamperReportDTO> { return call('TaskService', 'GetTamperReport', arg1) }
 export function GetTask(arg1: string): Promise<Task> { return call('TaskService', 'GetTask', arg1) }
 export function ListTasks(): Promise<Array<Task>> { return call('TaskService', 'ListTasks') }
+export function ListTasksForNode(arg1: string): Promise<Array<Task>> { return call('TaskService', 'ListTasksForNode', arg1) }
 export function ListTaskProgress(arg1: string): Promise<Array<ProgressEntry>> { return call('TaskService', 'ListTaskProgress', arg1) }
 export function UpdateTask(arg1: string, arg2: Record<string, unknown>): Promise<Task> { return call('TaskService', 'UpdateTask', arg1, arg2) }
 export function AssignTask(arg1: Task): Promise<void> { return call('TaskService', 'AssignTask', arg1) }

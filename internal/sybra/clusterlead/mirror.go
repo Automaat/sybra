@@ -108,6 +108,42 @@ func (m *Mirror) reconcileNode(ctx context.Context, node string, consecutiveFail
 	for i := range tasks {
 		m.applyFollowerTask(node, tasks[i])
 	}
+	m.reconcileMissing(ctx, node, client, tasks)
+}
+
+// reconcileMissing closes the gap ListTasksForNode's staleness filter opens:
+// a task the leader still considers live and assigned to node, but that this
+// node's response omitted. That only happens when the follower closed it
+// more than mirrorStaleTerminalWindow ago while the leader could not reach
+// this node at all (an outage or restart spanning the entire window) -- the
+// closing update never got a chance to apply, and the follower will never
+// offer that task again, so without this the canonical copy would stay stuck
+// at its last non-terminal state permanently. Fetches only the handful of
+// affected tasks directly (GetTask) instead of falling back to a full list.
+func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *cluster.Client, tasks []task.Task) {
+	seen := make(map[string]struct{}, len(tasks))
+	for i := range tasks {
+		seen[tasks[i].ID] = struct{}{}
+	}
+	canonical, err := m.tasks.List()
+	if err != nil {
+		return
+	}
+	for i := range canonical {
+		t := canonical[i]
+		if t.AssignedNode != node || task.IsTerminalStatus(t.Status) {
+			continue
+		}
+		if _, ok := seen[t.ID]; ok {
+			continue
+		}
+		follower, gerr := client.GetTask(ctx, t.ID)
+		if gerr != nil {
+			m.logger.Debug("cluster.mirror.reconcile_missing.failed", "node", node, "task", t.ID, "err", gerr)
+			continue
+		}
+		m.applyFollowerTask(node, follower)
+	}
 }
 
 func (m *Mirror) applyFollowerTask(node string, follower task.Task) bool {
