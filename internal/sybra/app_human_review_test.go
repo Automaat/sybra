@@ -1356,9 +1356,17 @@ func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
 
 	h.mu.Lock()
 	_, busy := h.inflight[tk.ID]
+	recent := len(h.recent)
+	perTask := len(h.perTask[tk.ID])
 	h.mu.Unlock()
 	if busy {
 		t.Fatal("expected no inflight entry after stale pre-run recheck")
+	}
+	if recent != 0 {
+		t.Fatalf("recent reservations = %d, want 0 after stale pre-run recheck", recent)
+	}
+	if perTask != 0 {
+		t.Fatalf("per-task reservations = %d, want 0 after stale pre-run recheck", perTask)
 	}
 
 	got, err := tasks.Get(tk.ID)
