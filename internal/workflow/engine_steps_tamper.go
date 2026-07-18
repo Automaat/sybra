@@ -164,11 +164,16 @@ var (
 			`@(unittest\.)?skip(Unless|If)?\s*\(|\braise\s+SkipTest\b|` + // unittest
 			`\b(it|describe|test|context)\.skip\s*\(|\bx(it|describe|test)\s*\(|` + // jest/mocha/vitest
 			`\b(test|it)\.todo\s*\(|@(Ignore|Disabled)\b`) // todo / JUnit
-	// tamperAddedExitRe matches an added forced success exit.
+	// tamperCapabilityGuardRe matches guards for host-dependent capabilities.
 	tamperCapabilityGuardRe = regexp.MustCompile(
 		`\b(os\.Symlink|os\.Link|os\.Readlink|filepath\.EvalSymlinks|` +
 			`exec\.LookPath|LookPath|user\.Current|user\.Lookup|` +
-			`net\.Listen|net\.Dial|runtime\.GOOS|runtime\.GOARCH)\b|testing\.Short\s*\(\s*\)`)
+			`net\.Listen|net\.Dial)\b|testing\.Short\s*\(\s*\)`)
+	// tamperPlatformGuardRe requires a branch on a platform constant; a bare
+	// runtime.GOOS/GOARCH reference must not suppress a later skip.
+	tamperPlatformGuardRe = regexp.MustCompile(
+		`\bif\b.*\bruntime\.(GOOS|GOARCH)\s*(==|!=)\s*("[^"]+"|` + "`[^`]+`" + `|\w+).*\{`)
+	// tamperAddedExitRe matches an added forced success exit.
 	tamperAddedExitRe = regexp.MustCompile(
 		`\bos\.Exit\s*\(\s*0\s*\)|\bsys\.exit\s*\(\s*0\s*\)|\bprocess\.exit\s*\(\s*0\s*\)|(^|[^.\w])exit\s*\(\s*0\s*\)`)
 	// tamperBuildIgnoreRe matches an added Go build-ignore tag (excludes the
@@ -420,7 +425,7 @@ func (s *tamperScan) feedAdded(content string) {
 	if looksLikeComment(content) {
 		return
 	}
-	isGuard := tamperCapabilityGuardRe.MatchString(content)
+	isGuard := tamperCapabilityGuardRe.MatchString(content) || tamperPlatformGuardRe.MatchString(content)
 	guarded := isGuard || s.guardWindow > 0
 	if isGuard {
 		s.guardWindow = tamperGuardWindowLines

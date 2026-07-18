@@ -118,6 +118,16 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: nil,
 		},
 		{
+			name:      "bare_goos_reference_does_not_guard_later_skip",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tplatform := runtime.GOOS\n+\t_ = platform\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "bare_goarch_reference_does_not_guard_later_skip",
+			patch:     "@@ @@\n func TestARM(t *testing.T) {\n+\tarch := runtime.GOARCH\n+\t_ = arch\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:      "unconditional_skip_after_guard_window_still_flags",
 			patch:     "@@ @@\n func TestX(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\treturn\n+\t}\n+\tsetup()\n+\tvalidate()\n+\tt.Skip(\"flaky\")\n",
 			wantRules: []string{"added-skip"},
