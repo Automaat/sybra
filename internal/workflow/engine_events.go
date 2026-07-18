@@ -207,6 +207,12 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 	if err != nil {
 		return
 	}
+	if _, reconciled, rErr := e.reconcileCurrentStepFromStatus(taskID, t, &def, newStatus); rErr != nil {
+		e.logger.Error("workflow.status-reconcile.err", "task_id", taskID, "status", newStatus, "err", rErr)
+		return
+	} else if reconciled {
+		return
+	}
 	step := def.StepByID(t.Workflow.CurrentStep)
 	if step == nil || step.Type != StepRunAgent {
 		return
@@ -1143,6 +1149,12 @@ func (e *Engine) ResumeStalled() {
 			e.handleMissingStep(t)
 			continue
 		}
+		if _, reconciled, rErr := e.reconcileCurrentStepFromStatus(t.ID, *t, &def, t.Status); rErr != nil {
+			e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-status-step", t.ID, rErr, "task_id", t.ID)
+			continue
+		} else if reconciled {
+			continue
+		}
 
 		if _, waitSkip := resumeSkipReasonForStatus(t.Status); step.Type == StepWaitHuman && !waitSkip && step.Config.Status != "" && t.Status != step.Config.Status {
 			if err := e.tasks.UpdateTaskStatus(t.ID, step.Config.Status, step.Config.StatusReason); err != nil {
@@ -1204,6 +1216,25 @@ func (e *Engine) ResumeStalled() {
 			e.clearResumeDispatching(t.ID)
 			continue
 		}
+		if _, reconciled, rErr := e.reconcileCurrentStepFromStatus(t.ID, fresh, &def, fresh.Status); rErr != nil {
+			e.clearResumeDispatching(t.ID)
+			e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-status-step", t.ID, rErr, "task_id", t.ID)
+			continue
+		} else if reconciled {
+			e.clearResumeDispatching(t.ID)
+			continue
+		}
+		nextFresh, reconciled, rErr := e.reconcileCurrentStepFromPriorCondition(t.ID, fresh, &def)
+		if rErr != nil {
+			e.clearResumeDispatching(t.ID)
+			e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-condition", t.ID, rErr, "task_id", t.ID)
+			continue
+		}
+		if reconciled {
+			e.clearResumeDispatching(t.ID)
+			continue
+		}
+		fresh = nextFresh
 
 		e.finishResumeStalledStep(t.ID, &def, step, t.Workflow, fresh)
 	}
