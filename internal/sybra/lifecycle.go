@@ -48,11 +48,19 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	a := lm.app
 
 	if a.cfg.Watchdog.Enabled {
-		verifyNow := func(vctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
+		verifyNow := func(vctx context.Context, taskID string) (watchdog.VerifyNowResult, error) {
 			if a.workflowEngine == nil {
-				return false, false, "", "", nil
+				return watchdog.VerifyNowResult{}, nil
 			}
-			return a.workflowEngine.VerifyTaskNow(vctx, taskID)
+			result, err := a.workflowEngine.VerifyTaskNow(vctx, taskID)
+			return watchdog.VerifyNowResult{
+				Verified:             result.Verified,
+				Passed:               result.Passed,
+				FailedCmd:            result.FailedCmd,
+				Output:               result.Output,
+				ClassificationKind:   result.ClassificationKind,
+				ClassificationReason: result.ClassificationReason,
+			}, err
 		}
 		wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg, a.cfg.Watchdog, a.getPressureGate(), verifyNow)
 		a.wg.Go(func() { wdog.Run(ctx) })

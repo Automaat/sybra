@@ -459,15 +459,15 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 func TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst(t *testing.T) {
 	tests := []struct {
 		name           string
-		verifyNow      func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
+		verifyNow      func(ctx context.Context, taskID string) (VerifyNowResult, error)
 		wantStatus     task.Status
 		wantReasonHas  string
 		wantVerifyCall bool
 	}{
 		{
 			name: "verify passes — false positive, retryable",
-			verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
-				return true, true, "", "", nil
+			verifyNow: func(context.Context, string) (VerifyNowResult, error) {
+				return VerifyNowResult{Verified: true, Passed: true}, nil
 			},
 			wantStatus:     task.StatusInProgress,
 			wantReasonHas:  "verify suite passed",
@@ -475,17 +475,32 @@ func TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst(t *testing.T) {
 		},
 		{
 			name: "verify still fails — escalate with fresh evidence",
-			verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
-				return true, false, "go test ./...", "--- FAIL: TestFoo", nil
+			verifyNow: func(context.Context, string) (VerifyNowResult, error) {
+				return VerifyNowResult{Verified: true, FailedCmd: "go test ./...", Output: "--- FAIL: TestFoo"}, nil
 			},
 			wantStatus:     task.StatusHumanRequired,
 			wantReasonHas:  "go test ./...",
 			wantVerifyCall: true,
 		},
 		{
+			name: "classified verify failure — block as verifier-side",
+			verifyNow: func(context.Context, string) (VerifyNowResult, error) {
+				return VerifyNowResult{
+					Verified:             true,
+					FailedCmd:            "go test ./...",
+					Output:               "link: signal: terminated",
+					ClassificationKind:   "infra_failure",
+					ClassificationReason: "verify suite hit Go toolchain/build-cache instability — blocked as verifier infrastructure, not an implementation failure",
+				}, nil
+			},
+			wantStatus:     task.StatusBlocked,
+			wantReasonHas:  "verifier infrastructure",
+			wantVerifyCall: true,
+		},
+		{
 			name: "nothing to verify — falls back to judge reason",
-			verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
-				return false, false, "", "", nil
+			verifyNow: func(context.Context, string) (VerifyNowResult, error) {
+				return VerifyNowResult{}, nil
 			},
 			wantStatus:     task.StatusHumanRequired,
 			wantReasonHas:  "watchdog: agent stuck, unclear why",
@@ -504,9 +519,9 @@ func TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst(t *testing.T) {
 			tasks, tk := newTestTasks(t)
 
 			called := false
-			var verifyNow func(context.Context, string) (bool, bool, string, string, error)
+			var verifyNow func(context.Context, string) (VerifyNowResult, error)
 			if tc.verifyNow != nil {
-				verifyNow = func(ctx context.Context, taskID string) (bool, bool, string, string, error) {
+				verifyNow = func(ctx context.Context, taskID string) (VerifyNowResult, error) {
 					called = true
 					return tc.verifyNow(ctx, taskID)
 				}
@@ -574,9 +589,9 @@ func TestApplyVerdict_EmptyReasonKindWaitsForKillBeforeVerify(t *testing.T) {
 			}
 			return true
 		},
-		verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
+		verifyNow: func(context.Context, string) (VerifyNowResult, error) {
 			order = append(order, "verify")
-			return true, true, "", "", nil
+			return VerifyNowResult{Verified: true, Passed: true}, nil
 		},
 	}
 
@@ -611,9 +626,9 @@ func TestApplyVerdict_EmptyReasonKindSkipsVerifyWhenKillTimesOut(t *testing.T) {
 		logger:            slog.New(slog.DiscardHandler),
 		stopAgent:         func(string) error { return nil },
 		killAgentsForTask: func(string, time.Duration) bool { return false },
-		verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
+		verifyNow: func(context.Context, string) (VerifyNowResult, error) {
 			verifyCalled = true
-			return true, true, "", "", nil
+			return VerifyNowResult{Verified: true, Passed: true}, nil
 		},
 	}
 
@@ -671,9 +686,9 @@ func TestApplyVerdict_GenericStallAndRewardHackingSkipVerify(t *testing.T) {
 				tasks:     tasks,
 				logger:    slog.New(slog.DiscardHandler),
 				stopAgent: func(string) error { return nil },
-				verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
+				verifyNow: func(context.Context, string) (VerifyNowResult, error) {
 					called = true
-					return true, true, "", "", nil
+					return VerifyNowResult{Verified: true, Passed: true}, nil
 				},
 			}
 

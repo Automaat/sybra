@@ -80,12 +80,12 @@ func TestVerifyTaskNow_NoGetterNotVerified(t *testing.T) {
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
-	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
+	result, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if verified || passed {
-		t.Fatalf("verified=%v passed=%v, want both false with no CheckConfigGetter", verified, passed)
+	if result.Verified || result.Passed {
+		t.Fatalf("verified=%v passed=%v, want both false with no CheckConfigGetter", result.Verified, result.Passed)
 	}
 }
 
@@ -93,12 +93,12 @@ func TestVerifyTaskNow_NoCommandsNotVerified(t *testing.T) {
 	t.Parallel()
 	engine, _ := newVerifyChecksEngine(t, t.TempDir(), nil)
 
-	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
+	result, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if verified || passed {
-		t.Fatalf("verified=%v passed=%v, want both false with no configured commands", verified, passed)
+	if result.Verified || result.Passed {
+		t.Fatalf("verified=%v passed=%v, want both false with no configured commands", result.Verified, result.Passed)
 	}
 }
 
@@ -108,12 +108,12 @@ func TestVerifyTaskNow_NoWorktreeNotVerified(t *testing.T) {
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
 	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: []string{"true"}})
 
-	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
+	result, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if verified || passed {
-		t.Fatalf("verified=%v passed=%v, want both false with no worktree", verified, passed)
+	if result.Verified || result.Passed {
+		t.Fatalf("verified=%v passed=%v, want both false with no worktree", result.Verified, result.Passed)
 	}
 }
 
@@ -122,15 +122,15 @@ func TestVerifyTaskNow_CommandsPass(t *testing.T) {
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	engine, _ := newVerifyChecksEngine(t, wt, []string{"true", "echo ok"})
 
-	verified, passed, failedCmd, _, err := engine.VerifyTaskNow(t.Context(), "t1")
+	result, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !verified || !passed {
-		t.Fatalf("verified=%v passed=%v, want both true", verified, passed)
+	if !result.Verified || !result.Passed {
+		t.Fatalf("verified=%v passed=%v, want both true", result.Verified, result.Passed)
 	}
-	if failedCmd != "" {
-		t.Errorf("failedCmd = %q, want empty", failedCmd)
+	if result.FailedCmd != "" {
+		t.Errorf("failedCmd = %q, want empty", result.FailedCmd)
 	}
 }
 
@@ -139,18 +139,18 @@ func TestVerifyTaskNow_CommandFails(t *testing.T) {
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	engine, _ := newVerifyChecksEngine(t, wt, []string{"true", "false"})
 
-	verified, passed, failedCmd, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	result, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !verified || passed {
-		t.Fatalf("verified=%v passed=%v, want verified=true passed=false", verified, passed)
+	if !result.Verified || result.Passed {
+		t.Fatalf("verified=%v passed=%v, want verified=true passed=false", result.Verified, result.Passed)
 	}
-	if failedCmd != "false" {
-		t.Errorf("failedCmd = %q, want %q", failedCmd, "false")
+	if result.FailedCmd != "false" {
+		t.Errorf("failedCmd = %q, want %q", result.FailedCmd, "false")
 	}
-	if !strings.Contains(output, "false") {
-		t.Errorf("output = %q, want it to contain the failing command", output)
+	if !strings.Contains(result.Output, "false") {
+		t.Errorf("output = %q, want it to contain the failing command", result.Output)
 	}
 }
 
@@ -178,13 +178,13 @@ func TestVerifyTaskNow_RepairsTornNodeModulesBeforeRunning(t *testing.T) {
 	cmd := "test -d frontend/node_modules/.bin"
 	engine, _ := newVerifyChecksEngine(t, wt, []string{cmd})
 
-	verified, passed, failedCmd, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	result, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !verified || !passed {
+	if !result.Verified || !result.Passed {
 		t.Fatalf("verified=%v passed=%v failedCmd=%q output=%q, want both true (repair should have fixed node_modules first)",
-			verified, passed, failedCmd, output)
+			result.Verified, result.Passed, result.FailedCmd, result.Output)
 	}
 }
 
@@ -391,7 +391,7 @@ func TestExecVerifyChecks_GoInfraFailureBlocks(t *testing.T) {
 	}
 }
 
-func TestExecVerifyChecks_GoInfraTextOnlyFailureAutoFixes(t *testing.T) {
+func TestExecVerifyChecks_GoInfraTextOnlyFailureBlocks(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{`echo "link: signal: terminated" >&2; exit 1`})
@@ -399,18 +399,99 @@ func TestExecVerifyChecks_GoInfraTextOnlyFailureAutoFixes(t *testing.T) {
 
 	wf := implementedExec()
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
-	if !errors.Is(err, errStepParked) {
-		t.Fatalf("err = %v, want errStepParked", err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if out != (StepOutput{}) {
-		t.Fatalf("parked output = %+v, want zero value", out)
+	if out.Output != "blocked" {
+		t.Fatalf("Output = %q, want blocked", out.Output)
 	}
 	ti := mustGetTaskInfo(t, tasks, "t1")
-	if ti.Status != "in-progress" {
-		t.Fatalf("status = %q, want in-progress (text-only infra marker should auto-fix)", ti.Status)
+	if ti.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", ti.Status)
 	}
-	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
-		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
+	if !strings.Contains(ti.StatusReason, "verifier infrastructure") {
+		t.Fatalf("reason = %q, want verifier-infrastructure classification", ti.StatusReason)
+	}
+	if wf.Variables["step.verify_checks.auto_fix"] != "" {
+		t.Fatalf("auto-fix counter = %q, want empty for blocked infra failure", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
+func TestExecVerifyChecks_GoInfraChildExitStatusBlocks(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{`sh -c 'echo "link: signal: terminated" >&2; exit 143'`})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "blocked" {
+		t.Fatalf("Output = %q, want blocked", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "verifier infrastructure") {
+		t.Fatalf("reason = %q, want verifier-infrastructure classification", ti.StatusReason)
+	}
+	if wf.Variables["step.verify_checks.auto_fix"] != "" {
+		t.Fatalf("auto-fix counter = %q, want empty for blocked infra failure", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
+func TestVerifyTaskNow_ClassifiesGoInfraFailure(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, _ := newVerifyChecksEngine(t, wt, []string{`echo "can't open import: /tmp/go-build123/b001/_pkg_.a: no such file or directory" >&2; exit 1`})
+
+	result, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Verified || result.Passed {
+		t.Fatalf("verified=%v passed=%v, want verified=true passed=false", result.Verified, result.Passed)
+	}
+	if result.FailedCmd == "" {
+		t.Fatal("failedCmd empty, want failing command")
+	}
+	if result.ClassificationKind != "infra_failure" {
+		t.Fatalf("classification kind = %q, want infra_failure", result.ClassificationKind)
+	}
+	if !strings.Contains(result.ClassificationReason, "verifier infrastructure") {
+		t.Fatalf("classification reason = %q, want verifier infrastructure reason", result.ClassificationReason)
+	}
+}
+
+func TestVerifyTaskNow_ClassifiesUnrelatedGoPackageFailure(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"go.mod":                          "module example.com/verifyrepo\n\ngo 1.26.5\n",
+		"internal/agent/agent.go":         "package agent\n\nfunc Ready() bool { return true }\n",
+		"internal/promptlab/promptlab.go": "package promptlab\n\nfunc Title() string { return \"a\" }\n",
+	})
+	writeRepoFile(t, wt, "internal/promptlab/promptlab.go", "package promptlab\n\nfunc Title() string { return \"b\" }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: change promptlab")
+
+	cmd := `go test ./... >/dev/null 2>&1; printf '# example.com/verifyrepo/internal/agent\n--- FAIL: TestUnrelated (0.00s)\nFAIL\texample.com/verifyrepo/internal/agent\t0.004s\nFAIL\n' >&2; exit 1`
+	engine, _ := newVerifyChecksEngine(t, wt, []string{cmd})
+
+	result, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Verified || result.Passed {
+		t.Fatalf("verified=%v passed=%v, want verified=true passed=false", result.Verified, result.Passed)
+	}
+	if result.ClassificationKind != "unrelated_failure" {
+		t.Fatalf("classification kind = %q, want unrelated_failure", result.ClassificationKind)
+	}
+	if !strings.Contains(result.ClassificationReason, "untouched Go package(s): internal/agent") {
+		t.Fatalf("classification reason = %q, want untouched-package reason", result.ClassificationReason)
 	}
 }
 

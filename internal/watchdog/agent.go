@@ -211,8 +211,19 @@ type Watchdog struct {
 
 	// verifyNow re-runs a task's verify suite before applyVerdict escalates an
 	// ambiguous loop-stop, so a stale judge verdict doesn't strand honest work
-	// (#2155). Nil falls through to unconditional escalation.
-	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
+	// (#2155). classificationKind/reason are set for verifier-side failures
+	// that must block instead of escalating as implementation defects. Nil
+	// falls through to unconditional escalation.
+	verifyNow func(ctx context.Context, taskID string) (VerifyNowResult, error)
+}
+
+type VerifyNowResult struct {
+	Verified             bool
+	Passed               bool
+	FailedCmd            string
+	Output               string
+	ClassificationKind   string
+	ClassificationReason string
 }
 
 // New creates a Watchdog. cfg.Model selects the cheap judge model and
@@ -225,7 +236,7 @@ func New(
 	wg *sync.WaitGroup,
 	cfg config.WatchdogConfig,
 	pressureGate *pressure.Gate,
-	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error),
+	verifyNow func(ctx context.Context, taskID string) (VerifyNowResult, error),
 ) *Watchdog {
 	return &Watchdog{
 		agents:               agents,
@@ -817,21 +828,28 @@ func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Age
 // the same as a generic_stall false alarm), StatusHumanRequired with the
 // fresh failing command/output when verify still fails, and StatusHumanRequired
 // with judgeReason when verification itself was not possible (no worktree, no
-// configured verify commands, or w.verifyNow is nil) or errored.
+// configured verify commands, or w.verifyNow is nil) or errored. Classified
+// verifier-side failures are blocked, matching the normal verify_checks gate.
 func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeReason string) (status task.Status, reason string) {
 	if w.verifyNow == nil {
 		return task.StatusHumanRequired, judgeReason
 	}
 	vctx, cancel := context.WithTimeout(ctx, verifyNowTimeout)
 	defer cancel()
-	verified, passed, failedCmd, output, err := w.verifyNow(vctx, taskID)
-	if !verified || err != nil {
+	result, err := w.verifyNow(vctx, taskID)
+	if !result.Verified || err != nil {
 		return task.StatusHumanRequired, judgeReason
 	}
-	if passed {
+	if result.Passed {
 		return task.StatusInProgress, "watchdog hang: verify suite passed on re-check — loop stop was a false positive"
 	}
-	return task.StatusHumanRequired, "watchdog: verify suite still fails after loop stop: " + trimTail(failedCmd, output, 500)
+	if result.ClassificationKind != "" {
+		if result.ClassificationReason == "" {
+			result.ClassificationReason = "watchdog: verify suite failed with verifier-side classification: " + result.ClassificationKind
+		}
+		return task.StatusBlocked, result.ClassificationReason
+	}
+	return task.StatusHumanRequired, "watchdog: verify suite still fails after loop stop: " + trimTail(result.FailedCmd, result.Output, 500)
 }
 
 // trimTail appends a bounded tail of output to failedCmd so the escalation

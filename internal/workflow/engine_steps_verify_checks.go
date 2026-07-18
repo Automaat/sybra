@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
@@ -109,6 +108,15 @@ type verifyFailureClassification struct {
 	ChangedFiles   []string
 }
 
+type VerifyTaskNowResult struct {
+	Verified             bool
+	Passed               bool
+	FailedCmd            string
+	Output               string
+	ClassificationKind   string
+	ClassificationReason string
+}
+
 // execVerifyChecks runs the project's deterministic verify suite
 // (`checks.verify`, opt-in) in the agent's worktree before it hands off to
 // review. A non-zero exit flips the task to human-required so an implementation
@@ -165,18 +173,18 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 	e.repairTornNodeModules(e.ctx, taskID, wtPath)
 
-	failedCmd, output, commandErr, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
+	failedCmd, output, _, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
 
 	if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {
-		if healed, fc, out, cErr, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
-			failedCmd, output, commandErr, runErr = fc, out, cErr, rErr
+		if healed, fc, out, _, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
+			failedCmd, output, runErr = fc, out, rErr
 		}
 	}
 
 	report := verifyChecksReport{
 		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
 	}
-	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output, commandErr)
+	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output)
 	if classification != nil {
 		report.Classification = classification.Kind
 		report.FailedPackages = classification.FailedPackages
@@ -231,31 +239,43 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 // configured, or no worktree yet); callers must treat that the same as
 // "could not verify" and fall back to their own default behavior rather than
 // treat it as a pass.
-func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
+func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (VerifyTaskNowResult, error) {
 	if e.checks == nil || e.worktrees == nil {
-		return false, false, "", "", nil
+		return VerifyTaskNowResult{}, nil
 	}
 	cmds := e.checks.VerifyCommands(ctx, taskID)
 	if len(cmds) == 0 {
-		return false, false, "", "", nil
+		return VerifyTaskNowResult{}, nil
 	}
 	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
 	if !ok {
-		return false, false, "", "", nil
+		return VerifyTaskNowResult{}, nil
 	}
 	if e.repairCorruptedNodeModules(ctx, taskID, wtPath) {
 		// Same as execVerifyChecks: an unrepairable corrupt install would
 		// deterministically fail verify and misattribute a toolchain problem
 		// to the diff — nothing was actually verified either way.
-		return false, false, "", "", nil
+		return VerifyTaskNowResult{}, nil
 	}
 	e.repairTornNodeModules(ctx, taskID, wtPath)
 	maybeMiseTrust(ctx, wtPath)
-	failedCmd, output, _, err = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
-	if err != nil {
-		return true, false, failedCmd, output, err
+	failedCmd, output, _, err := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+	result := VerifyTaskNowResult{
+		Verified:  true,
+		Passed:    failedCmd == "",
+		FailedCmd: failedCmd,
+		Output:    output,
 	}
-	return true, failedCmd == "", failedCmd, output, nil
+	if err != nil {
+		result.Passed = false
+		return result, err
+	}
+	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output)
+	if classification != nil {
+		result.ClassificationKind = classification.Kind
+		result.ClassificationReason = classification.Reason
+	}
+	return result, nil
 }
 
 // flagVerifyChecks flips the task to human-required. A failed status write
@@ -318,11 +338,11 @@ func (e *Engine) blockVerifyChecks(taskID string, step *Step, reason, detail str
 	return stepDone(step, "blocked")
 }
 
-func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string, commandErr error) *verifyFailureClassification {
+func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string) *verifyFailureClassification {
 	if failedCmd == "" {
 		return nil
 	}
-	if verifyGoInfraFailure(commandErr, output) {
+	if verifyGoInfraFailure(output) {
 		return &verifyFailureClassification{
 			Kind:   "infra_failure",
 			Reason: "verify suite hit Go toolchain/build-cache instability (linker terminated or cache artifacts vanished) — blocked as verifier infrastructure, not an implementation failure",
@@ -340,25 +360,13 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string,
 	}
 }
 
-func verifyGoInfraFailure(commandErr error, output string) bool {
-	if !verifyCommandTerminatedBySignal(commandErr) {
-		return false
-	}
+func verifyGoInfraFailure(output string) bool {
 	for _, re := range verifyGoInfraFailureRes {
 		if re.MatchString(output) {
 			return true
 		}
 	}
 	return false
-}
-
-func verifyCommandTerminatedBySignal(err error) bool {
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ProcessState == nil {
-		return false
-	}
-	status, ok := exitErr.Sys().(syscall.WaitStatus)
-	return ok && status.Signaled()
 }
 
 func classifyUnrelatedVerifyGoFailure(
