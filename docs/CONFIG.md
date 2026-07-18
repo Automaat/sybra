@@ -294,6 +294,7 @@ requires a restart to take effect (see diffConfig's
 | `github.reviews_max_prs_per_tick` | `int` |  | ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR poller fetches in one tick. Zero falls back to the built-in default; resolved non-positive values mean "unlimited". |
 | `github.reviews_stable_backoff_max_ticks` | `int` |  | ReviewsStableBackoffMaxTicks caps the exponential skip window for linked PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls back to the built-in default; resolved non-positive values disable the backoff entirely. |
 | `github.issues_seconds` | `int` |  |  |
+| `github.mention_trigger_phrase` | `string` |  | MentionTriggerPhrase, when set, gates a comment-mention search alongside the existing assigned/labeled issue paths: an open issue whose comments contain this phrase (e.g. "@sybra") gets a task via the same dedup/creation path. Empty (default) disables the feature — existing installs see no behavior change. |
 | `github.renovate_fast_seconds` | `int` |  |  |
 | `github.renovate_slow_seconds` | `int` |  |  |
 | `github.app` | `GitHubAppConfig` | _(see below)_ | App configures GitHub App installation-token auth. When enabled, Sybra mints a short-lived installation token and injects it into the gh subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall back to gh's own auth. |

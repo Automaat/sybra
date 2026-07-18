@@ -44,8 +44,14 @@ type GitHubConfig struct {
 	// backoff entirely.
 	ReviewsStableBackoffMaxTicks int `yaml:"reviews_stable_backoff_max_ticks" json:"reviewsStableBackoffMaxTicks"`
 	IssuesSeconds                int `yaml:"issues_seconds" json:"issuesSeconds"`
-	RenovateFastSeconds          int `yaml:"renovate_fast_seconds" json:"renovateFastSeconds"`
-	RenovateSlowSeconds          int `yaml:"renovate_slow_seconds" json:"renovateSlowSeconds"`
+	// MentionTriggerPhrase, when set, gates a comment-mention search alongside
+	// the existing assigned/labeled issue paths: an open issue whose comments
+	// contain this phrase (e.g. "@sybra") gets a task via the same
+	// dedup/creation path. Empty (default) disables the feature — existing
+	// installs see no behavior change.
+	MentionTriggerPhrase string `yaml:"mention_trigger_phrase" json:"mentionTriggerPhrase"`
+	RenovateFastSeconds  int    `yaml:"renovate_fast_seconds" json:"renovateFastSeconds"`
+	RenovateSlowSeconds  int    `yaml:"renovate_slow_seconds" json:"renovateSlowSeconds"`
 	// App configures GitHub App installation-token auth. When enabled, Sybra
 	// mints a short-lived installation token and injects it into the gh
 	// subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall
