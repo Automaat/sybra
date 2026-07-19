@@ -153,7 +153,6 @@ type Assignment struct {
 // be down-weighted here without code changes.
 func DefaultConfig() Config {
 	enabled := true
-	expEnabled := true
 	builtinVersion := CurrentBuiltinVersion
 	cheap := modeltier.Models(modeltier.Cheap)
 	expensive := modeltier.Models(modeltier.Expensive)
@@ -162,98 +161,123 @@ func DefaultConfig() Config {
 		MinSamplesPerVariant: 20,
 		BuiltinVersion:       &builtinVersion,
 		Experiments: []Experiment{
+			codeAuthorCheapExperiment(cheap),
+			codeAuthorMaintenanceCheapExperiment(cheap),
+			fixReviewExpensiveExperiment(expensive),
+			reviewExpensiveExperiment(expensive),
+			reviewTightenInstructionsExperiment(expensive),
+		},
+	}
+}
+
+func codeAuthorCheapExperiment(cheap map[string]string) Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "code-author-cheap",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "cheap",
+		Roles:          []string{"implementation"},
+		Variants: []Variant{
+			{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
+			{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
+			{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
+			{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
 			{
-				ID:             "code-author-cheap",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "stage",
-				Bracket:        "cheap",
-				Roles:          []string{"implementation"},
-				Variants: []Variant{
-					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-					{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
-					{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
-					{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
-					{
-						ID:       "pl-41673aa95495-claude-sonnet",
-						Provider: "claude",
-						Model:    "sonnet",
-						Tier:     "cheap",
-						Version:  "pl-41673aa95495",
-						Digest:   digestString(ImplementationTightenInstructionsPL41673AA95495),
-						PromptTransform: &PromptTransform{
-							Op:   "append",
-							Text: ImplementationTightenInstructionsPL41673AA95495,
-						},
-						Weight: 1,
-					},
+				ID:       "pl-41673aa95495-claude-sonnet",
+				Provider: "claude",
+				Model:    "sonnet",
+				Tier:     "cheap",
+				Version:  "pl-41673aa95495",
+				Digest:   digestString(ImplementationTightenInstructionsPL41673AA95495),
+				PromptTransform: &PromptTransform{
+					Op:   "append",
+					Text: ImplementationTightenInstructionsPL41673AA95495,
 				},
+				Weight: 1,
 			},
+		},
+	}
+}
+
+func codeAuthorMaintenanceCheapExperiment(cheap map[string]string) Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "code-author-maintenance-cheap",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "cheap",
+		Roles:          []string{"pr-fix", "test-runner"},
+		Variants: []Variant{
+			{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
+			{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
+			{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
+			{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
+		},
+	}
+}
+
+func fixReviewExpensiveExperiment(expensive map[string]string) Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "fix-review-expensive",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "expensive",
+		Roles:          []string{"fix-review"},
+		Variants: []Variant{
+			{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
+			{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
+			{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
+			{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
+		},
+	}
+}
+
+func reviewExpensiveExperiment(expensive map[string]string) Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "review-expensive",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "expensive",
+		Roles:          []string{"plan"},
+		Variants: []Variant{
+			{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
+			{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
+			{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
+			{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
+		},
+	}
+}
+
+func reviewTightenInstructionsExperiment(expensive map[string]string) Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "review-tighten-instructions-pl-a2d853b2c1d9",
+		Kind:           "compound",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "expensive",
+		Subject:        &Subject{Role: "review"},
+		Roles:          []string{"review"},
+		Variants: []Variant{
+			{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
+			{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
+			{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
+			{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
 			{
-				ID:             "code-author-maintenance-cheap",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "stage",
-				Bracket:        "cheap",
-				Roles:          []string{"pr-fix", "test-runner"},
-				Variants: []Variant{
-					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-					{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
-					{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
-					{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
+				ID:       "pl-a2d853b2c1d9-codex-gpt-5.5",
+				Provider: "codex",
+				Model:    expensive["codex"],
+				Tier:     "expensive",
+				Version:  "pl-a2d853b2c1d9",
+				Digest:   digestString(ReviewTightenInstructionsPLA2D853B2C1D9),
+				PromptTransform: &PromptTransform{
+					Op:   "append",
+					Text: ReviewTightenInstructionsPLA2D853B2C1D9,
 				},
-			},
-			{
-				ID:             "fix-review-expensive",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "stage",
-				Bracket:        "expensive",
-				Roles:          []string{"fix-review"},
-				Variants: []Variant{
-					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
-				},
-			},
-			{
-				ID:             "review-expensive",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "stage",
-				Bracket:        "expensive",
-				Roles:          []string{"plan"},
-				Variants: []Variant{
-					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
-				},
-			},
-			{
-				ID:             "review-tighten-instructions-pl-a2d853b2c1d9",
-				Kind:           "compound",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "stage",
-				Bracket:        "expensive",
-				Subject:        &Subject{Role: "review"},
-				Roles:          []string{"review"},
-				Variants: []Variant{
-					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
-					{
-						ID:       "pl-a2d853b2c1d9-codex-gpt-5.5",
-						Provider: "codex",
-						Model:    expensive["codex"],
-						Tier:     "expensive",
-						Version:  "pl-a2d853b2c1d9",
-						Digest:   digestString(ReviewTightenInstructionsPLA2D853B2C1D9),
-						PromptTransform: &PromptTransform{
-							Op:   "append",
-							Text: ReviewTightenInstructionsPLA2D853B2C1D9,
-						},
-						Weight: 1,
-					},
-				},
+				Weight: 1,
 			},
 		},
 	}
