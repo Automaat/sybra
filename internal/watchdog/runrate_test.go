@@ -137,7 +137,7 @@ func TestCheckRunRate_SkipsNonInProgressTask(t *testing.T) {
 		t.Fatalf("get task: %v", err)
 	}
 	if got.Status != task.StatusTodo {
-		t.Fatalf("status = %q, want todo (run-rate must only watch in-progress tasks)", got.Status)
+		t.Fatalf("status = %q, want todo (run-rate must only watch in-progress/in-review tasks)", got.Status)
 	}
 }
 
