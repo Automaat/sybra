@@ -2578,16 +2578,8 @@ func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
 	}
 }
 
-// redactedConfig returns a shallow copy of cfg with credential fields
-// blanked out. Keep in sync with cmd/gen-config-docs's redactedYAMLPaths —
-// both exist because the doc generator redacts a default value that's
-// always empty anyway, while this redacts a live, possibly populated value.
 func redactedConfig(cfg *config.Config) config.Config {
-	out := *cfg
-	if out.Server.AuthToken != "" {
-		out.Server.AuthToken = "[redacted]"
-	}
-	return out
+	return config.RedactedCopy(cfg)
 }
 
 func cmdConfigDump(cfg *config.Config, jsonOut bool) int {

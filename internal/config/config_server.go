@@ -12,6 +12,6 @@ const DefaultServerPort = "8080"
 // AuthToken is auto-generated and persisted to AuthTokenPath() on first run
 // if left empty, never to config.yaml — see applyServerDefaults.
 type ServerConfig struct {
-	AuthToken      string   `yaml:"auth_token" json:"authToken"`
+	AuthToken      string   `yaml:"auth_token" json:"authToken" secret:"true"`
 	AllowedOrigins []string `yaml:"allowed_origins" json:"allowedOrigins"`
 }

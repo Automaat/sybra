@@ -186,16 +186,6 @@ func structFields(st *ast.StructType) []fieldInfo {
 	return out
 }
 
-// redactedYAMLPaths are dot-separated yaml key paths (relative to Config)
-// whose default-value cell is never rendered, even though they hold no
-// secret in the zero-value DefaultConfig() — kept in sync by hand since the
-// generator has no way to infer "this yaml key holds a credential" from
-// static types alone.
-var redactedYAMLPaths = map[string]bool{
-	"server.auth_token": true,
-	"webhook.secret":    true,
-}
-
 // homeDir is config.HomeDir() at generation time — substituted back out of
 // path-shaped defaults so the doc (and its CI drift check) is stable across
 // machines and users instead of embedding whoever last ran the generator.
@@ -209,7 +199,7 @@ func normalizePath(s string) string {
 }
 
 func defaultValueAt(v reflect.Value, goPath []string, yamlPath string) string {
-	if redactedYAMLPaths[yamlPath] {
+	if config.IsSecretYAMLPath(yamlPath) {
 		return "`[redacted]`"
 	}
 	for v.Kind() == reflect.Pointer {

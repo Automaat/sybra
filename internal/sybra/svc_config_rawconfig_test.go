@@ -88,6 +88,97 @@ func TestUpdateSettings_RoundTripsExpandedSections(t *testing.T) {
 	}
 }
 
+func TestUpdateSettings_PatchesOnlyChangedLeafAndPreservesComments(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"# operator header",
+		"agent:",
+		"  # keep this agent comment",
+		"  provider: claude",
+		"  max_concurrent: 3",
+		"webhook:",
+		"  # keep this webhook comment",
+		"  secret: keep-me",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	settings := svc.GetSettings()
+	settings.Agent.MaxConcurrent = 9
+
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(saved)
+	for _, want := range []string{
+		"# operator header",
+		"# keep this agent comment",
+		"# keep this webhook comment",
+		"provider: claude",
+		"max_concurrent: 9",
+		"secret: keep-me",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("saved config missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "max_turns:") || strings.Contains(text, "allowed_origins:") {
+		t.Fatalf("UpdateSettings materialized unrelated defaults:\n%s", text)
+	}
+}
+
+func TestUpdateSettings_ResetToDefaultRemovesExplicitKey(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"browser:",
+		"  in_app: true",
+		"agent:",
+		"  provider: claude",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	settings := svc.GetSettings()
+	settings.Browser = svc.GetDefaultSettings().Browser
+
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(saved)
+	if strings.Contains(text, "in_app:") || strings.Contains(text, "browser:") {
+		t.Fatalf("default reset left explicit browser config behind:\n%s", text)
+	}
+	if !strings.Contains(text, "provider: claude") {
+		t.Fatalf("reset removed unrelated config:\n%s", text)
+	}
+}
+
 func TestGetRawConfig_ReturnsFileContents(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	writeConfigYAML(t, cfgPath, svc.cfg)
