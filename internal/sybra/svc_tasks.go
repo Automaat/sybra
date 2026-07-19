@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
-	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
