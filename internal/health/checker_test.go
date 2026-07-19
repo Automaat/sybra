@@ -153,6 +153,62 @@ func TestCheckerIncludesSandboxCleanupFinding(t *testing.T) {
 	}
 }
 
+func TestCheckerSkipsGHAuthCheckWhenUnwired(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+
+	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c.check(t.Context())
+
+	report := c.LatestReport()
+	if report == nil {
+		t.Fatal("LatestReport returned nil")
+	}
+	for _, f := range report.Findings {
+		if f.Category == CatGHAuthUnavailable {
+			t.Fatalf("unexpected %q finding with no ghAuthProbe wired: %+v", CatGHAuthUnavailable, f)
+		}
+	}
+}
+
+func TestCheckerIncludesGHAuthUnavailableFinding(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+
+	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c.SetGHAuthProbe(func() bool { return false })
+
+	c.check(t.Context())
+
+	report := c.LatestReport()
+	if report == nil {
+		t.Fatal("LatestReport returned nil")
+	}
+	var found *Finding
+	for i := range report.Findings {
+		if report.Findings[i].Category == CatGHAuthUnavailable {
+			found = &report.Findings[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected %q finding, got %v", CatGHAuthUnavailable, findingCategories(report.Findings))
+	}
+	if found.Severity != SeverityCritical {
+		t.Errorf("Severity = %q, want critical", found.Severity)
+	}
+}
+
 func TestCheckerIncludesPressureTelemetry(t *testing.T) {
 	t.Parallel()
 

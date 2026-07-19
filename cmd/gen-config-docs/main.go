@@ -192,8 +192,8 @@ func structFields(st *ast.StructType) []fieldInfo {
 // generator has no way to infer "this yaml key holds a credential" from
 // static types alone.
 var redactedYAMLPaths = map[string]bool{
-	"todoist.api_token": true,
 	"server.auth_token": true,
+	"webhook.secret":    true,
 }
 
 // homeDir is config.HomeDir() at generation time — substituted back out of
@@ -322,7 +322,7 @@ func render(sections []section) string {
 		"section. Defaults shown are `config.DefaultConfig()`'s values; an empty " +
 		"Default cell means the Go zero value (unset). Env var overrides applied " +
 		"in `config.Load` (e.g. `SYBRA_LOG_LEVEL`, `SYBRA_TASKS_DIR`, " +
-		"`SYBRA_TODOIST_TOKEN`) are not shown here — see internal/config/config_defaults.go.\n\n" +
+		"`SYBRA_AUTH_TOKEN`) are not shown here — see internal/config/config_defaults.go.\n\n" +
 		"Regenerate with `go generate ./internal/config/...` after changing a " +
 		"struct tag or doc comment; internal/config's " +
 		"`TestConfigDocs_InSyncWithSource` fails CI if this file drifts.\n\n")

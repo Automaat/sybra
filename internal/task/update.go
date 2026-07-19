@@ -37,7 +37,6 @@ type Update struct {
 	ReviewedHeadSHA       *string
 	ReviewedHeadAttempts  *int
 	PRPhase               *string
-	TodoistID             *string
 	Priority              *Priority
 	DueDate               **time.Time
 	Workflow              **workflow.Execution
@@ -90,7 +89,7 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
-		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "todoist_id", "plan", "plan_critique",
+		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "plan", "plan_critique",
 		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
 		"review_phase", "reviewed_head_sha", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
@@ -188,8 +187,6 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.RunRole = &s
 	case "supervisor_steer":
 		u.SupervisorSteer = &s
-	case "todoist_id":
-		u.TodoistID = &s
 	case "plan":
 		u.Plan = &s
 	case "plan_contract":

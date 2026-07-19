@@ -180,6 +180,43 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: []string{"added-skip"},
 		},
 		{
+			name:      "platform_guarded_skip_same_line_not_flagged",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" { t.Skip(\"linux-only\") }\n",
+			wantRules: nil,
+		},
+		{
+			name:      "platform_guarded_skip_next_line_not_flagged",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOARCH != \"amd64\" {\n+\t\tt.Skip(\"amd64-only\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			// Self-hosted false positive (issue #2323): a skip pattern that
+			// only exists inside a Go string literal — e.g. a diff fixture
+			// embedded in this detector's own regression tests — must not
+			// be mistaken for a real added t.Skip call. The added line here
+			// is the on-disk source text of a _test.go file whose *value*
+			// happens to contain an escaped `t.Skip(...)` sequence; the
+			// whole thing sits inside one unbroken, still-open string
+			// literal (escaped inner quotes never close it).
+			name: "skip_pattern_inside_go_string_literal_not_flagged",
+			patch: "@@ @@\n func TestFixture(t *testing.T) {\n" +
+				"+\tpatch := \"@@ @@\\n func TestReap(t *testing.T) {\\n+\\tif runtime.GOOS != \\\"linux\\\" { t.Skip(\\\"linux-only\\\") }\\n\"\n",
+			wantRules: nil,
+		},
+		{
+			// Same skip pattern, but as real unquoted code (no fixture
+			// wrapping) — must still flag. Guards against an overbroad
+			// masking fix silently swallowing genuine tampering.
+			name:      "skip_pattern_outside_go_string_literal_still_flags",
+			patch:     "@@ @@\n func TestFixture(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "guard_does_not_leak_across_hunks",
+			patch:     "@@ @@\n func TestGuarded(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n@@ @@\n func TestOther(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:  "two_new_identical_skips_same_commit_still_flags",
 			patch: "@@ @@\n func TestFoo(t *testing.T) {\n+\tt.Skip(\"flaky\")\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
 			baseContent: "func TestFoo(t *testing.T) {\n}\n\n" +
@@ -463,6 +500,48 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 		if !strings.Contains(r.Findings[0].Detail, "documented in task spec") {
 			t.Fatalf("detail = %q, want documented marker", r.Findings[0].Detail)
+		}
+	})
+
+	t.Run("plan_contract_expected_exact_deletion_is_downgraded", func(t *testing.T) {
+		allow := documentedDeletionAllowlistForTrustedSpec(TaskInfo{
+			PlanContract: strings.Replace(validPlanContract("t1"),
+				`  "verification": [`,
+				`  "expected_deletions": ["internal/mesh/mesh_helpers_test.go"],
+  "verification": [`, 1),
+		})
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/mesh/mesh_helpers_test.go"},
+		}, allow)
+		if r.highCount() != 0 {
+			t.Fatalf("highCount = %d, want 0 (%v)", r.highCount(), r.Findings)
+		}
+		if len(r.Findings) != 1 {
+			t.Fatalf("Findings = %v, want 1 downgraded deletion finding", r.Findings)
+		}
+		if got := r.Findings[0].Detail; !strings.Contains(got, "expected_deletions") {
+			t.Fatalf("detail = %q, want expected_deletions marker", got)
+		}
+	})
+
+	t.Run("plan_contract_expected_glob_deletion_is_downgraded", func(t *testing.T) {
+		allow := documentedDeletionAllowlistForTrustedSpec(TaskInfo{
+			PlanContract: strings.Replace(validPlanContract("t1"),
+				`  "verification": [`,
+				`  "expected_deletions": ["app/foo/testdata/*.golden"],
+  "verification": [`, 1),
+		})
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "app/foo/testdata/get-circuit-breaker.golden"},
+		}, allow)
+		if r.highCount() != 0 {
+			t.Fatalf("highCount = %d, want 0 (%v)", r.highCount(), r.Findings)
+		}
+		if len(r.Findings) != 1 {
+			t.Fatalf("Findings = %v, want 1 downgraded deletion finding", r.Findings)
+		}
+		if got := r.Findings[0].Detail; !strings.Contains(got, "expected_deletions") {
+			t.Fatalf("detail = %q, want expected_deletions marker", got)
 		}
 	})
 
@@ -757,6 +836,31 @@ func TestDocumentedDeletionAllowlist(t *testing.T) {
 		got := documentedDeletionAllowlist(body)
 		if !got.ExactPaths["internal/foo/obsolete_test.go"] {
 			t.Fatalf("ExactPaths = %v, want explicit deletion after comma boundary", got.ExactPaths)
+		}
+	})
+
+	t.Run("plan_contract_expected_deletions_add_exact_and_glob_entries", func(t *testing.T) {
+		allow := documentedDeletionAllowlistForTrustedSpec(TaskInfo{
+			Body: "## Scope\n- delete body_only_test.go\n",
+			PlanContract: strings.Replace(validPlanContract("t1"),
+				`  "verification": [`,
+				`  "expected_deletions": ["internal/foo/legacy_test.go", "testdata/*.golden"],
+  "verification": [`, 1),
+		})
+		if !allow.ExactPaths["body_only_test.go"] {
+			t.Fatalf("ExactPaths = %v, want body_only_test.go", allow.ExactPaths)
+		}
+		if !allow.ExactPaths["internal/foo/legacy_test.go"] {
+			t.Fatalf("ExactPaths = %v, want internal/foo/legacy_test.go", allow.ExactPaths)
+		}
+		if got := allow.ExactPathSource["internal/foo/legacy_test.go"]; !strings.Contains(got, "expected_deletions") {
+			t.Fatalf("ExactPathSource = %v, want expected_deletions marker", allow.ExactPathSource)
+		}
+		if len(allow.Globs) != 1 || allow.Globs[0] != "testdata/*.golden" {
+			t.Fatalf("Globs = %v, want testdata/*.golden", allow.Globs)
+		}
+		if got := allow.GlobSource["testdata/*.golden"]; !strings.Contains(got, "expected_deletions") {
+			t.Fatalf("GlobSource = %v, want expected_deletions marker", allow.GlobSource)
 		}
 	})
 }
@@ -1695,5 +1799,59 @@ func TestExecDetectTampering_BenignTestAddDoesNotBlock(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+// TestExecDetectTampering_SelfHostedSkipFixtureDoesNotFlag reproduces issue
+// #2323: a task that edits the tamper detector itself and adds a regression
+// test in engine_steps_tamper_test.go containing a platform-guarded skip
+// fixture (e.g. `if runtime.GOOS != "linux" { t.Skip("linux-only") }`)
+// embedded as a Go string constant must not self-deadlock the workflow — the
+// detector previously flagged its own fixture text as a live added-skip.
+func TestExecDetectTampering_SelfHostedSkipFixtureDoesNotFlag(t *testing.T) {
+	t.Parallel()
+	base := `package workflow
+
+import "testing"
+
+func TestScanTamperPatchFixture(t *testing.T) {
+	_ = 1
+}
+`
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md": "init\n",
+		"internal/workflow/engine_steps_tamper_test.go": base,
+	})
+	// Add a regression test covering a platform-guarded skip fixture. The
+	// fixture text lives entirely inside a Go string literal (escaped inner
+	// quotes never close it), so it is source data, not a real added skip.
+	tampered := `package workflow
+
+import "testing"
+
+func TestScanTamperPatchFixture(t *testing.T) {
+	_ = 1
+}
+
+func TestScanTamperPatchPlatformGuardFixture(t *testing.T) {
+	patch := "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" { t.Skip(\"linux-only\") }\n"
+	_ = patch
+}
+`
+	writeRepoFile(t, wt, "internal/workflow/engine_steps_tamper_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: cover platform-guarded skip fixture")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output == "flagged" {
+		t.Fatalf("Output = %q, want not flagged (self-hosted fixture, not a real skip)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress — workflow must not self-deadlock", ti.Status)
 	}
 }

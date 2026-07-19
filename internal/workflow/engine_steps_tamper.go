@@ -244,8 +244,12 @@ var (
 )
 
 type tamperDeletionAllowlist struct {
-	ExactPaths map[string]bool `json:"exactPaths"`
-	Basenames  map[string]bool `json:"basenames"`
+	ExactPaths      map[string]bool   `json:"exactPaths"`
+	Basenames       map[string]bool   `json:"basenames"`
+	Globs           []string          `json:"globs,omitempty"`
+	ExactPathSource map[string]string `json:"exactPathSource,omitempty"`
+	BasenameSource  map[string]string `json:"basenameSource,omitempty"`
+	GlobSource      map[string]string `json:"globSource,omitempty"`
 }
 
 // isEstablishedSkipIdiom reports whether the added skip line is already a
@@ -338,9 +342,14 @@ func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, 
 		case isDiffHeaderLine(line):
 			s.resetHunkState()
 			inHunk = false
+			// A guard and the skip it protects must be adjacent added lines; a
+			// hunk boundary breaks that adjacency, so reset the window rather
+			// than let an earlier guard exempt an unrelated skip in a later hunk.
+			s.guardWindow = 0
 		case strings.HasPrefix(line, "@@"):
 			s.resetHunkState()
 			inHunk = true
+			s.guardWindow = 0
 		case !inHunk && (strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++")):
 			// file header before any hunk; ignore
 		case inHunk && strings.HasPrefix(line, "+"):
@@ -460,7 +469,17 @@ func (s *tamperScan) feedAdded(content string) {
 	} else if s.guardWindow > 0 {
 		s.guardWindow--
 	}
-	if tamperAddedSkipRe.MatchString(content) && !guarded &&
+	// A skip pattern that only appears inside a Go string literal is fixture
+	// data — e.g. a diff snippet embedded as a test constant, including this
+	// detector's own regression tests (see
+	// https://github.com/Automaat/sybra/issues/2323) — not a real added
+	// t.Skip call. Match against a masked copy for .go files so that case is
+	// invisible to the detector instead of self-flagging.
+	skipScanContent := content
+	if strings.HasSuffix(s.path, ".go") {
+		skipScanContent = maskGoStringLiterals(content)
+	}
+	if tamperAddedSkipRe.MatchString(skipScanContent) && !guarded &&
 		!isEstablishedSkipIdiom(content, s.baseContent) &&
 		!s.consumeMergedUpstreamSkip(content) {
 		s.add("added-skip", trimDiffLine(content))
@@ -625,6 +644,45 @@ func codeBraceDelta(content string) int {
 	return delta
 }
 
+// maskGoStringLiterals blanks the interior of Go string/rune literals in a
+// single diff line, leaving surrounding code visible. This lets the skip
+// detector above tell fixture *data* — a diff snippet embedded as a Go
+// string constant — apart from a genuine added t.Skip call: the former sits
+// entirely inside the literal's quotes, the latter does not. Scanning is
+// line-based (see codeBraceDelta), so a raw string that opens and does not
+// close on the same line masks through the rest of the line — the same
+// "fail toward not matching" trade-off already accepted for other
+// cross-line constructs in this scanner.
+func maskGoStringLiterals(content string) string {
+	var b strings.Builder
+	b.Grow(len(content))
+	var quote byte
+	escaped := false
+	for i := range len(content) {
+		ch := content[i]
+		if quote != 0 {
+			b.WriteByte(' ')
+			switch {
+			case quote != '`' && escaped:
+				escaped = false
+			case quote != '`' && ch == '\\':
+				escaped = true
+			case ch == quote:
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'', '`':
+			quote = ch
+			b.WriteByte(' ')
+		default:
+			b.WriteByte(ch)
+		}
+	}
+	return b.String()
+}
+
 func (s *tamperScan) consumeMergedUpstreamSkip(content string) bool {
 	if len(s.mergedUpstreamSkips) == 0 {
 		return false
@@ -709,9 +767,9 @@ func buildTamperReport(taskID, base string, changes []tamperChange, allow tamper
 		if strings.HasPrefix(c.Status, "D") {
 			severity := tamperHigh
 			detail := string(cat) + " file deleted"
-			if documentedDeletionMatches(c.Path, allow, deletedBasenames) {
+			if source := documentedDeletionMatches(c.Path, allow, deletedBasenames); source != "" {
 				severity = tamperMedium
-				detail += " (documented in task spec)"
+				detail += " (" + source + ")"
 			}
 			report.Findings = append(report.Findings, tamperFinding{
 				File: c.Path, Category: string(cat), Severity: severity,
@@ -968,11 +1026,15 @@ func tamperCodeAuthorRole(role string) bool {
 
 func documentedDeletionAllowlistForTrustedSpec(t TaskInfo) tamperDeletionAllowlist {
 	allow := tamperDeletionAllowlist{
-		ExactPaths: map[string]bool{},
-		Basenames:  map[string]bool{},
+		ExactPaths:      map[string]bool{},
+		Basenames:       map[string]bool{},
+		ExactPathSource: map[string]string{},
+		BasenameSource:  map[string]string{},
+		GlobSource:      map[string]string{},
 	}
 	mergeDocumentedDeletionAllowlist(&allow, documentedDeletionAllowlist(t.Body))
 	mergeDocumentedDeletionAllowlist(&allow, documentedDeletionAllowlist(t.Plan))
+	mergeDocumentedDeletionAllowlist(&allow, documentedDeletionAllowlistFromPlanContract(t.PlanContract))
 	return allow
 }
 
@@ -986,11 +1048,35 @@ func mergeDocumentedDeletionAllowlist(dst *tamperDeletionAllowlist, src tamperDe
 	if dst.Basenames == nil {
 		dst.Basenames = map[string]bool{}
 	}
+	if dst.ExactPathSource == nil {
+		dst.ExactPathSource = map[string]string{}
+	}
+	if dst.BasenameSource == nil {
+		dst.BasenameSource = map[string]string{}
+	}
+	if dst.GlobSource == nil {
+		dst.GlobSource = map[string]string{}
+	}
 	for path := range src.ExactPaths {
 		dst.ExactPaths[path] = true
+		if source := strings.TrimSpace(src.ExactPathSource[path]); source != "" {
+			dst.ExactPathSource[path] = source
+		}
 	}
 	for base := range src.Basenames {
 		dst.Basenames[base] = true
+		if source := strings.TrimSpace(src.BasenameSource[base]); source != "" {
+			dst.BasenameSource[base] = source
+		}
+	}
+	for _, glob := range src.Globs {
+		if glob == "" || slices.Contains(dst.Globs, glob) {
+			continue
+		}
+		dst.Globs = append(dst.Globs, glob)
+		if source := strings.TrimSpace(src.GlobSource[glob]); source != "" {
+			dst.GlobSource[glob] = source
+		}
 	}
 }
 
@@ -1163,8 +1249,11 @@ func documentedDeletionAllowlist(body string) tamperDeletionAllowlist {
 		return tamperDeletionAllowlist{}
 	}
 	allow := tamperDeletionAllowlist{
-		ExactPaths: map[string]bool{},
-		Basenames:  map[string]bool{},
+		ExactPaths:      map[string]bool{},
+		Basenames:       map[string]bool{},
+		ExactPathSource: map[string]string{},
+		BasenameSource:  map[string]string{},
+		GlobSource:      map[string]string{},
 	}
 	for _, heading := range []string{
 		"## Scope",
@@ -1203,12 +1292,49 @@ func collectDocumentedDeletionTokens(section string, allow tamperDeletionAllowli
 			}
 			for _, candidate := range deletionPathsFromSegment(segment) {
 				allow.ExactPaths[candidate] = true
+				allow.ExactPathSource[candidate] = "documented in task spec"
 				if !strings.Contains(candidate, "/") {
 					allow.Basenames[candidate] = true
+					allow.BasenameSource[candidate] = "documented in task spec"
 				}
 			}
 		}
 	}
+}
+
+func documentedDeletionAllowlistFromPlanContract(raw string) tamperDeletionAllowlist {
+	if strings.TrimSpace(raw) == "" {
+		return tamperDeletionAllowlist{}
+	}
+	contract, err := parsePlanContract(raw)
+	if err != nil {
+		return tamperDeletionAllowlist{}
+	}
+	allow := tamperDeletionAllowlist{
+		ExactPaths:      map[string]bool{},
+		Basenames:       map[string]bool{},
+		ExactPathSource: map[string]string{},
+		BasenameSource:  map[string]string{},
+		GlobSource:      map[string]string{},
+	}
+	for _, rawEntry := range contract.ExpectedDeletions {
+		entry, isGlob, normErr := normalizeExpectedDeletionEntry(rawEntry)
+		if normErr != nil {
+			continue
+		}
+		if isGlob {
+			allow.Globs = append(allow.Globs, entry)
+			allow.GlobSource[entry] = "declared in plan contract expected_deletions"
+			continue
+		}
+		allow.ExactPaths[entry] = true
+		allow.ExactPathSource[entry] = "declared in plan contract expected_deletions"
+		if !strings.Contains(entry, "/") {
+			allow.Basenames[entry] = true
+			allow.BasenameSource[entry] = "declared in plan contract expected_deletions"
+		}
+	}
+	return allow
 }
 
 type documentedPathToken struct {
@@ -1494,14 +1620,30 @@ func normalizeDocumentedPath(raw string) (string, bool) {
 	return token, true
 }
 
-func documentedDeletionMatches(pathname string, allow tamperDeletionAllowlist, deletedBasenames map[string]int) bool {
+func documentedDeletionMatches(pathname string, allow tamperDeletionAllowlist, deletedBasenames map[string]int) string {
 	normalized, ok := normalizeDocumentedPath(pathname)
 	if !ok {
-		return false
+		return ""
 	}
 	if allow.ExactPaths[normalized] {
-		return true
+		return deletionAllowlistSource(allow.ExactPathSource, normalized)
 	}
 	base := pathpkg.Base(normalized)
-	return allow.Basenames[base] && deletedBasenames[base] == 1
+	if allow.Basenames[base] && deletedBasenames[base] == 1 {
+		return deletionAllowlistSource(allow.BasenameSource, base)
+	}
+	for _, glob := range allow.Globs {
+		matched, err := pathpkg.Match(glob, normalized)
+		if err == nil && matched {
+			return deletionAllowlistSource(allow.GlobSource, glob)
+		}
+	}
+	return ""
+}
+
+func deletionAllowlistSource(sources map[string]string, key string) string {
+	if source := strings.TrimSpace(sources[key]); source != "" {
+		return source
+	}
+	return "documented in task spec or plan contract"
 }

@@ -323,6 +323,101 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	}
 }
 
+// TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict is the exact
+// repro from #2232: an agent edited the conflicted file to a marker-free
+// resolution but never ran `git add`, so the path is still unmerged in the
+// index (`UU`). Unlike TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict,
+// this test deliberately skips staging the resolved file to prove the
+// recovery path also fires from that unstaged state, not just once the file
+// is already staged.
+func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) {
+	t.Parallel()
+
+	bare, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-recovery-unstaged")
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved on disk but merge not finalized.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: git still reports an unmerged path\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2232,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-recovery-unstaged",
+		Workflow:  wf,
+	})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2232,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-recovery-unstaged",
+	})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output != "continue" {
+		t.Fatalf("output = %q, want continue", out.Output)
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want unchanged in-progress", got.Status)
+	}
+
+	statusOut, err := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v: %s", err, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("worktree not clean after recovery: %s", statusOut)
+	}
+
+	subject, err := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%s").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git log: %v: %s", err, subject)
+	}
+	if got := strings.TrimSpace(string(subject)); got != "fix(recovery): finalize merge resolution" {
+		t.Fatalf("last subject = %q, want recovery commit", got)
+	}
+
+	localSHA := headSHA(t, wtPath)
+	remoteSHAOut, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "rev-parse", "refs/heads/feat/conflict-recovery-unstaged").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse remote branch: %v: %s", err, remoteSHAOut)
+	}
+	if remoteSHA := strings.TrimSpace(string(remoteSHAOut)); remoteSHA != localSHA {
+		t.Fatalf("remote SHA = %q, want pushed local SHA %q", remoteSHA, localSHA)
+	}
+}
+
 func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *testing.T) {
 	t.Parallel()
 

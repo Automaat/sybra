@@ -30,7 +30,6 @@ const mockTask = {
   codeReview: '',
   filePath: '',
   taskType: '',
-  todoistId: '',
   convertValues: () => {},
 } as unknown as Task
 

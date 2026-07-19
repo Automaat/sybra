@@ -3,28 +3,25 @@ package sybra
 import (
 	"fmt"
 	"log/slog"
-	"regexp"
+	"os"
+	"reflect"
+	"slices"
+	"strings"
 	"sync"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
-	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
+	"gopkg.in/yaml.v3"
 )
-
-// modelNameRe restricts the agent model identifier to characters safe to embed
-// on a CLI argument without quoting. Compiled once — recompiling per call
-// allocates ~1KB of regex state each time UpdateSettings runs.
-var modelNameRe = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // ConfigService exposes settings read/write as Wails-bound methods.
 type ConfigService struct {
 	mu             sync.RWMutex
 	cfg            *config.Config
+	persisted      *config.Config
 	logLevel       *slog.LevelVar
 	notifier       *notification.Emitter
 	agents         *agent.Manager
@@ -32,19 +29,17 @@ type ConfigService struct {
 	workflowEngine *workflow.Engine
 	logger         *slog.Logger
 	policy         func() limits.Policy
-	reloadHook     func() // called after todoist config changes
+	applyRuntime   func(config.Config) error
 }
 
 // GetSettings returns the current app settings for the config UI.
-// Secret fields (e.g. Todoist.APIToken) are redacted — callers must use
-// dedicated write-only methods (UpdateTodoistToken) to rotate them.
 func (s *ConfigService) GetSettings() AppSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c := s.cfg
-	todoist := c.Todoist
-	tokenSet := todoist.APIToken != ""
-	todoist.APIToken = "" // never leak the token over the read API
+	if s.persisted != nil {
+		c = s.persisted
+	}
 	return AppSettings{
 		Agent:        c.Agent,
 		Notification: c.Notification,
@@ -54,44 +49,27 @@ func (s *ConfigService) GetSettings() AppSettings {
 			MaxSizeMB: c.Logging.MaxSizeMB,
 			MaxFiles:  c.Logging.MaxFiles,
 		},
-		Audit:           c.Audit,
-		Todoist:         todoist,
-		Renovate:        c.Renovate,
-		Providers:       c.Providers,
-		GitHub:          c.GitHub,
-		Monitor:         c.Monitor,
-		SelfMonitor:     c.SelfMonitor,
-		Triage:          c.Triage,
-		Umbrella:        c.Umbrella,
-		Testing:         c.Testing,
-		Experience:      c.Experience,
-		Metrics:         c.Metrics,
-		Browser:         c.Browser,
-		ProjectTypes:    c.ProjectTypes,
-		Directories:     c.Directories(),
-		TodoistTokenSet: tokenSet,
+		Audit:        c.Audit,
+		Renovate:     c.Renovate,
+		Providers:    c.Providers,
+		GitHub:       c.GitHub,
+		Monitor:      c.Monitor,
+		SelfMonitor:  c.SelfMonitor,
+		Triage:       c.Triage,
+		Umbrella:     c.Umbrella,
+		Testing:      c.Testing,
+		Experience:   c.Experience,
+		Metrics:      c.Metrics,
+		Browser:      c.Browser,
+		ProjectTypes: c.ProjectTypes,
+		Directories:  c.Directories(),
 	}
 }
 
-// UpdateTodoistToken sets or clears the Todoist API token and persists the config.
-// Pass an empty string to remove the stored token.
-// This is the only write path for the token — GetSettings never returns it.
-func (s *ConfigService) UpdateTodoistToken(token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cfg.Todoist.APIToken = token
-	if err := s.cfg.Save(); err != nil {
-		return err
-	}
-	if s.reloadHook != nil {
-		s.reloadHook()
-	}
-	return nil
-}
-
-// GetDefaultSettings returns the settings a fresh install would have. The UI
-// diffs live values against these to flag "modified from default" fields and to
-// power per-field reset-to-default, without hardcoding defaults in TypeScript.
+// GetDefaultSettings returns the settings an empty config file resolves to. The
+// UI diffs live values against these to flag "modified from default" fields and
+// to power per-field reset-to-default, without hardcoding defaults in
+// TypeScript.
 func (s *ConfigService) GetDefaultSettings() AppSettings {
 	return configToSettings(config.DefaultConfig())
 }
@@ -109,146 +87,284 @@ func (s *ConfigService) GetRawConfig() (string, error) {
 // formatting and comments), then hot-reloads. Invalid YAML or a value that
 // fails validation is rejected without touching disk.
 func (s *ConfigService) SaveRawConfig(raw string) error {
-	parsed := config.DefaultConfig()
-	if err := yaml.Unmarshal([]byte(raw), parsed); err != nil {
-		return validationError(fmt.Sprintf("invalid YAML: %s", err))
-	}
-	// validateSettings reads s.cfg (stored-token check); guard it. ReloadFromDisk
-	// below takes the write lock itself, so release before calling it.
+	saveRaw := []byte(raw)
+	var err error
 	s.mu.RLock()
-	err := s.validateSettings(configToSettings(parsed))
+	base := s.cfg
+	if s.persisted != nil {
+		base = s.persisted
+	}
+	preserveServerToken := serverAuthTokenForRawSave(base)
 	s.mu.RUnlock()
+	if preserveServerToken != "" {
+		saveRaw, err = ensureServerAuthTokenInRawConfig(saveRaw, preserveServerToken)
+		if err != nil {
+			return validationError(fmt.Sprintf("invalid config: %s", err))
+		}
+	}
+	fileCfg, err := config.ParseFileConfig(saveRaw)
 	if err != nil {
-		return err
+		return validationError(fmt.Sprintf("invalid config: %s", err))
 	}
-	if err := config.WriteRawConfig([]byte(raw)); err != nil {
-		return err
+	resolved, err := config.ResolveFromCurrentEnvironment(fileCfg, config.ResolveOptions{})
+	if err != nil {
+		return validationError(err.Error())
 	}
-	_, err = s.ReloadFromDisk()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err = s.mutateLocked(resolved.Config, func() error {
+		return config.WriteRawConfig(saveRaw)
+	})
 	return err
 }
 
+func serverAuthTokenForRawSave(cfg *config.Config) string {
+	if cfg == nil || strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN")) != "" {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Server.AuthToken)
+}
+
+func ensureServerAuthTokenInRawConfig(raw []byte, token string) ([]byte, error) {
+	fileCfg, err := config.ParseFileConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	if fileCfg.Has("server", "auth_token") {
+		return raw, nil
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return nil, err
+	}
+	keyNode, valueNode, ok := yamlTopLevelField(&root, "server")
+	if !ok {
+		return appendServerBlock(raw, token), nil
+	}
+	if valueNode.Kind != yaml.MappingNode {
+		return rewriteRawConfigServerAuthToken(&root, keyNode, valueNode, token)
+	}
+	return insertServerAuthTokenLine(raw, keyNode, token)
+}
+
+func yamlTopLevelField(root *yaml.Node, key string) (keyNode, valueNode *yaml.Node, ok bool) {
+	node := root
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		node = node.Content[0]
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil, nil, false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i], node.Content[i+1], true
+		}
+	}
+	return nil, nil, false
+}
+
+func appendServerBlock(raw []byte, token string) []byte {
+	trimmed := strings.TrimRight(string(raw), "\n")
+	if trimmed != "" {
+		trimmed += "\n"
+	}
+	return []byte(trimmed + "server:\n  auth_token: " + yamlScalar(token) + "\n")
+}
+
+func rewriteRawConfigServerAuthToken(root, keyNode, valueNode *yaml.Node, token string) ([]byte, error) {
+	if valueNode.Kind == 0 {
+		valueNode.Kind = yaml.MappingNode
+		valueNode.Tag = "!!map"
+		valueNode.Value = ""
+		valueNode.Style = 0
+	}
+	valueNode.Kind = yaml.MappingNode
+	valueNode.Tag = "!!map"
+	valueNode.Content = append(valueNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "auth_token"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: token},
+	)
+	if keyNode != nil && keyNode.HeadComment != "" && valueNode.HeadComment == "" {
+		valueNode.HeadComment = keyNode.HeadComment
+	}
+	var out strings.Builder
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(root); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return []byte(out.String()), nil
+}
+
+func insertServerAuthTokenLine(raw []byte, keyNode *yaml.Node, token string) ([]byte, error) {
+	lines := strings.Split(string(raw), "\n")
+	serverIndent := keyNode.Column - 1
+	insertAt := len(lines)
+	for i := keyNode.Line; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent <= serverIndent {
+			insertAt = i
+			break
+		}
+	}
+	entry := strings.Repeat(" ", serverIndent+2) + "auth_token: " + yamlScalar(token)
+	lines = append(lines, "")
+	copy(lines[insertAt+1:], lines[insertAt:])
+	lines[insertAt] = entry
+	return []byte(strings.Join(lines, "\n")), nil
+}
+
+func yamlScalar(s string) string {
+	data, err := yaml.Marshal(s)
+	if err != nil {
+		return s
+	}
+	return strings.TrimSpace(string(data))
+}
+
 // UpdateSettings validates, persists, and hot-reloads the provided settings.
-func (s *ConfigService) UpdateSettings(settings AppSettings) error {
+func (s *ConfigService) UpdateSettings(settings AppSettings) (ConfigMutationResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if err := s.validateSettings(settings); err != nil {
-		return err
+		return ConfigMutationResult{}, err
 	}
-	if err := s.applyFromConfig(settingsToConfig(s.cfg, settings)); err != nil {
-		return err
+	base := s.cfg
+	if s.persisted != nil {
+		base = s.persisted
 	}
-	return s.cfg.Save()
+	next := settingsToConfig(base, settings)
+	return s.mutateLocked(&next, next.Save)
 }
 
 // validateSettings checks all editable fields for validity.
 func (s *ConfigService) validateSettings(settings AppSettings) error {
-	if settings.Agent.Provider != "" && !providerid.IsKnown(settings.Agent.Provider) {
-		return validationError(fmt.Sprintf("invalid provider: %q", settings.Agent.Provider))
+	base := s.cfg
+	if s.persisted != nil {
+		base = s.persisted
 	}
-	if settings.Agent.Model != "" && !modelNameRe.MatchString(settings.Agent.Model) {
-		return validationError(fmt.Sprintf("invalid model: %q", settings.Agent.Model))
-	}
-	if settings.Agent.FallbackModel != "" && !modelNameRe.MatchString(settings.Agent.FallbackModel) {
-		return validationError(fmt.Sprintf("invalid fallback model: %q", settings.Agent.FallbackModel))
-	}
-	validModes := map[string]bool{"": true, "headless": true, "interactive": true}
-	if !validModes[settings.Agent.Mode] {
-		return validationError(fmt.Sprintf("invalid mode: %q", settings.Agent.Mode))
-	}
-	if settings.Agent.MaxConcurrent < 1 || settings.Agent.MaxConcurrent > 100 {
-		return validationError("maxConcurrent must be 1–100")
-	}
-	if settings.Agent.LogRetentionDays < -1 {
-		return validationError("logRetentionDays must be -1 or greater")
-	}
-	if settings.Agent.LogGzipAfterDays < -1 {
-		return validationError("logGzipAfterDays must be -1 or greater")
-	}
-	if settings.Agent.LogRetentionMaxSizeMB < -1 {
-		return validationError("logRetentionMaxSizeMb must be -1 or greater")
-	}
-	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
-	if !validLevels[settings.Logging.Level] {
-		return validationError(fmt.Sprintf("invalid log level: %q", settings.Logging.Level))
-	}
-	if settings.Logging.MaxSizeMB < 1 || settings.Logging.MaxSizeMB > 500 {
-		return validationError("maxSizeMB must be 1–500")
-	}
-	if settings.Logging.MaxFiles < 1 || settings.Logging.MaxFiles > 50 {
-		return validationError("maxFiles must be 1–50")
-	}
-	if settings.Audit.RetentionDays < 1 || settings.Audit.RetentionDays > 365 {
-		return validationError("retentionDays must be 1–365")
-	}
-	if settings.Todoist.Enabled && settings.Todoist.APIToken == "" && s.cfg.Todoist.APIToken == "" {
-		return validationError("todoist API token required when enabled")
-	}
-	// 0 means "use the default" (config.Load coerces it to 120); any other
-	// out-of-range value is rejected. AppSettings is passed by value, so we
-	// cannot silently coerce here — the caller would never see the change.
-	if settings.Todoist.PollSeconds != 0 &&
-		(settings.Todoist.PollSeconds < 30 || settings.Todoist.PollSeconds > 3600) {
-		return validationError("todoist poll interval must be 30–3600 seconds")
+	next := settingsToConfig(base, settings)
+	if err := config.ValidateResolvedConfig(&next); err != nil {
+		return validationError(err.Error())
 	}
 	return nil
 }
 
-// applyFromConfig assigns all hot-reloadable fields from next into s.cfg and
-// pushes the manager settings that are intentionally live. s.mu must be held by the caller.
-// This never writes to disk — callers that need persistence must call s.cfg.Save().
-func (s *ConfigService) applyFromConfig(next config.Config) error {
-	s.cfg.Agent = next.Agent
-	s.cfg.Notification = next.Notification
-	s.cfg.Orchestrator = next.Orchestrator
-	s.cfg.Logging.Level = next.Logging.Level
-	s.cfg.Logging.MaxSizeMB = next.Logging.MaxSizeMB
-	s.cfg.Logging.MaxFiles = next.Logging.MaxFiles
-	s.cfg.Audit = next.Audit
-	s.cfg.Todoist = next.Todoist
-	// In-place field assignment: the renovate coordinator holds &s.cfg.Renovate.
-	s.cfg.Renovate.Enabled = next.Renovate.Enabled
-	s.cfg.Renovate.Author = next.Renovate.Author
-	s.cfg.Providers = next.Providers
-	s.cfg.GitHub = next.GitHub
-	s.cfg.Triage = next.Triage
-	s.cfg.Monitor = next.Monitor
-	s.cfg.SelfMonitor = next.SelfMonitor
-	s.cfg.Umbrella = next.Umbrella
-	s.cfg.Testing = next.Testing
-	s.cfg.Experience = next.Experience
-	s.cfg.Browser = next.Browser
-	s.cfg.ABTesting = next.ABTesting
-	s.cfg.Metrics = next.Metrics
-	s.cfg.ProjectTypes = next.ProjectTypes
-	s.notifier.SetDesktop(next.Notification.Desktop)
-	if err := s.refreshAgentRuntimeConfig(next); err != nil {
-		return err
+func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() error) (ConfigMutationResult, error) {
+	current := cloneConfig(s.cfg)
+	intent := cloneConfig(s.cfg)
+	if s.persisted != nil {
+		intent = cloneConfig(s.persisted)
 	}
-	if s.agents != nil {
-		s.agents.SetGuardrails(agent.Guardrails{
-			MaxCostUSD:              next.Agent.MaxCostUSD,
-			MaxTurns:                next.Agent.MaxTurns,
-			MaxCheckpoints:          next.MaxCheckpoints(),
-			TurnCostFraction:        next.Agent.TurnCostFraction,
-			TurnMultiplier:          next.Agent.TurnMultiplier,
-			CheckpointOnTurnCeiling: next.CheckpointOnTurnCeilingEnabled(),
-		})
+	result := diffConfig(*intent, *candidate)
+	if len(result.Rejected) > 0 {
+		return result, configMutationErrorf(result, "rejected immutable config paths: %s", strings.Join(result.Rejected, ", "))
 	}
-	if s.workflowEngine != nil {
-		s.workflowEngine.SetMaxCheckpoints(next.MaxCheckpoints())
+	nextActive := cloneConfig(current)
+	for _, path := range result.Applied {
+		copyConfigPath(nextActive, candidate, path)
 	}
-	if s.logLevel != nil {
-		s.logLevel.Set(s.cfg.Logging.SlogLevel())
+	if persist != nil {
+		if err := persist(); err != nil {
+			return result, err
+		}
 	}
-	if s.reloadHook != nil {
-		s.reloadHook()
+	if err := s.applyHotChangesLocked(result, nextActive); err != nil {
+		if persist != nil {
+			if restoreErr := config.RestoreLastKnownGoodConfig(); restoreErr != nil {
+				result.Recovery = &ConfigRecovery{
+					Message: fmt.Sprintf("hot apply failed and last-known-good restore failed: %v", restoreErr),
+				}
+				return result, fmt.Errorf("%w; restore last-known-good: %w", err, restoreErr)
+			}
+			result.Recovery = &ConfigRecovery{
+				RestoredLastKnownGood: true,
+				Message:               "restored config.yaml from last-known-good after hot apply failure",
+			}
+		}
+		return result, &configMutationError{result: result, cause: err}
+	}
+	*s.cfg = *nextActive
+	s.persisted = cloneConfig(candidate)
+	if s.logger != nil {
+		for _, path := range result.RestartRequired {
+			s.logger.Warn("config.reload.restart_required", "field", path)
+		}
+	}
+	return result, nil
+}
+
+func copyConfigPath(dst, src *config.Config, path string) {
+	dstField := fieldByYAMLPath(reflect.ValueOf(dst), path)
+	srcField := fieldByYAMLPath(reflect.ValueOf(src), path)
+	dstField.Set(srcField)
+}
+
+func (s *ConfigService) applyHotChangesLocked(result ConfigMutationResult, nextActive *config.Config) error {
+	for _, group := range configApplyGroups(result.Applied) {
+		switch group {
+		case configApplyNone:
+			continue
+		case configApplyAgentRuntime:
+			if err := s.refreshAgentRuntimeConfig(*nextActive); err != nil {
+				return err
+			}
+		case configApplyGuardrails:
+			if s.agents != nil {
+				s.agents.SetGuardrails(agent.Guardrails{
+					MaxCostUSD:              nextActive.Agent.MaxCostUSD,
+					MaxTurns:                nextActive.Agent.MaxTurns,
+					MaxCheckpoints:          nextActive.MaxCheckpoints(),
+					TurnCostFraction:        nextActive.Agent.TurnCostFraction,
+					TurnMultiplier:          nextActive.Agent.TurnMultiplier,
+					CheckpointOnTurnCeiling: nextActive.CheckpointOnTurnCeilingEnabled(),
+				})
+			}
+			if s.workflowEngine != nil {
+				s.workflowEngine.SetMaxCheckpoints(nextActive.MaxCheckpoints())
+			}
+		case configApplyNotification:
+			if s.notifier != nil {
+				s.notifier.SetDesktop(nextActive.Notification.Desktop)
+			}
+		case configApplyLogLevel:
+			if s.logLevel != nil {
+				s.logLevel.Set(nextActive.Logging.SlogLevel())
+			}
+		}
+	}
+	if slices.Contains(result.Applied, "agent") {
+		if s.agents != nil {
+			s.agents.SetGuardrails(agent.Guardrails{
+				MaxCostUSD:              nextActive.Agent.MaxCostUSD,
+				MaxTurns:                nextActive.Agent.MaxTurns,
+				MaxCheckpoints:          nextActive.MaxCheckpoints(),
+				TurnCostFraction:        nextActive.Agent.TurnCostFraction,
+				TurnMultiplier:          nextActive.Agent.TurnMultiplier,
+				CheckpointOnTurnCeiling: nextActive.CheckpointOnTurnCeilingEnabled(),
+			})
+		}
+		if s.workflowEngine != nil {
+			s.workflowEngine.SetMaxCheckpoints(nextActive.MaxCheckpoints())
+		}
 	}
 	return nil
 }
 
 func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) error {
+	if s.applyRuntime != nil {
+		return s.applyRuntime(next)
+	}
 	if s.agents == nil {
 		return nil
 	}
@@ -260,6 +376,14 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 	if s.policy != nil {
 		policy = s.policy()
 	}
+	policy.Enabled = cfg.Providers.Limits.Enabled
+	if policy.ProviderEnabled == nil {
+		policy.ProviderEnabled = map[string]bool{}
+	}
+	policy.ProviderEnabled[limits.ProviderClaude] = cfg.Providers.Claude.Enabled
+	policy.ProviderEnabled[limits.ProviderCodex] = cfg.Providers.Codex.Enabled
+	policy.ProviderEnabled[limits.ProviderCopilot] = cfg.Providers.Copilot.Enabled
+	policy.ProviderEnabled[limits.ProviderOpenCode] = cfg.Providers.OpenCode.Enabled
 	return agent.ManagerRuntimeConfig{
 		MaxConcurrent:          cfg.Agent.MaxConcurrent,
 		DefaultProvider:        cfg.Agent.Provider,
@@ -291,11 +415,6 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 	next.Logging.MaxSizeMB = settings.Logging.MaxSizeMB
 	next.Logging.MaxFiles = settings.Logging.MaxFiles
 	next.Audit = settings.Audit
-	next.Todoist = settings.Todoist
-	// Preserve the stored token when the caller sends a blank (redacted) value.
-	if settings.Todoist.APIToken == "" {
-		next.Todoist.APIToken = existing.Todoist.APIToken
-	}
 	next.Renovate = settings.Renovate
 	next.Providers = settings.Providers
 	next.GitHub = settings.GitHub

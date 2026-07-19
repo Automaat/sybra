@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/dispatchorder"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
@@ -22,6 +23,8 @@ const (
 	watchdogHangCleanRetryVarPrefix = "watchdog.hang_clean_retry."
 	watchdogReaskNoteVar            = "watchdog_reask_note"
 	maxWatchdogHangRetries          = 2
+	watchdogStopRetryVarPrefix      = "watchdog.stop_retry."
+	maxWatchdogStopRetries          = 2
 	watchdogRateLimitStatusPrefix   = "watchdog: rate limit"
 	watchdogRateLimitRetryVarPrefix = "watchdog.rate_limit_retry."
 	maxWatchdogRateLimitRetries     = 2
@@ -232,6 +235,23 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 	}
 	step := def.StepByID(t.Workflow.CurrentStep)
 	if step == nil || step.Type != StepRunAgent {
+		return
+	}
+	// A task can self-escalate to human-required only because live verification
+	// needs an open PR (branch already pushed) via a plain CLI status update,
+	// without the agent exiting. That arrives here through the status hook, not
+	// an agent-completion callback, so recover it before the wait_for_status
+	// guard bails — otherwise the pushed branch strands in human-required.
+	if comp, recovered, err := e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, step, t.Workflow, t, StepOutput{
+		StepID: step.ID,
+		Status: "completed",
+		Output: t.StatusReason,
+	}); recovered {
+		if err != nil {
+			e.logger.Error("workflow.status-recover.err", "task_id", taskID, "step", step.ID, "status", newStatus, "err", err)
+			return
+		}
+		e.fireComplete(comp)
 		return
 	}
 	if comp, recovered, err := e.maybeRecoverHumanRequiredByOpeningPR(taskID, step, t.Workflow, t, StepOutput{
@@ -1197,7 +1217,8 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 			"task_id", t.ID, "reason", "retry_after", "retry_after", retryAtStr, "step", step.ID)
 		return
 	}
-	if reason, skip := resumeSkipReasonForStatus(t.Status); skip {
+	retryableWatchdogStop := e.canRetryWatchdogStop(t, step)
+	if reason, skip := resumeSkipReasonForStatus(t.Status); skip && (reason != "human_required" || !retryableWatchdogStop) {
 		e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
 			reason+"|"+t.Status+"|"+step.ID,
 			"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)
@@ -1207,6 +1228,9 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 		return
 	}
 	if e.shouldSkipResumeForRateLimitedProvider(t, step) {
+		return
+	}
+	if retryableWatchdogStop && e.handleWatchdogStopRetry(t, step) {
 		return
 	}
 	if e.handleWatchdogRetries(t, step) {
@@ -1418,8 +1442,7 @@ func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
 }
 
 func isWatchdogHangReason(reason string) bool {
-	reason = strings.TrimSpace(reason)
-	return reason == watchdogHangStatusReasonPrefix || strings.HasPrefix(reason, watchdogHangStatusReasonPrefix+":")
+	return watchdogreason.IsHang(reason)
 }
 
 func buildWatchdogReaskNote(attempt int) string {
@@ -1630,8 +1653,80 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 }
 
 func isWatchdogRateLimitReason(reason string) bool {
-	reason = strings.TrimSpace(reason)
-	return reason == watchdogRateLimitStatusPrefix || strings.HasPrefix(reason, watchdogRateLimitStatusPrefix+":")
+	return watchdogreason.IsRateLimit(reason)
+}
+
+func (e *Engine) canRetryWatchdogStop(t *TaskInfo, step *Step) bool {
+	return t != nil &&
+		t.Workflow != nil &&
+		step != nil &&
+		step.Type == StepRunAgent &&
+		t.Status == "human-required" &&
+		step.Config.Role == "implementation" &&
+		watchdogreason.IsRetryableStop(t.StatusReason)
+}
+
+func (e *Engine) handleWatchdogStopRetry(t *TaskInfo, step *Step) bool {
+	if !e.canRetryWatchdogStop(t, step) {
+		return false
+	}
+	// Same completion-routing race as watchdog hang retry: if the just-stopped
+	// agent is still being routed, do not spend retry budget or rewrite status.
+	if e.hasTrackedAgentForTaskStep(t.ID, step.ID) {
+		return false
+	}
+	retryKey := watchdogStopRetryKey(step.ID)
+	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
+	if attempts >= maxWatchdogStopRetries {
+		reason := fmt.Sprintf("watchdog stop: retry budget exhausted after %d clean re-dispatches", attempts)
+		t.Workflow.State = ExecFailed
+		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+			e.logger.Error("workflow.watchdog-stop.persist", "task_id", t.ID, "step", step.ID, "err", err)
+		}
+		if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+			e.logger.Error("workflow.watchdog-stop.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+		} else {
+			e.logger.Warn("workflow.watchdog-stop.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+		}
+		return true
+	}
+	t.Workflow.SetVar(retryKey, strconv.Itoa(attempts+1))
+	cleanRef := t.Workflow.Variables[tamperBaselineVar(step.ID)]
+	if cleanRef == "" {
+		cleanRef = "HEAD"
+	}
+	t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
+	t.Workflow.SetVar(watchdogReaskNoteVar, buildWatchdogStopReaskNote(t.StatusReason, attempts+1))
+	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		e.logger.Error("workflow.watchdog-stop.persist", "task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	if err := e.tasks.UpdateTaskStatus(t.ID, "in-progress", ""); err != nil {
+		e.logger.Error("workflow.watchdog-stop.clear", "task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	t.Status = "in-progress"
+	t.StatusReason = ""
+	e.logger.Info("workflow.watchdog-stop.retry",
+		"task_id", t.ID, "step", step.ID, "attempt", attempts+1, "max", maxWatchdogStopRetries)
+	return false
+}
+
+func buildWatchdogStopReaskNote(reason string, attempt int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️ Your previous implementation run was STOPPED by the watchdog for loop-like behavior — attempt %d of %d.\n\n",
+		attempt, maxWatchdogStopRetries)
+	if reason = strings.TrimSpace(reason); reason != "" {
+		b.WriteString("Previous watchdog reason: ")
+		b.WriteString(reason)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("To make forward progress this time:\n")
+	b.WriteString("- Do NOT repeat the same failing command or read-only investigation loop.\n")
+	b.WriteString("- Inspect the latest concrete error/output, then change code or narrow the command before retrying.\n")
+	b.WriteString("- If a deterministic check is failing, run only that narrow check and fix the root cause.\n")
+	b.WriteString("- If a human genuinely must decide, stop and mark the task human-required with the exact blocker.")
+	return b.String()
 }
 
 func (e *Engine) handleTransientFetchRetry(t *TaskInfo, step *Step) bool {
@@ -1688,6 +1783,10 @@ func (e *Engine) clearWatchdogReaskNote(taskID string, wf *Execution) {
 
 func watchdogHangRetryKey(stepID string) string {
 	return watchdogHangRetryVarPrefix + stepID
+}
+
+func watchdogStopRetryKey(stepID string) string {
+	return watchdogStopRetryVarPrefix + stepID
 }
 
 func watchdogHangCleanRetryKey(stepID string) string {

@@ -29,7 +29,7 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("marker-free unmerged path is recoverable", func(t *testing.T) {
+	t.Run("marker-free unstaged path is recoverable", func(t *testing.T) {
 		t.Parallel()
 		wtPath := newConflictedWorktree(t)
 		if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("feature\nmain\n"), 0o644); err != nil {
@@ -41,20 +41,7 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
 		}
 		if !slices.Equal(got, []string{"README.md"}) {
-			t.Fatalf("paths = %v, want [README.md]", got)
-		}
-	})
-
-	t.Run("marker-free binary conflict is not recoverable", func(t *testing.T) {
-		t.Parallel()
-		wtPath := newBinaryConflictedWorktree(t)
-
-		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
-		if err != nil {
-			t.Fatalf("ResolvedUnmergedPaths: %v", err)
-		}
-		if len(got) != 0 {
-			t.Fatalf("paths = %v, want none while binary conflict remains unmerged", got)
+			t.Fatalf("paths = %v, want [README.md] even though it was never `git add`ed", got)
 		}
 	})
 
@@ -70,21 +57,37 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
 		}
 		if len(got) != 0 {
-			t.Fatalf("paths = %v, want none for unstaged deletion conflict", got)
+			t.Fatalf("paths = %v, want none when the resolution deleted the file", got)
 		}
 	})
 
 	t.Run("staged deletion resolution is recoverable", func(t *testing.T) {
 		t.Parallel()
 		wtPath := newConflictedWorktree(t)
-		runGitInDir(t, wtPath, "rm", "README.md")
+		if err := os.Remove(filepath.Join(wtPath, "README.md")); err != nil {
+			t.Fatal(err)
+		}
+		runGitInDir(t, wtPath, "add", "-A")
 
 		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
 		if err != nil {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
 		}
 		if !slices.Equal(got, []string{"README.md"}) {
-			t.Fatalf("paths = %v, want [README.md]", got)
+			t.Fatalf("paths = %v, want [README.md] when the deletion was staged", got)
+		}
+	})
+
+	t.Run("marker-free binary conflict is not recoverable", func(t *testing.T) {
+		t.Parallel()
+		wtPath := newBinaryConflictedWorktree(t)
+
+		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
+		if err != nil {
+			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("paths = %v, want none while binary conflict remains unmerged", got)
 		}
 	})
 

@@ -1905,6 +1905,54 @@ func TestPushUpstream_RoutesToFork(t *testing.T) {
 	}
 }
 
+// TestPushUpstream_UsesPushEnv proves pushLocked's git push subprocess
+// carries whatever environment pushEnv() returns — the seam that lets a
+// cached GitHub App installation token (github.GHEnv) reach the credential
+// helper `git push` invokes, instead of that helper only ever seeing the
+// single interactive `gh auth login` session (#2315). A pre-push hook is the
+// only vantage point that observes the push subprocess's own env directly.
+func TestPushUpstream_UsesPushEnv(t *testing.T) {
+	_, wtPath := initWorktree(t)
+
+	if err := InstallHooks(context.Background(), wtPath, &ChecksConfig{
+		PrePush: []string{`test "$GH_TOKEN" = "installation-token-xyz"`},
+	}); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	orig := pushEnv
+	pushEnv = func() []string {
+		return append(os.Environ(), "GH_TOKEN=installation-token-xyz")
+	}
+	t.Cleanup(func() { pushEnv = orig })
+
+	if err := PushUpstream(context.Background(), wtPath, "synapse/test"); err != nil {
+		t.Fatalf("PushUpstream should succeed with pushEnv's GH_TOKEN visible to the pre-push hook: %v", err)
+	}
+}
+
+// TestPushUpstream_PushEnvNilInheritsAmbient proves the default (no App auth
+// configured) behavior is unchanged: pushEnv's nil return means `git push`
+// inherits the process environment, same as before this env seam existed.
+func TestPushUpstream_PushEnvNilInheritsAmbient(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	t.Setenv("GH_TOKEN", "ambient-token")
+
+	if err := InstallHooks(context.Background(), wtPath, &ChecksConfig{
+		PrePush: []string{`test "$GH_TOKEN" = "ambient-token"`},
+	}); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	orig := pushEnv
+	pushEnv = func() []string { return nil }
+	t.Cleanup(func() { pushEnv = orig })
+
+	if err := PushUpstream(context.Background(), wtPath, "synapse/test"); err != nil {
+		t.Fatalf("PushUpstream with nil pushEnv should inherit the ambient process env: %v", err)
+	}
+}
+
 func TestDeleteUpstreamBranchSkipsPrePushHook(t *testing.T) {
 	t.Parallel()
 	bare, wtPath := initWorktree(t)
@@ -3507,6 +3555,64 @@ func TestPreflightPushCredentials_ExhaustsRetriesReturnsError(t *testing.T) {
 	}
 	if *refreshCalls != len(pushPreflightRetryBackoffs) {
 		t.Fatalf("forceRefreshAppToken called %d times, want %d", *refreshCalls, len(pushPreflightRetryBackoffs))
+	}
+}
+
+// pushAuthFailureHookCalls records invocations of a stubbed pushAuthFailureHook.
+type pushAuthFailureHookCalls struct {
+	count   int
+	lastErr error
+}
+
+// stubPushAuthFailureHook replaces the package-level failure hook with a
+// counting fake and restores the no-op default on cleanup.
+func stubPushAuthFailureHook(t *testing.T) *pushAuthFailureHookCalls {
+	t.Helper()
+	got := &pushAuthFailureHookCalls{}
+	SetPushAuthFailureHook(func(err error) {
+		got.count++
+		got.lastErr = err
+	})
+	t.Cleanup(func() { SetPushAuthFailureHook(nil) })
+	return got
+}
+
+func TestPreflightPushCredentials_HookFiresOnExhaustedRetries(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	setGitHubOriginPushURL(t, wtPath)
+
+	dir := t.TempDir()
+	writeFakeGhFailingNTimes(t, dir, 100)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubPushPreflightRetry(t)
+	hook := stubPushAuthFailureHook(t)
+
+	if err := PreflightPushCredentials(context.Background(), wtPath); !errors.Is(err, ErrPushAuthPreflight) {
+		t.Fatalf("PreflightPushCredentials error = %v, want ErrPushAuthPreflight", err)
+	}
+	if hook.count != 1 {
+		t.Fatalf("pushAuthFailureHook called %d times, want 1", hook.count)
+	}
+	if hook.lastErr == nil || !errors.Is(hook.lastErr, ErrPushAuthPreflight) {
+		t.Fatalf("pushAuthFailureHook error = %v, want ErrPushAuthPreflight", hook.lastErr)
+	}
+}
+
+func TestPreflightPushCredentials_HookNotCalledOnSuccess(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	setGitHubOriginPushURL(t, wtPath)
+
+	dir := t.TempDir()
+	writeFakeGhFailingNTimes(t, dir, 0)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubPushPreflightRetry(t)
+	hook := stubPushAuthFailureHook(t)
+
+	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
+		t.Fatalf("PreflightPushCredentials = %v, want nil", err)
+	}
+	if hook.count != 0 {
+		t.Fatalf("pushAuthFailureHook called %d times, want 0", hook.count)
 	}
 }
 

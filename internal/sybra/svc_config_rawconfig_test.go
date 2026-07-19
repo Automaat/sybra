@@ -10,22 +10,15 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 )
 
-func TestGetSettings_ExposesExpandedSectionsAndTokenFlag(t *testing.T) {
+func TestGetSettings_ExposesExpandedSections(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
-	svc.cfg.Todoist.APIToken = "tok"
-	svc.cfg.GitHub.Enabled = true
-	svc.cfg.Monitor.Enabled = true
-	svc.cfg.Triage.PollSeconds = 45
-	svc.cfg.ProjectTypes = []string{"pet"}
-	writeConfigYAML(t, cfgPath, svc.cfg)
+	svc.persisted.GitHub.Enabled = true
+	svc.persisted.Monitor.Enabled = true
+	svc.persisted.Triage.PollSeconds = 45
+	svc.persisted.ProjectTypes = []string{"pet"}
+	writeConfigYAML(t, cfgPath, svc.persisted)
 
 	got := svc.GetSettings()
-	if !got.TodoistTokenSet {
-		t.Error("TodoistTokenSet should be true when a token is stored")
-	}
-	if got.Todoist.APIToken != "" {
-		t.Error("token must still be redacted")
-	}
 	if !got.GitHub.Enabled || !got.Monitor.Enabled {
 		t.Error("expanded sections not surfaced in GetSettings")
 	}
@@ -43,6 +36,9 @@ func TestGetDefaultSettings_MatchesDefaultConfig(t *testing.T) {
 
 	def := svc.GetDefaultSettings()
 	want := config.DefaultConfig()
+	if def.GitHub.Enabled != want.GitHub.Enabled {
+		t.Errorf("default github.enabled = %v, want %v", def.GitHub.Enabled, want.GitHub.Enabled)
+	}
 	if def.Agent.MaxConcurrent != want.Agent.MaxConcurrent {
 		t.Errorf("default maxConcurrent = %d, want %d", def.Agent.MaxConcurrent, want.Agent.MaxConcurrent)
 	}
@@ -64,16 +60,23 @@ func TestUpdateSettings_RoundTripsExpandedSections(t *testing.T) {
 	s.Testing.MaxConcurrent = 4
 	s.ProjectTypes = []string{"work"}
 
-	if err := svc.UpdateSettings(s); err != nil {
+	if _, err := svc.UpdateSettings(s); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
 	}
-	if svc.cfg.GitHub.PollerRole != "secondary" || !svc.cfg.Monitor.Enabled ||
-		svc.cfg.Monitor.IntervalSeconds != 600 || !svc.cfg.Umbrella.Enabled ||
-		svc.cfg.Testing.MaxConcurrent != 4 {
-		t.Errorf("expanded sections not applied in-memory: %+v", svc.cfg.GitHub)
+	if svc.cfg.GitHub.PollerRole == "secondary" ||
+		svc.cfg.Monitor.IntervalSeconds == 600 || svc.cfg.Umbrella.Enabled {
+		t.Errorf("restart-required sections unexpectedly became active: github=%+v monitor=%+v umbrella=%+v", svc.cfg.GitHub, svc.cfg.Monitor, svc.cfg.Umbrella)
 	}
-	if len(svc.cfg.ProjectTypes) != 1 || svc.cfg.ProjectTypes[0] != "work" {
-		t.Errorf("projectTypes = %v, want [work]", svc.cfg.ProjectTypes)
+	if svc.cfg.Testing.MaxConcurrent != 4 {
+		t.Errorf("hot testing settings not applied in-memory: %+v", svc.cfg.Testing)
+	}
+	got := svc.GetSettings()
+	if got.GitHub.PollerRole != "secondary" || !got.Monitor.Enabled ||
+		got.Monitor.IntervalSeconds != 600 || !got.Umbrella.Enabled {
+		t.Errorf("persisted expanded sections not retained: github=%+v monitor=%+v umbrella=%+v", got.GitHub, got.Monitor, got.Umbrella)
+	}
+	if len(got.ProjectTypes) != 1 || got.ProjectTypes[0] != "work" {
+		t.Errorf("persisted projectTypes = %v, want [work]", got.ProjectTypes)
 	}
 
 	saved, err := os.ReadFile(cfgPath)
@@ -82,35 +85,6 @@ func TestUpdateSettings_RoundTripsExpandedSections(t *testing.T) {
 	}
 	if !strings.Contains(string(saved), "poller_role: secondary") {
 		t.Error("expanded section not persisted to disk")
-	}
-}
-
-func TestUpdateSettings_TodoistPollInterval(t *testing.T) {
-	svc, cfgPath := setupConfigSvc(t)
-	svc.cfg.Todoist.APIToken = "tok"
-	writeConfigYAML(t, cfgPath, svc.cfg)
-
-	s := svc.GetSettings()
-	s.Todoist.Enabled = true
-
-	// Out-of-range is rejected (no silent by-value coercion).
-	s.Todoist.PollSeconds = 5
-	if err := svc.UpdateSettings(s); err == nil {
-		t.Error("expected error for poll interval below 30, got nil")
-	}
-	s.Todoist.PollSeconds = 99999
-	if err := svc.UpdateSettings(s); err == nil {
-		t.Error("expected error for poll interval above 3600, got nil")
-	}
-
-	// 0 means "use default" and is accepted; in-range values pass.
-	s.Todoist.PollSeconds = 0
-	if err := svc.UpdateSettings(s); err != nil {
-		t.Errorf("poll interval 0 should be accepted: %v", err)
-	}
-	s.Todoist.PollSeconds = 300
-	if err := svc.UpdateSettings(s); err != nil {
-		t.Errorf("poll interval 300 should be accepted: %v", err)
 	}
 }
 
@@ -156,6 +130,30 @@ func TestSaveRawConfig_ValidRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveRawConfig_PreservesServerAuthTokenWhenOmitted(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.cfg.Server.AuthToken = "persist-me"
+	svc.persisted = cloneConfig(svc.cfg)
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	raw := "schema_version: 2\nagent:\n  bash_timeout: 2m\n"
+	if err := svc.SaveRawConfig(raw); err != nil {
+		t.Fatalf("SaveRawConfig: %v", err)
+	}
+	if svc.cfg.Server.AuthToken != "persist-me" {
+		t.Fatalf("in-memory auth token = %q, want persist-me", svc.cfg.Server.AuthToken)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedText := string(saved)
+	if !strings.Contains(savedText, "auth_token: persist-me") {
+		t.Fatalf("saved config missing preserved auth token:\n%s", savedText)
+	}
+}
+
 func TestSaveRawConfig_PreservesFormattingWhenBuiltinVersionMissing(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	writeConfigYAML(t, cfgPath, svc.cfg)
@@ -164,7 +162,7 @@ func TestSaveRawConfig_PreservesFormattingWhenBuiltinVersionMissing(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	edited := "# keep this comment\n" + regexp.MustCompile(`builtin_version: \d+\n`).ReplaceAllString(raw, "")
+	edited := "# keep this comment\n" + regexp.MustCompile(`(?m)^\s*builtin_version: \d+\n`).ReplaceAllString(raw, "")
 	edited = strings.Replace(edited, "max_files: 5", "max_files: 7", 1)
 
 	if err := svc.SaveRawConfig(edited); err != nil {

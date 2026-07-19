@@ -286,6 +286,79 @@ func searchLabeledChunked(e execer, repos []string, label string) ([]Issue, erro
 	return all, nil
 }
 
+// FetchMentionedIssuesForRepos returns open issues whose comments contain the
+// given trigger phrase across the specified repos.
+func FetchMentionedIssuesForRepos(repos []string, phrase string) ([]Issue, error) {
+	return fetchMentionedIssuesForReposWith(defaultExecer, repos, phrase)
+}
+
+func fetchMentionedIssuesForReposWith(e execer, repos []string, phrase string) ([]Issue, error) {
+	if len(repos) == 0 || phrase == "" {
+		return nil, nil
+	}
+	// Cache against the full repo set; the per-chunk searches below are an
+	// implementation detail callers shouldn't see.
+	cacheKey := "mention:" + phrase + "||" + strings.Join(repos, ",")
+	if runtimeCacheEnabled(e) {
+		if cached, ok := mentionedIssuesCache.Get(cacheKey); ok {
+			return cached, nil
+		}
+		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
+			if stale, ok := mentionedIssuesCache.GetStale(cacheKey); ok {
+				return stale, nil
+			}
+			return nil, ErrBudgetExhausted
+		}
+	}
+
+	issues, err := searchMentionedChunked(e, repos, phrase)
+	if err != nil {
+		if runtimeCacheEnabled(e) {
+			if stale, ok := mentionedIssuesCache.GetStale(cacheKey); ok {
+				return stale, nil
+			}
+		}
+		return nil, err
+	}
+	if runtimeCacheEnabled(e) {
+		mentionedIssuesCache.Set(cacheKey, issues, 30*time.Second)
+	}
+	return issues, nil
+}
+
+// mentionedRepoQuery builds the mention-search query for one repo chunk. The
+// phrase is quoted so GitHub's search treats it as a single token/phrase
+// rather than splitting on whitespace.
+func mentionedRepoQuery(repos []string, phrase string) string {
+	parts := make([]string, len(repos))
+	for i, r := range repos {
+		parts[i] = "repo:" + r
+	}
+	return fmt.Sprintf("is:issue is:open in:comments %q %s sort:updated-desc", phrase, strings.Join(parts, " "))
+}
+
+// searchMentionedChunked runs the mention search in repo chunks (see
+// searchLabeledChunked) and dedupes by URL.
+func searchMentionedChunked(e execer, repos []string, phrase string) ([]Issue, error) {
+	seen := make(map[string]struct{})
+	var all []Issue
+	for start := 0; start < len(repos); start += issueSearchChunkSize {
+		end := min(start+issueSearchChunkSize, len(repos))
+		issues, err := searchIssuesWith(e, mentionedRepoQuery(repos[start:end], phrase))
+		if err != nil {
+			return nil, err
+		}
+		for i := range issues {
+			if _, dup := seen[issues[i].URL]; dup {
+				continue
+			}
+			seen[issues[i].URL] = struct{}{}
+			all = append(all, issues[i])
+		}
+	}
+	return all, nil
+}
+
 func searchIssuesWith(e execer, query string) ([]Issue, error) {
 	httpResp, err := runGHAPIWith(e, "", "graphql",
 		"-f", "query="+issueQuery,
