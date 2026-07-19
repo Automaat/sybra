@@ -11,7 +11,7 @@ import (
 
 func TestDetectAvailableRuntimes(t *testing.T) {
 	dir := t.TempDir()
-	writeRuntimeExe(t, filepath.Join(dir, "claude"), "#!/bin/sh\nprintf 'Claude 1.2.3\\n'\n")
+	writeRuntimeExe(t, filepath.Join(dir, "claude"), "#!/bin/sh\ncase \"$1\" in\n--version) printf 'Claude 1.2.3\\n' ;;\n--help) printf '  --file <specs...> File resources to download at startup.\\n' ;;\n*) exit 0 ;;\nesac\n")
 	writeRuntimeExe(t, filepath.Join(dir, "opencode"), "#!/bin/sh\nprintf 'OpenCode 0.9.0\\n'\n")
 	writeRuntimeExe(t, filepath.Join(dir, "hermes"), "#!/bin/sh\nprintf 'Hermes 2.0.0\\n'\n")
 	t.Setenv("PATH", dir)
@@ -34,6 +34,9 @@ func TestDetectAvailableRuntimes(t *testing.T) {
 	if claude.Error != "" {
 		t.Fatalf("claude error = %q, want empty", claude.Error)
 	}
+	if claude.AttachmentSupport != runtimeAttachmentSupported {
+		t.Fatalf("claude attachment support = %q, want %q", claude.AttachmentSupport, runtimeAttachmentSupported)
+	}
 
 	codex := runtimeByID(t, got, "codex")
 	if codex.Installed {
@@ -49,6 +52,51 @@ func TestDetectAvailableRuntimes(t *testing.T) {
 	}
 	if hermes.Version != "Hermes 2.0.0" {
 		t.Fatalf("hermes version = %q", hermes.Version)
+	}
+	if hermes.AttachmentSupport != "" {
+		t.Fatalf("hermes attachment support = %q, want empty", hermes.AttachmentSupport)
+	}
+}
+
+func TestProbeRuntimeTextCapability(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex")
+	writeRuntimeExe(t, path, "#!/bin/sh\ncase \"$1:$2\" in\nexec:--help) printf '  -i, --image <FILE>... Optional image(s) to attach to the initial prompt\\n' ;;\n*) exit 0 ;;\nesac\n")
+
+	probe := &runtimeTextProbe{
+		args:       []string{"exec", "--help"},
+		substrings: []string{"--image <file>"},
+	}
+	if got := probeRuntimeTextCapability(path, probe, time.Second); got != runtimeAttachmentSupported {
+		t.Fatalf("probeRuntimeTextCapability() = %q, want %q", got, runtimeAttachmentSupported)
+	}
+}
+
+func TestProbeRuntimeTextCapabilityUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex")
+	writeRuntimeExe(t, path, "#!/bin/sh\nprintf 'Usage: codex exec [options]\\n'\n")
+
+	probe := &runtimeTextProbe{
+		args:       []string{"exec", "--help"},
+		substrings: []string{"--image <file>"},
+	}
+	if got := probeRuntimeTextCapability(path, probe, time.Second); got != runtimeAttachmentUnsupported {
+		t.Fatalf("probeRuntimeTextCapability() = %q, want %q", got, runtimeAttachmentUnsupported)
+	}
+}
+
+func TestProbeRuntimeTextCapabilityErrorsReturnUnknown(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex")
+	writeRuntimeExe(t, path, "#!/bin/sh\necho 'boom' >&2\nexit 9\n")
+
+	probe := &runtimeTextProbe{
+		args:       []string{"exec", "--help"},
+		substrings: []string{"--image <file>"},
+	}
+	if got := probeRuntimeTextCapability(path, probe, time.Second); got != "" {
+		t.Fatalf("probeRuntimeTextCapability() = %q, want empty", got)
 	}
 }
 
