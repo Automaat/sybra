@@ -89,6 +89,17 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	if cfg.Audit.RetentionDays < 1 || cfg.Audit.RetentionDays > 365 {
 		add("audit.retention_days: retentionDays must be 1–365")
 	}
+	validateAttachmentAndTodoistConfig(cfg, add)
+	validateIntegrationConfig(cfg, add)
+	validateK8sSecretEnv(cfg, add)
+
+	if len(msgs) == 0 {
+		return nil
+	}
+	return &ValidationError{Messages: msgs}
+}
+
+func validateAttachmentAndTodoistConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if cfg.Attachments.MaxSizeMB < 1 || cfg.Attachments.MaxSizeMB > 20 {
 		add("attachments.max_size_mb: maxSizeMB must be 1–20")
 	}
@@ -98,13 +109,6 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	if cfg.Todoist.Enabled && cfg.Todoist.APIToken == "" {
 		add("todoist.enabled: todoist API token required when enabled")
 	}
-	validateIntegrationConfig(cfg, add)
-	validateK8sSecretEnv(cfg, add)
-
-	if len(msgs) == 0 {
-		return nil
-	}
-	return &ValidationError{Messages: msgs}
 }
 
 func validateIntegrationConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
