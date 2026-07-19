@@ -12,13 +12,13 @@ func TestUpdateSettings_ValidationRejectsBadFallbackModel(t *testing.T) {
 	settings := svc.GetSettings()
 	settings.Agent.FallbackModel = "bad model; rm -rf /"
 
-	if err := svc.UpdateSettings(settings); err == nil {
+	if _, err := svc.UpdateSettings(settings); err == nil {
 		t.Error("expected validation error for invalid fallback model, got nil")
 	}
 
 	// Valid model string must be accepted.
 	settings.Agent.FallbackModel = "claude-sonnet-4-6"
-	if err := svc.UpdateSettings(settings); err != nil {
+	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Errorf("UpdateSettings with valid fallback model: %v", err)
 	}
 }
@@ -53,7 +53,7 @@ func TestUpdateSettings_ValidationRejectsLogRetentionValuesBelowDisableSentinel(
 		t.Run(tc.name, func(t *testing.T) {
 			settings := svc.GetSettings()
 			tc.mut(&settings)
-			err := svc.UpdateSettings(settings)
+			_, err := svc.UpdateSettings(settings)
 			if err == nil {
 				t.Fatalf("expected validation error for %s, got nil", tc.name)
 			}
@@ -73,7 +73,7 @@ func TestUpdateSettings_AcceptsLogRetentionDisableSentinels(t *testing.T) {
 	settings.Agent.LogGzipAfterDays = -1
 	settings.Agent.LogRetentionMaxSizeMB = -1
 
-	if err := svc.UpdateSettings(settings); err != nil {
+	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
 	}
 	if svc.cfg.Agent.LogRetentionDays != -1 ||

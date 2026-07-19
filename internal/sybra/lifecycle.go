@@ -247,13 +247,13 @@ func (lm *LifecycleManager) StartWatchers(ctx context.Context) {
 	a := lm.app
 	cfgPath := filepath.Join(config.HomeDir(), "config.yaml")
 	cw := confighot.New(cfgPath, func() {
-		changed, err := a.configSvc.ReloadFromDisk()
+		result, err := a.configSvc.ReloadFromDisk()
 		if err != nil {
 			a.logger.Error("config.reload.failed", "err", err)
 			return
 		}
-		if len(changed) > 0 {
-			a.logger.Info("config.reloaded", "changed", changed)
+		if len(result.Applied) > 0 || len(result.RestartRequired) > 0 {
+			a.logger.Info("config.reloaded", "applied", result.Applied, "restart_required", result.RestartRequired)
 		}
 	}, a.logger)
 	if err := cw.Start(ctx); err != nil {
