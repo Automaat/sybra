@@ -1103,6 +1103,168 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing.T) {
+	tests := []struct {
+		name       string
+		retries    string
+		wantStarts int
+		wantStatus string
+		wantReason string
+		wantRetry  string
+		baseline   string
+		wantClean  string
+	}{
+		{
+			name:       "first retry requeues implementation",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantRetry:  "1",
+			baseline:   "abc123",
+			wantClean:  "abc123",
+		},
+		{
+			name:       "budget exhausted stays human required",
+			retries:    "2",
+			wantStarts: 0,
+			wantStatus: "human-required",
+			wantReason: "watchdog stop: retry budget exhausted after 2 clean re-dispatches",
+			wantRetry:  "2",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+			vars := map[string]string{}
+			if tc.retries != "" {
+				vars[watchdogStopRetryKey("implement")] = tc.retries
+			}
+			if tc.baseline != "" {
+				vars[tamperBaselineVar("implement")] = tc.baseline
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "human-required",
+				StatusReason: "watchdog: loop stop: looping on toolchain setup",
+				AgentMode:    "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   vars,
+					StartedAt:   time.Now().UTC(),
+				},
+			})
+
+			engine.ResumeStalled()
+
+			if got := agents.CallCount(); got != tc.wantStarts {
+				t.Fatalf("StartAgent calls = %d, want %d", got, tc.wantStarts)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.StatusReason != tc.wantReason {
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
+			}
+			if got.Workflow.Variables[watchdogStopRetryKey("implement")] != tc.wantRetry {
+				t.Fatalf("stop retry var = %q, want %q", got.Workflow.Variables[watchdogStopRetryKey("implement")], tc.wantRetry)
+			}
+			if tc.wantStatus == "human-required" && got.Workflow.State != ExecFailed {
+				t.Fatalf("workflow state = %q, want ExecFailed after retry exhaustion", got.Workflow.State)
+			}
+			if tc.wantStarts > 0 {
+				if got := agents.calls[0].CleanRetryRef; got != tc.wantClean {
+					t.Fatalf("clean retry ref = %q, want %q", got, tc.wantClean)
+				}
+				if got.Workflow.Variables[watchdogHangCleanRetryKey("implement")] != "" {
+					t.Fatalf("clean retry marker = %q, want cleared after dispatch", got.Workflow.Variables[watchdogHangCleanRetryKey("implement")])
+				}
+			}
+		})
+	}
+}
+
+func TestResumeStalled_WatchdogStopVerifiedFailureDoesNotRetry(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: "watchdog: verify suite still fails after loop stop: go test ./cmd/sybra-cli\nFAIL",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 for verified blocker", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.StatusReason == "" || !strings.Contains(got.StatusReason, "verify suite still fails") {
+		t.Fatalf("status_reason = %q, want verified-failure reason preserved", got.StatusReason)
+	}
+}
+
+func TestResumeStalled_WatchdogStopRateLimitedProviderKeepsHumanRequired(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimited(true)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: "watchdog: loop stop: looping on toolchain setup",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 while provider is rate-limited", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.StatusReason != "watchdog: loop stop: looping on toolchain setup" {
+		t.Fatalf("status_reason = %q, want retryable stop marker preserved", got.StatusReason)
+	}
+	if got.Workflow.Variables[watchdogStopRetryKey("implement")] != "" {
+		t.Fatalf("stop retry var = %q, want empty when dispatch is skipped", got.Workflow.Variables[watchdogStopRetryKey("implement")])
+	}
+}
+
 func TestResumeStalled_WatchdogHangExhaustedRunTestOpensPR(t *testing.T) {
 	store := newInlineTestStore(t, "testing-task", `
 id: testing-task
@@ -1207,41 +1369,6 @@ steps:
 	}
 	if len(completed) != 0 {
 		t.Fatalf("workflow completions = %d, want 0", len(completed))
-	}
-}
-
-func TestResumeStalled_WatchdogLoopHumanRequiredDoesNotRetry(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
-	tasks.Put(TaskInfo{
-		ID:           "t1",
-		Status:       "human-required",
-		StatusReason: "watchdog: looping on toolchain setup",
-		AgentMode:    "headless",
-		Workflow: &Execution{
-			WorkflowID:  "test-simple",
-			CurrentStep: "implement",
-			State:       ExecWaiting,
-			StartedAt:   time.Now().UTC(),
-		},
-	})
-
-	engine.ResumeStalled()
-
-	if got := agents.CallCount(); got != 0 {
-		t.Fatalf("StartAgent calls = %d, want 0 for watchdog loop escalation", got)
-	}
-	got, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if got.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", got.Status)
-	}
-	if got.StatusReason != "watchdog: looping on toolchain setup" {
-		t.Fatalf("status_reason = %q, want loop reason preserved", got.StatusReason)
 	}
 }
 
