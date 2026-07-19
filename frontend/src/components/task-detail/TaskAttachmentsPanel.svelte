@@ -29,10 +29,10 @@
     return `${(size / (1024 * 1024)).toFixed(1)} MB`
   }
 
-  async function refreshAttachments() {
+  async function refreshAttachments(taskID: string = task.id) {
     loading = true
     try {
-      attachments = (await ListAttachments(task.id)) ?? []
+      attachments = (await ListAttachments(taskID)) ?? []
       error = ''
       await refreshPreviews()
     } catch (e) {
@@ -134,9 +134,8 @@
   }
 
   $effect(() => {
-    task.id
     attachments = [...(task.attachments ?? [])]
-    void refreshAttachments()
+    void refreshAttachments(task.id)
   })
 </script>
 
