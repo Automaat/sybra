@@ -86,7 +86,7 @@ func deleteYAMLPath(raw []byte, path []string) ([]byte, error) {
 	return current, nil
 }
 
-func deleteEmptyMappingPath(raw []byte, path []string) ([]byte, bool, error) {
+func deleteEmptyMappingPath(raw []byte, path []string) (out []byte, removed bool, err error) {
 	root, err := parseYAMLRoot(raw)
 	if err != nil {
 		return nil, false, err
@@ -98,7 +98,7 @@ func deleteEmptyMappingPath(raw []byte, path []string) ([]byte, bool, error) {
 	return deleteYAMLPathOnce(raw, path)
 }
 
-func deleteYAMLPathOnce(raw []byte, path []string) ([]byte, bool, error) {
+func deleteYAMLPathOnce(raw []byte, path []string) (out []byte, removed bool, err error) {
 	root, err := parseYAMLRoot(raw)
 	if err != nil {
 		return nil, false, err
@@ -322,9 +322,9 @@ func yamlValueIsEmptyMapping(node *yaml.Node) bool {
 }
 
 func renderNestedYAMLPath(path []string, value any, indent int) ([]byte, error) {
-	var nested any = value
-	for i := len(path) - 1; i >= 0; i-- {
-		nested = map[string]any{path[i]: nested}
+	var nested = value
+	for _, key := range slices.Backward(path) {
+		nested = map[string]any{key: nested}
 	}
 	data, err := yaml.Marshal(nested)
 	if err != nil {
@@ -402,11 +402,4 @@ func normalizeYAMLLineComment(comment string) string {
 
 func leadingSpaces(s string) int {
 	return len(s) - len(strings.TrimLeft(s, " "))
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
