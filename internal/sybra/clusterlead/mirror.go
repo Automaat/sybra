@@ -233,7 +233,7 @@ func (m *Mirror) detectAndRepairDrift(ctx context.Context, node string, canonica
 		"canonical_tags", canonical.Tags, "follower_tags", follower.Tags,
 		"canonical_depends_on", canonical.DependsOn, "follower_depends_on", follower.DependsOn)
 	m.alertDrift(ctx, node, canonical, tagsDrift, depsDrift)
-	m.repairDrift(ctx, node, canonical, follower)
+	m.repairDrift(ctx, node, canonical)
 }
 
 func (m *Mirror) alertDrift(ctx context.Context, node string, canonical task.Task, tagsDrift, depsDrift bool) {
@@ -261,22 +261,39 @@ func (m *Mirror) alertDrift(ctx context.Context, node string, canonical task.Tas
 	}
 }
 
+// driftRepairTimeout bounds repairDrift's two follower round trips (a
+// re-fetch plus the repair push) so one unreachable follower can't hold
+// applyMu — shared across every node's reconcile goroutine — for the full
+// 30s cluster client default per drifted task.
+const driftRepairTimeout = 5 * time.Second
+
 // repairDrift pushes only the drifted fields onto the follower's own current
 // task state (not the leader's canonical copy verbatim) — the follower's
 // Status/Workflow/AgentRuns/etc. may be more current than what the leader
 // last pulled, and overwriting those would roll back real execution
-// progress, exactly the split-brain risk PushUpdate exists to avoid.
-func (m *Mirror) repairDrift(ctx context.Context, node string, canonical, follower task.Task) {
+// progress, exactly the split-brain risk PushUpdate exists to avoid. It
+// re-fetches via GetTask rather than reusing this tick's ListTasks snapshot,
+// which can already be stale by the time this repair runs — earlier tasks in
+// the same batch, under the same applyMu lock, each take up to
+// driftRepairTimeout first.
+func (m *Mirror) repairDrift(ctx context.Context, node string, canonical task.Task) {
 	client, ok := m.roster.Client(node)
 	if !ok || client == nil {
 		m.logger.Warn("cluster.mirror.drift_repair.no_client", "task", canonical.ID, "node", node)
 		return
 	}
-	repaired := follower
+	repairCtx, cancel := context.WithTimeout(ctx, driftRepairTimeout)
+	defer cancel()
+	live, err := client.GetTask(repairCtx, canonical.ID)
+	if err != nil {
+		m.logger.Warn("cluster.mirror.drift_repair.refetch_failed", "task", canonical.ID, "node", node, "err", err)
+		return
+	}
+	repaired := live
 	repaired.Tags = canonical.Tags
 	repaired.DependsOn = canonical.DependsOn
 	repaired.AssignedNode = node
-	if err := client.AssignTask(ctx, repaired); err != nil {
+	if err := client.AssignTask(repairCtx, repaired); err != nil {
 		m.logger.Warn("cluster.mirror.drift_repair.failed", "task", canonical.ID, "node", node, "err", err)
 		return
 	}
