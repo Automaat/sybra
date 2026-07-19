@@ -56,13 +56,12 @@ func collectSecretYAMLPaths(typ reflect.Type, prefix []string) {
 	if typ.Kind() != reflect.Struct {
 		return
 	}
-	for i := range typ.NumField() {
-		sf := typ.Field(i)
+	for sf := range typ.Fields() {
 		name := yamlTagName(sf)
 		if name == "" || name == "-" {
 			continue
 		}
-		path := append(prefix, name)
+		path := append(slices.Clone(prefix), name)
 		if sf.Tag.Get("secret") == "true" {
 			secretYAMLPathSet[strings.Join(path, ".")] = struct{}{}
 		}
