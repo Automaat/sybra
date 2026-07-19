@@ -316,7 +316,7 @@ func validateContractPath(p string) error {
 	return nil
 }
 
-func normalizeExpectedDeletionEntry(raw string) (string, bool, error) {
+func normalizeExpectedDeletionEntry(raw string) (entry string, isGlob bool, err error) {
 	p := strings.TrimSpace(raw)
 	if err := validateContractPath(p); err != nil {
 		return "", false, err
