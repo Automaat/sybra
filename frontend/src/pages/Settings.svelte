@@ -1,14 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import {
-    GetSettings, GetDefaultSettings, UpdateSettings, UpdateTodoistToken,
+    GetSettings, GetDefaultSettings, UpdateSettings,
     GetVersion, GetCodexModels, GetCopilotModels, GetAvailableRuntimes, ProviderHealthEnabled,
   } from '$lib/api'
   import { CLAUDE_MODEL_OPTIONS } from '$lib/claude-models'
   import type { AppSettings, RuntimeInfo } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import ProviderHealthPanel from '../components/settings/ProviderHealthPanel.svelte'
   import LoggingPanel from '../components/settings/LoggingPanel.svelte'
-  import TodoistPanel from '../components/settings/TodoistPanel.svelte'
   import RenovatePanel from '../components/settings/RenovatePanel.svelte'
   import AgentPanel from '../components/settings/AgentPanel.svelte'
   import OrchestratorPanel from '../components/settings/OrchestratorPanel.svelte'
@@ -194,15 +193,6 @@
     foldIntoBaseline((base) => { base.providers = JSON.parse(JSON.stringify($state.snapshot(settings!.providers))) })
   }
 
-  // Token rotates through the dedicated write-only path, not the generic Save.
-  async function saveToken(token: string) {
-    await UpdateTodoistToken(token)
-    if (!settings) return
-    settings.todoistTokenSet = token !== ''
-    settings.todoist.apiToken = ''
-    foldIntoBaseline((base) => { base.todoistTokenSet = settings!.todoistTokenSet; base.todoist.apiToken = '' })
-  }
-
   const modelOptions = $derived.by(() => {
     if (!settings) return [] as ModelOption[]
     if (settings.agent.provider === 'codex') return codexDynamicModels.length > 0 ? codexDynamicModels : codexFallbackModels
@@ -227,7 +217,7 @@
   // ---- rail + filtering -----------------------------------------------------
   type TabId =
     | 'appearance' | 'notifications' | 'agent' | 'provider-health'
-    | 'orchestrator' | 'automation' | 'github' | 'monitor' | 'todoist' | 'renovate'
+    | 'orchestrator' | 'automation' | 'github' | 'monitor' | 'renovate'
     | 'system' | 'logging' | 'version' | 'directories' | 'raw'
 
   type RailItem = { id: TabId; label: string; keywords: string; keys: (keyof AppSettings)[] }
@@ -247,7 +237,6 @@
       { id: 'automation', label: 'Triage & Umbrella', keywords: 'triage classify umbrella grounding expand', keys: ['triage', 'umbrella'] },
       { id: 'github', label: 'GitHub', keywords: 'github issues pr poller role app token merge renovate', keys: ['github'] },
       { id: 'monitor', label: 'Monitor', keywords: 'monitor anomaly self-monitor bottleneck failure lost agent', keys: ['monitor', 'selfMonitor'] },
-      { id: 'todoist', label: 'Todoist', keywords: 'todoist token sync poll project', keys: ['todoist'] },
       { id: 'renovate', label: 'Renovate', keywords: 'renovate dependency bot author', keys: ['renovate'] },
     ] },
     { label: 'System', items: [
@@ -428,9 +417,6 @@
           {/if}
           {#if active === 'monitor'}
             <MonitorPanel bind:settings {defaults} />
-          {/if}
-          {#if active === 'todoist'}
-            <TodoistPanel bind:settings {defaults} onsavetoken={saveToken} />
           {/if}
           {#if active === 'renovate'}
             <RenovatePanel bind:settings {defaults} />

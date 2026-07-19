@@ -12,7 +12,6 @@ import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/int
 import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
 import type { Report as EvaluationReportData, PhaseReport as PhaseReportData } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
-import type { Project as TodoistProject } from '../../bindings/github.com/Automaat/sybra/internal/todoist/models.js'
 import type { Status } from '../../bindings/github.com/Automaat/sybra/internal/provider/models.js'
 import type { Digest, Status as LearningDigestStatus } from '../../bindings/github.com/Automaat/sybra/internal/learning/models.js'
 
@@ -108,7 +107,6 @@ export function StartK8sPocAgent(arg1: string): Promise<Agent> { return call('Ap
 export function GetSettings(): Promise<AppSettings> { return call('ConfigService', 'GetSettings') }
 export function GetDefaultSettings(): Promise<AppSettings> { return call('ConfigService', 'GetDefaultSettings') }
 export function UpdateSettings(arg1: AppSettings): Promise<void> { return call('ConfigService', 'UpdateSettings', arg1) }
-export function UpdateTodoistToken(arg1: string): Promise<void> { return call('ConfigService', 'UpdateTodoistToken', arg1) }
 export function GetRawConfig(): Promise<string> { return call('ConfigService', 'GetRawConfig') }
 export function SaveRawConfig(arg1: string): Promise<void> { return call('ConfigService', 'SaveRawConfig', arg1) }
 
@@ -124,14 +122,11 @@ export function FetchAssignedIssues(): Promise<Array<Issue>> { return call('Inte
 export function FetchRenovatePRs(): Promise<Array<RenovatePR>> { return call('IntegrationService', 'FetchRenovatePRs') }
 export function FixRenovateCI(arg1: string, arg2: number, arg3: string, arg4: string): Promise<void> { return call('IntegrationService', 'FixRenovateCI', arg1, arg2, arg3, arg4) }
 export function GetProviderHealth(): Promise<Array<Status>> { return call('IntegrationService', 'GetProviderHealth') }
-export function GetTodoistProjects(): Promise<Array<TodoistProject>> { return call('IntegrationService', 'GetTodoistProjects') }
 export function ProviderHealthEnabled(): Promise<boolean> { return call('IntegrationService', 'ProviderHealthEnabled') }
 export function MergeRenovatePR(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'MergeRenovatePR', arg1, arg2) }
 export function RerunRenovateChecks(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'RerunRenovateChecks', arg1, arg2) }
 export function SetProviderAutoFailover(arg1: boolean): Promise<void> { return call('IntegrationService', 'SetProviderAutoFailover', arg1) }
 export function SetProviderEnabled(arg1: string, arg2: boolean): Promise<void> { return call('IntegrationService', 'SetProviderEnabled', arg1, arg2) }
-export function SyncTodoist(): Promise<void> { return call('IntegrationService', 'SyncTodoist') }
-export function TodoistEnabled(): Promise<boolean> { return call('IntegrationService', 'TodoistEnabled') }
 
 // LoopAgentService
 export function CreateLoopAgent(arg1: LoopAgent): Promise<LoopAgent> { return call('LoopAgentService', 'CreateLoopAgent', arg1) }
@@ -199,6 +194,7 @@ export function ListTaskAuditEvents(arg1: string, arg2: number): Promise<Array<T
 export function GetTamperReport(arg1: string): Promise<TamperReportDTO> { return call('TaskService', 'GetTamperReport', arg1) }
 export function GetTask(arg1: string): Promise<Task> { return call('TaskService', 'GetTask', arg1) }
 export function ListTasks(): Promise<Array<Task>> { return call('TaskService', 'ListTasks') }
+export function ListTasksForNode(arg1: string): Promise<Array<Task>> { return call('TaskService', 'ListTasksForNode', arg1) }
 export function ListTaskProgress(arg1: string): Promise<Array<ProgressEntry>> { return call('TaskService', 'ListTaskProgress', arg1) }
 export function UpdateTask(arg1: string, arg2: Record<string, unknown>): Promise<Task> { return call('TaskService', 'UpdateTask', arg1, arg2) }
 export function AssignTask(arg1: Task): Promise<void> { return call('TaskService', 'AssignTask', arg1) }

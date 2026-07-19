@@ -9,5 +9,4 @@ func (a *App) wireConfigService() {
 	a.configSvc.workflowEngine = a.workflowEngine
 	a.configSvc.logger = a.logger
 	a.configSvc.policy = a.limitPolicy
-	a.configSvc.reloadHook = a.reloadTodoist
 }

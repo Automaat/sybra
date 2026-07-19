@@ -81,8 +81,6 @@ data:
       enabled: false
     github:
       enabled: false
-    todoist:
-      enabled: false
     renovate:
       enabled: false
     umbrella:

@@ -427,7 +427,7 @@ func TestApplyMediumFeatureGoesToPlanning(t *testing.T) {
 	}
 }
 
-func TestApplyWorkProjectForcesInteractiveAndPlanning(t *testing.T) {
+func TestApplyWorkProjectPlanningKeepsMode(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("refactor ingestion", "https://github.com/example-org/example-repo/issues/1", task.AgentModeHeadless)
 	if err != nil {
@@ -447,8 +447,9 @@ func TestApplyWorkProjectForcesInteractiveAndPlanning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if updated.AgentMode != task.AgentModeInteractive {
-		t.Errorf("mode: got %q, want interactive", updated.AgentMode)
+	// Work projects no longer force interactive; the classifier's pick stands.
+	if updated.AgentMode != task.AgentModeHeadless {
+		t.Errorf("mode: got %q, want headless", updated.AgentMode)
 	}
 	if updated.Status != task.StatusPlanning {
 		t.Errorf("status: got %s, want planning", updated.Status)
@@ -485,8 +486,8 @@ func TestApplyUsesExistingProjectWhenTaskHasNoRepoURL(t *testing.T) {
 	if updated.ProjectID != "example-org/example-repo" {
 		t.Errorf("project_id: got %q, want example-org/example-repo", updated.ProjectID)
 	}
-	if updated.AgentMode != task.AgentModeInteractive {
-		t.Errorf("mode: got %q, want interactive", updated.AgentMode)
+	if updated.AgentMode != task.AgentModeHeadless {
+		t.Errorf("mode: got %q, want headless", updated.AgentMode)
 	}
 	if updated.Status != task.StatusPlanning {
 		t.Errorf("status: got %s, want planning", updated.Status)
@@ -589,9 +590,10 @@ func TestApplyStaleProjectIDReResolvesFromIssueURL(t *testing.T) {
 	if updated.ProjectID != "example-org/example-repo" {
 		t.Errorf("project_id: got %q, want example-org/example-repo (stale ID must re-resolve)", updated.ProjectID)
 	}
-	// Re-resolution must recover the work project type so its forced routing applies.
-	if updated.AgentMode != task.AgentModeInteractive {
-		t.Errorf("mode: got %q, want interactive (work-typed routing must apply after re-resolve)", updated.AgentMode)
+	// Re-resolution recovers the work project type; mode is no longer forced,
+	// so the classifier's headless pick stands.
+	if updated.AgentMode != task.AgentModeHeadless {
+		t.Errorf("mode: got %q, want headless (classifier pick stands after re-resolve)", updated.AgentMode)
 	}
 	if updated.Status != task.StatusPlanning {
 		t.Errorf("status: got %s, want planning", updated.Status)

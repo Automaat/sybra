@@ -108,8 +108,100 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: nil,
 		},
 		{
+			name:      "goos_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" {\n+\t\tt.Skip(\"linux-only process enumeration test\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "goarch_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestARM(t *testing.T) {\n+\tif runtime.GOARCH != \"arm64\" {\n+\t\tt.Skip(\"arm64-only test\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "composite_platform_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" || runtime.GOARCH != \"amd64\" {\n+\t\tt.Skip(\"linux/amd64-only test\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "unknown_goos_guarded_skip_still_flags",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"not-a-real-os\" {\n+\t\tt.Skip(\"flaky\")\n+\t}\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "identifier_goos_guarded_skip_still_flags",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != targetOS {\n+\t\tt.Skip(\"flaky\")\n+\t}\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "mixed_platform_and_nonplatform_guard_still_flags",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" || flakyEnvironment() {\n+\t\tt.Skip(\"flaky\")\n+\t}\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "unconditional_skip_after_platform_guard_still_flags",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" {\n+\t\tsetup()\n+\t}\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "unrelated_skip_after_platform_guard_closed_by_context_still_flags",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n \t{\n-\t\tif setupOK() {\n+\t\tif runtime.GOOS != \"linux\" { if setupOK() {\n \t\t\tsetup()\n \t\t}\n \t}\n }\n \n func TestOther(t *testing.T) {\n+\tt.Skip(\"unrelated flaky\")\n \tassertReady(t)\n }\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "skip_message_brace_does_not_extend_platform_guard",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" {\n+\t\tt.Skip(\"only works on {legacy} platform\")\n+\t}\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "bare_goos_reference_does_not_guard_later_skip",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tplatform := runtime.GOOS\n+\t_ = platform\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "bare_goarch_reference_does_not_guard_later_skip",
+			patch:     "@@ @@\n func TestARM(t *testing.T) {\n+\tarch := runtime.GOARCH\n+\t_ = arch\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:      "unconditional_skip_after_guard_window_still_flags",
 			patch:     "@@ @@\n func TestX(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\treturn\n+\t}\n+\tsetup()\n+\tvalidate()\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "platform_guarded_skip_same_line_not_flagged",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" { t.Skip(\"linux-only\") }\n",
+			wantRules: nil,
+		},
+		{
+			name:      "platform_guarded_skip_next_line_not_flagged",
+			patch:     "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOARCH != \"amd64\" {\n+\t\tt.Skip(\"amd64-only\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			// Self-hosted false positive (issue #2323): a skip pattern that
+			// only exists inside a Go string literal — e.g. a diff fixture
+			// embedded in this detector's own regression tests — must not
+			// be mistaken for a real added t.Skip call. The added line here
+			// is the on-disk source text of a _test.go file whose *value*
+			// happens to contain an escaped `t.Skip(...)` sequence; the
+			// whole thing sits inside one unbroken, still-open string
+			// literal (escaped inner quotes never close it).
+			name: "skip_pattern_inside_go_string_literal_not_flagged",
+			patch: "@@ @@\n func TestFixture(t *testing.T) {\n" +
+				"+\tpatch := \"@@ @@\\n func TestReap(t *testing.T) {\\n+\\tif runtime.GOOS != \\\"linux\\\" { t.Skip(\\\"linux-only\\\") }\\n\"\n",
+			wantRules: nil,
+		},
+		{
+			// Same skip pattern, but as real unquoted code (no fixture
+			// wrapping) — must still flag. Guards against an overbroad
+			// masking fix silently swallowing genuine tampering.
+			name:      "skip_pattern_outside_go_string_literal_still_flags",
+			patch:     "@@ @@\n func TestFixture(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
+			name:      "guard_does_not_leak_across_hunks",
+			patch:     "@@ @@\n func TestGuarded(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n@@ @@\n func TestOther(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
 			wantRules: []string{"added-skip"},
 		},
 		{
@@ -894,6 +986,91 @@ func TestExecDetectTampering_AddedSkipFlags(t *testing.T) {
 	}
 }
 
+func TestExecDetectTampering_PlatformGuardedSkipDoesNotFlag(t *testing.T) {
+	t.Parallel()
+	base := "package agent\n\nimport (\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                   "init\n",
+		"internal/agent/reap.go":      "package agent\n\nfunc Reap() {}\n",
+		"internal/agent/reap_test.go": base,
+	})
+	// A skip guarded by runtime.GOOS is a platform guard, not tampering — see
+	// https://github.com/Automaat/sybra/issues/2038.
+	tampered := "package agent\n\nimport (\n\t\"runtime\"\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif runtime.GOOS != \"linux\" {\n\t\tt.Skip(\"linux-only process enumeration test\")\n\t}\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	writeRepoFile(t, wt, "internal/agent/reap_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: skip TestReap on non-linux")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output == "flagged" {
+		t.Fatalf("Output = %q, want not flagged (platform-guarded skip)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_SkipAfterPlatformGuardFlags(t *testing.T) {
+	t.Parallel()
+	base := "package agent\n\nimport (\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                   "init\n",
+		"internal/agent/reap.go":      "package agent\n\nfunc Reap() {}\n",
+		"internal/agent/reap_test.go": base,
+	})
+	tampered := "package agent\n\nimport (\n\t\"runtime\"\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif runtime.GOOS != \"linux\" {\n\t\tsetup()\n\t}\n\tt.Skip(\"flaky\")\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	writeRepoFile(t, wt, "internal/agent/reap_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: add unguarded skip after platform check")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_UnguardedSkipStillFlags(t *testing.T) {
+	t.Parallel()
+	base := "package agent\n\nimport (\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                   "init\n",
+		"internal/agent/reap.go":      "package agent\n\nfunc Reap() {}\n",
+		"internal/agent/reap_test.go": base,
+	})
+	// An unconditional skip — not guarded by any platform/capability check —
+	// must still be flagged as tampering.
+	tampered := "package agent\n\nimport (\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tt.Skip(\"linux-only process enumeration test\")\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	writeRepoFile(t, wt, "internal/agent/reap_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: unconditionally skip TestReap")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
 func TestExecDetectTampering_EstablishedSkipIdiomDoesNotFlag(t *testing.T) {
 	t.Parallel()
 	skipLine := "\tif !hasGit() { t.Skip(\"git not available\") }"
@@ -1543,5 +1720,59 @@ func TestExecDetectTampering_BenignTestAddDoesNotBlock(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+// TestExecDetectTampering_SelfHostedSkipFixtureDoesNotFlag reproduces issue
+// #2323: a task that edits the tamper detector itself and adds a regression
+// test in engine_steps_tamper_test.go containing a platform-guarded skip
+// fixture (e.g. `if runtime.GOOS != "linux" { t.Skip("linux-only") }`)
+// embedded as a Go string constant must not self-deadlock the workflow — the
+// detector previously flagged its own fixture text as a live added-skip.
+func TestExecDetectTampering_SelfHostedSkipFixtureDoesNotFlag(t *testing.T) {
+	t.Parallel()
+	base := `package workflow
+
+import "testing"
+
+func TestScanTamperPatchFixture(t *testing.T) {
+	_ = 1
+}
+`
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md": "init\n",
+		"internal/workflow/engine_steps_tamper_test.go": base,
+	})
+	// Add a regression test covering a platform-guarded skip fixture. The
+	// fixture text lives entirely inside a Go string literal (escaped inner
+	// quotes never close it), so it is source data, not a real added skip.
+	tampered := `package workflow
+
+import "testing"
+
+func TestScanTamperPatchFixture(t *testing.T) {
+	_ = 1
+}
+
+func TestScanTamperPatchPlatformGuardFixture(t *testing.T) {
+	patch := "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" { t.Skip(\"linux-only\") }\n"
+	_ = patch
+}
+`
+	writeRepoFile(t, wt, "internal/workflow/engine_steps_tamper_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: cover platform-guarded skip fixture")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output == "flagged" {
+		t.Fatalf("Output = %q, want not flagged (self-hosted fixture, not a real skip)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress — workflow must not self-deadlock", ti.Status)
 	}
 }

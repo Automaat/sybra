@@ -22,8 +22,6 @@ func setupConfigSvc(t *testing.T) (svc *ConfigService, cfgPath string) {
 	home := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
 
-	// Write seed config; Load applies all defaults so s.cfg matches what
-	// ReloadFromDisk will produce (e.g. Todoist.PollSeconds = 120).
 	seed := config.DefaultConfig()
 	seed.Agent.MaxConcurrent = 3
 	seed.Agent.Provider = "claude"
@@ -391,6 +389,27 @@ func TestReloadFromDisk_BrowserRestartRequiredWarned(t *testing.T) {
 	}
 }
 
+func TestReloadFromDisk_ServerRestartRequiredWarnedAndSynced(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.cfg.Server.AuthToken = "old-token"
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	next := *svc.cfg
+	next.Server.AuthToken = "new-token"
+	writeConfigYAML(t, cfgPath, &next)
+
+	hot, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if len(hot) != 0 {
+		t.Errorf("expected no hot keys, got %v", hot)
+	}
+	if svc.cfg.Server.AuthToken != "new-token" {
+		t.Fatalf("s.cfg Server.AuthToken = %q, want new-token", svc.cfg.Server.AuthToken)
+	}
+}
+
 func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	limitStore, err := limits.NewStore(filepath.Join(t.TempDir(), "limits.json"))
@@ -444,7 +463,6 @@ func TestReloadFromDisk_NoFeedbackLoop(t *testing.T) {
 			MaxFiles:  svc.cfg.Logging.MaxFiles,
 		},
 		Audit:     svc.cfg.Audit,
-		Todoist:   svc.cfg.Todoist,
 		Renovate:  svc.cfg.Renovate,
 		Providers: svc.cfg.Providers,
 	}

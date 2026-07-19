@@ -2,10 +2,12 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -31,6 +33,118 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.TasksDir == "" {
 		t.Error("TasksDir should not be empty")
 	}
+	if cfg.Triage.PollSeconds != 60 {
+		t.Errorf("Triage.PollSeconds = %d, want 60", cfg.Triage.PollSeconds)
+	}
+	if cfg.Monitor.DispatchLimit != cfg.Agent.MaxConcurrent {
+		t.Errorf("Monitor.DispatchLimit = %d, want Agent.MaxConcurrent %d", cfg.Monitor.DispatchLimit, cfg.Agent.MaxConcurrent)
+	}
+}
+
+func TestDefaultConfigMatchesEmptyFileResolution(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DefaultConfig()
+	if diff := cmpConfigSubset(got, want); diff != "" {
+		t.Fatalf("LoadNoPersist(empty file) != DefaultConfig():\n%s", diff)
+	}
+}
+
+func TestParseFileConfigRejectsUnknownKeyWithFullPathAndSuggestion(t *testing.T) {
+	_, err := ParseFileConfig([]byte("monitor:\n  issue_reop: Automaat/sybra\n"))
+	if err == nil {
+		t.Fatal("expected unknown-key error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `unknown config key "monitor.issue_reop"`) {
+		t.Fatalf("error = %q, want full path", msg)
+	}
+	if !strings.Contains(msg, `did you mean "issue_repo"?`) {
+		t.Fatalf("error = %q, want suggestion", msg)
+	}
+}
+
+func TestParseFileConfigRejectsFutureSchemaVersion(t *testing.T) {
+	_, err := ParseFileConfig([]byte("schema_version: 99\n"))
+	if err == nil {
+		t.Fatal("expected future-version error, got nil")
+	}
+	if !strings.Contains(err.Error(), "schema_version 99 is newer") {
+		t.Fatalf("error = %q, want upgrade-oriented schema_version message", err.Error())
+	}
+}
+
+func TestResolveAppliesV2DurationAliases(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(
+		"schema_version: 2\n" +
+			"agent:\n  bash_timeout: 2m\n" +
+			"auto_update:\n  poll: 45s\n" +
+			"monitor:\n  stuck_human: 90m\n",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.BashTimeoutSeconds; got != 120 {
+		t.Fatalf("Agent.BashTimeoutSeconds = %d, want 120", got)
+	}
+	if got := resolved.Config.AutoUpdate.PollSeconds; got != 45 {
+		t.Fatalf("AutoUpdate.PollSeconds = %d, want 45", got)
+	}
+	if got := resolved.Config.Monitor.StuckHumanHours; got != 1.5 {
+		t.Fatalf("Monitor.StuckHumanHours = %v, want 1.5", got)
+	}
+}
+
+func TestResolveRejectsNonIntegralDurationAliasForIntField(t *testing.T) {
+	_, err := ParseFileConfig([]byte("schema_version: 2\nsandbox:\n  retention: 90m\n"))
+	if err == nil {
+		t.Fatal("expected duration validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "sandbox.retention") || !strings.Contains(err.Error(), "whole hour") {
+		t.Fatalf("error = %q, want whole-hour validation on sandbox.retention", err.Error())
+	}
+}
+
+func cmpConfigSubset(got, want *Config) string {
+	var diffs []string
+	if got.SchemaVersion != want.SchemaVersion {
+		diffs = append(diffs, fmt.Sprintf("SchemaVersion: got %d want %d", got.SchemaVersion, want.SchemaVersion))
+	}
+	if got.GitHub.Enabled != want.GitHub.Enabled {
+		diffs = append(diffs, fmt.Sprintf("GitHub.Enabled: got %v want %v", got.GitHub.Enabled, want.GitHub.Enabled))
+	}
+	if got.Triage.PollSeconds != want.Triage.PollSeconds {
+		diffs = append(diffs, fmt.Sprintf("Triage.PollSeconds: got %d want %d", got.Triage.PollSeconds, want.Triage.PollSeconds))
+	}
+	if got.Monitor.DispatchLimit != want.Monitor.DispatchLimit {
+		diffs = append(diffs, fmt.Sprintf("Monitor.DispatchLimit: got %d want %d", got.Monitor.DispatchLimit, want.Monitor.DispatchLimit))
+	}
+	if got.Monitor.Model != want.Monitor.Model {
+		diffs = append(diffs, fmt.Sprintf("Monitor.Model: got %q want %q", got.Monitor.Model, want.Monitor.Model))
+	}
+	if got.AutoUpdate.PollSeconds != want.AutoUpdate.PollSeconds {
+		diffs = append(diffs, fmt.Sprintf("AutoUpdate.PollSeconds: got %d want %d", got.AutoUpdate.PollSeconds, want.AutoUpdate.PollSeconds))
+	}
+	if got.SkillsDir != want.SkillsDir {
+		diffs = append(diffs, fmt.Sprintf("SkillsDir: got %q want %q", got.SkillsDir, want.SkillsDir))
+	}
+	if got.ProjectsDir != want.ProjectsDir {
+		diffs = append(diffs, fmt.Sprintf("ProjectsDir: got %q want %q", got.ProjectsDir, want.ProjectsDir))
+	}
+	return strings.Join(diffs, "\n")
 }
 
 func TestLoadFromYAML(t *testing.T) {
@@ -453,15 +567,16 @@ func TestLoadPromptLabPreservesExplicitEnabled(t *testing.T) {
 
 func TestHumanReviewSybraBugAction(t *testing.T) {
 	cases := []struct {
-		name string
-		yaml string
-		want string
+		name    string
+		yaml    string
+		want    string
+		wantErr string
 	}{
 		{name: "empty defaults to file_issue", yaml: "human_review:\n  enabled: true\n", want: HumanReviewSybraBugActionFileIssue},
 		{name: "note only", yaml: "human_review:\n  sybra_bug_action: note_only\n", want: HumanReviewSybraBugActionNoteOnly},
 		{name: "block only", yaml: "human_review:\n  sybra_bug_action: block_only\n", want: HumanReviewSybraBugActionBlockOnly},
 		{name: "local task", yaml: "human_review:\n  sybra_bug_action: local_task\n", want: HumanReviewSybraBugActionLocalTask},
-		{name: "invalid falls back", yaml: "human_review:\n  sybra_bug_action: nope\n", want: HumanReviewSybraBugActionFileIssue},
+		{name: "invalid is rejected", yaml: "human_review:\n  sybra_bug_action: nope\n", wantErr: "human_review.sybra_bug_action"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -471,6 +586,12 @@ func TestHumanReviewSybraBugAction(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg, err := Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load() error = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -542,6 +663,7 @@ func TestReviewHoldDefaults(t *testing.T) {
 		wantEnabled bool
 		wantMode    string
 		wantNit     int
+		wantErr     string
 	}{
 		{
 			name:        "absent block is disabled",
@@ -558,11 +680,9 @@ func TestReviewHoldDefaults(t *testing.T) {
 			wantNit:     DefaultReviewHoldNitMaxLines,
 		},
 		{
-			name:        "invalid mode falls back to push",
-			yaml:        "review_hold:\n  enabled: true\n  mode: bogus\n",
-			wantEnabled: true,
-			wantMode:    ReviewHoldModePush,
-			wantNit:     DefaultReviewHoldNitMaxLines,
+			name:    "invalid mode is rejected",
+			yaml:    "review_hold:\n  enabled: true\n  mode: bogus\n",
+			wantErr: "review_hold.mode",
 		},
 		{
 			name:        "push_nits mode preserves an explicit threshold",
@@ -587,6 +707,12 @@ func TestReviewHoldDefaults(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg, err := Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load() error = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -827,11 +953,11 @@ func TestAllowsProjectType(t *testing.T) {
 	}
 }
 
-func TestDefaultGitHubOptIn(t *testing.T) {
+func TestDefaultConfigMatchesLegacyEmptyFileGitHubBehavior(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
-	if cfg.GitHub.Enabled {
-		t.Error("default GitHub.Enabled should be false for first-run opt-in")
+	if !cfg.GitHub.Enabled {
+		t.Error("DefaultConfig GitHub.Enabled should match legacy empty-file resolution")
 	}
 	if !cfg.GitHub.IssuesEnabled {
 		t.Error("default GitHub.IssuesEnabled should be true so github.enabled=true enables issues")
@@ -1672,15 +1798,17 @@ func oldShapeABTestingExperiments() []abtest.Experiment {
 func writeOldShapeConfig(t *testing.T, dir string) {
 	t.Helper()
 	enabled := true
-	cfg := &Config{
-		ABTesting: abtest.Config{
-			Enabled:              &enabled,
-			MinSamplesPerVariant: 20,
-			Experiments:          oldShapeABTestingExperiments(),
-			// BuiltinVersion deliberately left at zero: simulates a config
-			// persisted before builtin_version existed.
-		},
+	cfg := DefaultConfig()
+	cfg.SchemaVersion = 0 // omit to simulate a pre-versioned config file
+	cfg.ABTesting = abtest.Config{
+		Enabled:              &enabled,
+		MinSamplesPerVariant: 20,
+		Experiments:          oldShapeABTestingExperiments(),
+		// BuiltinVersion deliberately left at zero: simulates a config
+		// persisted before builtin_version existed.
 	}
+	// Pinned so Load() never generates a server auth token as unrelated state.
+	cfg.Server = ServerConfig{AuthToken: "test-token"}
 	data, err := yamlv3.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1735,106 +1863,72 @@ func TestLoadReconcilesStaleBuiltinABExperiments(t *testing.T) {
 	}
 }
 
-// TestLoadReconcilePersistsBackupBeforeOverwrite proves a one-generation
-// backup of the prior experiment list is written to disk before the stale
-// same-ID built-in is overwritten, so a hand-tuned built-in is recoverable.
-func TestLoadReconcilePersistsBackupBeforeOverwrite(t *testing.T) {
+// TestLoadReconcileDoesNotRewriteConfigFile proves the ab_testing builtin
+// reconcile is in-memory only. This is the fix for #2180: any tool that
+// renders config.yaml declaratively (Ansible, Nix, Chezmoi) previously lost a
+// fight for ownership of the file against Sybra's own reconcile-then-Save on
+// every restart. Repeated Load() calls against a config whose builtin_version
+// perpetually lags the code default must (a) never touch config.yaml on disk
+// and (b) still reconcile the builtins into the in-memory result every time.
+func TestLoadReconcileDoesNotRewriteConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
 	writeOldShapeConfig(t, dir)
 
-	if _, err := Load(); err != nil {
-		t.Fatal(err)
-	}
-
-	backupPath := filepath.Join(dir, "config.ab_testing.backup.v0.yaml")
-	data, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatalf("backup file not written: %v", err)
-	}
-	var backup struct {
-		PriorBuiltinVersion int                 `yaml:"prior_builtin_version"`
-		Experiments         []abtest.Experiment `yaml:"experiments"`
-	}
-	if err := yamlv3.Unmarshal(data, &backup); err != nil {
-		t.Fatalf("backup file unreadable: %v", err)
-	}
-	if backup.PriorBuiltinVersion != 0 {
-		t.Fatalf("PriorBuiltinVersion = %d, want 0", backup.PriorBuiltinVersion)
-	}
-	var recovered *abtest.Experiment
-	for i := range backup.Experiments {
-		if backup.Experiments[i].ID == "code-author-cheap" {
-			recovered = &backup.Experiments[i]
-		}
-	}
-	if recovered == nil {
-		t.Fatal("backup does not contain the prior code-author-cheap experiment")
-		return
-	}
-	found := false
-	for _, v := range recovered.Variants {
-		if v.ID == "claude-sonnet" && v.Weight == 99 {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("backup lost the hand-tuned claude-sonnet weight — same-ID built-in is not recoverable")
-	}
-}
-
-// TestLoadReconcilePersistsToDisk proves the reconciled config is written
-// back to config.yaml immediately, so the refresh survives a process
-// restart rather than living only in the in-memory Load() result.
-func TestLoadReconcilePersistsToDisk(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("SYBRA_HOME", dir)
-	writeOldShapeConfig(t, dir)
-
-	if _, err := Load(); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	before, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var onDisk Config
-	if err := yamlv3.Unmarshal(data, &onDisk); err != nil {
-		t.Fatal(err)
-	}
-	if got := onDisk.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
-		t.Fatalf("persisted BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
-	}
-	foundCustom := false
-	for _, exp := range onDisk.ABTesting.Experiments {
-		if exp.ID == "my-custom-experiment" {
-			foundCustom = true
+
+	for i := range 2 {
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+			t.Fatalf("iteration %d: in-memory BuiltinVersion = %d, want %d", i, got, abtest.CurrentBuiltinVersion)
+		}
+		foundCustom := false
+		for _, exp := range cfg.ABTesting.Experiments {
+			if exp.ID == "my-custom-experiment" {
+				foundCustom = true
+			}
+		}
+		if !foundCustom {
+			t.Fatalf("iteration %d: reconciled in-memory config lost the user-authored experiment", i)
 		}
 	}
-	if !foundCustom {
-		t.Fatal("persisted config.yaml lost the user-authored experiment")
+
+	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Load rewrote an externally-managed config.yaml during ab_testing builtin reconcile")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.ab_testing.backup.v0.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("Load should not write an ab_testing backup file, stat err = %v", err)
 	}
 }
 
 // TestLoadDoesNotReconcileUpToDateBuiltins proves a config already stamped at
-// the current builtin version is left alone — no repeat backup/rewrite work
-// on every Load (e.g. every hot reload).
+// the current builtin version is left alone.
 func TestLoadDoesNotReconcileUpToDateBuiltins(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
 	enabled := true
-	cfg := &Config{
-		ABTesting: abtest.Config{
-			Enabled:              &enabled,
-			MinSamplesPerVariant: 20,
-			BuiltinVersion: func() *int {
-				v := abtest.CurrentBuiltinVersion
-				return &v
-			}(),
-			Experiments: abtest.DefaultConfig().Experiments,
-		},
+	cfg := DefaultConfig()
+	cfg.SchemaVersion = 0
+	cfg.ABTesting = abtest.Config{
+		Enabled:              &enabled,
+		MinSamplesPerVariant: 20,
+		BuiltinVersion: func() *int {
+			v := abtest.CurrentBuiltinVersion
+			return &v
+		}(),
+		Experiments: abtest.DefaultConfig().Experiments,
 	}
+	cfg.Server = ServerConfig{AuthToken: "test-token"}
 	data, err := yamlv3.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1843,12 +1937,21 @@ func TestLoadDoesNotReconcileUpToDateBuiltins(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	before, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "config.ab_testing.backup.v0.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("backup file should not be written when already at current builtin version, stat err = %v", err)
+	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Load rewrote a config.yaml already at the current builtin version")
 	}
 }
 
@@ -1899,47 +2002,191 @@ func TestLoadNoPersistLeavesStaleConfigUntouched(t *testing.T) {
 	}
 }
 
-func TestLoadReconcileKeepsVersionedBackupsPerPriorBuiltinVersion(t *testing.T) {
+// TestLoadReconcileSurvivesExternalToolReRenderingStaleVersion reproduces the
+// home-nas deploy flap from #2180: an external tool (Ansible) re-renders
+// config.yaml on every deploy at a builtin_version that never advances (it
+// only knows what's checked into its own template), and Sybra restarts on
+// every deploy. Before the fix, each restart expanded the operator's file and
+// the next deploy's re-render was reported as drift; the loop never settled.
+// Each Load() must reconcile in memory without ever mutating the file that
+// the external tool owns.
+func TestLoadReconcileSurvivesExternalToolReRenderingStaleVersion(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
 	writeOldShapeConfig(t, dir)
 
-	if _, err := Load(); err != nil {
+	rendered, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	firstBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v0.yaml"))
+	if regexp.MustCompile(`builtin_version:`).Match(rendered) {
+		t.Fatal("fixture config.yaml unexpectedly declares builtin_version (should be absent, simulating a pre-builtin_version persisted config)")
+	}
+
+	for deploy := range 3 {
+		// Simulate the external tool re-rendering its owned file exactly as
+		// authored, every deploy, regardless of what Sybra did last restart.
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), rendered, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("deploy %d: %v", deploy, err)
+		}
+		if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+			t.Fatalf("deploy %d: in-memory BuiltinVersion = %d, want %d", deploy, got, abtest.CurrentBuiltinVersion)
+		}
+	}
+
+	afterAllDeploys, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterAllDeploys, rendered) {
+		t.Fatal("config.yaml drifted from what the external tool rendered across repeated restarts")
+	}
+}
+
+// TestLoadPersistsTokenWithoutReconciledBuiltins is the real upgrade case the
+// headline fix must hold on: an existing config with stale ab_testing builtins
+// and NO server.auth_token. Load() legitimately generates+persists a token to
+// AuthTokenPath(), but config.yaml itself — including the operator's
+// ab_testing block — must stay byte-for-byte untouched: a generated secret
+// and reconciled-in-memory builtins are both derived state, never written
+// into the file the operator owns (see #2180).
+func TestLoadPersistsTokenWithoutReconciledBuiltins(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	enabled := true
+	// Old-shape config WITHOUT a pinned auth token, so Load() must generate one.
+	fixture := DefaultConfig()
+	fixture.SchemaVersion = 0
+	fixture.Server = ServerConfig{}
+	fixture.ABTesting = abtest.Config{
+		Enabled:              &enabled,
+		MinSamplesPerVariant: 20,
+		Experiments:          oldShapeABTestingExperiments(),
+		// BuiltinVersion intentionally absent: pre-builtin_version config.
+	}
+	data, err := yamlv3.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	rewritten := regexp.MustCompile(`builtin_version: \d+`).ReplaceAllString(string(data), "builtin_version: 1")
-	if rewritten == string(data) {
-		t.Fatal("failed to downgrade builtin_version in persisted config")
+	// In memory, the reconcile still took effect.
+	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+		t.Fatalf("in-memory BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(rewritten), 0o644); err != nil {
+	if cfg.Server.AuthToken == "" {
+		t.Fatal("Load did not generate a server auth token")
+	}
+
+	// The generated token must land at AuthTokenPath(), not config.yaml.
+	tokenFile, err := os.ReadFile(AuthTokenPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(tokenFile)) != cfg.Server.AuthToken {
+		t.Fatal("Load did not persist the generated server auth token to AuthTokenPath()")
+	}
+
+	persisted, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(persisted, data) {
+		t.Fatalf("Load rewrote config.yaml while only persisting a generated token; diff:\nbefore:\n%s\nafter:\n%s", data, persisted)
+	}
+}
+
+// TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults is the #2180 repro:
+// an externally-rendered config.yaml with no server.auth_token must stay
+// byte-for-byte unchanged on disk — the generated token belongs at
+// AuthTokenPath(), never mixed into the operator's file alongside every other
+// default Load() fills in in-memory (logging, agent, providers, ...).
+func TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	minimal := []byte("ab_testing:\n  enabled: true\n  min_samples_per_variant: 20\n  experiments:\n    - id: my-custom-experiment\n      enabled: true\n      assignment_unit: stage\n      roles: [implementation]\n      variants:\n        - id: custom-v1\n          provider: claude\n          model: sonnet\n          weight: 1\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), minimal, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := Load(); err != nil {
-		t.Fatal(err)
-	}
-	secondBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v1.yaml"))
+	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	stillFirstBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v0.yaml"))
+	if cfg.Server.AuthToken == "" {
+		t.Fatal("Load did not generate a server auth token")
+	}
+
+	persisted, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(stillFirstBackup, firstBackup) {
-		t.Fatal("v0 backup was overwritten by a later reconcile")
+	if !bytes.Equal(persisted, minimal) {
+		t.Fatalf("Load rewrote an externally-rendered config.yaml while persisting a generated token; diff:\nbefore:\n%s\nafter:\n%s", minimal, persisted)
 	}
-	if len(secondBackup) == 0 {
-		t.Fatal("v1 backup should not be empty")
+
+	tokenFile, err := os.ReadFile(AuthTokenPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(tokenFile)) != cfg.Server.AuthToken {
+		t.Fatalf("persisted AuthTokenPath() missing the generated auth token:\n%s", tokenFile)
+	}
+}
+
+// TestLoadRerenderedConfigStaysByteStableAcrossRestarts is the exact
+// adversarial-test repro from #2180: an external tool re-renders config.yaml
+// on every deploy without ever learning the generated server.auth_token, and
+// Sybra restarts on every deploy. Because the token now lives at
+// AuthTokenPath() instead of config.yaml, the second (and every subsequent)
+// restart must reuse the same token without touching config.yaml at all.
+func TestLoadRerenderedConfigStaysByteStableAcrossRestarts(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	rendered := []byte("ab_testing:\n  enabled: true\n  min_samples_per_variant: 20\n  experiments:\n    - id: my-custom-experiment\n      enabled: true\n      assignment_unit: stage\n      roles: [implementation]\n      variants:\n        - id: custom-v1\n          provider: claude\n          model: sonnet\n          weight: 1\n")
+
+	var firstToken string
+	for restart := range 2 {
+		// Simulate the external tool re-rendering its owned file exactly as
+		// authored, every restart, unaware server.auth_token even exists.
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), rendered, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("restart %d: %v", restart, err)
+		}
+		if cfg.Server.AuthToken == "" {
+			t.Fatalf("restart %d: no server auth token resolved", restart)
+		}
+		if restart == 0 {
+			firstToken = cfg.Server.AuthToken
+		} else if cfg.Server.AuthToken != firstToken {
+			t.Fatalf("restart %d: auth token rotated (%q != %q)", restart, cfg.Server.AuthToken, firstToken)
+		}
+	}
+
+	afterAllRestarts, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterAllRestarts, rendered) {
+		t.Fatal("config.yaml drifted from what the external tool rendered across repeated restarts")
 	}
 }
 

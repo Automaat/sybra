@@ -149,9 +149,9 @@ task task-rev01 ready-review "Extract scrub blocklist builder into helper" low "
   "branch: sybra/task-rev01-scrub-helper" \
   "reviewed: false"
 
-task task-rev02 in-review "Rate-limit the Todoist poller" medium "Automaat/sybra" "backend,integration" \
-  "Back off when Todoist returns 429." \
-  "branch: sybra/task-rev02-todoist-backoff" \
+task task-rev02 in-review "Rate-limit the Renovate poller" medium "Automaat/sybra" "backend,integration" \
+  "Back off when GitHub returns 429." \
+  "branch: sybra/task-rev02-renovate-backoff" \
   "review_phase: reviewing" \
   "agent_runs:" \
   "  - agent_id: agent-rev02-plan" \
@@ -257,7 +257,7 @@ task task-pr01 ready-pr "Add --json flag to sybra-cli config doctor" medium "Aut
 
 # --- human-required --------------------------------------------------------
 task task-hr01 human-required "Migrate config schema to v2" high "Automaat/sybra" "backend,config" \
-  "Ambiguous migration path for legacy todoist token field." \
+  "Ambiguous migration path for legacy auth token field." \
   "status_reason: Needs a human decision on token migration strategy." \
   "branch: sybra/task-hr01-config-v2" \
   "agent_runs:" \

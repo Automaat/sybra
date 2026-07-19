@@ -291,6 +291,9 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	}
 	r.logAudit(audit.EventPRAutoMerged, t.ID, "", auditData)
 	r.logger.Info("auto-merge.merged", "task_id", t.ID, "pr", issue.PR.Number)
+	if r.onAutoMergeApplied != nil {
+		r.onAutoMergeApplied()
+	}
 }
 
 // escalateExhaustedFix parks a task whose pr-fix retry budget is spent. Trying
@@ -544,7 +547,7 @@ func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) str
 func prIssueBody(ctx context.Context, issue github.PRIssue) (string, bool) {
 	switch issue.Kind {
 	case github.PRIssueConflict:
-		return conflictPrompt(issue.PR), true
+		return conflictPrompt(ctx, issue.PR), true
 	case github.PRIssueCIFailure:
 		return ciFailurePrompt(issue.PR), true
 	case github.PRIssueComments:
@@ -729,7 +732,7 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// e.ctx field (Engine.SetContext), not an explicit parameter threaded here.
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
-	return r.dispatchPRIssueWithOptions(t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
+	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
 }
 
 func prHasCurrentApproval(pr github.PullRequest) bool {
@@ -956,7 +959,7 @@ func (r *Handler) rollbackAutoResolvedMerge(ctx context.Context, taskID string, 
 // next cycle. The primary kind is authoritative for the workflow's
 // pr_issue_kind var (cancel and phase reconciliation key on it); handle
 // carries the full set for the retry tracker.
-func (r *Handler) dispatchPRIssueWithOptions(t task.Task, primary github.PRIssue, handle []github.PRIssue, prompt, dir string, opts dispatchFixOptions) bool {
+func (r *Handler) dispatchPRIssueWithOptions(ctx context.Context, t task.Task, primary github.PRIssue, handle []github.PRIssue, prompt, dir string, opts dispatchFixOptions) bool {
 	if r.WorkflowEngine == nil {
 		r.logger.Error("pr-monitor.no-workflow-engine", "task_id", t.ID)
 		return false
@@ -979,6 +982,10 @@ func (r *Handler) dispatchPRIssueWithOptions(t task.Task, primary github.PRIssue
 		// result contract instead of duplicating it as a second copy that
 		// could drift out of sync.
 		"pr_fix_result_contract": PRFixResultContract,
+		// Same reasoning: the test_fix step's static YAML prompt needs the
+		// host-appropriate commit flags (-s vs -s -S) for its own commit
+		// instruction, computed once here rather than hardcoded in the YAML.
+		"commit_sign_flags": project.CommitSignFlags(ctx),
 	}
 	// Deterministic backstop for review-hold: when the hold is active and this
 	// fix touches review comments, the agent drafted its replies into a pending
@@ -1228,7 +1235,7 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	if shaErr != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
-	return r.dispatchBranchConflictRecovery(taskID, dir, base, t, headSHA, resume, hadActiveWorkflow)
+	return r.dispatchBranchConflictRecovery(ctx, taskID, dir, base, t, headSHA, resume, hadActiveWorkflow)
 }
 
 func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
@@ -1296,9 +1303,9 @@ func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictRe
 // rather than a separate CancelWorkflow + StartWorkflowWithVars pair — is
 // what avoids a guaranteed reentrant "start in progress" failure there (see
 // workflow.Engine.ReplaceWorkflow's doc).
-func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool) bool {
+func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool) bool {
 	vars := map[string]string{
-		"prompt":                branchConflictPrompt(t, base) + PRFixResultContract,
+		"prompt":                branchConflictPrompt(ctx, t, base) + PRFixResultContract,
 		workflow.WorkflowVarDir: dir,
 		"resume_status":         resume.status,
 		"resume_status_reason":  resume.statusReason,
@@ -1559,7 +1566,7 @@ func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 // by PrepareForBranchFix before this is called). Unlike the PR-backed conflict
 // prompt, this path may allow a rebase plus force-with-lease because no PR
 // exists yet.
-func branchConflictPrompt(t task.Task, base string) string {
+func branchConflictPrompt(ctx context.Context, t task.Task, base string) string {
 	branch := t.Branch
 	if branch == "" {
 		branch = "the task's current branch"
@@ -1573,7 +1580,7 @@ func branchConflictPrompt(t task.Task, base string) string {
 			"git merge refs/remotes/origin/%s\n"+
 			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
 			"# this branch's intent and the upstream changes, then git add and git\n"+
-			"# commit to complete the merge.\n"+
+			"# commit %s to complete the merge.\n"+
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
 			"# will fail with \"nothing to commit\".\n"+
@@ -1591,7 +1598,7 @@ func branchConflictPrompt(t task.Task, base string) string {
 			"- Before pushing, run tests for touched code as a single blocking foreground command (e.g. `go test ./pkg/foo/...`) and wait for it to exit — never background a test run or narrate/poll its progress; if it has not finished within a couple of minutes, stop and report a blocker instead of waiting indefinitely\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes",
-		branch, base, base, prFixPushPrompt(branch, "", false, true), base, base,
+		branch, base, project.CommitSignFlags(ctx), base, prFixPushPrompt(branch, "", false, true), base, base,
 	)
 }
 
@@ -1670,7 +1677,7 @@ func commentsPrompt(ctx context.Context, pr github.PullRequest) string {
 	)
 }
 
-func conflictPrompt(pr github.PullRequest) string {
+func conflictPrompt(ctx context.Context, pr github.PullRequest) string {
 	var filesCtx string
 	if files, err := github.FetchPRFiles(pr.Repository, pr.Number); err == nil && len(files) > 0 {
 		var sb strings.Builder
@@ -1683,10 +1690,10 @@ func conflictPrompt(pr github.PullRequest) string {
 		filesCtx = sb.String()
 	}
 
-	return buildConflictPrompt(pr, filesCtx)
+	return buildConflictPrompt(ctx, pr, filesCtx)
 }
 
-func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
+func buildConflictPrompt(ctx context.Context, pr github.PullRequest, filesCtx string) string {
 	base := pr.BaseRefName
 	if base == "" {
 		base = "main"
@@ -1700,7 +1707,7 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"git fetch origin\n"+
 			"git merge %s\n"+
 			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
-			"# the PR intent and upstream changes, then git add and git commit to\n"+
+			"# the PR intent and upstream changes, then git add and git commit %s to\n"+
 			"# complete the merge.\n"+
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
@@ -1717,6 +1724,6 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
-		pr.HeadRefName, pr.Number, baseRef, prFixPushPrompt(pr.HeadRefName, "", false, false), baseRef, filesCtx,
+		pr.HeadRefName, pr.Number, baseRef, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "", false, false), baseRef, filesCtx,
 	)
 }

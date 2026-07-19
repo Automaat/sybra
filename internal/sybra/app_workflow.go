@@ -275,6 +275,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Title:                 t.Title,
 		Status:                string(t.Status),
 		StatusReason:          t.StatusReason,
+		Role:                  t.RunRole,
 		Tags:                  t.Tags,
 		AgentMode:             t.AgentMode,
 		Priority:              string(t.Priority),

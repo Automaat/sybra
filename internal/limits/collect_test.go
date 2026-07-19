@@ -257,6 +257,43 @@ func TestChooseProvider_NoDataDoesNotStealRequested(t *testing.T) {
 	}
 }
 
+// TestChooseProvider_DistributesAcrossEligiblePeers guards against
+// re-introducing a fixed-priority pick: with PreferUnderused off and no
+// quantitative reason to prefer one equally-eligible peer over another,
+// ChooseProvider must not always land on the same candidate.
+func TestChooseProvider_DistributesAcrossEligiblePeers(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:             ProviderClaude,
+		Source:               SourceStream,
+		Confidence:           ConfidenceExact,
+		CapturedAt:           now,
+		RateLimitReachedType: "rate_limit_reached",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	policy := DefaultPolicy()
+	policy.PreferUnderused = false
+
+	seen := map[string]bool{}
+	for range 200 {
+		alt, _ := s.ChooseProvider(ProviderClaude, []string{ProviderClaude, ProviderCodex, ProviderCopilot}, func(string) bool {
+			return true
+		}, policy)
+		seen[alt] = true
+	}
+	for _, want := range []string{ProviderCodex, ProviderCopilot} {
+		if !seen[want] {
+			t.Errorf("ChooseProvider never picked %q across 200 trials: %v", want, seen)
+		}
+	}
+}
+
 // TestChooseSoftLimitedPeer_PicksPeerOnlySoftLimited verifies the last-resort
 // failover for task c61f327a: a peer whose only issue is its own soft
 // session/weekly threshold is still eligible when the requested provider is
@@ -314,6 +351,41 @@ func TestChooseSoftLimitedPeer_SkipsHardBlockedPeer(t *testing.T) {
 	}, DefaultPolicy())
 	if alt != "" {
 		t.Fatalf("alt = %q, want none (claude is hard blocked, not soft-limited)", alt)
+	}
+}
+
+// TestChooseSoftLimitedPeer_DistributesAcrossEligiblePeers guards against a
+// fixed-priority pick among multiple equally-eligible soft-limited peers.
+func TestChooseSoftLimitedPeer_DistributesAcrossEligiblePeers(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	for _, p := range []string{ProviderCodex, ProviderCopilot} {
+		if err := s.UpdateSnapshot(Snapshot{
+			Provider:   p,
+			Source:     SourceStream,
+			Confidence: ConfidenceExact,
+			CapturedAt: now,
+			Primary:    &CycleSnapshot{UsedPercent: 90, WindowMinutes: 300, ResetsAt: now.Add(time.Hour)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	seen := map[string]bool{}
+	for range 200 {
+		alt, _ := s.ChooseSoftLimitedPeer(ProviderClaude, []string{ProviderClaude, ProviderCodex, ProviderCopilot}, func(string) bool {
+			return true
+		}, DefaultPolicy())
+		seen[alt] = true
+	}
+	for _, want := range []string{ProviderCodex, ProviderCopilot} {
+		if !seen[want] {
+			t.Errorf("ChooseSoftLimitedPeer never picked %q across 200 trials: %v", want, seen)
+		}
 	}
 }
 

@@ -16,9 +16,14 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"log/slog"
@@ -41,6 +46,7 @@ import (
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
+	"github.com/Automaat/sybra/internal/task"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -113,6 +119,11 @@ func run() (int, error) {
 		return autoupdate.RestartExitCode, nil
 	}
 
+	webhookSrv, webhookErrCh, err := startWebhookServer(ctx, cfg, app, logger)
+	if err != nil {
+		return 1, err
+	}
+
 	mux := buildMux(logger, broker, app)
 
 	// authMiddleware gates the HTTP control plane behind the shared-secret
@@ -125,6 +136,7 @@ func run() (int, error) {
 
 	srv, errCh, err := serveAll(ctx, cfg, handler, logger)
 	if err != nil {
+		shutdownBackgroundServer(webhookSrv, logger, "webhook")
 		return 1, err
 	}
 
@@ -142,9 +154,16 @@ func run() (int, error) {
 		if shutErr := srv.Shutdown(shutCtx); shutErr != nil {
 			logger.Error("server.shutdown.err", "err", shutErr)
 		}
+		if shutErr := shutdownHTTPServer(shutCtx, webhookSrv); shutErr != nil {
+			logger.Error("webhook.shutdown.err", "err", shutErr)
+		}
 	case serveErr := <-errCh:
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			return 1, fmt.Errorf("serve: %w", serveErr)
+		}
+	case webhookErr := <-webhookErrCh:
+		if webhookErr != nil && !errors.Is(webhookErr, http.ErrServerClosed) {
+			return 1, fmt.Errorf("webhook serve: %w", webhookErr)
 		}
 	}
 	if restartRequested.Load() {
@@ -357,6 +376,199 @@ type slogWriter struct{ logger *slog.Logger }
 func (w slogWriter) Write(p []byte) (int, error) {
 	w.logger.Debug("stdlib.log", "msg", string(p))
 	return len(p), nil
+}
+
+const webhookSignatureHeader = "X-Sybra-Signature"
+
+type webhookTaskCreator interface {
+	CreateTaskWithInit(title, body, mode string, init task.Update) (task.Task, error)
+}
+
+type webhookTaskRequest struct {
+	Title     string   `json:"title"`
+	Body      string   `json:"body"`
+	Mode      string   `json:"mode"`
+	Tags      []string `json:"tags"`
+	ProjectID string   `json:"project_id"`
+}
+
+type webhookTaskResponse struct {
+	TaskID string `json:"task_id"`
+}
+
+type webhookErrorEnvelope struct {
+	Error string `json:"error"`
+	Code  string `json:"code"`
+}
+
+func resolveWebhookTaskCreator(app *sybra.App) (webhookTaskCreator, error) {
+	taskSvc, ok := sybra.ServiceRegistry(app)["TaskService"]
+	if !ok {
+		return nil, fmt.Errorf("webhook task service unavailable")
+	}
+	creator, ok := taskSvc.Impl.(webhookTaskCreator)
+	if !ok {
+		return nil, fmt.Errorf("webhook task service has unexpected type %T", taskSvc.Impl)
+	}
+	return creator, nil
+}
+
+func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCreator) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webhook/task", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeWebhookError(w, logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, httpapi.MaxRequestBody)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeWebhookError(w, logger, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
+				return
+			}
+			writeWebhookError(w, logger, http.StatusBadRequest, "validation_error", "failed to read request body")
+			return
+		}
+		if secret != "" && !validWebhookSignature(secret, r.Header.Get(webhookSignatureHeader), body) {
+			writeWebhookError(w, logger, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
+			return
+		}
+
+		var req webhookTaskRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeWebhookError(w, logger, http.StatusBadRequest, "validation_error", "invalid JSON payload")
+			return
+		}
+		title := strings.TrimSpace(req.Title)
+		if title == "" {
+			writeWebhookError(w, logger, http.StatusBadRequest, "validation_error", "title is required")
+			return
+		}
+		mode := strings.TrimSpace(req.Mode)
+		if mode == "" {
+			mode = task.AgentModeHeadless
+		}
+		if _, err := task.ValidateAgentMode(mode); err != nil {
+			writeWebhookError(w, logger, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+
+		init := task.Update{}
+		if tags := normalizeWebhookTags(req.Tags); len(tags) > 0 {
+			init.Tags = task.Ptr(tags)
+		}
+		if projectID := strings.TrimSpace(req.ProjectID); projectID != "" {
+			init.ProjectID = task.Ptr(projectID)
+		}
+
+		created, err := creator.CreateTaskWithInit(title, req.Body, mode, init)
+		if err != nil {
+			logger.Error("webhook.create_task", "err", err)
+			writeWebhookError(w, logger, http.StatusInternalServerError, "internal_error", "internal error")
+			return
+		}
+		writeWebhookJSON(w, http.StatusCreated, webhookTaskResponse{TaskID: created.ID})
+	})
+	return mux
+}
+
+func normalizeWebhookTags(tags []string) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		out = append(out, tag)
+	}
+	return out
+}
+
+func validWebhookSignature(secret, header string, body []byte) bool {
+	sigHex, ok := strings.CutPrefix(header, "sha256=")
+	if !ok || sigHex == "" {
+		return false
+	}
+	got, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(body)
+	return hmac.Equal(got, mac.Sum(nil))
+}
+
+func writeWebhookJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeWebhookError(w http.ResponseWriter, logger *slog.Logger, status int, code, message string) {
+	if status >= 500 {
+		logger.Error("webhook.error", "status", status, "code", code)
+	} else {
+		logger.Warn("webhook.error", "status", status, "code", code)
+	}
+	writeWebhookJSON(w, status, webhookErrorEnvelope{Error: message, Code: code})
+}
+
+func startWebhookServer(ctx context.Context, cfg *config.Config, app *sybra.App, logger *slog.Logger) (*http.Server, chan error, error) {
+	if cfg == nil || !cfg.Webhook.Enabled {
+		return nil, nil, nil
+	}
+	creator, err := resolveWebhookTaskCreator(app)
+	if err != nil {
+		return nil, nil, fmt.Errorf("webhook: %w", err)
+	}
+	return startWebhookServerWithHandler(ctx, cfg.Webhook, newWebhookHandler(logger, cfg.Webhook.Secret, creator), logger)
+}
+
+func startWebhookServerWithHandler(ctx context.Context, cfg config.WebhookConfig, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
+	if !cfg.Enabled {
+		return nil, nil, nil
+	}
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	listeners, err := listenAll(ctx, []string{srv.Addr})
+	if err != nil {
+		return nil, nil, fmt.Errorf("webhook listen %s: %w", srv.Addr, err)
+	}
+	errCh := make(chan error, len(listeners))
+	for i := range listeners {
+		ln := listeners[i]
+		logger.Info("webhook.listen", "addr", ln.Addr().String())
+		go func() {
+			errCh <- srv.Serve(ln)
+		}()
+	}
+	return srv, errCh, nil
+}
+
+func shutdownHTTPServer(ctx context.Context, srv *http.Server) error {
+	if srv == nil {
+		return nil
+	}
+	return srv.Shutdown(ctx)
+}
+
+func shutdownBackgroundServer(srv *http.Server, logger *slog.Logger, name string) {
+	if srv == nil {
+		return
+	}
+	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutCtx); err != nil {
+		logger.Error(name+".shutdown.err", "err", err)
+	}
 }
 
 func serveAll(ctx context.Context, cfg *config.Config, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {

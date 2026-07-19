@@ -3,6 +3,7 @@ package limits
 import (
 	"cmp"
 	"encoding/json"
+	"math/rand/v2"
 	"os"
 	"slices"
 	"strings"
@@ -381,6 +382,15 @@ func (s *Store) ChooseProvider(requested string, candidates []string, healthy fu
 			}
 			return cmp.Compare(a.WeeklySpendUSD, b.WeeklySpendUSD)
 		})
+	} else {
+		// available[0] below picks the winner. Without PreferUnderused there is
+		// no quantitative signal to rank by, so shuffle first — otherwise
+		// available[0] always lands on whichever candidate sorts first in the
+		// caller-supplied order (typically providerid.All()'s fixed order),
+		// systematically favoring the same peer every time.
+		rand.Shuffle(len(available), func(i, j int) {
+			available[i], available[j] = available[j], available[i]
+		})
 	}
 	if !requestedLimited {
 		// Do not route away from the requested/default provider just because
@@ -417,6 +427,7 @@ func (s *Store) ChooseSoftLimitedPeer(requested string, candidates []string, hea
 		p := &summary.Providers[i]
 		byProvider[p.Provider] = p
 	}
+	eligible := make([]*ProviderSummary, 0, len(candidates))
 	for _, p := range candidates {
 		if p == requested || !providerEnabled(policy, p) || !healthy(p) {
 			continue
@@ -428,10 +439,17 @@ func (s *Store) ChooseSoftLimitedPeer(requested string, candidates []string, hea
 			continue
 		}
 		if IsSoftThresholdReason(ps.QuotaReason) {
-			return p, ps.QuotaReason
+			eligible = append(eligible, ps)
 		}
 	}
-	return "", ""
+	if len(eligible) == 0 {
+		return "", ""
+	}
+	// No quantitative ranking among last-resort soft-limited peers, so pick
+	// uniformly at random instead of always the first match in candidates'
+	// (typically fixed provider) order.
+	pick := eligible[rand.IntN(len(eligible))]
+	return pick.Provider, pick.QuotaReason
 }
 
 func (s *Store) flushLocked() error {

@@ -16,7 +16,7 @@
 
   let title = $state('')
   let body = $state('')
-  let headless = $state(false)
+  let headless = $state(true)
   let reasoningEffort = $state('')
   let taskType = $state('normal')
   let selectedProject = $state('')
@@ -59,7 +59,7 @@
   function reset() {
     title = ''
     body = ''
-    headless = false
+    headless = true
     reasoningEffort = ''
     taskType = 'normal'
     selectedProject = ''

@@ -255,6 +255,10 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 	}
 	f := poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)
 	f.SetPollInterval(a.cfg.GitHub.Issues())
+	if phrase := strings.TrimSpace(a.cfg.GitHub.MentionTriggerPhrase); phrase != "" {
+		f.SetMentionTrigger(phrase)
+		a.logger.Info("github.issues.mention-trigger.enabled", "phrase", phrase)
+	}
 	if a.cfg.Umbrella.Enabled {
 		model := a.cfg.Umbrella.Model
 		ground := a.cfg.Umbrella.Ground
@@ -293,7 +297,6 @@ func (a *App) logAutomationsSummary() {
 		"instance_role", a.cfg.Orchestrator.InstanceRole(),
 		"orchestrator", a.cfg.Orchestrator.RunsOrchestrator(),
 		"scheduler", a.cfg.Orchestrator.RunsScheduler(),
-		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
 		"github", a.cfg.GitHub.Enabled,
 		"github_issues", a.cfg.GitHub.RunsIssuesFetcher(),
 		"github_reviews", a.cfg.GitHub.RunsReviewer(),
@@ -636,6 +639,18 @@ func (a *App) initStatusHook() {
 		if local && a.workflowEngine != nil {
 			a.workflowEngine.HandleStatusChange(taskID, to)
 		}
+		// HandleStatusChange may reroute a human-required self-escalation back
+		// into the PR flow (missing live-PR blocker recovery). When it does the
+		// task no longer sits at human-required, so skip the stale
+		// human-required follow-up below — just release the agents and return.
+		if to == string(task.StatusHumanRequired) {
+			if t, err := a.tasks.Get(taskID); err == nil && t.Status != task.StatusHumanRequired {
+				if local && releaseTaskAgents {
+					a.releaseTaskAgents(taskID)
+				}
+				return
+			}
+		}
 		if local && releaseTaskAgents {
 			a.releaseTaskAgents(taskID)
 		}
@@ -746,8 +761,19 @@ func (a *App) releaseTaskAgents(taskID string) {
 	if len(filtered) == 0 {
 		return
 	}
-	go func(agentsToStop []*agent.Agent) {
-		for _, ag := range agentsToStop {
+	// Tracked by a.wg (not a bare `go func`): App.Shutdown waits on a.wg
+	// before calling agents.Shutdown, which explicitly skips detached agents
+	// so they survive a restart. A task landing (e.g. its own PR merging)
+	// commonly races the very redeploy that lands it, so an untracked
+	// goroutine here can be starved of scheduler time entirely — the process
+	// exits before ever sending the stop signal, and a detached interactive
+	// agent (a never-EOF stdin FIFO) then idles forever holding a
+	// concurrency slot until happenstance reaps it on some later restart.
+	// Tracking it here only needs to guarantee the signal is sent — once
+	// StopAgent's SIGINT/SIGKILL reaches the OS, delivery no longer depends
+	// on this process staying alive.
+	a.wg.Go(func() {
+		for _, ag := range filtered {
 			var err error
 			if ag.Mode == "headless" && ag.CompletedSuccessfully() {
 				err = a.agents.StopCompletedAgent(ag.ID)
@@ -758,7 +784,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 				a.logger.Warn("task.status.release-agent", "task_id", taskID, "agent_id", ag.ID, "err", err)
 			}
 		}
-	}(filtered)
+	})
 }
 
 func (a *App) runsTaskLocally(t task.Task) bool {
@@ -995,6 +1021,19 @@ func (a *App) initAudit() {
 	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
 		a.logger.Warn("audit.cleanup", "err", err)
 	}
+
+	// Wired here (rather than per-caller) so every push-preflight failure —
+	// from review.Handler's PR-fix path and workflow.Engine's PR-tail push
+	// step alike — surfaces as one audit event internal/health's
+	// checkGHPushAuthFailure turns into an operator-visible finding, instead
+	// of only the per-task status_reason PreflightPushCredentials' callers
+	// already set. See #2315: a task landed in human-required with no signal
+	// beyond a log line when the host's only gh session expired.
+	project.SetPushAuthFailureHook(func(err error) {
+		a.logAudit(audit.EventGHPushAuthFailed, "", "", map[string]any{
+			"err": err.Error(),
+		})
+	})
 }
 
 // initArtifacts constructs the artifact store, wires the task delete hook to
@@ -1044,6 +1083,10 @@ func (a *App) initProviderHealth(ctx context.Context, emit func(string, any)) {
 		CopilotRLCooldown:  time.Duration(a.cfg.Providers.Copilot.RateLimitCooldownSeconds) * time.Second,
 		OpenCodeRLCooldown: time.Duration(a.cfg.Providers.OpenCode.RateLimitCooldownSeconds) * time.Second,
 	}, emit, a.logger)
+	// New seeds every provider Healthy=false until probed; probe once here,
+	// before the gate is live, so startLifecycle's dispatch never sees a
+	// window where every provider reads unhealthy and fails closed.
+	pc.ProbeOnce(ctx)
 	a.providerHealth = pc
 	a.agents.SetHealthGate(pc)
 	a.wg.Go(func() { pc.Run(ctx) })
@@ -1064,7 +1107,6 @@ func (a *App) emitDegradedWarnings(emit func(string, any)) {
 // and returns the GitHub issues fetcher (still consumed by
 // startBackgroundServices). Extracted so Startup stays under funlen.
 func (a *App) initAutomations(emit func(string, any)) *poll.IssuesFetcher {
-	a.initTodoist(emit)
 	a.initRenovate(emit)
 	a.initPromptLab()
 	a.initTriage()
@@ -1397,6 +1439,12 @@ func (a *App) newRecovery() *recovery.Recovery {
 		OrphanRoots: []string{
 			filepath.Join(config.HomeDir(), "sandboxes"),
 			filepath.Join(config.HomeDir(), "worktrees"),
+			// The /sybra-test skill's fake-provider harness spawns its
+			// subject process directly under a fresh os.TempDir()/sybra-test-*
+			// sandbox, outside the normal task/worktree/sandbox lifecycle
+			// (sybra#2210) — glob-expanded fresh on every sweep since each
+			// test run gets its own directory.
+			filepath.Join(os.TempDir(), "sybra-test-*"),
 		},
 		// Also gate on the instance role: RunStartupCleanup calls
 		// RestartStaleInProgress outside the (gated) maintenance pass, so an

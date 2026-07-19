@@ -24,7 +24,6 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 - **Chat UI** — VS Code-like conversation view per agent with real-time output streaming
 - **Planning workflow** — complex tasks get a plan that humans review before implementation starts
 - **Spotlight** — keyboard-driven task creation from anywhere in the app
-- **Todoist sync** — bidirectional sync with configurable polling
 - **Audit log** — structured NDJSON event log for failure analysis and cycle-time tracking
 - **CLI** (`sybra-cli`) — task CRUD from the terminal, used by Claude Code skills
 

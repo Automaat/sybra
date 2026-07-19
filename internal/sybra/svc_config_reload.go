@@ -17,16 +17,6 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 		return nil, err
 	}
 
-	// validateSettings reads s.cfg (stored-token check); guard it under the read
-	// lock, released before the write lock below (RWMutex is not reentrant).
-	nextSettings := configToSettings(next)
-	s.mu.RLock()
-	verr := s.validateSettings(nextSettings)
-	s.mu.RUnlock()
-	if verr != nil {
-		return nil, verr
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -43,7 +33,6 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	s.cfg.Logging.MaxSizeMB = next.Logging.MaxSizeMB
 	s.cfg.Logging.MaxFiles = next.Logging.MaxFiles
 	s.cfg.Audit = next.Audit
-	s.cfg.Todoist = next.Todoist
 	s.cfg.Renovate.Enabled = next.Renovate.Enabled
 	s.cfg.Renovate.Author = next.Renovate.Author
 	s.cfg.Providers = next.Providers
@@ -56,6 +45,7 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	s.cfg.PromptLab = next.PromptLab
 	s.cfg.ABTesting = next.ABTesting
 	s.cfg.Metrics = next.Metrics
+	s.cfg.Server = next.Server
 	s.cfg.AutoUpdate = next.AutoUpdate
 	s.cfg.Browser = next.Browser
 	s.cfg.ProjectTypes = next.ProjectTypes
@@ -64,8 +54,8 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	}
 
 	// Selectively call live setters only for fields that actually changed.
-	// This avoids restarting Todoist or other services on every config write
-	// when nothing relevant changed (e.g. UI saves non-Todoist settings).
+	// This avoids restarting services on every config write when nothing
+	// relevant changed (e.g. UI saves unrelated settings).
 	for _, k := range hot {
 		switch k {
 		case "notification.desktop":
@@ -73,10 +63,6 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 		case "logging.level":
 			if s.logLevel != nil {
 				s.logLevel.Set(next.Logging.SlogLevel())
-			}
-		case "todoist":
-			if s.reloadHook != nil {
-				s.reloadHook()
 			}
 		}
 	}
@@ -113,9 +99,7 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 
 // configToSettings converts a *config.Config into AppSettings for validation
 // and for the default-settings baseline the UI diffs against. It mirrors every
-// editable section GetSettings exposes. Unlike GetSettings it copies the
-// Todoist token verbatim — validateSettings needs to know whether a token is
-// present — so its result must never be returned to the UI unredacted.
+// editable section GetSettings exposes.
 func configToSettings(c *config.Config) AppSettings {
 	return AppSettings{
 		Agent:        c.Agent,
@@ -127,7 +111,6 @@ func configToSettings(c *config.Config) AppSettings {
 			MaxFiles:  c.Logging.MaxFiles,
 		},
 		Audit:        c.Audit,
-		Todoist:      c.Todoist,
 		Renovate:     c.Renovate,
 		Providers:    c.Providers,
 		GitHub:       c.GitHub,

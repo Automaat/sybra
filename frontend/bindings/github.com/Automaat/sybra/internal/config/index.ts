@@ -26,7 +26,6 @@ export {
     RenovateConfig,
     SelfMonitorConfig,
     TestingConfig,
-    TodoistConfig,
     TriageConfig,
     UmbrellaConfig
 } from "./models.js";

@@ -26,7 +26,7 @@ type trackedAgentSnapshot struct {
 }
 
 func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []string) int { //nolint:contextcheck // Nil is a legacy caller contract; normalize it before deriving the bounded sweep context.
-	roots = canonicalProcessRoots(roots)
+	roots = canonicalProcessRoots(expandRootGlobs(roots))
 	if len(roots) == 0 {
 		return 0
 	}
@@ -92,6 +92,32 @@ func (m *Manager) trackedProcessOwners() (tracked map[int]struct{}, owners map[s
 		owners[a.ID] = trackedAgentSnapshot{State: a.GetState()}
 	}
 	return tracked, owners
+}
+
+// expandRootGlobs resolves glob patterns (e.g. the sybra-test harness's
+// os.TempDir()/sybra-test-* sandboxes, one fresh directory per test run) into
+// their currently-existing matches. Re-run on every sweep call — unlike the
+// fixed sandboxes/worktrees roots, these directories come and go, so the
+// expansion cannot be cached at Recovery-construction time. Plain literal
+// roots (no glob metacharacters) pass through unchanged.
+func expandRootGlobs(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		if !strings.ContainsAny(root, "*?[") {
+			out = append(out, root)
+			continue
+		}
+		matches, err := filepath.Glob(root)
+		if err != nil {
+			continue
+		}
+		out = append(out, matches...)
+	}
+	return out
 }
 
 func canonicalProcessRoots(roots []string) []string {

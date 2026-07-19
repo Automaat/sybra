@@ -56,9 +56,6 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	if old.Logging.Level != next.Logging.Level {
 		hot = append(hot, "logging.level")
 	}
-	if !reflect.DeepEqual(old.Todoist, next.Todoist) {
-		hot = append(hot, "todoist")
-	}
 	if old.Renovate.Author != next.Renovate.Author || old.Renovate.Enabled != next.Renovate.Enabled {
 		hot = append(hot, "renovate")
 	}
@@ -108,6 +105,7 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	restart = appendDeepChanged(restart, "ab_testing", old.ABTesting, next.ABTesting)
 	restart = appendDeepChanged(restart, "triage", old.Triage, next.Triage)
 	restart = appendDeepChanged(restart, "github", old.GitHub, next.GitHub)
+	restart = appendDeepChanged(restart, "server", old.Server, next.Server)
 	restart = appendDeepChanged(restart, "project_types", old.ProjectTypes, next.ProjectTypes)
 	restart = appendDeepChanged(restart, "auto_update", old.AutoUpdate, next.AutoUpdate)
 	restart = appendDeepChanged(restart, "browser", old.Browser, next.Browser)

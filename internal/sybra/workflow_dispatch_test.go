@@ -57,3 +57,10 @@ func TestSkipTaskCreatedWorkflowPlanningReviewWithPR(t *testing.T) {
 		t.Error("expected a planning task with a linked PR to stay out of task:created dispatch")
 	}
 }
+
+func TestTaskToInfo_PreservesRunRole(t *testing.T) {
+	info := taskToInfo(task.Task{ID: "t1", RunRole: "review"})
+	if info.Role != "review" {
+		t.Fatalf("Role = %q, want review", info.Role)
+	}
+}

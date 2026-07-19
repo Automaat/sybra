@@ -61,6 +61,16 @@ func TestTaskFields_PlanCritiqueAndReplanCount(t *testing.T) {
 	})
 }
 
+func TestTaskFields_Role(t *testing.T) {
+	t.Parallel()
+
+	ti := TaskInfo{ID: "t1", Role: "review"}
+	fields := taskFields(ti)
+	if got := fields["task.role"]; got != ti.Role {
+		t.Fatalf("task.role = %q, want %q", got, ti.Role)
+	}
+}
+
 // --- Test helpers ---
 
 func init() {
@@ -1093,6 +1103,168 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing.T) {
+	tests := []struct {
+		name       string
+		retries    string
+		wantStarts int
+		wantStatus string
+		wantReason string
+		wantRetry  string
+		baseline   string
+		wantClean  string
+	}{
+		{
+			name:       "first retry requeues implementation",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantRetry:  "1",
+			baseline:   "abc123",
+			wantClean:  "abc123",
+		},
+		{
+			name:       "budget exhausted stays human required",
+			retries:    "2",
+			wantStarts: 0,
+			wantStatus: "human-required",
+			wantReason: "watchdog stop: retry budget exhausted after 2 clean re-dispatches",
+			wantRetry:  "2",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+			vars := map[string]string{}
+			if tc.retries != "" {
+				vars[watchdogStopRetryKey("implement")] = tc.retries
+			}
+			if tc.baseline != "" {
+				vars[tamperBaselineVar("implement")] = tc.baseline
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "human-required",
+				StatusReason: "watchdog: loop stop: looping on toolchain setup",
+				AgentMode:    "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   vars,
+					StartedAt:   time.Now().UTC(),
+				},
+			})
+
+			engine.ResumeStalled()
+
+			if got := agents.CallCount(); got != tc.wantStarts {
+				t.Fatalf("StartAgent calls = %d, want %d", got, tc.wantStarts)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.StatusReason != tc.wantReason {
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
+			}
+			if got.Workflow.Variables[watchdogStopRetryKey("implement")] != tc.wantRetry {
+				t.Fatalf("stop retry var = %q, want %q", got.Workflow.Variables[watchdogStopRetryKey("implement")], tc.wantRetry)
+			}
+			if tc.wantStatus == "human-required" && got.Workflow.State != ExecFailed {
+				t.Fatalf("workflow state = %q, want ExecFailed after retry exhaustion", got.Workflow.State)
+			}
+			if tc.wantStarts > 0 {
+				if got := agents.calls[0].CleanRetryRef; got != tc.wantClean {
+					t.Fatalf("clean retry ref = %q, want %q", got, tc.wantClean)
+				}
+				if got.Workflow.Variables[watchdogHangCleanRetryKey("implement")] != "" {
+					t.Fatalf("clean retry marker = %q, want cleared after dispatch", got.Workflow.Variables[watchdogHangCleanRetryKey("implement")])
+				}
+			}
+		})
+	}
+}
+
+func TestResumeStalled_WatchdogStopVerifiedFailureDoesNotRetry(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: "watchdog: verify suite still fails after loop stop: go test ./cmd/sybra-cli\nFAIL",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 for verified blocker", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.StatusReason == "" || !strings.Contains(got.StatusReason, "verify suite still fails") {
+		t.Fatalf("status_reason = %q, want verified-failure reason preserved", got.StatusReason)
+	}
+}
+
+func TestResumeStalled_WatchdogStopRateLimitedProviderKeepsHumanRequired(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimited(true)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: "watchdog: loop stop: looping on toolchain setup",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 while provider is rate-limited", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.StatusReason != "watchdog: loop stop: looping on toolchain setup" {
+		t.Fatalf("status_reason = %q, want retryable stop marker preserved", got.StatusReason)
+	}
+	if got.Workflow.Variables[watchdogStopRetryKey("implement")] != "" {
+		t.Fatalf("stop retry var = %q, want empty when dispatch is skipped", got.Workflow.Variables[watchdogStopRetryKey("implement")])
+	}
+}
+
 func TestResumeStalled_WatchdogHangExhaustedRunTestOpensPR(t *testing.T) {
 	store := newInlineTestStore(t, "testing-task", `
 id: testing-task
@@ -1135,7 +1307,7 @@ steps:
 	if got.Status != "ready-pr" {
 		t.Fatalf("status = %q, want ready-pr", got.Status)
 	}
-	if got.StatusReason != "manual testing stalled under watchdog after clean retries (no evidenced verdict) — opening PR for CI and human review" {
+	if got.StatusReason != "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review" {
 		t.Fatalf("status_reason = %q", got.StatusReason)
 	}
 	if got.Workflow.State != ExecCompleted {
@@ -1197,41 +1369,6 @@ steps:
 	}
 	if len(completed) != 0 {
 		t.Fatalf("workflow completions = %d, want 0", len(completed))
-	}
-}
-
-func TestResumeStalled_WatchdogLoopHumanRequiredDoesNotRetry(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
-	tasks.Put(TaskInfo{
-		ID:           "t1",
-		Status:       "human-required",
-		StatusReason: "watchdog: looping on toolchain setup",
-		AgentMode:    "headless",
-		Workflow: &Execution{
-			WorkflowID:  "test-simple",
-			CurrentStep: "implement",
-			State:       ExecWaiting,
-			StartedAt:   time.Now().UTC(),
-		},
-	})
-
-	engine.ResumeStalled()
-
-	if got := agents.CallCount(); got != 0 {
-		t.Fatalf("StartAgent calls = %d, want 0 for watchdog loop escalation", got)
-	}
-	got, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if got.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", got.Status)
-	}
-	if got.StatusReason != "watchdog: looping on toolchain setup" {
-		t.Fatalf("status_reason = %q, want loop reason preserved", got.StatusReason)
 	}
 }
 
@@ -1453,6 +1590,562 @@ func startTestSimpleImplement(t *testing.T) (*Store, *memTasks, *mockAgents, *En
 		t.Fatalf("last agent role = %q, want implementation", got)
 	}
 	return store, tasks, agents, engine
+}
+
+const missingLivePRProofReason = "manual verification blocker: no current open PR could be verified as allFlaky for the required live pr-monitor proof"
+const alreadyFixedOnMainVerdict = "Already fixed on main; no PR needed. Duplicate task, safe to close/mark done."
+
+func TestAdvanceStep_ManualVerificationBlockerRoutesToReadyPR(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	_, wtPath := newPRWorktree(t, "feat/live-proof")
+	commitFile(t, wtPath, "proof.txt", "proof")
+	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
+
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+		Branch:    "feat/live-proof",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  missingLivePRProofReason,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
+	}
+	if ti.StatusReason != readyPRRecoveryReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, readyPRRecoveryReason)
+	}
+	if ti.PRNumber != 0 {
+		t.Fatalf("pr number = %d, want 0", ti.PRNumber)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
+	}
+	if ti.Workflow.CurrentStep != "" {
+		t.Fatalf("current step = %q, want empty", ti.Workflow.CurrentStep)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestAdvanceStep_AlreadyFixedOnMainMarksDone(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		AgentMode:    "headless",
+		ProjectID:    "acme/widgets",
+		StatusReason: "",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainVerdict); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  alreadyFixedOnMainVerdict,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "done" {
+		t.Fatalf("status = %q, want done", ti.Status)
+	}
+	if ti.StatusReason != alreadyFixedOnMainRecoveryReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainRecoveryReason)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestHandleStatusChange_AlreadyFixedOnMainMarksDone(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainVerdict); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.HandleStatusChange("t1", "human-required")
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "done" {
+		t.Fatalf("status = %q, want done", ti.Status)
+	}
+	if ti.StatusReason != alreadyFixedOnMainRecoveryReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainRecoveryReason)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestAdvanceStep_AlreadyFixedOnMainRequiresDuplicateSignal(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	reason := "need human decision about product direction"
+	if err := tasks.UpdateTaskStatus("t1", "human-required", reason); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  reason,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if ti.StatusReason != reason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, reason)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
+	}
+}
+
+func TestAdvanceStep_ManualVerificationBlockerLinksExistingPR(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	_, wtPath := newPRWorktree(t, "feat/live-proof")
+	commitFile(t, wtPath, "proof.txt", "proof")
+	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
+
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRFinder(&fakePRFinder{number: 42, found: true})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+		Branch:    "feat/live-proof",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  missingLivePRProofReason,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "in-review" {
+		t.Fatalf("status = %q, want in-review", ti.Status)
+	}
+	if ti.StatusReason != "" {
+		t.Fatalf("status reason = %q, want empty", ti.StatusReason)
+	}
+	if ti.PRNumber != 42 {
+		t.Fatalf("pr number = %d, want 42", ti.PRNumber)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestHandleStatusChange_ManualVerificationBlockerRoutesToReadyPR(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	_, wtPath := newPRWorktree(t, "feat/live-proof")
+	commitFile(t, wtPath, "proof.txt", "proof")
+	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
+
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+		Branch:    "feat/live-proof",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.HandleStatusChange("t1", "human-required")
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
+	}
+	if ti.StatusReason != readyPRRecoveryReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, readyPRRecoveryReason)
+	}
+	if ti.PRNumber != 0 {
+		t.Fatalf("pr number = %d, want 0", ti.PRNumber)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestHandleStatusChange_ManualVerificationBlockerLinksExistingPR(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	_, wtPath := newPRWorktree(t, "feat/live-proof")
+	commitFile(t, wtPath, "proof.txt", "proof")
+	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
+
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRFinder(&fakePRFinder{number: 42, found: true})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+		Branch:    "feat/live-proof",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.HandleStatusChange("t1", "human-required")
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "in-review" {
+		t.Fatalf("status = %q, want in-review", ti.Status)
+	}
+	if ti.StatusReason != "" {
+		t.Fatalf("status reason = %q, want empty", ti.StatusReason)
+	}
+	if ti.PRNumber != 42 {
+		t.Fatalf("pr number = %d, want 42", ti.PRNumber)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
 }
 
 // TestRetry_SupersededAgentLateCompletionDropped reproduces the production bug
@@ -6525,11 +7218,16 @@ func TestExecuteSteps_CycleDetection(t *testing.T) {
 
 // fakeWorktreeGetter is a scripted WorktreeGetter for tests.
 type fakeWorktreeGetter struct {
-	path string
-	ok   bool
+	path  string
+	ok    bool
+	paths map[string]string
 }
 
-func (f *fakeWorktreeGetter) GetWorktreePath(_ string) (string, bool) {
+func (f *fakeWorktreeGetter) GetWorktreePath(taskID string) (string, bool) {
+	if f.paths != nil {
+		path, ok := f.paths[taskID]
+		return path, ok
+	}
 	return f.path, f.ok
 }
 

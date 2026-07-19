@@ -240,7 +240,7 @@ func prepareHome(o options) (home string, cleanup func(), err error) {
 
 	// Write a minimal config that:
 	// - enables metrics (for /metrics scraping)
-	// - disables all pollers (todoist, github, renovate) so the server has
+	// - disables all pollers (github, renovate) so the server has
 	//   no background noise competing with the scenario
 	// - lifts the concurrency cap to at least 2× the requested concurrency
 	// - opts agents out of require_permissions so fake-claude runs with
@@ -257,8 +257,6 @@ agent:
   max_turns: 0
   research_machine_dir: %s
   require_permissions: false
-todoist:
-  enabled: false
 github:
   enabled: false
 renovate:

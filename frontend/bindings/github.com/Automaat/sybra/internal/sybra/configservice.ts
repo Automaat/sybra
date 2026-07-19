@@ -15,9 +15,10 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as $models from "./models.js";
 
 /**
- * GetDefaultSettings returns the settings a fresh install would have. The UI
- * diffs live values against these to flag "modified from default" fields and to
- * power per-field reset-to-default, without hardcoding defaults in TypeScript.
+ * GetDefaultSettings returns the settings an empty config file resolves to. The
+ * UI diffs live values against these to flag "modified from default" fields and
+ * to power per-field reset-to-default, without hardcoding defaults in
+ * TypeScript.
  */
 export function GetDefaultSettings(): $CancellablePromise<$models.AppSettings> {
     return $Call.ByID(2008277869).then(($result: any) => {
@@ -36,8 +37,6 @@ export function GetRawConfig(): $CancellablePromise<string> {
 
 /**
  * GetSettings returns the current app settings for the config UI.
- * Secret fields (e.g. Todoist.APIToken) are redacted — callers must use
- * dedicated write-only methods (UpdateTodoistToken) to rotate them.
  */
 export function GetSettings(): $CancellablePromise<$models.AppSettings> {
     return $Call.ByID(1300186602).then(($result: any) => {
@@ -71,15 +70,6 @@ export function SaveRawConfig(raw: string): $CancellablePromise<void> {
  */
 export function UpdateSettings(settings: $models.AppSettings): $CancellablePromise<void> {
     return $Call.ByID(659336121, settings);
-}
-
-/**
- * UpdateTodoistToken sets or clears the Todoist API token and persists the config.
- * Pass an empty string to remove the stored token.
- * This is the only write path for the token — GetSettings never returns it.
- */
-export function UpdateTodoistToken(token: string): $CancellablePromise<void> {
-    return $Call.ByID(1514278165, token);
 }
 
 // Private type creation functions

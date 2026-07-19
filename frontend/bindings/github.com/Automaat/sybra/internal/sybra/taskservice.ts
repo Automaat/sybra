@@ -56,7 +56,7 @@ export function CreateTask(title: string, body: string, mode: string): $Cancella
 
 /**
  * CreateTaskWithInit is CreateTask plus caller-supplied initial field
- * overrides (e.g. TodoistID) applied atomically in the same first-write as
+ * overrides (e.g. Issue) applied atomically in the same first-write as
  * task creation. Callers that need a dedupe key persisted alongside the task
  * — so a crash between create and a second update can never re-import the
  * same source item — should use this instead of CreateTask followed by a
@@ -147,6 +147,19 @@ export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
+        return $$createType9($result);
+    });
+}
+
+/**
+ * ListTasksForNode returns the subset of the board relevant to a cluster
+ * follower's mirror: tasks assigned to that node, excluding chat tasks and
+ * terminal tasks closed longer than mirrorStaleTerminalWindow ago. Unlike
+ * ListTasks, this is sized for repeated polling rather than a one-off full
+ * board read.
+ */
+export function ListTasksForNode(node: string): $CancellablePromise<task$0.Task[]> {
+    return $Call.ByID(844621143, node).then(($result: any) => {
         return $$createType9($result);
     });
 }
