@@ -56,7 +56,7 @@ const (
 // umbrella's max-parallel cap — and rolls each umbrella tracker's status up
 // from its children (cycle or a stuck child → human-required; all done →
 // done + close the umbrella issue). No-op when no umbrella tasks exist.
-func (a *App) releaseUnblockedChildren() {
+func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	a.recoverDegradedUmbrellas()
 
 	tasks, err := a.tasks.List()
@@ -124,7 +124,7 @@ func (a *App) releaseUnblockedChildren() {
 
 	// A blocked tracker pauses only tracker rollup/issue close; dependency-ready
 	// children still release so independent work under the umbrella can proceed.
-	a.releaseCapped(g.ReadyToRelease(), byID, states)
+	a.releaseCapped(ctx, g.ReadyToRelease(), byID, states)
 
 	// An in-flight recovery run owns this umbrella's tracker/children this
 	// tick; skip its rollup entirely rather than computing status from a
@@ -196,7 +196,7 @@ func isRunningChild(s task.Status) bool {
 // releaseCapped releases ready children to `todo`, but no more than each
 // umbrella's remaining parallelism budget (cap - active). Strips the gating
 // marker on release so a later re-block cannot retrigger it.
-func (a *App) releaseCapped(ready []string, byID map[string]*task.Task, states map[string]*umbrellaState) {
+func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string]*task.Task, states map[string]*umbrellaState) {
 	for _, id := range ready {
 		t, ok := byID[id]
 		if !ok || t == nil {
@@ -206,6 +206,7 @@ func (a *App) releaseCapped(ready []string, byID map[string]*task.Task, states m
 		if st == nil || st.active+st.released >= st.cap {
 			continue // at the umbrella's parallelism cap for this tick
 		}
+		prevTags, prevStatus, prevReason := t.Tags, t.Status, t.StatusReason
 		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
 			return s == umbrellaGatedTag
 		})
@@ -218,12 +219,33 @@ func (a *App) releaseCapped(ready []string, byID map[string]*task.Task, states m
 			a.logger.Error("umbrella.release.failed", "task_id", id, "err", err)
 			continue
 		}
-		a.pushReleaseToHomeNode(updated)
+		if err := a.pushReleaseToHomeNode(ctx, updated); err != nil {
+			a.logger.Error("umbrella.release.push_failed", "task_id", id, "err", err)
+			// The follower never saw the release, so it must not look released
+			// here either — restore the pre-release state so ReadyToRelease
+			// picks this child up again next tick instead of leaving the
+			// leader's board silently diverged from the follower forever.
+			if _, rerr := a.tasks.Update(id, task.Update{
+				Status:       task.Ptr(prevStatus),
+				Tags:         &prevTags,
+				StatusReason: task.Ptr(prevReason),
+			}); rerr != nil {
+				a.logger.Error("umbrella.release.rollback_failed", "task_id", id, "err", rerr)
+			}
+			continue
+		}
 		st.setChildStatus(id, updated.Status)
 		st.released++
 		a.logger.Info("umbrella.child.released", "task_id", id)
 	}
 }
+
+// pushReleaseTimeout bounds pushReleaseToHomeNode's remote call well under the
+// cluster client's own 30s default so one unreachable follower can delay the
+// single-threaded dispatch tick — and every other umbrella's local-only
+// releases queued behind it in the same releaseCapped loop — by at most this
+// long rather than up to 30s per stuck release.
+const pushReleaseTimeout = 5 * time.Second
 
 // pushReleaseToHomeNode forwards a just-released child's new state to its
 // home follower when the task isn't homed locally. The local a.tasks.Update
@@ -235,18 +257,22 @@ func (a *App) releaseCapped(ready []string, byID map[string]*task.Task, states m
 // the node that actually dispatches it — stays stuck on its pre-release copy.
 // Released children are always still-gated/todo, so pushing them verbatim can
 // never roll back a follower's in-progress execution state (see
-// Assigner.PushUpdate).
-func (a *App) pushReleaseToHomeNode(t task.Task) {
+// Assigner.PushUpdate). Returns nil when the task is homed locally (nothing
+// to push) or the assigner/config aren't wired up (test doubles).
+func (a *App) pushReleaseToHomeNode(ctx context.Context, t task.Task) error {
 	if a.assigner == nil || a.cfg == nil {
-		return
+		return nil
 	}
 	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
 	if home.Local {
-		return
+		return nil
 	}
-	if _, err := a.assigner.PushUpdate(a.ctx, t); err != nil {
-		a.logger.Error("umbrella.release.push_failed", "task_id", t.ID, "node", home.Name, "err", err)
+	pushCtx, cancel := context.WithTimeout(ctx, pushReleaseTimeout)
+	defer cancel()
+	if _, err := a.assigner.PushUpdate(pushCtx, t); err != nil {
+		return fmt.Errorf("push release to %q: %w", home.Name, err)
 	}
+	return nil
 }
 
 func (st *umbrellaState) setChildStatus(id string, status task.Status) {

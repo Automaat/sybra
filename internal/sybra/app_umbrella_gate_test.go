@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func TestReleaseUnblockedChildren_RespectsMaxParallel(t *testing.T) {
 	c2 := mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusTodo)
 	c3 := mkChild(t, m, "c3", "Automaat/sybra#3", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	released, held := 0, 0
 	for _, id := range []string{c1.ID, c2.ID, c3.ID} {
@@ -80,7 +81,7 @@ func TestReleaseUnblockedChildren_HaltChainFlagsTracker(t *testing.T) {
 	stuck := mkChild(t, m, "stuck", "Automaat/sybra#1", umb, nil, task.StatusHumanRequired)
 	indep := mkChild(t, m, "indep", "Automaat/sybra#2", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker = %q, want human-required on stuck child", got)
@@ -110,7 +111,7 @@ func TestReleaseUnblockedChildren_StuckChildDoesNotConsumeParallelSlot(t *testin
 	}
 	ready := mkChild(t, m, "ready", "Automaat/sybra#2", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker = %q, want human-required on stuck child", got)
@@ -141,7 +142,7 @@ func TestReleaseUnblockedChildren_RetryableWatchdogStopKeepsTrackerInProgress(t 
 	}
 	ready := mkChild(t, m, "ready", "Automaat/sybra#2", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusInProgress {
 		t.Fatalf("tracker = %q, want in-progress while watchdog-stopped child is still recoverable", got)
@@ -178,7 +179,7 @@ func TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates(t *testing.T) {
 	}
 	dependent := mkChild(t, m, "dependent", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusBlocked)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker = %q, want human-required on non-gated blocked child", got)
@@ -205,7 +206,7 @@ func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
 	mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusDone)
 	mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusDone)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusDone {
 		t.Fatalf("tracker = %q, want done when all children done", got)
@@ -226,7 +227,7 @@ func TestReleaseUnblockedChildren_UpdatesTrackerProgressChecklist(t *testing.T) 
 	mkChild(t, m, "done child", "Automaat/sybra#1", umb, nil, task.StatusDone)
 	mkChild(t, m, "blocked child", "Automaat/sybra#2", umb, nil, task.StatusHumanRequired)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	body := mustTask(t, m, tracker.ID).Body
 	for _, want := range []string{
@@ -390,7 +391,7 @@ func TestReleaseUnblockedChildren_ExpandFailingTrackerNeverAutoCloses(t *testing
 		t.Fatalf("create failure tracker: %v", err)
 	}
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker = %q, want to stay human-required (never auto-closed)", got)
@@ -409,7 +410,7 @@ func TestReleaseUnblockedChildren_EmptyTrackerHeldUntilSettled(t *testing.T) {
 	// Tracker with no children, created just now → not yet settled.
 	tracker := mkTracker(t, m, umb, 5)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	// A freshly-created childless tracker must not be closed — its children may
 	// still be materializing in the same expansion.
@@ -431,7 +432,7 @@ func TestReleaseUnblockedChildren_CancelledChildSurfaces(t *testing.T) {
 	mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusDone)
 	mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusCancelled)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	// A cancelled child must surface for a human, never silently complete/close.
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
@@ -468,7 +469,7 @@ func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
 			}
 			mkChild(t, m, "child", "Automaat/sybra#1", umb, nil, tt.childStatus)
 
-			app.releaseUnblockedChildren()
+			app.releaseUnblockedChildren(context.Background())
 
 			got := mustTask(t, m, tracker.ID)
 			if got.Status != task.StatusBlocked {
@@ -498,7 +499,7 @@ func TestReleaseUnblockedChildren_BlockedTrackerStillReleasesReadyChildren(t *te
 	}
 	child := mkChild(t, m, "ready", "Automaat/sybra#1", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	gotTracker := mustTask(t, m, tracker.ID)
 	if gotTracker.Status != task.StatusBlocked {
@@ -527,7 +528,7 @@ func TestReleaseUnblockedChildren_CloseFailureDefersDone(t *testing.T) {
 	tracker := mkTracker(t, m, umb, 5)
 	mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusDone)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	// Close failed transiently → tracker must NOT flip to done (so the close
 	// retries next tick rather than orphaning the open issue).
@@ -586,7 +587,7 @@ func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
 
 	root := mkChild(t, m, "root", "Automaat/sybra#1", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	released, err := m.Get(root.ID)
 	if err != nil {
@@ -664,7 +665,7 @@ func TestReleaseUnblockedChildren_PushesReleaseToRemoteHomeNode(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	released, err := m.Get(child.ID)
 	if err != nil {
@@ -681,6 +682,102 @@ func TestReleaseUnblockedChildren_PushesReleaseToRemoteHomeNode(t *testing.T) {
 	}
 	if assigned[0].Status != task.StatusTodo || slices.Contains(assigned[0].Tags, umbrellaGatedTag) {
 		t.Errorf("pushed task = %+v, want released (todo, gate tag stripped)", assigned[0])
+	}
+}
+
+// TestReleaseUnblockedChildren_RollsBackReleaseOnPushFailure covers the
+// adversarial-review blocker on the fix above: if the remote push fails, the
+// leader must not report the child as released while the follower — the node
+// that actually dispatches it — never saw the change. Without the rollback,
+// the gating tag/status only ever get stripped once, so a failed push
+// permanently strands the follower with no way for the next tick to retry.
+func TestReleaseUnblockedChildren_RollsBackReleaseOnPushFailure(t *testing.T) {
+	t.Parallel()
+	var failing atomic.Bool
+	failing.Store(true)
+	var attempts atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/TaskService/AssignTask" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		attempts.Add(1)
+		if failing.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role: config.ClusterRoleLeader,
+		Followers: []config.Follower{{
+			Name:      "home-nas",
+			Endpoints: []string{srv.URL},
+			Homes:     []string{"Automaat/sybra"},
+		}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+
+	app, m := newUmbrellaGateApp(t)
+	app.cfg = cfg
+	app.ctx = context.Background()
+	app.assigner = clusterlead.NewAssigner(cfg, m, roster, func(string) bool { return false }, nil, nil)
+
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	child, _, err := m.Put(task.Task{
+		ID:            "task-remote",
+		Title:         "remote child",
+		Status:        task.StatusBlocked,
+		ProjectID:     "Automaat/sybra",
+		Issue:         "Automaat/sybra#1",
+		UmbrellaIssue: umb,
+		Tags:          []string{umbrellaGatedTag},
+		AssignedNode:  "home-nas",
+	})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	if attempts.Load() != 1 {
+		t.Fatalf("push attempts = %d, want 1", attempts.Load())
+	}
+	afterFailedPush, err := m.Get(child.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !slices.Contains(afterFailedPush.Tags, umbrellaGatedTag) {
+		t.Fatalf("gating tag stripped despite failed push: tags=%v", afterFailedPush.Tags)
+	}
+	if afterFailedPush.Status != task.StatusBlocked {
+		t.Fatalf("status = %q after failed push, want rolled back to %q", afterFailedPush.Status, task.StatusBlocked)
+	}
+
+	// Next tick, the follower is healthy again — the rolled-back state must
+	// still be eligible for release rather than permanently stranded.
+	failing.Store(false)
+	app.releaseUnblockedChildren(context.Background())
+
+	if attempts.Load() != 2 {
+		t.Fatalf("push attempts after recovery = %d, want 2", attempts.Load())
+	}
+	afterRetry, err := m.Get(child.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if slices.Contains(afterRetry.Tags, umbrellaGatedTag) {
+		t.Fatalf("gating tag still present after a successful retry: tags=%v", afterRetry.Tags)
+	}
+	if afterRetry.Status != task.StatusTodo {
+		t.Fatalf("status = %q after successful retry, want %q", afterRetry.Status, task.StatusTodo)
 	}
 }
 
@@ -705,7 +802,7 @@ func TestReleaseUnblockedChildren_IgnoresSybraBugBlock(t *testing.T) {
 		t.Fatalf("create buggy: %v", err)
 	}
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, bug.ID); got != task.StatusBlocked {
 		t.Fatalf("sybra-bug-blocked child was released to %q, want blocked", got)
@@ -721,7 +818,7 @@ func TestReleaseUnblockedChildren_HoldsThenReleasesChain(t *testing.T) {
 	dep := mkChild(t, m, "dep", "Automaat/sybra#1", umb, nil, task.StatusInProgress)
 	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 	childTask := mustTask(t, m, child.ID)
 	if childTask.Status != task.StatusTodo || !slices.Contains(childTask.Tags, umbrellaGatedTag) {
 		t.Fatalf("child released early: status = %q tags = %v, want todo+%s", childTask.Status, childTask.Tags, umbrellaGatedTag)
@@ -731,7 +828,7 @@ func TestReleaseUnblockedChildren_HoldsThenReleasesChain(t *testing.T) {
 	if _, err := m.Update(dep.ID, task.Update{Status: task.Ptr(task.StatusDone)}); err != nil {
 		t.Fatalf("finish dep: %v", err)
 	}
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 	if got := mustStatus(t, m, child.ID); got != task.StatusTodo {
 		t.Fatalf("child status = %q, want %q after dep done", got, task.StatusTodo)
 	}
@@ -746,7 +843,7 @@ func TestReleaseUnblockedChildren_CrossFormDependencyResolves(t *testing.T) {
 	mkChild(t, m, "dep", "https://github.com/Automaat/sybra/issues/1", umb, nil, task.StatusDone)
 	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 	if got := mustStatus(t, m, child.ID); got != task.StatusTodo {
 		t.Fatalf("child status = %q, want %q (cross-form dep should resolve)", got, task.StatusTodo)
 	}
@@ -771,7 +868,7 @@ func TestReleaseUnblockedChildren_CycleFlagsTracker(t *testing.T) {
 	x := mkChild(t, m, "x", "Automaat/sybra#1", umb, []string{"Automaat/sybra#2"}, task.StatusTodo)
 	y := mkChild(t, m, "y", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker status = %q, want %q on cycle", got, task.StatusHumanRequired)
@@ -798,7 +895,7 @@ func TestReleaseUnblockedChildren_NoUmbrellaNoOp(t *testing.T) {
 		t.Fatalf("create plain: %v", err)
 	}
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 	if got := mustStatus(t, m, tk.ID); got != task.StatusBlocked {
 		t.Fatalf("plain blocked task changed to %q, want blocked", got)
 	}
@@ -904,7 +1001,7 @@ func TestReleaseUnblockedChildren_InFlightUmbrellaSkipsReleaseAndRollup(t *testi
 
 	app.umbrellaRecoveryInFlight[umbrella.NormalizeIssueRef(umb)] = true
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	got := mustTask(t, m, child.ID)
 	if got.Status != task.StatusTodo || !slices.Contains(got.Tags, umbrellaGatedTag) {
@@ -931,7 +1028,7 @@ func TestReleaseUnblockedChildren_InFlightUmbrellaDoesNotBlockUnrelated(t *testi
 
 	app.umbrellaRecoveryInFlight[umbrella.NormalizeIssueRef(umbA)] = true
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	gotA := mustTask(t, m, childA.ID)
 	if gotA.Status != task.StatusTodo || !slices.Contains(gotA.Tags, umbrellaGatedTag) {
@@ -974,7 +1071,7 @@ func TestReleaseUnblockedChildren_AsyncRecoveryDoesNotBlockUnrelatedRelease(t *t
 	mkTracker(t, tasks, umbB, 5)
 	childB := mkChild(t, tasks, "b", "Automaat/sybra#1", umbB, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if !app.umbrellaRecoveryInFlightSnapshot()[umbrella.NormalizeIssueRef(umbA)] {
 		t.Fatal("degraded umbrella ref not marked in-flight")

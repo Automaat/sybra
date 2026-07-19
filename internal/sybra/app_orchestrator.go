@@ -63,7 +63,7 @@ func (a *App) dispatchPass(ctx context.Context) {
 	if !a.runsScheduler() {
 		return
 	}
-	a.releaseUnblockedChildren()
+	a.releaseUnblockedChildren(ctx)
 	a.reconcileRunnableBoardTasks(ctx)
 	if a.assigner != nil {
 		a.assigner.Tick(ctx)
