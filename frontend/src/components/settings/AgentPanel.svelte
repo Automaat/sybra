@@ -19,6 +19,7 @@
   let { settings = $bindable(), defaults, modelOptions, runtimes, runtimeStatus = 'ready', advancedOpen = false }: Props = $props()
   const a = $derived(settings.agent)
   const d = $derived(defaults.agent)
+  type RuntimeView = RuntimeInfo & { attachmentSupport?: string }
 
   // *bool tri-state: null = "default", true/false explicit. Rendered as a select.
   const triOptions = [
@@ -31,6 +32,10 @@
   }
   function strToTri(s: string): boolean | null {
     return s === 'default' ? null : s === 'true'
+  }
+
+  function attachmentSupport(runtime: RuntimeInfo): string {
+    return (runtime as RuntimeView).attachmentSupport ?? ''
   }
 </script>
 
@@ -89,6 +94,11 @@
               <span class="rounded px-1.5 py-0.5 text-xs {runtime.installed ? 'bg-success-500/15 text-success-700 dark:text-success-300' : 'bg-surface-300 text-surface-600 dark:bg-surface-700 dark:text-surface-300'}">
                 {runtime.installed ? 'installed' : 'missing'}
               </span>
+              {#if attachmentSupport(runtime) === 'supported'}
+                <span class="rounded px-1.5 py-0.5 text-xs bg-primary-500/10 text-primary-700 dark:text-primary-300">attachments</span>
+              {:else if attachmentSupport(runtime) === 'unsupported'}
+                <span class="rounded px-1.5 py-0.5 text-xs bg-surface-300 text-surface-600 dark:bg-surface-700 dark:text-surface-300">no attachments</span>
+              {/if}
               {#if runtime.informationalOnly}
                 <span class="rounded px-1.5 py-0.5 text-xs bg-primary-500/10 text-primary-700 dark:text-primary-300">info only</span>
               {/if}

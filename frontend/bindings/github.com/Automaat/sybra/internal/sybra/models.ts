@@ -497,6 +497,7 @@ export class RuntimeInfo {
     "version"?: string;
     "error"?: string;
     "informationalOnly"?: boolean;
+    "attachmentSupport"?: string;
 
     /** Creates a new RuntimeInfo instance. */
     constructor($$source: Partial<RuntimeInfo> = {}) {
