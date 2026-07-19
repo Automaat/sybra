@@ -340,6 +340,7 @@ func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, 
 	for line := range strings.SplitSeq(patch, "\n") {
 		switch {
 		case isDiffHeaderLine(line):
+			s.resetHunkState()
 			inHunk = false
 			// A guard and the skip it protects must be adjacent added lines; a
 			// hunk boundary breaks that adjacency, so reset the window rather
@@ -519,6 +520,7 @@ func (s *tamperScan) add(rule, detail string) {
 }
 
 func (s *tamperScan) resetHunkState() {
+	s.guardWindow = 0
 	s.platformGuardDepth = 0
 	s.postGo = goLineMaskState{}
 	s.preGo = goLineMaskState{}
