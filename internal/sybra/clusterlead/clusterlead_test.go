@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -326,6 +328,154 @@ func TestMirrorMirrorsPlanningSidecars(t *testing.T) {
 		got.PlanBrief != "" ||
 		got.CodeReview != "" {
 		t.Fatalf("cleared follower sidecars should clear leader sidecars: %+v", got)
+	}
+}
+
+// fakeAnomalySink is a monitor.IssueSink test double that records every
+// submitted anomaly so tests can assert alerting fired without depending on
+// GitHub/local-task-routing machinery.
+type fakeAnomalySink struct {
+	mu    sync.Mutex
+	calls []monitor.Anomaly
+}
+
+func (s *fakeAnomalySink) Submit(_ context.Context, a monitor.Anomaly, _ string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, a)
+	return true, nil
+}
+
+func (s *fakeAnomalySink) submitted() []monitor.Anomaly {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.calls)
+}
+
+// TestMirrorDetectsAndRepairsTagsAndDependsOnDrift covers issue #2350: Tags
+// and DependsOn are leader-authoritative fields Merge never pulls from the
+// follower (see Merge's field list — only execution fields like Status flow
+// follower-authoritative). If a leader-side write to either one never
+// reached the follower, nothing in the ordinary reconcile loop would ever
+// notice. This seeds a follower report that disagrees with the canonical
+// copy on both fields and asserts the sweep detects it, alerts through the
+// anomaly sink, and repairs the follower within the same reconcile pass —
+// without touching the follower's own Status/PR fields (never a stale
+// full-task overwrite).
+func TestMirrorDetectsAndRepairsTagsAndDependsOnDrift(t *testing.T) {
+	stub := &followerStub{}
+	srv := stub.server(t)
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
+	sink := &fakeAnomalySink{}
+	mirror.SetAnomalySink(sink)
+
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	canonical := task.Task{
+		ID:           "task-pet",
+		Status:       task.StatusTodo,
+		AssignedNode: "pet-box",
+		Tags:         []string{"backend", "umbrella-gated"},
+		DependsOn:    []string{"https://github.com/o/r/issues/1"},
+		UpdatedAt:    t0,
+	}
+	if _, _, err := mgr.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+
+	// The follower reports real progress (a status advance the leader hasn't
+	// pulled yet — expected and fine) but still carries the stale Tags/
+	// DependsOn from before the leader's edit never reached it.
+	stale := task.Task{
+		ID:           "task-pet",
+		Status:       task.StatusInProgress,
+		AssignedNode: "pet-box",
+		Tags:         []string{"backend"},
+		DependsOn:    nil,
+		UpdatedAt:    t0.Add(time.Hour),
+	}
+	if !mirror.applyFollowerTask("pet-box", stale) {
+		t.Fatal("apply follower report")
+	}
+
+	// Detected + alerted.
+	calls := sink.submitted()
+	if len(calls) != 1 {
+		t.Fatalf("anomaly sink got %d submissions, want 1: %+v", len(calls), calls)
+	}
+	if calls[0].Kind != monitor.KindClusterDrift || calls[0].TaskID != "task-pet" {
+		t.Fatalf("submitted anomaly = %+v, want KindClusterDrift for task-pet", calls[0])
+	}
+
+	// Repaired: the follower stub received an AssignTask carrying the
+	// canonical Tags/DependsOn...
+	got, ok := stub.lastAssigned()
+	if !ok {
+		t.Fatal("follower did not receive a repair push")
+	}
+	if !slices.Equal(got.Tags, canonical.Tags) {
+		t.Errorf("repaired tags = %v, want %v", got.Tags, canonical.Tags)
+	}
+	if !slices.Equal(got.DependsOn, canonical.DependsOn) {
+		t.Errorf("repaired depends_on = %v, want %v", got.DependsOn, canonical.DependsOn)
+	}
+	// ...but the follower's own execution state (Status) was left as its
+	// current report, not rolled back to the leader's stale canonical copy.
+	if got.Status != task.StatusInProgress {
+		t.Errorf("repair push overwrote follower status: got %q, want %q (must not roll back execution state)", got.Status, task.StatusInProgress)
+	}
+
+	// Applying normally still landed the follower's Status on the leader —
+	// drift detection doesn't block the ordinary merge.
+	if leaderCopy, err := mgr.Get("task-pet"); err != nil || leaderCopy.Status != task.StatusInProgress {
+		t.Errorf("leader canonical status = %+v, err=%v, want in-progress merged normally", leaderCopy, err)
+	}
+}
+
+// TestMirrorNoAlertOnOrdinaryStatusDisagreement asserts that Status differing
+// between the leader and follower — the normal, expected, self-healing case
+// Merge exists for — never fires the drift alert/repair path. Only
+// Tags/DependsOn (fields Merge doesn't carry) are drift-worthy; alerting on
+// every ordinary status lag would make the signal useless.
+func TestMirrorNoAlertOnOrdinaryStatusDisagreement(t *testing.T) {
+	stub := &followerStub{}
+	srv := stub.server(t)
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
+	sink := &fakeAnomalySink{}
+	mirror.SetAnomalySink(sink)
+
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	if _, _, err := mgr.Put(task.Task{
+		ID: "task-pet", Status: task.StatusTodo, AssignedNode: "pet-box",
+		Tags: []string{"backend"}, UpdatedAt: t0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	advanced := task.Task{
+		ID: "task-pet", Status: task.StatusPlanReview, AssignedNode: "pet-box",
+		Tags: []string{"backend"}, UpdatedAt: t0.Add(time.Hour),
+	}
+	if !mirror.applyFollowerTask("pet-box", advanced) {
+		t.Fatal("apply follower report")
+	}
+
+	if calls := sink.submitted(); len(calls) != 0 {
+		t.Fatalf("anomaly sink got %d submissions for an ordinary status advance, want 0: %+v", len(calls), calls)
+	}
+	if _, ok := stub.lastAssigned(); ok {
+		t.Error("follower received an unnecessary repair push for a matching Tags/DependsOn task")
 	}
 }
 

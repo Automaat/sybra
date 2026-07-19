@@ -69,6 +69,15 @@ export enum AnomalyKind {
     KindLostAgent = "lost_agent",
     KindFailureSpike = "failure_spike",
     KindBottleneck = "bottleneck",
+
+    /**
+     * KindClusterDrift is filed by clusterlead.Mirror, not Detect — a leader
+     * canonical task's Tags/DependsOn disagree with what its home follower
+     * reports, meaning a leader-side write never reached the node that
+     * actually owns the task. Always RequiresLLM: false; Mirror repairs it
+     * deterministically and files this purely as an audit trail.
+     */
+    KindClusterDrift = "cluster_drift",
 };
 
 /**
