@@ -1201,7 +1201,7 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 		retryableWatchdogStop := e.canRetryWatchdogStop(t, step)
-		if reason, skip := resumeSkipReasonForStatus(t.Status); skip && !(reason == "human_required" && retryableWatchdogStop) {
+		if reason, skip := resumeSkipReasonForStatus(t.Status); skip && (reason != "human_required" || !retryableWatchdogStop) {
 			e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
 				reason+"|"+t.Status+"|"+step.ID,
 				"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)
