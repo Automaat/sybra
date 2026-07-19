@@ -1083,6 +1083,10 @@ func (a *App) initProviderHealth(ctx context.Context, emit func(string, any)) {
 		CopilotRLCooldown:  time.Duration(a.cfg.Providers.Copilot.RateLimitCooldownSeconds) * time.Second,
 		OpenCodeRLCooldown: time.Duration(a.cfg.Providers.OpenCode.RateLimitCooldownSeconds) * time.Second,
 	}, emit, a.logger)
+	// New seeds every provider Healthy=false until probed; probe once here,
+	// before the gate is live, so startLifecycle's dispatch never sees a
+	// window where every provider reads unhealthy and fails closed.
+	pc.ProbeOnce(ctx)
 	a.providerHealth = pc
 	a.agents.SetHealthGate(pc)
 	a.wg.Go(func() { pc.Run(ctx) })

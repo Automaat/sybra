@@ -511,3 +511,33 @@ func TestTryReserveSlot_RegisterNoDoubleCount(t *testing.T) {
 	}
 	assertAccountingInvariant(t, m)
 }
+
+// TestFirstHealthyProvider_DistributesAcrossEligiblePeers guards against
+// re-introducing a fixed-order pick: with several equally-eligible
+// candidates, firstHealthyProvider must not always land on the same one.
+func TestFirstHealthyProvider_DistributesAcrossEligiblePeers(t *testing.T) {
+	candidates := []string{"claude", "codex", "copilot"}
+	healthy := func(string) bool { return true }
+
+	seen := map[string]bool{}
+	for range 200 {
+		seen[firstHealthyProvider("opencode", candidates, healthy)] = true
+	}
+	for _, want := range candidates {
+		if !seen[want] {
+			t.Errorf("firstHealthyProvider never picked %q across 200 trials: %v", want, seen)
+		}
+	}
+}
+
+func TestFirstHealthyProvider_ExcludesAndFiltersUnhealthy(t *testing.T) {
+	candidates := []string{"claude", "codex", "copilot"}
+	healthy := func(p string) bool { return p == "codex" }
+
+	if got := firstHealthyProvider("claude", candidates, healthy); got != "codex" {
+		t.Errorf("got %q, want codex (only healthy candidate)", got)
+	}
+	if got := firstHealthyProvider("codex", candidates, healthy); got != "" {
+		t.Errorf("got %q, want none (only healthy candidate is excluded)", got)
+	}
+}
