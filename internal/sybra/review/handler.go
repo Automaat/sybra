@@ -1462,7 +1462,17 @@ func (r *Handler) includeKnownTaskPRs(tasks []task.Task, monitoredPRs []github.P
 // agent that opened a PR outside of any workflow). Those tasks would render
 // a red ✗ in the kanban UI forever and never get picked up for pr-fix.
 //
-// Now we also include in-progress tasks that carry an explicit PR number.
+// Now we also include in-progress and todo tasks that carry an explicit PR
+// number. todo joined for the identical reason: skipTaskCreatedWorkflow
+// (workflow_dispatch.go) deliberately skips a fresh task.created dispatch for
+// any todo task with a PRNumber (starting a brand-new implementation
+// workflow would be wrong), on the assumption that "status-specific lanes"
+// resume it instead — but this was the only such lane, and it excluded todo,
+// so a task recovered to todo with its PR still open (e.g. a human-review
+// unblock, or an operator requeue) had no dispatch path at all and sat there
+// indefinitely even with a live, fixable (e.g. conflicting) PR. handoff-tagged
+// todo tasks are excluded (see the todo case below): they already have their
+// own re-entry lane and must not also become a pr-fix candidate.
 // Branch-only matching stays gated on in-review to avoid false positives
 // from tasks that pushed a WIP branch without opening a PR yet.
 func prMonitorEligible(t *task.Task) bool {
@@ -1479,10 +1489,18 @@ func prMonitorEligible(t *task.Task) bool {
 	case task.StatusInReview:
 		return t.PRNumber != 0 || t.Branch != ""
 	case task.StatusInProgress:
-		// Only in-progress tasks that already have a PR — a branch alone
-		// isn't enough, we don't want to treat mid-implementation tasks
-		// as candidates for pr-fix dispatch.
+		// Only tasks that already have a PR — a branch alone isn't enough,
+		// still mid-implementation.
 		return t.PRNumber != 0
+	case task.StatusTodo:
+		// A handoff-tagged task is exempted from skipTaskCreatedWorkflow's
+		// skip (allowsTaskCreatedWorkflowWithPR, workflow_dispatch.go) so its
+		// own task.created lane can re-fire regardless of PRNumber — pr-fix
+		// must stay out of that lane's way, the same way it stays out of an
+		// inbound review task's, or the two could pick a conflicting action
+		// (reimplement from scratch vs. patch the existing PR) for the same
+		// task on the same tick.
+		return t.PRNumber != 0 && !slices.Contains(t.Tags, "handoff")
 	default:
 		return false
 	}
