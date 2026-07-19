@@ -202,7 +202,7 @@ func (s *Service) tick(_ context.Context) {
 	}
 
 	version := prevOverlay.Version + 1
-	overlay := buildOverlay(version, s.now(), plan, scores, prevOverlay)
+	overlay := buildOverlay(version, s.now(), plan, scores, prevOverlay, base)
 	if err := s.store.Save(overlay); err != nil {
 		s.logger.Warn("routing.overlay.save_failed", "err", err)
 		return
@@ -310,12 +310,14 @@ func currentWeights(base abtest.Config, overlay Overlay) map[string]map[string]i
 // buildOverlay assembles the next persisted overlay generation from a weight
 // plan and the scores that drove it. Experiments present in plan.Experiments
 // are rebuilt from the plan; every experiment the plan did NOT touch is
-// carried forward verbatim from prev, so a tick that re-plans only some
-// experiments never drops the last-learned weights of the rest from the
-// persisted snapshot (which would otherwise silently fall back to base
-// weights on the next reload/restart/Apply). Output is sorted by experiment
-// ID for deterministic persistence.
-func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score, prev Overlay) Overlay {
+// carried forward from prev — but only when it (and each carried variant)
+// still exists in the current base config, so an experiment/variant the
+// operator has since removed drops out of the overlay instead of silently
+// reviving stale weights if the same IDs are re-introduced later. This keeps
+// re-plans from dropping the last-learned weights of untouched experiments
+// while never resurrecting a deleted cohort's obsolete overlay. Output is
+// sorted by experiment ID for deterministic persistence.
+func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score, prev Overlay, base abtest.Config) Overlay {
 	scoreByKey := map[string]Score{}
 	for _, s := range scores {
 		scoreByKey[s.ExperimentID+"|"+s.VariantID] = s
@@ -355,10 +357,40 @@ func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score, p
 		overlay.Experiments = append(overlay.Experiments, ov)
 	}
 
-	// Carry forward untouched experiments from the prior generation.
+	// Carry forward untouched experiments from the prior generation, but
+	// only those still present in the current base config — a removed
+	// experiment/variant must not linger in the overlay and revive stale
+	// weights if the same IDs are re-added later.
+	baseVariants := map[string]map[string]bool{}
+	for i := range base.Experiments {
+		exp := &base.Experiments[i]
+		if exp.ID == "" {
+			continue
+		}
+		vs := map[string]bool{}
+		for j := range exp.Variants {
+			if id := exp.Variants[j].ID; id != "" {
+				vs[id] = true
+			}
+		}
+		baseVariants[exp.ID] = vs
+	}
 	for _, exp := range prev.Experiments {
-		if !planned[exp.ExperimentID] {
-			overlay.Experiments = append(overlay.Experiments, exp)
+		if planned[exp.ExperimentID] {
+			continue
+		}
+		vs, ok := baseVariants[exp.ExperimentID]
+		if !ok {
+			continue
+		}
+		kept := OverlayExperiment{ExperimentID: exp.ExperimentID}
+		for _, v := range exp.Variants {
+			if vs[v.VariantID] {
+				kept.Variants = append(kept.Variants, v)
+			}
+		}
+		if len(kept.Variants) > 0 {
+			overlay.Experiments = append(overlay.Experiments, kept)
 		}
 	}
 	sort.Slice(overlay.Experiments, func(i, j int) bool {

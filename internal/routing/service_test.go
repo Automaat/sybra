@@ -194,8 +194,13 @@ func TestBuildOverlay_CarriesForwardUntouchedExperiments(t *testing.T) {
 	plan := WeightPlan{Changed: true, Experiments: map[string]map[string]int{
 		"exp-a": {"v1": 5},
 	}}
+	// Both experiments are still present in the base config.
+	base := abtest.Config{Experiments: []abtest.Experiment{
+		{ID: "exp-a", Variants: []abtest.Variant{{ID: "v1", Weight: 1}}},
+		{ID: "exp-b", Variants: []abtest.Variant{{ID: "v1", Weight: 1}}},
+	}}
 
-	overlay := buildOverlay(2, time.Now(), plan, nil, prev)
+	overlay := buildOverlay(2, time.Now(), plan, nil, prev, base)
 
 	if wa, ok := overlay.WeightAt("exp-a", "v1"); !ok || wa != 5 {
 		t.Fatalf("exp-a/v1 weight = (%d, %v), want (5, true)", wa, ok)
@@ -207,6 +212,50 @@ func TestBuildOverlay_CarriesForwardUntouchedExperiments(t *testing.T) {
 	}
 	if len(overlay.Experiments) != 2 {
 		t.Fatalf("overlay has %d experiments, want 2", len(overlay.Experiments))
+	}
+}
+
+// TestBuildOverlay_DropsRemovedExperimentsAndVariants guards against a stale
+// overlay entry surviving after the operator removes an experiment (or a
+// single variant) from the base config — it must not linger to revive
+// obsolete weights if the same IDs are re-introduced later.
+func TestBuildOverlay_DropsRemovedExperimentsAndVariants(t *testing.T) {
+	prev := Overlay{
+		Version: 1,
+		Experiments: []OverlayExperiment{
+			{ExperimentID: "exp-a", Variants: []OverlayVariant{{VariantID: "v1", Weight: 7}}},
+			{ExperimentID: "exp-gone", Variants: []OverlayVariant{{VariantID: "v1", Weight: 9}}},
+			{ExperimentID: "exp-c", Variants: []OverlayVariant{
+				{VariantID: "v1", Weight: 3},
+				{VariantID: "v-gone", Weight: 4},
+			}},
+		},
+	}
+	// This tick re-plans nothing; every prior experiment is a carry-forward
+	// candidate.
+	plan := WeightPlan{Changed: true, Experiments: map[string]map[string]int{}}
+	// Base no longer declares exp-gone, and exp-c dropped v-gone.
+	base := abtest.Config{Experiments: []abtest.Experiment{
+		{ID: "exp-a", Variants: []abtest.Variant{{ID: "v1", Weight: 1}}},
+		{ID: "exp-c", Variants: []abtest.Variant{{ID: "v1", Weight: 1}}},
+	}}
+
+	overlay := buildOverlay(2, time.Now(), plan, nil, prev, base)
+
+	if _, ok := overlay.WeightAt("exp-gone", "v1"); ok {
+		t.Fatalf("exp-gone survived carry-forward, want dropped (removed from base)")
+	}
+	if _, ok := overlay.WeightAt("exp-c", "v-gone"); ok {
+		t.Fatalf("exp-c/v-gone survived carry-forward, want dropped (removed from base)")
+	}
+	if wa, ok := overlay.WeightAt("exp-a", "v1"); !ok || wa != 7 {
+		t.Fatalf("exp-a/v1 weight = (%d, %v), want (7, true) (still in base)", wa, ok)
+	}
+	if wc, ok := overlay.WeightAt("exp-c", "v1"); !ok || wc != 3 {
+		t.Fatalf("exp-c/v1 weight = (%d, %v), want (3, true) (still in base)", wc, ok)
+	}
+	if len(overlay.Experiments) != 2 {
+		t.Fatalf("overlay has %d experiments, want 2 (exp-a, exp-c)", len(overlay.Experiments))
 	}
 }
 
