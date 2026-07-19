@@ -637,8 +637,8 @@ CORS policy. AuthToken gates every request except GET /health behind a
 shared-secret bearer token: callers must send
 `Authorization: Bearer <token>`, or, for the SSE endpoints only (browser
 EventSource cannot set request headers), a `?token=<token>` query param.
-AuthToken is auto-generated and persisted to config.yaml on first run if
-left empty — see applyServerDefaults.
+AuthToken is auto-generated and persisted to AuthTokenPath() on first run if
+left empty in both config.yaml and the token sidecar — see applyServerDefaults.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|

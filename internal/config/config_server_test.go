@@ -33,11 +33,18 @@ func TestLoadGeneratesAndPersistsServerAuthToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), cfg.Server.AuthToken) {
-		t.Error("generated token was not persisted to config.yaml")
+	if strings.Contains(string(data), cfg.Server.AuthToken) {
+		t.Error("generated token was persisted to config.yaml")
+	}
+	tokenData, err := os.ReadFile(AuthTokenPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(tokenData)) != cfg.Server.AuthToken {
+		t.Error("generated token was not persisted to server_auth_token")
 	}
 
-	// A second Load() must reuse the persisted token rather than rotating it.
+	// A second Load() must reuse the sidecar token rather than rotating it.
 	cfg2, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -137,5 +144,26 @@ func TestLoadNoPersistDoesNotGenerateServerAuthToken(t *testing.T) {
 	}
 	if strings.Contains(string(data), "auth_token") {
 		t.Fatalf("LoadNoPersist should not persist auth_token, got %s", data)
+	}
+}
+
+func TestLoadNoPersistReadsServerAuthTokenSidecar(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("server:\n  allowed_origins: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(AuthTokenPath(), []byte("sidecar-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.AuthToken != "sidecar-token" {
+		t.Fatalf("AuthToken = %q, want sidecar-token", cfg.Server.AuthToken)
 	}
 }

@@ -105,6 +105,9 @@ func markerFreeWorktreePaths(wtPath string, paths []string, rejectBinary bool) (
 		data, readErr := os.ReadFile(filepath.Join(wtPath, filepath.FromSlash(path)))
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
+				if rejectBinary {
+					return nil, nil
+				}
 				continue
 			}
 			return nil, fmt.Errorf("read unmerged path %s: %w", path, readErr)

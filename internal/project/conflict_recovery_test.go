@@ -58,6 +58,36 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("deleted unstaged unmerged path is not recoverable", func(t *testing.T) {
+		t.Parallel()
+		wtPath := newConflictedWorktree(t)
+		if err := os.Remove(filepath.Join(wtPath, "README.md")); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
+		if err != nil {
+			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("paths = %v, want none for unstaged deletion conflict", got)
+		}
+	})
+
+	t.Run("staged deletion resolution is recoverable", func(t *testing.T) {
+		t.Parallel()
+		wtPath := newConflictedWorktree(t)
+		runGitInDir(t, wtPath, "rm", "README.md")
+
+		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
+		if err != nil {
+			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+		}
+		if !slices.Equal(got, []string{"README.md"}) {
+			t.Fatalf("paths = %v, want [README.md]", got)
+		}
+	})
+
 	t.Run("still-markered conflict is not recoverable", func(t *testing.T) {
 		t.Parallel()
 		wtPath := newConflictedWorktree(t)

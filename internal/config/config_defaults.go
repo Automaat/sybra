@@ -891,39 +891,88 @@ func load(opts loadOptions) (*Config, error) {
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 	applyReviewHoldDefaults(cfg)
-	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
+	applyServerDefaults(cfg, opts.persistLoadReconciles)
 
-	persistLoadReconciles(cfg, opts, existingFile, abTestingReconciled, serverTokenGenerated)
+	persistLoadReconciles(cfg, opts, existingFile, abTestingReconciled)
 
 	return cfg, nil
 }
 
 // persistLoadReconciles writes back in-memory-only changes made during load()
-// that must survive a restart: the ab_testing builtin reconcile (existing
-// files only) and a freshly generated server auth token (even for a
-// brand-new install — sybra-server reads Server.AuthToken once at startup,
-// so an unsaved token would silently rotate on every restart and lock
-// operators out).
-func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestingReconciled, serverTokenGenerated bool) {
+// that must survive a restart: currently the ab_testing builtin reconcile
+// (existing files only). This deliberately patches only the ab_testing subtree
+// instead of calling Config.Save(), because load-time persistence must not
+// expand externally-rendered minimal config.yaml files with every default.
+func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestingReconciled bool) {
 	if opts.persistLoadReconciles && existingFile && abTestingReconciled {
-		if saveErr := cfg.Save(); saveErr != nil {
+		if saveErr := persistABTestingReconcile(cfg.ABTesting); saveErr != nil {
 			slog.Warn("config: failed to persist ab_testing builtin reconcile", "err", saveErr)
 		}
 	}
-	if opts.persistLoadReconciles && serverTokenGenerated {
-		if saveErr := cfg.Save(); saveErr != nil {
-			slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
+}
+
+func persistABTestingReconcile(abCfg abtest.Config) error {
+	data, err := os.ReadFile(configPath())
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return err
+	}
+	if doc.Kind == 0 {
+		doc.Kind = yaml.DocumentNode
+	}
+	if len(doc.Content) == 0 {
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("config root is %v, want mapping", root.Kind)
+	}
+
+	abData, err := yaml.Marshal(abCfg)
+	if err != nil {
+		return err
+	}
+	var abDoc yaml.Node
+	if err := yaml.Unmarshal(abData, &abDoc); err != nil {
+		return err
+	}
+	if len(abDoc.Content) == 0 {
+		return fmt.Errorf("marshal ab_testing produced empty YAML")
+	}
+	abNode := abDoc.Content[0]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "ab_testing" {
+			root.Content[i+1] = abNode
+			out, mErr := yaml.Marshal(&doc)
+			if mErr != nil {
+				return mErr
+			}
+			return WriteRawConfig(out)
 		}
 	}
+	root.Content = append(root.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "ab_testing"},
+		abNode,
+	)
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return err
+	}
+	return WriteRawConfig(out)
 }
 
 // applyServerDefaults resolves sybra-server's auth token and CORS allowlist:
 // env vars win when set, otherwise a missing token is auto-generated so the
 // HTTP control plane always fails closed instead of silently running
-// unauthenticated. Returns true when a new token was generated (the caller
-// must persist it — see load()). Read-only config loads pass allowGenerate=false
-// so they never invent an in-memory-only secret that diverges from disk.
-func applyServerDefaults(cfg *Config, allowGenerate bool) bool {
+// unauthenticated. Generated tokens are persisted in AuthTokenPath(), not
+// config.yaml, so load-time state never rewrites externally-rendered config
+// files just to carry a local secret. Read-only config loads pass
+// allowGenerate=false so they never invent an in-memory-only secret that
+// diverges from disk.
+func applyServerDefaults(cfg *Config, allowGenerate bool) {
 	if v := os.Getenv("SYBRA_AUTH_TOKEN"); v != "" {
 		cfg.Server.AuthToken = v
 	}
@@ -935,18 +984,67 @@ func applyServerDefaults(cfg *Config, allowGenerate bool) bool {
 		cfg.Server.AllowedOrigins = origins
 	}
 	if cfg.Server.AuthToken != "" {
-		return false
+		return
+	}
+	if token := readAuthTokenFile(); token != "" {
+		cfg.Server.AuthToken = token
+		return
 	}
 	if !allowGenerate {
-		return false
+		return
 	}
 	token, err := generateAuthToken()
 	if err != nil {
 		slog.Warn("config: failed to generate server auth token", "err", err)
-		return false
+		return
+	}
+	if err := writeAuthTokenFile(token); err != nil {
+		slog.Warn("config: failed to persist generated server auth token", "err", err)
 	}
 	cfg.Server.AuthToken = token
-	return true
+}
+
+// AuthTokenPath is where sybra-server's generated bearer token is persisted
+// when config.yaml does not declare server.auth_token itself. Keeping the
+// generated secret out of config.yaml means an externally-rendered file
+// (Ansible, Nix, Chezmoi, a git-tracked file) is never rewritten to carry
+// runtime state invented by Sybra. An explicit server.auth_token in config.yaml
+// still wins over this file.
+func AuthTokenPath() string {
+	return filepath.Join(HomeDir(), "server_auth_token")
+}
+
+func readAuthTokenFile() string {
+	data, err := os.ReadFile(AuthTokenPath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func writeAuthTokenFile(token string) error {
+	path := AuthTokenPath()
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".server_auth_token-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.WriteString(token + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(configFilePerm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // generateAuthToken returns a random 256-bit hex-encoded shared secret for

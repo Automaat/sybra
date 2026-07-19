@@ -31,6 +31,11 @@ func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, 
 		}
 		return nil, false, false, nil
 	}
+	switch current.Type {
+	case StepRunAgent, StepCondition, StepRequireSidecar, StepFlagPlanCritique:
+	default:
+		return nil, false, false, nil
+	}
 	mustExecute := current.Type == StepRequireSidecar || current.Type == StepFlagPlanCritique
 	fields := e.transitionFields(t, t.Workflow)
 	nextID, err := ResolveTransition(current.Next, fields)
@@ -50,13 +55,11 @@ func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, 
 			return nil, false, false, nil
 		case StepRunAgent, StepParallel, StepBestOfN:
 			return nil, false, false, nil
-		case StepSetStatus:
-			if step.Config.Status != "" {
-				fields["task.status"] = step.Config.Status
-			}
 		case StepRequireSidecar, StepFlagPlanCritique:
 			mustExecute = true
-		case StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution,
+		case StepCondition:
+			// Purely synchronous and side-effect-free: keep walking transitions.
+		case StepSetStatus, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution,
 			StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate,
 			StepClearPlanArtifacts, StepValidatePlan,
 			StepValidatePlanContract, StepTriageReview,
@@ -64,7 +67,7 @@ func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, 
 			StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch,
 			StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch,
 			StepCreatePR, StepClassifyTask:
-			// Purely synchronous step: keep walking the declared transitions.
+			return nil, false, false, nil
 		}
 		nextID, err = ResolveTransition(step.Next, fields)
 		if err != nil || nextID == "" {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -1814,6 +1815,48 @@ func TestLoadReconcilePersistsToDisk(t *testing.T) {
 	}
 	if !foundCustom {
 		t.Fatal("persisted config.yaml lost the user-authored experiment")
+	}
+}
+
+func TestLoadReconcilePatchesOnlyABTestingConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	minimal := struct {
+		ABTesting abtest.Config `yaml:"ab_testing"`
+	}{
+		ABTesting: abtest.Config{
+			Experiments: oldShapeABTestingExperiments(),
+		},
+	}
+	data, err := yamlv3.Marshal(minimal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := yamlv3.Unmarshal(after, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("config keys = %v, want only ab_testing", raw)
+	}
+	if _, ok := raw["ab_testing"]; !ok {
+		t.Fatalf("config.yaml missing ab_testing after reconcile: %s", after)
+	}
+	if strings.Contains(string(after), "logging:") || strings.Contains(string(after), "server:") {
+		t.Fatalf("Load expanded unrelated defaults into config.yaml:\n%s", after)
 	}
 }
 

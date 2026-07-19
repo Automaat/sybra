@@ -99,6 +99,34 @@ func newMaybeCritiqueResumeDef() Definition {
 	}
 }
 
+func newSideEffectReconcileDef() Definition {
+	return Definition{
+		ID:   "side-effect-reconcile",
+		Name: "side effect reconcile",
+		Steps: []Step{
+			{
+				ID:   "route",
+				Name: "Route",
+				Type: StepCondition,
+				Next: []Transition{{GoTo: "create_pr"}},
+			},
+			{
+				ID:   "create_pr",
+				Name: "Create PR",
+				Type: StepCreatePR,
+				Next: []Transition{{GoTo: "review_pr"}},
+			},
+			{
+				ID:     "review_pr",
+				Name:   "Review PR",
+				Type:   StepWaitHuman,
+				Config: StepConfig{Status: "ready-pr", HumanActions: []string{"approve"}},
+				Next:   []Transition{{GoTo: ""}},
+			},
+		},
+	}
+}
+
 func TestHandleStatusChange_ReconcilesCurrentStepToVisibleWaitHuman(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.Save(newPlanCritiqueReconcileDef()); err != nil {
@@ -253,6 +281,68 @@ func TestHandleStatusChange_ReconcileExecutesCurrentPlanCritiqueFlag(t *testing.
 	}
 	if agents.CallCount() != 0 {
 		t.Fatalf("StartAgent called %d times, want 0", agents.CallCount())
+	}
+}
+
+func TestHandleStatusChange_DoesNotSkipSideEffectStepToWaitHuman(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newSideEffectReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "ready-pr",
+		Workflow: &Execution{
+			WorkflowID:  "side-effect-reconcile",
+			CurrentStep: "route",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	engine.HandleStatusChange("t1", "ready-pr")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "route" {
+		t.Fatalf("CurrentStep = %q, want route", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.State != ExecWaiting {
+		t.Fatalf("State = %q, want %q", got.Workflow.State, ExecWaiting)
+	}
+}
+
+func TestHandleStatusChange_DoesNotSkipCurrentSideEffectStepToWaitHuman(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newSideEffectReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "ready-pr",
+		Workflow: &Execution{
+			WorkflowID:  "side-effect-reconcile",
+			CurrentStep: "create_pr",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	engine.HandleStatusChange("t1", "ready-pr")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "create_pr" {
+		t.Fatalf("CurrentStep = %q, want create_pr", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.State != ExecWaiting {
+		t.Fatalf("State = %q, want %q", got.Workflow.State, ExecWaiting)
 	}
 }
 
