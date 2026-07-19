@@ -249,6 +249,64 @@ func TestRouteTransfersAttachmentsBeforeAssign(t *testing.T) {
 	}
 }
 
+func TestReassignTransfersAttachmentsBeforeAssign(t *testing.T) {
+	oldNode := &followerRecorder{}
+	newNode := &followerRecorder{}
+	oldSrv := oldNode.server(t)
+	newSrv := newNode.server(t)
+
+	a, tasks := newReassignFixture(t, []config.Follower{
+		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true, Homes: []string{"acme/x"}},
+		{Name: "new-box", Endpoints: []string{newSrv.URL}, Trusted: true},
+	}, nil)
+	attachments, err := attachment.NewStore(t.TempDir(), 10<<20)
+	if err != nil {
+		t.Fatalf("attachment.NewStore: %v", err)
+	}
+	a.SetAttachments(attachments)
+
+	createdAt := time.Date(2026, 7, 19, 11, 0, 0, 0, time.UTC)
+	meta, err := attachments.Import("t-reassign-attach", task.Attachment{
+		ID:          "att_1",
+		FileName:    "handoff.txt",
+		ContentType: "text/plain",
+		CreatedAt:   createdAt,
+	}, []byte("handoff payload"))
+	if err != nil {
+		t.Fatalf("attachments.Import: %v", err)
+	}
+	seedTask(t, tasks, task.Task{
+		ID:           "t-reassign-attach",
+		Title:        "attached move",
+		ProjectID:    "acme/x",
+		Status:       task.StatusInProgress,
+		AssignedNode: "old-box",
+		Attachments:  []task.Attachment{meta},
+	})
+
+	if err := a.Reassign(t.Context(), "t-reassign-attach", "new-box"); err != nil {
+		t.Fatalf("Reassign: %v", err)
+	}
+
+	imported := newNode.importedAttachments()
+	if len(imported) != 1 {
+		t.Fatalf("imported attachments = %+v, want one blob transfer", imported)
+	}
+	if imported[0].taskID != "t-reassign-attach" || imported[0].meta.ID != "att_1" || string(imported[0].data) != "handoff payload" {
+		t.Fatalf("imported attachment = %+v, want t-reassign-attach/att_1 handoff payload", imported[0])
+	}
+	assigned := newNode.assignedTasks()
+	if len(assigned) != 1 {
+		t.Fatalf("assigned tasks = %+v, want one", assigned)
+	}
+	if len(assigned[0].Attachments) != 1 {
+		t.Fatalf("assigned attachments = %+v, want transferred metadata", assigned[0].Attachments)
+	}
+	if assigned[0].Attachments[0].Path != "/follower/attachments/t-reassign-attach/att_1/handoff.txt" {
+		t.Fatalf("assigned attachment path = %q, want follower-local path", assigned[0].Attachments[0].Path)
+	}
+}
+
 func TestReassignStopsAgentsOnTheOldNode(t *testing.T) {
 	oldNode := &followerRecorder{agents: []map[string]any{
 		{"id": "a-mine", "taskId": "t1", "state": "running"},

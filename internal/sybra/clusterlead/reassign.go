@@ -77,36 +77,40 @@ func (a *Assigner) Reassign(ctx context.Context, taskID, node string) error {
 		return fmt.Errorf("%w: %q (trusted=%v encrypted=%v)", ErrConfidentiality, home.Name, home.Trusted, home.Encrypted)
 	}
 
-	previous := t.AssignedNode
-	previousOverride := t.NodeOverride
-	if previous == home.Name {
+	previousNode := t.AssignedNode
+	if previousNode == home.Name {
 		return a.pinOverride(taskID, node)
 	}
-	if previous == "" && a.stopLocalAgents == nil && mayHaveLiveAgent(t) {
+	if previousNode == "" && a.stopLocalAgents == nil && mayHaveLiveAgent(t) {
 		return fmt.Errorf("%w: %s is running on the leader and this caller cannot stop its agents; reassign it from the board",
 			ErrCannotDrainLocal, taskID)
 	}
-	a.drainTask(ctx, previous, t)
+	a.drainTask(ctx, previousNode, t)
 
 	moved, err := a.stampNode(taskID, node, home.Name)
 	if err != nil {
 		return err
 	}
 	if home.Local {
-		a.logger.Info("cluster.reassign", "task", taskID, "from", previous, "to", config.LocalNodeName)
+		a.logger.Info("cluster.reassign", "task", taskID, "from", previousNode, "to", config.LocalNodeName)
 		return nil
 	}
 
 	client, ok := a.roster.Client(home.Name)
 	if !ok || client == nil {
-		a.rollbackNode(taskID, previous, previousOverride, moved)
+		a.rollbackNode(taskID, t, moved)
 		return fmt.Errorf("clusterlead: no follower client for node %q", home.Name)
 	}
-	if err := client.AssignTask(ctx, moved); err != nil {
-		a.rollbackNode(taskID, previous, previousOverride, moved)
+	push, err := a.transferAttachments(ctx, client, moved)
+	if err != nil {
+		a.rollbackNode(taskID, t, moved)
+		return fmt.Errorf("clusterlead: transfer attachments for %s to %s: %w", taskID, home.Name, err)
+	}
+	if err := client.AssignTask(ctx, push); err != nil {
+		a.rollbackNode(taskID, t, moved)
 		return fmt.Errorf("clusterlead: assign %s to %s: %w", taskID, home.Name, err)
 	}
-	a.logger.Info("cluster.reassign", "task", taskID, "from", previous, "to", home.Name)
+	a.logger.Info("cluster.reassign", "task", taskID, "from", previousNode, "to", home.Name)
 	return nil
 }
 
@@ -142,7 +146,7 @@ func (a *Assigner) stampNode(taskID, override, assigned string) (task.Task, erro
 	return saved, nil
 }
 
-func (a *Assigner) rollbackNode(taskID, previous, previousOverride string, moved task.Task) {
+func (a *Assigner) rollbackNode(taskID string, previous, moved task.Task) {
 	cur, err := a.tasks.Get(taskID)
 	if err != nil {
 		a.logger.Error("cluster.reassign.rollback.failed", "task", taskID, "err", err)
@@ -151,13 +155,16 @@ func (a *Assigner) rollbackNode(taskID, previous, previousOverride string, moved
 	if cur.AssignedNode != moved.AssignedNode {
 		return
 	}
-	cur.AssignedNode = previous
-	cur.NodeOverride = previousOverride
+	cur.AssignedNode = previous.AssignedNode
+	cur.NodeOverride = previous.NodeOverride
+	cur.WorktreeDir = previous.WorktreeDir
+	cur.MirrorRev = previous.MirrorRev
+	cur.MirrorUpdatedAt = previous.MirrorUpdatedAt
 	if _, _, err := a.tasks.Put(cur); err != nil {
 		a.logger.Error("cluster.reassign.rollback.failed", "task", taskID, "err", err)
 		return
 	}
-	a.logger.Warn("cluster.reassign.rolled_back", "task", taskID, "node", previous)
+	a.logger.Warn("cluster.reassign.rolled_back", "task", taskID, "node", previous.AssignedNode)
 }
 
 func (a *Assigner) drainTask(ctx context.Context, node string, t task.Task) {

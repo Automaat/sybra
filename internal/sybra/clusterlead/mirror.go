@@ -171,7 +171,10 @@ func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, 
 	if canonical.AssignedNode != node {
 		return false
 	}
-	follower = m.localizeFollowerAttachments(ctx, node, canonical, follower)
+	follower, ok := m.localizeFollowerAttachments(ctx, node, canonical, follower)
+	if !ok {
+		return false
+	}
 	merged, ok := Merge(canonical, follower)
 	if !ok {
 		return false
@@ -188,20 +191,18 @@ func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, 
 	return true
 }
 
-func (m *Mirror) localizeFollowerAttachments(ctx context.Context, node string, canonical, follower task.Task) task.Task {
+func (m *Mirror) localizeFollowerAttachments(ctx context.Context, node string, canonical, follower task.Task) (task.Task, bool) {
 	if len(follower.Attachments) == 0 {
-		return follower
+		return follower, true
 	}
 	if m.attachments == nil || m.roster == nil {
-		follower.Attachments = canonical.Attachments
 		m.logger.Warn("cluster.mirror.attachments.unavailable", "node", node, "task", follower.ID)
-		return follower
+		return follower, false
 	}
 	client, ok := m.roster.Client(node)
 	if !ok || client == nil {
-		follower.Attachments = canonical.Attachments
 		m.logger.Warn("cluster.mirror.attachments.no_client", "node", node, "task", follower.ID)
-		return follower
+		return follower, false
 	}
 
 	canonicalByID := make(map[string]task.Attachment, len(canonical.Attachments))
@@ -219,24 +220,18 @@ func (m *Mirror) localizeFollowerAttachments(ctx context.Context, node string, c
 		}
 		data, err := client.ExportAttachment(ctx, follower.ID, att.ID)
 		if err != nil {
-			if existing, ok := canonicalByID[att.ID]; ok {
-				local = append(local, existing)
-			}
 			m.logger.Warn("cluster.mirror.attachment.export.failed", "node", node, "task", follower.ID, "attachment_id", att.ID, "err", err)
-			continue
+			return follower, false
 		}
 		imported, err := m.attachments.Import(follower.ID, att, data)
 		if err != nil {
-			if existing, ok := canonicalByID[att.ID]; ok {
-				local = append(local, existing)
-			}
 			m.logger.Warn("cluster.mirror.attachment.import.failed", "node", node, "task", follower.ID, "attachment_id", att.ID, "err", err)
-			continue
+			return follower, false
 		}
 		local = append(local, imported)
 	}
 	follower.Attachments = local
-	return follower
+	return follower, true
 }
 
 func attachmentEquivalent(a, b task.Attachment) bool {
