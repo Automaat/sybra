@@ -1246,6 +1246,30 @@ func ReconcileWithRemote(ctx context.Context, worktreePath, branch string) error
 	return fmt.Errorf("%w: local %s vs remote %s/%s %s", ErrBranchDiverged, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 }
 
+// MergeDivergedRemote repairs the ErrBranchDiverged case ReconcileWithRemote
+// refuses to touch: a worktree whose checked-out branch is both ahead and
+// behind its own live remote head (e.g. a stale local task-branch commit plus
+// an independent push from another clone/machine). Discarding the worktree
+// and recreating it from the same local branch — the naive recovery — does
+// not fix this: the recreated checkout starts from the identical diverged
+// history (see #2347). This instead runs one real `git merge` of the remote
+// head into local, via TryCleanMerge so the worktree is always left clean.
+//
+// Returns (true, nil) when the branches reconciled (a clean merge commit, or
+// a no-op because local already contained the remote head by the time this
+// ran) — the worktree now carries both sides' history and is safe to reuse.
+// Returns (false, nil) when the merge hit a genuine content conflict: a real
+// semantic blocker between two copies of the same branch, which the caller
+// must not paper over by recreating.
+func MergeDivergedRemote(ctx context.Context, worktreePath, branch string) (bool, error) {
+	remote := PushRemote(ctx, worktreePath)
+	result, err := TryCleanMerge(ctx, worktreePath, "refs/remotes/"+remote+"/"+branch)
+	if err != nil {
+		return false, err
+	}
+	return result != CleanMergeConflict, nil
+}
+
 func worktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 	out, err := executil.Output(ctx, worktreePath, "git", "status", "--porcelain")
 	if err != nil {

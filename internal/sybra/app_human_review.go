@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/monitor"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
@@ -393,15 +394,27 @@ func (h *humanReviewHandler) humanReviewCycleRunCount(t task.Task) int {
 
 func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID string, v verdictDecision) {
 	note := h.scrubForTask(current.ProjectID, v.Summary)
-	if status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction); ok && current.Status == task.StatusHumanRequired {
+	status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
+	if ok && current.Status == task.StatusHumanRequired && h.verifyUnblocked(current) {
 		newBody := appendSection(current.Body, "Auto-review: unblocked", note)
 		statusReason := "auto-review recovery: " + strings.TrimSpace(v.Summary)
-		if _, err := h.tasks.Update(current.ID, task.Update{
+		updated, err := h.tasks.Update(current.ID, task.Update{
 			Body:         &newBody,
 			Status:       task.Ptr(status),
 			StatusReason: task.Ptr(statusReason),
-		}); err != nil {
+		})
+		if err != nil {
 			h.logger.Error("human-review.unblocked.update", "task_id", current.ID, "agent_id", agentID, "status", status, "err", err)
+			return
+		}
+		if updated.Status != status {
+			// The store applies updates under a per-task lock, so this can
+			// only mean a status guard elsewhere in the write path silently
+			// declined the transition — treat that the same as an update
+			// error rather than latch a verdict that never actually moved
+			// the task off human-required.
+			h.logger.Error("human-review.unblocked.status-mismatch",
+				"task_id", current.ID, "agent_id", agentID, "want_status", status, "got_status", updated.Status)
 			return
 		}
 		h.markVerdictRendered(current.ID, agentID)
@@ -410,6 +423,66 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 	if h.appendNote(current.ID, "Auto-review: unblocked", note) {
 		h.markVerdictRendered(current.ID, agentID)
 	}
+}
+
+// verifyUnblocked re-validates an "unblocked" verdict against the task's real
+// worktree state instead of trusting the agent's self-report. See #2347: an
+// auto-review note once claimed the task had self-unblocked while GitHub and
+// task state both still showed human-required against a dirty PR — the
+// review layer never checked the agent's claimed fix actually left its local
+// checkout. The branch must be clean (no uncommitted edits, no leftover merge
+// state) and pushed (local HEAD present on the remote) before the status flip
+// is trusted.
+//
+// A task with no worktree on disk (e.g. it never made it past triage, or the
+// worktree was already cleaned up) has nothing to verify against and passes
+// through unchanged — the recovery predates this check for those tasks.
+func (h *humanReviewHandler) verifyUnblocked(t task.Task) bool {
+	dir := strings.TrimSpace(t.WorktreeDir)
+	if dir == "" {
+		return true
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dirty, err := project.IsWorktreeDirty(ctx, dir)
+	if err != nil {
+		h.logger.Warn("human-review.unblocked.verify-dirty", "task_id", t.ID, "err", err)
+		return false
+	}
+	if dirty {
+		h.logger.Warn("human-review.unblocked.dirty-worktree", "task_id", t.ID)
+		return false
+	}
+
+	branch, err := project.CurrentBranch(ctx, dir)
+	if err != nil || strings.TrimSpace(branch) == "" {
+		h.logger.Warn("human-review.unblocked.verify-branch", "task_id", t.ID, "err", err)
+		return false
+	}
+
+	localHead, err := project.CurrentCommit(ctx, dir)
+	if err != nil {
+		h.logger.Warn("human-review.unblocked.verify-head", "task_id", t.ID, "err", err)
+		return false
+	}
+
+	remote := project.PushRemote(ctx, dir)
+	remoteHead, err := project.RemoteBranchHead(ctx, dir, remote, branch)
+	if err != nil {
+		h.logger.Warn("human-review.unblocked.verify-remote", "task_id", t.ID, "branch", branch, "err", err)
+		return false
+	}
+	if remoteHead == "" || remoteHead != localHead {
+		h.logger.Warn("human-review.unblocked.unpushed",
+			"task_id", t.ID, "branch", branch, "local_head", localHead, "remote_head", remoteHead)
+		return false
+	}
+	return true
 }
 
 func safeHumanReviewRecoveryStatus(action string) (task.Status, bool) {

@@ -442,10 +442,16 @@ func (m *Manager) adoptWorktree(ctx context.Context, t task.Task, onPhase func(s
 // already checked out on the right branch just needs its remote fast-forwarded.
 // Returns (true, nil) when wtPath is now healthy, on wantBranch, and synced to
 // the latest remote head — the caller can skip setup entirely, mirroring
-// PrepareForTask's genuine-reuse path. Returns (false, nil) when there was
-// nothing to reuse (no worktree, unhealthy, wrong branch, or the remote sync
-// hit a conflict) — in every such case wtPath has already been removed, so
-// the caller's normal create-fresh path runs unmodified.
+// PrepareForTask's genuine-reuse path. Also true when the branch had diverged
+// from its own remote head and MergeDivergedRemote deterministically
+// reconciled it with a real merge. Returns (false, nil) when there was
+// nothing to reuse (no worktree, unhealthy, wrong branch, or a non-diverged
+// remote sync failure) — in every such case wtPath has already been removed,
+// so the caller's normal create-fresh path runs unmodified. Returns a non-nil
+// error (wtPath removed) when the branch diverged from its own remote head
+// AND reconciling that with a real merge hit a genuine content conflict — a
+// recreate cannot paper over that, so the caller must surface it rather than
+// silently continue (see #2347).
 func (m *Manager) reuseFixWorktree(ctx context.Context, taskID, clonePath, wtPath, wantBranch string) (bool, error) {
 	if _, statErr := os.Stat(wtPath); statErr != nil {
 		if os.IsNotExist(statErr) {
@@ -466,13 +472,39 @@ func (m *Manager) reuseFixWorktree(ctx context.Context, taskID, clonePath, wtPat
 	// Fast-forward the branch to the live remote head (e.g. a fix pushed from
 	// another clone/machine since this worktree was last used). Unlike
 	// PrepareForTask's reused path there is no rebase here — fix worktrees
-	// check out the PR/task branch directly. Any failure (dirty, diverged,
-	// transient network) falls back to a clean recreate rather than risk
-	// handing the fixer a stale or half-synced checkout; the reused worktree
-	// was always freshly recreated before this change, so recreation on
-	// failure is strictly no worse than the prior behavior.
+	// check out the PR/task branch directly. Any failure other than a genuine
+	// divergence (dirty, transient network) falls back to a clean recreate
+	// rather than risk handing the fixer a stale or half-synced checkout; the
+	// reused worktree was always freshly recreated before this change, so
+	// recreation on failure is strictly no worse than the prior behavior.
 	if err := project.ReconcileWithRemote(ctx, wtPath, wantBranch); err != nil {
-		m.logger.Warn("fix.worktree.reconcile-failed-recreate", "task_id", taskID, "branch", wantBranch, "err", err)
+		if errors.Is(err, project.ErrBranchDiverged) {
+			// A plain recreate here would just re-check-out the same diverged
+			// local branch and reproduce the bug this guards against (#2347)
+			// — the recreated worktree still starts ahead of, and behind, its
+			// own remote head. Deterministically reconcile it with a real
+			// merge first instead.
+			merged, mergeErr := project.MergeDivergedRemote(ctx, wtPath, wantBranch)
+			if mergeErr != nil {
+				m.logger.Warn("fix.worktree.reconcile-diverged-merge-failed", "task_id", taskID, "branch", wantBranch, "err", mergeErr)
+			} else if merged {
+				m.logger.Info("fix.worktree.reconcile-diverged-merged", "task_id", taskID, "branch", wantBranch)
+				return true, nil
+			} else {
+				// Genuine content conflict merging the branch's own remote
+				// head into local — a real semantic blocker between two
+				// copies of the same branch, not something a recreate can
+				// paper over. Stop here rather than silently dispatching the
+				// fix agent against an unreconciled worktree.
+				m.logger.Warn("fix.worktree.reconcile-diverged-conflict", "task_id", taskID, "branch", wantBranch)
+				if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
+					return false, fmt.Errorf("remove worktree after diverged-branch conflict: %w", rerr)
+				}
+				return false, fmt.Errorf("%w: branch %s has a genuine content conflict against its own remote head", project.ErrBranchDiverged, wantBranch)
+			}
+		} else {
+			m.logger.Warn("fix.worktree.reconcile-failed-recreate", "task_id", taskID, "branch", wantBranch, "err", err)
+		}
 		if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
 			return false, fmt.Errorf("remove worktree after reconcile failure: %w", rerr)
 		}
