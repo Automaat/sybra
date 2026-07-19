@@ -1697,6 +1697,7 @@ func findMergedPRByBranch(repo, branch string) (int, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
 		"--repo", repo, "--head", branch, "--state", "merged", "--json", "number", "--limit", "2")
+	cmd.Env = github.GHEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, out)

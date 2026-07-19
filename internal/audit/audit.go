@@ -160,6 +160,16 @@ const (
 	// finding. Data carries "sink" (e.g. "monitor", "human-review") and a
 	// secrets-redacted "err"; never issue titles/bodies.
 	EventGHIssueAuthFailed = "gh_issue.auth_failed"
+	// EventGHPushAuthFailed records a git push credential preflight failure
+	// (project.PreflightPushCredentials, called before every agent-authored
+	// push) — see internal/health's checkGHPushAuthFailure, which surfaces
+	// this as an actionable health finding instead of only the per-task
+	// status_reason preflightPushCredentials also sets. Data carries a
+	// secrets-redacted "err"; never worktree paths or credentials. Unlike
+	// EventGHIssueAuthFailed there is no durable outbox on this path — a
+	// failed preflight parks the task in human-required immediately, so this
+	// event fires on every occurrence, not just the first.
+	EventGHPushAuthFailed = "gh_push.auth_failed"
 )
 
 type Event struct {
