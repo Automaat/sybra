@@ -714,45 +714,6 @@ func codeBraceDelta(content string) int {
 	return delta
 }
 
-// maskGoStringLiterals blanks the interior of Go string/rune literals in a
-// single diff line, leaving surrounding code visible. This lets the skip
-// detector above tell fixture *data* — a diff snippet embedded as a Go
-// string constant — apart from a genuine added t.Skip call: the former sits
-// entirely inside the literal's quotes, the latter does not. Scanning is
-// line-based (see codeBraceDelta), so a raw string that opens and does not
-// close on the same line masks through the rest of the line — the same
-// "fail toward not matching" trade-off already accepted for other
-// cross-line constructs in this scanner.
-func maskGoStringLiterals(content string) string {
-	var b strings.Builder
-	b.Grow(len(content))
-	var quote byte
-	escaped := false
-	for i := range len(content) {
-		ch := content[i]
-		if quote != 0 {
-			b.WriteByte(' ')
-			switch {
-			case quote != '`' && escaped:
-				escaped = false
-			case quote != '`' && ch == '\\':
-				escaped = true
-			case ch == quote:
-				quote = 0
-			}
-			continue
-		}
-		switch ch {
-		case '"', '\'', '`':
-			quote = ch
-			b.WriteByte(' ')
-		default:
-			b.WriteByte(ch)
-		}
-	}
-	return b.String()
-}
-
 func (s *tamperScan) consumeMergedUpstreamSkip(content string) bool {
 	if len(s.mergedUpstreamSkips) == 0 {
 		return false
