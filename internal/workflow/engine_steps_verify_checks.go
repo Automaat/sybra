@@ -98,6 +98,8 @@ var verifyGoInfraFailureRes = []*regexp.Regexp{
 	regexp.MustCompile(`(?mi)(?:can't open import:.*go-build|go-build[\\/].*no such file or directory)`),
 }
 
+var verifyGolangCILintFindingRe = regexp.MustCompile(`^([^\s:][^:\n]*\.go):\d+:\d+:\s.+$`)
+
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
 	Commands       []string `json:"commands"`
@@ -113,6 +115,7 @@ type verifyFailureClassification struct {
 	Reason         string
 	FailedPackages []string
 	ChangedFiles   []string
+	AutoFixable    bool
 }
 
 // execVerifyChecks runs the project's deterministic verify suite
@@ -217,6 +220,10 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 
 	if failedCmd != "" {
 		if classification != nil {
+			if classification.AutoFixable {
+				return e.autoFixOrFlagVerifyChecks(
+					taskID, step, wfExec, t, classification.Reason, failedCmd, output)
+			}
 			return e.blockVerifyChecks(taskID, step, classification.Reason, classification.Kind)
 		}
 		reason := "implementation does not pass the project verify suite: " + trimDiffLine(failedCmd) +
@@ -406,6 +413,16 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 			Reason: "verify suite hit Go toolchain/build-cache instability (linker terminated or cache artifacts vanished) — blocked as verifier infrastructure, not an implementation failure",
 		}
 	}
+	lintFile, changedFiles, ok := classifyCodeFixableLintFailure(
+		e.ctx, taskID, wtPath, failedCmd, output, e.focusedChecksBaseRef(taskID))
+	if ok {
+		return &verifyFailureClassification{
+			Kind:         "code_fixable_lint",
+			Reason:       "verify suite failed on changed Go file " + lintFile + " in " + trimDiffLine(failedCmd) + " — deterministic lint finding; re-ask implementation to fix the code without weakening the check",
+			ChangedFiles: changedFiles,
+			AutoFixable:  true,
+		}
+	}
 	pkgs, changedFiles, ok := classifyUnrelatedVerifyGoFailure(e.ctx, taskID, wtPath, failedCmd, output, e.focusedChecksBaseRef(taskID))
 	if !ok {
 		return nil
@@ -425,6 +442,61 @@ func verifyGoInfraFailure(output string) bool {
 		}
 	}
 	return false
+}
+
+func classifyCodeFixableLintFailure(
+	parentCtx context.Context,
+	taskID, wtPath, failedCmd, output, worktreeBaseRef string,
+) (lintFile string, changedFiles []string, ok bool) {
+	if !strings.Contains(failedCmd, "golangci-lint") {
+		return "", nil, false
+	}
+	changedFiles, err := changedFilesSinceProjectBase(parentCtx, wtPath, worktreeBaseRef)
+	if err != nil {
+		return "", nil, false
+	}
+	lintFiles := parseGolangCILintGoFiles(output)
+	if len(lintFiles) != 1 {
+		return "", changedFiles, false
+	}
+	if !slices.Contains(changedFiles, lintFiles[0]) {
+		return "", changedFiles, false
+	}
+	return lintFiles[0], changedFiles, true
+}
+
+func parseGolangCILintGoFiles(output string) []string {
+	seen := map[string]bool{}
+	var files []string
+	for raw := range strings.SplitSeq(output, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		match := verifyGolangCILintFindingRe.FindStringSubmatch(line)
+		if len(match) != 2 {
+			continue
+		}
+		file, ok := normalizeRepoGoFile(match[1])
+		if !ok || seen[file] {
+			continue
+		}
+		seen[file] = true
+		files = append(files, file)
+	}
+	return files
+}
+
+func normalizeRepoGoFile(file string) (string, bool) {
+	file = strings.TrimSpace(file)
+	if file == "" || filepath.Ext(file) != ".go" || filepath.IsAbs(file) {
+		return "", false
+	}
+	clean := filepath.ToSlash(filepath.Clean(file))
+	if clean == "." || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+	return clean, true
 }
 
 func classifyUnrelatedVerifyGoFailure(
