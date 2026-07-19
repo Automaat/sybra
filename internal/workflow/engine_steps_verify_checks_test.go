@@ -626,6 +626,22 @@ func TestExecVerifyChecks_UnrelatedGoPackageFailureBlocks(t *testing.T) {
 	}
 }
 
+func TestClassifyVerifyFailure_UntouchedLintFileIsNotCodeFixable(t *testing.T) {
+	t.Parallel()
+	wt := makeLintVerifyRepo(t)
+	engine, _ := newVerifyChecksEngine(t, wt, nil)
+
+	classification := engine.classifyVerifyFailure(
+		"t1",
+		wt,
+		lintVerifyCommand("internal/bar/bar.go"),
+		"internal/bar/bar.go:3:1: unnamedResult: consider giving a name to these results (gocritic)\n",
+	)
+	if classification != nil && classification.Kind == "code_fixable_lint" {
+		t.Fatalf("classification = %+v, must not auto-fix lint in untouched file", classification)
+	}
+}
+
 func TestExecVerifyChecks_DependentGoPackageFailureStillAutoFixes(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{
