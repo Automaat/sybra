@@ -14,18 +14,16 @@ type Environment struct {
 	LogLevel       string
 	LogDir         string
 	TasksDir       string
-	TodoistToken   string
 	AuthToken      string
 	AllowedOrigins []string
 }
 
 func environmentFromOS() Environment {
 	env := Environment{
-		LogLevel:     os.Getenv("SYBRA_LOG_LEVEL"),
-		LogDir:       os.Getenv("SYBRA_LOG_DIR"),
-		TasksDir:     os.Getenv("SYBRA_TASKS_DIR"),
-		TodoistToken: os.Getenv("SYBRA_TODOIST_TOKEN"),
-		AuthToken:    os.Getenv("SYBRA_AUTH_TOKEN"),
+		LogLevel:  os.Getenv("SYBRA_LOG_LEVEL"),
+		LogDir:    os.Getenv("SYBRA_LOG_DIR"),
+		TasksDir:  os.Getenv("SYBRA_TASKS_DIR"),
+		AuthToken: os.Getenv("SYBRA_AUTH_TOKEN"),
 	}
 	if raw := os.Getenv("SYBRA_ALLOWED_ORIGINS"); raw != "" {
 		parts := strings.Split(raw, ",")
@@ -89,9 +87,6 @@ func applyEnvironmentOverrides(cfg *ResolvedConfig, env Environment) {
 	if env.TasksDir != "" {
 		cfg.TasksDir = env.TasksDir
 	}
-	if env.TodoistToken != "" {
-		cfg.Todoist.APIToken = env.TodoistToken
-	}
 	if env.AuthToken != "" {
 		cfg.Server.AuthToken = env.AuthToken
 	}
@@ -127,9 +122,6 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	}
 	if cfg.LoopAgentsDir == "" {
 		cfg.LoopAgentsDir = defaultLoopAgentsDir()
-	}
-	if cfg.Todoist.PollSeconds <= 0 {
-		cfg.Todoist.PollSeconds = 120
 	}
 	if cfg.Renovate.Author == "" {
 		cfg.Renovate.Author = "app/renovate"

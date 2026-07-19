@@ -15,13 +15,12 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/todoist"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-// IntegrationService exposes Todoist, Renovate, and GitHub issue operations
-// as Wails-bound methods.
+// IntegrationService exposes Renovate and GitHub issue operations as
+// Wails-bound methods.
 type IntegrationService struct {
 	tasks          *task.Manager
 	projects       *project.Store
@@ -30,31 +29,10 @@ type IntegrationService struct {
 	audit          *audit.Logger
 	cfg            *config.Config
 	logger         *slog.Logger
-	todoist        *todoistCoordinator
 	renovate       *renovateCoordinator
 	workflowEngine *workflow.Engine
 	providerHealth *provider.Checker
 	saveConfig     func() error
-}
-
-// SyncTodoist triggers an immediate Todoist sync.
-func (s *IntegrationService) SyncTodoist() error {
-	return s.todoist.syncNow()
-}
-
-// GetTodoistProjects returns Todoist projects for the settings UI.
-func (s *IntegrationService) GetTodoistProjects() ([]todoist.Project, error) {
-	token := s.cfg.Todoist.APIToken
-	if token == "" {
-		return nil, fmt.Errorf("todoist API token not configured")
-	}
-	c := todoist.NewClient(token)
-	return c.ListProjects(context.Background())
-}
-
-// TodoistEnabled returns whether the todoist handler is active.
-func (s *IntegrationService) TodoistEnabled() bool {
-	return s.todoist.enabled()
 }
 
 // FetchRenovatePRs returns Renovate PRs for manual refresh.
@@ -110,8 +88,7 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 
 	dir := ""
 	if t.ProjectID != "" {
-		// context.Background(): FixRenovatePR is a Wails-bound method with no
-		// ctx parameter (see GetTodoistProjects above for the same pattern).
+		// context.Background(): FixRenovatePR is a Wails-bound method with no ctx parameter.
 		d, wtErr := s.worktrees.PrepareForFix(context.Background(), t, number)
 		if wtErr != nil {
 			s.logger.Error("renovate-fix.worktree", "task_id", t.ID, "err", wtErr)

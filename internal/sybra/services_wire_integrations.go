@@ -8,7 +8,6 @@ func (a *App) wireIntegrationService() {
 	a.intgSvc.audit = a.audit
 	a.intgSvc.cfg = a.cfg
 	a.intgSvc.logger = a.logger
-	a.intgSvc.todoist = a.todoist
 	a.intgSvc.renovate = a.renovate
 	a.intgSvc.workflowEngine = a.workflowEngine
 	a.intgSvc.providerHealth = a.providerHealth

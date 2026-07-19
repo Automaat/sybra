@@ -383,7 +383,6 @@ export class Task {
      * without an own PR (and for inbound review tasks, which use ReviewPhase).
      */
     "prPhase"?: string;
-    "todoistId": string;
     "priority"?: Priority;
     "dueDate"?: string | null;
     "closedAt"?: string | null;
@@ -554,9 +553,6 @@ export class Task {
         if (!("runRole" in $$source)) {
             this["runRole"] = "";
         }
-        if (!("todoistId" in $$source)) {
-            this["todoistId"] = "";
-        }
         if (!("agentRuns" in $$source)) {
             this["agentRuns"] = [];
         }
@@ -589,9 +585,9 @@ export class Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
         const $$createField18_0 = $$createType0;
-        const $$createField39_0 = $$createType2;
-        const $$createField40_0 = $$createType4;
-        const $$createField56_0 = $$createType5;
+        const $$createField38_0 = $$createType2;
+        const $$createField39_0 = $$createType4;
+        const $$createField55_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -603,13 +599,13 @@ export class Task {
             $$parsedSource["dependsOn"] = $$createField18_0($$parsedSource["dependsOn"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField39_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField38_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField40_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField39_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField56_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField55_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -675,7 +671,6 @@ export class Update {
     "ReviewedHeadSHA": string | null;
     "ReviewedHeadAttempts": number | null;
     "PRPhase": string | null;
-    "TodoistID": string | null;
     "Priority": Priority | null;
     "DueDate": string | null;
     "Workflow": workflow$0.Execution | null;
@@ -771,9 +766,6 @@ export class Update {
         if (!("PRPhase" in $$source)) {
             this["PRPhase"] = null;
         }
-        if (!("TodoistID" in $$source)) {
-            this["TodoistID"] = null;
-        }
         if (!("Priority" in $$source)) {
             this["Priority"] = null;
         }
@@ -835,7 +827,7 @@ export class Update {
     static createFrom($$source: any = {}): Update {
         const $$createField6_0 = $$createType6;
         const $$createField10_0 = $$createType6;
-        const $$createField28_0 = $$createType7;
+        const $$createField27_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("DependsOn" in $$parsedSource) {
             $$parsedSource["DependsOn"] = $$createField6_0($$parsedSource["DependsOn"]);
@@ -844,7 +836,7 @@ export class Update {
             $$parsedSource["Tags"] = $$createField10_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField28_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField27_0($$parsedSource["Workflow"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }

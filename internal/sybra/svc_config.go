@@ -26,19 +26,13 @@ type ConfigService struct {
 	workflowEngine *workflow.Engine
 	logger         *slog.Logger
 	policy         func() limits.Policy
-	reloadHook     func() // called after todoist config changes
 }
 
 // GetSettings returns the current app settings for the config UI.
-// Secret fields (e.g. Todoist.APIToken) are redacted — callers must use
-// dedicated write-only methods (UpdateTodoistToken) to rotate them.
 func (s *ConfigService) GetSettings() AppSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c := s.cfg
-	todoist := c.Todoist
-	tokenSet := todoist.APIToken != ""
-	todoist.APIToken = "" // never leak the token over the read API
 	return AppSettings{
 		Agent:        c.Agent,
 		Notification: c.Notification,
@@ -48,39 +42,21 @@ func (s *ConfigService) GetSettings() AppSettings {
 			MaxSizeMB: c.Logging.MaxSizeMB,
 			MaxFiles:  c.Logging.MaxFiles,
 		},
-		Audit:           c.Audit,
-		Todoist:         todoist,
-		Renovate:        c.Renovate,
-		Providers:       c.Providers,
-		GitHub:          c.GitHub,
-		Monitor:         c.Monitor,
-		SelfMonitor:     c.SelfMonitor,
-		Triage:          c.Triage,
-		Umbrella:        c.Umbrella,
-		Testing:         c.Testing,
-		Experience:      c.Experience,
-		Metrics:         c.Metrics,
-		Browser:         c.Browser,
-		ProjectTypes:    c.ProjectTypes,
-		Directories:     c.Directories(),
-		TodoistTokenSet: tokenSet,
+		Audit:        c.Audit,
+		Renovate:     c.Renovate,
+		Providers:    c.Providers,
+		GitHub:       c.GitHub,
+		Monitor:      c.Monitor,
+		SelfMonitor:  c.SelfMonitor,
+		Triage:       c.Triage,
+		Umbrella:     c.Umbrella,
+		Testing:      c.Testing,
+		Experience:   c.Experience,
+		Metrics:      c.Metrics,
+		Browser:      c.Browser,
+		ProjectTypes: c.ProjectTypes,
+		Directories:  c.Directories(),
 	}
-}
-
-// UpdateTodoistToken sets or clears the Todoist API token and persists the config.
-// Pass an empty string to remove the stored token.
-// This is the only write path for the token — GetSettings never returns it.
-func (s *ConfigService) UpdateTodoistToken(token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cfg.Todoist.APIToken = token
-	if err := s.cfg.Save(); err != nil {
-		return err
-	}
-	if s.reloadHook != nil {
-		s.reloadHook()
-	}
-	return nil
 }
 
 // GetDefaultSettings returns the settings an empty config file resolves to. The
@@ -259,9 +235,6 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) error {
 // validateSettings checks all editable fields for validity.
 func (s *ConfigService) validateSettings(settings AppSettings) error {
 	next := settingsToConfig(s.cfg, settings)
-	if next.Todoist.PollSeconds == 0 {
-		next.Todoist.PollSeconds = 120
-	}
 	if err := config.ValidateResolvedConfig(&next); err != nil {
 		return validationError(err.Error())
 	}
@@ -279,7 +252,6 @@ func (s *ConfigService) applyFromConfig(next config.Config) error {
 	s.cfg.Logging.MaxSizeMB = next.Logging.MaxSizeMB
 	s.cfg.Logging.MaxFiles = next.Logging.MaxFiles
 	s.cfg.Audit = next.Audit
-	s.cfg.Todoist = next.Todoist
 	// In-place field assignment: the renovate coordinator holds &s.cfg.Renovate.
 	s.cfg.Renovate.Enabled = next.Renovate.Enabled
 	s.cfg.Renovate.Author = next.Renovate.Author
@@ -314,9 +286,6 @@ func (s *ConfigService) applyFromConfig(next config.Config) error {
 	}
 	if s.logLevel != nil {
 		s.logLevel.Set(s.cfg.Logging.SlogLevel())
-	}
-	if s.reloadHook != nil {
-		s.reloadHook()
 	}
 	return nil
 }
@@ -364,11 +333,6 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 	next.Logging.MaxSizeMB = settings.Logging.MaxSizeMB
 	next.Logging.MaxFiles = settings.Logging.MaxFiles
 	next.Audit = settings.Audit
-	next.Todoist = settings.Todoist
-	// Preserve the stored token when the caller sends a blank (redacted) value.
-	if settings.Todoist.APIToken == "" {
-		next.Todoist.APIToken = existing.Todoist.APIToken
-	}
 	next.Renovate = settings.Renovate
 	next.Providers = settings.Providers
 	next.GitHub = settings.GitHub

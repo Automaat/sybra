@@ -2,7 +2,7 @@
 
 # Sybra Configuration Reference
 
-Every key Sybra reads from `~/.sybra/config.yaml`, grouped by top-level section. Defaults shown are `config.DefaultConfig()`'s values; an empty Default cell means the Go zero value (unset). Env var overrides applied in `config.Load` (e.g. `SYBRA_LOG_LEVEL`, `SYBRA_TASKS_DIR`, `SYBRA_TODOIST_TOKEN`) are not shown here — see internal/config/config_defaults.go.
+Every key Sybra reads from `~/.sybra/config.yaml`, grouped by top-level section. Defaults shown are `config.DefaultConfig()`'s values; an empty Default cell means the Go zero value (unset). Env var overrides applied in `config.Load` (e.g. `SYBRA_LOG_LEVEL`, `SYBRA_TASKS_DIR`, `SYBRA_AUTH_TOKEN`) are not shown here — see internal/config/config_defaults.go.
 
 Regenerate with `go generate ./internal/config/...` after changing a struct tag or doc comment; internal/config's `TestConfigDocs_InSyncWithSource` fails CI if this file drifts.
 
@@ -26,7 +26,6 @@ redacted config for this machine.
 | `testing` | `TestingConfig` | _(see below)_ |  |
 | `notification` | `NotificationConfig` | _(see below)_ |  |
 | `orchestrator` | `OrchestratorConfig` | _(see below)_ |  |
-| `todoist` | `TodoistConfig` | _(see below)_ |  |
 | `renovate` | `RenovateConfig` | _(see below)_ |  |
 | `github` | `GitHubConfig` | _(see below)_ |  |
 | `umbrella` | `UmbrellaConfig` | _(see below)_ |  |
@@ -262,16 +261,6 @@ requires a restart to take effect (see diffConfig's
 | `orchestrator.pressure.warning_disk_free_percent` | `float64` | `15` | WarningDiskFreePercent is the free-disk-space percentage at which Sybra automatically runs a safe-cache reclaim pass (internal/cleanup's RiskSafe buckets, via internal/diskreclaim), before disk free space reaches MinDiskFreePercent and dispatch starts being deferred. Must be set higher than MinDiskFreePercent for cleanup to get a chance to run first; the gate still triggers cleanup even once MinDiskFreePercent has also been crossed. <=0 disables the warning-triggered cleanup entirely. Default 15. |
 | `orchestrator.pressure.reclaim_cooldown_seconds` | `int` | `300` | ReclaimCooldownSeconds rate-limits how often the warning-triggered safe cleanup pass may run, so a host hovering right at the watermark doesn't re-scan/re-delete on every dispatch tick. <=0 falls back to diskreclaim.DefaultCooldown (5 minutes). Default 300. |
 | `orchestrator.pressure.sample_interval_seconds` | `int` | `15` | SampleIntervalSeconds is both the resource-sample cache TTL and the deny-log throttle window. <=0 falls back to pressure.DefaultSampleIntervalSeconds (15). Default 15. |
-
-## TodoistConfig (`todoist`)
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `todoist.enabled` | `bool` |  |  |
-| `todoist.api_token` | `string` | `[redacted]` |  |
-| `todoist.project_id` | `string` |  |  |
-| `todoist.default_project_id` | `string` |  |  |
-| `todoist.poll_seconds` | `int` | `120` |  |
 
 ## RenovateConfig (`renovate`)
 
@@ -649,7 +638,7 @@ if left empty, never to config.yaml — see applyServerDefaults.
 ## ClusterConfig (`cluster`)
 
 ClusterConfig configures leader-follower mode (umbrella #1803). The leader
-owns the canonical task store, polls Todoist/GitHub, and assigns work to
+owns the canonical task store, polls GitHub, and assigns work to
 followers by per-project homing; followers execute assigned tasks and stream
 state back. Default role "standalone" preserves single-node behavior, so the
 block requires zero migration. Role is "standalone", "leader", or "follower"

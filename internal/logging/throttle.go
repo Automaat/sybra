@@ -7,7 +7,7 @@ import (
 
 // ErrorThrottle suppresses repeated identical error log entries that would
 // otherwise dominate the log when a transient or unfixable failure recurs on
-// every poller tick (e.g. todoist outage, restart-stale loop hitting an
+// every poller tick (e.g. a GitHub outage, restart-stale loop hitting an
 // unrunnable task once a minute).
 //
 // On the first occurrence of a given (key, err) pair the throttle logs at

@@ -71,7 +71,6 @@ export const StartK8sPocAgent = pick(AppSvc.StartK8sPocAgent, http.StartK8sPocAg
 export const GetSettings = pick(ConfigSvc.GetSettings, http.GetSettings)
 export const GetDefaultSettings = pick(ConfigSvc.GetDefaultSettings, http.GetDefaultSettings)
 export const UpdateSettings = pick(ConfigSvc.UpdateSettings, http.UpdateSettings)
-export const UpdateTodoistToken = pick(ConfigSvc.UpdateTodoistToken, http.UpdateTodoistToken)
 export const GetRawConfig = pick(ConfigSvc.GetRawConfig, http.GetRawConfig)
 export const SaveRawConfig = pick(ConfigSvc.SaveRawConfig, http.SaveRawConfig)
 
@@ -87,14 +86,11 @@ export const FetchAssignedIssues = pick(IntegrationSvc.FetchAssignedIssues, http
 export const FetchRenovatePRs = pick(IntegrationSvc.FetchRenovatePRs, http.FetchRenovatePRs)
 export const FixRenovateCI = pick(IntegrationSvc.FixRenovateCI, http.FixRenovateCI)
 export const GetProviderHealth = pick(IntegrationSvc.GetProviderHealth, http.GetProviderHealth)
-export const GetTodoistProjects = pick(IntegrationSvc.GetTodoistProjects, http.GetTodoistProjects)
 export const MergeRenovatePR = pick(IntegrationSvc.MergeRenovatePR, http.MergeRenovatePR)
 export const ProviderHealthEnabled = pick(IntegrationSvc.ProviderHealthEnabled, http.ProviderHealthEnabled)
 export const RerunRenovateChecks = pick(IntegrationSvc.RerunRenovateChecks, http.RerunRenovateChecks)
 export const SetProviderAutoFailover = pick(IntegrationSvc.SetProviderAutoFailover, http.SetProviderAutoFailover)
 export const SetProviderEnabled = pick(IntegrationSvc.SetProviderEnabled, http.SetProviderEnabled)
-export const SyncTodoist = pick(IntegrationSvc.SyncTodoist, http.SyncTodoist)
-export const TodoistEnabled = pick(IntegrationSvc.TodoistEnabled, http.TodoistEnabled)
 
 // LearningService
 export const ListDigests = pick(LearningSvc.ListDigests, http.ListDigests)

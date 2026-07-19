@@ -33,9 +33,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.TasksDir == "" {
 		t.Error("TasksDir should not be empty")
 	}
-	if cfg.Todoist.PollSeconds != 120 {
-		t.Errorf("Todoist.PollSeconds = %d, want 120", cfg.Todoist.PollSeconds)
-	}
 	if cfg.Triage.PollSeconds != 60 {
 		t.Errorf("Triage.PollSeconds = %d, want 60", cfg.Triage.PollSeconds)
 	}
@@ -128,9 +125,6 @@ func cmpConfigSubset(got, want *Config) string {
 	}
 	if got.GitHub.Enabled != want.GitHub.Enabled {
 		diffs = append(diffs, fmt.Sprintf("GitHub.Enabled: got %v want %v", got.GitHub.Enabled, want.GitHub.Enabled))
-	}
-	if got.Todoist.PollSeconds != want.Todoist.PollSeconds {
-		diffs = append(diffs, fmt.Sprintf("Todoist.PollSeconds: got %d want %d", got.Todoist.PollSeconds, want.Todoist.PollSeconds))
 	}
 	if got.Triage.PollSeconds != want.Triage.PollSeconds {
 		diffs = append(diffs, fmt.Sprintf("Triage.PollSeconds: got %d want %d", got.Triage.PollSeconds, want.Triage.PollSeconds))

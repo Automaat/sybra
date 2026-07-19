@@ -114,7 +114,6 @@ func (lm *LifecycleManager) StartPollers(ctx context.Context, emit func(string, 
 	lm.startAppAuthLoop(ctx)
 	lm.startRateBudgetLoop(ctx)
 	lm.startPollHub(ctx, issuesFetcher)
-	a.startTodoistLoop(ctx)
 }
 
 // appTokenRefreshInterval is how often the GitHub App installation token is

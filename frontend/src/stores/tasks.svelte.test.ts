@@ -50,7 +50,6 @@ function makeTask(overrides: Record<string, unknown> = {}): Task {
     statusReason: '',
     reviewed: false,
     runRole: '',
-    todoistId: '',
     agentRuns: [],
     createdAt: '2026-04-01T00:00:00Z',
     updatedAt: '2026-04-01T00:00:00Z',

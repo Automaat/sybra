@@ -28,7 +28,7 @@ cluster:
   bind_addr: ":8080"
 ```
 
-A follower hard-disables every inbound poller (Todoist, GitHub issues, Renovate)
+A follower hard-disables every inbound poller (GitHub issues, Renovate)
 regardless of its own feature flags: the leader is the only ingress, so two nodes
 can never race to claim the same upstream item.
 
