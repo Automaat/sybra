@@ -8,8 +8,8 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-// checkRunRate escalates an in-progress task whose dispatch loop is
-// thrashing — many agent runs of the same role landing within a short
+// checkRunRate escalates an in-progress or in-review task whose dispatch loop
+// is thrashing — many agent runs of the same role landing within a short
 // trailing window — rather than waiting for the dwell budget (hours) to
 // notice. See #2134: a task accumulated 1204 implementation runs over ~29h,
 // each ~18-90s apart and all costUsd:0/instant-stopped, before dwell finally
@@ -28,7 +28,13 @@ func (w *Watchdog) checkRunRate(now time.Time) {
 		if t.TaskType == task.TaskTypeChat {
 			continue
 		}
-		if t.Status != task.StatusInProgress {
+		// in-review is watched alongside in-progress: pr-fix — one of the
+		// exact same-role thrash targets this check exists for — dispatches
+		// against StatusInReview tasks (see prMonitorEligible), not just
+		// StatusInProgress ones. A pr-fix loop against an in-review task was
+		// otherwise structurally invisible to this breaker (#2134's fix only
+		// ever covered in-progress).
+		if t.Status != task.StatusInProgress && t.Status != task.StatusInReview {
 			continue
 		}
 		// Same exemption as checkDwell: a live headless agent may itself be
