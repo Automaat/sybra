@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
@@ -19,6 +21,7 @@ import (
 type ConfigService struct {
 	mu             sync.RWMutex
 	cfg            *config.Config
+	persisted      *config.Config
 	logLevel       *slog.LevelVar
 	notifier       *notification.Emitter
 	agents         *agent.Manager
@@ -26,6 +29,7 @@ type ConfigService struct {
 	workflowEngine *workflow.Engine
 	logger         *slog.Logger
 	policy         func() limits.Policy
+	applyRuntime   func(config.Config) error
 }
 
 // GetSettings returns the current app settings for the config UI.
@@ -33,6 +37,9 @@ func (s *ConfigService) GetSettings() AppSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c := s.cfg
+	if s.persisted != nil {
+		c = s.persisted
+	}
 	return AppSettings{
 		Agent:        c.Agent,
 		Notification: c.Notification,
@@ -83,7 +90,11 @@ func (s *ConfigService) SaveRawConfig(raw string) error {
 	saveRaw := []byte(raw)
 	var err error
 	s.mu.RLock()
-	preserveServerToken := serverAuthTokenForRawSave(s.cfg)
+	base := s.cfg
+	if s.persisted != nil {
+		base = s.persisted
+	}
+	preserveServerToken := serverAuthTokenForRawSave(base)
 	s.mu.RUnlock()
 	if preserveServerToken != "" {
 		saveRaw, err = ensureServerAuthTokenInRawConfig(saveRaw, preserveServerToken)
@@ -95,13 +106,15 @@ func (s *ConfigService) SaveRawConfig(raw string) error {
 	if err != nil {
 		return validationError(fmt.Sprintf("invalid config: %s", err))
 	}
-	if _, err := config.ResolveFromCurrentEnvironment(fileCfg, config.ResolveOptions{}); err != nil {
+	resolved, err := config.ResolveFromCurrentEnvironment(fileCfg, config.ResolveOptions{})
+	if err != nil {
 		return validationError(err.Error())
 	}
-	if err := config.WriteRawConfig(saveRaw); err != nil {
-		return err
-	}
-	_, err = s.ReloadFromDisk()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err = s.mutateLocked(resolved.Config, func() error {
+		return config.WriteRawConfig(saveRaw)
+	})
 	return err
 }
 
@@ -219,78 +232,139 @@ func yamlScalar(s string) string {
 }
 
 // UpdateSettings validates, persists, and hot-reloads the provided settings.
-func (s *ConfigService) UpdateSettings(settings AppSettings) error {
+func (s *ConfigService) UpdateSettings(settings AppSettings) (ConfigMutationResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if err := s.validateSettings(settings); err != nil {
-		return err
+		return ConfigMutationResult{}, err
 	}
-	if err := s.applyFromConfig(settingsToConfig(s.cfg, settings)); err != nil {
-		return err
+	base := s.cfg
+	if s.persisted != nil {
+		base = s.persisted
 	}
-	return s.cfg.Save()
+	next := settingsToConfig(base, settings)
+	return s.mutateLocked(&next, next.Save)
 }
 
 // validateSettings checks all editable fields for validity.
 func (s *ConfigService) validateSettings(settings AppSettings) error {
-	next := settingsToConfig(s.cfg, settings)
+	base := s.cfg
+	if s.persisted != nil {
+		base = s.persisted
+	}
+	next := settingsToConfig(base, settings)
 	if err := config.ValidateResolvedConfig(&next); err != nil {
 		return validationError(err.Error())
 	}
 	return nil
 }
 
-// applyFromConfig assigns all hot-reloadable fields from next into s.cfg and
-// pushes the manager settings that are intentionally live. s.mu must be held by the caller.
-// This never writes to disk — callers that need persistence must call s.cfg.Save().
-func (s *ConfigService) applyFromConfig(next config.Config) error {
-	s.cfg.Agent = next.Agent
-	s.cfg.Notification = next.Notification
-	s.cfg.Orchestrator = next.Orchestrator
-	s.cfg.Logging.Level = next.Logging.Level
-	s.cfg.Logging.MaxSizeMB = next.Logging.MaxSizeMB
-	s.cfg.Logging.MaxFiles = next.Logging.MaxFiles
-	s.cfg.Audit = next.Audit
-	// In-place field assignment: the renovate coordinator holds &s.cfg.Renovate.
-	s.cfg.Renovate.Enabled = next.Renovate.Enabled
-	s.cfg.Renovate.Author = next.Renovate.Author
-	s.cfg.Providers = next.Providers
-	s.cfg.GitHub = next.GitHub
-	s.cfg.Triage = next.Triage
-	s.cfg.Monitor = next.Monitor
-	s.cfg.SelfMonitor = next.SelfMonitor
-	s.cfg.Umbrella = next.Umbrella
-	s.cfg.Testing = next.Testing
-	s.cfg.Experience = next.Experience
-	s.cfg.Browser = next.Browser
-	s.cfg.ABTesting = next.ABTesting
-	s.cfg.Metrics = next.Metrics
-	s.cfg.ProjectTypes = next.ProjectTypes
-	s.notifier.SetDesktop(next.Notification.Desktop)
-	if err := s.refreshAgentRuntimeConfig(next); err != nil {
-		return err
+func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() error) (ConfigMutationResult, error) {
+	current := cloneConfig(s.cfg)
+	intent := cloneConfig(s.cfg)
+	if s.persisted != nil {
+		intent = cloneConfig(s.persisted)
 	}
-	if s.agents != nil {
-		s.agents.SetGuardrails(agent.Guardrails{
-			MaxCostUSD:              next.Agent.MaxCostUSD,
-			MaxTurns:                next.Agent.MaxTurns,
-			MaxCheckpoints:          next.MaxCheckpoints(),
-			TurnCostFraction:        next.Agent.TurnCostFraction,
-			TurnMultiplier:          next.Agent.TurnMultiplier,
-			CheckpointOnTurnCeiling: next.CheckpointOnTurnCeilingEnabled(),
-		})
+	result := diffConfig(*intent, *candidate)
+	if len(result.Rejected) > 0 {
+		return result, configMutationErrorf(result, "rejected immutable config paths: %s", strings.Join(result.Rejected, ", "))
 	}
-	if s.workflowEngine != nil {
-		s.workflowEngine.SetMaxCheckpoints(next.MaxCheckpoints())
+	nextActive := cloneConfig(current)
+	for _, path := range result.Applied {
+		copyConfigPath(nextActive, candidate, path)
 	}
-	if s.logLevel != nil {
-		s.logLevel.Set(s.cfg.Logging.SlogLevel())
+	if persist != nil {
+		if err := persist(); err != nil {
+			return result, err
+		}
+	}
+	if err := s.applyHotChangesLocked(result, nextActive); err != nil {
+		if persist != nil {
+			if restoreErr := config.RestoreLastKnownGoodConfig(); restoreErr != nil {
+				result.Recovery = &ConfigRecovery{
+					Message: fmt.Sprintf("hot apply failed and last-known-good restore failed: %v", restoreErr),
+				}
+				return result, fmt.Errorf("%w; restore last-known-good: %w", err, restoreErr)
+			}
+			result.Recovery = &ConfigRecovery{
+				RestoredLastKnownGood: true,
+				Message:               "restored config.yaml from last-known-good after hot apply failure",
+			}
+		}
+		return result, &configMutationError{result: result, cause: err}
+	}
+	*s.cfg = *nextActive
+	s.persisted = cloneConfig(candidate)
+	if s.logger != nil {
+		for _, path := range result.RestartRequired {
+			s.logger.Warn("config.reload.restart_required", "field", path)
+		}
+	}
+	return result, nil
+}
+
+func copyConfigPath(dst, src *config.Config, path string) {
+	dstField := fieldByYAMLPath(reflect.ValueOf(dst), path)
+	srcField := fieldByYAMLPath(reflect.ValueOf(src), path)
+	dstField.Set(srcField)
+}
+
+func (s *ConfigService) applyHotChangesLocked(result ConfigMutationResult, nextActive *config.Config) error {
+	for _, group := range configApplyGroups(result.Applied) {
+		switch group {
+		case configApplyNone:
+			continue
+		case configApplyAgentRuntime:
+			if err := s.refreshAgentRuntimeConfig(*nextActive); err != nil {
+				return err
+			}
+		case configApplyGuardrails:
+			if s.agents != nil {
+				s.agents.SetGuardrails(agent.Guardrails{
+					MaxCostUSD:              nextActive.Agent.MaxCostUSD,
+					MaxTurns:                nextActive.Agent.MaxTurns,
+					MaxCheckpoints:          nextActive.MaxCheckpoints(),
+					TurnCostFraction:        nextActive.Agent.TurnCostFraction,
+					TurnMultiplier:          nextActive.Agent.TurnMultiplier,
+					CheckpointOnTurnCeiling: nextActive.CheckpointOnTurnCeilingEnabled(),
+				})
+			}
+			if s.workflowEngine != nil {
+				s.workflowEngine.SetMaxCheckpoints(nextActive.MaxCheckpoints())
+			}
+		case configApplyNotification:
+			if s.notifier != nil {
+				s.notifier.SetDesktop(nextActive.Notification.Desktop)
+			}
+		case configApplyLogLevel:
+			if s.logLevel != nil {
+				s.logLevel.Set(nextActive.Logging.SlogLevel())
+			}
+		}
+	}
+	if slices.Contains(result.Applied, "agent") {
+		if s.agents != nil {
+			s.agents.SetGuardrails(agent.Guardrails{
+				MaxCostUSD:              nextActive.Agent.MaxCostUSD,
+				MaxTurns:                nextActive.Agent.MaxTurns,
+				MaxCheckpoints:          nextActive.MaxCheckpoints(),
+				TurnCostFraction:        nextActive.Agent.TurnCostFraction,
+				TurnMultiplier:          nextActive.Agent.TurnMultiplier,
+				CheckpointOnTurnCeiling: nextActive.CheckpointOnTurnCeilingEnabled(),
+			})
+		}
+		if s.workflowEngine != nil {
+			s.workflowEngine.SetMaxCheckpoints(nextActive.MaxCheckpoints())
+		}
 	}
 	return nil
 }
 
 func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) error {
+	if s.applyRuntime != nil {
+		return s.applyRuntime(next)
+	}
 	if s.agents == nil {
 		return nil
 	}
@@ -302,6 +376,14 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 	if s.policy != nil {
 		policy = s.policy()
 	}
+	policy.Enabled = cfg.Providers.Limits.Enabled
+	if policy.ProviderEnabled == nil {
+		policy.ProviderEnabled = map[string]bool{}
+	}
+	policy.ProviderEnabled[limits.ProviderClaude] = cfg.Providers.Claude.Enabled
+	policy.ProviderEnabled[limits.ProviderCodex] = cfg.Providers.Codex.Enabled
+	policy.ProviderEnabled[limits.ProviderCopilot] = cfg.Providers.Copilot.Enabled
+	policy.ProviderEnabled[limits.ProviderOpenCode] = cfg.Providers.OpenCode.Enabled
 	return agent.ManagerRuntimeConfig{
 		MaxConcurrent:          cfg.Agent.MaxConcurrent,
 		DefaultProvider:        cfg.Agent.Provider,

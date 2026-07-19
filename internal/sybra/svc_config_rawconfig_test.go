@@ -12,11 +12,11 @@ import (
 
 func TestGetSettings_ExposesExpandedSections(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
-	svc.cfg.GitHub.Enabled = true
-	svc.cfg.Monitor.Enabled = true
-	svc.cfg.Triage.PollSeconds = 45
-	svc.cfg.ProjectTypes = []string{"pet"}
-	writeConfigYAML(t, cfgPath, svc.cfg)
+	svc.persisted.GitHub.Enabled = true
+	svc.persisted.Monitor.Enabled = true
+	svc.persisted.Triage.PollSeconds = 45
+	svc.persisted.ProjectTypes = []string{"pet"}
+	writeConfigYAML(t, cfgPath, svc.persisted)
 
 	got := svc.GetSettings()
 	if !got.GitHub.Enabled || !got.Monitor.Enabled {
@@ -60,16 +60,23 @@ func TestUpdateSettings_RoundTripsExpandedSections(t *testing.T) {
 	s.Testing.MaxConcurrent = 4
 	s.ProjectTypes = []string{"work"}
 
-	if err := svc.UpdateSettings(s); err != nil {
+	if _, err := svc.UpdateSettings(s); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
 	}
-	if svc.cfg.GitHub.PollerRole != "secondary" || !svc.cfg.Monitor.Enabled ||
-		svc.cfg.Monitor.IntervalSeconds != 600 || !svc.cfg.Umbrella.Enabled ||
-		svc.cfg.Testing.MaxConcurrent != 4 {
-		t.Errorf("expanded sections not applied in-memory: %+v", svc.cfg.GitHub)
+	if svc.cfg.GitHub.PollerRole == "secondary" ||
+		svc.cfg.Monitor.IntervalSeconds == 600 || svc.cfg.Umbrella.Enabled {
+		t.Errorf("restart-required sections unexpectedly became active: github=%+v monitor=%+v umbrella=%+v", svc.cfg.GitHub, svc.cfg.Monitor, svc.cfg.Umbrella)
 	}
-	if len(svc.cfg.ProjectTypes) != 1 || svc.cfg.ProjectTypes[0] != "work" {
-		t.Errorf("projectTypes = %v, want [work]", svc.cfg.ProjectTypes)
+	if svc.cfg.Testing.MaxConcurrent != 4 {
+		t.Errorf("hot testing settings not applied in-memory: %+v", svc.cfg.Testing)
+	}
+	got := svc.GetSettings()
+	if got.GitHub.PollerRole != "secondary" || !got.Monitor.Enabled ||
+		got.Monitor.IntervalSeconds != 600 || !got.Umbrella.Enabled {
+		t.Errorf("persisted expanded sections not retained: github=%+v monitor=%+v umbrella=%+v", got.GitHub, got.Monitor, got.Umbrella)
+	}
+	if len(got.ProjectTypes) != 1 || got.ProjectTypes[0] != "work" {
+		t.Errorf("persisted projectTypes = %v, want [work]", got.ProjectTypes)
 	}
 
 	saved, err := os.ReadFile(cfgPath)
@@ -126,6 +133,7 @@ func TestSaveRawConfig_ValidRoundTrip(t *testing.T) {
 func TestSaveRawConfig_PreservesServerAuthTokenWhenOmitted(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	svc.cfg.Server.AuthToken = "persist-me"
+	svc.persisted = cloneConfig(svc.cfg)
 	writeConfigYAML(t, cfgPath, svc.cfg)
 
 	raw := "schema_version: 2\nagent:\n  bash_timeout: 2m\n"

@@ -223,6 +223,34 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	}
 }
 
+func TestWriteRawConfig_PreservesLastKnownGoodWithRestrictivePerms(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("logging:\n  level: info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRawConfig([]byte("logging:\n  level: debug\n")); err != nil {
+		t.Fatalf("WriteRawConfig: %v", err)
+	}
+
+	backupPath := LastKnownGoodConfigPath()
+	backup, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read last-known-good: %v", err)
+	}
+	if string(backup) != "logging:\n  level: info\n" {
+		t.Fatalf("last-known-good = %q, want previous config", string(backup))
+	}
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatalf("stat last-known-good: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("last-known-good perm = %o, want 0600", perm)
+	}
+}
+
 // TestDefaultDispatchJitterAndInFlightCap locks in the jitter/soft-cap
 // defaults: jitter defaults on (1000ms) to spread dispatch against a shared
 // subscription's rate limit; the in-flight soft-cap stays off (0) so

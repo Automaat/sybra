@@ -728,27 +728,10 @@ func ReadRawConfig() (string, error) {
 // the file watcher and concurrent readers never observe a partial write.
 func WriteRawConfig(data []byte) error {
 	path := configPath()
-	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
+	if err := preserveLastKnownGoodConfig(path); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // harmless once the rename below consumes it
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(configFilePerm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return writeFileAtomic(path, data, ".config-*.yaml.tmp")
 }
 
 // Directories returns the resolved paths for all sybra data directories.
@@ -854,6 +837,13 @@ func AuthTokenPath() string {
 	return filepath.Join(HomeDir(), "server_auth_token")
 }
 
+// LastKnownGoodConfigPath is the crash-safe rollback copy of config.yaml that
+// SaveRawConfig/UpdateSettings restore if a persisted candidate cannot be
+// activated hot.
+func LastKnownGoodConfigPath() string {
+	return filepath.Join(HomeDir(), "config.last-known-good.yaml")
+}
+
 // readAuthTokenFile returns the token persisted at AuthTokenPath(), or "" if
 // it's absent or unreadable.
 func readAuthTokenFile() string {
@@ -868,17 +858,42 @@ func readAuthTokenFile() string {
 // mirroring WriteRawConfig's crash-safety, but targeting the dedicated token
 // file instead of config.yaml.
 func writeAuthTokenFile(token string) error {
-	path := AuthTokenPath()
+	return writeFileAtomic(AuthTokenPath(), []byte(token+"\n"), ".server_auth_token-*.tmp")
+}
+
+func preserveLastKnownGoodConfig(path string) error {
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		return writeFileAtomic(LastKnownGoodConfigPath(), data, ".config-last-good-*.tmp")
+	case os.IsNotExist(err):
+		return nil
+	default:
+		return err
+	}
+}
+
+// RestoreLastKnownGoodConfig copies LastKnownGoodConfigPath back onto
+// config.yaml through the same atomic-write path used by WriteRawConfig.
+func RestoreLastKnownGoodConfig() error {
+	data, err := os.ReadFile(LastKnownGoodConfigPath())
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(configPath(), data, ".config-restore-*.tmp")
+}
+
+func writeFileAtomic(path string, data []byte, tempPattern string) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".server_auth_token-*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(path), tempPattern)
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // harmless once the rename below consumes it
-	if _, err := tmp.WriteString(token + "\n"); err != nil {
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return err
 	}
