@@ -17,8 +17,17 @@ func EscapeAppleScript(s string) string {
 
 // Run executes a command in dir, returning a formatted error with stderr on failure.
 func Run(ctx context.Context, dir, name string, args ...string) error {
+	return RunEnv(ctx, dir, nil, name, args...)
+}
+
+// RunEnv executes a command in dir with an explicit environment, returning a
+// formatted error with stderr on failure. A nil env means "inherit the
+// current process environment", matching exec.Cmd's own zero-value behavior
+// and Run's default.
+func RunEnv(ctx context.Context, dir string, env []string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, string(out))
 	}

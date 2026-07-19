@@ -952,15 +952,29 @@ func PushUpstream(ctx context.Context, worktreePath, branch string) error {
 // run at once, and the resulting host CPU contention is what flakes
 // timing-sensitive tests unrelated to any of their diffs. The push lock is
 // intentionally separate from bareRepoLocks because hooks can run for minutes.
+//
+// pushEnv carries a cached GitHub App installation token via GH_TOKEN when one
+// is configured (see checkGHAuthStatus, which validates the same credential
+// path). Without it, the actual `git push` here would fall through to
+// whatever ambient `gh auth login` session ConfigureGitHubAuth's credential
+// helper finds — App auth would then validate clean in PreflightPushCredentials
+// while the push itself still depended on the single interactive session it
+// exists to back up (#2315).
 func pushLocked(ctx context.Context, worktreePath string, args ...string) error {
 	gitDir, err := gitCommonDir(ctx, worktreePath)
 	if err != nil {
 		return err
 	}
 	return withBareRepoPushLock(gitDir, func() error {
-		return executil.Run(ctx, worktreePath, "git", args...)
+		return executil.RunEnv(ctx, worktreePath, pushEnv(), "git", args...)
 	})
 }
+
+// pushEnv is indirected so tests can stub the environment `git push` runs
+// with (see checkGHAuthStatus's identical use of github.GHEnv, and
+// forceRefreshAppToken above for the same test-seam pattern) without needing
+// a real minted GitHub App installation token.
+var pushEnv = github.GHEnv
 
 // SetBranchTo force-sets a branch ref in the bare clone to point at commit,
 // creating the branch if it does not already exist. Used by best-of-N
