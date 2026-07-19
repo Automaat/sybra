@@ -12,11 +12,11 @@ import (
 
 func TestGetSettings_ExposesExpandedSections(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
-	svc.cfg.GitHub.Enabled = true
-	svc.cfg.Monitor.Enabled = true
-	svc.cfg.Triage.PollSeconds = 45
-	svc.cfg.ProjectTypes = []string{"pet"}
-	writeConfigYAML(t, cfgPath, svc.cfg)
+	svc.persisted.GitHub.Enabled = true
+	svc.persisted.Monitor.Enabled = true
+	svc.persisted.Triage.PollSeconds = 45
+	svc.persisted.ProjectTypes = []string{"pet"}
+	writeConfigYAML(t, cfgPath, svc.persisted)
 
 	got := svc.GetSettings()
 	if !got.GitHub.Enabled || !got.Monitor.Enabled {
