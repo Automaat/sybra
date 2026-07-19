@@ -17,7 +17,7 @@ const (
 )
 
 // ClusterConfig configures leader-follower mode (umbrella #1803). The leader
-// owns the canonical task store, polls GitHub, and assigns work to
+// owns the canonical task store, polls GitHub and Renovate, and assigns work to
 // followers by per-project homing; followers execute assigned tasks and stream
 // state back. Default role "standalone" preserves single-node behavior, so the
 // block requires zero migration. Role is "standalone", "leader", or "follower"

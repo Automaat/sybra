@@ -88,7 +88,7 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 
 	dir := ""
 	if t.ProjectID != "" {
-		// context.Background(): FixRenovatePR is a Wails-bound method with no ctx parameter.
+		// context.Background(): FixRenovateCI is a Wails-bound method with no ctx parameter.
 		d, wtErr := s.worktrees.PrepareForFix(context.Background(), t, number)
 		if wtErr != nil {
 			s.logger.Error("renovate-fix.worktree", "task_id", t.ID, "err", wtErr)
