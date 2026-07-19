@@ -146,12 +146,10 @@ func TestExpand_ConcurrentCallsMaterializeSingleDAG(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, err := Expand(context.Background(), tasks, run, "https://github.com/o/r/issues/100")
 			errs <- err
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
