@@ -141,6 +141,47 @@ func TestCheckRunRate_SkipsNonInProgressTask(t *testing.T) {
 	}
 }
 
+// TestCheckRunRate_EscalatesBurstOnInReviewTask covers the gap behind
+// task 1e9f8878: pr-fix dispatches against in-review tasks (prMonitorEligible
+// allows StatusInReview whenever a branch or PR is set), so a same-role
+// thrash there must escalate exactly like an in-progress one — not sit
+// invisible to this breaker because it only ever checked in-progress.
+func TestCheckRunRate_EscalatesBurstOnInReviewTask(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	mgr := task.NewManager(store, nil)
+	tk, err := mgr.Create("in-review burst task", "## Description\nsome work", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = mgr.Update(tk.ID, task.Update{
+		Status:   task.Ptr(task.StatusInReview),
+		PRNumber: task.Ptr(2292),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	now := time.Now()
+	addRuns(t, mgr, tk.ID, "pr-fix", 30, now.Add(-29*time.Minute), 18*time.Second)
+
+	w := &Watchdog{tasks: mgr, logger: slog.New(slog.DiscardHandler), maxRunsPerWindow: 30, runWindow: 30 * time.Minute}
+	w.checkRunRate(now)
+
+	got, err := mgr.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "run_rate") || !strings.Contains(got.StatusReason, "pr-fix") {
+		t.Fatalf("status reason = %q, want it to mention run_rate and pr-fix", got.StatusReason)
+	}
+}
+
 func TestCheckRunRate_DoesNotSumAcrossRoles(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
