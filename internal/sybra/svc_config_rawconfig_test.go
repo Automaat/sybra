@@ -180,6 +180,103 @@ func TestUpdateSettings_ResetToDefaultRemovesExplicitKey(t *testing.T) {
 	}
 }
 
+func TestUpdateSettings_UpdatesDurationAliasInPlace(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"schema_version: 2",
+		"agent:",
+		"  provider: claude",
+		"  bash_timeout: 2m # keep this inline comment",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	if cfg.Agent.BashTimeoutSeconds != 120 {
+		t.Fatalf("alias not resolved: bash_timeout_seconds = %d, want 120", cfg.Agent.BashTimeoutSeconds)
+	}
+
+	settings := svc.GetSettings()
+	settings.Agent.BashTimeoutSeconds = 300
+
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(saved)
+	if strings.Contains(text, "bash_timeout_seconds") {
+		t.Fatalf("patch wrote a conflicting legacy key beside the alias:\n%s", text)
+	}
+	if !strings.Contains(text, "bash_timeout: 300s") {
+		t.Fatalf("alias entry not updated in place:\n%s", text)
+	}
+	if !strings.Contains(text, "# keep this inline comment") {
+		t.Fatalf("alias inline comment dropped:\n%s", text)
+	}
+
+	// A mixed alias+legacy file would be rejected on reload; the patch must stay loadable.
+	reloaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("patched config no longer loads: %v", err)
+	}
+	if reloaded.Agent.BashTimeoutSeconds != 300 {
+		t.Fatalf("reloaded bash_timeout_seconds = %d, want 300", reloaded.Agent.BashTimeoutSeconds)
+	}
+}
+
+func TestUpdateSettings_ResetToDefaultRemovesDurationAlias(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"schema_version: 2",
+		"agent:",
+		"  provider: claude",
+		"  bash_timeout: 2m",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	settings := svc.GetSettings()
+	settings.Agent.BashTimeoutSeconds = svc.GetDefaultSettings().Agent.BashTimeoutSeconds
+
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(saved)
+	if strings.Contains(text, "bash_timeout") {
+		t.Fatalf("reset to default left a duration entry behind:\n%s", text)
+	}
+	if !strings.Contains(text, "provider: claude") {
+		t.Fatalf("reset removed unrelated config:\n%s", text)
+	}
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("patched config no longer loads: %v", err)
+	}
+}
+
 func TestGetRawConfig_ReturnsFileContents(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	writeConfigYAML(t, cfgPath, svc.cfg)
