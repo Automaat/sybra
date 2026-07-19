@@ -44,6 +44,7 @@ redacted config for this machine.
 | `providers` | `ProvidersConfig` | _(see below)_ |  |
 | `metrics` | `MetricsConfig` | _(see below)_ |  |
 | `server` | `ServerConfig` | _(see below)_ |  |
+| `webhook` | `WebhookConfig` | _(see below)_ |  |
 | `cluster` | `ClusterConfig` | _(see below)_ |  |
 | `auto_update` | `AutoUpdateConfig` | _(see below)_ |  |
 | `browser` | `BrowserConfig` | _(see below)_ |  |
@@ -634,6 +635,19 @@ if left empty, never to config.yaml — see applyServerDefaults.
 |---|---|---|---|
 | `server.auth_token` | `string` | `[redacted]` |  |
 | `server.allowed_origins` | `[]string` |  |  |
+
+## WebhookConfig (`webhook`)
+
+WebhookConfig controls the optional inbound HTTP webhook used for external
+task creation. When Enabled is true, sybra-server starts a separate listener
+on Port and serves POST /webhook/task. Secret optionally enables HMAC-SHA256
+request signing via X-Sybra-Signature: sha256=<hex>.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `webhook.enabled` | `bool` |  |  |
+| `webhook.port` | `int` | `8081` |  |
+| `webhook.secret` | `string` | `[redacted]` |  |
 
 ## ClusterConfig (`cluster`)
 

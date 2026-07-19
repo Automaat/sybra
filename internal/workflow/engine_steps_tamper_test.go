@@ -178,6 +178,28 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: nil,
 		},
 		{
+			// Self-hosted false positive (issue #2323): a skip pattern that
+			// only exists inside a Go string literal — e.g. a diff fixture
+			// embedded in this detector's own regression tests — must not
+			// be mistaken for a real added t.Skip call. The added line here
+			// is the on-disk source text of a _test.go file whose *value*
+			// happens to contain an escaped `t.Skip(...)` sequence; the
+			// whole thing sits inside one unbroken, still-open string
+			// literal (escaped inner quotes never close it).
+			name: "skip_pattern_inside_go_string_literal_not_flagged",
+			patch: "@@ @@\n func TestFixture(t *testing.T) {\n" +
+				"+\tpatch := \"@@ @@\\n func TestReap(t *testing.T) {\\n+\\tif runtime.GOOS != \\\"linux\\\" { t.Skip(\\\"linux-only\\\") }\\n\"\n",
+			wantRules: nil,
+		},
+		{
+			// Same skip pattern, but as real unquoted code (no fixture
+			// wrapping) — must still flag. Guards against an overbroad
+			// masking fix silently swallowing genuine tampering.
+			name:      "skip_pattern_outside_go_string_literal_still_flags",
+			patch:     "@@ @@\n func TestFixture(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:      "guard_does_not_leak_across_hunks",
 			patch:     "@@ @@\n func TestGuarded(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n@@ @@\n func TestOther(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
 			wantRules: []string{"added-skip"},
@@ -1698,5 +1720,59 @@ func TestExecDetectTampering_BenignTestAddDoesNotBlock(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+// TestExecDetectTampering_SelfHostedSkipFixtureDoesNotFlag reproduces issue
+// #2323: a task that edits the tamper detector itself and adds a regression
+// test in engine_steps_tamper_test.go containing a platform-guarded skip
+// fixture (e.g. `if runtime.GOOS != "linux" { t.Skip("linux-only") }`)
+// embedded as a Go string constant must not self-deadlock the workflow — the
+// detector previously flagged its own fixture text as a live added-skip.
+func TestExecDetectTampering_SelfHostedSkipFixtureDoesNotFlag(t *testing.T) {
+	t.Parallel()
+	base := `package workflow
+
+import "testing"
+
+func TestScanTamperPatchFixture(t *testing.T) {
+	_ = 1
+}
+`
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md": "init\n",
+		"internal/workflow/engine_steps_tamper_test.go": base,
+	})
+	// Add a regression test covering a platform-guarded skip fixture. The
+	// fixture text lives entirely inside a Go string literal (escaped inner
+	// quotes never close it), so it is source data, not a real added skip.
+	tampered := `package workflow
+
+import "testing"
+
+func TestScanTamperPatchFixture(t *testing.T) {
+	_ = 1
+}
+
+func TestScanTamperPatchPlatformGuardFixture(t *testing.T) {
+	patch := "@@ @@\n func TestReap(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" { t.Skip(\"linux-only\") }\n"
+	_ = patch
+}
+`
+	writeRepoFile(t, wt, "internal/workflow/engine_steps_tamper_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: cover platform-guarded skip fixture")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output == "flagged" {
+		t.Fatalf("Output = %q, want not flagged (self-hosted fixture, not a real skip)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress — workflow must not self-deadlock", ti.Status)
 	}
 }

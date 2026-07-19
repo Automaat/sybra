@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
 // umbrellaGatedTag is the tag the expander sets on a gate-blocked child; the
@@ -155,6 +156,10 @@ func accumulateChild(st *umbrellaState, t *task.Task) {
 		// the cancelled work (its dependents stay held; see depsSatisfied).
 		st.anyCancelled = true
 	case task.StatusHumanRequired:
+		if watchdogreason.IsRetryableStop(t.StatusReason) {
+			st.active++
+			return
+		}
 		st.anyHR = true
 	case task.StatusBlocked:
 		if slices.Contains(t.Tags, umbrellaGatedTag) {

@@ -87,6 +87,14 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 		hcheck.SetSandboxQuarantine(a.sandboxes.QuarantinedEntries)
 	}
 	hcheck.SetPressureStatus(a.healthPressureStatus)
+	if a.cfg.GitHub.Enabled {
+		// Proactive counterpart to checkGHPushAuthFailure/checkGHIssueAuthFailure
+		// (both reactive, only firing after a push/issue-filing attempt has
+		// already failed): samples live gh-auth health every health tick so
+		// credential loss (an expired interactive `gh auth login` session,
+		// see #2315) is caught before it blocks the next push, not after.
+		hcheck.SetGHAuthProbe(github.Authenticated)
+	}
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
 	lm.startMonitorService(ctx, emit)

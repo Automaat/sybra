@@ -164,6 +164,64 @@ func checkGHIssueAuthFailure(events []audit.Event, now time.Time) []Finding {
 	}}
 }
 
+// checkGHPushAuthFailure flags git push credential preflight failures
+// (project.PreflightPushCredentials, see internal/audit.EventGHPushAuthFailed).
+// Unlike GH issue filing, the push path has no durable outbox — a failed
+// preflight parks its task in human-required immediately — so this is the
+// only host-level signal beyond a per-task status_reason string. Severity is
+// critical (not warning, unlike checkGHIssueAuthFailure) because a blocked
+// push halts the task outright rather than degrading to a queued retry.
+func checkGHPushAuthFailure(events []audit.Event, now time.Time) []Finding {
+	var lastErr string
+	count := 0
+	for _, e := range events {
+		if e.Type != audit.EventGHPushAuthFailed {
+			continue
+		}
+		count++
+		if errStr, ok := e.Data["err"].(string); ok && errStr != "" {
+			lastErr = errStr
+		}
+	}
+	if count == 0 {
+		return nil
+	}
+
+	return []Finding{{
+		Category:    CatGHPushAuthFailure,
+		Severity:    SeverityCritical,
+		Title:       "git push credential preflight is failing",
+		Description: fmt.Sprintf("Git push credential preflight failed %d time(s) in the last 24h, parking task(s) in human-required — configure github.app or run `gh auth login` on the host.", count),
+		Evidence: map[string]any{
+			"count":      count,
+			"last_error": lastErr,
+		},
+		DetectedAt: now,
+	}}
+}
+
+// checkGHAuthUnavailable turns a proactive gh-auth probe result into a
+// finding — the periodic counterpart to checkGHPushAuthFailure/
+// checkGHIssueAuthFailure, which only fire after a real push or issue-filing
+// attempt has already failed. authenticated is the live result of
+// github.Authenticated(), sampled once per health tick (see Checker.ghAuthProbe);
+// a nil probe (the default) means this check never runs.
+func checkGHAuthUnavailable(authenticated bool, now time.Time) []Finding {
+	if authenticated {
+		return nil
+	}
+	return []Finding{{
+		Category:    CatGHAuthUnavailable,
+		Severity:    SeverityCritical,
+		Title:       "GitHub credentials are unavailable",
+		Description: "Periodic gh auth probe failed — every push, PR, and issue operation against GitHub is blocked. Configure github.app or run `gh auth login` on the host.",
+		Evidence: map[string]any{
+			"probe": "gh api rate_limit",
+		},
+		DetectedAt: now,
+	}}
+}
+
 func isExpectedHumanRequired(e audit.Event) bool {
 	kind, _ := e.Data["human_kind"].(string)
 	return kind == "review_manual" || kind == "review_draft"
