@@ -1593,6 +1593,7 @@ func startTestSimpleImplement(t *testing.T) (*Store, *memTasks, *mockAgents, *En
 }
 
 const missingLivePRProofReason = "manual verification blocker: no current open PR could be verified as allFlaky for the required live pr-monitor proof"
+const alreadyFixedOnMainVerdict = "Already fixed on main; no PR needed. Duplicate task, safe to close/mark done."
 
 func TestAdvanceStep_ManualVerificationBlockerRoutesToReadyPR(t *testing.T) {
 	store := newInlineTestStore(t, "pr-recovery", `
@@ -1680,6 +1681,228 @@ steps:
 	}
 	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
 		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestAdvanceStep_AlreadyFixedOnMainMarksDone(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		AgentMode:    "headless",
+		ProjectID:    "acme/widgets",
+		StatusReason: "",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainVerdict); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  alreadyFixedOnMainVerdict,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "done" {
+		t.Fatalf("status = %q, want done", ti.Status)
+	}
+	if ti.StatusReason != alreadyFixedOnMainRecoveryReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainRecoveryReason)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestHandleStatusChange_AlreadyFixedOnMainMarksDone(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
+	var completed []CompletionInfo
+	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainVerdict); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.HandleStatusChange("t1", "human-required")
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "done" {
+		t.Fatalf("status = %q, want done", ti.Status)
+	}
+	if ti.StatusReason != alreadyFixedOnMainRecoveryReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainRecoveryReason)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
+	}
+	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+	}
+}
+
+func TestAdvanceStep_AlreadyFixedOnMainRequiresDuplicateSignal(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	reason := "need human decision about product direction"
+	if err := tasks.UpdateTaskStatus("t1", "human-required", reason); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  reason,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if ti.StatusReason != reason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, reason)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
 	}
 }
 
