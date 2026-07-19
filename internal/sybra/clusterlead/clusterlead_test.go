@@ -60,8 +60,8 @@ func (f *followerStub) server(t *testing.T) *httptest.Server {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			if t, ok := f.live[args[0]]; ok {
-				_ = json.NewEncoder(w).Encode(t)
+			if liveTask, ok := f.live[args[0]]; ok {
+				_ = json.NewEncoder(w).Encode(liveTask)
 				return
 			}
 			for i := range f.tasks {
