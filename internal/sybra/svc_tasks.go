@@ -190,14 +190,14 @@ func (s *TaskService) UploadAttachment(taskID, fileName string, data []byte) (ta
 	}
 	_, err = s.tasks.UpdateFn(taskID, func(cur task.Task) (task.Update, error) {
 		next := slices.Clone(cur.Attachments)
-		next = append(next, task.Attachment(meta))
+		next = append(next, meta)
 		return task.Update{Attachments: &next}, nil
 	})
 	if err != nil {
 		_ = s.attachments.Delete(taskID, meta.ID)
 		return task.Attachment{}, err
 	}
-	return task.Attachment(meta), nil
+	return meta, nil
 }
 
 func (s *TaskService) ListAttachments(taskID string) ([]task.Attachment, error) {
