@@ -8,11 +8,13 @@ import "github.com/Automaat/sybra/internal/abtest"
 //   - a.cfg.ABTesting is mutated in place. This is what app_human_review.go
 //     and svc_tasks.go's staff-review dispatch read directly on every call
 //     (s.cfg.ABTesting / h.cfg.ABTesting), so those two sites pick up the new
-//     weights with no further wiring. It also means a later config.yaml edit
-//     that changes ab_testing (config_registry.go's "ab_testing" hot-reload
-//     path) still fully replaces this field, as intended — the next routing
-//     tick re-applies the overlay on top of whatever base the operator just
-//     saved.
+//     weights with no further wiring. A later config.yaml edit that changes
+//     ab_testing (config_registry.go's "ab_testing" hot-reload path) fully
+//     replaces this field with the plain operator-saved base, dropping the
+//     overlay — so mutateLocked re-invokes routing.Service.ApplyPersistedOverlay
+//     immediately after the base swap (svc_config.go) to re-merge the overlay on
+//     top of the new base and fan it back out, rather than waiting for the next
+//     routing tick.
 //   - workflowEngine, orchSvc, and evaluationSvc each hold their own copy
 //     (set once at wiring time) rather than reading a.cfg live, so each needs
 //     its own explicit push.

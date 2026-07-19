@@ -10,4 +10,12 @@ func (a *App) wireConfigService() {
 	a.configSvc.workflowEngine = a.workflowEngine
 	a.configSvc.logger = a.logger
 	a.configSvc.policy = a.limitPolicy
+	// Read a.routingSvc lazily: it is constructed later in startRoutingService,
+	// so binding the pointer now would capture nil. ApplyPersistedOverlay itself
+	// no-ops when routing is disabled or no overlay was ever saved.
+	a.configSvc.reapplyRouting = func() {
+		if a.routingSvc != nil {
+			a.routingSvc.ApplyPersistedOverlay()
+		}
+	}
 }

@@ -30,6 +30,11 @@ type ConfigService struct {
 	logger         *slog.Logger
 	policy         func() limits.Policy
 	applyRuntime   func(config.Config) error
+	// reapplyRouting re-merges the persisted routing overlay on top of the
+	// freshly hot-reloaded base A/B config and fans it back out to every
+	// selection site. Called after an ab_testing hot change so a base edit
+	// does not silently drop the live overlay until the next routing tick.
+	reapplyRouting func()
 }
 
 // GetSettings returns the current app settings for the config UI.
@@ -297,6 +302,14 @@ func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() er
 	}
 	*s.cfg = *nextActive
 	s.persisted = cloneConfig(candidate)
+	// A base ab_testing hot change replaced s.cfg.ABTesting with the plain
+	// operator-saved weights, dropping any live routing overlay. Re-merge the
+	// persisted overlay on top of the new base now (reads the just-updated live
+	// base) so every selection site stays weight-consistent instead of drifting
+	// on unweighted base until the next routing tick.
+	if s.reapplyRouting != nil && slices.Contains(result.Applied, "ab_testing") {
+		s.reapplyRouting()
+	}
 	if s.logger != nil {
 		for _, path := range result.RestartRequired {
 			s.logger.Warn("config.reload.restart_required", "field", path)
