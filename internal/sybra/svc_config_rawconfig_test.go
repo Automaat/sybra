@@ -343,6 +343,35 @@ func TestSaveRawConfig_PreservesServerAuthTokenWhenOmitted(t *testing.T) {
 	}
 }
 
+// TestSaveRawConfig_DoesNotMaterializeGeneratedTokenWhenAbsentFromFile
+// reproduces a generated bearer token (resolved in-memory from the separate
+// server_auth_token file, never written to config.yaml) surviving a raw save
+// that never mentions server.auth_token. It must stay absent from disk.
+func TestSaveRawConfig_DoesNotMaterializeGeneratedTokenWhenAbsentFromFile(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	if err := os.WriteFile(cfgPath, []byte("schema_version: 2\nagent:\n  provider: codex\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Simulates ensureServerAuthToken resolving a generated token from
+	// server_auth_token at load time: present in memory, absent from the file.
+	svc.cfg.Server.AuthToken = "generated-token"
+	svc.persisted.Server.AuthToken = "generated-token"
+
+	raw := "schema_version: 2\nagent:\n  provider: claude\n"
+	if err := svc.SaveRawConfig(raw); err != nil {
+		t.Fatalf("SaveRawConfig: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedText := string(saved)
+	if strings.Contains(savedText, "auth_token") {
+		t.Fatalf("raw save materialized the generated token into config.yaml:\n%s", savedText)
+	}
+}
+
 func TestSaveRawConfig_PreservesFormattingWhenBuiltinVersionMissing(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	writeConfigYAML(t, cfgPath, svc.cfg)
