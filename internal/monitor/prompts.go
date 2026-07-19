@@ -250,6 +250,8 @@ func suggestedInvestigation(a Anomaly) string {
 		return "- Confirm the agent process actually exited; workflow recovery should resume the in-progress task.\n"
 	case KindUntriaged:
 		return "- Run `/sybra-triage` against the affected task to fill `agent_mode` and `tags`.\n"
+	case KindClusterDrift:
+		return "- Mirror already repaired this by re-pushing the leader's Tags/DependsOn to the follower — filed as an audit trail. If it recurs for the same task, the write path that edits it is failing to reach the follower; check that node's connectivity and cluster.mirror.drift_repair.failed logs.\n"
 	case KindStuckHumanBlocked:
 		hint := "- Review the task file and `status_reason`, then provide the required human input to unblock progress.\n"
 		if reason, _ := a.Evidence["status_reason"].(string); reason != "" {

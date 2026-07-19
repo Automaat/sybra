@@ -532,6 +532,9 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			}
 		})
 	}, a.logger)
+	if a.mirror != nil {
+		a.mirror.SetAnomalySink(routingSink)
+	}
 	svc := monitor.NewService(monitor.Deps{
 		Cfg:          a.cfg.Monitor,
 		Tasks:        a.tasks,
