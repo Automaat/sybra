@@ -1627,43 +1627,6 @@ export class TestingConfig {
     }
 }
 
-export class TodoistConfig {
-    "enabled": boolean;
-    "apiToken": string;
-    "projectId": string;
-    "defaultProjectId": string;
-    "pollSeconds": number;
-
-    /** Creates a new TodoistConfig instance. */
-    constructor($$source: Partial<TodoistConfig> = {}) {
-        if (!("enabled" in $$source)) {
-            this["enabled"] = false;
-        }
-        if (!("apiToken" in $$source)) {
-            this["apiToken"] = "";
-        }
-        if (!("projectId" in $$source)) {
-            this["projectId"] = "";
-        }
-        if (!("defaultProjectId" in $$source)) {
-            this["defaultProjectId"] = "";
-        }
-        if (!("pollSeconds" in $$source)) {
-            this["pollSeconds"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new TodoistConfig instance from a string or object.
-     */
-    static createFrom($$source: any = {}): TodoistConfig {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new TodoistConfig($$parsedSource as Partial<TodoistConfig>);
-    }
-}
-
 /**
  * TriageConfig controls the background auto-triage worker. When Enabled,
  * sybra periodically classifies tasks in status=new via claude -p and

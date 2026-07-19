@@ -14,7 +14,6 @@ type Environment struct {
 	LogLevel       string
 	LogDir         string
 	TasksDir       string
-	TodoistToken   string
 	AuthToken      string
 	WebhookSecret  string
 	AllowedOrigins []string
@@ -25,7 +24,6 @@ func environmentFromOS() Environment {
 		LogLevel:      os.Getenv("SYBRA_LOG_LEVEL"),
 		LogDir:        os.Getenv("SYBRA_LOG_DIR"),
 		TasksDir:      os.Getenv("SYBRA_TASKS_DIR"),
-		TodoistToken:  os.Getenv("SYBRA_TODOIST_TOKEN"),
 		AuthToken:     os.Getenv("SYBRA_AUTH_TOKEN"),
 		WebhookSecret: os.Getenv("SYBRA_WEBHOOK_SECRET"),
 	}
@@ -91,9 +89,6 @@ func applyEnvironmentOverrides(cfg *ResolvedConfig, env Environment) {
 	if env.TasksDir != "" {
 		cfg.TasksDir = env.TasksDir
 	}
-	if env.TodoistToken != "" {
-		cfg.Todoist.APIToken = env.TodoistToken
-	}
 	if env.AuthToken != "" {
 		cfg.Server.AuthToken = env.AuthToken
 	}
@@ -135,9 +130,6 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	}
 	if cfg.Webhook.Port <= 0 {
 		cfg.Webhook.Port = DefaultWebhookPort
-	}
-	if cfg.Todoist.PollSeconds <= 0 {
-		cfg.Todoist.PollSeconds = 120
 	}
 	if cfg.Renovate.Author == "" {
 		cfg.Renovate.Author = "app/renovate"

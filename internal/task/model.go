@@ -361,11 +361,10 @@ type Task struct {
 	// changes-requested → awaiting-approval → approved. Computed by the PR poller;
 	// drives the phase glyph on the board's In Review cards. Empty for tasks
 	// without an own PR (and for inbound review tasks, which use ReviewPhase).
-	PRPhase   string     `json:"prPhase,omitempty"`
-	TodoistID string     `json:"todoistId"`
-	Priority  Priority   `json:"priority,omitempty"`
-	DueDate   *time.Time `json:"dueDate,omitempty"`
-	ClosedAt  *time.Time `json:"closedAt,omitempty"`
+	PRPhase  string     `json:"prPhase,omitempty"`
+	Priority Priority   `json:"priority,omitempty"`
+	DueDate  *time.Time `json:"dueDate,omitempty"`
+	ClosedAt *time.Time `json:"closedAt,omitempty"`
 	// Outcome records how a task's own PR concluded: "merged", "merged_with_edits",
 	// "closed", or "reverted". Stamped by the PR monitor when the task auto-advances
 	// to done (and updated to "reverted" by the revert scanner). Empty for tasks

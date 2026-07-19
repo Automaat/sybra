@@ -297,7 +297,6 @@ func (a *App) logAutomationsSummary() {
 		"instance_role", a.cfg.Orchestrator.InstanceRole(),
 		"orchestrator", a.cfg.Orchestrator.RunsOrchestrator(),
 		"scheduler", a.cfg.Orchestrator.RunsScheduler(),
-		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
 		"github", a.cfg.GitHub.Enabled,
 		"github_issues", a.cfg.GitHub.RunsIssuesFetcher(),
 		"github_reviews", a.cfg.GitHub.RunsReviewer(),
@@ -1104,7 +1103,6 @@ func (a *App) emitDegradedWarnings(emit func(string, any)) {
 // and returns the GitHub issues fetcher (still consumed by
 // startBackgroundServices). Extracted so Startup stays under funlen.
 func (a *App) initAutomations(emit func(string, any)) *poll.IssuesFetcher {
-	a.initTodoist(emit)
 	a.initRenovate(emit)
 	a.initPromptLab()
 	a.initTriage()

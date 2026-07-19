@@ -1019,7 +1019,7 @@ func TestTaskService_CreateTaskWithInit_IssueURLStubPreservesCallerTags(t *testi
 	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) { return nil, nil }
 	svc.viewerLogin = func() string { return "me" }
 
-	initTags := []string{"backend", "todoist"}
+	initTags := []string{"backend", "urgent"}
 	created, err := svc.CreateTaskWithInit(
 		"https://github.com/owner/repo/issues/13",
 		"",

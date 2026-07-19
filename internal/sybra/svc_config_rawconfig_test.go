@@ -10,9 +10,8 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 )
 
-func TestGetSettings_ExposesExpandedSectionsAndTokenFlag(t *testing.T) {
+func TestGetSettings_ExposesExpandedSections(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
-	svc.cfg.Todoist.APIToken = "tok"
 	svc.cfg.GitHub.Enabled = true
 	svc.cfg.Monitor.Enabled = true
 	svc.cfg.Triage.PollSeconds = 45
@@ -20,12 +19,6 @@ func TestGetSettings_ExposesExpandedSectionsAndTokenFlag(t *testing.T) {
 	writeConfigYAML(t, cfgPath, svc.cfg)
 
 	got := svc.GetSettings()
-	if !got.TodoistTokenSet {
-		t.Error("TodoistTokenSet should be true when a token is stored")
-	}
-	if got.Todoist.APIToken != "" {
-		t.Error("token must still be redacted")
-	}
 	if !got.GitHub.Enabled || !got.Monitor.Enabled {
 		t.Error("expanded sections not surfaced in GetSettings")
 	}
@@ -85,35 +78,6 @@ func TestUpdateSettings_RoundTripsExpandedSections(t *testing.T) {
 	}
 	if !strings.Contains(string(saved), "poller_role: secondary") {
 		t.Error("expanded section not persisted to disk")
-	}
-}
-
-func TestUpdateSettings_TodoistPollInterval(t *testing.T) {
-	svc, cfgPath := setupConfigSvc(t)
-	svc.cfg.Todoist.APIToken = "tok"
-	writeConfigYAML(t, cfgPath, svc.cfg)
-
-	s := svc.GetSettings()
-	s.Todoist.Enabled = true
-
-	// Out-of-range is rejected (no silent by-value coercion).
-	s.Todoist.PollSeconds = 5
-	if err := svc.UpdateSettings(s); err == nil {
-		t.Error("expected error for poll interval below 30, got nil")
-	}
-	s.Todoist.PollSeconds = 99999
-	if err := svc.UpdateSettings(s); err == nil {
-		t.Error("expected error for poll interval above 3600, got nil")
-	}
-
-	// 0 means "use default" and is accepted; in-range values pass.
-	s.Todoist.PollSeconds = 0
-	if err := svc.UpdateSettings(s); err != nil {
-		t.Errorf("poll interval 0 should be accepted: %v", err)
-	}
-	s.Todoist.PollSeconds = 300
-	if err := svc.UpdateSettings(s); err != nil {
-		t.Errorf("poll interval 300 should be accepted: %v", err)
 	}
 }
 

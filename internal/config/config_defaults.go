@@ -1424,7 +1424,7 @@ func writeDefaultConfig(path string) error {
 
 // tightenConfigPerms retrofits the config directory and file to 0o700/0o600
 // on installs created before those became the write-time default (config.yaml
-// holds the plaintext Todoist token). Best-effort: a failed chmod is logged,
+// holds plaintext secrets). Best-effort: a failed chmod is logged,
 // not fatal — Load must still succeed on read-only or restricted filesystems.
 func tightenConfigPerms(path string, existingFile bool) {
 	tightenPathPerm(filepath.Dir(path), configDirPerm, "home dir")

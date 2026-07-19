@@ -50,9 +50,6 @@ const (
 	// Notification events.
 	Notification = "notification"
 
-	// Todoist integration events.
-	TodoistSynced = "todoist:synced"
-
 	// GitHub issues events.
 	IssuesUpdated = "issues:updated"
 

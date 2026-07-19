@@ -22,8 +22,6 @@ func setupConfigSvc(t *testing.T) (svc *ConfigService, cfgPath string) {
 	home := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
 
-	// Write seed config; Load applies all defaults so s.cfg matches what
-	// ReloadFromDisk will produce (e.g. Todoist.PollSeconds = 120).
 	seed := config.DefaultConfig()
 	seed.Agent.MaxConcurrent = 3
 	seed.Agent.Provider = "claude"
@@ -465,7 +463,6 @@ func TestReloadFromDisk_NoFeedbackLoop(t *testing.T) {
 			MaxFiles:  svc.cfg.Logging.MaxFiles,
 		},
 		Audit:     svc.cfg.Audit,
-		Todoist:   svc.cfg.Todoist,
 		Renovate:  svc.cfg.Renovate,
 		Providers: svc.cfg.Providers,
 	}

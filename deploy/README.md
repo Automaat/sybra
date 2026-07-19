@@ -213,7 +213,7 @@ cluster:
   bind_addr: ":8080"          # or bind_addrs: [...] to lock down interfaces
 ```
 
-A follower hard-disables every poller (Todoist/GitHub/Renovate) regardless of its
+A follower hard-disables every poller (GitHub/Renovate) regardless of its
 own feature flags, so no `project_types` juggling is needed — the leader is the
 only ingress.
 

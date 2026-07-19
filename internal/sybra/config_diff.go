@@ -56,9 +56,6 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	if old.Logging.Level != next.Logging.Level {
 		hot = append(hot, "logging.level")
 	}
-	if !reflect.DeepEqual(old.Todoist, next.Todoist) {
-		hot = append(hot, "todoist")
-	}
 	if old.Renovate.Author != next.Renovate.Author || old.Renovate.Enabled != next.Renovate.Enabled {
 		hot = append(hot, "renovate")
 	}

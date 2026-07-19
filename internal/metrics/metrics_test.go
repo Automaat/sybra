@@ -23,7 +23,6 @@ func TestMetricsPipeline(t *testing.T) {
 	}
 	AgentStarted("claude", "headless")
 	TaskCreated()
-	TodoistPoll(context.Background(), true)
 	GitHubFetch(context.Background(), false)
 	RenovatePoll(context.Background(), true)
 	MonitorTick(context.Background())
@@ -51,10 +50,6 @@ func TestMetricsPipeline(t *testing.T) {
 	TaskCreated()
 	TaskUpdated()
 	TaskDeleted()
-	TodoistPoll(context.Background(), true)
-	TodoistPoll(context.Background(), false)
-	TodoistImported(context.Background(), 3)
-	TodoistCompleted(context.Background(), 1)
 	GitHubFetch(context.Background(), true)
 	GitHubIssuesImported(context.Background(), 7)
 	RenovatePoll(context.Background(), true)
@@ -98,9 +93,6 @@ func TestMetricsPipeline(t *testing.T) {
 		"sybra_tasks_created_total",
 		"sybra_tasks_updated_total",
 		"sybra_tasks_deleted_total",
-		"sybra_todoist_polls_total",
-		"sybra_todoist_items_imported_total",
-		"sybra_todoist_items_completed_total",
 		"sybra_github_fetches_total",
 		"sybra_github_issues_imported_total",
 		"sybra_renovate_polls_total",

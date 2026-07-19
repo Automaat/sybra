@@ -2584,9 +2584,6 @@ func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
 // always empty anyway, while this redacts a live, possibly populated value.
 func redactedConfig(cfg *config.Config) config.Config {
 	out := *cfg
-	if out.Todoist.APIToken != "" {
-		out.Todoist.APIToken = "[redacted]"
-	}
 	if out.Server.AuthToken != "" {
 		out.Server.AuthToken = "[redacted]"
 	}

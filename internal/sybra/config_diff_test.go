@@ -69,20 +69,6 @@ func TestDiffConfig_Mixed(t *testing.T) {
 	}
 }
 
-func TestDiffConfig_TodoistBlock(t *testing.T) {
-	t.Parallel()
-	old := config.DefaultConfig()
-	next := *old
-	next.Todoist.APIToken = "tok-123"
-	next.Todoist.Enabled = true
-
-	hot, _ := diffConfig(*old, next)
-
-	if !slices.Contains(hot, "todoist") {
-		t.Errorf("expected todoist in hot, got %v", hot)
-	}
-}
-
 func TestDiffConfig_GuardrailsHot(t *testing.T) {
 	t.Parallel()
 	old := config.DefaultConfig()

@@ -89,12 +89,6 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	if cfg.Audit.RetentionDays < 1 || cfg.Audit.RetentionDays > 365 {
 		add("audit.retention_days: retentionDays must be 1–365")
 	}
-	if cfg.Todoist.PollSeconds < 30 || cfg.Todoist.PollSeconds > 3600 {
-		add("todoist.poll_seconds: todoist poll interval must be 30–3600 seconds")
-	}
-	if cfg.Todoist.Enabled && cfg.Todoist.APIToken == "" {
-		add("todoist.enabled: todoist API token required when enabled")
-	}
 	if cfg.GitHub.PollerRole != "" && cfg.GitHub.PollerRole != "primary" && cfg.GitHub.PollerRole != "secondary" {
 		add("github.poller_role must be \"primary\", \"secondary\", or empty, got %q", cfg.GitHub.PollerRole)
 	}
