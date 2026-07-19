@@ -194,6 +194,7 @@ func structFields(st *ast.StructType) []fieldInfo {
 var redactedYAMLPaths = map[string]bool{
 	"todoist.api_token": true,
 	"server.auth_token": true,
+	"webhook.secret":    true,
 }
 
 // homeDir is config.HomeDir() at generation time — substituted back out of
