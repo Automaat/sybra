@@ -351,7 +351,8 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	r.scanForReverts(ctx, tasks)
 	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.reconcilePRPhases(tasks, monitoredPRs)
-	r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
+	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
+	issues = r.mergeReconciledReady(reconciledReady, issues)
 	r.closeFinishedReviewTasks(tasks, nil)
 	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 
@@ -359,6 +360,38 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 		return r.pollFast()
 	}
 	return r.pollSlow()
+}
+
+// mergeReconciledReady runs handleAutoMerge for every same-cycle
+// ready_to_merge followup reconcileHumanRequiredBlockers returns, then folds
+// them into issues so downstream stages (native auto-merge arming, poll
+// summary) see them too — shared by both pollers so a reconciled reviewed pet
+// PR merges in the same cycle regardless of which one observed it. No-op
+// when project routing isn't configured (handleAutoMerge needs it to gate).
+// Applies the same running-agent/active-workflow gates handleTaskPRIssues
+// uses for every other issue kind (Copilot review on #2292): the task just
+// flipped human-required -> in-review in this same tick, but a concurrent
+// dispatch (e.g. a second poller instance) could already have a workflow or
+// agent live against it by the time this runs — merging out from under that
+// would race the in-flight run.
+func (r *Handler) mergeReconciledReady(reconciledReady, issues []github.PRIssue) []github.PRIssue {
+	if r.projects == nil {
+		return issues
+	}
+	for i := range reconciledReady {
+		issue := reconciledReady[i]
+		if r.agents.HasRunningAgentForTask(issue.TaskID) {
+			r.logger.Info("reviews.dispatch.gate", "task_id", issue.TaskID, "gate", "running_agent", "kind", issue.Kind)
+			continue
+		}
+		if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(issue.TaskID) {
+			r.logger.Info("reviews.dispatch.gate", "task_id", issue.TaskID, "gate", "active_workflow", "kind", issue.Kind)
+			continue
+		}
+		r.handleAutoMerge(issue)
+		issues = append(issues, issue)
+	}
+	return issues
 }
 
 func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
@@ -433,26 +466,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	r.adoptOrphanPRs(ctx, tasks, monitoredPRs)
 	r.adoptTasklessPRs(tasks, monitoredPRs)
 
-	var (
-		matchers       []github.TaskMatcher
-		closedMatchers []github.TaskMatcher
-	)
-	for i := range tasks {
-		m := github.TaskMatcher{
-			ID:        tasks[i].ID,
-			PRNumber:  tasks[i].PRNumber,
-			Branch:    tasks[i].Branch,
-			ProjectID: tasks[i].ProjectID,
-		}
-		if prMonitorEligible(&tasks[i]) {
-			matchers = append(matchers, m)
-			closedMatchers = append(closedMatchers, m)
-		} else if prClosedEligible(&tasks[i]) {
-			// human-required tasks are excluded from pr-fix dispatch but still
-			// advance to done when their PR is merged.
-			closedMatchers = append(closedMatchers, m)
-		}
-	}
+	matchers, closedMatchers := buildOutboundMatchers(tasks)
 
 	issues := r.handleMatchedOwnPRs(ctx, tasks, monitoredPRs, matchers)
 
@@ -474,7 +488,8 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	// monitoredPRs here is the author:@me search result (r.monitoredPRs), which
 	// already spans every open PR the user authored regardless of task status —
 	// no separate fetch is needed to reach a human-required task's own PR.
-	r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
+	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
+	issues = r.mergeReconciledReady(reconciledReady, issues)
 	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
 	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 
@@ -482,6 +497,28 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 		return r.pollFast()
 	}
 	return r.pollSlow()
+}
+
+// buildOutboundMatchers builds the pr-fix dispatch and closed-task matcher
+// sets pollAndMonitorPRs needs from its task list.
+func buildOutboundMatchers(tasks []task.Task) (matchers, closedMatchers []github.TaskMatcher) {
+	for i := range tasks {
+		m := github.TaskMatcher{
+			ID:        tasks[i].ID,
+			PRNumber:  tasks[i].PRNumber,
+			Branch:    tasks[i].Branch,
+			ProjectID: tasks[i].ProjectID,
+		}
+		if prMonitorEligible(&tasks[i]) {
+			matchers = append(matchers, m)
+			closedMatchers = append(closedMatchers, m)
+		} else if prClosedEligible(&tasks[i]) {
+			// human-required tasks are excluded from pr-fix dispatch but still
+			// advance to done when their PR is merged.
+			closedMatchers = append(closedMatchers, m)
+		}
+	}
+	return matchers, closedMatchers
 }
 
 // handleKnownPRConflictsViaREST runs a REST-only conflict/CI/ready-to-merge

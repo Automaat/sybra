@@ -1234,6 +1234,222 @@ func TestPollKnownTaskPRs_ReconcilesHumanRequiredBlocker(t *testing.T) {
 	}
 }
 
+func TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
+	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+	r.projects = projStore
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	reviewed := true
+	parked, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:     task.Ptr(42),
+		ProjectID:    task.Ptr("pet-owner/pet-repo"),
+		Reviewed:     &reviewed,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var mergedRepo string
+	var mergedNum int
+	r.mergePR = func(repo string, number int) error {
+		mergedRepo, mergedNum = repo, number
+		return nil
+	}
+	r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+		results := make([]github.MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			results[i] = github.MonitorPRResult{
+				Repo: ref.Repo, Number: ref.Number, Open: true,
+				PR: github.PullRequest{
+					Number:     ref.Number,
+					Repository: ref.Repo,
+					HeadSHA:    "sha42",
+					Mergeable:  "MERGEABLE",
+					CIStatus:   "SUCCESS",
+				},
+			}
+		}
+		return results
+	}
+
+	r.Poll(t.Context())
+
+	if mergedRepo != "pet-owner/pet-repo" || mergedNum != 42 {
+		t.Fatalf("merged = %q#%d, want pet-owner/pet-repo#42", mergedRepo, mergedNum)
+	}
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("status = %q, want in-review after reconciliation", got.Status)
+	}
+}
+
+// TestPollAndMonitorPRs_MergesReconciledReviewedPetPRSameCycle mirrors
+// TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle for the primary
+// search-backed poller path (pollAndMonitorPRs). reconcileHumanRequiredBlockers'
+// same-cycle ready_to_merge followups must reach handleAutoMerge from both
+// pollers, not just the secondary/known-PR one.
+func TestPollAndMonitorPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.emit = func(string, any) {}
+	r.prTracker = github.NewIssueTracker(0)
+	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
+
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+	r.projects = projStore
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	reviewed := true
+	parked, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:     task.Ptr(42),
+		ProjectID:    task.Ptr("pet-owner/pet-repo"),
+		Reviewed:     &reviewed,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var mergedRepo string
+	var mergedNum int
+	r.mergePR = func(repo string, number int) error {
+		mergedRepo, mergedNum = repo, number
+		return nil
+	}
+	r.fetchReviewsFn = func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{
+			CreatedByMe: []github.PullRequest{{
+				Number:     42,
+				Repository: "pet-owner/pet-repo",
+				HeadSHA:    "sha42",
+				Mergeable:  "MERGEABLE",
+				CIStatus:   "SUCCESS",
+			}},
+		}, nil
+	}
+
+	r.Poll(t.Context())
+
+	if mergedRepo != "pet-owner/pet-repo" || mergedNum != 42 {
+		t.Fatalf("merged = %q#%d, want pet-owner/pet-repo#42", mergedRepo, mergedNum)
+	}
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("status = %q, want in-review after reconciliation", got.Status)
+	}
+}
+
+// TestMergeReconciledReady_SkipsTaskWithRunningAgent covers Copilot's #2292
+// review point: a same-cycle ready_to_merge followup must respect the same
+// running-agent gate handleTaskPRIssues applies to every other issue kind,
+// not call handleAutoMerge unconditionally.
+func TestMergeReconciledReady_SkipsTaskWithRunningAgent(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+	r.projects = projStore
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	claim, ok := r.agents.TryClaimDispatch(created.ID)
+	if !ok {
+		t.Fatal("claim dispatch")
+	}
+	defer claim.Release()
+
+	var merged bool
+	r.mergePR = func(string, int) error { merged = true; return nil }
+
+	issue := github.PRIssue{
+		Kind: github.PRIssueReadyToMerge, TaskID: created.ID,
+		PR: github.PullRequest{Number: 42, Repository: "pet-owner/pet-repo", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
+	}
+	got := r.mergeReconciledReady([]github.PRIssue{issue}, nil)
+
+	if merged {
+		t.Fatal("handleAutoMerge ran while an agent is live for the task")
+	}
+	if len(got) != 0 {
+		t.Fatalf("issues = %v, want empty — a gated followup must not be folded in", got)
+	}
+}
+
+// TestMergeReconciledReady_SkipsTaskWithActiveWorkflow mirrors the running-
+// agent case for a workflow that is live but has no agent process currently
+// attached (e.g. parked in verify_commits between an agent exiting and the
+// workflow's tail steps advancing).
+func TestMergeReconciledReady_SkipsTaskWithActiveWorkflow(t *testing.T) {
+	r, tasks := newOutboundWorkflowTestHandler(t)
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "verify_commits",
+		State:       workflow.ExecWaiting,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		ProjectID: task.Ptr("Automaat/sybra"),
+		Workflow:  &wf,
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var merged bool
+	r.mergePR = func(string, int) error { merged = true; return nil }
+
+	issue := github.PRIssue{
+		Kind: github.PRIssueReadyToMerge, TaskID: created.ID,
+		PR: github.PullRequest{Number: 42, Repository: "Automaat/sybra", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
+	}
+	got := r.mergeReconciledReady([]github.PRIssue{issue}, nil)
+
+	if merged {
+		t.Fatal("handleAutoMerge ran while the task's workflow is still active")
+	}
+	if len(got) != 0 {
+		t.Fatalf("issues = %v, want empty — a gated followup must not be folded in", got)
+	}
+}
+
 func TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 	r.prTracker = github.NewIssueTracker(0)
