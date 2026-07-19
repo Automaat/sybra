@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"log/slog"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -212,7 +213,25 @@ func (s *Service) tick(_ context.Context) {
 
 	version := prevOverlay.Version + 1
 	overlay := buildOverlay(version, s.now(), plan, scores, prevOverlay, base)
+	if overlaysEquivalent(overlay, prevOverlay) {
+		// Shadow mode (routing disabled) clamps currentWeights against base, so
+		// PlanWeights keeps reporting base->target as a change every tick even
+		// once the persisted overlay already equals target. Persisting here
+		// would mint a fresh generation identical to the last, churning
+		// DecisionVersion and emitting duplicate routing.reweighted audits with
+		// no real weight change. Suppress the no-op generation.
+		s.logger.Debug("routing.tick.noop_generation")
+		return
+	}
 	s.persistAndApply(overlay, base)
+}
+
+// overlaysEquivalent reports whether two overlays carry identical weight/score
+// content, ignoring the Version and GeneratedAt stamps. buildOverlay sorts
+// experiments and variants deterministically, so a structural comparison is
+// stable across generations.
+func overlaysEquivalent(a, b Overlay) bool {
+	return reflect.DeepEqual(a.Experiments, b.Experiments)
 }
 
 // persistAndApply saves the overlay generation, pushes it live when routing is
