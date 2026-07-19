@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
 const (
@@ -708,7 +709,7 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 			return
 		}
 		if ag.TaskID != "" && (trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "" {
-			w.stopAndVerifyAmbiguousLoop(ctx, ag, verdict)
+			w.stopAndVerifyAmbiguousLoop(ctx, ag, trigger, verdict)
 			return
 		}
 		// #2229: a reward_hacking stop on a fix-review agent that still has a
@@ -736,15 +737,28 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 		// the fix-review carve-out above already retried them.
 		if ag.TaskID != "" {
 			reason := "watchdog stop"
-			if verdict.Reason != "" {
-				reason = "watchdog: " + verdict.Reason
-			}
 			status := task.StatusHumanRequired
 			if trigger == "stall" || ((trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "generic_stall") {
 				status = task.StatusInProgress
 				reason = "watchdog hang"
 				if verdict.Reason != "" {
 					reason = "watchdog hang: " + verdict.Reason
+				}
+			} else {
+				switch {
+				case verdict.ReasonKind == "reward_hacking":
+					reason = watchdogreason.RewardHacking(verdict.Reason)
+				case verdict.ReasonKind != "":
+					reason = "watchdog: " + verdict.ReasonKind
+					if verdict.Reason != "" {
+						reason += ": " + verdict.Reason
+					}
+				case trigger == "loop":
+					reason = watchdogreason.LoopStop(verdict.Reason)
+				case trigger == "budget":
+					reason = watchdogreason.BudgetStop(verdict.Reason)
+				case verdict.Reason != "":
+					reason = "watchdog: " + verdict.Reason
 				}
 			}
 			if _, err := w.tasks.Update(ag.TaskID, task.Update{
@@ -814,10 +828,10 @@ const killForVerifyTimeout = 10 * time.Second
 // so the completion callback sees an intended recovery path immediately,
 // matching the stall/generic_stall convention, rather than leaving the task
 // on its pre-stop status for the duration of the verify re-run.
-func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Agent, verdict agent.InspectorVerdict) {
-	judgeReason := "watchdog stop"
-	if verdict.Reason != "" {
-		judgeReason = "watchdog: " + verdict.Reason
+func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
+	judgeReason := watchdogreason.LoopStop(verdict.Reason)
+	if trigger == "budget" {
+		judgeReason = watchdogreason.BudgetStop(verdict.Reason)
 	}
 	if _, err := w.tasks.Update(ag.TaskID, task.Update{
 		Status:       task.Ptr(task.StatusInProgress),
