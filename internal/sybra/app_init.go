@@ -255,6 +255,10 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 	}
 	f := poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)
 	f.SetPollInterval(a.cfg.GitHub.Issues())
+	if phrase := strings.TrimSpace(a.cfg.GitHub.MentionTriggerPhrase); phrase != "" {
+		f.SetMentionTrigger(phrase)
+		a.logger.Info("github.issues.mention-trigger.enabled", "phrase", phrase)
+	}
 	if a.cfg.Umbrella.Enabled {
 		model := a.cfg.Umbrella.Model
 		ground := a.cfg.Umbrella.Ground

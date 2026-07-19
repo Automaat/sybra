@@ -443,6 +443,7 @@ var (
 	reviewSummaryCache   = newTTLCache[ReviewSummary]()
 	assignedIssuesCache  = newTTLCache[[]Issue]()
 	labeledIssuesCache   = newTTLCache[[]Issue]()
+	mentionedIssuesCache = newTTLCache[[]Issue]()
 	renovatePRsCache     = newTTLCache[[]RenovatePR]()
 	prCache              = newTTLCache[PullRequest]()
 	prStatsCache         = newTTLCache[PRStats]()
