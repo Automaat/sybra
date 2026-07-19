@@ -197,12 +197,28 @@ func (s *Service) tick(_ context.Context) {
 		MinSamplesToShift: s.cfg.MinSamplesToShift,
 	})
 	if !plan.Changed {
+		// No weight change this tick, but the operator may have removed an
+		// experiment/variant since the overlay was last persisted. Purge any
+		// now-stale entries so they cannot linger on disk and revive obsolete
+		// weights if the same IDs are re-added later — buildOverlay's own
+		// pruning never runs on this path.
+		if pruned, changed := pruneOverlay(prevOverlay, base, s.now()); changed {
+			s.persistAndApply(pruned, base)
+			return
+		}
 		s.logger.Debug("routing.tick.unchanged")
 		return
 	}
 
 	version := prevOverlay.Version + 1
 	overlay := buildOverlay(version, s.now(), plan, scores, prevOverlay, base)
+	s.persistAndApply(overlay, base)
+}
+
+// persistAndApply saves the overlay generation, pushes it live when routing is
+// enabled, and emits the overlay event + audit record. A save failure aborts
+// before any apply/emit so the in-memory overlay never diverges from disk.
+func (s *Service) persistAndApply(overlay Overlay, base abtest.Config) {
 	if err := s.store.Save(overlay); err != nil {
 		s.logger.Warn("routing.overlay.save_failed", "err", err)
 		return
@@ -215,7 +231,7 @@ func (s *Service) tick(_ context.Context) {
 	if s.cfg.Enabled && s.apply != nil {
 		merged := mergeWeights(base, overlay)
 		if err := s.apply(merged); err != nil {
-			s.logger.Warn("routing.apply.failed", "err", err, "version", version)
+			s.logger.Warn("routing.apply.failed", "err", err, "version", overlay.Version)
 		} else {
 			applied = true
 		}
@@ -223,7 +239,7 @@ func (s *Service) tick(_ context.Context) {
 
 	s.emit(OverlayEvent, overlay)
 	s.emitAudit(overlay, applied)
-	s.logger.Info("routing.tick", "version", version, "experiments", len(overlay.Experiments), "applied", applied)
+	s.logger.Info("routing.tick", "version", overlay.Version, "experiments", len(overlay.Experiments), "applied", applied)
 }
 
 func (s *Service) emitAudit(overlay Overlay, applied bool) {
@@ -361,20 +377,7 @@ func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score, p
 	// only those still present in the current base config — a removed
 	// experiment/variant must not linger in the overlay and revive stale
 	// weights if the same IDs are re-added later.
-	baseVariants := map[string]map[string]bool{}
-	for i := range base.Experiments {
-		exp := &base.Experiments[i]
-		if exp.ID == "" {
-			continue
-		}
-		vs := map[string]bool{}
-		for j := range exp.Variants {
-			if id := exp.Variants[j].ID; id != "" {
-				vs[id] = true
-			}
-		}
-		baseVariants[exp.ID] = vs
-	}
+	baseVariants := baseVariantSet(base)
 	for _, exp := range prev.Experiments {
 		if planned[exp.ExperimentID] {
 			continue
@@ -397,6 +400,63 @@ func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score, p
 		return overlay.Experiments[i].ExperimentID < overlay.Experiments[j].ExperimentID
 	})
 	return overlay
+}
+
+// baseVariantSet indexes base as experimentID -> set of live variant IDs,
+// skipping empty IDs — the membership oracle used to decide which persisted
+// overlay entries are still declared by the operator.
+func baseVariantSet(base abtest.Config) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for i := range base.Experiments {
+		exp := &base.Experiments[i]
+		if exp.ID == "" {
+			continue
+		}
+		vs := map[string]bool{}
+		for j := range exp.Variants {
+			if id := exp.Variants[j].ID; id != "" {
+				vs[id] = true
+			}
+		}
+		out[exp.ID] = vs
+	}
+	return out
+}
+
+// pruneOverlay strips experiments/variants no longer present in base from a
+// persisted overlay, returning the pruned overlay and whether anything was
+// removed. buildOverlay only prunes when a plan is produced; the no-op tick
+// path (plan.Changed == false) never reaches it, so this covers the case
+// where the operator removes a cohort without any concurrent weight change —
+// its stale weights must not survive on disk to be revived if the same IDs
+// are re-added later. Version bumps only when something is actually pruned.
+func pruneOverlay(prev Overlay, base abtest.Config, now time.Time) (Overlay, bool) {
+	baseVariants := baseVariantSet(base)
+	pruned := Overlay{Version: prev.Version, GeneratedAt: prev.GeneratedAt}
+	changed := false
+	for _, exp := range prev.Experiments {
+		vs, ok := baseVariants[exp.ExperimentID]
+		if !ok {
+			changed = true
+			continue
+		}
+		kept := OverlayExperiment{ExperimentID: exp.ExperimentID}
+		for _, v := range exp.Variants {
+			if vs[v.VariantID] {
+				kept.Variants = append(kept.Variants, v)
+			} else {
+				changed = true
+			}
+		}
+		if len(kept.Variants) > 0 {
+			pruned.Experiments = append(pruned.Experiments, kept)
+		}
+	}
+	if changed {
+		pruned.Version = prev.Version + 1
+		pruned.GeneratedAt = now
+	}
+	return pruned, changed
 }
 
 // mergeWeights clones base and overwrites each configured variant's Weight

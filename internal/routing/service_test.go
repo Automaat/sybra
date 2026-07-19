@@ -259,6 +259,113 @@ func TestBuildOverlay_DropsRemovedExperimentsAndVariants(t *testing.T) {
 	}
 }
 
+// expRows builds a one-experiment breakdown group for the given experiment ID.
+func expRows(expID string, v1Landed, v2Landed float64) evaluation.ExperimentGroup {
+	return evaluation.ExperimentGroup{
+		ExperimentID: expID,
+		Rows: []evaluation.ComparisonBreakdown{
+			{
+				ExperimentID: expID, VariantID: "v1",
+				Runs: 100, ResolvedRuns: 100,
+				LandedEstimate: evaluation.RateEstimate{WilsonLower: v1Landed, HasData: true},
+			},
+			{
+				ExperimentID: expID, VariantID: "v2",
+				Runs: 100, ResolvedRuns: 100,
+				LandedEstimate: evaluation.RateEstimate{WilsonLower: v2Landed, HasData: true},
+			},
+		},
+	}
+}
+
+// TestService_Tick_NoOp_PrunesRemovedExperiment covers the service-level no-op
+// tick path (plan.Changed == false): when the operator removes an experiment
+// after its weights were persisted, the next tick — even one that shifts no
+// weight — must purge the now-stale overlay entry so it cannot revive obsolete
+// weights if the same experiment IDs are re-added later. buildOverlay's own
+// pruning never runs on this path.
+func TestService_Tick_NoOp_PrunesRemovedExperiment(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	includeB := true
+	base := func() abtest.Config {
+		cfg := abtest.Config{Experiments: []abtest.Experiment{
+			{ID: "exp", Variants: []abtest.Variant{
+				{ID: "v1", Provider: "claude", Model: "sonnet", Weight: 1},
+				{ID: "v2", Provider: "codex", Model: "gpt", Weight: 1},
+			}},
+		}}
+		if includeB {
+			cfg.Experiments = append(cfg.Experiments, abtest.Experiment{
+				ID: "exp-b", Variants: []abtest.Variant{
+					{ID: "v1", Provider: "claude", Model: "sonnet", Weight: 1},
+					{ID: "v2", Provider: "codex", Model: "gpt", Weight: 1},
+				},
+			})
+		}
+		return cfg
+	}
+	report := func() (evaluation.Report, bool) {
+		groups := []evaluation.ExperimentGroup{expRows("exp", 0.9, 0.1)}
+		if includeB {
+			groups = append(groups, expRows("exp-b", 0.9, 0.1))
+		}
+		return evaluation.Report{
+			ByExperimentKind: []evaluation.ExperimentKindBreakdown{
+				{Kind: "model", Groups: groups},
+			},
+		}, true
+	}
+
+	svc := NewService(Deps{
+		Cfg: config.RoutingConfig{
+			Enabled:           true,
+			IntervalHours:     6,
+			WeightBudget:      20,
+			FloorWeight:       1,
+			MaxStep:           100, // converge in one tick
+			MinSamplesToShift: 0,
+			Coefficients:      config.DefaultRoutingCoefficients(),
+		},
+		Base:   base,
+		Report: report,
+		Store:  store,
+		Apply:  func(abtest.Config) error { return nil },
+		Logger: slog.New(slog.DiscardHandler),
+		Now:    func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+	})
+
+	runOnceSync(svc) // converges both experiments -> version 1
+	if o, ok, _ := store.Load(); !ok {
+		t.Fatalf("overlay not persisted after first tick")
+	} else if _, has := o.WeightAt("exp-b", "v1"); !has {
+		t.Fatalf("exp-b not in overlay after first tick, want present")
+	}
+
+	// Operator removes exp-b from base and it drops out of the report. The
+	// second tick shifts no weight on exp (already converged) -> plan.Changed
+	// is false, so this exercises the no-op prune path.
+	includeB = false
+	runOnceSync(svc)
+
+	o, ok, err := store.Load()
+	if err != nil || !ok {
+		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+	}
+	if _, has := o.WeightAt("exp-b", "v1"); has {
+		t.Fatalf("exp-b survived the no-op tick, want pruned (removed from base)")
+	}
+	if _, has := o.WeightAt("exp", "v1"); !has {
+		t.Fatalf("exp/v1 dropped by prune, want retained (still in base)")
+	}
+	if o.Version != 2 {
+		t.Fatalf("overlay.Version = %d after prune, want 2 (bumped on prune)", o.Version)
+	}
+}
+
 func TestService_VersionBumpsOnlyOnChange(t *testing.T) {
 	var applied []abtest.Config
 	var audited []audit.Event
