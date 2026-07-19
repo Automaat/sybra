@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -572,7 +573,7 @@ func TestSaveRawConfig_RestoresLastKnownGoodOnHotApplyFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(before) {
+	if !bytes.Equal(after, before) {
 		t.Fatalf("config.yaml not restored after hot apply failure\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 	if svc.cfg.Agent.Provider != "claude" {

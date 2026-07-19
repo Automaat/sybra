@@ -3,6 +3,7 @@ package sybra
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -160,9 +161,7 @@ func cloneStringMap(src map[string]string) map[string]string {
 		return nil
 	}
 	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
+	maps.Copy(dst, src)
 	return dst
 }
 
@@ -231,18 +230,17 @@ func fieldByYAMLPath(v reflect.Value, path string) reflect.Value {
 	for v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
-	for _, part := range strings.Split(path, ".") {
+	for part := range strings.SplitSeq(path, ".") {
 		if v.Kind() != reflect.Struct {
 			panic("config path does not resolve to a struct: " + path)
 		}
 		found := false
 		t := v.Type()
-		for i := 0; i < t.NumField(); i++ {
-			sf := t.Field(i)
+		for sf := range t.Fields() {
 			if yamlFieldName(sf) != part {
 				continue
 			}
-			v = v.Field(i)
+			v = v.FieldByIndex(sf.Index)
 			found = true
 			break
 		}
@@ -279,8 +277,7 @@ func walkConfigType(typ reflect.Type, path []string, out *[]string) {
 		*out = append(*out, strings.Join(path, "."))
 		return
 	}
-	for i := 0; i < typ.NumField(); i++ {
-		sf := typ.Field(i)
+	for sf := range typ.Fields() {
 		name := yamlFieldName(sf)
 		if name == "" || name == "-" {
 			continue

@@ -244,9 +244,7 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) (ConfigMutationResu
 		base = s.persisted
 	}
 	next := settingsToConfig(base, settings)
-	return s.mutateLocked(&next, func() error {
-		return next.Save()
-	})
+	return s.mutateLocked(&next, next.Save)
 }
 
 // validateSettings checks all editable fields for validity.
@@ -287,7 +285,7 @@ func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() er
 				result.Recovery = &ConfigRecovery{
 					Message: fmt.Sprintf("hot apply failed and last-known-good restore failed: %v", restoreErr),
 				}
-				return result, fmt.Errorf("%w; restore last-known-good: %v", err, restoreErr)
+				return result, fmt.Errorf("%w; restore last-known-good: %w", err, restoreErr)
 			}
 			result.Recovery = &ConfigRecovery{
 				RestoredLastKnownGood: true,
@@ -315,6 +313,8 @@ func copyConfigPath(dst, src *config.Config, path string) {
 func (s *ConfigService) applyHotChangesLocked(result ConfigMutationResult, nextActive *config.Config) error {
 	for _, group := range configApplyGroups(result.Applied) {
 		switch group {
+		case configApplyNone:
+			continue
 		case configApplyAgentRuntime:
 			if err := s.refreshAgentRuntimeConfig(*nextActive); err != nil {
 				return err
