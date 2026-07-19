@@ -96,11 +96,31 @@ func (a *Assigner) Tick(ctx context.Context) {
 // idempotent: the follower's AssignTask upserts by id, so a repeated push is
 // harmless.
 func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err error) {
+	return a.route(ctx, t, false)
+}
+
+// PushUpdate re-pushes a task that is already assigned to its home follower,
+// forwarding a leader-side canonical edit (e.g. the umbrella gate clearing a
+// dependency block) that would otherwise never reach the follower: Mirror
+// only pulls follower state up to the leader (internal/sybra/clusterlead/mirror.go),
+// it never pushes leader edits back down, and Route/Tick push only once, at
+// first assignment.
+//
+// Callers must only use this for a task that has not started executing
+// anywhere (e.g. still gated/todo) — AssignTask writes the pushed copy
+// verbatim on the follower, so pushing a stale leader-side snapshot over a
+// follower's own in-progress execution state (AgentRuns, Workflow, ...) would
+// roll it back.
+func (a *Assigner) PushUpdate(ctx context.Context, t task.Task) (pushed bool, err error) {
+	return a.route(ctx, t, true)
+}
+
+func (a *Assigner) route(ctx context.Context, t task.Task, force bool) (routed bool, err error) {
 	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
 	if home.Local {
 		return false, nil
 	}
-	if t.AssignedNode == home.Name {
+	if !force && t.AssignedNode == home.Name {
 		return false, nil
 	}
 	if a.isWorkProject(t.ProjectID) && (!home.Trusted || !home.Encrypted) {

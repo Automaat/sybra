@@ -218,9 +218,34 @@ func (a *App) releaseCapped(ready []string, byID map[string]*task.Task, states m
 			a.logger.Error("umbrella.release.failed", "task_id", id, "err", err)
 			continue
 		}
+		a.pushReleaseToHomeNode(updated)
 		st.setChildStatus(id, updated.Status)
 		st.released++
 		a.logger.Info("umbrella.child.released", "task_id", id)
+	}
+}
+
+// pushReleaseToHomeNode forwards a just-released child's new state to its
+// home follower when the task isn't homed locally. The local a.tasks.Update
+// above only ever touches this leader's own canonical copy; Mirror only pulls
+// follower state up to the leader; and the assigner's normal Route/Tick push
+// a task to its follower once, at first assignment, then never again. Without
+// this forward, a follower-homed task released by this leader's umbrella gate
+// would carry the release in the leader's mirror forever while the follower —
+// the node that actually dispatches it — stays stuck on its pre-release copy.
+// Released children are always still-gated/todo, so pushing them verbatim can
+// never roll back a follower's in-progress execution state (see
+// Assigner.PushUpdate).
+func (a *App) pushReleaseToHomeNode(t task.Task) {
+	if a.assigner == nil || a.cfg == nil {
+		return
+	}
+	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
+	if home.Local {
+		return
+	}
+	if _, err := a.assigner.PushUpdate(a.ctx, t); err != nil {
+		a.logger.Error("umbrella.release.push_failed", "task_id", t.ID, "node", home.Name, "err", err)
 	}
 }
 

@@ -2,18 +2,24 @@ package sybra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -593,6 +599,88 @@ func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
 	// retrigger a release.
 	if slices.Contains(released.Tags, umbrellaGatedTag) {
 		t.Fatalf("gating tag not stripped on release: tags=%v", released.Tags)
+	}
+}
+
+// TestReleaseUnblockedChildren_PushesReleaseToRemoteHomeNode reproduces the
+// 2026-07-19 incident: a child already stamped AssignedNode by a prior
+// Assigner.Tick (i.e. routed once, same as every real gated child) gets
+// released locally by the umbrella gate, but without pushReleaseToHomeNode
+// that release only ever lands in the leader's own canonical copy — the
+// follower that actually dispatches the task never sees it.
+func TestReleaseUnblockedChildren_PushesReleaseToRemoteHomeNode(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var assigned []task.Task
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/TaskService/AssignTask" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var args []task.Task
+		_ = json.Unmarshal(body, &args)
+		if len(args) == 1 {
+			mu.Lock()
+			assigned = append(assigned, args[0])
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role: config.ClusterRoleLeader,
+		Followers: []config.Follower{{
+			Name:      "home-nas",
+			Endpoints: []string{srv.URL},
+			Homes:     []string{"Automaat/sybra"},
+		}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+
+	app, m := newUmbrellaGateApp(t)
+	app.cfg = cfg
+	app.ctx = context.Background()
+	app.assigner = clusterlead.NewAssigner(cfg, m, roster, func(string) bool { return false }, nil, nil)
+
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	child, _, err := m.Put(task.Task{
+		ID:            "task-remote",
+		Title:         "remote child",
+		Status:        task.StatusTodo,
+		ProjectID:     "Automaat/sybra",
+		Issue:         "Automaat/sybra#1",
+		UmbrellaIssue: umb,
+		Tags:          []string{umbrellaGatedTag},
+		AssignedNode:  "home-nas",
+	})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	app.releaseUnblockedChildren()
+
+	released, err := m.Get(child.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if slices.Contains(released.Tags, umbrellaGatedTag) {
+		t.Fatalf("gating tag not stripped locally: tags=%v", released.Tags)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(assigned) != 1 {
+		t.Fatalf("follower received %d pushes, want 1 — the release must reach the remote home node", len(assigned))
+	}
+	if assigned[0].Status != task.StatusTodo || slices.Contains(assigned[0].Tags, umbrellaGatedTag) {
+		t.Errorf("pushed task = %+v, want released (todo, gate tag stripped)", assigned[0])
 	}
 }
 
