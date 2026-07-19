@@ -61,6 +61,16 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: []string{"added-skip"},
 		},
 		{
+			name:      "go_skip_in_interpreted_fixture_string_not_flagged",
+			patch:     "@@ @@\n func TestDetector(t *testing.T) {\n+\tpatch := \"@@ @@\\n+\\tt.Skip(\\\"linux-only\\\")\\n\"\n+\t_ = patch\n }\n",
+			wantRules: nil,
+		},
+		{
+			name:      "go_skip_in_raw_fixture_string_not_flagged",
+			patch:     "@@ @@\n func TestDetector(t *testing.T) {\n+\tpatch := `@@ @@\n++\tt.Skip(\"linux-only\")\n+`\n+\t_ = patch\n }\n",
+			wantRules: nil,
+		},
+		{
 			name:  "added_skip_matches_established_idiom_elsewhere_in_file",
 			patch: "@@ @@\n func TestBar(t *testing.T) {\n+\tif !hasGit() { t.Skip(\"git not available\") }\n",
 			baseContent: "func TestFoo(t *testing.T) {\n\tif !hasGit() { t.Skip(\"git not available\") }\n}\n\n" +

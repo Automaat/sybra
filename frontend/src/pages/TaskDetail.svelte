@@ -10,6 +10,7 @@
   import TaskMetadataRow from '../components/task-detail/TaskMetadataRow.svelte'
   import TaskPullRequestsPanel from '../components/task-detail/TaskPullRequestsPanel.svelte'
   import TaskDescriptionEditor from '../components/task-detail/TaskDescriptionEditor.svelte'
+  import TaskAttachmentsPanel from '../components/task-detail/TaskAttachmentsPanel.svelte'
   import PlanReviewPanel from '../components/task-detail/PlanReviewPanel.svelte'
   import TaskPlanPanel from '../components/task-detail/TaskPlanPanel.svelte'
   import TaskReviewPanel from '../components/task-detail/TaskReviewPanel.svelte'
@@ -232,6 +233,7 @@
         <div class="flex min-w-0 flex-1 flex-col gap-6">
           <section class={panelClass('overview', 'flex flex-col gap-6')}>
             <TaskDescriptionEditor task={t} />
+            <TaskAttachmentsPanel task={t} />
           </section>
 
           {#if showPlanTab}

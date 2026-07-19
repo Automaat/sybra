@@ -13,6 +13,7 @@ type Config struct {
 	SchemaVersion  int                  `yaml:"schema_version,omitempty" json:"schemaVersion"`
 	Logging        LoggingConfig        `yaml:"logging" json:"logging"`
 	Audit          AuditConfig          `yaml:"audit" json:"audit"`
+	Attachments    AttachmentConfig     `yaml:"attachments" json:"attachments"`
 	Trash          TrashConfig          `yaml:"trash" json:"trash"`
 	Sandbox        SandboxConfig        `yaml:"sandbox" json:"sandbox"`
 	TaskSnapshot   TaskSnapshotConfig   `yaml:"task_snapshot" json:"taskSnapshot"`

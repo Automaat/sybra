@@ -19,6 +19,7 @@ redacted config for this machine.
 | `schema_version` | `int` | `2` |  |
 | `logging` | `LoggingConfig` | _(see below)_ |  |
 | `audit` | `AuditConfig` | _(see below)_ |  |
+| `attachments` | `AttachmentConfig` | _(see below)_ |  |
 | `trash` | `TrashConfig` | _(see below)_ |  |
 | `sandbox` | `SandboxConfig` | _(see below)_ |  |
 | `task_snapshot` | `TaskSnapshotConfig` | _(see below)_ |  |
@@ -72,6 +73,14 @@ redacted config for this machine.
 |---|---|---|---|
 | `audit.enabled` | `bool` | `true` |  |
 | `audit.retention_days` | `int` | `30` |  |
+
+## AttachmentConfig (`attachments`)
+
+AttachmentConfig controls local task attachment uploads.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `attachments.max_size_mb` | `int` | `10` | MaxSizeMB caps a single uploaded attachment's raw byte size before it is written to disk. 0 falls back to DefaultAttachmentMaxSizeMB. |
 
 ## TrashConfig (`trash`)
 

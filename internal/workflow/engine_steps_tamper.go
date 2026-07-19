@@ -333,7 +333,7 @@ func scanTamperPatch(path string, cat tamperCategory, patch, baseContent, upstre
 
 func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, upstreamContent string) tamperPatchResult {
 	s := &tamperScan{
-		path: path, cat: cat, isCI: cat == tamperCatCI, seen: map[string]bool{},
+		path: path, cat: cat, isCI: cat == tamperCatCI, isGo: strings.HasSuffix(path, ".go"), seen: map[string]bool{},
 		baseContent: baseContent, mergedUpstreamSkips: mergedUpstreamSkipAllowance(baseContent, upstreamContent),
 	}
 	inHunk := false
@@ -379,6 +379,7 @@ type tamperScan struct {
 	path                string
 	cat                 tamperCategory
 	isCI                bool
+	isGo                bool
 	baseContent         string
 	mergedUpstreamSkips map[string]int
 	seen                map[string]bool
@@ -391,9 +392,85 @@ type tamperScan struct {
 	delRun              int
 	guardWindow         int
 	platformGuardDepth  int
+	postGo              goLineMaskState
+	preGo               goLineMaskState
 }
 
 const tamperGuardWindowLines = 3
+
+func (s *tamperScan) postChangeVisible(content string) string {
+	if !s.isGo {
+		return content
+	}
+	return s.postGo.visibleLine(content)
+}
+
+func (s *tamperScan) preChangeVisible(content string) string {
+	if !s.isGo {
+		return content
+	}
+	return s.preGo.visibleLine(content)
+}
+
+type goLineMaskState struct {
+	quote          byte
+	escaped        bool
+	inBlockComment bool
+}
+
+func (s *goLineMaskState) visibleLine(content string) string {
+	out := []byte(content)
+	for i := 0; i < len(out); i++ {
+		ch := out[i]
+		if s.inBlockComment {
+			out[i] = ' '
+			if ch == '*' && i+1 < len(out) && out[i+1] == '/' {
+				out[i+1] = ' '
+				s.inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if s.quote != 0 {
+			out[i] = ' '
+			switch {
+			case s.quote == '`' && ch == '`':
+				s.quote = 0
+			case s.quote != '`' && s.escaped:
+				s.escaped = false
+			case s.quote != '`' && ch == '\\':
+				s.escaped = true
+			case s.quote != '`' && ch == s.quote:
+				s.quote = 0
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(out) {
+			switch out[i+1] {
+			case '/':
+				for j := i; j < len(out); j++ {
+					out[j] = ' '
+				}
+				return string(out)
+			case '*':
+				out[i], out[i+1] = ' ', ' '
+				s.inBlockComment = true
+				i++
+				continue
+			}
+		}
+		switch ch {
+		case '"', '\'', '`':
+			s.quote = ch
+			out[i] = ' '
+		}
+	}
+	if s.quote != '`' {
+		s.quote = 0
+		s.escaped = false
+	}
+	return string(out)
+}
 
 func mergedUpstreamSkipAllowance(baseContent, upstreamContent string) map[string]int {
 	upstreamCounts := trimmedMatchingLineCounts(upstreamContent, tamperAddedSkipRe)
@@ -443,10 +520,14 @@ func (s *tamperScan) add(rule, detail string) {
 
 func (s *tamperScan) resetHunkState() {
 	s.platformGuardDepth = 0
+	s.postGo = goLineMaskState{}
+	s.preGo = goLineMaskState{}
 }
 
 func (s *tamperScan) feedContext(content string) {
-	s.updatePlatformGuardDepth(content, false)
+	visible := s.postChangeVisible(content)
+	_ = s.preChangeVisible(content)
+	s.updatePlatformGuardDepth(visible, false)
 }
 
 func (s *tamperScan) feedAdded(content string) {
@@ -456,54 +537,45 @@ func (s *tamperScan) feedAdded(content string) {
 		s.add("added-build-ignore", trimDiffLine(content))
 		return
 	}
+	visible := s.postChangeVisible(content)
 	if looksLikeComment(content) {
 		return
 	}
-	isCapabilityGuard := tamperCapabilityGuardRe.MatchString(content)
-	isPlatformGuard := isPlatformGuard(content)
+	isCapabilityGuard := tamperCapabilityGuardRe.MatchString(visible)
+	isPlatformGuard := isPlatformGuardVisible(content, visible)
 	guarded := isCapabilityGuard || isPlatformGuard || s.guardWindow > 0 || s.platformGuardDepth > 0
 	if isCapabilityGuard {
 		s.guardWindow = tamperGuardWindowLines
 	} else if s.guardWindow > 0 {
 		s.guardWindow--
 	}
-	// A skip pattern that only appears inside a Go string literal is fixture
-	// data — e.g. a diff snippet embedded as a test constant, including this
-	// detector's own regression tests (see
-	// https://github.com/Automaat/sybra/issues/2323) — not a real added
-	// t.Skip call. Match against a masked copy for .go files so that case is
-	// invisible to the detector instead of self-flagging.
-	skipScanContent := content
-	if strings.HasSuffix(s.path, ".go") {
-		skipScanContent = maskGoStringLiterals(content)
-	}
-	if tamperAddedSkipRe.MatchString(skipScanContent) && !guarded &&
+	if tamperAddedSkipRe.MatchString(visible) && !guarded &&
 		!isEstablishedSkipIdiom(content, s.baseContent) &&
 		!s.consumeMergedUpstreamSkip(content) {
 		s.add("added-skip", trimDiffLine(content))
 	}
-	if tamperAddedExitRe.MatchString(content) {
+	if tamperAddedExitRe.MatchString(visible) {
 		s.add("added-early-exit", trimDiffLine(content))
 	}
 	if s.isCI {
-		if tamperCINeuterRe.MatchString(content) {
+		if tamperCINeuterRe.MatchString(visible) {
 			s.add("ci-neutered", trimDiffLine(content))
 		}
-		if tamperCIRunRe.MatchString(content) {
+		if tamperCIRunRe.MatchString(visible) {
 			s.addRun++
 		}
 		return
 	}
-	if tamperAssertionRe.MatchString(content) {
+	if tamperAssertionRe.MatchString(visible) {
 		s.addAssert++
 	}
-	if tamperTestDeclRe.MatchString(content) {
+	if tamperTestDeclRe.MatchString(visible) {
 		s.addDecl++
 	}
-	if detectTautology(content) {
+	if detectTautology(visible) {
 		s.add("tautological-assertion", trimDiffLine(content))
 	}
-	s.updatePlatformGuardDepth(content, isPlatformGuard)
+	s.updatePlatformGuardDepth(visible, isPlatformGuard)
 }
 
 func (s *tamperScan) updatePlatformGuardDepth(content string, startsGuard bool) {
@@ -515,8 +587,8 @@ func (s *tamperScan) updatePlatformGuardDepth(content string, startsGuard bool) 
 	}
 }
 
-func isPlatformGuard(content string) bool {
-	if !tamperPlatformGuardLineRe.MatchString(content) {
+func isPlatformGuardVisible(content, visible string) bool {
+	if !tamperPlatformGuardLineRe.MatchString(visible) {
 		return false
 	}
 	expr, ok := parsePlatformGuardExpr(content)
@@ -642,45 +714,6 @@ func codeBraceDelta(content string) int {
 	return delta
 }
 
-// maskGoStringLiterals blanks the interior of Go string/rune literals in a
-// single diff line, leaving surrounding code visible. This lets the skip
-// detector above tell fixture *data* — a diff snippet embedded as a Go
-// string constant — apart from a genuine added t.Skip call: the former sits
-// entirely inside the literal's quotes, the latter does not. Scanning is
-// line-based (see codeBraceDelta), so a raw string that opens and does not
-// close on the same line masks through the rest of the line — the same
-// "fail toward not matching" trade-off already accepted for other
-// cross-line constructs in this scanner.
-func maskGoStringLiterals(content string) string {
-	var b strings.Builder
-	b.Grow(len(content))
-	var quote byte
-	escaped := false
-	for i := range len(content) {
-		ch := content[i]
-		if quote != 0 {
-			b.WriteByte(' ')
-			switch {
-			case quote != '`' && escaped:
-				escaped = false
-			case quote != '`' && ch == '\\':
-				escaped = true
-			case ch == quote:
-				quote = 0
-			}
-			continue
-		}
-		switch ch {
-		case '"', '\'', '`':
-			quote = ch
-			b.WriteByte(' ')
-		default:
-			b.WriteByte(ch)
-		}
-	}
-	return b.String()
-}
-
 func (s *tamperScan) consumeMergedUpstreamSkip(content string) bool {
 	if len(s.mergedUpstreamSkips) == 0 {
 		return false
@@ -694,19 +727,20 @@ func (s *tamperScan) consumeMergedUpstreamSkip(content string) bool {
 }
 
 func (s *tamperScan) feedRemoved(content string) {
+	visible := s.preChangeVisible(content)
 	if looksLikeComment(content) {
 		return
 	}
 	if s.isCI {
-		if tamperCIRunRe.MatchString(content) {
+		if tamperCIRunRe.MatchString(visible) {
 			s.delRun++
 		}
 		return
 	}
-	if tamperAssertionRe.MatchString(content) {
+	if tamperAssertionRe.MatchString(visible) {
 		s.delAssert++
 	}
-	if tamperTestDeclRe.MatchString(content) {
+	if tamperTestDeclRe.MatchString(visible) {
 		s.delDecl++
 	}
 }

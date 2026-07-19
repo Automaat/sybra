@@ -473,6 +473,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 		Status:          StatusTodo,
 		TaskType:        TaskTypeNormal,
 		AgentMode:       mode,
+		Attachments:     []Attachment{},
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		StatusChangedAt: now,
@@ -515,6 +516,7 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 		Status:          StatusTodo,
 		TaskType:        TaskTypeNormal,
 		AgentMode:       mode,
+		Attachments:     []Attachment{},
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		StatusChangedAt: now,
@@ -690,6 +692,7 @@ func (s *Store) CreateChat(projectID string) (Task, error) {
 		TaskType:        TaskTypeChat,
 		AgentMode:       AgentModeInteractive,
 		ProjectID:       projectID,
+		Attachments:     []Attachment{},
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		StatusChangedAt: now,
@@ -1365,6 +1368,9 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.TestingCycleStartedAt != nil {
 		t.TestingCycleStartedAt = u.TestingCycleStartedAt
 	}
+	if u.Attachments != nil {
+		t.Attachments = slices.Clone(*u.Attachments)
+	}
 	return nil
 }
 
@@ -1672,6 +1678,7 @@ func cloneTask(t Task) Task {
 	clone.AllowedTools = slices.Clone(t.AllowedTools)
 	clone.Tags = slices.Clone(t.Tags)
 	clone.DependsOn = slices.Clone(t.DependsOn)
+	clone.Attachments = slices.Clone(t.Attachments)
 	clone.AgentRuns = slices.Clone(t.AgentRuns)
 	if t.DueDate != nil {
 		d := *t.DueDate

@@ -52,6 +52,7 @@ var configRegistry = []configRegistryEntry{
 	{Path: "logging.max_files", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "logging.dir", Policy: configPolicyImmutable, Visibility: configVisibilityRaw},
 	{Path: "audit", Policy: configPolicyHot, Visibility: configVisibilityUI},
+	{Path: "attachments", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "trash", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "sandbox", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "task_snapshot", Policy: configPolicyRestart, Visibility: configVisibilityRaw},

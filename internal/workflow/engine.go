@@ -49,6 +49,7 @@ type TaskInfo struct {
 	PlanDecisions         string
 	PlanBrief             string
 	CodeReview            string
+	Attachments           []AttachmentInfo
 	// PlanDrafts holds raw per-provider plans during dual-/N-provider planning.
 	// Keys are parallel child step IDs (e.g. "plan_claude", "plan_codex").
 	PlanDrafts map[string]string
@@ -65,6 +66,15 @@ type TaskInfo struct {
 	TestingCycleStartedAt *time.Time
 	// ManualTest is repo/project-declared guidance for black-box testing.
 	ManualTest ManualTestInfo
+}
+
+// AttachmentInfo is the workflow-visible subset of task attachment metadata.
+type AttachmentInfo struct {
+	ID          string
+	FileName    string
+	ContentType string
+	SizeBytes   int64
+	Path        string
 }
 
 // ManualTestInfo describes the runnable surface a test-runner should exercise.

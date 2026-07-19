@@ -33,6 +33,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.TasksDir == "" {
 		t.Error("TasksDir should not be empty")
 	}
+	if cfg.Attachments.MaxSizeMB != DefaultAttachmentMaxSizeMB {
+		t.Errorf("Attachments.MaxSizeMB = %d, want %d", cfg.Attachments.MaxSizeMB, DefaultAttachmentMaxSizeMB)
+	}
 	if cfg.Triage.PollSeconds != 60 {
 		t.Errorf("Triage.PollSeconds = %d, want 60", cfg.Triage.PollSeconds)
 	}
@@ -143,6 +146,9 @@ func cmpConfigSubset(got, want *Config) string {
 	}
 	if got.ProjectsDir != want.ProjectsDir {
 		diffs = append(diffs, fmt.Sprintf("ProjectsDir: got %q want %q", got.ProjectsDir, want.ProjectsDir))
+	}
+	if got.Attachments.MaxSizeMB != want.Attachments.MaxSizeMB {
+		diffs = append(diffs, fmt.Sprintf("Attachments.MaxSizeMB: got %d want %d", got.Attachments.MaxSizeMB, want.Attachments.MaxSizeMB))
 	}
 	return strings.Join(diffs, "\n")
 }

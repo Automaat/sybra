@@ -948,7 +948,7 @@ func TestApplyVerdict_BudgetStopWithoutGenericStallEscalates(t *testing.T) {
 				t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
 			}
 			if got.StatusReason != tc.wantReason {
-				t.Fatalf("status_reason = %q, want watchdog reason", got.StatusReason)
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
 			}
 			if !stopped {
 				t.Fatal("stopAgent not called on budget stop verdict")

@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
@@ -326,10 +327,25 @@ func (a *App) initStats() {
 // initLocalStores wires the small local-only data stores that degrade to nil
 // on failure rather than blocking startup.
 func (a *App) initLocalStores() {
+	a.initAttachments()
 	a.initArtifacts()
 	a.initExperience()
 	a.initLearning()
 	a.initAgentQueue()
+}
+
+func (a *App) initAttachments() {
+	store, err := attachment.NewStore(a.cfg.AttachmentsDir(), int64(a.cfg.Attachments.MaxSizeMB)*1024*1024)
+	if err != nil {
+		a.logger.Warn("attachments.init.degraded", "err", err)
+		return
+	}
+	a.attachments = store
+	a.tasks.SetDeleteHook(func(id string) {
+		if err := store.DeleteTask(id); err != nil {
+			a.logger.Warn("attachments.gc.delete", "task_id", id, "err", err)
+		}
+	})
 }
 
 func (a *App) initExperience() {
@@ -829,8 +845,10 @@ func (a *App) initCluster() {
 	}
 	a.clusterRoster = roster
 	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.isWorkProject, a.auditClusterBlock, a.logger)
+	a.assigner.SetAttachments(a.attachments)
 	a.assigner.SetStopLocalAgents(a.releaseTaskAgents)
 	a.mirror = clusterlead.NewMirror(a.cfg, a.tasks, roster, a.logger, 0)
+	a.mirror.SetAttachments(a.attachments)
 	if a.clusterSvc != nil {
 		a.clusterSvc.setRoster(roster)
 		a.clusterSvc.setAssigner(a.assigner)

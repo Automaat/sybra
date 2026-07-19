@@ -293,12 +293,30 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		PlanBrief:             t.PlanBrief,
 		CodeReview:            t.CodeReview,
 		PlanDrafts:            t.PlanDrafts,
+		Attachments:           toAttachmentInfos(t.Attachments),
 		Issue:                 t.Issue,
 		Reviewed:              t.Reviewed,
 		Workflow:              t.Workflow,
 		AgentRuns:             toRunInfos(t.AgentRuns),
 		TestingCycleStartedAt: t.TestingCycleStartedAt,
 	}
+}
+
+func toAttachmentInfos(attachments []task.Attachment) []workflow.AttachmentInfo {
+	if len(attachments) == 0 {
+		return nil
+	}
+	out := make([]workflow.AttachmentInfo, len(attachments))
+	for i := range attachments {
+		out[i] = workflow.AttachmentInfo{
+			ID:          attachments[i].ID,
+			FileName:    attachments[i].FileName,
+			ContentType: attachments[i].ContentType,
+			SizeBytes:   attachments[i].SizeBytes,
+			Path:        attachments[i].Path,
+		}
+	}
+	return out
 }
 
 // toRunInfos projects a task's agent runs onto the engine-visible subset used

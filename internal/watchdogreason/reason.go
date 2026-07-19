@@ -8,6 +8,7 @@ const (
 	budgetStopPrefix           = "watchdog: budget stop"
 	rateLimitPrefix            = "watchdog: rate limit"
 	rewardHackingPrefix        = "watchdog: reward_hacking"
+	rewardHackingRetryPrefix   = "watchdog: reward-hacking retry"
 	verifyFailedPrefix         = "watchdog: verify suite still fails after loop stop:"
 	verifyUnconfirmedPrefix    = "watchdog: could not confirm agent stopped before verify"
 	retryBudgetExhaustedPhrase = "retry budget exhausted"
@@ -44,8 +45,32 @@ func IsRetryableStop(reason string) bool {
 	if reason == "watchdog stop" {
 		return true
 	}
-	return (reason == loopStopPrefix || strings.HasPrefix(reason, loopStopPrefix+":")) &&
-		!strings.Contains(reason, retryBudgetExhaustedPhrase)
+	if strings.Contains(reason, retryBudgetExhaustedPhrase) {
+		return false
+	}
+	if reason == loopStopPrefix || strings.HasPrefix(reason, loopStopPrefix+":") {
+		return true
+	}
+	return isLegacyRetryableStop(reason)
+}
+
+func isLegacyRetryableStop(reason string) bool {
+	if !strings.HasPrefix(reason, "watchdog: ") {
+		return false
+	}
+	for _, prefix := range []string{
+		budgetStopPrefix,
+		rateLimitPrefix,
+		rewardHackingPrefix,
+		rewardHackingRetryPrefix,
+		verifyFailedPrefix,
+		verifyUnconfirmedPrefix,
+	} {
+		if strings.HasPrefix(reason, prefix) {
+			return false
+		}
+	}
+	return strings.Contains(strings.ToLower(reason), "loop")
 }
 
 func withDetail(prefix, detail string) string {

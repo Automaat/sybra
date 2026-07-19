@@ -29,6 +29,7 @@ func configToSettings(c *config.Config) AppSettings {
 			MaxSizeMB: c.Logging.MaxSizeMB,
 			MaxFiles:  c.Logging.MaxFiles,
 		},
+		Attachments:  c.Attachments,
 		Audit:        c.Audit,
 		Renovate:     c.Renovate,
 		Providers:    c.Providers,

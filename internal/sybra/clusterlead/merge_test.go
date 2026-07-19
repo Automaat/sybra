@@ -42,7 +42,15 @@ func TestMergeAuthoritySplit(t *testing.T) {
 		PlanDecisions: "# Decisions\n\nNo open decisions.",
 		PlanBrief:     "the brief",
 		CodeReview:    "the review",
-		UpdatedAt:     t1,
+		Attachments: []task.Attachment{{
+			ID:          "att_1",
+			FileName:    "evidence.txt",
+			ContentType: "text/plain",
+			SizeBytes:   8,
+			Path:        "/leader/local/attachments/task-1/att_1/evidence.txt",
+			CreatedAt:   t1,
+		}},
+		UpdatedAt: t1,
 	}
 
 	out, ok := Merge(canonical, follower)
@@ -64,7 +72,10 @@ func TestMergeAuthoritySplit(t *testing.T) {
 		out.PlanResearch != "the research" ||
 		out.PlanDecisions != "# Decisions\n\nNo open decisions." ||
 		out.PlanBrief != "the brief" ||
-		out.CodeReview != "the review" {
+		out.CodeReview != "the review" ||
+		len(out.Attachments) != 1 ||
+		out.Attachments[0].ID != "att_1" ||
+		out.Attachments[0].Path != "/leader/local/attachments/task-1/att_1/evidence.txt" {
 		t.Errorf("execution fields must be follower-authoritative: %+v", out)
 	}
 

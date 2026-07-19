@@ -1046,6 +1046,14 @@ func BuildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription boo
 		return prompt
 	}
 	base := fmt.Sprintf("# Task: %s\n\n%s", t.Title, t.Body)
+	if len(t.Attachments) > 0 {
+		lines := make([]string, 0, len(t.Attachments)+2)
+		lines = append(lines, "## Attachments")
+		for _, att := range t.Attachments {
+			lines = append(lines, fmt.Sprintf("- %s | %d bytes | %s | %s", att.FileName, att.SizeBytes, att.ContentType, att.Path))
+		}
+		base += "\n\n" + strings.Join(lines, "\n")
+	}
 	if prompt == "" {
 		return base
 	}

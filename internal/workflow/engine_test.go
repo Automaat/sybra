@@ -1106,6 +1106,7 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing.T) {
 	tests := []struct {
 		name       string
+		reason     string
 		retries    string
 		wantStarts int
 		wantStatus string
@@ -1115,7 +1116,8 @@ func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing
 		wantClean  string
 	}{
 		{
-			name:       "first retry requeues implementation",
+			name:       "structured first retry requeues implementation",
+			reason:     "watchdog: loop stop: looping on toolchain setup",
 			wantStarts: 1,
 			wantStatus: "in-progress",
 			wantRetry:  "1",
@@ -1123,7 +1125,16 @@ func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing
 			wantClean:  "abc123",
 		},
 		{
+			name:       "legacy first retry requeues implementation",
+			reason:     "watchdog: looping on toolchain setup",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantRetry:  "1",
+			wantClean:  "HEAD",
+		},
+		{
 			name:       "budget exhausted stays human required",
+			reason:     "watchdog: loop stop: looping on toolchain setup",
 			retries:    "2",
 			wantStarts: 0,
 			wantStatus: "human-required",
@@ -1147,7 +1158,7 @@ func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing
 			tasks.Put(TaskInfo{
 				ID:           "t1",
 				Status:       "human-required",
-				StatusReason: "watchdog: loop stop: looping on toolchain setup",
+				StatusReason: tc.reason,
 				AgentMode:    "headless",
 				Workflow: &Execution{
 					WorkflowID:  "test-simple",

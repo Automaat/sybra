@@ -3,6 +3,8 @@ package sybra
 import (
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/config"
 )
 
 func TestUpdateSettings_ValidationRejectsBadFallbackModel(t *testing.T) {
@@ -80,5 +82,21 @@ func TestUpdateSettings_AcceptsLogRetentionDisableSentinels(t *testing.T) {
 		svc.cfg.Agent.LogGzipAfterDays != -1 ||
 		svc.cfg.Agent.LogRetentionMaxSizeMB != -1 {
 		t.Fatalf("log retention sentinels not persisted: %+v", svc.cfg.Agent)
+	}
+}
+
+func TestUpdateSettings_PreservesAttachmentLimitWhenOmitted(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.cfg.Attachments.MaxSizeMB = 12
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	settings := svc.GetSettings()
+	settings.Attachments = config.AttachmentConfig{}
+
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+	if got := svc.cfg.Attachments.MaxSizeMB; got != 12 {
+		t.Fatalf("Attachments.MaxSizeMB = %d, want preserved value 12", got)
 	}
 }

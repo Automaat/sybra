@@ -1513,3 +1513,73 @@ func TestTaskService_EnrichFromPR_UnknownViewerDefersInsteadOfMisrouting(t *test
 		t.Error("task was tagged for review on an unidentified PR; it may be our own")
 	}
 }
+
+func TestTaskService_AttachmentsCRUD(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	created, err := svc.tasks.Create("attachment task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	uploaded, err := svc.UploadAttachment(created.ID, "diagram?.png", []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	if err != nil {
+		t.Fatalf("UploadAttachment: %v", err)
+	}
+	if uploaded.ID == "" {
+		t.Fatal("UploadAttachment returned empty ID")
+	}
+	if uploaded.FileName != "diagram-.png" {
+		t.Fatalf("FileName = %q, want sanitized name", uploaded.FileName)
+	}
+
+	listed, err := svc.ListAttachments(created.ID)
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != uploaded.ID {
+		t.Fatalf("ListAttachments = %+v, want uploaded attachment", listed)
+	}
+
+	url, err := svc.GetAttachmentURL(created.ID, uploaded.ID)
+	if err != nil {
+		t.Fatalf("GetAttachmentURL: %v", err)
+	}
+	if !strings.HasPrefix(url, "data:image/") {
+		t.Fatalf("GetAttachmentURL = %q, want image data URL", url)
+	}
+
+	if err := svc.DeleteAttachment(created.ID, uploaded.ID); err != nil {
+		t.Fatalf("DeleteAttachment: %v", err)
+	}
+
+	listed, err = svc.ListAttachments(created.ID)
+	if err != nil {
+		t.Fatalf("ListAttachments after delete: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("len(ListAttachments after delete) = %d, want 0", len(listed))
+	}
+	if _, err := svc.GetAttachmentURL(created.ID, uploaded.ID); err == nil {
+		t.Fatal("GetAttachmentURL after delete returned nil error")
+	}
+}
+
+func TestTaskService_DeleteTaskRemovesAttachmentBlobs(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	created, err := svc.tasks.Create("attachment cleanup task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploaded, err := svc.UploadAttachment(created.ID, "cleanup.txt", []byte("cleanup"))
+	if err != nil {
+		t.Fatalf("UploadAttachment: %v", err)
+	}
+	if err := svc.DeleteTask(created.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	if _, err := os.Stat(uploaded.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("attachment blob still exists after task delete: %v", err)
+	}
+}

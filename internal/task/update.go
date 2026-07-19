@@ -54,6 +54,7 @@ type Update struct {
 	Outcome               *string
 	MergeCommit           *string
 	TestingCycleStartedAt *time.Time
+	Attachments           *[]Attachment
 }
 
 func (u Update) writesSidecar() bool {

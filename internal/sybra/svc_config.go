@@ -49,6 +49,7 @@ func (s *ConfigService) GetSettings() AppSettings {
 			MaxSizeMB: c.Logging.MaxSizeMB,
 			MaxFiles:  c.Logging.MaxFiles,
 		},
+		Attachments:  c.Attachments,
 		Audit:        c.Audit,
 		Renovate:     c.Renovate,
 		Providers:    c.Providers,
@@ -415,6 +416,13 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 	next.Logging.MaxSizeMB = settings.Logging.MaxSizeMB
 	next.Logging.MaxFiles = settings.Logging.MaxFiles
 	next.Audit = settings.Audit
+	next.Attachments = settings.Attachments
+	if next.Attachments.MaxSizeMB == 0 {
+		next.Attachments.MaxSizeMB = existing.Attachments.MaxSizeMB
+		if next.Attachments.MaxSizeMB == 0 {
+			next.Attachments.MaxSizeMB = config.DefaultAttachmentMaxSizeMB
+		}
+	}
 	next.Renovate = settings.Renovate
 	next.Providers = settings.Providers
 	next.GitHub = settings.GitHub

@@ -359,6 +359,34 @@ export class AgentDefaults {
     }
 }
 
+/**
+ * AttachmentConfig controls local task attachment uploads.
+ */
+export class AttachmentConfig {
+    /**
+     * MaxSizeMB caps a single uploaded attachment's raw byte size before it is
+     * written to disk. 0 falls back to DefaultAttachmentMaxSizeMB.
+     */
+    "maxSizeMB": number;
+
+    /** Creates a new AttachmentConfig instance. */
+    constructor($$source: Partial<AttachmentConfig> = {}) {
+        if (!("maxSizeMB" in $$source)) {
+            this["maxSizeMB"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AttachmentConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AttachmentConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AttachmentConfig($$parsedSource as Partial<AttachmentConfig>);
+    }
+}
+
 export class AuditConfig {
     "enabled": boolean;
     "retentionDays": number;

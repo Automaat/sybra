@@ -14,6 +14,7 @@ func (a *App) wireTaskService() {
 	a.taskSvc.worktrees = a.worktrees
 	a.taskSvc.sandboxes = a.sandboxes
 	a.taskSvc.artifacts = a.artifacts
+	a.taskSvc.attachments = a.attachments
 	a.taskSvc.wg = &a.wg
 	a.taskSvc.logger = a.logger
 	a.taskSvc.audit = a.audit

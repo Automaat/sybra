@@ -89,6 +89,9 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	if cfg.Audit.RetentionDays < 1 || cfg.Audit.RetentionDays > 365 {
 		add("audit.retention_days: retentionDays must be 1–365")
 	}
+	if cfg.Attachments.MaxSizeMB < 1 || cfg.Attachments.MaxSizeMB > 20 {
+		add("attachments.max_size_mb: maxSizeMB must be 1–20")
+	}
 	if cfg.GitHub.PollerRole != "" && cfg.GitHub.PollerRole != "primary" && cfg.GitHub.PollerRole != "secondary" {
 		add("github.poller_role must be \"primary\", \"secondary\", or empty, got %q", cfg.GitHub.PollerRole)
 	}
