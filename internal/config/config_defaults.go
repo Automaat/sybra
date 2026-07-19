@@ -662,6 +662,9 @@ func defaultSeedConfig() *Config {
 		Cluster: ClusterConfig{
 			Role: ClusterRoleStandalone,
 		},
+		Webhook: WebhookConfig{
+			Port: DefaultWebhookPort,
+		},
 		Orchestrator: OrchestratorConfig{
 			Role: InstanceRoleFull,
 			// Seed the pressure thresholds here (not in applyPressureDefaults) so

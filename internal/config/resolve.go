@@ -16,16 +16,18 @@ type Environment struct {
 	TasksDir       string
 	TodoistToken   string
 	AuthToken      string
+	WebhookSecret  string
 	AllowedOrigins []string
 }
 
 func environmentFromOS() Environment {
 	env := Environment{
-		LogLevel:     os.Getenv("SYBRA_LOG_LEVEL"),
-		LogDir:       os.Getenv("SYBRA_LOG_DIR"),
-		TasksDir:     os.Getenv("SYBRA_TASKS_DIR"),
-		TodoistToken: os.Getenv("SYBRA_TODOIST_TOKEN"),
-		AuthToken:    os.Getenv("SYBRA_AUTH_TOKEN"),
+		LogLevel:      os.Getenv("SYBRA_LOG_LEVEL"),
+		LogDir:        os.Getenv("SYBRA_LOG_DIR"),
+		TasksDir:      os.Getenv("SYBRA_TASKS_DIR"),
+		TodoistToken:  os.Getenv("SYBRA_TODOIST_TOKEN"),
+		AuthToken:     os.Getenv("SYBRA_AUTH_TOKEN"),
+		WebhookSecret: os.Getenv("SYBRA_WEBHOOK_SECRET"),
 	}
 	if raw := os.Getenv("SYBRA_ALLOWED_ORIGINS"); raw != "" {
 		parts := strings.Split(raw, ",")
@@ -95,6 +97,9 @@ func applyEnvironmentOverrides(cfg *ResolvedConfig, env Environment) {
 	if env.AuthToken != "" {
 		cfg.Server.AuthToken = env.AuthToken
 	}
+	if env.WebhookSecret != "" {
+		cfg.Webhook.Secret = env.WebhookSecret
+	}
 	if len(env.AllowedOrigins) > 0 {
 		cfg.Server.AllowedOrigins = append([]string(nil), env.AllowedOrigins...)
 	}
@@ -127,6 +132,9 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	}
 	if cfg.LoopAgentsDir == "" {
 		cfg.LoopAgentsDir = defaultLoopAgentsDir()
+	}
+	if cfg.Webhook.Port <= 0 {
+		cfg.Webhook.Port = DefaultWebhookPort
 	}
 	if cfg.Todoist.PollSeconds <= 0 {
 		cfg.Todoist.PollSeconds = 120
