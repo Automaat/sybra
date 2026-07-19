@@ -20,6 +20,12 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+// expandIssueLocker serializes one umbrella's critical section across both
+// goroutines in this process and other processes sharing the same task store.
+// Expand/Recover hold it across the full scan -> plan -> materialize window so
+// a second caller cannot write a stale DAG after the first one persists.
+var expandIssueLocker = fsutil.NewKeyedLocker()
+
 // errSkipUpdate signals tagTrackerDegraded's UpdateFn callback that the tag
 // is already present, so the read-modify-write should short-circuit without
 // writing (and without firing a task:updated event).
@@ -217,6 +223,21 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 		return Result{}, fmt.Errorf("plan umbrella: %w", err)
 	}
 
+	// Re-read right before writes. The planner can run for minutes, and issue/
+	// task mutations outside Expand do not take this lock. Writing against the
+	// pre-plan snapshot would reopen the exact stale-check -> persist gap this
+	// helper exists to close.
+	existing, tracker, err = scanExisting(tasks, umb.URL)
+	if err != nil {
+		return Result{}, fmt.Errorf("re-scan existing tasks: %w", err)
+	}
+	if tracker.exists && allMaterialized(planSubs, existing) {
+		if err := clearExpandFailure(tasks, tracker.id); err != nil {
+			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
+		}
+		return Result{UmbrellaURL: umb.URL, Skipped: len(subs), ChildCount: len(subs)}, nil
+	}
+
 	specs := ChildSpecs(plan, planSubs, existing)
 	created, err := materialize(tasks, umb, specs, byRef, tracker.exists, tracker.id, plan.MaxParallel, plan.Fallback)
 	if err != nil {
@@ -238,13 +259,17 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 }
 
 func lockExpandIssue(tasks *task.Manager, issueURL string) (func() error, error) {
-	sum := sha256.Sum256([]byte(NormalizeIssueRef(issueURL)))
+	key := NormalizeIssueRef(issueURL)
+	sum := sha256.Sum256([]byte(key))
 	lockPath := filepath.Join(tasks.Store().Dir(), fmt.Sprintf(".umbrella-expand-%x", sum[:8]))
-	unlock, err := fsutil.LockFile(lockPath)
+	unlock, err := expandIssueLocker.Lock(key, lockPath)
 	if err != nil {
 		return nil, fmt.Errorf("lock umbrella expand %s: %w", issueURL, err)
 	}
-	return unlock, nil
+	return func() error {
+		unlock()
+		return nil
+	}, nil
 }
 
 // allMaterialized reports whether every open sub-issue already has a task.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -127,6 +128,117 @@ func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
 	if got := children["o/r#3"].DependsOn; len(got) != 1 || got[0] != "https://github.com/o/r/issues/2" {
 		t.Fatalf("child #3 deps = %v, want issue #2", got)
 	}
+}
+
+func TestExpand_ConcurrentCallsMaterializeSingleDAG(t *testing.T) {
+	restore := githubFetchUmbrellaForTest(t, github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+	}, makeTestIssues(3))
+	defer restore()
+
+	tasks := newTestTaskManager(t)
+	run := func(context.Context, string, string) (string, error) {
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2"},{"issue":"o/r#3"}],"maxParallel":3}`, nil
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := Expand(context.Background(), tasks, run, "https://github.com/o/r/issues/100")
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Expand: %v", err)
+		}
+	}
+
+	assertSingleDAG(t, tasks, "https://github.com/o/r/issues/100", 3)
+}
+
+func TestExpand_RechecksExistingStateBeforeMaterialize(t *testing.T) {
+	umb := github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+	}
+	restore := githubFetchUmbrellaForTest(t, umb, makeTestIssues(3))
+	defer restore()
+
+	tasks := newTestTaskManager(t)
+	plannerStarted := make(chan struct{})
+	releasePlanner := make(chan struct{})
+	run := func(context.Context, string, string) (string, error) {
+		close(plannerStarted)
+		<-releasePlanner
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2"},{"issue":"o/r#3"}],"maxParallel":3}`, nil
+	}
+
+	type expandOutcome struct {
+		res Result
+		err error
+	}
+	done := make(chan expandOutcome, 1)
+	go func() {
+		res, err := Expand(context.Background(), tasks, run, umb.URL)
+		done <- expandOutcome{res: res, err: err}
+	}()
+
+	<-plannerStarted
+
+	tracker, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+		Issue:     task.Ptr(umb.URL),
+		TaskType:  task.Ptr(task.TaskTypeUmbrella),
+		ProjectID: task.Ptr(umb.Repository),
+		Status:    task.Ptr(task.StatusInProgress),
+		Tags:      task.Ptr([]string{"umbrella", MaxParallelTag(DefaultMaxParallel)}),
+	})
+	if err != nil {
+		t.Fatalf("create tracker: %v", err)
+	}
+	for _, issue := range []string{
+		"https://github.com/o/r/issues/1",
+		"https://github.com/o/r/issues/2",
+		"https://github.com/o/r/issues/3",
+	} {
+		if _, err := tasks.CreateFull("child", "", task.AgentModeHeadless, task.Update{
+			Issue:         task.Ptr(issue),
+			UmbrellaIssue: task.Ptr(umb.URL),
+			ProjectID:     task.Ptr(umb.Repository),
+			Status:        task.Ptr(task.StatusTodo),
+		}); err != nil {
+			t.Fatalf("create child %s: %v", issue, err)
+		}
+	}
+
+	close(releasePlanner)
+	outcome := <-done
+	if outcome.err != nil {
+		t.Fatalf("Expand: %v", outcome.err)
+	}
+	if outcome.res.Created != 0 {
+		t.Fatalf("Created = %d, want 0 once children appeared during planning", outcome.res.Created)
+	}
+	if outcome.res.Skipped != 3 {
+		t.Fatalf("Skipped = %d, want 3 once all children already exist", outcome.res.Skipped)
+	}
+
+	gotTracker, err := tasks.Get(tracker.ID)
+	if err != nil {
+		t.Fatalf("Get tracker: %v", err)
+	}
+	if ParseMaxParallel(gotTracker.Tags) != DefaultMaxParallel {
+		t.Fatalf("tracker tags changed unexpectedly = %v", gotTracker.Tags)
+	}
+	assertSingleDAG(t, tasks, umb.URL, 3)
 }
 
 func githubFetchUmbrellaForTest(t *testing.T, umb github.Issue, subs []github.Issue) func() {
@@ -511,5 +623,35 @@ func TestIsUmbrellaIssue(t *testing.T) {
 				t.Errorf("IsUmbrellaIssue(%q, %v) = %v, want %v", c.title, c.labels, got, c.want)
 			}
 		})
+	}
+}
+
+func assertSingleDAG(t *testing.T, tasks *task.Manager, umbrellaURL string, wantChildren int) {
+	t.Helper()
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	umbKey := NormalizeIssueRef(umbrellaURL)
+	trackers := 0
+	children := map[string]int{}
+	for i := range all {
+		switch {
+		case all[i].TaskType == task.TaskTypeUmbrella && NormalizeIssueRef(all[i].Issue) == umbKey:
+			trackers++
+		case NormalizeIssueRef(all[i].UmbrellaIssue) == umbKey:
+			children[NormalizeIssueRef(all[i].Issue)]++
+		}
+	}
+	if trackers != 1 {
+		t.Fatalf("trackers = %d, want 1 for %s", trackers, umbrellaURL)
+	}
+	if len(children) != wantChildren {
+		t.Fatalf("children = %d unique issues, want %d: %v", len(children), wantChildren, children)
+	}
+	for issue, count := range children {
+		if count != 1 {
+			t.Fatalf("child %s duplicated %d times", issue, count)
+		}
 	}
 }
