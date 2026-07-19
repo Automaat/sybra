@@ -10,10 +10,20 @@ import (
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
 )
+
+type fixedStatusHookPRFinder struct {
+	number int
+	found  bool
+}
+
+func (f fixedStatusHookPRFinder) FindPRForBranch(context.Context, string, string) (number int, found bool, err error) {
+	return f.number, f.found, nil
+}
 
 // TestApp_WatcherStatusHook_AdvancesWorkflow reproduces the production bug
 // where two tasks sat permanently in plan-review without ever entering
@@ -138,6 +148,106 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 				return // success — workflow advanced
 			}
 		}
+	}
+}
+
+func TestApp_StatusHook_RecoversMissingLivePRBlockerBeforeAgentStop(t *testing.T) {
+	a := setupApp(t)
+
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, "pr-recovery.yaml"), []byte(`
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: a.tasks},
+		&fakeAgentLauncher{tasks: a.tasks},
+		a.logger,
+	)
+	engine.SetContext(t.Context())
+	wtPath := newDispatchTestWorktree(t, "feat/live-proof")
+	if err := project.PushSync(t.Context(), wtPath, "feat/live-proof"); err != nil {
+		t.Fatalf("PushSync: %v", err)
+	}
+	engine.SetWorktreeGetter(fixedWorktreeGetter{path: wtPath})
+	engine.SetPRFinder(fixedStatusHookPRFinder{number: 42, found: true})
+	a.workflowEngine = engine
+	a.initStatusHook()
+
+	created, err := a.tasks.Create("recover missing live pr blocker", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wfExec := &workflow.Execution{
+		WorkflowID:  "pr-recovery",
+		CurrentStep: "implement",
+		State:       workflow.ExecRunning,
+		Variables:   map[string]string{},
+	}
+	if _, err := a.tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusInProgress),
+		ProjectID:    task.Ptr("acme/widgets"),
+		Branch:       task.Ptr("feat/live-proof"),
+		StatusReason: task.Ptr(""),
+		Workflow:     &wfExec,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := a.tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("manual verification blocker: no current open PR could be verified as allFlaky for the required live pr-monitor proof"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want in-review", got.Status)
+	}
+	if got.PRNumber != 42 {
+		t.Fatalf("pr number = %d, want 42", got.PRNumber)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status reason = %q, want empty", got.StatusReason)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", got.Workflow)
 	}
 }
 

@@ -6,13 +6,13 @@ import (
 	"testing"
 )
 
-// TestAdversarialVerifyChecks_DoesNotHumanRequireWhenCorruptInstallRepairFails
+// TestAdversarialVerifyChecks_HumanRequiresWhenCorruptInstallRepairFails
 // exercises task f8ca18d6's failure mode end to end: node_modules is left
 // corrupted by a killed `npm ci` (missing .bin), and the repair's own `npm
-// ci` also fails (e.g. killed again, or offline). The still-broken install
-// must never be run through the verify command and misattributed to the
-// diff as a human-required implementation failure.
-func TestAdversarialVerifyChecks_DoesNotHumanRequireWhenCorruptInstallRepairFails(t *testing.T) {
+// ci` also fails (e.g. killed again, or offline). The still-broken install must
+// never run through the verify command, but the gate must also fail closed so
+// an implementation cannot bypass verification by corrupting node_modules.
+func TestAdversarialVerifyChecks_HumanRequiresWhenCorruptInstallRepairFails(t *testing.T) {
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	frontend := filepath.Join(wt, "frontend")
 	nm := filepath.Join(frontend, "node_modules")
@@ -47,11 +47,13 @@ func TestAdversarialVerifyChecks_DoesNotHumanRequireWhenCorruptInstallRepairFail
 	}
 
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status == "human-required" {
-		t.Fatalf("corrupted node_modules with failed repair still routed to human-required; output=%q reason=%q",
-			out.Output, ti.StatusReason)
+	if out.Output != "flagged" {
+		t.Fatalf("output = %q, want flagged", out.Output)
 	}
-	if ti.Status != "in-progress" {
-		t.Errorf("status = %q, want unchanged (in-progress)", ti.Status)
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if ti.StatusReason == "" {
+		t.Fatal("expected a human-required status reason")
 	}
 }

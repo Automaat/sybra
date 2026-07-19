@@ -3,23 +3,17 @@ package sybra
 import (
 	"fmt"
 	"log/slog"
-	"regexp"
+	"os"
+	"strings"
 	"sync"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
-	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
+	"gopkg.in/yaml.v3"
 )
-
-// modelNameRe restricts the agent model identifier to characters safe to embed
-// on a CLI argument without quoting. Compiled once — recompiling per call
-// allocates ~1KB of regex state each time UpdateSettings runs.
-var modelNameRe = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // ConfigService exposes settings read/write as Wails-bound methods.
 type ConfigService struct {
@@ -89,9 +83,10 @@ func (s *ConfigService) UpdateTodoistToken(token string) error {
 	return nil
 }
 
-// GetDefaultSettings returns the settings a fresh install would have. The UI
-// diffs live values against these to flag "modified from default" fields and to
-// power per-field reset-to-default, without hardcoding defaults in TypeScript.
+// GetDefaultSettings returns the settings an empty config file resolves to. The
+// UI diffs live values against these to flag "modified from default" fields and
+// to power per-field reset-to-default, without hardcoding defaults in
+// TypeScript.
 func (s *ConfigService) GetDefaultSettings() AppSettings {
 	return configToSettings(config.DefaultConfig())
 }
@@ -109,23 +104,142 @@ func (s *ConfigService) GetRawConfig() (string, error) {
 // formatting and comments), then hot-reloads. Invalid YAML or a value that
 // fails validation is rejected without touching disk.
 func (s *ConfigService) SaveRawConfig(raw string) error {
-	parsed := config.DefaultConfig()
-	if err := yaml.Unmarshal([]byte(raw), parsed); err != nil {
-		return validationError(fmt.Sprintf("invalid YAML: %s", err))
-	}
-	// validateSettings reads s.cfg (stored-token check); guard it. ReloadFromDisk
-	// below takes the write lock itself, so release before calling it.
+	saveRaw := []byte(raw)
+	var err error
 	s.mu.RLock()
-	err := s.validateSettings(configToSettings(parsed))
+	preserveServerToken := serverAuthTokenForRawSave(s.cfg)
 	s.mu.RUnlock()
-	if err != nil {
-		return err
+	if preserveServerToken != "" {
+		saveRaw, err = ensureServerAuthTokenInRawConfig(saveRaw, preserveServerToken)
+		if err != nil {
+			return validationError(fmt.Sprintf("invalid config: %s", err))
+		}
 	}
-	if err := config.WriteRawConfig([]byte(raw)); err != nil {
+	fileCfg, err := config.ParseFileConfig(saveRaw)
+	if err != nil {
+		return validationError(fmt.Sprintf("invalid config: %s", err))
+	}
+	if _, err := config.ResolveFromCurrentEnvironment(fileCfg, config.ResolveOptions{}); err != nil {
+		return validationError(err.Error())
+	}
+	if err := config.WriteRawConfig(saveRaw); err != nil {
 		return err
 	}
 	_, err = s.ReloadFromDisk()
 	return err
+}
+
+func serverAuthTokenForRawSave(cfg *config.Config) string {
+	if cfg == nil || strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN")) != "" {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Server.AuthToken)
+}
+
+func ensureServerAuthTokenInRawConfig(raw []byte, token string) ([]byte, error) {
+	fileCfg, err := config.ParseFileConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	if fileCfg.Has("server", "auth_token") {
+		return raw, nil
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return nil, err
+	}
+	keyNode, valueNode, ok := yamlTopLevelField(&root, "server")
+	if !ok {
+		return appendServerBlock(raw, token), nil
+	}
+	if valueNode.Kind != yaml.MappingNode {
+		return rewriteRawConfigServerAuthToken(&root, keyNode, valueNode, token)
+	}
+	return insertServerAuthTokenLine(raw, keyNode, token)
+}
+
+func yamlTopLevelField(root *yaml.Node, key string) (keyNode, valueNode *yaml.Node, ok bool) {
+	node := root
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		node = node.Content[0]
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil, nil, false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i], node.Content[i+1], true
+		}
+	}
+	return nil, nil, false
+}
+
+func appendServerBlock(raw []byte, token string) []byte {
+	trimmed := strings.TrimRight(string(raw), "\n")
+	if trimmed != "" {
+		trimmed += "\n"
+	}
+	return []byte(trimmed + "server:\n  auth_token: " + yamlScalar(token) + "\n")
+}
+
+func rewriteRawConfigServerAuthToken(root, keyNode, valueNode *yaml.Node, token string) ([]byte, error) {
+	if valueNode.Kind == 0 {
+		valueNode.Kind = yaml.MappingNode
+		valueNode.Tag = "!!map"
+		valueNode.Value = ""
+		valueNode.Style = 0
+	}
+	valueNode.Kind = yaml.MappingNode
+	valueNode.Tag = "!!map"
+	valueNode.Content = append(valueNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "auth_token"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: token},
+	)
+	if keyNode != nil && keyNode.HeadComment != "" && valueNode.HeadComment == "" {
+		valueNode.HeadComment = keyNode.HeadComment
+	}
+	var out strings.Builder
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(root); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return []byte(out.String()), nil
+}
+
+func insertServerAuthTokenLine(raw []byte, keyNode *yaml.Node, token string) ([]byte, error) {
+	lines := strings.Split(string(raw), "\n")
+	serverIndent := keyNode.Column - 1
+	insertAt := len(lines)
+	for i := keyNode.Line; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent <= serverIndent {
+			insertAt = i
+			break
+		}
+	}
+	entry := strings.Repeat(" ", serverIndent+2) + "auth_token: " + yamlScalar(token)
+	lines = append(lines, "")
+	copy(lines[insertAt+1:], lines[insertAt:])
+	lines[insertAt] = entry
+	return []byte(strings.Join(lines, "\n")), nil
+}
+
+func yamlScalar(s string) string {
+	data, err := yaml.Marshal(s)
+	if err != nil {
+		return s
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // UpdateSettings validates, persists, and hot-reloads the provided settings.
@@ -144,53 +258,12 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) error {
 
 // validateSettings checks all editable fields for validity.
 func (s *ConfigService) validateSettings(settings AppSettings) error {
-	if settings.Agent.Provider != "" && !providerid.IsKnown(settings.Agent.Provider) {
-		return validationError(fmt.Sprintf("invalid provider: %q", settings.Agent.Provider))
+	next := settingsToConfig(s.cfg, settings)
+	if next.Todoist.PollSeconds == 0 {
+		next.Todoist.PollSeconds = 120
 	}
-	if settings.Agent.Model != "" && !modelNameRe.MatchString(settings.Agent.Model) {
-		return validationError(fmt.Sprintf("invalid model: %q", settings.Agent.Model))
-	}
-	if settings.Agent.FallbackModel != "" && !modelNameRe.MatchString(settings.Agent.FallbackModel) {
-		return validationError(fmt.Sprintf("invalid fallback model: %q", settings.Agent.FallbackModel))
-	}
-	validModes := map[string]bool{"": true, "headless": true, "interactive": true}
-	if !validModes[settings.Agent.Mode] {
-		return validationError(fmt.Sprintf("invalid mode: %q", settings.Agent.Mode))
-	}
-	if settings.Agent.MaxConcurrent < 1 || settings.Agent.MaxConcurrent > 100 {
-		return validationError("maxConcurrent must be 1–100")
-	}
-	if settings.Agent.LogRetentionDays < -1 {
-		return validationError("logRetentionDays must be -1 or greater")
-	}
-	if settings.Agent.LogGzipAfterDays < -1 {
-		return validationError("logGzipAfterDays must be -1 or greater")
-	}
-	if settings.Agent.LogRetentionMaxSizeMB < -1 {
-		return validationError("logRetentionMaxSizeMb must be -1 or greater")
-	}
-	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
-	if !validLevels[settings.Logging.Level] {
-		return validationError(fmt.Sprintf("invalid log level: %q", settings.Logging.Level))
-	}
-	if settings.Logging.MaxSizeMB < 1 || settings.Logging.MaxSizeMB > 500 {
-		return validationError("maxSizeMB must be 1–500")
-	}
-	if settings.Logging.MaxFiles < 1 || settings.Logging.MaxFiles > 50 {
-		return validationError("maxFiles must be 1–50")
-	}
-	if settings.Audit.RetentionDays < 1 || settings.Audit.RetentionDays > 365 {
-		return validationError("retentionDays must be 1–365")
-	}
-	if settings.Todoist.Enabled && settings.Todoist.APIToken == "" && s.cfg.Todoist.APIToken == "" {
-		return validationError("todoist API token required when enabled")
-	}
-	// 0 means "use the default" (config.Load coerces it to 120); any other
-	// out-of-range value is rejected. AppSettings is passed by value, so we
-	// cannot silently coerce here — the caller would never see the change.
-	if settings.Todoist.PollSeconds != 0 &&
-		(settings.Todoist.PollSeconds < 30 || settings.Todoist.PollSeconds > 3600) {
-		return validationError("todoist poll interval must be 30–3600 seconds")
+	if err := config.ValidateResolvedConfig(&next); err != nil {
+		return validationError(err.Error())
 	}
 	return nil
 }

@@ -1293,8 +1293,8 @@ func TestStoreCreateDefaultMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.AgentMode != "interactive" {
-		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "interactive")
+	if created.AgentMode != "headless" {
+		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "headless")
 	}
 }
 
@@ -1430,6 +1430,98 @@ func TestStoreListInvalidatePathRefreshesJSONSidecar(t *testing.T) {
 	}
 	if tasks[0].PlanContract != contract {
 		t.Fatalf("PlanContract = %q, want %q", tasks[0].PlanContract, contract)
+	}
+}
+
+func TestStoreListDetectsExternalTaskFileChangeWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("Original", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	created.Title = "Edited on disk"
+	data, err := Marshal(created)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
+		t.Fatalf("write edited task: %v", err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("list after external edit: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].Title != "Edited on disk" {
+		t.Fatalf("Title = %q, want external edit", tasks[0].Title)
+	}
+}
+
+func TestStoreListDetectsExternalTaskDeleteWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("Deleted", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	if err := os.Remove(created.FilePath); err != nil {
+		t.Fatalf("remove task: %v", err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("list after external delete: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("got %d tasks, want deleted task gone", len(tasks))
+	}
+}
+
+func TestStoreListDetectsExternalSidecarChangeWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("Task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	planPath := filepath.Join(dir, created.ID+".plan.md")
+	if err := os.WriteFile(planPath, []byte("# refreshed plan"), 0o644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("list after external sidecar write: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].Plan != "# refreshed plan" {
+		t.Fatalf("Plan = %q, want external sidecar", tasks[0].Plan)
 	}
 }
 

@@ -554,6 +554,9 @@ func TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview(t *testing.T) {
 	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "in-progress", "task.pr_number": "17478"}); err != nil || got != "set_ready_pr_existing" {
 		t.Fatalf("verify_checks existing-PR goto = %q, err=%v; want set_ready_pr_existing", got, err)
 	}
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "blocked", "task.pr_number": "17478"}); err != nil || got != "" {
+		t.Fatalf("verify_checks blocked goto = %q, err=%v; want end (wins over PR routing)", got, err)
+	}
 	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "human-required", "task.pr_number": "17478"}); err != nil || got != "" {
 		t.Fatalf("verify_checks human-required goto = %q, err=%v; want end (wins over PR routing)", got, err)
 	}
@@ -1621,6 +1624,39 @@ func TestSimpleTaskReview_DoesNotMatchLinkedPRTask(t *testing.T) {
 	linkedPR := TaskInfo{ID: "linked-pr", Status: "ready-review", PRNumber: 1981}
 	if got := engine.MatchWorkflow(linkedPR, "task.status_changed"); got != nil {
 		t.Fatalf("linked-PR ready-review task matched %q, want no pre-PR review workflow", got.ID)
+	}
+}
+
+func TestSimpleTaskPR_SkipsReviewOnlyRoles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := SyncBuiltins(store); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	codeAuthor := TaskInfo{ID: "code-author", Status: "ready-pr"}
+	if got := engine.MatchWorkflow(codeAuthor, "task.status_changed"); got == nil || got.ID != "simple-task-pr" {
+		id := "<nil>"
+		if got != nil {
+			id = got.ID
+		}
+		t.Fatalf("code-author ready-pr task matched %q, want simple-task-pr", id)
+	}
+
+	for _, role := range []string{"review", "test-runner", "human-review"} {
+		t.Run(role, func(t *testing.T) {
+			if got := engine.MatchWorkflow(TaskInfo{ID: role, Status: "ready-pr", Role: role}, "task.status_changed"); got != nil {
+				t.Fatalf("%s ready-pr task matched %q, want no PR workflow", role, got.ID)
+			}
+		})
 	}
 }
 

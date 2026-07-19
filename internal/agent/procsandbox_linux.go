@@ -96,6 +96,13 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	if cfg.sandbox.gitOverlayTagLogDir != "" && cfg.sandbox.gitTagLogDir != "" {
 		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayTagLogDir, cfg.sandbox.gitTagLogDir)
 	}
+	// Re-lock readOnlyDir last: bwrap resolves overlapping bind entries in
+	// argument order, so this must come after every writable --bind above to
+	// win even when readOnlyDir sits inside a writable root (e.g. nested
+	// under tmp — see injectReadOnlyProcessSandbox).
+	if cfg.sandbox.readOnlyDir != "" {
+		wrapped = append(wrapped, "--ro-bind", cfg.sandbox.readOnlyDir, cfg.sandbox.readOnlyDir)
+	}
 	wrapped = append(wrapped, "--", name)
 	wrapped = append(wrapped, args...)
 	if cfg.sandbox.gitOverlayRefFile != "" && cfg.sandbox.gitBranchRef != "" && cfg.sandbox.worktree != "" {

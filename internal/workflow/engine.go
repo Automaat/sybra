@@ -26,6 +26,7 @@ type TaskInfo struct {
 	Title        string
 	Status       string
 	StatusReason string
+	Role         string
 	Tags         []string
 	AgentMode    string
 	// Priority mirrors task.Priority ("", "low", "medium", "high", "urgent").
@@ -343,6 +344,7 @@ type Engine struct {
 	pendingRecovery    map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError        *logging.ErrorThrottle
 	demotionThrottle   *logging.ErrorThrottle
+	resumeSkip         *logging.InfoThrottle
 	maxTestAttempts    int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
 	// reviewLoopDisabled: see SetReviewUntilClean. Inverted so the zero value
 	// keeps the review→fix→review cycle running, matching
@@ -354,6 +356,7 @@ type Engine struct {
 	openPROnUnrunnableGate bool
 	maxCheckpoints         int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
 	verifyTimeout          time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
+	verifyChecksSlots      chan struct{} // process-local verify_checks concurrency cap; lazily initialized for zero-value Engines in tests
 	abTesting              abtest.Config
 	evalGate               *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
 	conflictRecovery       func(taskID string) bool
@@ -403,6 +406,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		pendingRecovery:        make(map[string]pendingRecovery),
 		resumeError:            logging.NewErrorThrottle(),
 		demotionThrottle:       logging.NewErrorThrottle(),
+		resumeSkip:             logging.NewInfoThrottle(),
 		openPROnUnrunnableGate: true,
 	}
 }

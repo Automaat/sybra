@@ -1111,6 +1111,83 @@ func TestRestartStalePRFixRebaseFailedFlipsToHumanRequired(t *testing.T) {
 	}
 }
 
+// TestRestartStaleShutdownCancellationSuppressed is a regression guard for
+// sybra#2291's own reproduction: the incident's log line was literally
+// "restart-stale.failed", emitted by this package's StartAgent dispatch on
+// this exact code path. A graceful server shutdown cancels the context this
+// sweep runs under mid-dispatch, so StartAgent returns a context.Canceled
+// error for a task that has nothing wrong with it. Recovery.surfaceStartFailure
+// must recognize that shape (via workflow.IsShutdownCancellation) and leave
+// the task alone — no StatusReason overwrite, no status change — rather than
+// writing a misleading "agent start failed: ...context canceled..." reason on
+// every stale-restart sweep tick until the new instance resumes dispatching.
+func TestRestartStaleShutdownCancellationSuppressed(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agentsCtx, cancelAgents := context.WithCancel(t.Context())
+	t.Cleanup(cancelAgents)
+	agents := newTestAgentManager(t, agentsCtx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("shutdown-cancelled stale restart", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	projID := "owner/repo"
+	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{
+		startErr: fmt.Errorf("worktree required for project task: %w",
+			fmt.Errorf("fetch origin: git fetch origin +refs/heads/*:refs/remotes/origin/*: %w", context.Canceled)),
+	}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Projects:     stubProjects{},
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+	}
+
+	// The sweep's own context is already cancelled — simulating the exact
+	// moment a graceful shutdown fires mid-sweep.
+	shutdownCtx, cancelShutdown := context.WithCancel(context.Background())
+	cancelShutdown()
+	r.RestartStaleInProgress(shutdownCtx)
+	wg.Wait()
+
+	if stub.startCalls != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1", stub.startCalls)
+	}
+	updated, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInProgress {
+		t.Errorf("status = %s, want unchanged %s", updated.Status, task.StatusInProgress)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status reason = %q, want empty (shutdown cancellation must not surface a reason)", updated.StatusReason)
+	}
+}
+
 // stubWorkflowEngine implements recovery.WorkflowRestarter for tests that need
 // a non-nil engine without a real workflow store.
 type stubWorkflowEngine struct {
@@ -1799,6 +1876,88 @@ func TestRestartStaleRecoverCompletedHeadlessRunKeysOnOutcome(t *testing.T) {
 			}
 			_ = taskID
 		})
+	}
+}
+
+// TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag proves
+// the fast-completion reconciliation path (a headless run that reached a
+// definitive terminal outcome but whose workflow step was never recorded, due
+// to the callback being lost across an app restart) fires for any run_agent
+// step, not only tasks tagged "review". Before this generalization a
+// non-review task in this exact shape fell through to the generic
+// stale-restart path instead and was silently re-implemented from scratch.
+func TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("implement feature", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		State:       workflow.ExecRunning,
+		CurrentStep: "implement",
+		StartedAt:   time.Now(),
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   &status,
+		Workflow: &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-impl",
+		Role:      "implementation",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		Outcome:   task.RunOutcomeSuccess,
+		Result:    "implementation done",
+		StartedAt: time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.completions) != 1 {
+		t.Fatalf("HandleAgentComplete called %d times; want 1 (non-review task must recover too)", len(wfStub.completions))
+	}
+	if !wfStub.completions[0].Success {
+		t.Errorf("Success = false, want true")
+	}
+	if stub.startCalls != 0 {
+		t.Errorf("StartAgent called %d times; want 0 (recovered via completion, not a bare respawn)", stub.startCalls)
 	}
 }
 

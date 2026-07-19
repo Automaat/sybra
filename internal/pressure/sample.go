@@ -15,6 +15,14 @@ type Sample struct {
 	LoadPerCPU      float64
 }
 
+// CurrentLoadPerCPU returns the current 1-minute load average normalized by
+// CPU count. ok=false means the host signal could not be read on this
+// platform/runtime.
+func CurrentLoadPerCPU() (load float64, ok bool) {
+	load = loadPerCPU()
+	return load, !math.IsNaN(load)
+}
+
 // thresholdTripped reports whether value has crossed threshold in the
 // configured "bad" direction. below=true means lower-is-worse (a percent-free
 // signal like disk/memory); below=false means higher-is-worse (a load

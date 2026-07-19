@@ -461,9 +461,9 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 }
 
 // waitFor polls a condition with timeout. The timeout is scaled by
-// e2eTimeoutScale so CI runners (slow fork/exec, container I/O variance)
-// don't have to be defended against per-test. Local runs see the unscaled
-// deadline.
+// e2eTimeoutScale so CI runners (slow fork/exec, container I/O variance) and
+// locally-loaded hosts (e.g. a fleet of concurrent agents) don't have to be
+// defended against per-test.
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
 	scale := e2eTimeoutScale()
@@ -607,10 +607,16 @@ func e2eTimeoutScaleResolve() int64 {
 			return n
 		}
 	}
+	factor := loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
+	// CI runners carry a known-bad baseline (slow fork/exec, container I/O
+	// variance) even when the load average looks idle, so they get a fixed
+	// floor on top of the measured factor. Local/dev runs (including a fleet
+	// of concurrent agents on darwin/linux) have no such baseline — they
+	// scale purely off measured host load, same as CI does above the floor.
 	if os.Getenv("CI") == "" && os.Getenv("GITHUB_ACTIONS") == "" {
-		return 1
+		return factor
 	}
-	scaled := e2eCITimeoutScaleFloor * loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
+	scaled := e2eCITimeoutScaleFloor * factor
 	if scaled < e2eCITimeoutScaleFloor {
 		return e2eCITimeoutScaleFloor
 	}
@@ -1189,6 +1195,67 @@ func TestE2E_MalformedToolCall_RepeatedFailsOverProvider(t *testing.T) {
 	}
 	if tk.Status == task.StatusHumanRequired {
 		t.Fatal("task escalated to human-required; want automatic provider fallback")
+	}
+}
+
+func TestE2E_HumanReview_StructuredFallbackUnblocksTask(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{
+		"human_review_invalid_structured",
+		"human_review_unblocked_ready_pr",
+	})
+
+	cfg := &config.Config{}
+	cfg.HumanReview.Enabled = true
+	cfg.HumanReview.SybraRepoDir = env.agentDir
+	cfg.HumanReview.MaxPerHour = 3
+	sink := &fakeIssueSink{created: true, url: "https://github.com/Automaat/sybra/issues/42"}
+	h := newHumanReviewHandler(cfg, env.tasks, env.agents, nil, e2eLogger(t), sink, config.HomeDir(), "", nil)
+	env.onAgentComplete = h.onComplete
+
+	created, err := env.tasks.Create("human review structured fallback", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("owner/repo"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if spawned := h.maybeSpawn(created.ID, string(task.StatusTodo)); !spawned {
+		t.Fatal("expected initial human-review spawn")
+	}
+
+	waitFor(t, 20*time.Second, "human-review fallback unblocks task", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil &&
+			tk.Status == task.StatusReadyPR &&
+			len(tk.AgentRuns) == 2 &&
+			tk.AgentRuns[0].VerdictRendered &&
+			tk.AgentRuns[1].VerdictRendered
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Status != task.StatusReadyPR {
+		t.Fatalf("status = %q, want %q", tk.Status, task.StatusReadyPR)
+	}
+	if len(tk.AgentRuns) != 2 {
+		t.Fatalf("AgentRuns len = %d, want 2", len(tk.AgentRuns))
+	}
+	if tk.AgentRuns[0].Provider != "claude" || tk.AgentRuns[1].Provider != "codex" {
+		t.Fatalf("AgentRun providers = [%s %s], want [claude codex]", tk.AgentRuns[0].Provider, tk.AgentRuns[1].Provider)
+	}
+	if tk.AgentRuns[1].Model != "gpt-5.4-mini" {
+		t.Fatalf("fallback model = %q, want gpt-5.4-mini", tk.AgentRuns[1].Model)
+	}
+	if !strings.Contains(tk.StatusReason, "auto-review recovery") {
+		t.Fatalf("status_reason = %q, want auto-review recovery marker", tk.StatusReason)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("sink calls = %d, want 0", sink.calls)
 	}
 }
 
@@ -2872,6 +2939,35 @@ func TestE2E_Codex_TestVerdict_Pass_JSON(t *testing.T) {
 		if !strings.Contains(string(data), "--output-schema") {
 			t.Errorf("--output-schema missing from codex args:\n%s", string(data))
 		}
+	}
+}
+
+func TestE2E_Codex_TestVerdict_Pass_JSON_WithTrailingEmptyItem(t *testing.T) {
+	env := setupE2EMultiProvider(t, "codex", []string{"test_verdict_pass_trailing_empty_item"})
+	installTestingTaskWithOutputSchemaWorkflow(t, env)
+
+	created, err := env.tasks.Create("codex json verdict pass with trailing item", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusReadyPR {
+		t.Errorf("status after trailing empty item = %q, want %q", tk.Status, task.StatusReadyPR)
 	}
 }
 

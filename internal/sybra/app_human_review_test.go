@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
@@ -37,6 +38,25 @@ func (f *fakeIssueSink) SubmitIssue(_ context.Context, title, body string, label
 	f.gotBody = body
 	f.gotLabels = labels
 	return f.created, f.url, f.err
+}
+
+type fakeHumanReviewAgentRunner struct {
+	apply func(agent.RunConfig) agent.RunConfig
+	run   func(agent.RunConfig) (*agent.Agent, error)
+}
+
+func (f *fakeHumanReviewAgentRunner) ApplyABVariant(cfg agent.RunConfig, _ abtest.Config, _, _ string) agent.RunConfig {
+	if f != nil && f.apply != nil {
+		return f.apply(cfg)
+	}
+	return cfg
+}
+
+func (f *fakeHumanReviewAgentRunner) Run(cfg agent.RunConfig) (*agent.Agent, error) {
+	if f != nil && f.run != nil {
+		return f.run(cfg)
+	}
+	return &agent.Agent{ID: "fake-human-review", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
 }
 
 func newReviewTestEnv(t *testing.T) (*humanReviewHandler, *task.Manager, *fakeIssueSink, func()) {
@@ -88,6 +108,40 @@ func TestVerdictDecisionIsSharedParserType(t *testing.T) {
 	}
 }
 
+// TestHumanReviewDispatchDir_ReadOnlyFallback pins that dispatching into the
+// configured Sybra source checkout (no task worktree, or one that no longer
+// exists on disk) reports readOnly=true — callers must feed this into
+// RunConfig.ReadOnlyDir so the process sandbox never grants that checkout
+// write access. Dispatching into a real task worktree must report
+// readOnly=false, since UNBLOCK actions there (fix/commit/push) are expected.
+func TestHumanReviewDispatchDir_ReadOnlyFallback(t *testing.T) {
+	sybraRepoDir := t.TempDir()
+
+	t.Run("no worktree", func(t *testing.T) {
+		dir, readOnly := humanReviewDispatchDir(task.Task{}, sybraRepoDir)
+		if dir != sybraRepoDir || !readOnly {
+			t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=true", dir, readOnly, sybraRepoDir)
+		}
+	})
+
+	t.Run("worktree missing on disk", func(t *testing.T) {
+		tk := task.Task{WorktreeDir: filepath.Join(t.TempDir(), "does-not-exist")}
+		dir, readOnly := humanReviewDispatchDir(tk, sybraRepoDir)
+		if dir != sybraRepoDir || !readOnly {
+			t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=true", dir, readOnly, sybraRepoDir)
+		}
+	})
+
+	t.Run("worktree present", func(t *testing.T) {
+		worktreeDir := t.TempDir()
+		tk := task.Task{WorktreeDir: worktreeDir}
+		dir, readOnly := humanReviewDispatchDir(tk, sybraRepoDir)
+		if dir != worktreeDir || readOnly {
+			t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=false", dir, readOnly, worktreeDir)
+		}
+	})
+}
+
 // TestBuildPrompt_NoFencedVerdictInstruction pins that the prompt no longer
 // tells the agent to emit a fenced ```sybra-verdict``` block — the schema is
 // now enforced out-of-band via RunConfig.OutputSchema/--json-schema, and the
@@ -102,7 +156,8 @@ func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
+	prompt := h.buildPrompt(tk, dir, nil)
 	if strings.Contains(prompt, "sybra-verdict") {
 		t.Errorf("prompt still instructs a fenced sybra-verdict block:\n%s", prompt)
 	}
@@ -125,7 +180,8 @@ func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
+	prompt := h.buildPrompt(tk, dir, nil)
 	if !strings.Contains(prompt, "actually re-run the exact failing command") {
 		t.Errorf("prompt does not require re-running the failing command before calling it transient:\n%s", prompt)
 	}
@@ -155,7 +211,8 @@ func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
 		t.Fatalf("seed draft-review task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
+	prompt := h.buildPrompt(tk, dir, nil)
 	for _, want := range []string{
 		"pre-flight the draft before submitting anything",
 		"APPROVE drafts must NEVER be auto-submitted",
@@ -184,7 +241,8 @@ func TestBuildPrompt_RequiresRecheckingSupersededFailures(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	prompt := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
+	prompt := h.buildPrompt(tk, dir, nil)
 	if !strings.Contains(prompt, "supersedes the wording the failure quotes") {
 		t.Errorf("prompt does not require rechecking superseded test-runner FAILs:\n%s", prompt)
 	}
@@ -399,7 +457,7 @@ func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 	ag.AppendOutput(agent.StreamEvent{
 		Type: "assistant",
 		Content: "```sybra-verdict\n" +
-			`{"decision":"unblocked","summary":"fixed lint, pushed, advanced to ready-pr"}` +
+			`{"decision":"unblocked","reason":"fixed lint, pushed, advanced to ready-pr","recoverable_action":"none","confidence":"high"}` +
 			"\n```\n",
 	})
 	h.inflight[tk.ID] = "agent-1"
@@ -426,6 +484,60 @@ func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 	}
 }
 
+func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-action"
+	tk, err := tasks.Create("Recover task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"opened the PR and the host should resume review","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusReadyPR {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyPR)
+	}
+	if !strings.Contains(got.StatusReason, "auto-review recovery") {
+		t.Fatalf("status_reason = %q, want auto-review recovery note", got.StatusReason)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("expected unblocked note in body; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("sink calls = %d, want 0", sink.calls)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
 func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 	t.Parallel()
 	h, _, _, cleanup := newReviewTestEnv(t)
@@ -435,7 +547,8 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 		ID: "t1", Title: "x", Status: task.StatusHumanRequired,
 		Branch: "feat/queue", WorktreeDir: "/data/worktrees/queue",
 	}
-	p := h.buildPrompt(tk, humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir), nil)
+	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
+	p := h.buildPrompt(tk, dir, nil)
 	for _, want := range []string{
 		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
 		"never fabricate", "/data/worktrees/queue", "feat/queue",
@@ -1083,6 +1196,160 @@ func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {
 	}
 }
 
+func TestOnComplete_StructuredVerdictFailure_RetriesAlternateProvider(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const firstAgentID = "hr-structured-1"
+	tk, err := tasks.Create("Retry structured review", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("owner/repo"),
+	}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:   firstAgentID,
+		Role:      string(agent.RoleHumanReview),
+		Mode:      "headless",
+		Provider:  "claude",
+		Model:     "claude-haiku-4-5-20251001",
+		State:     "running",
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	runner := &fakeHumanReviewAgentRunner{
+		apply: func(cfg agent.RunConfig) agent.RunConfig { return cfg },
+		run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+			if cfg.Provider != "codex" {
+				t.Fatalf("fallback provider = %q, want codex", cfg.Provider)
+			}
+			if cfg.Model != "haiku" {
+				t.Fatalf("fallback model = %q, want haiku alias", cfg.Model)
+			}
+			return &agent.Agent{
+				ID:        "hr-structured-2",
+				TaskID:    cfg.TaskID,
+				Provider:  "codex",
+				Model:     "gpt-5.4-mini",
+				StartedAt: time.Now().UTC(),
+			}, nil
+		},
+	}
+	h.agents = runner
+
+	ag := &agent.Agent{
+		ID:       firstAgentID,
+		TaskID:   tk.ID,
+		Name:     agent.RoleHumanReview.AgentName(tk.Title),
+		Provider: "claude",
+		Model:    "claude-haiku-4-5-20251001",
+	}
+	ag.SetHasOutputSchema(true)
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: `{"decision":"human","reason":"","recoverable_action":"none","confidence":"high"}`})
+	h.inflight[tk.ID] = firstAgentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if len(got.AgentRuns) != 2 {
+		t.Fatalf("agent runs = %d, want 2 (failed structured run + fallback run)", len(got.AgentRuns))
+	}
+	if !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("first run not rendered: %+v", got.AgentRuns[0])
+	}
+	if got.AgentRuns[1].Provider != "codex" || got.AgentRuns[1].Model != "gpt-5.4-mini" {
+		t.Fatalf("fallback run = %+v, want codex/gpt-5.4-mini", got.AgentRuns[1])
+	}
+	if _, busy := h.inflight[tk.ID]; !busy {
+		t.Fatal("fallback retry should keep the replacement run inflight")
+	}
+	if strings.Contains(got.Body, "unparseable verdict") {
+		t.Fatalf("fallback spawn should not append a terminal note yet; body:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("sink calls = %d, want 0", sink.calls)
+	}
+}
+
+func TestOnComplete_StructuredVerdictFailure_SecondFailureRendersDurableNote(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const currentAgentID = "hr-structured-2"
+	tk, err := tasks.Create("Retry exhausted structured review", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("owner/repo"),
+	}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+	start := time.Now().UTC()
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         "hr-structured-1",
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		Provider:        "claude",
+		Model:           "claude-haiku-4-5-20251001",
+		State:           "stopped",
+		StartedAt:       start.Add(-time.Minute),
+		VerdictRendered: true,
+	}); err != nil {
+		t.Fatalf("add first run: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:   currentAgentID,
+		Role:      string(agent.RoleHumanReview),
+		Mode:      "headless",
+		Provider:  "codex",
+		Model:     "gpt-5.4-mini",
+		State:     "running",
+		StartedAt: start,
+	}); err != nil {
+		t.Fatalf("add second run: %v", err)
+	}
+
+	ag := &agent.Agent{
+		ID:       currentAgentID,
+		TaskID:   tk.ID,
+		Name:     agent.RoleHumanReview.AgentName(tk.Title),
+		Provider: "codex",
+		Model:    "gpt-5.4-mini",
+	}
+	ag.SetHasOutputSchema(true)
+	h.inflight[tk.ID] = currentAgentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if len(got.AgentRuns) != 2 {
+		t.Fatalf("agent runs = %d, want no third retry", len(got.AgentRuns))
+	}
+	if !got.AgentRuns[1].VerdictRendered {
+		t.Fatalf("second run not rendered: %+v", got.AgentRuns[1])
+	}
+	if !strings.Contains(got.Body, "did not return a usable structured verdict") {
+		t.Fatalf("expected durable structured-verdict note; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("sink calls = %d, want 0", sink.calls)
+	}
+}
+
 // TestOnComplete_PlaceholderVerdict_RejectedNotFiled pins task 2379fece's
 // repro: a run that returns a placeholder/echoed-schema payload
 // (summary="test", issue_title="test title", issue_body="test body") must
@@ -1296,6 +1563,71 @@ func TestMaybeSpawn_SkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
 	}
 }
 
+func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
+	t.Parallel()
+
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Racey hook task", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+
+	runner := &fakeHumanReviewAgentRunner{}
+	runCalls := 0
+	runner.apply = func(cfg agent.RunConfig) agent.RunConfig {
+		if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusBlocked)}); err != nil {
+			t.Fatalf("advance task before run: %v", err)
+		}
+		return cfg
+	}
+	runner.run = func(cfg agent.RunConfig) (*agent.Agent, error) {
+		runCalls++
+		return &agent.Agent{ID: "should-not-run", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}
+	h.agents = runner
+
+	if spawned := h.maybeSpawn(tk.ID, string(task.StatusTodo)); spawned {
+		t.Fatal("maybeSpawn = true, want false after task left human-required before Run")
+	}
+	if runCalls != 0 {
+		t.Fatalf("Run called %d times, want 0", runCalls)
+	}
+
+	h.mu.Lock()
+	_, busy := h.inflight[tk.ID]
+	recent := len(h.recent)
+	perTask := len(h.perTask[tk.ID])
+	h.mu.Unlock()
+	if busy {
+		t.Fatal("expected no inflight entry after stale pre-run recheck")
+	}
+	if recent != 0 {
+		t.Fatalf("recent reservations = %d, want 0 after stale pre-run recheck", recent)
+	}
+	if perTask != 0 {
+		t.Fatalf("per-task reservations = %d, want 0 after stale pre-run recheck", perTask)
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
+	}
+	if len(got.AgentRuns) != 0 {
+		t.Fatalf("agent runs = %d, want 0", len(got.AgentRuns))
+	}
+}
+
 func TestMaybeSpawn_IdempotencyGate_IgnoresRenderedVerdictBeforeTestingCycle(t *testing.T) {
 	t.Parallel()
 	h, tasks, _, cleanup := newReviewTestEnv(t)
@@ -1485,6 +1817,32 @@ func TestMaybeSpawn_SkipsProjectlessTask(t *testing.T) {
 	h.mu.Unlock()
 	if busy {
 		t.Error("expected no inflight entry — a project-less task must not spawn a review agent in the Sybra source tree")
+	}
+}
+
+func TestMaybeSpawn_SkipsStaleNonHumanRequiredTask(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Already handled task", "queued", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusBlocked),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to blocked: %v", err)
+	}
+
+	h.maybeSpawn(tk.ID, string(task.StatusHumanRequired))
+
+	h.mu.Lock()
+	_, busy := h.inflight[tk.ID]
+	h.mu.Unlock()
+	if busy {
+		t.Error("expected no inflight entry - stale non-human-required task must not spawn a review agent")
 	}
 }
 

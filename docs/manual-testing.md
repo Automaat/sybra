@@ -71,7 +71,7 @@ server:
 YAML
 ```
 
-A pinned `server.auth_token` keeps the harness's `curl` calls reproducible — without it, sybra-server auto-generates a random token on first start (see `internal/config.applyServerDefaults`) and the value would only be discoverable by re-reading `$TMP/home/config.yaml` after the fact.
+A pinned `server.auth_token` keeps the harness's `curl` calls reproducible — without it, sybra-server auto-generates a random token on first start (see `internal/config.applyServerDefaults`) and the value would only be discoverable by re-reading `$TMP/home/server_auth_token` after the fact.
 
 Create fake CLIs:
 

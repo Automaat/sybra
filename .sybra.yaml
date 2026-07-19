@@ -43,13 +43,14 @@ manual_test:
 # otherwise the hook fails with "tool not found" at commit time, which was
 # the aa9ba123 failure mode (see CLAUDE.md Server Deployment section).
 checks:
+  # golangci-lint and go test are intentionally NOT run here — CI's
+  # lint-go/test-go jobs already cover them on every push, and running the
+  # full-repo lint/test suite per-commit across parallel agent worktrees
+  # overloads the local machine. gofmt/goimports-equivalent formatting is
+  # cheap enough to keep local via oxlint/hadolint below.
   pre_commit:
-    - 'GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint-$(basename "$(pwd)")" mise exec -- golangci-lint run ./...'
     - (cd frontend && npx oxlint .)
     - mise exec -- hadolint Dockerfile
-  pre_push:
-    - mise exec -- go test ./...
-    - (cd frontend && npm run check)
   # Mutation pass run by the codegen_gate workflow step before tamper/verify/
   # review/testing so generated files, goimports, and go.mod drift are fixed
   # in the worktree and committed before downstream validation.

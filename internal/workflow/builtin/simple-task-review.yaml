@@ -271,6 +271,10 @@ steps:
         Never weaken, skip, delete, or hardcode tests to satisfy a review
         comment — fix the underlying code. Tampering is checked and blocks the
         task.
+        {{- if getvar .Vars "watchdog_reask_note"}}
+
+        {{getvar .Vars "watchdog_reask_note"}}
+        {{- end}}
     next:
       - goto: detect_tampering
 

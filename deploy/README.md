@@ -59,12 +59,17 @@ Layout on the box:
 
 ```
 /opt/sybra/
-  src/     git checkout of Automaat/sybra on main   (autoupdate RepoDir)
-  bin/     sybra-build.sh, sybra-run.sh
-  build/   sybra-server (running binary) + web/ (static bundle)
+  src/         git checkout of Automaat/sybra on main   (autoupdate RepoDir)
+  review-src/  second, independent checkout for human-review's fallback dir
+  bin/         sybra-build.sh, sybra-run.sh
+  build/       sybra-server (running binary) + web/ (static bundle)
 /etc/sybra/sybra.env
 /data/sybra/home  →  HOME=/home/sybra/.sybra  (config, tasks, worktrees, agent registry)
 ```
+
+`review-src/` exists so `human_review.sybra_repo_dir` never resolves to the
+same directory `auto_update.repo_dir` builds and ff-merges from (#1925) —
+see the config section below.
 
 ## Build-safety contract
 
@@ -94,7 +99,7 @@ echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://
   > /etc/apt/sources.list.d/github-cli.list
 apt-get update && apt-get install -y gh
 
-install -d -o sybra -g sybra /opt/sybra /opt/sybra/bin /opt/sybra/build /etc/sybra
+install -d -o sybra -g sybra /opt/sybra /opt/sybra/bin /opt/sybra/build /opt/sybra/review-src /etc/sybra
 ```
 
 As the `sybra` user:
@@ -106,6 +111,12 @@ export PATH="$HOME/.local/bin:$PATH"
 
 git clone https://github.com/Automaat/sybra /opt/sybra/src
 cd /opt/sybra/src && mise install
+
+# Second, independent checkout for human_review.sybra_repo_dir — never point
+# this at /opt/sybra/src (see "Config changes" below). It only needs to stay
+# roughly current for diagnosis, so a periodic `git -C /opt/sybra/review-src
+# pull` (e.g. a daily cron) is enough; it does not need mise/toolchain install.
+git clone https://github.com/Automaat/sybra /opt/sybra/review-src
 
 # claude + codex CLIs as npm globals, then reshim so mise exposes them on PATH
 mise exec -- npm install -g @anthropic-ai/claude-code @openai/codex
@@ -140,8 +151,15 @@ auto_update:
     poll_seconds: 300
 ```
 
-Also drop `human_review.sybra_repo_dir: /app/src` → `/opt/sybra/src` (the old
-value was the in-image source copy).
+Also drop `human_review.sybra_repo_dir: /app/src` → `/opt/sybra/review-src` —
+**not** `/opt/sybra/src`. The old `/app/src` value was the in-image source
+copy; the replacement must be the dedicated `review-src` checkout provisioned
+above, never the live deploy checkout `auto_update.repo_dir` builds and
+ff-merges from. The review agent is dispatched with a read-only process
+sandbox whenever it falls back to `sybra_repo_dir` (no task worktree), so a
+misconfigured value here can't actually be written to — but pointing both
+keys at the same directory still means the diagnostic agent's `git`/`grep`
+reads race the autoupdate loop's concurrent merges into that tree (#1925).
 
 ## home-nas ansible changes (`deploy-sybra.yml`)
 

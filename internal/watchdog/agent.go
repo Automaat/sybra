@@ -233,7 +233,9 @@ type Watchdog struct {
 
 	// verifyNow re-runs a task's verify suite before applyVerdict escalates an
 	// ambiguous loop-stop, so a stale judge verdict doesn't strand honest work
-	// (#2155). Nil falls through to unconditional escalation.
+	// (#2155). The injected verifier owns its command timeout; this layer must
+	// not impose a smaller generic cap than the workflow check budget. Nil
+	// falls through to unconditional escalation.
 	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
 }
 
@@ -709,6 +711,19 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 			w.stopAndVerifyAmbiguousLoop(ctx, ag, verdict)
 			return
 		}
+		// #2229: a reward_hacking stop on a fix-review agent that still has a
+		// concrete, unaddressed review finding to anchor a retry on (the
+		// "stalled re-reading instead of editing the file the reviewer already
+		// named" pattern) is retried once via the workflow engine's own
+		// reward-hacking retry budget, instead of escalating immediately. Any
+		// other reward_hacking stop — a different role, or no finding to point
+		// the retry at — falls through to the unconditional escalation below,
+		// preserving the cautious default.
+		if ag.TaskID != "" && verdict.ReasonKind == "reward_hacking" && (trigger == "loop" || trigger == "budget") &&
+			w.retriableRewardHackingFixReview(ag) {
+			w.stopForRewardHackingRetry(ag, verdict)
+			return
+		}
 		// Set the task state before stopping so the completion callback sees the
 		// intended recovery path. rate_limit is already handled above regardless
 		// of trigger. Of what remains: a stall stop is a retryable hang; the
@@ -717,7 +732,8 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 		// command-repetition or long-running-verify-poll flake, not
 		// reward-hacking) gets the same retryable treatment — see #1456.
 		// Reward-hacking loops (and any other non-rate_limit reason_kind on a
-		// budget trigger) remain immediate human-required escalations.
+		// budget trigger) remain immediate human-required escalations, unless
+		// the fix-review carve-out above already retried them.
 		if ag.TaskID != "" {
 			reason := "watchdog stop"
 			if verdict.Reason != "" {
@@ -776,12 +792,6 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 		// intentional no-op; debounce suppresses re-check
 	}
 }
-
-// verifyNowTimeout bounds a single on-demand verify re-run triggered by an
-// ambiguous loop/budget stop verdict — generous enough for a real test suite,
-// short enough that a hung verify command cannot indefinitely delay the
-// escalation decision it exists to inform.
-const verifyNowTimeout = 5 * time.Minute
 
 // killForVerifyTimeout bounds how long stopAndVerifyAmbiguousLoop waits for
 // the stopped agent's process to actually exit before re-running verify in
@@ -846,9 +856,7 @@ func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeRea
 	if w.verifyNow == nil {
 		return task.StatusHumanRequired, judgeReason
 	}
-	vctx, cancel := context.WithTimeout(ctx, verifyNowTimeout)
-	defer cancel()
-	verified, passed, failedCmd, output, err := w.verifyNow(vctx, taskID)
+	verified, passed, failedCmd, output, err := w.verifyNow(ctx, taskID)
 	if !verified || err != nil {
 		return task.StatusHumanRequired, judgeReason
 	}
@@ -904,6 +912,66 @@ func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict age
 	w.logger.Info("agent.watchdog.rate_limit.stop",
 		"id", ag.ID, "task_id", ag.TaskID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
 }
+
+// retriableRewardHackingFixReview reports whether a reward_hacking "stop"
+// verdict for ag should be retried instead of escalated. Scoped narrowly to
+// fix-review agents (see agent.RoleFixReview) whose task still carries a
+// code-review sidecar naming a concrete, unaddressed finding location — the
+// exact "stalled re-reading instead of editing the file the reviewer already
+// named" pattern from #2229. A fix-review agent with no such anchor, or any
+// other role, still escalates immediately: retrying blind would just burn
+// budget on a genuinely stuck loop.
+func (w *Watchdog) retriableRewardHackingFixReview(ag *agent.Agent) bool {
+	if agent.RoleFromName(ag.Name) != agent.RoleFixReview {
+		return false
+	}
+	t, err := w.tasks.Get(ag.TaskID)
+	if err != nil {
+		return false
+	}
+	return hasUnaddressedReviewFinding(t.CodeReview)
+}
+
+// hasUnaddressedReviewFinding reports whether a code-review sidecar still
+// names a concrete file:line finding for a fix-review agent to act on. The
+// adversarial-review skill (internal/skills/data/adversarial-review.md) emits
+// every finding with a "*Location:* `path:line`" line, so its presence is a
+// cheap, reliable signal that the sidecar has somewhere concrete to point a
+// retry at rather than being empty or purely prose.
+func hasUnaddressedReviewFinding(codeReview string) bool {
+	return strings.Contains(codeReview, "Location:")
+}
+
+// stopForRewardHackingRetry handles a "stop" verdict whose ReasonKind is
+// "reward_hacking" on a fix-review agent that retriableRewardHackingFixReview
+// has already confirmed has a concrete review finding to retry against. The
+// task is left in-progress (not human-required) with a distinct status-reason
+// prefix the workflow engine's handleWatchdogRewardHackingRetry recognizes on
+// the next ResumeStalled tick: it re-dispatches the fix_review step once more
+// with a steer pointing at the sidecar's named location, before falling back
+// to human-required if that retry also stalls.
+func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.InspectorVerdict) {
+	reason := rewardHackingRetryStatusReason
+	if verdict.Reason != "" {
+		reason = rewardHackingRetryStatusReason + ": " + verdict.Reason
+	}
+	if _, err := w.tasks.Update(ag.TaskID, task.Update{
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
+	}
+	if err := w.stopAgent(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
+	}
+	w.logger.Info("agent.watchdog.reward_hacking.retry", "id", ag.ID, "task_id", ag.TaskID, "reason", verdict.Reason)
+}
+
+// rewardHackingRetryStatusReason must stay in sync with
+// internal/workflow/engine_events.go's watchdogRewardHackingStatusPrefix —
+// that constant is what handleWatchdogRewardHackingRetry pattern-matches on
+// to recognize and bound this specific retry path.
+const rewardHackingRetryStatusReason = "watchdog: reward-hacking retry"
 
 // zeroOutputReason is the provider-health detail recorded for a zero-output
 // startup hang (see inspectHeadless). Kept distinct from the generic

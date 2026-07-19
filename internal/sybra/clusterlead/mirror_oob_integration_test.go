@@ -33,6 +33,33 @@ type managerTaskService struct{ mgr *task.Manager }
 
 func (s *managerTaskService) ListTasks() ([]task.Task, error) { return s.mgr.List() }
 
+// ListTasksForNode mirrors internal/sybra.TaskService.ListTasksForNode's
+// filter (assigned-to-node, drop terminal tasks closed more than 10m ago --
+// keep the window in sync with internal/sybra's mirrorStaleTerminalWindow) so
+// tests exercising realFollowerServer drive the real, lean mirror path rather
+// than the pre-#2258 fallback.
+func (s *managerTaskService) ListTasksForNode(node string) ([]task.Task, error) {
+	all, err := s.mgr.List()
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for i := range all {
+		t := all[i]
+		if t.TaskType == task.TaskTypeChat {
+			continue
+		}
+		if t.AssignedNode != node {
+			continue
+		}
+		if task.IsTerminalStatus(t.Status) && t.ClosedAt != nil && time.Since(*t.ClosedAt) > 10*time.Minute {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 func (s *managerTaskService) GetTask(id string) (task.Task, error) { return s.mgr.Get(id) }
 
 func (s *managerTaskService) AssignTask(t task.Task) error {
@@ -100,7 +127,7 @@ func realFollowerServer(t *testing.T, mgr *task.Manager) *httptest.Server {
 		_, _ = io.WriteString(w, `{"status":"ok"}`)
 	})
 	httpapi.Mount(mux, map[string]httpapi.Service{
-		"TaskService": httpapi.NewService(&managerTaskService{mgr: mgr}, "ListTasks", "GetTask", "AssignTask"),
+		"TaskService": httpapi.NewService(&managerTaskService{mgr: mgr}, "ListTasks", "ListTasksForNode", "GetTask", "AssignTask"),
 	}, slog.New(slog.DiscardHandler))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -136,10 +163,11 @@ func TestMirrorPropagatesOutOfBandFollowerWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The follower's own copy of the same task, as AssignTask would have
-	// written it there.
+	// written it there -- AssignedNode included, since the leader's push
+	// (clusterlead.Assigner.Route) stamps it on the task before sending.
 	if _, _, err := followerMgr.Put(task.Task{
 		ID: "task-oob", Title: "t", Status: task.StatusInProgress,
-		ProjectID: "owner/pet", CreatedAt: t0, UpdatedAt: t0,
+		ProjectID: "owner/pet", AssignedNode: "pet-box", CreatedAt: t0, UpdatedAt: t0,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +208,65 @@ func TestMirrorPropagatesOutOfBandFollowerWrite(t *testing.T) {
 	}
 }
 
+// TestMirrorReconcileMissingRecoversTaskListTasksForNodeOmitted repros the gap
+// ListTasksForNode's staleness filter opens: the follower closed a task
+// (ClosedAt) long before the leader ever managed a successful reconcile
+// against it (simulating a leader outage/restart spanning the entire
+// mirrorStaleTerminalWindow), so the task never once appears in
+// ListTasksForNode's response. Without Mirror.reconcileMissing's GetTask
+// backstop, canonical would stay stuck at its last non-terminal status
+// forever, since the follower will never offer that task again.
+func TestMirrorReconcileMissingRecoversTaskListTasksForNodeOmitted(t *testing.T) {
+	followerMgr := newManager(t)
+	srv := realFollowerServer(t, followerMgr)
+
+	leaderMgr := newManager(t)
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+
+	t0 := time.Now().Add(-time.Hour)
+	if _, _, err := leaderMgr.Put(task.Task{
+		ID: "task-late-close", Title: "t", Status: task.StatusInProgress,
+		ProjectID: "owner/pet", AssignedNode: "pet-box", CreatedAt: t0, UpdatedAt: t0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	closedAt := time.Now().Add(-time.Hour)
+	if _, _, err := followerMgr.Put(task.Task{
+		ID: "task-late-close", Title: "t", Status: task.StatusDone,
+		ProjectID: "owner/pet", AssignedNode: "pet-box", Branch: "feat/late-close",
+		UpdatedAt: closedAt, ClosedAt: &closedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mirror := NewMirror(cfg, leaderMgr, roster, slog.New(slog.DiscardHandler), 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); mirror.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got task.Task
+	for time.Now().Before(deadline) {
+		got, err = leaderMgr.Get("task-late-close")
+		if err == nil && got.Status == task.StatusDone {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got.Status != task.StatusDone {
+		t.Fatalf("leader canonical status = %q, want done -- reconcileMissing should have fetched the task ListTasksForNode's staleness filter omitted", got.Status)
+	}
+	if got.Branch != "feat/late-close" {
+		t.Errorf("leader canonical branch = %q, want feat/late-close", got.Branch)
+	}
+}
+
 // TestMirrorReconcileSucceedsPastOldThirtyTwoMegabyteCap attacks the size-cap
 // fix with a real oversized payload transmitted over a real HTTP connection
 // (chunked transfer, real read loop) -- not the author's own tiny
@@ -210,7 +297,7 @@ func TestMirrorReconcileSucceedsPastOldThirtyTwoMegabyteCap(t *testing.T) {
 	bigBody := strings.Repeat("x", payloadBytes)
 	if _, _, err := followerMgr.Put(task.Task{
 		ID: "task-big", Title: "t", Status: task.StatusDone,
-		ProjectID: "owner/pet", Body: bigBody, UpdatedAt: time.Now(),
+		ProjectID: "owner/pet", AssignedNode: "pet-box", Body: bigBody, UpdatedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}

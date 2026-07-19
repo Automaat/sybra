@@ -17,16 +17,6 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 		return nil, err
 	}
 
-	// validateSettings reads s.cfg (stored-token check); guard it under the read
-	// lock, released before the write lock below (RWMutex is not reentrant).
-	nextSettings := configToSettings(next)
-	s.mu.RLock()
-	verr := s.validateSettings(nextSettings)
-	s.mu.RUnlock()
-	if verr != nil {
-		return nil, verr
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -56,6 +46,7 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	s.cfg.PromptLab = next.PromptLab
 	s.cfg.ABTesting = next.ABTesting
 	s.cfg.Metrics = next.Metrics
+	s.cfg.Server = next.Server
 	s.cfg.AutoUpdate = next.AutoUpdate
 	s.cfg.Browser = next.Browser
 	s.cfg.ProjectTypes = next.ProjectTypes

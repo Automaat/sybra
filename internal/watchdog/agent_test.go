@@ -479,6 +479,90 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 	}
 }
 
+// TestApplyVerdict_RewardHackingFixReviewWithFindingRetries covers #2229: a
+// reward_hacking stop on a fix-review agent whose task still carries a
+// code-review sidecar naming a concrete finding location must retry via the
+// watchdog-reward-hacking path (a distinct, in-progress status-reason marker)
+// instead of escalating straight to human-required.
+func TestApplyVerdict_RewardHackingFixReviewWithFindingRetries(t *testing.T) {
+	for _, trigger := range []string{"loop", "budget"} {
+		t.Run(trigger, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+			if _, err := tasks.Update(tk.ID, task.Update{
+				CodeReview: task.Ptr("Review Verdict: NEEDS_FIXES\n\n**issue:** narrowed exception check\n*Location:* `internal/sybra/workflow_dispatch.go:75`"),
+			}); err != nil {
+				t.Fatalf("seed code review sidecar: %v", err)
+			}
+
+			stopped := false
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { stopped = true; return nil },
+			}
+
+			w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: "fix-review:demo", TaskID: tk.ID}, trigger, agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "re-reading unrelated files without editing",
+				Recommendation: "stop",
+				ReasonKind:     "reward_hacking",
+			})
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusInProgress {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+			}
+			if got.StatusReason != "watchdog: reward-hacking retry: re-reading unrelated files without editing" {
+				t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
+			}
+			if !stopped {
+				t.Fatal("stopAgent not called on retriable reward_hacking stop")
+			}
+		})
+	}
+}
+
+// TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates covers the
+// narrow scope of the #2229 carve-out: a fix-review agent with no concrete
+// review finding to anchor a retry on (empty or finding-less sidecar) still
+// escalates immediately, same as before the carve-out existed.
+func TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	if _, err := tasks.Update(tk.ID, task.Update{
+		CodeReview: task.Ptr("Review Verdict: NEEDS_FIXES\n\n**issue:** something is wrong, no location given"),
+	}); err != nil {
+		t.Fatalf("seed code review sidecar: %v", err)
+	}
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: "fix-review:demo", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "repeating the same failing fix with fabricated progress",
+		Recommendation: "stop",
+		ReasonKind:     "reward_hacking",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on non-retriable reward_hacking stop")
+	}
+}
+
 // TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst covers #2147/#2155:
 // an unclassified ("") loop stop is exactly the ambiguous case the judge's own
 // prompt steers toward when reward-hacking is merely possible — re-run verify
@@ -663,6 +747,29 @@ func TestApplyVerdict_EmptyReasonKindSkipsVerifyWhenKillTimesOut(t *testing.T) {
 	}
 	if !strings.Contains(got.StatusReason, "could not confirm agent stopped") {
 		t.Fatalf("status_reason = %q, want it to explain the unconfirmed stop", got.StatusReason)
+	}
+}
+
+func TestVerdictStatusFromVerifyDoesNotImposeFixedTimeout(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	w := &Watchdog{
+		verifyNow: func(ctx context.Context, taskID string) (bool, bool, string, string, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("verify context has no parent deadline")
+			}
+			if remaining := time.Until(deadline); remaining < 9*time.Minute {
+				t.Fatalf("verify context deadline = %s remaining, want the caller deadline without the old 5m watchdog cap", remaining)
+			}
+			return true, true, "", "", nil
+		},
+	}
+
+	status, reason := w.verdictStatusFromVerify(parent, "t1", "watchdog: agent stuck")
+	if status != task.StatusInProgress {
+		t.Fatalf("status = %q reason = %q, want in-progress", status, reason)
 	}
 }
 

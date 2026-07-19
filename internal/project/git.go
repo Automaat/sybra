@@ -1,6 +1,7 @@
 package project
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/executil"
+	"github.com/Automaat/sybra/internal/github"
 	"gopkg.in/yaml.v3"
 )
 
@@ -317,10 +319,35 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	if err := InstallSignoffHook(ctx, destPath); err != nil {
 		return fmt.Errorf("install signoff hook: %w", err)
 	}
+	if err := configureCommitIdentity(ctx, destPath); err != nil {
+		return fmt.Errorf("configure commit identity: %w", err)
+	}
 	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
 	// origin` becomes a no-op against refs/remotes/origin/*. Configure the
 	// standard refspec so fetches actually update tracking refs.
 	return runBare(ctx, destPath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+}
+
+// configureCommitIdentity sets an explicit git identity on the bare clone.
+// Headless/interactive agent commits are made by the agent's own bash tool
+// calls, not orchestrated Go code, so they inherit whatever identity is
+// already configured on the clone — an empty one fails every commit with
+// "empty ident name", and any stray local override (however it got there)
+// silently becomes the permanent author of every real commit. Setting it
+// explicitly at clone time means neither can happen by accident.
+// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL let an operator brand commits (e.g. as
+// their own GitHub App bot); the default matches the identity
+// internal/agent/k8s_job_runner.go already falls back to.
+func configureCommitIdentity(ctx context.Context, barePath string) error {
+	name := cmp.Or(os.Getenv("GIT_AUTHOR_NAME"), "Sybra Agent")
+	email := cmp.Or(os.Getenv("GIT_AUTHOR_EMAIL"), "sybra-agent@example.invalid")
+	if err := runBare(ctx, barePath, "config", "user.name", name); err != nil {
+		return fmt.Errorf("set user.name: %w", err)
+	}
+	if err := runBare(ctx, barePath, "config", "user.email", email); err != nil {
+		return fmt.Errorf("set user.email: %w", err)
+	}
+	return nil
 }
 
 // DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
@@ -1086,6 +1113,12 @@ func CurrentCommit(ctx context.Context, worktreePath string) (string, error) {
 	return strings.TrimSpace(sha), nil
 }
 
+// RemoteBranchHead returns the live head SHA of branch on remote via
+// `git ls-remote`. Returns ("", nil) when the remote branch does not exist.
+func RemoteBranchHead(ctx context.Context, worktreePath, remote, branch string) (string, error) {
+	return remoteBranchHead(ctx, worktreePath, remote, branch)
+}
+
 // isAncestor reports whether ancestor is reachable from descendant in the
 // worktree's history. Returns false when either ref is unknown.
 func isAncestor(ctx context.Context, worktreePath, ancestor, descendant string) bool {
@@ -1277,6 +1310,23 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 	return fmt.Errorf("%w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 }
 
+// pushPreflightRetryBackoffs bounds retries for a push-credential preflight
+// failure. GitHub App installation tokens rotate hourly; a preflight landing
+// in the ~minute window around that rotation can observe a momentarily
+// invalid token rather than a genuine credential problem (#2160). Between
+// attempts, ForceRefreshAppToken mints a fresh token instead of waiting for
+// the 30-minute background refresh loop to catch up — a no-op without GitHub
+// App auth configured, so a plain-PAT setup just gets a couple of cheap
+// retries against a transient network blip.
+var (
+	pushPreflightRetryBackoffs = []time.Duration{1 * time.Second, 3 * time.Second}
+	pushPreflightRetrySleep    = sleepWithContext
+	// forceRefreshAppToken is indirected so tests can observe/stub the retry's
+	// token-refresh call without depending on internal/github's package-global
+	// App-auth state.
+	forceRefreshAppToken = github.ForceRefreshAppToken
+)
+
 // PreflightPushCredentials cheaply validates the GitHub credential path before
 // Sybra spends an agent turn or starts push-dependent git work. It intentionally
 // skips SSH and non-GitHub remotes: those either use OS-level ssh-agent state or
@@ -1291,8 +1341,25 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 	if !isGitHubHTTPSRemote(strings.TrimSpace(pushURL)) {
 		return nil
 	}
+
+	authErr := checkGHAuthStatus(ctx, worktreePath)
+	for attempt := 0; attempt < len(pushPreflightRetryBackoffs) && authErr != nil; attempt++ {
+		// Best-effort: a mint failure here (e.g. a transient network blip
+		// talking to GitHub) shouldn't itself abort the retry loop — the plain
+		// PAT / ambient-auth path still gets its retry either way.
+		_ = forceRefreshAppToken(ctx)
+		if err := pushPreflightRetrySleep(ctx, pushPreflightRetryBackoffs[attempt]); err != nil {
+			return authErr
+		}
+		authErr = checkGHAuthStatus(ctx, worktreePath)
+	}
+	return authErr
+}
+
+func checkGHAuthStatus(ctx context.Context, worktreePath string) error {
 	cmd := exec.CommandContext(ctx, "gh", "auth", "status", "--hostname", "github.com")
 	cmd.Dir = worktreePath
+	cmd.Env = github.GHEnv()
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil

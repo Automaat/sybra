@@ -15,9 +15,10 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as $models from "./models.js";
 
 /**
- * GetDefaultSettings returns the settings a fresh install would have. The UI
- * diffs live values against these to flag "modified from default" fields and to
- * power per-field reset-to-default, without hardcoding defaults in TypeScript.
+ * GetDefaultSettings returns the settings an empty config file resolves to. The
+ * UI diffs live values against these to flag "modified from default" fields and
+ * to power per-field reset-to-default, without hardcoding defaults in
+ * TypeScript.
  */
 export function GetDefaultSettings(): $CancellablePromise<$models.AppSettings> {
     return $Call.ByID(2008277869).then(($result: any) => {

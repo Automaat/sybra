@@ -15,11 +15,14 @@ import (
 
 // Decision is the agent's structured verdict output.
 type Decision struct {
-	Decision    string   `json:"decision"` // "human" | "sybra_bug"
-	Summary     string   `json:"summary"`
-	IssueTitle  string   `json:"issue_title,omitempty"`
-	IssueBody   string   `json:"issue_body,omitempty"`
-	IssueLabels []string `json:"issue_labels,omitempty"`
+	Decision          string   `json:"decision"` // "human" | "sybra_bug" | "unblocked"
+	Reason            string   `json:"reason,omitempty"`
+	Summary           string   `json:"summary,omitempty"` // legacy alias for Reason
+	RecoverableAction string   `json:"recoverable_action,omitempty"`
+	Confidence        string   `json:"confidence,omitempty"`
+	IssueTitle        string   `json:"issue_title,omitempty"`
+	IssueBody         string   `json:"issue_body,omitempty"`
+	IssueLabels       []string `json:"issue_labels,omitempty"`
 }
 
 // Source records which parse path produced a Decision, for audit trails.
@@ -43,7 +46,7 @@ const (
 // therefore modeled as nullable and listed as required; the model emits null
 // for them on a human verdict. Go decodes JSON null into the zero value
 // (empty string / nil slice), so normalize() sees them as absent.
-const Schema = `{"type":"object","properties":{"decision":{"type":"string","enum":["human","sybra_bug","unblocked"]},"summary":{"type":"string"},"issue_title":{"type":["string","null"]},"issue_body":{"type":["string","null"]},"issue_labels":{"type":["array","null"],"items":{"type":"string"}}},"required":["decision","summary","issue_title","issue_body","issue_labels"],"additionalProperties":false}`
+const Schema = `{"type":"object","properties":{"decision":{"type":"string","enum":["human","sybra_bug","unblocked"]},"reason":{"type":"string"},"recoverable_action":{"type":"string","enum":["none","todo","planning","plan-review","in-progress","ready-review","in-review","testing","ready-pr","done"]},"confidence":{"type":"string","enum":["low","medium","high"]},"issue_title":{"type":["string","null"]},"issue_body":{"type":["string","null"]},"issue_labels":{"type":["array","null"],"items":{"type":"string"}}},"required":["decision","reason","recoverable_action","confidence","issue_title","issue_body","issue_labels"],"additionalProperties":false}`
 
 var fenceRe = regexp.MustCompile("(?s)```\\s*sybra-verdict\\s*\\n(.*?)\\n```")
 
@@ -97,23 +100,61 @@ func decodeFenced(text string) (Decision, error) {
 
 func normalize(v Decision, src Source) (Decision, Source, error) {
 	v.Decision = strings.ToLower(strings.TrimSpace(v.Decision))
+	v.Reason = strings.TrimSpace(v.Reason)
 	v.Summary = strings.TrimSpace(v.Summary)
+	if v.Reason == "" {
+		v.Reason = v.Summary
+	}
+	v.Summary = v.Reason
+	v.RecoverableAction = strings.ToLower(strings.TrimSpace(v.RecoverableAction))
+	if v.RecoverableAction == "" {
+		v.RecoverableAction = "none"
+	}
+	v.Confidence = strings.ToLower(strings.TrimSpace(v.Confidence))
+	if v.Confidence == "" {
+		v.Confidence = "medium"
+	}
 	v.IssueTitle = strings.TrimSpace(v.IssueTitle)
 	v.IssueBody = strings.TrimSpace(v.IssueBody)
 	v.IssueLabels = normalizeLabels(v.IssueLabels)
 	if v.Decision != "human" && v.Decision != "sybra_bug" && v.Decision != "unblocked" {
 		return Decision{}, "", fmt.Errorf("verdict: invalid decision %q", v.Decision)
 	}
-	if v.Summary == "" {
+	if v.Reason == "" {
 		return Decision{}, "", errors.New("verdict: empty summary")
 	}
-	if isPlaceholder(v.Summary) {
-		return Decision{}, "", fmt.Errorf("verdict: placeholder summary %q", v.Summary)
+	if !validRecoverableActions[v.RecoverableAction] {
+		return Decision{}, "", fmt.Errorf("verdict: invalid recoverable_action %q", v.RecoverableAction)
+	}
+	if !validConfidence[v.Confidence] {
+		return Decision{}, "", fmt.Errorf("verdict: invalid confidence %q", v.Confidence)
+	}
+	if isPlaceholder(v.Reason) {
+		return Decision{}, "", fmt.Errorf("verdict: placeholder summary %q", v.Reason)
 	}
 	if v.Decision == "sybra_bug" && (isPlaceholder(v.IssueTitle) || isPlaceholder(v.IssueBody)) {
 		return Decision{}, "", fmt.Errorf("verdict: placeholder issue payload (title=%q body=%q)", v.IssueTitle, v.IssueBody)
 	}
 	return v, src, nil
+}
+
+var validRecoverableActions = map[string]bool{
+	"none":         true,
+	"todo":         true,
+	"planning":     true,
+	"plan-review":  true,
+	"in-progress":  true,
+	"ready-review": true,
+	"in-review":    true,
+	"testing":      true,
+	"ready-pr":     true,
+	"done":         true,
+}
+
+var validConfidence = map[string]bool{
+	"low":    true,
+	"medium": true,
+	"high":   true,
 }
 
 // placeholderValues are exact (case-insensitive, trimmed) strings a model
