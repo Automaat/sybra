@@ -364,15 +364,28 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 // summary) see them too — shared by both pollers so a reconciled reviewed pet
 // PR merges in the same cycle regardless of which one observed it. No-op
 // when project routing isn't configured (handleAutoMerge needs it to gate).
+// Applies the same running-agent/active-workflow gates handleTaskPRIssues
+// uses for every other issue kind (Copilot review on #2292): the task just
+// flipped human-required -> in-review in this same tick, but a concurrent
+// dispatch (e.g. a second poller instance) could already have a workflow or
+// agent live against it by the time this runs — merging out from under that
+// would race the in-flight run.
 func (r *Handler) mergeReconciledReady(reconciledReady, issues []github.PRIssue) []github.PRIssue {
 	if r.projects == nil {
 		return issues
 	}
 	for i := range reconciledReady {
-		r.handleAutoMerge(reconciledReady[i])
-	}
-	if len(reconciledReady) > 0 {
-		issues = append(issues, reconciledReady...)
+		issue := reconciledReady[i]
+		if r.agents.HasRunningAgentForTask(issue.TaskID) {
+			r.logger.Info("reviews.dispatch.gate", "task_id", issue.TaskID, "gate", "running_agent", "kind", issue.Kind)
+			continue
+		}
+		if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(issue.TaskID) {
+			r.logger.Info("reviews.dispatch.gate", "task_id", issue.TaskID, "gate", "active_workflow", "kind", issue.Kind)
+			continue
+		}
+		r.handleAutoMerge(issue)
+		issues = append(issues, issue)
 	}
 	return issues
 }
