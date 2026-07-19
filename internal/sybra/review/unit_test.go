@@ -501,8 +501,28 @@ func TestPRMonitorEligible(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "todo with PR — not eligible, not in monitored states",
+			name: "todo with PR — eligible; skipTaskCreatedWorkflow skips the fresh-implementation lane for this exact shape and pr-fix is the only other path",
 			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42},
+			want: true,
+		},
+		{
+			name: "todo with branch only — not eligible (avoid WIP false positives, same as in-progress)",
+			tk:   task.Task{Status: task.StatusTodo, Branch: "sybra/wip"},
+			want: false,
+		},
+		{
+			name: "todo with nothing — not eligible, a normal fresh-dispatch candidate",
+			tk:   task.Task{Status: task.StatusTodo},
+			want: false,
+		},
+		{
+			name: "todo with PR and review tag — excluded (inbound review task, not ours)",
+			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42, Tags: []string{"review"}},
+			want: false,
+		},
+		{
+			name: "todo with PR and handoff tag — excluded (handoff owns its own re-entry lane)",
+			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42, Tags: []string{"handoff", "handoff-ready-pr"}},
 			want: false,
 		},
 		{
@@ -563,9 +583,9 @@ func TestPrClosedEligible(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "todo with PR — not eligible",
+			name: "todo with PR — eligible (via prMonitorEligible)",
 			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42},
-			want: false,
+			want: true,
 		},
 		{
 			name: "done with PR — not eligible (terminal)",
