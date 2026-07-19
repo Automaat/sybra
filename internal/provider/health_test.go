@@ -299,6 +299,33 @@ func (f *fakeEmitter) snapshot() []HealthEvent {
 	return out
 }
 
+// TestNew_SeedsUnhealthyUntilProbed guards against re-introducing the
+// incident where an enabled-but-never-probed provider (copilot with no CLI
+// on PATH) was seeded Healthy=true and picked as a failover target before
+// any probe had run.
+func TestNew_SeedsUnhealthyUntilProbed(t *testing.T) {
+	fe := &fakeEmitter{}
+	c := New(Config{
+		ClaudeEnabled:  true,
+		CodexEnabled:   true,
+		CopilotEnabled: true,
+	}, fe.emit, nil)
+	for _, p := range []string{"claude", "codex", "copilot"} {
+		if c.IsHealthy(p) {
+			t.Errorf("%s: seeded healthy before any probe ran", p)
+		}
+		if got := c.Reason(p); got != "unknown" {
+			t.Errorf("%s: seeded reason = %q, want %q", p, got, "unknown")
+		}
+	}
+	if c.IsHealthy("opencode") {
+		t.Error("opencode: disabled provider seeded healthy")
+	}
+	if got := c.Reason("opencode"); got != "disabled" {
+		t.Errorf("opencode: seeded reason = %q, want %q", got, "disabled")
+	}
+}
+
 func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *fakeClock) {
 	t.Helper()
 	fe := &fakeEmitter{}
@@ -534,7 +561,12 @@ func TestFailover_PicksHealthyPeer(t *testing.T) {
 	}
 }
 
-func TestFailover_PriorityChainCopilotLast(t *testing.T) {
+// TestFailover_NoFixedPriority verifies that with multiple healthy peers
+// available, Failover distributes across all of them instead of always
+// preferring the same one — copilot in particular must be picked sometimes,
+// not systematically last. A single-eligible-candidate case must still
+// return deterministically.
+func TestFailover_NoFixedPriority(t *testing.T) {
 	fe := &fakeEmitter{}
 	c := New(Config{
 		Interval:       time.Minute,
@@ -549,37 +581,26 @@ func TestFailover_PriorityChainCopilotLast(t *testing.T) {
 	healthy("codex")
 	healthy("copilot")
 
-	// Copilot is never preferred while a higher-priority peer is healthy.
-	if got := c.Failover("codex"); got != "claude" {
-		t.Errorf("codex down, claude healthy → want claude, got %q", got)
+	seen := map[string]bool{}
+	for range 200 {
+		seen[c.Failover("opencode")] = true
 	}
-	if got := c.Failover("copilot"); got != "claude" {
-		t.Errorf("copilot down → want claude (highest), got %q", got)
+	for _, want := range []string{"claude", "codex", "copilot"} {
+		if !seen[want] {
+			t.Errorf("Failover never picked %q across 200 trials with all peers healthy: %v", want, seen)
+		}
 	}
 
-	// claude down → codex (next in priority), still not copilot.
 	down("claude")
-	if got := c.Failover("claude"); got != "codex" {
-		t.Errorf("claude down → want codex, got %q", got)
-	}
-
-	// claude + codex down → copilot is the only healthy peer left.
 	down("codex")
 	if got := c.Failover("claude"); got != "copilot" {
 		t.Errorf("claude+codex down → want copilot, got %q", got)
 	}
 
-	// copilot can itself fail over to a recovered higher-priority peer.
 	healthy("claude")
-	if got := c.Failover("copilot"); got != "claude" {
-		t.Errorf("copilot down, claude back → want claude, got %q", got)
-	}
-
-	// Disabled peers are skipped even when healthy.
 	c.SetProviderEnabled("claude", false)
-	down("codex")
-	if got := c.Failover("codex"); got != "copilot" {
-		t.Errorf("claude disabled, codex down → want copilot, got %q", got)
+	if got := c.Failover("claude"); got != "copilot" {
+		t.Errorf("claude disabled → want copilot, got %q", got)
 	}
 }
 

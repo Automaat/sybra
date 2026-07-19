@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -38,9 +39,10 @@ type Config struct {
 	ProbeErrorThreshold int
 }
 
-// failoverPriority is the order auto-failover prefers healthy peers in.
-// Copilot is last: it is never chosen over claude/codex, but can be a
-// fallback target when both are unhealthy, and can itself fail over to them.
+// failoverPriority is the universe of providers auto-failover considers.
+// Despite the name it imposes no preference order: failoverLocked picks
+// uniformly at random among whichever of these are enabled and healthy, so
+// no single peer (e.g. copilot) is systematically favored or starved.
 var failoverPriority = providerid.All()
 
 const defaultProbeErrorThreshold = 2
@@ -135,10 +137,17 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 		now:           time.Now,
 	}
 	// Seed defaults so Snapshot returns something meaningful before first probe.
-	c.statuses["claude"] = &Status{Provider: "claude", Healthy: cfg.ClaudeEnabled, Reason: initialReason(cfg.ClaudeEnabled)}
-	c.statuses["codex"] = &Status{Provider: "codex", Healthy: cfg.CodexEnabled, Reason: initialReason(cfg.CodexEnabled)}
-	c.statuses["copilot"] = &Status{Provider: "copilot", Healthy: cfg.CopilotEnabled, Reason: initialReason(cfg.CopilotEnabled)}
-	c.statuses["opencode"] = &Status{Provider: "opencode", Healthy: cfg.OpenCodeEnabled, Reason: initialReason(cfg.OpenCodeEnabled)}
+	// Healthy is always seeded false, even for an enabled provider: "enabled"
+	// only means the operator turned it on, not that its CLI is installed,
+	// authenticated, or working. A provider whose binary is missing (e.g.
+	// copilot not on PATH) must not be eligible as a failover target until a
+	// real probe confirms it — see the incident that motivated this: a
+	// pre-probe seed of Healthy=true let quota-based failover route runs to
+	// an uninstalled copilot CLI, crashing every one of them.
+	c.statuses["claude"] = &Status{Provider: "claude", Healthy: false, Reason: initialReason(cfg.ClaudeEnabled)}
+	c.statuses["codex"] = &Status{Provider: "codex", Healthy: false, Reason: initialReason(cfg.CodexEnabled)}
+	c.statuses["copilot"] = &Status{Provider: "copilot", Healthy: false, Reason: initialReason(cfg.CopilotEnabled)}
+	c.statuses["opencode"] = &Status{Provider: "opencode", Healthy: false, Reason: initialReason(cfg.OpenCodeEnabled)}
 	return c
 }
 
@@ -486,9 +495,9 @@ func (c *Checker) Reason(provider string) string {
 	return ""
 }
 
-// Failover picks a healthy peer when auto-failover is enabled, walking
-// failoverPriority in order (claude > codex > copilot). Returns empty string
-// if auto-failover is disabled or no enabled peer is currently healthy.
+// Failover picks a uniformly random healthy peer when auto-failover is
+// enabled. Returns empty string if auto-failover is disabled or no enabled
+// peer is currently healthy.
 func (c *Checker) Failover(unhealthy string) string {
 	if c == nil {
 		return ""
@@ -502,15 +511,19 @@ func (c *Checker) failoverLocked(unhealthy string) string {
 	if !c.cfg.AutoFailover {
 		return ""
 	}
+	candidates := make([]string, 0, len(failoverPriority))
 	for _, peer := range failoverPriority {
 		if peer == unhealthy || !c.providerEnabledLocked(peer) {
 			continue
 		}
 		if s, ok := c.statuses[peer]; ok && s.Healthy {
-			return peer
+			candidates = append(candidates, peer)
 		}
 	}
-	return ""
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[rand.IntN(len(candidates))]
 }
 
 // providerEnabledLocked reports whether a provider participates in probing and
