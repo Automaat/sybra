@@ -44,6 +44,8 @@ export {
     AppSettings,
     ClusterNodeDTO,
     CodexModel,
+    ConfigMutationResult,
+    ConfigRecovery,
     CopilotModel,
     LoggingSettings,
     LoopAgentRun,

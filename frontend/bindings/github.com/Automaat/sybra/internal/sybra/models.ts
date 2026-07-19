@@ -341,6 +341,85 @@ export class CodexModel {
     }
 }
 
+export class ConfigMutationResult {
+    "applied": string[];
+    "restartRequired": string[];
+    "unchanged": string[];
+    "rejected": string[];
+    "recovery"?: ConfigRecovery | null;
+
+    /** Creates a new ConfigMutationResult instance. */
+    constructor($$source: Partial<ConfigMutationResult> = {}) {
+        if (!("applied" in $$source)) {
+            this["applied"] = [];
+        }
+        if (!("restartRequired" in $$source)) {
+            this["restartRequired"] = [];
+        }
+        if (!("unchanged" in $$source)) {
+            this["unchanged"] = [];
+        }
+        if (!("rejected" in $$source)) {
+            this["rejected"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConfigMutationResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ConfigMutationResult {
+        const $$createField0_0 = $$createType18;
+        const $$createField1_0 = $$createType18;
+        const $$createField2_0 = $$createType18;
+        const $$createField3_0 = $$createType18;
+        const $$createField4_0 = $$createType21;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("applied" in $$parsedSource) {
+            $$parsedSource["applied"] = $$createField0_0($$parsedSource["applied"]);
+        }
+        if ("restartRequired" in $$parsedSource) {
+            $$parsedSource["restartRequired"] = $$createField1_0($$parsedSource["restartRequired"]);
+        }
+        if ("unchanged" in $$parsedSource) {
+            $$parsedSource["unchanged"] = $$createField2_0($$parsedSource["unchanged"]);
+        }
+        if ("rejected" in $$parsedSource) {
+            $$parsedSource["rejected"] = $$createField3_0($$parsedSource["rejected"]);
+        }
+        if ("recovery" in $$parsedSource) {
+            $$parsedSource["recovery"] = $$createField4_0($$parsedSource["recovery"]);
+        }
+        return new ConfigMutationResult($$parsedSource as Partial<ConfigMutationResult>);
+    }
+}
+
+export class ConfigRecovery {
+    "restoredLastKnownGood": boolean;
+    "message": string;
+
+    /** Creates a new ConfigRecovery instance. */
+    constructor($$source: Partial<ConfigRecovery> = {}) {
+        if (!("restoredLastKnownGood" in $$source)) {
+            this["restoredLastKnownGood"] = false;
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConfigRecovery instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ConfigRecovery {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ConfigRecovery($$parsedSource as Partial<ConfigRecovery>);
+    }
+}
+
 /**
  * CopilotModel is a single Copilot model option (slug + display name).
  */
@@ -477,7 +556,7 @@ export class MonitorReportBinding {
      * Creates a new MonitorReportBinding instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorReportBinding {
-        const $$createField2_0 = $$createType20;
+        const $$createField2_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("report" in $$parsedSource) {
             $$parsedSource["report"] = $$createField2_0($$parsedSource["report"]);
@@ -597,7 +676,7 @@ export class TamperReportDTO {
      */
     static createFrom($$source: any = {}): TamperReportDTO {
         const $$createField4_0 = $$createType18;
-        const $$createField5_0 = $$createType22;
+        const $$createField5_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField4_0($$parsedSource["files"]);
@@ -687,7 +766,7 @@ export class TaskAuditEventDTO {
      * Creates a new TaskAuditEventDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskAuditEventDTO {
-        const $$createField4_0 = $$createType23;
+        const $$createField4_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("data" in $$parsedSource) {
             $$parsedSource["data"] = $$createField4_0($$parsedSource["data"]);
@@ -769,7 +848,9 @@ const $$createType16 = config$0.MetricsConfig.createFrom;
 const $$createType17 = config$0.BrowserConfig.createFrom;
 const $$createType18 = $Create.Array($Create.Any);
 const $$createType19 = $Create.Map($Create.Any, $Create.Any);
-const $$createType20 = monitor$0.Report.createFrom;
-const $$createType21 = TamperFindingDTO.createFrom;
-const $$createType22 = $Create.Array($$createType21);
-const $$createType23 = $Create.Map($Create.Any, $Create.Any);
+const $$createType20 = ConfigRecovery.createFrom;
+const $$createType21 = $Create.Nullable($$createType20);
+const $$createType22 = monitor$0.Report.createFrom;
+const $$createType23 = TamperFindingDTO.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = $Create.Map($Create.Any, $Create.Any);
