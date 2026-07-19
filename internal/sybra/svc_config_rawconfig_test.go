@@ -95,7 +95,7 @@ func TestUpdateSettings_PatchesOnlyChangedLeafAndPreservesComments(t *testing.T)
 		"agent:",
 		"  # keep this agent comment",
 		"  provider: claude",
-		"  max_concurrent: 3",
+		"  max_concurrent: 3 # keep this inline comment",
 		"webhook:",
 		"  # keep this webhook comment",
 		"  secret: keep-me",
@@ -126,9 +126,10 @@ func TestUpdateSettings_PatchesOnlyChangedLeafAndPreservesComments(t *testing.T)
 	for _, want := range []string{
 		"# operator header",
 		"# keep this agent comment",
+		"# keep this inline comment",
 		"# keep this webhook comment",
 		"provider: claude",
-		"max_concurrent: 9",
+		"max_concurrent: 9 # keep this inline comment",
 		"secret: keep-me",
 	} {
 		if !strings.Contains(text, want) {

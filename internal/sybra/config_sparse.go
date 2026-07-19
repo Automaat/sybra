@@ -127,8 +127,10 @@ func upsertYAMLPath(raw []byte, path []string, value any) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		replLines := splitRawLines(replacement)
+		preserveYAMLLineComment(entry, replLines)
 		start, end := yamlEntryBounds(lines, entry)
-		lines = replaceLineRange(lines, start, end, splitRawLines(replacement))
+		lines = replaceLineRange(lines, start, end, replLines)
 		return joinRawLines(lines), nil
 	}
 	parent, remaining, hasRoot := deepestExistingYAMLMapping(root, path)
@@ -376,6 +378,26 @@ func replaceLineRange(lines []string, start, end int, replacement []string) []st
 	out = append(out, replacement...)
 	out = append(out, lines[end:]...)
 	return out
+}
+
+func preserveYAMLLineComment(entry yamlPathEntry, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	comment := normalizeYAMLLineComment(entry.value.LineComment)
+	if comment == "" {
+		comment = normalizeYAMLLineComment(entry.key.LineComment)
+	}
+	if comment == "" {
+		return
+	}
+	lines[0] += " # " + comment
+}
+
+func normalizeYAMLLineComment(comment string) string {
+	comment = strings.TrimSpace(comment)
+	comment = strings.TrimSpace(strings.TrimPrefix(comment, "#"))
+	return comment
 }
 
 func leadingSpaces(s string) int {
