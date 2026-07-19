@@ -158,6 +158,21 @@ func initialReason(enabled bool) string {
 	return "disabled"
 }
 
+// ProbeOnce runs a single synchronous probe pass across all enabled
+// providers, replacing their seeded Healthy=false with a real result before
+// returning. Callers that wire a Checker into a gate other goroutines will
+// immediately start consulting (e.g. Manager.SetHealthGate) must call this
+// first — otherwise every provider reads unhealthy until Run's background
+// goroutine gets scheduled and completes its own first pass, which can fail
+// every dispatch attempted in that window closed. Bounded by probeTimeout
+// (10s) regardless of provider count, since checkAll probes concurrently.
+func (c *Checker) ProbeOnce(ctx context.Context) {
+	if c == nil {
+		return
+	}
+	c.checkAll(ctx)
+}
+
 // Run performs an immediate probe and then probes on a ticker until ctx is
 // cancelled. Safe to call once from a goroutine.
 func (c *Checker) Run(ctx context.Context) {

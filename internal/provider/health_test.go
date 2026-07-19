@@ -326,6 +326,32 @@ func TestNew_SeedsUnhealthyUntilProbed(t *testing.T) {
 	}
 }
 
+// TestProbeOnce_ClearsSeedBeforeGateWiring guards the fix for the window
+// TestNew_SeedsUnhealthyUntilProbed's seed change opened: a caller wiring
+// this Checker into a gate other goroutines immediately consult (see
+// app_init.go's initProviderHealth) must be able to get a real status
+// synchronously, without waiting for Run's background ticker to fire.
+func TestProbeOnce_ClearsSeedBeforeGateWiring(t *testing.T) {
+	fe := &fakeEmitter{}
+	c := New(Config{ClaudeEnabled: true, CodexEnabled: true}, fe.emit, nil)
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
+	}
+	c.probeCodex = func(context.Context) (Status, error) {
+		return Status{Provider: "codex", Healthy: false, Reason: "logged_out"}, nil
+	}
+	if c.IsHealthy("claude") {
+		t.Fatal("precondition: claude should read unhealthy before ProbeOnce")
+	}
+	c.ProbeOnce(context.Background())
+	if !c.IsHealthy("claude") {
+		t.Error("claude should be healthy after ProbeOnce resolves its probe true")
+	}
+	if c.IsHealthy("codex") {
+		t.Error("codex should stay unhealthy after ProbeOnce resolves its probe false")
+	}
+}
+
 func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *fakeClock) {
 	t.Helper()
 	fe := &fakeEmitter{}
