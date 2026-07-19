@@ -367,9 +367,14 @@ type Engine struct {
 	maxCheckpoints         int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
 	verifyTimeout          time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 	verifyChecksSlots      chan struct{} // process-local verify_checks concurrency cap; lazily initialized for zero-value Engines in tests
-	abTesting              abtest.Config
-	evalGate               *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
-	conflictRecovery       func(taskID string) bool
+	// abMu guards abTesting alone: the routing ticker hot-swaps the A/B config
+	// via SetABTestingConfig while dispatch reads it (selectABVariant,
+	// providerEligibilitySnapshot, demotion/shutout reporting). Kept separate
+	// from mu so a config swap never contends with dispatch bookkeeping.
+	abMu             sync.RWMutex
+	abTesting        abtest.Config
+	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	conflictRecovery func(taskID string) bool
 	// dispatchComparator, when set, orders TaskInfo pairs for ResumeStalled's
 	// per-tick dispatch scan, replacing the built-in
 	// dispatchorder.Rank(status)-only sort. Wired by app_init.go so
@@ -587,7 +592,24 @@ func (e *Engine) SetOpenPROnUnrunnableGate(v bool) { e.openPROnUnrunnableGate = 
 func (e *Engine) SetMaxCheckpoints(n int) { e.maxCheckpoints = n }
 
 // SetABTestingConfig wires deterministic A/B assignment for run_agent steps.
-func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }
+// Safe to call concurrently with dispatch: the routing ticker hot-swaps this
+// live via applyRoutingWeights.
+func (e *Engine) SetABTestingConfig(cfg abtest.Config) {
+	e.abMu.Lock()
+	e.abTesting = cfg
+	e.abMu.Unlock()
+}
+
+// abTestingConfig returns the current A/B config under the read lock. The
+// returned value shares abTesting's backing experiment slice, but every writer
+// (SetABTestingConfig / mergeWeights) publishes a freshly built slice rather
+// than mutating in place, so an in-flight reader iterating this snapshot is
+// unaffected by a concurrent swap.
+func (e *Engine) abTestingConfig() abtest.Config {
+	e.abMu.RLock()
+	defer e.abMu.RUnlock()
+	return e.abTesting
+}
 
 // SetEvalGate wires a prompteval.Gate so stored offline eval verdicts block
 // online A/B enrollment for digested variants. Leaving it unset (nil)

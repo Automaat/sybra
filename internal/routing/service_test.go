@@ -179,6 +179,37 @@ func TestService_Tick_NoReportYet_NoOp(t *testing.T) {
 	}
 }
 
+// TestBuildOverlay_CarriesForwardUntouchedExperiments guards the persisted
+// snapshot against a partial-plan tick silently dropping the last-learned
+// weights of an experiment it did not re-plan this generation.
+func TestBuildOverlay_CarriesForwardUntouchedExperiments(t *testing.T) {
+	prev := Overlay{
+		Version: 1,
+		Experiments: []OverlayExperiment{
+			{ExperimentID: "exp-a", Variants: []OverlayVariant{{VariantID: "v1", Weight: 7}}},
+			{ExperimentID: "exp-b", Variants: []OverlayVariant{{VariantID: "v1", Weight: 9}}},
+		},
+	}
+	// This tick only re-plans exp-a.
+	plan := WeightPlan{Changed: true, Experiments: map[string]map[string]int{
+		"exp-a": {"v1": 5},
+	}}
+
+	overlay := buildOverlay(2, time.Now(), plan, nil, prev)
+
+	if wa, ok := overlay.WeightAt("exp-a", "v1"); !ok || wa != 5 {
+		t.Fatalf("exp-a/v1 weight = (%d, %v), want (5, true)", wa, ok)
+	}
+	// exp-b was untouched this tick — its learned weight must survive, not
+	// fall back to base.
+	if wb, ok := overlay.WeightAt("exp-b", "v1"); !ok || wb != 9 {
+		t.Fatalf("exp-b/v1 weight = (%d, %v), want (9, true) (carry-forward)", wb, ok)
+	}
+	if len(overlay.Experiments) != 2 {
+		t.Fatalf("overlay has %d experiments, want 2", len(overlay.Experiments))
+	}
+}
+
 func TestService_VersionBumpsOnlyOnChange(t *testing.T) {
 	var applied []abtest.Config
 	var audited []audit.Event

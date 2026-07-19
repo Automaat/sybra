@@ -202,7 +202,7 @@ func (s *Service) tick(_ context.Context) {
 	}
 
 	version := prevOverlay.Version + 1
-	overlay := buildOverlay(version, s.now(), plan, scores)
+	overlay := buildOverlay(version, s.now(), plan, scores, prevOverlay)
 	if err := s.store.Save(overlay); err != nil {
 		s.logger.Warn("routing.overlay.save_failed", "err", err)
 		return
@@ -307,12 +307,15 @@ func currentWeights(base abtest.Config, overlay Overlay) map[string]map[string]i
 	return out
 }
 
-// buildOverlay assembles the persisted overlay from a weight plan and the
-// scores that drove it. Only experiments present in plan.Experiments are
-// included — an unchanged experiment keeps whatever the prior overlay
-// generation recorded via the caller retaining prevOverlay separately;
-// buildOverlay itself is a pure, one-generation snapshot.
-func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score) Overlay {
+// buildOverlay assembles the next persisted overlay generation from a weight
+// plan and the scores that drove it. Experiments present in plan.Experiments
+// are rebuilt from the plan; every experiment the plan did NOT touch is
+// carried forward verbatim from prev, so a tick that re-plans only some
+// experiments never drops the last-learned weights of the rest from the
+// persisted snapshot (which would otherwise silently fall back to base
+// weights on the next reload/restart/Apply). Output is sorted by experiment
+// ID for deterministic persistence.
+func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score, prev Overlay) Overlay {
 	scoreByKey := map[string]Score{}
 	for _, s := range scores {
 		scoreByKey[s.ExperimentID+"|"+s.VariantID] = s
@@ -325,7 +328,9 @@ func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score) O
 	sort.Strings(expIDs)
 
 	overlay := Overlay{Version: version, GeneratedAt: now}
+	planned := make(map[string]bool, len(plan.Experiments))
 	for _, expID := range expIDs {
+		planned[expID] = true
 		weights := plan.Experiments[expID]
 		variantIDs := make([]string, 0, len(weights))
 		for vid := range weights {
@@ -349,6 +354,16 @@ func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score) O
 		}
 		overlay.Experiments = append(overlay.Experiments, ov)
 	}
+
+	// Carry forward untouched experiments from the prior generation.
+	for _, exp := range prev.Experiments {
+		if !planned[exp.ExperimentID] {
+			overlay.Experiments = append(overlay.Experiments, exp)
+		}
+	}
+	sort.Slice(overlay.Experiments, func(i, j int) bool {
+		return overlay.Experiments[i].ExperimentID < overlay.Experiments[j].ExperimentID
+	})
 	return overlay
 }
 
