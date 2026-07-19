@@ -11,6 +11,7 @@ func isolateServerEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("SYBRA_AUTH_TOKEN", "")
 	t.Setenv("SYBRA_ALLOWED_ORIGINS", "")
+	t.Setenv("SYBRA_WEBHOOK_SECRET", "")
 }
 
 func TestLoadGeneratesAndPersistsServerAuthToken(t *testing.T) {
@@ -149,5 +150,45 @@ func TestLoadNoPersistDoesNotGenerateServerAuthToken(t *testing.T) {
 	}
 	if _, err := os.Stat(AuthTokenPath()); !os.IsNotExist(err) {
 		t.Fatalf("LoadNoPersist should not create AuthTokenPath(), stat err = %v", err)
+	}
+}
+
+func TestLoadWebhookDefaults(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Webhook.Enabled {
+		t.Fatal("Webhook.Enabled = true, want false by default")
+	}
+	if cfg.Webhook.Port != DefaultWebhookPort {
+		t.Fatalf("Webhook.Port = %d, want %d", cfg.Webhook.Port, DefaultWebhookPort)
+	}
+	if cfg.Webhook.Secret != "" {
+		t.Fatalf("Webhook.Secret = %q, want empty by default", cfg.Webhook.Secret)
+	}
+}
+
+func TestLoadWebhookSecretEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_WEBHOOK_SECRET", "env-webhook-secret")
+
+	yaml := []byte("webhook:\n  secret: file-secret\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Webhook.Secret != "env-webhook-secret" {
+		t.Fatalf("Webhook.Secret = %q, want env override", cfg.Webhook.Secret)
 	}
 }

@@ -2,18 +2,27 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 func testLogger() *slog.Logger {
@@ -26,6 +35,84 @@ func okHandler() http.Handler {
 	})
 }
 
+type fakeWebhookTaskCreator struct {
+	created task.Task
+	err     error
+
+	gotTitle string
+	gotBody  string
+	gotMode  string
+	gotInit  task.Update
+	calls    int
+}
+
+func (f *fakeWebhookTaskCreator) CreateTaskWithInit(title, body, mode string, init task.Update) (task.Task, error) {
+	f.calls++
+	f.gotTitle = title
+	f.gotBody = body
+	f.gotMode = mode
+	f.gotInit = init
+	if f.err != nil {
+		return task.Task{}, f.err
+	}
+	return f.created, nil
+}
+
+type recordedEvent struct {
+	name string
+	data any
+}
+
+type eventRecorder struct {
+	mu     sync.Mutex
+	events []recordedEvent
+}
+
+func (r *eventRecorder) append(name string, data any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, recordedEvent{name: name, data: data})
+}
+
+func (r *eventRecorder) snapshot() []recordedEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]recordedEvent(nil), r.events...)
+}
+
+func startupLikeServerTestConfig(home string) *config.Config {
+	cfg := config.DefaultConfig()
+	cfg.TasksDir = filepath.Join(home, "tasks")
+	cfg.SkillsDir = filepath.Join(home, "claude", "skills")
+	cfg.RepoDir = home
+	cfg.ProjectsDir = filepath.Join(home, "projects")
+	cfg.ClonesDir = filepath.Join(home, "clones")
+	cfg.WorktreesDir = filepath.Join(home, "worktrees")
+	cfg.LoopAgentsDir = filepath.Join(home, "loop-agents")
+	cfg.Logging.Dir = filepath.Join(home, "logs")
+	cfg.Notification.Desktop = false
+	cfg.GitHub.Enabled = false
+	cfg.Renovate.Enabled = false
+	cfg.Todoist.Enabled = false
+	cfg.Triage.Enabled = false
+	cfg.Umbrella.Enabled = false
+	cfg.Watchdog.Enabled = false
+	cfg.Monitor.Enabled = false
+	cfg.SelfMonitor.Enabled = false
+	cfg.Evaluation.Enabled = false
+	cfg.HarnessEvolve.Enabled = false
+	cfg.AutoUpdate.Enabled = false
+	cfg.Providers.HealthCheck.Enabled = false
+	cfg.Providers.Limits.Enabled = false
+	return cfg
+}
+
+func webhookSignature(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
 func TestAuthMiddlewareRejectsMissingToken(t *testing.T) {
 	h := authMiddleware("secret", testLogger(), okHandler())
 	req := httptest.NewRequest(http.MethodPost, "/api/TaskService/ListTasks", http.NoBody)
@@ -34,6 +121,230 @@ func TestAuthMiddlewareRejectsMissingToken(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+}
+
+func TestWebhookHandlerCreatesUnsignedTaskWithDefaultsAndMetadata(t *testing.T) {
+	creator := &fakeWebhookTaskCreator{created: task.Task{ID: "task-1"}}
+	handler := newWebhookHandler(testLogger(), "", creator)
+	body := []byte(`{"title":" from webhook ","body":"payload","tags":[" webhook ","","ops"],"project_id":" Automaat/sybra "}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	var resp webhookTaskResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.TaskID != "task-1" {
+		t.Fatalf("task_id = %q, want task-1", resp.TaskID)
+	}
+	if creator.calls != 1 {
+		t.Fatalf("CreateTaskWithInit calls = %d, want 1", creator.calls)
+	}
+	if creator.gotTitle != "from webhook" {
+		t.Fatalf("title = %q, want trimmed title", creator.gotTitle)
+	}
+	if creator.gotBody != "payload" {
+		t.Fatalf("body = %q, want payload", creator.gotBody)
+	}
+	if creator.gotMode != task.AgentModeHeadless {
+		t.Fatalf("mode = %q, want %q", creator.gotMode, task.AgentModeHeadless)
+	}
+	if creator.gotInit.Tags == nil {
+		t.Fatal("init.Tags = nil, want webhook tags")
+	}
+	if got := *creator.gotInit.Tags; len(got) != 2 || got[0] != "webhook" || got[1] != "ops" {
+		t.Fatalf("tags = %v, want [webhook ops]", got)
+	}
+	if creator.gotInit.ProjectID == nil || *creator.gotInit.ProjectID != "Automaat/sybra" {
+		t.Fatalf("project_id = %v, want Automaat/sybra", creator.gotInit.ProjectID)
+	}
+}
+
+func TestWebhookHandlerCreatesSignedTask(t *testing.T) {
+	creator := &fakeWebhookTaskCreator{created: task.Task{ID: "task-signed"}}
+	handler := newWebhookHandler(testLogger(), "secret", creator)
+	body := []byte(`{"title":"signed","mode":"interactive"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
+	req.Header.Set(webhookSignatureHeader, webhookSignature("secret", body))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	if creator.gotMode != task.AgentModeInteractive {
+		t.Fatalf("mode = %q, want %q", creator.gotMode, task.AgentModeInteractive)
+	}
+}
+
+func TestWebhookHandlerRejectsMissingSignature(t *testing.T) {
+	handler := newWebhookHandler(testLogger(), "secret", &fakeWebhookTaskCreator{})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(`{"title":"signed"}`))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+}
+
+func TestWebhookHandlerRejectsBadSignature(t *testing.T) {
+	handler := newWebhookHandler(testLogger(), "secret", &fakeWebhookTaskCreator{})
+	body := []byte(`{"title":"signed"}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
+	req.Header.Set(webhookSignatureHeader, webhookSignature("wrong", body))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+}
+
+func TestWebhookHandlerRejectsInvalidPayload(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{name: "invalid json", body: `{"title":`, status: http.StatusBadRequest},
+		{name: "missing title", body: `{"body":"x"}`, status: http.StatusBadRequest},
+		{name: "invalid mode", body: `{"title":"x","mode":"bogus"}`, status: http.StatusBadRequest},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := newWebhookHandler(testLogger(), "", &fakeWebhookTaskCreator{})
+			req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(tc.body))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != tc.status {
+				t.Fatalf("status = %d, want %d", rr.Code, tc.status)
+			}
+		})
+	}
+}
+
+func TestWebhookHandlerRejectsWrongMethod(t *testing.T) {
+	handler := newWebhookHandler(testLogger(), "", &fakeWebhookTaskCreator{})
+	req := httptest.NewRequest(http.MethodGet, "/webhook/task", http.NoBody)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+
+	cfg := startupLikeServerTestConfig(home)
+	logger := slog.New(slog.DiscardHandler)
+	var emitted eventRecorder
+	app := sybra.NewApp(logger, &slog.LevelVar{}, cfg, sybra.WithEmit(func(event string, data any) {
+		emitted.append(event, data)
+	}))
+	if err := app.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	t.Cleanup(func() {
+		app.Shutdown(context.Background())
+	})
+
+	creator, err := resolveWebhookTaskCreator(app)
+	if err != nil {
+		t.Fatalf("resolveWebhookTaskCreator: %v", err)
+	}
+	handler := newWebhookHandler(logger, "", creator)
+	body := []byte(`{"title":"from webhook","body":"hook body","tags":["webhook","ext"],"project_id":"Automaat/sybra"}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	var resp webhookTaskResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	taskSvc, ok := sybra.ServiceRegistry(app)["TaskService"].Impl.(*sybra.TaskService)
+	if !ok {
+		t.Fatal("TaskService impl missing")
+	}
+	created, err := taskSvc.GetTask(resp.TaskID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if created.Title != "from webhook" {
+		t.Fatalf("title = %q, want from webhook", created.Title)
+	}
+	if created.Body != "hook body" {
+		t.Fatalf("body = %q, want hook body", created.Body)
+	}
+	if created.AgentMode != task.AgentModeHeadless {
+		t.Fatalf("mode = %q, want %q", created.AgentMode, task.AgentModeHeadless)
+	}
+	if created.ProjectID != "Automaat/sybra" {
+		t.Fatalf("project_id = %q, want Automaat/sybra", created.ProjectID)
+	}
+	if len(created.Tags) != 2 || created.Tags[0] != "webhook" || created.Tags[1] != "ext" {
+		t.Fatalf("tags = %v, want [webhook ext]", created.Tags)
+	}
+	found := false
+	for _, evt := range emitted.snapshot() {
+		if evt.name == events.TaskCreated {
+			if path, ok := evt.data.(string); ok && strings.HasSuffix(path, resp.TaskID+".md") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("task:created event for %s not observed", resp.TaskID)
+	}
+}
+
+func TestStartWebhookServerDisabledNoop(t *testing.T) {
+	srv, errCh, err := startWebhookServerWithHandler(t.Context(), config.WebhookConfig{}, okHandler(), testLogger())
+	if err != nil {
+		t.Fatalf("startWebhookServerWithHandler: %v", err)
+	}
+	if srv != nil || errCh != nil {
+		t.Fatalf("disabled webhook = (%v, %v), want nil,nil", srv, errCh)
+	}
+}
+
+func TestStartWebhookServerFailsOnBindError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer ln.Close()
+
+	cfg := config.WebhookConfig{Enabled: true, Port: ln.Addr().(*net.TCPAddr).Port}
+	srv, errCh, err := startWebhookServerWithHandler(t.Context(), cfg, okHandler(), testLogger())
+	if err == nil {
+		if srv != nil {
+			_ = srv.Close()
+		}
+		t.Fatal("bind conflict succeeded, want error")
+	}
+	if srv != nil || errCh != nil {
+		t.Fatalf("error path returned (%v, %v), want nil,nil", srv, errCh)
 	}
 }
 
