@@ -846,8 +846,10 @@ func (a *App) initCluster() {
 	}
 	a.clusterRoster = roster
 	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.isWorkProject, a.auditClusterBlock, a.logger)
+	a.assigner.SetAttachments(a.attachments)
 	a.assigner.SetStopLocalAgents(a.releaseTaskAgents)
 	a.mirror = clusterlead.NewMirror(a.cfg, a.tasks, roster, a.logger, 0)
+	a.mirror.SetAttachments(a.attachments)
 	if a.clusterSvc != nil {
 		a.clusterSvc.setRoster(roster)
 		a.clusterSvc.setAssigner(a.assigner)

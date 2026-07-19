@@ -317,6 +317,26 @@ func (c *Client) AssignTask(ctx context.Context, t task.Task) error {
 	return err
 }
 
+// ImportAttachment replicates one attachment blob onto a follower before the
+// task metadata that references it is assigned there.
+func (c *Client) ImportAttachment(ctx context.Context, taskID string, meta task.Attachment, data []byte) (task.Attachment, error) {
+	raw, err := c.Call(ctx, "ClusterAttachmentService", "ImportAttachment", taskID, meta, data)
+	if err != nil {
+		return task.Attachment{}, err
+	}
+	return decode[task.Attachment](raw)
+}
+
+// ExportAttachment reads one attachment blob from a follower for leader mirror
+// reconciliation.
+func (c *Client) ExportAttachment(ctx context.Context, taskID, attachmentID string) ([]byte, error) {
+	raw, err := c.callIdempotent(ctx, "ClusterAttachmentService", "ExportAttachment", taskID, attachmentID)
+	if err != nil {
+		return nil, err
+	}
+	return decode[[]byte](raw)
+}
+
 // RecoverLostAgent asks the follower to resume a specific task after the
 // leader has authoritatively detected a lost-agent anomaly for it.
 func (c *Client) RecoverLostAgent(ctx context.Context, taskID string) error {

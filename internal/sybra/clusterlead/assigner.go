@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
@@ -26,6 +28,7 @@ type Assigner struct {
 	isWorkProject func(projectID string) bool
 	auditBlock    func(taskID, node, reason string)
 	logger        *slog.Logger
+	attachments   *attachment.Store
 
 	stopLocalAgents func(taskID string)
 }
@@ -36,6 +39,12 @@ type Assigner struct {
 // second one on the same branch.
 func (a *Assigner) SetStopLocalAgents(stop func(taskID string)) {
 	a.stopLocalAgents = stop
+}
+
+// SetAttachments supplies the local blob store used to replicate attachments
+// before a task is assigned to a follower.
+func (a *Assigner) SetAttachments(store *attachment.Store) {
+	a.attachments = store
 }
 
 // NewAssigner constructs an Assigner. isWorkProject classifies a project as
@@ -103,6 +112,10 @@ func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err err
 	}
 	push := t
 	push.AssignedNode = home.Name
+	push, err = a.transferAttachments(ctx, client, push)
+	if err != nil {
+		return false, fmt.Errorf("clusterlead: transfer attachments for %s to %s: %w", t.ID, home.Name, err)
+	}
 	if err := client.AssignTask(ctx, push); err != nil {
 		return false, fmt.Errorf("clusterlead: assign %s to %s: %w", t.ID, home.Name, err)
 	}
@@ -115,6 +128,34 @@ func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err err
 		return true, fmt.Errorf("clusterlead: stamp assigned_node on %s: %w", t.ID, err)
 	}
 	return true, nil
+}
+
+func (a *Assigner) transferAttachments(ctx context.Context, client *cluster.Client, t task.Task) (task.Task, error) {
+	if len(t.Attachments) == 0 {
+		return t, nil
+	}
+	if a.attachments == nil {
+		return t, fmt.Errorf("attachment store unavailable")
+	}
+	next := t
+	next.Attachments = make([]task.Attachment, len(t.Attachments))
+	for i := range t.Attachments {
+		att := t.Attachments[i]
+		path, err := a.attachments.Path(t.ID, att.ID)
+		if err != nil {
+			return t, fmt.Errorf("read attachment %s metadata: %w", att.ID, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return t, fmt.Errorf("read attachment %s blob: %w", att.ID, err)
+		}
+		imported, err := client.ImportAttachment(ctx, t.ID, att, data)
+		if err != nil {
+			return t, fmt.Errorf("import attachment %s: %w", att.ID, err)
+		}
+		next.Attachments[i] = imported
+	}
+	return next, nil
 }
 
 func (a *Assigner) blockForConfidentiality(t task.Task, home config.HomeNode) error {

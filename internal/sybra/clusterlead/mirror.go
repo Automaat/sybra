@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
@@ -45,6 +46,8 @@ type Mirror struct {
 	logger   *slog.Logger
 	interval time.Duration
 	applyMu  sync.Mutex
+
+	attachments *attachment.Store
 }
 
 // NewMirror constructs a Mirror. A nil logger falls back to slog.Default(); a
@@ -57,6 +60,12 @@ func NewMirror(cfg *config.Config, tasks *task.Manager, roster *cluster.Roster, 
 		interval = DefaultReconcileInterval
 	}
 	return &Mirror{cfg: cfg, tasks: tasks, roster: roster, logger: logger, interval: interval}
+}
+
+// SetAttachments supplies the leader-local blob store used to mirror follower
+// attachment uploads back into the canonical task view.
+func (m *Mirror) SetAttachments(store *attachment.Store) {
+	m.attachments = store
 }
 
 // Run starts, per follower, a reconcile ticker, and blocks until ctx is
@@ -106,7 +115,7 @@ func (m *Mirror) reconcileNode(ctx context.Context, node string, consecutiveFail
 	}
 	*consecutiveFailures = 0
 	for i := range tasks {
-		m.applyFollowerTask(node, tasks[i])
+		m.applyFollowerTaskWithContext(ctx, node, tasks[i])
 	}
 	m.reconcileMissing(ctx, node, client, tasks)
 }
@@ -143,11 +152,15 @@ func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *clus
 			m.logger.Debug("cluster.mirror.reconcile_missing.failed", "node", node, "task", t.ID, "err", gerr)
 			continue
 		}
-		m.applyFollowerTask(node, follower)
+		m.applyFollowerTaskWithContext(ctx, node, follower)
 	}
 }
 
 func (m *Mirror) applyFollowerTask(node string, follower task.Task) bool {
+	return m.applyFollowerTaskWithContext(context.Background(), node, follower)
+}
+
+func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, follower task.Task) bool {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 
@@ -158,6 +171,7 @@ func (m *Mirror) applyFollowerTask(node string, follower task.Task) bool {
 	if canonical.AssignedNode != node {
 		return false
 	}
+	follower = m.localizeFollowerAttachments(ctx, node, canonical, follower)
 	merged, ok := Merge(canonical, follower)
 	if !ok {
 		return false
@@ -172,6 +186,65 @@ func (m *Mirror) applyFollowerTask(node string, follower task.Task) bool {
 	}
 	m.logger.Debug("cluster.mirror.applied", "node", node, "task", follower.ID, "status", string(merged.Status), "rev", merged.MirrorRev)
 	return true
+}
+
+func (m *Mirror) localizeFollowerAttachments(ctx context.Context, node string, canonical, follower task.Task) task.Task {
+	if len(follower.Attachments) == 0 {
+		return follower
+	}
+	if m.attachments == nil || m.roster == nil {
+		follower.Attachments = canonical.Attachments
+		m.logger.Warn("cluster.mirror.attachments.unavailable", "node", node, "task", follower.ID)
+		return follower
+	}
+	client, ok := m.roster.Client(node)
+	if !ok || client == nil {
+		follower.Attachments = canonical.Attachments
+		m.logger.Warn("cluster.mirror.attachments.no_client", "node", node, "task", follower.ID)
+		return follower
+	}
+
+	canonicalByID := make(map[string]task.Attachment, len(canonical.Attachments))
+	for i := range canonical.Attachments {
+		canonicalByID[canonical.Attachments[i].ID] = canonical.Attachments[i]
+	}
+	local := make([]task.Attachment, 0, len(follower.Attachments))
+	for i := range follower.Attachments {
+		att := follower.Attachments[i]
+		if existing, ok := canonicalByID[att.ID]; ok && attachmentEquivalent(existing, att) {
+			if _, err := m.attachments.Path(canonical.ID, existing.ID); err == nil {
+				local = append(local, existing)
+				continue
+			}
+		}
+		data, err := client.ExportAttachment(ctx, follower.ID, att.ID)
+		if err != nil {
+			if existing, ok := canonicalByID[att.ID]; ok {
+				local = append(local, existing)
+			}
+			m.logger.Warn("cluster.mirror.attachment.export.failed", "node", node, "task", follower.ID, "attachment_id", att.ID, "err", err)
+			continue
+		}
+		imported, err := m.attachments.Import(follower.ID, att, data)
+		if err != nil {
+			if existing, ok := canonicalByID[att.ID]; ok {
+				local = append(local, existing)
+			}
+			m.logger.Warn("cluster.mirror.attachment.import.failed", "node", node, "task", follower.ID, "attachment_id", att.ID, "err", err)
+			continue
+		}
+		local = append(local, imported)
+	}
+	follower.Attachments = local
+	return follower
+}
+
+func attachmentEquivalent(a, b task.Attachment) bool {
+	return a.ID == b.ID &&
+		a.FileName == b.FileName &&
+		a.ContentType == b.ContentType &&
+		a.SizeBytes == b.SizeBytes &&
+		a.CreatedAt.Equal(b.CreatedAt)
 }
 
 func (m *Mirror) writeSidecars(t task.Task) error {
@@ -241,6 +314,7 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 	out.PlanDecisions = follower.PlanDecisions
 	out.PlanBrief = follower.PlanBrief
 	out.CodeReview = follower.CodeReview
+	out.Attachments = follower.Attachments
 
 	out.MirrorRev = canonical.MirrorRev + 1
 	followerUpdated := follower.UpdatedAt

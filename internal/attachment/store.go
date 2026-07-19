@@ -92,6 +92,75 @@ func (s *Store) Put(taskID string, req UploadRequest) (Attachment, error) {
 	return meta, nil
 }
 
+// Import stores a replicated attachment blob with its existing attachment ID.
+func (s *Store) Import(taskID string, meta Attachment, data []byte) (Attachment, error) {
+	if s == nil {
+		return Attachment{}, errors.New("attachment store is not configured")
+	}
+	if err := validateTaskKey(taskID); err != nil {
+		return Attachment{}, err
+	}
+	if err := validateTaskKey(meta.ID); err != nil {
+		return Attachment{}, err
+	}
+	if err := s.validateSize(data); err != nil {
+		return Attachment{}, err
+	}
+	name := sanitizeFileName(meta.FileName)
+	if name == "" {
+		return Attachment{}, errors.New("attachment filename is required")
+	}
+	contentType := strings.TrimSpace(meta.ContentType)
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	createdAt := meta.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	mu := s.lockFor(taskID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	dir, err := s.attachmentDir(taskID, meta.ID)
+	if err != nil {
+		return Attachment{}, err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return Attachment{}, fmt.Errorf("replace attachment dir: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return Attachment{}, fmt.Errorf("create attachment dir: %w", err)
+	}
+	blobPath := filepath.Join(dir, name)
+	if err := writeFileAtomic(blobPath, data, 0o600); err != nil {
+		return Attachment{}, fmt.Errorf("write attachment blob: %w", err)
+	}
+
+	local := Attachment{
+		ID:          meta.ID,
+		FileName:    name,
+		ContentType: contentType,
+		SizeBytes:   int64(len(data)),
+		Path:        blobPath,
+		CreatedAt:   createdAt,
+	}
+	metaBytes, err := json.Marshal(local)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return Attachment{}, fmt.Errorf("marshal attachment metadata: %w", err)
+	}
+	if err := writeFileAtomic(filepath.Join(dir, metaFileName), metaBytes, 0o600); err != nil {
+		_ = os.RemoveAll(dir)
+		return Attachment{}, fmt.Errorf("write attachment metadata: %w", err)
+	}
+	return local, nil
+}
+
 // List returns every on-disk attachment metadata entry for a task.
 func (s *Store) List(taskID string) ([]Attachment, error) {
 	if s == nil {
