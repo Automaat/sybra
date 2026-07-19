@@ -1,6 +1,9 @@
 package workflow
 
-import "strconv"
+import (
+	"errors"
+	"strconv"
+)
 
 // asyncBoundaryComplete reports whether a StepParallel/StepBestOfN step has
 // no pending children/attempts left, i.e. it is safe for status-driven
@@ -141,7 +144,10 @@ func (e *Engine) reconcileCurrentStepFromStatus(taskID string, t TaskInfo, def *
 		return t, false, nil
 	}
 	target, found, mustExecute, err := e.findReachableWaitHumanByStatus(def, current, t, status)
-	if err != nil || !found || target.ID == t.Workflow.CurrentStep {
+	// found is only ever true alongside a non-nil target (every return in
+	// findReachableWaitHumanByStatus pairs them), but the explicit nil check
+	// lets nilaway verify that instead of trusting the bool correlation.
+	if err != nil || !found || target == nil || target.ID == t.Workflow.CurrentStep {
 		return t, false, err
 	}
 	if mustExecute {
@@ -160,6 +166,12 @@ func (e *Engine) reconcileCurrentStepFromStatus(taskID string, t TaskInfo, def *
 	}
 
 	wf := t.Workflow.Clone()
+	if wf == nil {
+		// Unreachable: t.Workflow is non-nil (checked at function entry) and
+		// Clone only returns nil for a nil receiver. Explicit check satisfies
+		// nilaway, which can't see that invariant across the call.
+		return TaskInfo{}, false, errors.New("reconcile: cloned workflow is nil")
+	}
 	wf.CurrentStep = target.ID
 	wf.State = ExecWaiting
 	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
@@ -177,6 +189,12 @@ func (e *Engine) reconcileCurrentStepFromStatus(taskID string, t TaskInfo, def *
 }
 
 func (e *Engine) executeCurrentStepForStatusReconcile(taskID string, def *Definition, current *Step, t TaskInfo, status string) (bool, error) {
+	if current == nil {
+		// Unreachable in practice: mustExecute (this function's sole caller
+		// gate) is only ever true alongside a non-nil current — see the
+		// caller. Explicit check satisfies nilaway.
+		return false, nil
+	}
 	e.logger.Info("workflow.current-step.reconcile-status.execute",
 		"task_id", taskID, "from", t.Workflow.CurrentStep, "status", status)
 	switch current.Type {
@@ -188,6 +206,12 @@ func (e *Engine) executeCurrentStepForStatusReconcile(taskID string, def *Defini
 		})
 	case StepCondition, StepRequireSidecar, StepFlagPlanCritique:
 		wf := t.Workflow.Clone()
+		if wf == nil {
+			// Unreachable: t.Workflow is non-nil whenever this function's
+			// caller reaches mustExecute — Clone only returns nil for a nil
+			// receiver. Explicit check satisfies nilaway.
+			return false, errors.New("reconcile: cloned workflow is nil")
+		}
 		return true, e.executeNextSteps(taskID, def, current, wf)
 	default:
 		return false, nil
@@ -220,6 +244,12 @@ func (e *Engine) reconcileCurrentStepFromPriorCondition(taskID string, t TaskInf
 	}
 
 	wf := t.Workflow.Clone()
+	if wf == nil {
+		// Unreachable: t.Workflow is non-nil (checked at function entry) and
+		// Clone only returns nil for a nil receiver. Explicit check satisfies
+		// nilaway, which can't see that invariant across the call.
+		return TaskInfo{}, false, errors.New("reconcile: cloned workflow is nil")
+	}
 	wf.CurrentStep = next.ID
 	if next.Type == StepWaitHuman {
 		wf.State = ExecWaiting
