@@ -367,6 +367,12 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 	next.Logging.MaxFiles = settings.Logging.MaxFiles
 	next.Audit = settings.Audit
 	next.Attachments = settings.Attachments
+	if next.Attachments.MaxSizeMB == 0 {
+		next.Attachments.MaxSizeMB = existing.Attachments.MaxSizeMB
+		if next.Attachments.MaxSizeMB == 0 {
+			next.Attachments.MaxSizeMB = config.DefaultAttachmentMaxSizeMB
+		}
+	}
 	next.Todoist = settings.Todoist
 	// Preserve the stored token when the caller sends a blank (redacted) value.
 	if settings.Todoist.APIToken == "" {

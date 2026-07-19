@@ -15,6 +15,10 @@ const mockUpdateAgent = vi.fn()
 const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 const mockPushLocal = vi.fn()
 const mockListTaskProgress = vi.fn()
+const mockListAttachments = vi.fn()
+const mockUploadAttachment = vi.fn()
+const mockDeleteAttachment = vi.fn()
+const mockGetAttachmentURL = vi.fn()
 
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
@@ -87,6 +91,10 @@ vi.mock('$lib/api', () => ({
   GetTaskSetupLog: vi.fn(async () => ({ taskId: 'task-1', exists: false })),
   ListTaskAuditEvents: vi.fn(async () => []),
   ListTaskProgress: (...args: unknown[]) => mockListTaskProgress(...args),
+  ListAttachments: (...args: unknown[]) => mockListAttachments(...args),
+  UploadAttachment: (...args: unknown[]) => mockUploadAttachment(...args),
+  DeleteAttachment: (...args: unknown[]) => mockDeleteAttachment(...args),
+  GetAttachmentURL: (...args: unknown[]) => mockGetAttachmentURL(...args),
 }))
 
 vi.mock('@skeletonlabs/skeleton-svelte', () => ({
@@ -137,6 +145,11 @@ describe('TaskDetail', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     mockListTaskProgress.mockReset()
     mockListTaskProgress.mockResolvedValue([])
+    mockListAttachments.mockReset()
+    mockListAttachments.mockResolvedValue([])
+    mockUploadAttachment.mockReset()
+    mockDeleteAttachment.mockReset()
+    mockGetAttachmentURL.mockReset()
   })
 
   afterEach(() => {
@@ -218,6 +231,16 @@ describe('TaskDetail', () => {
     })
     await vi.waitFor(() => {
       expect(screen.getByText('Start agent')).toBeDefined()
+    })
+  })
+
+  it('renders the attachments panel in overview', async () => {
+    mockGet.mockResolvedValue(mockTask)
+    render(TaskDetail, {
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('task-attachments-panel')).toBeDefined()
     })
   })
 

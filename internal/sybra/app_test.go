@@ -15,6 +15,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/config"
 	eventnames "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/health"
@@ -301,6 +302,16 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 		wg:             &wg,
 		logger:         a.logger,
 	}
+	attachments, err := attachment.NewStore(t.TempDir(), int64(config.DefaultAttachmentMaxSizeMB)*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.attachments = attachments
+	a.tasks.SetDeleteHook(func(id string) {
+		if err := attachments.DeleteTask(id); err != nil {
+			t.Fatalf("attachments.DeleteTask(%s): %v", id, err)
+		}
+	})
 	return svc, a
 }
 

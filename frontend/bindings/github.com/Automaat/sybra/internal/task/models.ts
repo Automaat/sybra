@@ -7,6 +7,9 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as attachment$0 from "../attachment/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as workflow$0 from "../workflow/models.js";
 
 /**
@@ -173,6 +176,16 @@ export class AgentRun {
         return new AgentRun($$parsedSource as Partial<AgentRun>);
     }
 }
+
+/**
+ * Attachment re-exports the persisted task attachment metadata type.
+ */
+export const Attachment = attachment$0.Attachment;
+
+/**
+ * Attachment re-exports the persisted task attachment metadata type.
+ */
+export type Attachment = attachment$0.Attachment;
 
 /**
  * Priority is a task's dispatch priority. PriorityNone (the empty string) is
@@ -454,6 +467,7 @@ export class Task {
      * and all test-runner runs count (correct for first-ever cycles).
      */
     "testingCycleStartedAt"?: string | null;
+    "attachments": Attachment[];
     "agentRuns": AgentRun[];
     "workflow"?: workflow$0.Execution | null;
     "createdAt": string;
@@ -557,6 +571,9 @@ export class Task {
         if (!("todoistId" in $$source)) {
             this["todoistId"] = "";
         }
+        if (!("attachments" in $$source)) {
+            this["attachments"] = [];
+        }
         if (!("agentRuns" in $$source)) {
             this["agentRuns"] = [];
         }
@@ -591,7 +608,8 @@ export class Task {
         const $$createField18_0 = $$createType0;
         const $$createField39_0 = $$createType2;
         const $$createField40_0 = $$createType4;
-        const $$createField56_0 = $$createType5;
+        const $$createField41_0 = $$createType6;
+        const $$createField57_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -602,14 +620,17 @@ export class Task {
         if ("dependsOn" in $$parsedSource) {
             $$parsedSource["dependsOn"] = $$createField18_0($$parsedSource["dependsOn"]);
         }
+        if ("attachments" in $$parsedSource) {
+            $$parsedSource["attachments"] = $$createField39_0($$parsedSource["attachments"]);
+        }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField39_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField40_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField40_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField41_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField56_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField57_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -693,6 +714,7 @@ export class Update {
     "Outcome": string | null;
     "MergeCommit": string | null;
     "TestingCycleStartedAt": string | null;
+    "Attachments": Attachment[] | null;
 
     /** Creates a new Update instance. */
     constructor($$source: Partial<Update> = {}) {
@@ -825,6 +847,9 @@ export class Update {
         if (!("TestingCycleStartedAt" in $$source)) {
             this["TestingCycleStartedAt"] = null;
         }
+        if (!("Attachments" in $$source)) {
+            this["Attachments"] = null;
+        }
 
         Object.assign(this, $$source);
     }
@@ -833,9 +858,10 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField6_0 = $$createType6;
-        const $$createField10_0 = $$createType6;
-        const $$createField28_0 = $$createType7;
+        const $$createField6_0 = $$createType8;
+        const $$createField10_0 = $$createType8;
+        const $$createField28_0 = $$createType9;
+        const $$createField43_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("DependsOn" in $$parsedSource) {
             $$parsedSource["DependsOn"] = $$createField6_0($$parsedSource["DependsOn"]);
@@ -846,16 +872,22 @@ export class Update {
         if ("Workflow" in $$parsedSource) {
             $$parsedSource["Workflow"] = $$createField28_0($$parsedSource["Workflow"]);
         }
+        if ("Attachments" in $$parsedSource) {
+            $$parsedSource["Attachments"] = $$createField43_0($$parsedSource["Attachments"]);
+        }
         return new Update($$parsedSource as Partial<Update>);
     }
 }
 
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = AgentRun.createFrom;
+const $$createType1 = attachment$0.Attachment.createFrom;
 const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = workflow$0.Execution.createFrom;
-const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = $Create.Map($Create.Any, $Create.Any);
-const $$createType6 = $Create.Nullable($$createType0);
-const $$createType7 = $Create.Nullable($$createType4);
+const $$createType3 = AgentRun.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = workflow$0.Execution.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = $Create.Map($Create.Any, $Create.Any);
+const $$createType8 = $Create.Nullable($$createType0);
+const $$createType9 = $Create.Nullable($$createType6);
+const $$createType10 = $Create.Nullable($$createType2);

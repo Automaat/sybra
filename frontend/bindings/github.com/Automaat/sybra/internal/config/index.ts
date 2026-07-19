@@ -3,6 +3,7 @@
 
 export {
     AgentDefaults,
+    AttachmentConfig,
     AuditConfig,
     BrowserConfig,
     ExperienceConfig,

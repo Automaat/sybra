@@ -449,25 +449,18 @@ func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 }
 
 func TestReloadFromDisk_NoFeedbackLoop(t *testing.T) {
-
 	// UpdateSettings saves to disk; watcher fires ReloadFromDisk; diff should
 	// be empty since disk now matches in-memory cfg.
 	svc, _ := setupConfigSvc(t)
 
-	// UpdateSettings mutates cfg and saves
-	settings := AppSettings{
-		Agent:        svc.cfg.Agent,
-		Notification: svc.cfg.Notification,
-		Orchestrator: svc.cfg.Orchestrator,
-		Logging: LoggingSettings{
-			Level:     "warn",
-			MaxSizeMB: svc.cfg.Logging.MaxSizeMB,
-			MaxFiles:  svc.cfg.Logging.MaxFiles,
-		},
-		Audit:     svc.cfg.Audit,
-		Todoist:   svc.cfg.Todoist,
-		Renovate:  svc.cfg.Renovate,
-		Providers: svc.cfg.Providers,
+	// UpdateSettings mutates cfg and saves. Build from the live round-tripped
+	// payload so newly added config sections participate in the test instead of
+	// silently regressing it to a partial overlay.
+	settings := configToSettings(svc.cfg)
+	settings.Logging = LoggingSettings{
+		Level:     "warn",
+		MaxSizeMB: svc.cfg.Logging.MaxSizeMB,
+		MaxFiles:  svc.cfg.Logging.MaxFiles,
 	}
 	settings.Agent.MaxConcurrent = 3 // ensure valid
 	if err := svc.UpdateSettings(settings); err != nil {

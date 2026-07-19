@@ -192,8 +192,11 @@ export function GetLatestDigest(): Promise<[Digest, boolean]> { return call('Lea
 export function BlessTampering(arg1: string): Promise<Task> { return call('TaskService', 'BlessTampering', arg1) }
 export function CreateTask(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'CreateTask', arg1, arg2, arg3) }
 export function DeleteTask(arg1: string): Promise<void> { return call('TaskService', 'DeleteTask', arg1) }
+export function DeleteAttachment(arg1: string, arg2: string): Promise<void> { return call('TaskService', 'DeleteAttachment', arg1, arg2) }
 export function DispatchFromHumanRequired(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'DispatchFromHumanRequired', arg1, arg2, arg3) }
+export function GetAttachmentURL(arg1: string, arg2: string): Promise<string> { return call('TaskService', 'GetAttachmentURL', arg1, arg2) }
 export function ListTaskArtifacts(arg1: string): Promise<Array<TaskArtifactDTO>> { return call('TaskService', 'ListTaskArtifacts', arg1) }
+export function ListAttachments(arg1: string): Promise<Array<any>> { return call('TaskService', 'ListAttachments', arg1) }
 export function GetTaskSetupLog(arg1: string): Promise<TaskSetupLogDTO> { return call('TaskService', 'GetTaskSetupLog', arg1) }
 export function ListTaskAuditEvents(arg1: string, arg2: number): Promise<Array<TaskAuditEventDTO>> { return call('TaskService', 'ListTaskAuditEvents', arg1, arg2) }
 export function GetTamperReport(arg1: string): Promise<TamperReportDTO> { return call('TaskService', 'GetTamperReport', arg1) }
@@ -201,6 +204,7 @@ export function GetTask(arg1: string): Promise<Task> { return call('TaskService'
 export function ListTasks(): Promise<Array<Task>> { return call('TaskService', 'ListTasks') }
 export function ListTasksForNode(arg1: string): Promise<Array<Task>> { return call('TaskService', 'ListTasksForNode', arg1) }
 export function ListTaskProgress(arg1: string): Promise<Array<ProgressEntry>> { return call('TaskService', 'ListTaskProgress', arg1) }
+export function UploadAttachment(arg1: string, arg2: string, arg3: Array<number>): Promise<any> { return call('TaskService', 'UploadAttachment', arg1, arg2, arg3) }
 export function UpdateTask(arg1: string, arg2: Record<string, unknown>): Promise<Task> { return call('TaskService', 'UpdateTask', arg1, arg2) }
 export function AssignTask(arg1: Task): Promise<void> { return call('TaskService', 'AssignTask', arg1) }
 export function RecoverLostAgent(arg1: string): Promise<void> { return call('TaskService', 'RecoverLostAgent', arg1) }

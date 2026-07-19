@@ -15,6 +15,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as artifact$0 from "../artifact/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as attachment$0 from "../attachment/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -68,6 +71,10 @@ export function CreateTaskWithInit(title: string, body: string, mode: string, in
     });
 }
 
+export function DeleteAttachment(taskID: string, attachmentID: string): $CancellablePromise<void> {
+    return $Call.ByID(737517256, taskID, attachmentID);
+}
+
 /**
  * DeleteTask removes a task file from disk and cleans up its worktree.
  */
@@ -95,6 +102,10 @@ export function DispatchFromHumanRequired(id: string, target: string, reason: st
     });
 }
 
+export function GetAttachmentURL(taskID: string, attachmentID: string): $CancellablePromise<string> {
+    return $Call.ByID(3926233316, taskID, attachmentID);
+}
+
 /**
  * GetTamperReport returns the detector report artifact for a tamper-flagged task.
  */
@@ -119,15 +130,21 @@ export function GetTaskSetupLog(taskID: string): $CancellablePromise<$models.Tas
     });
 }
 
+export function ListAttachments(taskID: string): $CancellablePromise<task$0.Attachment[]> {
+    return $Call.ByID(1026482144, taskID).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
 export function ListTaskArtifacts(taskID: string): $CancellablePromise<$models.TaskArtifactDTO[]> {
     return $Call.ByID(1612534482, taskID).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType6($result);
     });
 }
 
 export function ListTaskAuditEvents(taskID: string, days: number): $CancellablePromise<$models.TaskAuditEventDTO[]> {
     return $Call.ByID(1451731527, taskID, days).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType8($result);
     });
 }
 
@@ -137,7 +154,7 @@ export function ListTaskAuditEvents(taskID: string, days: number): $CancellableP
  */
 export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0.ProgressEntry[]> {
     return $Call.ByID(821819796, taskID).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType10($result);
     });
 }
 
@@ -147,7 +164,7 @@ export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType11($result);
     });
 }
 
@@ -160,7 +177,7 @@ export function ListTasks(): $CancellablePromise<task$0.Task[]> {
  */
 export function ListTasksForNode(node: string): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(844621143, node).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType11($result);
     });
 }
 
@@ -210,14 +227,22 @@ export function UpdateTask(id: string, updates: { [_ in string]?: any }): $Cance
     });
 }
 
+export function UploadAttachment(taskID: string, fileName: string, data: string): $CancellablePromise<task$0.Attachment> {
+    return $Call.ByID(1704419594, taskID, fileName, data).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
 // Private type creation functions
 const $$createType0 = task$0.Task.createFrom;
 const $$createType1 = $models.TamperReportDTO.createFrom;
 const $$createType2 = $models.TaskSetupLogDTO.createFrom;
-const $$createType3 = $models.TaskArtifactDTO.createFrom;
+const $$createType3 = attachment$0.Attachment.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = $models.TaskAuditEventDTO.createFrom;
+const $$createType5 = $models.TaskArtifactDTO.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = artifact$0.ProgressEntry.createFrom;
+const $$createType7 = $models.TaskAuditEventDTO.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = $Create.Array($$createType0);
+const $$createType9 = artifact$0.ProgressEntry.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = $Create.Array($$createType0);

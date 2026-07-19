@@ -110,3 +110,29 @@ func TestRecordImplAgentStart_PromptHashCorrelatesWithCompletion(t *testing.T) {
 		t.Fatalf("prompt_hash mismatch: started=%q rendered=%q", startedHash, renderedHash)
 	}
 }
+
+func TestBuildTaskStartPrompt_AppendsAttachmentPathsOnly(t *testing.T) {
+	t.Parallel()
+
+	got := BuildTaskStartPrompt(task.Task{
+		Title: "attachment prompt task",
+		Body:  "Investigate the attached evidence.",
+		Attachments: []task.Attachment{{
+			ID:          "att-1",
+			FileName:    "evidence.png",
+			ContentType: "image/png",
+			SizeBytes:   2048,
+			Path:        "/tmp/sybra/attachments/task-1/att-1/evidence.png",
+		}},
+	}, "Implement the fix.", true)
+
+	if !strings.Contains(got, "## Attachments") {
+		t.Fatalf("prompt missing attachments section:\n%s", got)
+	}
+	if !strings.Contains(got, "evidence.png | 2048 bytes | image/png | /tmp/sybra/attachments/task-1/att-1/evidence.png") {
+		t.Fatalf("prompt missing attachment metadata line:\n%s", got)
+	}
+	if strings.Contains(got, "iVBOR") {
+		t.Fatalf("prompt appears to inline attachment bytes:\n%s", got)
+	}
+}
