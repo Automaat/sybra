@@ -850,6 +850,22 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 		return false
 	}
 
+	branch, err := project.CurrentBranch(ctx, dir)
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.branch", "task_id", t.ID, "pr", pr.Number, "err", err)
+		return false
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		r.logger.Warn("pr-monitor.auto-resolve.branch-empty", "task_id", t.ID, "pr", pr.Number)
+		return false
+	}
+
+	if err := project.ReconcileWithRemote(ctx, dir, branch); err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.branch-preflight", "task_id", t.ID, "pr", pr.Number, "branch", branch, "err", err)
+		return false
+	}
+
 	preMergeHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		r.logger.Warn("pr-monitor.auto-resolve.pre-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
@@ -886,19 +902,6 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 	if mergedHead == "" {
 		r.logger.Warn("pr-monitor.auto-resolve.post-merge-head-empty", "task_id", t.ID, "pr", pr.Number)
 		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "post-merge-head-empty")
-		return false
-	}
-
-	branch, err := project.CurrentBranch(ctx, dir)
-	if err != nil {
-		r.logger.Warn("pr-monitor.auto-resolve.branch", "task_id", t.ID, "pr", pr.Number, "err", err)
-		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "branch")
-		return false
-	}
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		r.logger.Warn("pr-monitor.auto-resolve.branch-empty", "task_id", t.ID, "pr", pr.Number)
-		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "branch-empty")
 		return false
 	}
 
