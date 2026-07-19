@@ -868,6 +868,27 @@ func TestConfigDoctorJSONAcceptsStricterConfigPermissions(t *testing.T) {
 	}
 }
 
+func TestConfigDumpRedactsTaggedSecrets(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Server.AuthToken = "server-secret"
+	cfg.Webhook.Secret = "webhook-secret"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDump(cfg, false)
+	})
+	if code != 0 {
+		t.Fatalf("config dump exit %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "server-secret") || strings.Contains(out, "webhook-secret") {
+		t.Fatalf("config dump leaked secret:\n%s", out)
+	}
+	if strings.Count(out, config.RedactedPlaceholder) != 2 {
+		t.Fatalf("config dump redaction count = %d, want 2:\n%s", strings.Count(out, config.RedactedPlaceholder), out)
+	}
+}
+
 func TestListFilterStatus(t *testing.T) {
 	setupStore(t)
 

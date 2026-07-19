@@ -245,7 +245,17 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) (ConfigMutationResu
 		base = s.persisted
 	}
 	next := settingsToConfig(base, settings)
-	return s.mutateLocked(&next, next.Save)
+	raw, err := config.ReadRawConfig()
+	if err != nil {
+		return ConfigMutationResult{}, err
+	}
+	patched, err := patchSettingsRawConfig([]byte(raw), base, &next)
+	if err != nil {
+		return ConfigMutationResult{}, err
+	}
+	return s.mutateLocked(&next, func() error {
+		return config.WriteRawConfig(patched)
+	})
 }
 
 // validateSettings checks all editable fields for validity.

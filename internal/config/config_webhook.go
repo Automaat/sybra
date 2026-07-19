@@ -11,5 +11,5 @@ const DefaultWebhookPort = 8081
 type WebhookConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
 	Port    int    `yaml:"port" json:"port"`
-	Secret  string `yaml:"secret" json:"secret"`
+	Secret  string `yaml:"secret" json:"secret" secret:"true"`
 }
