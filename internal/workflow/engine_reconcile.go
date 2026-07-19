@@ -2,6 +2,35 @@ package workflow
 
 import "strconv"
 
+// asyncBoundaryComplete reports whether a StepParallel/StepBestOfN step has
+// no pending children/attempts left, i.e. it is safe for status-driven
+// reconciliation to treat it as passable. A missing inflight record reports
+// incomplete (blocking), not complete: resolveNext persists CurrentStep
+// pointing at the parallel/best-of-n step *before* execParallel/execBestOfN
+// creates and persists its inflight record (a separate write, with no lock
+// held across it — reconcileCurrentStepFromStatus runs on the status-change
+// caller's own goroutine, unsynchronized with executeSteps), so CurrentStep
+// can legitimately equal this step's ID while the record doesn't exist yet.
+// Treating that pre-spawn window as "complete" would let reconciliation skip
+// the boundary entirely, and the children's eventual completion callbacks
+// would then find no record to record against and drop silently. Blocking
+// here instead costs at most the brief spawn window; a genuinely stuck task
+// still falls to the existing dwell/run-rate watchdogs, not this check.
+// Any other step type is never a boundary and always reports complete.
+func (e *Engine) asyncBoundaryComplete(wf *Execution, step *Step) bool {
+	if wf == nil || step == nil {
+		return true
+	}
+	switch step.Type {
+	case StepParallel:
+		return wf.ParallelInflight[step.ID].AllChildrenDone()
+	case StepBestOfN:
+		return wf.BestOfNInflight[step.ID].AllAttemptsDone()
+	default:
+		return true
+	}
+}
+
 // transitionFields mirrors resolveNext's field set for lightweight
 // "where would the workflow go now?" previews used by stale-step repair.
 func (e *Engine) transitionFields(t TaskInfo, wf *Execution) map[string]string {
@@ -21,7 +50,7 @@ func (e *Engine) transitionFields(t TaskInfo, wf *Execution) map[string]string {
 // findReachableWaitHumanByStatus walks the current workflow path without
 // executing steps, stopping at the first async boundary. Used when a human or
 // external tool already moved task.Status to the downstream wait_human gate.
-func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, t TaskInfo, status string) (*Step, bool, bool, error) {
+func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, t TaskInfo, status string) (target *Step, found, mustExecute bool, err error) {
 	if current == nil {
 		return nil, false, false, nil
 	}
@@ -31,7 +60,7 @@ func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, 
 		}
 		return nil, false, false, nil
 	}
-	mustExecute := current.Type == StepRequireSidecar || current.Type == StepFlagPlanCritique
+	mustExecute = current.Type == StepRequireSidecar || current.Type == StepFlagPlanCritique
 	fields := e.transitionFields(t, t.Workflow)
 	nextID, err := ResolveTransition(current.Next, fields)
 	if err != nil || nextID == "" {
@@ -88,6 +117,18 @@ func (e *Engine) reconcileCurrentStepFromStatus(taskID string, t TaskInfo, def *
 				"task_id", taskID, "step", current.ID, "status", status, "reason", "running_agent")
 			return t, false, nil
 		}
+	}
+	if current != nil && !e.asyncBoundaryComplete(t.Workflow, current) {
+		// current is StepParallel/StepBestOfN with children/attempts still
+		// in flight: an external task.Status write matching some downstream
+		// wait_human must not fast-forward CurrentStep past this boundary —
+		// findReachableWaitHumanByStatus's own walk only stops at a *later*
+		// StepParallel/StepBestOfN it encounters, never at the starting step
+		// itself, so without this guard a status match could jump straight
+		// to that wait_human while child/judge agents are still running.
+		e.logger.Debug("workflow.current-step.reconcile-status.skip",
+			"task_id", taskID, "step", current.ID, "status", status, "reason", "async_boundary_incomplete")
+		return t, false, nil
 	}
 	target, found, mustExecute, err := e.findReachableWaitHumanByStatus(def, current, t, status)
 	if err != nil || !found || target.ID == t.Workflow.CurrentStep {

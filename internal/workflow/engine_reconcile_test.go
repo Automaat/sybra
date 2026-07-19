@@ -216,6 +216,157 @@ func TestHandleStatusChange_DoesNotReconcileRunningRunAgentWithoutWaitForStatus(
 	}
 }
 
+func newParallelReconcileDef() Definition {
+	return Definition{
+		ID:   "parallel-reconcile",
+		Name: "parallel reconcile",
+		Steps: []Step{
+			{
+				ID:   "fan_out",
+				Name: "Fan Out",
+				Type: StepParallel,
+				Parallel: []Step{
+					{ID: "child_a", Type: StepRunAgent},
+					{ID: "child_b", Type: StepRunAgent},
+				},
+				Next: []Transition{{GoTo: "review_plan"}},
+			},
+			{
+				ID:     "review_plan",
+				Name:   "Review Plan",
+				Type:   StepWaitHuman,
+				Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve", "reject"}},
+				Next:   []Transition{{GoTo: ""}},
+			},
+		},
+	}
+}
+
+// TestHandleStatusChange_DoesNotReconcilePastIncompleteParallel covers a real
+// incident on a fix for reconcileCurrentStepFromStatus itself: an external
+// task.Status write matching a downstream wait_human must not fast-forward
+// CurrentStep past a StepParallel/StepBestOfN boundary while children/
+// attempts are still in flight — findReachableWaitHumanByStatus's own walk
+// only stops at a *later* async-boundary step it encounters, never at the
+// starting step, so without an explicit guard this exact status match would
+// jump straight to review_plan while child_b is still pending.
+func TestHandleStatusChange_DoesNotReconcilePastIncompleteParallel(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newParallelReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "plan-review",
+		Workflow: &Execution{
+			WorkflowID:  "parallel-reconcile",
+			CurrentStep: "fan_out",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			ParallelInflight: map[string]*ParallelChildren{
+				"fan_out": {
+					ParentStepID: "fan_out",
+					Children: map[string]*ChildStatus{
+						"child_a": {Status: "completed"},
+						"child_b": {Status: "pending"},
+					},
+				},
+			},
+		},
+	})
+
+	engine.HandleStatusChange("t1", "plan-review")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "fan_out" {
+		t.Fatalf("CurrentStep = %q, want fan_out (must not skip past incomplete parallel children)", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.State != ExecWaiting {
+		t.Fatalf("State = %q, want %q", got.Workflow.State, ExecWaiting)
+	}
+}
+
+// TestHandleStatusChange_ReconcilesPastCompletedParallel is the control case:
+// once every child has reached a terminal status, the same status match must
+// still reconcile normally (the guard must not block forever).
+func TestHandleStatusChange_ReconcilesPastCompletedParallel(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newParallelReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "plan-review",
+		Workflow: &Execution{
+			WorkflowID:  "parallel-reconcile",
+			CurrentStep: "fan_out",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			ParallelInflight: map[string]*ParallelChildren{
+				"fan_out": {
+					ParentStepID: "fan_out",
+					Children: map[string]*ChildStatus{
+						"child_a": {Status: "completed"},
+						"child_b": {Status: "completed"},
+					},
+				},
+			},
+		},
+	})
+
+	engine.HandleStatusChange("t1", "plan-review")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("CurrentStep = %q, want review_plan", got.Workflow.CurrentStep)
+	}
+}
+
+// TestHandleStatusChange_DoesNotReconcilePastNotYetSpawnedParallel covers the
+// pre-spawn race an adversarial review pass on this fix surfaced:
+// resolveNext can persist CurrentStep pointing at a StepParallel step before
+// execParallel has created its ParallelInflight record (a separate,
+// unsynchronized write). A missing record must therefore report incomplete
+// (block), not complete — treating it as complete here would let
+// reconciliation skip the boundary during exactly that window, and the
+// children's eventual completions would then have no record to land in.
+func TestHandleStatusChange_DoesNotReconcilePastNotYetSpawnedParallel(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newParallelReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "plan-review",
+		Workflow: &Execution{
+			WorkflowID:  "parallel-reconcile",
+			CurrentStep: "fan_out",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			// No ParallelInflight entry at all — the pre-spawn window.
+		},
+	})
+
+	engine.HandleStatusChange("t1", "plan-review")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "fan_out" {
+		t.Fatalf("CurrentStep = %q, want fan_out (must not skip a boundary whose record hasn't been created yet)", got.Workflow.CurrentStep)
+	}
+}
+
 func TestHandleStatusChange_ReconcileExecutesCurrentPlanCritiqueFlag(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.Save(newPlanCritiqueReconcileDef()); err != nil {
