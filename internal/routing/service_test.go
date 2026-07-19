@@ -151,6 +151,53 @@ func TestService_Tick_ShadowMode_ComputesAndAuditsButNeverApplies(t *testing.T) 
 	}
 }
 
+// TestService_ShadowTicks_StayWithinMaxStepOfBase guards the rollout-safety
+// contract: while routing is disabled nothing is applied, so live weights stay
+// at base. Repeated shadow ticks must therefore keep the persisted overlay
+// within one MaxStep of base — otherwise enabling routing and letting
+// ApplyPersistedOverlay push the accumulated overlay would jump live traffic
+// many steps in a single dispatch, bypassing MaxStep.
+func TestService_ShadowTicks_StayWithinMaxStepOfBase(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	const maxStep = 2
+	svc := NewService(Deps{
+		Cfg: config.RoutingConfig{
+			Enabled:           false, // shadow mode: never applies
+			IntervalHours:     6,
+			WeightBudget:      20, // budget lets v1 target climb well past base+MaxStep
+			FloorWeight:       1,
+			MaxStep:           maxStep,
+			MinSamplesToShift: 0,
+			Coefficients:      config.DefaultRoutingCoefficients(),
+		},
+		Base:   testBaseConfig, // v1/v2 both start at weight 1
+		Report: func() (evaluation.Report, bool) { return testReport(0.9, 0.1), true },
+		Store:  store,
+		Apply:  func(abtest.Config) error { t.Fatalf("Apply called in shadow mode"); return nil },
+		Logger: slog.New(slog.DiscardHandler),
+		Now:    func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+	})
+
+	svc.loadOverlay()
+	for range 5 {
+		svc.tick(context.Background())
+	}
+
+	overlay, ok, err := store.Load()
+	if err != nil || !ok {
+		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+	}
+	w1, _ := overlay.WeightAt("exp", "v1")
+	// base v1 weight is 1; after any number of shadow ticks it must not exceed
+	// base + MaxStep, since live traffic never left base.
+	if w1 > 1+maxStep {
+		t.Fatalf("shadow overlay v1 weight = %d after 5 ticks, want <= %d (base+MaxStep)", w1, 1+maxStep)
+	}
+}
+
 func TestService_Tick_NoReportYet_NoOp(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

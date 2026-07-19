@@ -189,7 +189,7 @@ func (s *Service) tick(_ context.Context) {
 	prevOverlay := s.overlay
 	s.mu.Unlock()
 
-	current := currentWeights(base, prevOverlay)
+	current := currentWeights(base, prevOverlay, s.cfg.Enabled)
 	plan := PlanWeights(scores, current, PlanOptions{
 		WeightBudget:      s.cfg.WeightBudget,
 		FloorWeight:       s.cfg.FloorWeight,
@@ -294,7 +294,17 @@ func flattenRows(rep evaluation.Report) []evaluation.ComparisonBreakdown {
 // clamp is relative to what is actually live, not base's static defaults,
 // while every configured variant (even one with zero runs) still gets an
 // entry.
-func currentWeights(base abtest.Config, overlay Overlay) map[string]map[string]int {
+//
+// overlayLive gates the overlay override to what is genuinely serving live
+// traffic. In shadow mode (routing disabled) Apply is never called, so live
+// weights stay at base — folding the overlay in there would let each shadow
+// tick's MaxStep clamp advance from the *previous overlay* rather than from
+// base, accumulating drift across ticks. ApplyPersistedOverlay would then push
+// that many-steps-away overlay live in a single jump on the first enabled
+// dispatch, bypassing the MaxStep rollout cap. Clamping against base while
+// shadowing keeps the persisted overlay within one MaxStep of base, so the
+// first live apply respects the cap.
+func currentWeights(base abtest.Config, overlay Overlay, overlayLive bool) map[string]map[string]int {
 	out := map[string]map[string]int{}
 	for i := range base.Experiments {
 		exp := &base.Experiments[i]
@@ -311,8 +321,10 @@ func currentWeights(base abtest.Config, overlay Overlay) map[string]map[string]i
 			if weight <= 0 {
 				weight = defaultFloorWeight
 			}
-			if w, ok := overlay.WeightAt(exp.ID, v.ID); ok {
-				weight = w
+			if overlayLive {
+				if w, ok := overlay.WeightAt(exp.ID, v.ID); ok {
+					weight = w
+				}
 			}
 			variants[v.ID] = weight
 		}
