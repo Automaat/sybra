@@ -43,18 +43,62 @@ func patchSettingsRawConfig(raw []byte, before, after *config.Config) ([]byte, e
 	current := append([]byte(nil), raw...)
 	var err error
 	for _, path := range deletes {
-		current, err = deleteYAMLPath(current, splitYAMLPath(path))
+		current, err = deleteConfigLeafPath(current, path)
 		if err != nil {
 			return nil, err
 		}
 	}
 	for _, mut := range sets {
-		current, err = upsertYAMLPath(current, splitYAMLPath(mut.path), mut.value)
+		current, err = setConfigLeafPath(current, mut.path, mut.value)
 		if err != nil {
 			return nil, err
 		}
 	}
 	return current, nil
+}
+
+// setConfigLeafPath writes a canonical (legacy) leaf value into the raw YAML.
+// When the file expresses the field through its schema-v2 duration alias (e.g.
+// `agent.bash_timeout: 2m` rather than `agent.bash_timeout_seconds`), it edits
+// the alias entry in place instead — writing the legacy key beside the alias
+// would produce a mixed file that fails the next reload's alias/legacy
+// conflict check.
+func setConfigLeafPath(raw []byte, path string, value any) ([]byte, error) {
+	if aliasPath, ok := config.DurationAliasPathForLegacy(path); ok && rawHasYAMLPath(raw, aliasPath) {
+		if aliasValue, formatted := config.FormatDurationAliasValue(path, value); formatted {
+			out, err := upsertYAMLPath(raw, splitYAMLPath(aliasPath), aliasValue)
+			if err != nil {
+				return nil, err
+			}
+			// Drop any stale legacy key so the reload never sees an alias+legacy conflict.
+			return deleteYAMLPath(out, splitYAMLPath(path))
+		}
+	}
+	return upsertYAMLPath(raw, splitYAMLPath(path), value)
+}
+
+// deleteConfigLeafPath removes a canonical (legacy) leaf and, when present, the
+// field's schema-v2 duration alias entry, so resetting a value to its default
+// clears whichever form the file used.
+func deleteConfigLeafPath(raw []byte, path string) ([]byte, error) {
+	out, err := deleteYAMLPath(raw, splitYAMLPath(path))
+	if err != nil {
+		return nil, err
+	}
+	aliasPath, ok := config.DurationAliasPathForLegacy(path)
+	if !ok {
+		return out, nil
+	}
+	return deleteYAMLPath(out, splitYAMLPath(aliasPath))
+}
+
+func rawHasYAMLPath(raw []byte, path string) bool {
+	root, err := parseYAMLRoot(raw)
+	if err != nil {
+		return false
+	}
+	_, ok := findYAMLEntry(root, splitYAMLPath(path))
+	return ok
 }
 
 func changedConfigLeafPaths(old, next config.Config) []string {
