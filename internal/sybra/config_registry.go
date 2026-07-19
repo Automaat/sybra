@@ -75,6 +75,12 @@ var configRegistry = []configRegistryEntry{
 	{Path: "prompt_lab", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "experience", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "ab_testing", Policy: configPolicyHot, Visibility: configVisibilityRaw},
+	// routing.Service reads its interval/budget/floor/step/coefficients once
+	// at Run() startup, same as evaluation/prompt_lab/harness_evolution's
+	// tickers — restart, not hot, is the correct policy here for the same
+	// reason: there is no live re-arm point for an already-running
+	// time.Ticker's interval or the per-tick config it closes over.
+	{Path: "routing", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "providers.health_check", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "providers.claude", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyAgentRuntime},
 	{Path: "providers.codex", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyAgentRuntime},

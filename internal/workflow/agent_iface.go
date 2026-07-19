@@ -114,6 +114,9 @@ type AgentAssignment struct {
 	// missing mandatory-skill receipt so completion can record a recovered run
 	// distinctly from a first-pass conformant one.
 	SkillRecoveryAttempt bool
+	// DecisionVersion mirrors abtest.Assignment.DecisionVersion — the routing
+	// overlay generation (if any) that set this assignment's variant weight.
+	DecisionVersion int
 }
 
 // PromptTransform mirrors the A/B assignment payload used to rewrite a prompt

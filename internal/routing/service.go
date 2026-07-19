@@ -1,0 +1,390 @@
+package routing
+
+import (
+	"context"
+	"log/slog"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evaluation"
+)
+
+// OverlayEvent is the Emit payload name for a changed routing overlay.
+const OverlayEvent = "routing:overlay"
+
+// WeightApplier pushes a merged (base + overlay) abtest.Config to every live
+// A/B selection site (workflow engine, orchestrator, evaluation service, the
+// shared app config struct read directly by human-review/staff-review
+// dispatch) — see internal/sybra's applyRoutingWeights. Never written to
+// config.yaml.
+type WeightApplier func(abtest.Config) error
+
+// Deps are the collaborators for the routing service.
+type Deps struct {
+	Cfg config.RoutingConfig
+	// Base returns the current operator-configured A/B suite (experiment/
+	// variant identities and declared default weights). Called fresh every
+	// tick so a live config edit (new/removed variant) is picked up.
+	Base func() abtest.Config
+	// Report returns the most recently computed evaluation report and
+	// whether one exists yet. Reads the evaluation service's own cache
+	// (LastReport) rather than recomputing, so routing never doubles the
+	// stats/audit scan cost of a tick.
+	Report func() (evaluation.Report, bool)
+	Store  *Store
+	// Apply pushes a changed, merged config live. Never called when
+	// Cfg.Enabled is false (shadow mode: compute + audit only).
+	Apply    WeightApplier
+	AuditLog func(audit.Event) error
+	Emit     func(string, any)
+	Logger   *slog.Logger
+	Now      func() time.Time
+}
+
+// Service periodically scores A/B variants from the evaluation report and
+// turns the scores into a bounded weight overlay. Built and run even when
+// disabled: a disabled tick still computes, persists, and audits a plan —
+// it just never calls Apply — so rollout is observable before it is live.
+type Service struct {
+	cfg      config.RoutingConfig
+	base     func() abtest.Config
+	report   func() (evaluation.Report, bool)
+	store    *Store
+	apply    WeightApplier
+	auditLog func(audit.Event) error
+	emit     func(string, any)
+	logger   *slog.Logger
+	now      func() time.Time
+
+	mu      sync.Mutex
+	overlay Overlay
+	loaded  bool
+}
+
+// NewService builds the service, filling zero-value dependencies with safe
+// no-op defaults so a partially-wired Deps (e.g. in tests) never panics.
+func NewService(d Deps) *Service {
+	if d.Logger == nil {
+		d.Logger = slog.Default()
+	}
+	if d.Now == nil {
+		d.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if d.Emit == nil {
+		d.Emit = func(string, any) {}
+	}
+	if d.AuditLog == nil {
+		d.AuditLog = func(audit.Event) error { return nil }
+	}
+	if d.Base == nil {
+		d.Base = func() abtest.Config { return abtest.Config{} }
+	}
+	return &Service{
+		cfg:      d.Cfg,
+		base:     d.Base,
+		report:   d.Report,
+		store:    d.Store,
+		apply:    d.Apply,
+		auditLog: d.AuditLog,
+		emit:     d.Emit,
+		logger:   d.Logger,
+		now:      d.Now,
+	}
+}
+
+// Run ticks on the configured interval, computing and persisting a weight
+// plan each time. Runs regardless of Cfg.Enabled (see Service doc); returns
+// when ctx is cancelled.
+func (s *Service) Run(ctx context.Context) {
+	s.loadOverlay()
+	interval := time.Duration(s.cfg.IntervalHours * float64(time.Hour))
+	if interval < time.Hour {
+		interval = 6 * time.Hour
+	}
+	s.logger.Info("routing.start", "enabled", s.cfg.Enabled, "interval", interval.String())
+
+	s.tick(ctx)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.tick(ctx)
+		}
+	}
+}
+
+// ApplyPersistedOverlay pushes the last-saved overlay (if any) through Apply
+// once, synchronously — meant to be called at startup before the ticker's
+// first interval elapses, so a restart with routing already enabled does not
+// briefly serve unweighted base config while waiting for the next tick.
+// No-op when routing is disabled, Apply is unset, or no overlay was ever
+// saved.
+func (s *Service) ApplyPersistedOverlay() {
+	s.loadOverlay()
+	if !s.cfg.Enabled || s.apply == nil {
+		return
+	}
+	s.mu.Lock()
+	overlay := s.overlay
+	loaded := s.loaded
+	s.mu.Unlock()
+	if !loaded || len(overlay.Experiments) == 0 {
+		return
+	}
+	merged := mergeWeights(s.base(), overlay)
+	if err := s.apply(merged); err != nil {
+		s.logger.Warn("routing.startup_apply.failed", "err", err)
+	}
+}
+
+// LastOverlay returns the most recently computed/loaded overlay and whether
+// one exists.
+func (s *Service) LastOverlay() (Overlay, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.overlay, s.loaded && len(s.overlay.Experiments) > 0
+}
+
+func (s *Service) loadOverlay() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loaded {
+		return
+	}
+	s.loaded = true
+	if s.store == nil {
+		return
+	}
+	o, ok, err := s.store.Load()
+	if err != nil {
+		s.logger.Warn("routing.overlay.load_failed", "err", err)
+		return
+	}
+	if ok {
+		s.overlay = o
+	}
+}
+
+func (s *Service) tick(_ context.Context) {
+	if s.report == nil || s.store == nil {
+		return
+	}
+	rep, ok := s.report()
+	if !ok {
+		s.logger.Debug("routing.tick.no_report")
+		return
+	}
+
+	base := s.base()
+	scores := ScoreVariants(flattenRows(rep), coefficientsFromConfig(s.cfg.Coefficients))
+
+	s.mu.Lock()
+	prevOverlay := s.overlay
+	s.mu.Unlock()
+
+	current := currentWeights(base, prevOverlay)
+	plan := PlanWeights(scores, current, PlanOptions{
+		WeightBudget:      s.cfg.WeightBudget,
+		FloorWeight:       s.cfg.FloorWeight,
+		MaxStep:           s.cfg.MaxStep,
+		MinSamplesToShift: s.cfg.MinSamplesToShift,
+	})
+	if !plan.Changed {
+		s.logger.Debug("routing.tick.unchanged")
+		return
+	}
+
+	version := prevOverlay.Version + 1
+	overlay := buildOverlay(version, s.now(), plan, scores)
+	if err := s.store.Save(overlay); err != nil {
+		s.logger.Warn("routing.overlay.save_failed", "err", err)
+		return
+	}
+	s.mu.Lock()
+	s.overlay = overlay
+	s.mu.Unlock()
+
+	applied := false
+	if s.cfg.Enabled && s.apply != nil {
+		merged := mergeWeights(base, overlay)
+		if err := s.apply(merged); err != nil {
+			s.logger.Warn("routing.apply.failed", "err", err, "version", version)
+		} else {
+			applied = true
+		}
+	}
+
+	s.emit(OverlayEvent, overlay)
+	s.emitAudit(overlay, applied)
+	s.logger.Info("routing.tick", "version", version, "experiments", len(overlay.Experiments), "applied", applied)
+}
+
+func (s *Service) emitAudit(overlay Overlay, applied bool) {
+	data := map[string]any{
+		"version": overlay.Version,
+		"applied": applied,
+	}
+	experiments := make([]map[string]any, 0, len(overlay.Experiments))
+	for _, exp := range overlay.Experiments {
+		variants := make([]map[string]any, 0, len(exp.Variants))
+		for _, v := range exp.Variants {
+			variants = append(variants, map[string]any{
+				"variant_id":        v.VariantID,
+				"weight":            v.Weight,
+				"score":             v.Score,
+				"runs":              v.Runs,
+				"resolved_runs":     v.ResolvedRuns,
+				"insufficient_data": v.InsufficientData,
+				"landed_lower":      v.Inputs.LandedWilsonLower,
+				"cost_per_landed":   v.Inputs.CostPerLanded,
+				"duration_p50s":     v.Inputs.DurationP50S,
+			})
+		}
+		experiments = append(experiments, map[string]any{
+			"experiment_id": exp.ExperimentID,
+			"variants":      variants,
+		})
+	}
+	data["experiments"] = experiments
+	if err := s.auditLog(audit.Event{Type: audit.EventRoutingReweighted, Data: data}); err != nil {
+		s.logger.Warn("routing.audit.failed", "err", err)
+	}
+}
+
+// flattenRows collects every experiment/variant comparison row across every
+// experiment kind — routing weights all A/B kinds (model/prompt/skill/
+// compound) uniformly, matching how abtest.Config.Experiments itself makes
+// no kind distinction at selection time.
+func flattenRows(rep evaluation.Report) []evaluation.ComparisonBreakdown {
+	var rows []evaluation.ComparisonBreakdown
+	for _, kind := range rep.ByExperimentKind {
+		for _, group := range kind.Groups {
+			rows = append(rows, group.Rows...)
+		}
+	}
+	return rows
+}
+
+// currentWeights builds the full configured (experimentID -> variantID ->
+// weight) universe from base, then overrides each entry with the
+// last-applied overlay weight when one was recorded — so PlanWeights' step
+// clamp is relative to what is actually live, not base's static defaults,
+// while every configured variant (even one with zero runs) still gets an
+// entry.
+func currentWeights(base abtest.Config, overlay Overlay) map[string]map[string]int {
+	out := map[string]map[string]int{}
+	for i := range base.Experiments {
+		exp := &base.Experiments[i]
+		if exp.ID == "" {
+			continue
+		}
+		variants := map[string]int{}
+		for j := range exp.Variants {
+			v := &exp.Variants[j]
+			if v.ID == "" {
+				continue
+			}
+			weight := v.Weight
+			if weight <= 0 {
+				weight = defaultFloorWeight
+			}
+			if w, ok := overlay.WeightAt(exp.ID, v.ID); ok {
+				weight = w
+			}
+			variants[v.ID] = weight
+		}
+		if len(variants) > 0 {
+			out[exp.ID] = variants
+		}
+	}
+	return out
+}
+
+// buildOverlay assembles the persisted overlay from a weight plan and the
+// scores that drove it. Only experiments present in plan.Experiments are
+// included — an unchanged experiment keeps whatever the prior overlay
+// generation recorded via the caller retaining prevOverlay separately;
+// buildOverlay itself is a pure, one-generation snapshot.
+func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score) Overlay {
+	scoreByKey := map[string]Score{}
+	for _, s := range scores {
+		scoreByKey[s.ExperimentID+"|"+s.VariantID] = s
+	}
+
+	expIDs := make([]string, 0, len(plan.Experiments))
+	for expID := range plan.Experiments {
+		expIDs = append(expIDs, expID)
+	}
+	sort.Strings(expIDs)
+
+	overlay := Overlay{Version: version, GeneratedAt: now}
+	for _, expID := range expIDs {
+		weights := plan.Experiments[expID]
+		variantIDs := make([]string, 0, len(weights))
+		for vid := range weights {
+			variantIDs = append(variantIDs, vid)
+		}
+		sort.Strings(variantIDs)
+
+		ov := OverlayExperiment{ExperimentID: expID}
+		for _, vid := range variantIDs {
+			s := scoreByKey[expID+"|"+vid]
+			ov.Variants = append(ov.Variants, OverlayVariant{
+				VariantID:          vid,
+				Weight:             weights[vid],
+				Score:              s.Value,
+				Inputs:             s.Inputs,
+				Runs:               s.Runs,
+				ResolvedRuns:       s.ResolvedRuns,
+				InsufficientData:   s.InsufficientData,
+				SkillParityUnknown: s.SkillParityUnknown,
+			})
+		}
+		overlay.Experiments = append(overlay.Experiments, ov)
+	}
+	return overlay
+}
+
+// mergeWeights clones base and overwrites each configured variant's Weight
+// with the overlay's applied weight, stamping WeightsVersion so every
+// downstream Assignment records this generation. Experiments/variants not
+// covered by the overlay (e.g. never scored yet) keep base's declared
+// weight unchanged.
+func mergeWeights(base abtest.Config, overlay Overlay) abtest.Config {
+	merged := base
+	merged.Experiments = make([]abtest.Experiment, len(base.Experiments))
+	for i := range base.Experiments {
+		exp := base.Experiments[i]
+		exp.Variants = append([]abtest.Variant(nil), exp.Variants...)
+		for j := range exp.Variants {
+			if w, ok := overlay.WeightAt(exp.ID, exp.Variants[j].ID); ok {
+				exp.Variants[j].Weight = w
+			}
+		}
+		merged.Experiments[i] = exp
+	}
+	version := overlay.Version
+	merged.WeightsVersion = &version
+	return merged
+}
+
+func coefficientsFromConfig(c config.RoutingCoefficients) Coefficients {
+	return Coefficients{
+		LandedWeight:       c.LandedWeight,
+		MergeWeight:        c.MergeWeight,
+		CIFirstPassWeight:  c.CIFirstPassWeight,
+		ReworkWeight:       c.ReworkWeight,
+		FailureWeight:      c.FailureWeight,
+		CostWeight:         c.CostWeight,
+		DurationWeight:     c.DurationWeight,
+		CostNormalizer:     c.CostNormalizer,
+		DurationNormalizer: c.DurationNormalizer,
+	}
+}

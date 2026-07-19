@@ -42,6 +42,7 @@ redacted config for this machine.
 | `prompt_lab` | `PromptLabConfig` | _(see below)_ |  |
 | `experience` | `ExperienceConfig` | _(see below)_ |  |
 | `ab_testing` | `abtest.Config` |  |  |
+| `routing` | `RoutingConfig` | _(see below)_ |  |
 | `providers` | `ProvidersConfig` | _(see below)_ |  |
 | `metrics` | `MetricsConfig` | _(see below)_ |  |
 | `server` | `ServerConfig` | _(see below)_ |  |
@@ -553,6 +554,54 @@ while never suppressing re-files the same ID every tick. Defaults to 30.
 | `experience.enabled` | `bool` |  |  |
 | `experience.max_records` | `int` | `5` |  |
 | `experience.ttl_days` | `int` |  | TTLDays expires records older than this many days out of injection — a stale record can otherwise poison a prompt with advice that no longer matches the current codebase. 0 (default) disables expiry, so existing deployments are unaffected until an operator opts in. |
+
+## RoutingConfig (`routing`)
+
+RoutingConfig controls the adaptive provider-routing service, which turns
+the periodic evaluation scorecard into bounded, versioned weight nudges for
+internal/abtest's per-experiment variants. It never writes to config.yaml —
+learned weights live in a side-store overlay (routing.Store) applied
+in-process — so a bad tick is trivially recoverable (delete the overlay,
+restart) and the operator's own ab_testing.yaml stays the source of truth
+for which variants exist at all.
+
+Enabled defaults to false: a fresh install computes and audits weight
+proposals (shadow mode) without ever pushing them live, matching
+PromptLabConfig's opt-in posture for a new autonomous loop.
+
+Coefficients is left zero-valued by most operators; applyRoutingDefaults
+fills any zero field from DefaultCoefficients so a partial override (e.g.
+only CostWeight) leaves every other term at its shipped default.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `routing.enabled` | `bool` |  |  |
+| `routing.interval_hours` | `float64` | `6` |  |
+| `routing.weight_budget` | `int` | `40` | WeightBudget is the total weight distributed across a single experiment's variants each tick (floor allocation included). Higher values let the top-ranked variant pull further ahead of the floor. |
+| `routing.floor_weight` | `int` | `1` | FloorWeight is the minimum weight every configured variant keeps regardless of score, guaranteeing exploration traffic to low-sample and parity-unknown cohorts (acceptance criterion: "low-sample cohorts retain exploration traffic"). |
+| `routing.max_step` | `int` | `5` | MaxStep bounds how far a single tick may move one variant's weight, up or down, so a noisy score swing cannot re-route most traffic in one generation. |
+| `routing.min_samples_to_shift` | `int` | `20` | MinSamplesToShift is the resolved-run threshold below which a variant is treated as insufficiently sampled and held at FloorWeight instead of being ranked — distinct from ab_testing.min_samples_per_variant, which gates the evaluation scorecard's InsufficientData display flag. |
+| `routing.coefficients` | `RoutingCoefficients` | _(see below)_ |  |
+
+## RoutingCoefficients (`routing.coefficients`)
+
+RoutingCoefficients weights each score input's contribution to a variant's
+composite outcome score. Positive fields reward the metric (landed, merge,
+CI-first-pass rate); the rework/failure/cost/duration fields are already
+applied as penalties by routing.ScoreVariants, so a larger value here means
+a stronger penalty, never a sign flip.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `routing.coefficients.landed_weight` | `float64` | `1` |  |
+| `routing.coefficients.merge_weight` | `float64` | `0.5` |  |
+| `routing.coefficients.ci_first_pass_weight` | `float64` | `0.25` |  |
+| `routing.coefficients.rework_weight` | `float64` | `0.75` |  |
+| `routing.coefficients.failure_weight` | `float64` | `1` |  |
+| `routing.coefficients.cost_weight` | `float64` | `0.2` | CostWeight and DurationWeight scale a normalized (0..1-clamped) cost/ duration penalty — see CostNormalizer/DurationNormalizer — so cost only ever lowers a variant's rank, never zeroes its weight (FloorWeight is the hard floor no penalty can cross). |
+| `routing.coefficients.duration_weight` | `float64` | `0.1` |  |
+| `routing.coefficients.cost_normalizer` | `float64` | `5` |  |
+| `routing.coefficients.duration_normalizer` | `float64` | `3600` |  |
 
 ## ProvidersConfig (`providers`)
 

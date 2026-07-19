@@ -8,6 +8,7 @@ experiment_id: exp-1
 variant_id: variant-a
 assignment_unit: task
 assignment_key: task-map
+decision_version: 3
 pid: 12345
 session_id: sess-map
 log_path: /tmp/sybra/agents/a-map.ndjson

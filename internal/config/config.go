@@ -36,6 +36,7 @@ type Config struct {
 	PromptLab      PromptLabConfig      `yaml:"prompt_lab" json:"promptLab"`
 	Experience     ExperienceConfig     `yaml:"experience" json:"experience"`
 	ABTesting      abtest.Config        `yaml:"ab_testing" json:"abTesting"`
+	Routing        RoutingConfig        `yaml:"routing" json:"routing"`
 	Providers      ProvidersConfig      `yaml:"providers" json:"providers"`
 	Metrics        MetricsConfig        `yaml:"metrics" json:"metrics"`
 	Server         ServerConfig         `yaml:"server" json:"server"`

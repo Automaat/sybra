@@ -120,6 +120,19 @@ type OrchestratorService struct {
 	agentID string
 }
 
+// setABTesting swaps the A/B config the orchestrator brain is dispatched
+// under on its next StartOrchestrator(Context) call — called from
+// applyRoutingWeights (internal/routing's WeightApplier, wired in
+// lifecycle.go) so a routing overlay tick reaches the orchestrator session's
+// own provider pick, not just workflow-dispatched task agents. Unexported:
+// OrchestratorService is a Wails-bound service, so this stays an internal
+// wiring hook rather than a frontend-callable RPC method.
+func (s *OrchestratorService) setABTesting(cfg abtest.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.abTesting = cfg
+}
+
 func (s *OrchestratorService) reconcileOrchestratorsLocked() string {
 	if s.agents == nil {
 		s.agentID = ""

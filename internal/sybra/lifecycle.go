@@ -8,7 +8,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
@@ -21,6 +23,7 @@ import (
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/routing"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdog"
@@ -102,6 +105,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	lm.startEvaluationService(ctx, emit)
 	lm.startLearningDigestService(ctx, emit)
 	lm.startPromptLabService(ctx, emit)
+	lm.startRoutingService(ctx, emit)
 	lm.startAutoUpdate(ctx)
 	lm.startAgentLogPruneLoop(ctx)
 	lm.startTrashPruneLoop(ctx)
@@ -680,6 +684,49 @@ func (lm *LifecycleManager) startPromptLabService(ctx context.Context, _ func(st
 		return
 	}
 	a.wg.Go(func() { a.promptLab.run(ctx) })
+}
+
+// startRoutingService constructs the adaptive provider-routing service and
+// launches its ticker. Built and run even when disabled (Deps below apply
+// nothing in that case — see routing.Service): this keeps the shadow-mode
+// audit trail live for every install, matching startEvaluationService's
+// "build always, gate behavior on Cfg.Enabled" pattern. Runs after
+// startEvaluationService so Report can read the evaluation service's own
+// cache instead of re-scanning stats/audit on routing's own interval.
+func (lm *LifecycleManager) startRoutingService(ctx context.Context, emit func(string, any)) {
+	a := lm.app
+	store, err := routing.NewStore(config.RoutingDir())
+	if err != nil {
+		a.logger.Warn("routing.store.init_failed", "err", err)
+		return
+	}
+	deps := routing.Deps{
+		Cfg:  a.cfg.Routing,
+		Base: func() abtest.Config { return a.cfg.ABTesting },
+		Report: func() (evaluation.Report, bool) {
+			if a.evaluationSvc == nil {
+				return evaluation.Report{}, false
+			}
+			return a.evaluationSvc.LastReport()
+		},
+		Store: store,
+		Apply: a.applyRoutingWeights,
+		AuditLog: func(e audit.Event) error {
+			if a.audit == nil {
+				return nil
+			}
+			return a.audit.Log(e)
+		},
+		Emit:   emit,
+		Logger: a.logger,
+	}
+	svc := routing.NewService(deps)
+	a.routingSvc = svc
+	// Push any weights persisted from a prior run before the first tick's
+	// interval elapses, so a restart with routing already enabled does not
+	// briefly dispatch on unweighted base config.
+	svc.ApplyPersistedOverlay()
+	a.wg.Go(func() { svc.Run(ctx) })
 }
 
 // pollRegistrar is the subset of *poll.Hub used by registerPollHandlers,

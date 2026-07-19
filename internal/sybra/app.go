@@ -46,6 +46,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/recovery"
+	"github.com/Automaat/sybra/internal/routing"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/spotlight"
@@ -100,6 +101,7 @@ type App struct {
 	selfMonitorSvc    *selfmonitor.Service
 	evaluationSvc     *evaluation.Service
 	learningDigestSvc *learning.Service
+	routingSvc        *routing.Service
 	agentOrch         *agentorch.Orchestrator
 	reviewer          *review.Handler
 	assigner          *clusterlead.Assigner

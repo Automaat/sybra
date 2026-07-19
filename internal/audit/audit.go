@@ -138,6 +138,16 @@ const (
 	// raw error message — so failures are observable without exposing content.
 	EventCodexHookFailed = "codex.hook.failed"
 
+	// EventRoutingReweighted records one adaptive-routing tick (internal/routing)
+	// that produced a changed weight plan: a new overlay generation, the
+	// per-experiment/variant weights it set, and the score inputs that drove
+	// them. Emitted every generation, including shadow-mode (routing.enabled:
+	// false) ticks that compute and audit but never apply — so the audit log
+	// stays the full explainability trail regardless of rollout posture. Data
+	// carries only experiment/variant IDs and numeric score inputs — never
+	// prompts, provider CLI arguments, or task content.
+	EventRoutingReweighted = "routing.reweighted"
+
 	// EventLearningDigest records a successful Learning Digest generation
 	// (internal/learning) with provider/model/duration/cost in Data.
 	EventLearningDigest = "learning.digest"

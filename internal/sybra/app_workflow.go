@@ -715,6 +715,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		VariantID:               assignment.VariantID,
 		AssignmentUnit:          assignment.AssignmentUnit,
 		AssignmentKey:           assignment.AssignmentKey,
+		DecisionVersion:         assignment.DecisionVersion,
 		DisableProviderFailover: assignment.ExperimentID != "",
 		Dir:                     dir,
 		OneShot:                 oneShot,

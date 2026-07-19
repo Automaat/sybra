@@ -1235,6 +1235,78 @@ func applyPromptLabDefaults(cfg *Config) {
 	}
 }
 
+// applyRoutingDefaults fills zero values while preserving Enabled from an
+// explicit YAML override — the zero value (false) is exactly the desired
+// shadow-mode default, so no DefaultConfig entry is needed. Coefficient
+// fields are filled independently so an operator overriding a single
+// coefficient (e.g. cost_weight) does not silently zero every other term.
+func applyRoutingDefaults(cfg *Config) {
+	r := &cfg.Routing
+	if r.IntervalHours < 1 {
+		r.IntervalHours = 6
+	}
+	if r.WeightBudget <= 0 {
+		r.WeightBudget = 40
+	}
+	if r.FloorWeight <= 0 {
+		r.FloorWeight = 1
+	}
+	if r.MaxStep <= 0 {
+		r.MaxStep = 5
+	}
+	if r.MinSamplesToShift <= 0 {
+		r.MinSamplesToShift = 20
+	}
+	def := DefaultRoutingCoefficients()
+	c := &r.Coefficients
+	if c.LandedWeight == 0 {
+		c.LandedWeight = def.LandedWeight
+	}
+	if c.MergeWeight == 0 {
+		c.MergeWeight = def.MergeWeight
+	}
+	if c.CIFirstPassWeight == 0 {
+		c.CIFirstPassWeight = def.CIFirstPassWeight
+	}
+	if c.ReworkWeight == 0 {
+		c.ReworkWeight = def.ReworkWeight
+	}
+	if c.FailureWeight == 0 {
+		c.FailureWeight = def.FailureWeight
+	}
+	if c.CostWeight == 0 {
+		c.CostWeight = def.CostWeight
+	}
+	if c.DurationWeight == 0 {
+		c.DurationWeight = def.DurationWeight
+	}
+	if c.CostNormalizer == 0 {
+		c.CostNormalizer = def.CostNormalizer
+	}
+	if c.DurationNormalizer == 0 {
+		c.DurationNormalizer = def.DurationNormalizer
+	}
+}
+
+// DefaultRoutingCoefficients returns the shipped scoring weights: landed and
+// merge outcomes dominate, CI-first-pass is a smaller positive signal,
+// rework/failure are the strongest penalties, and cost/duration are gentle
+// tie-breakers — reflecting that a slower or pricier variant that lands
+// cleanly should still outrank a cheap one that needs rework.
+func DefaultRoutingCoefficients() RoutingCoefficients {
+	return RoutingCoefficients{
+		LandedWeight:       1.0,
+		MergeWeight:        0.5,
+		CIFirstPassWeight:  0.25,
+		ReworkWeight:       0.75,
+		FailureWeight:      1.0,
+		CostWeight:         0.2,
+		DurationWeight:     0.1,
+		CostNormalizer:     5.0,    // $5/landed PR treated as "expensive"
+		DurationNormalizer: 3600.0, // 1h treated as "slow"
+	}
+}
+
 // applySelfMonitorDefaults fills zero values for the SelfMonitor block so
 // older configs behave deterministically and the service can rely on every
 // field. Enabled stays false until operators opt in.
@@ -1560,6 +1632,14 @@ func HarnessEvolveDir() string {
 // internal/promptlab.
 func PromptLabDir() string {
 	return filepath.Join(HomeDir(), "prompt-lab")
+}
+
+// RoutingDir is the local store for the adaptive-routing weight overlay
+// (internal/routing.Store) — the versioned per-experiment/variant weights and
+// score-input snapshot the routing service computes each tick. Never written
+// into config.yaml.
+func RoutingDir() string {
+	return filepath.Join(HomeDir(), "routing")
 }
 
 // PromptEvalDir is the local store for offline prompt/skill eval verdicts

@@ -656,6 +656,7 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 		VariantID:               p.assignment.VariantID,
 		AssignmentUnit:          p.assignment.AssignmentUnit,
 		AssignmentKey:           p.assignment.AssignmentKey,
+		DecisionVersion:         p.assignment.DecisionVersion,
 		DisableProviderFailover: p.assignment.ExperimentID != "",
 		RequestedSkill:          requestedWorkflowSkill(p.prompt),
 		RequirePermissions:      p.requirePerm,

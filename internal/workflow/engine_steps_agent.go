@@ -379,6 +379,7 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 		ReasoningEffort: a.ReasoningEffort,
 		PromptTransform: workflowPromptTransform(a.PromptTransform),
 		SkillAliases:    cloneWorkflowSkillAliases(a.SkillAliases),
+		DecisionVersion: a.DecisionVersion,
 	}, true, nil
 }
 
