@@ -3,6 +3,7 @@ package sybra
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
@@ -38,6 +40,7 @@ type TaskService struct {
 	worktrees      *worktree.Manager
 	sandboxes      *sandbox.Manager
 	artifacts      *artifact.Store
+	attachments    *attachment.Store
 	wg             *sync.WaitGroup
 	logger         *slog.Logger
 	audit          *audit.Logger
@@ -172,6 +175,87 @@ func (s *TaskService) GetTask(id string) (task.Task, error) {
 		return t, err
 	}
 	return s.withEstimatedAgentRunCosts(t), nil
+}
+
+func (s *TaskService) UploadAttachment(taskID, fileName string, data []byte) (task.Attachment, error) {
+	if s.attachments == nil {
+		return task.Attachment{}, validationError("attachments are unavailable")
+	}
+	if strings.TrimSpace(fileName) == "" {
+		return task.Attachment{}, validationError("attachment filename is required")
+	}
+	meta, err := s.attachments.Put(taskID, attachment.UploadRequest{FileName: fileName, Data: data})
+	if err != nil {
+		return task.Attachment{}, validationError(err.Error())
+	}
+	_, err = s.tasks.UpdateFn(taskID, func(cur task.Task) (task.Update, error) {
+		next := slices.Clone(cur.Attachments)
+		next = append(next, task.Attachment(meta))
+		return task.Update{Attachments: &next}, nil
+	})
+	if err != nil {
+		_ = s.attachments.Delete(taskID, meta.ID)
+		return task.Attachment{}, err
+	}
+	return task.Attachment(meta), nil
+}
+
+func (s *TaskService) ListAttachments(taskID string) ([]task.Attachment, error) {
+	t, err := s.tasks.Get(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if t.Attachments == nil {
+		return []task.Attachment{}, nil
+	}
+	return slices.Clone(t.Attachments), nil
+}
+
+func (s *TaskService) DeleteAttachment(taskID, attachmentID string) error {
+	if s.attachments == nil {
+		return validationError("attachments are unavailable")
+	}
+	_, err := s.tasks.UpdateFn(taskID, func(cur task.Task) (task.Update, error) {
+		idx := slices.IndexFunc(cur.Attachments, func(att task.Attachment) bool { return att.ID == attachmentID })
+		if idx < 0 {
+			return task.Update{}, validationError(fmt.Sprintf("attachment %q not found", attachmentID))
+		}
+		next := make([]task.Attachment, 0, len(cur.Attachments)-1)
+		next = append(next, cur.Attachments[:idx]...)
+		next = append(next, cur.Attachments[idx+1:]...)
+		return task.Update{Attachments: &next}, nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.attachments.Delete(taskID, attachmentID); err != nil && s.logger != nil {
+		s.logger.Warn("attachments.delete", "task_id", taskID, "attachment_id", attachmentID, "err", err)
+	}
+	return nil
+}
+
+func (s *TaskService) GetAttachmentURL(taskID, attachmentID string) (string, error) {
+	if s.attachments == nil {
+		return "", validationError("attachments are unavailable")
+	}
+	t, err := s.tasks.Get(taskID)
+	if err != nil {
+		return "", err
+	}
+	idx := slices.IndexFunc(t.Attachments, func(att task.Attachment) bool { return att.ID == attachmentID })
+	if idx < 0 {
+		return "", validationError(fmt.Sprintf("attachment %q not found", attachmentID))
+	}
+	att := t.Attachments[idx]
+	path, err := s.attachments.Path(taskID, attachmentID)
+	if err != nil {
+		return "", validationError(err.Error())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read attachment: %w", err)
+	}
+	return "data:" + att.ContentType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error) {

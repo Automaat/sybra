@@ -23,6 +23,7 @@ type AppSettings struct {
 	Orchestrator config.OrchestratorConfig `json:"orchestrator"`
 	Logging      LoggingSettings           `json:"logging"`
 	Audit        config.AuditConfig        `json:"audit"`
+	Attachments  config.AttachmentConfig   `json:"attachments"`
 	Todoist      config.TodoistConfig      `json:"todoist"`
 	Renovate     config.RenovateConfig     `json:"renovate"`
 	Providers    config.ProvidersConfig    `json:"providers"`

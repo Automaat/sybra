@@ -48,6 +48,7 @@ func (s *ConfigService) GetSettings() AppSettings {
 			MaxSizeMB: c.Logging.MaxSizeMB,
 			MaxFiles:  c.Logging.MaxFiles,
 		},
+		Attachments:     c.Attachments,
 		Audit:           c.Audit,
 		Todoist:         todoist,
 		Renovate:        c.Renovate,
@@ -279,6 +280,7 @@ func (s *ConfigService) applyFromConfig(next config.Config) error {
 	s.cfg.Logging.MaxSizeMB = next.Logging.MaxSizeMB
 	s.cfg.Logging.MaxFiles = next.Logging.MaxFiles
 	s.cfg.Audit = next.Audit
+	s.cfg.Attachments = next.Attachments
 	s.cfg.Todoist = next.Todoist
 	// In-place field assignment: the renovate coordinator holds &s.cfg.Renovate.
 	s.cfg.Renovate.Enabled = next.Renovate.Enabled
@@ -364,6 +366,7 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 	next.Logging.MaxSizeMB = settings.Logging.MaxSizeMB
 	next.Logging.MaxFiles = settings.Logging.MaxFiles
 	next.Audit = settings.Audit
+	next.Attachments = settings.Attachments
 	next.Todoist = settings.Todoist
 	// Preserve the stored token when the caller sends a blank (redacted) value.
 	if settings.Todoist.APIToken == "" {

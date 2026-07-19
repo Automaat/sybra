@@ -33,6 +33,7 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	s.cfg.Logging.MaxSizeMB = next.Logging.MaxSizeMB
 	s.cfg.Logging.MaxFiles = next.Logging.MaxFiles
 	s.cfg.Audit = next.Audit
+	s.cfg.Attachments = next.Attachments
 	s.cfg.Todoist = next.Todoist
 	s.cfg.Renovate.Enabled = next.Renovate.Enabled
 	s.cfg.Renovate.Author = next.Renovate.Author
@@ -117,6 +118,7 @@ func configToSettings(c *config.Config) AppSettings {
 			MaxSizeMB: c.Logging.MaxSizeMB,
 			MaxFiles:  c.Logging.MaxFiles,
 		},
+		Attachments:  c.Attachments,
 		Audit:        c.Audit,
 		Todoist:      c.Todoist,
 		Renovate:     c.Renovate,

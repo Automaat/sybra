@@ -588,6 +588,8 @@ func DefaultConfig() *Config {
 	return resolved.Config
 }
 
+const DefaultAttachmentMaxSizeMB = 10
+
 func defaultSeedConfig() *Config {
 	cfg := &Config{
 		SchemaVersion: CurrentSchemaVersion,
@@ -600,6 +602,9 @@ func defaultSeedConfig() *Config {
 		Audit: AuditConfig{
 			Enabled:       true,
 			RetentionDays: 30,
+		},
+		Attachments: AttachmentConfig{
+			MaxSizeMB: DefaultAttachmentMaxSizeMB,
 		},
 		Agent: AgentDefaults{
 			Provider:         "claude",
@@ -688,6 +693,11 @@ func (c *Config) AuditDir() string {
 	return filepath.Join(c.Logging.Dir, "audit")
 }
 
+// AttachmentsDir returns the local root directory for task attachment blobs.
+func (c *Config) AttachmentsDir() string {
+	return defaultAttachmentsDir()
+}
+
 // Save writes the current config to disk.
 func (c *Config) Save() error {
 	data, err := yaml.Marshal(c)
@@ -756,6 +766,7 @@ func (c *Config) Directories() map[string]string {
 		"projects":        c.ProjectsDir,
 		"clones":          c.ClonesDir,
 		"worktrees":       c.WorktreesDir,
+		"attachments":     c.AttachmentsDir(),
 		"logs":            c.Logging.Dir,
 		"audit":           c.AuditDir(),
 		"loop_agents":     c.LoopAgentsDir,
@@ -1481,6 +1492,10 @@ func defaultWorktreesDir() string {
 
 func defaultLoopAgentsDir() string {
 	return filepath.Join(HomeDir(), "loop-agents")
+}
+
+func defaultAttachmentsDir() string {
+	return filepath.Join(HomeDir(), "attachments")
 }
 
 func WorkflowsDir() string {

@@ -128,6 +128,9 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	if cfg.LoopAgentsDir == "" {
 		cfg.LoopAgentsDir = defaultLoopAgentsDir()
 	}
+	if cfg.Attachments.MaxSizeMB <= 0 {
+		cfg.Attachments.MaxSizeMB = DefaultAttachmentMaxSizeMB
+	}
 	if cfg.Todoist.PollSeconds <= 0 {
 		cfg.Todoist.PollSeconds = 120
 	}

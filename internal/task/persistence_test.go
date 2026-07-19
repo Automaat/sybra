@@ -57,6 +57,14 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		Sandbox:                &sandbox,
 		ReasoningEffort:        "xhigh",
 		TestingCycleStartedAt:  &testingCycleStartedAt,
+		Attachments: []Attachment{{
+			ID:          "att-1",
+			FileName:    "evidence.txt",
+			ContentType: "text/plain",
+			SizeBytes:   5,
+			Path:        "/tmp/attachments/task1234/att-1/evidence.txt",
+			CreatedAt:   now.Add(-30 * time.Minute),
+		}},
 		AgentRuns: []AgentRun{{
 			AgentID:                 "agent-1",
 			Role:                    "test-runner",
@@ -277,6 +285,15 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.ReasoningEffort = "xhigh"
 	case "TestingCycleStartedAt":
 		task.TestingCycleStartedAt = &later
+	case "Attachments":
+		task.Attachments = []Attachment{{
+			ID:          "att-1",
+			FileName:    "log.txt",
+			ContentType: "text/plain",
+			SizeBytes:   123,
+			Path:        "/tmp/attachments/task-persist/att-1/log.txt",
+			CreatedAt:   later,
+		}}
 	case "AgentRuns":
 		task.AgentRuns = []AgentRun{{
 			AgentID:                 "agent-1",

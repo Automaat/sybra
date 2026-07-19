@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -280,6 +281,9 @@ type AgentRun struct {
 	SubagentCallCount int `json:"subagentCallCount,omitempty"`
 }
 
+// Attachment re-exports the persisted task attachment metadata type.
+type Attachment = attachment.Attachment
+
 // Task is the in-memory representation of a task markdown file: YAML
 // frontmatter (everything but Body) plus the GFM markdown Body. Store parses
 // and marshals it to/from tasks/<id>.md; planning/review/critique content
@@ -406,6 +410,7 @@ type Task struct {
 	// counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
 	// and all test-runner runs count (correct for first-ever cycles).
 	TestingCycleStartedAt *time.Time          `json:"testingCycleStartedAt,omitempty"`
+	Attachments           []Attachment        `json:"attachments"`
 	AgentRuns             []AgentRun          `json:"agentRuns"`
 	Workflow              *workflow.Execution `json:"workflow,omitempty"`
 	CreatedAt             time.Time           `json:"createdAt"`

@@ -49,6 +49,7 @@ type taskFrontmatter struct {
 	Sandbox                *bool               `yaml:"sandbox,omitempty"`
 	ReasoningEffort        string              `yaml:"reasoning_effort,omitempty"`
 	TestingCycleStartedAt  *time.Time          `yaml:"testing_cycle_started_at,omitempty"`
+	Attachments            []Attachment        `yaml:"attachments,omitempty"`
 	AgentRuns              []agentRunRecord    `yaml:"agent_runs,omitempty"`
 	Workflow               *workflow.Execution `yaml:"workflow,omitempty"`
 	CreatedAt              time.Time           `yaml:"created_at"`
@@ -138,6 +139,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		Sandbox:                fm.Sandbox,
 		ReasoningEffort:        fm.ReasoningEffort,
 		TestingCycleStartedAt:  fm.TestingCycleStartedAt,
+		Attachments:            fm.Attachments,
 		Workflow:               fm.Workflow,
 		CreatedAt:              fm.CreatedAt,
 		UpdatedAt:              fm.UpdatedAt,
@@ -154,6 +156,9 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 	t.AgentRuns = agentRunsFromRecords(fm.AgentRuns)
 	if t.AgentRuns == nil {
 		t.AgentRuns = []AgentRun{}
+	}
+	if t.Attachments == nil {
+		t.Attachments = []Attachment{}
 	}
 	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
 	return t
@@ -200,6 +205,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		Sandbox:                t.Sandbox,
 		ReasoningEffort:        t.ReasoningEffort,
 		TestingCycleStartedAt:  t.TestingCycleStartedAt,
+		Attachments:            t.Attachments,
 		AgentRuns:              agentRunRecordsFromRuns(t.AgentRuns),
 		Workflow:               t.Workflow,
 		CreatedAt:              t.CreatedAt,
