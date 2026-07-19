@@ -1022,6 +1022,19 @@ func (a *App) initAudit() {
 	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
 		a.logger.Warn("audit.cleanup", "err", err)
 	}
+
+	// Wired here (rather than per-caller) so every push-preflight failure —
+	// from review.Handler's PR-fix path and workflow.Engine's PR-tail push
+	// step alike — surfaces as one audit event internal/health's
+	// checkGHPushAuthFailure turns into an operator-visible finding, instead
+	// of only the per-task status_reason PreflightPushCredentials' callers
+	// already set. See #2315: a task landed in human-required with no signal
+	// beyond a log line when the host's only gh session expired.
+	project.SetPushAuthFailureHook(func(err error) {
+		a.logAudit(audit.EventGHPushAuthFailed, "", "", map[string]any{
+			"err": err.Error(),
+		})
+	})
 }
 
 // initArtifacts constructs the artifact store, wires the task delete hook to

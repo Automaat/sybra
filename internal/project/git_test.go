@@ -3510,6 +3510,59 @@ func TestPreflightPushCredentials_ExhaustsRetriesReturnsError(t *testing.T) {
 	}
 }
 
+// stubPushAuthFailureHook replaces the package-level failure hook with a
+// counting fake and restores the no-op default on cleanup.
+func stubPushAuthFailureHook(t *testing.T) (calls *int, lastErr *error) {
+	t.Helper()
+	calls = new(int)
+	lastErr = new(error)
+	SetPushAuthFailureHook(func(err error) {
+		*calls++
+		*lastErr = err
+	})
+	t.Cleanup(func() { SetPushAuthFailureHook(nil) })
+	return calls, lastErr
+}
+
+func TestPreflightPushCredentials_HookFiresOnExhaustedRetries(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	setGitHubOriginPushURL(t, wtPath)
+
+	dir := t.TempDir()
+	writeFakeGhFailingNTimes(t, dir, 100)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubPushPreflightRetry(t)
+	hookCalls, hookErr := stubPushAuthFailureHook(t)
+
+	if err := PreflightPushCredentials(context.Background(), wtPath); !errors.Is(err, ErrPushAuthPreflight) {
+		t.Fatalf("PreflightPushCredentials error = %v, want ErrPushAuthPreflight", err)
+	}
+	if *hookCalls != 1 {
+		t.Fatalf("pushAuthFailureHook called %d times, want 1", *hookCalls)
+	}
+	if *hookErr == nil || !errors.Is(*hookErr, ErrPushAuthPreflight) {
+		t.Fatalf("pushAuthFailureHook error = %v, want ErrPushAuthPreflight", *hookErr)
+	}
+}
+
+func TestPreflightPushCredentials_HookNotCalledOnSuccess(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	setGitHubOriginPushURL(t, wtPath)
+
+	dir := t.TempDir()
+	writeFakeGhFailingNTimes(t, dir, 0)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubPushPreflightRetry(t)
+	hookCalls, _ := stubPushAuthFailureHook(t)
+
+	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
+		t.Fatalf("PreflightPushCredentials = %v, want nil", err)
+	}
+	if *hookCalls != 0 {
+		t.Fatalf("pushAuthFailureHook called %d times, want 0", *hookCalls)
+	}
+}
+
 func TestStripHTTPSUserinfo(t *testing.T) {
 	cases := []struct {
 		name    string

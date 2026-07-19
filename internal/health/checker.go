@@ -37,6 +37,12 @@ type Checker struct {
 	// check — set only when a sandbox.Manager is wired in (see New).
 	sandboxQuarantine func() []sandbox.QuarantineEntry
 	pressure          func() *PressureStatus
+	// ghAuthProbe, when set, is called once per tick with a live
+	// github.Authenticated() result so credential loss is caught proactively
+	// (checkGHAuthUnavailable) instead of only after a push/issue-filing
+	// attempt has already failed. nil disables the check — set only when
+	// GitHub integration is enabled (see SetGHAuthProbe).
+	ghAuthProbe func() bool
 
 	mu     sync.RWMutex
 	report *Report
@@ -73,6 +79,14 @@ func (c *Checker) SetSandboxQuarantine(f func() []sandbox.QuarantineEntry) {
 // Optional — omit to leave pressure telemetry out of the report.
 func (c *Checker) SetPressureStatus(f func() *PressureStatus) {
 	c.pressure = f
+}
+
+// SetGHAuthProbe wires in a live GitHub-auth probe (typically
+// github.Authenticated), enabling checkGHAuthUnavailable. Optional — omit
+// when GitHub integration is disabled, so an install with no gh CLI/token
+// configured at all doesn't get a spurious critical finding every tick.
+func (c *Checker) SetGHAuthProbe(f func() bool) {
+	c.ghAuthProbe = f
 }
 
 // OwnedProcesses separates exact Sybra PIDs from process groups Sybra created.
@@ -148,6 +162,10 @@ func (c *Checker) check(ctx context.Context) {
 	findings = append(findings, checkTriageMismatch(weekEvents, now)...)
 	findings = append(findings, checkStatusBottleneck(weekEvents, now)...)
 	findings = append(findings, checkGHIssueAuthFailure(dayEvents, now)...)
+	findings = append(findings, checkGHPushAuthFailure(dayEvents, now)...)
+	if c.ghAuthProbe != nil {
+		findings = append(findings, checkGHAuthUnavailable(c.ghAuthProbe(), now)...)
+	}
 	docker := sampleDockerDisk(ctx, c.docker, now)
 	findings = append(findings, checkDockerReclaimable(docker, now)...)
 	if c.sandboxQuarantine != nil {

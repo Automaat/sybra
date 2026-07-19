@@ -244,6 +244,62 @@ func TestCheckGHIssueAuthFailure(t *testing.T) {
 	})
 }
 
+func TestCheckGHPushAuthFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	t.Run("no push auth failures", func(t *testing.T) {
+		t.Parallel()
+		events := []audit.Event{
+			{Type: audit.EventTaskCreated, Timestamp: now},
+		}
+		if got := checkGHPushAuthFailure(events, now); len(got) != 0 {
+			t.Errorf("expected no findings, got %d", len(got))
+		}
+	})
+
+	t.Run("push preflight failures collapse into one critical finding", func(t *testing.T) {
+		t.Parallel()
+		events := []audit.Event{
+			{Type: audit.EventGHPushAuthFailed, Timestamp: now, Data: map[string]any{"err": "gh auth status: You are not logged into any GitHub hosts"}},
+			{Type: audit.EventGHPushAuthFailed, Timestamp: now, Data: map[string]any{"err": "gh auth status: You are not logged into any GitHub hosts"}},
+		}
+		got := checkGHPushAuthFailure(events, now)
+		if len(got) != 1 {
+			t.Fatalf("expected one finding, got %d", len(got))
+		}
+		if got[0].Category != CatGHPushAuthFailure {
+			t.Errorf("category = %s, want %s", got[0].Category, CatGHPushAuthFailure)
+		}
+		if got[0].Severity != SeverityCritical {
+			t.Errorf("severity = %s, want %s", got[0].Severity, SeverityCritical)
+		}
+		if got[0].Evidence["count"] != 2 {
+			t.Errorf("count evidence = %v, want 2", got[0].Evidence["count"])
+		}
+	})
+}
+
+func TestCheckGHAuthUnavailable(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	if got := checkGHAuthUnavailable(true, now); len(got) != 0 {
+		t.Errorf("authenticated=true: expected no findings, got %d", len(got))
+	}
+
+	got := checkGHAuthUnavailable(false, now)
+	if len(got) != 1 {
+		t.Fatalf("authenticated=false: expected one finding, got %d", len(got))
+	}
+	if got[0].Category != CatGHAuthUnavailable {
+		t.Errorf("category = %s, want %s", got[0].Category, CatGHAuthUnavailable)
+	}
+	if got[0].Severity != SeverityCritical {
+		t.Errorf("severity = %s, want %s", got[0].Severity, SeverityCritical)
+	}
+}
+
 func TestRollupScore(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

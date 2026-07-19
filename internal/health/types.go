@@ -29,6 +29,8 @@ const (
 	CatTriageMismatch    Category = "triage_mismatch"
 	CatStatusBottleneck  Category = "status_bottleneck"
 	CatGHAuthFailure     Category = "gh_auth_failure"
+	CatGHPushAuthFailure Category = "gh_push_auth_failure"
+	CatGHAuthUnavailable Category = "gh_auth_unavailable"
 	CatSandboxCleanup    Category = "sandbox_cleanup_failure"
 )
 

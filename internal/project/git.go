@@ -1325,7 +1325,25 @@ var (
 	// token-refresh call without depending on internal/github's package-global
 	// App-auth state.
 	forceRefreshAppToken = github.ForceRefreshAppToken
+	// pushAuthFailureHook is called with the final error every time
+	// PreflightPushCredentials exhausts its retries and still can't
+	// authenticate. It's the single choke point both real callers
+	// (review.Handler and workflow.Engine both default to calling this
+	// function directly) go through, so wiring host-level alerting here once
+	// — rather than in each caller — can't be missed by a new call site. nil
+	// by default (no-op); wired once at startup via SetPushAuthFailureHook to
+	// record an audit event (see internal/health's checkGHPushAuthFailure).
+	pushAuthFailureHook = func(err error) {}
 )
+
+// SetPushAuthFailureHook overrides the push-preflight failure hook. Pass nil
+// to restore the no-op default.
+func SetPushAuthFailureHook(f func(err error)) {
+	if f == nil {
+		f = func(error) {}
+	}
+	pushAuthFailureHook = f
+}
 
 // PreflightPushCredentials cheaply validates the GitHub credential path before
 // Sybra spends an agent turn or starts push-dependent git work. It intentionally
@@ -1349,9 +1367,12 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 		// PAT / ambient-auth path still gets its retry either way.
 		_ = forceRefreshAppToken(ctx)
 		if err := pushPreflightRetrySleep(ctx, pushPreflightRetryBackoffs[attempt]); err != nil {
-			return authErr
+			break
 		}
 		authErr = checkGHAuthStatus(ctx, worktreePath)
+	}
+	if authErr != nil {
+		pushAuthFailureHook(authErr)
 	}
 	return authErr
 }
