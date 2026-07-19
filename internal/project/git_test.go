@@ -2646,6 +2646,111 @@ func TestReconcileWithRemote_DirtyWorktreeFailsClosed(t *testing.T) {
 	}
 }
 
+// TestMergeDivergedRemote_ReconcilesNonConflictingHistories is the repair
+// path for ReconcileWithRemote's ErrBranchDiverged: a worktree that is both
+// ahead and behind its own remote head (see #2347) must be reconciled with a
+// real merge rather than left diverged by a naive worktree recreate.
+func TestMergeDivergedRemote_ReconcilesNonConflictingHistories(t *testing.T) {
+	t.Parallel()
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	// Remote advances on one file; local advances independently on another —
+	// diverged, but not conflicting.
+	pushRemoteCommit(t, remoteBare, branch, "remote-side")
+	if err := os.WriteFile(filepath.Join(wtPath, "local-only.txt"), []byte("local-side"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "add", "local-only.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "commit", "-m", "local-only change").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+
+	err := ReconcileWithRemote(context.Background(), wtPath, branch)
+	if !errors.Is(err, ErrBranchDiverged) {
+		t.Fatalf("ReconcileWithRemote diverged = %v, want ErrBranchDiverged", err)
+	}
+
+	merged, err := MergeDivergedRemote(context.Background(), wtPath, branch)
+	if err != nil {
+		t.Fatalf("MergeDivergedRemote: %v", err)
+	}
+	if !merged {
+		t.Fatal("MergeDivergedRemote = false, want true for non-conflicting divergence")
+	}
+
+	// Both sides' content must be present after the merge.
+	if _, err := os.Stat(filepath.Join(wtPath, "local-only.txt")); err != nil {
+		t.Errorf("merged worktree missing local-only.txt: %v", err)
+	}
+	remoteContent, err := os.ReadFile(filepath.Join(wtPath, "data.txt"))
+	if err != nil {
+		t.Fatalf("read data.txt: %v", err)
+	}
+	if string(remoteContent) != "remote-side" {
+		t.Errorf("data.txt = %q, want remote-side content merged in", remoteContent)
+	}
+
+	statusOut, statusErr := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
+	if statusErr != nil {
+		t.Fatalf("git status: %v: %s", statusErr, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("worktree not clean after merge: %q", statusOut)
+	}
+}
+
+// TestMergeDivergedRemote_ConflictLeavesWorktreeClean guards the "genuine
+// semantic blocker" half of the contract: a real conflict merging the
+// branch's own remote head into local must not be silently discarded, and
+// must not leave the worktree in a half-merged state.
+func TestMergeDivergedRemote_ConflictLeavesWorktreeClean(t *testing.T) {
+	t.Parallel()
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	// Remote and local both edit the same file differently — genuinely
+	// conflicting divergence.
+	pushRemoteCommit(t, remoteBare, branch, "remote-side")
+	localSHA := makeCommit(t, wtPath, "local-side")
+
+	if err := ReconcileWithRemote(context.Background(), wtPath, branch); !errors.Is(err, ErrBranchDiverged) {
+		t.Fatalf("ReconcileWithRemote diverged = %v, want ErrBranchDiverged", err)
+	}
+
+	merged, err := MergeDivergedRemote(context.Background(), wtPath, branch)
+	if err != nil {
+		t.Fatalf("MergeDivergedRemote: %v", err)
+	}
+	if merged {
+		t.Fatal("MergeDivergedRemote = true, want false for a genuine content conflict")
+	}
+
+	statusOut, statusErr := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
+	if statusErr != nil {
+		t.Fatalf("git status: %v: %s", statusErr, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("worktree left dirty after conflicting merge attempt: %q", statusOut)
+	}
+
+	headOut, headErr := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+	if headErr != nil {
+		t.Fatalf("rev-parse HEAD: %v", headErr)
+	}
+	if head := strings.TrimSpace(string(headOut)); head != localSHA {
+		t.Fatalf("HEAD after conflict = %q, want unchanged local HEAD %q", head, localSHA)
+	}
+}
+
 // TestMergeOnto_MergesNonConflictingHistories proves the core "additive, no
 // force-push" property: merging two branches whose commits touch different
 // files produces a merge commit carrying both sides' content, and pushing the

@@ -65,6 +65,7 @@ type autoResolveHarness struct {
 	auditDir string
 	proj     project.Project
 	branch   string
+	src      string
 }
 
 func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHarness {
@@ -156,6 +157,7 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 		auditDir: auditDir,
 		proj:     proj,
 		branch:   branch,
+		src:      src,
 	}
 }
 
@@ -201,6 +203,28 @@ func currentHEAD(t *testing.T, dir string) string {
 		t.Fatalf("git rev-parse HEAD: %v: %s", err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func configureGitIdentity(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"-C", dir, "config", "user.email", "test@test.com"},
+		{"-C", dir, "config", "user.name", "Test"},
+		{"-C", dir, "config", "commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+func emptyCommit(t *testing.T, dir, msg string) string {
+	t.Helper()
+	configureGitIdentity(t, dir)
+	if out, err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", msg).CombinedOutput(); err != nil {
+		t.Fatalf("git commit --allow-empty: %v: %s", err, out)
+	}
+	return currentHEAD(t, dir)
 }
 
 func TestDispatchFixIssues_PushPreflightFailureBlocksAgentDispatch(t *testing.T) {
@@ -669,6 +693,46 @@ func TestAutoResolveConflict_EmptyBranchRollsBackMerge(t *testing.T) {
 	}
 	if got := currentHEAD(t, worktreeDir); got != preMergeHead {
 		t.Fatalf("HEAD after empty-branch rollback = %s, want %s", got, preMergeHead)
+	}
+}
+
+func TestAutoResolveConflict_DivergedBranchSkipsMergeRepair(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	worktreeDir, err := h.r.worktrees.PrepareForFix(context.Background(), tk, pr.Number)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+
+	localHead := emptyCommit(t, worktreeDir, "local diverged commit")
+
+	remoteHead := emptyCommit(t, h.src, "remote diverged commit")
+
+	mergeCalled := false
+	pushCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	if ok := h.r.autoResolveConflict(context.Background(), tk, pr, worktreeDir); ok {
+		t.Fatal("autoResolveConflict = true, want false for a branch diverged from its own remote")
+	}
+	if mergeCalled {
+		t.Fatal("tryCleanMergeFn called despite diverged branch preflight failure")
+	}
+	if pushCalled {
+		t.Fatal("pushSyncFn called despite diverged branch preflight failure")
+	}
+	if got := currentHEAD(t, worktreeDir); got != localHead {
+		t.Fatalf("HEAD after diverged-branch preflight = %s, want unchanged local head %s", got, localHead)
+	}
+	if got := currentHEAD(t, h.src); got != remoteHead {
+		t.Fatalf("remote clone HEAD after preflight = %s, want %s", got, remoteHead)
 	}
 }
 

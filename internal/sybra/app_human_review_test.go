@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -17,6 +19,40 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
 )
+
+// setupUnblockedRecoveryWorktree creates a clone checked out on branch, with
+// an "origin" remote reachable over the file transport, and pushes an
+// initial commit — the clean/pushed baseline verifyUnblocked's checks expect
+// a genuinely self-unblocked task to be in.
+func setupUnblockedRecoveryWorktree(t *testing.T, branch string) string {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v: %s", err, out)
+	}
+	clone := t.TempDir()
+	if out, err := exec.Command("git", "clone", bare, clone).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v: %s", err, out)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", clone}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	runGit("config", "user.email", "test@test.com")
+	runGit("config", "user.name", "Test")
+	runGit("config", "commit.gpgsign", "false")
+	runGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(clone, "file.txt"), []byte("initial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "initial")
+	runGit("push", "-u", "origin", branch)
+	return clone
+}
 
 type fakeIssueSink struct {
 	mu      sync.Mutex
@@ -535,6 +571,174 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	}
 	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
 		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+// TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions is the happy
+// path for verifyUnblocked against a real worktree: a clean, fully pushed
+// branch is exactly the state a genuinely self-unblocked task should be in,
+// and the status transition must still go through.
+func TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-clean"
+	dir := setupUnblockedRecoveryWorktree(t, "fix/clean")
+	tk, err := tasks.Create("Recover task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:      task.Ptr(task.StatusHumanRequired),
+		ProjectID:   task.Ptr("Automaat/sybra"),
+		WorktreeDir: task.Ptr(dir),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID, Role: string(agent.RoleHumanReview), Mode: "headless", State: "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"pushed the fix","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusReadyPR {
+		t.Fatalf("status = %q, want %q (clean, pushed branch must be trusted)", got.Status, task.StatusReadyPR)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("sink calls = %d, want 0", sink.calls)
+	}
+}
+
+// TestOnComplete_UnblockedVerdict_DirtyWorktreeDoesNotTransition is the
+// regression for #2347: an "unblocked" claim against a worktree that still
+// has uncommitted changes must not be trusted — the task stays parked in
+// human-required with only a note, instead of silently advancing on an
+// unverified claim.
+func TestOnComplete_UnblockedVerdict_DirtyWorktreeDoesNotTransition(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-dirty"
+	dir := setupUnblockedRecoveryWorktree(t, "fix/dirty")
+	if err := os.WriteFile(filepath.Join(dir, "uncommitted.txt"), []byte("still editing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tk, err := tasks.Create("Recover task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:      task.Ptr(task.StatusHumanRequired),
+		ProjectID:   task.Ptr("Automaat/sybra"),
+		WorktreeDir: task.Ptr(dir),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID, Role: string(agent.RoleHumanReview), Mode: "headless", State: "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"pushed the fix","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want unchanged %q (dirty worktree must not be trusted)", got.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("expected unblocked note in body even though status did not transition; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("sink calls = %d, want 0", sink.calls)
+	}
+}
+
+// TestOnComplete_UnblockedVerdict_UnpushedBranchDoesNotTransition is the
+// other half of #2347's regression: a clean worktree whose commits never
+// actually reached the remote (the exact "claimed unblocked but PR still
+// dirty" symptom from the incident) must also not be trusted.
+func TestOnComplete_UnblockedVerdict_UnpushedBranchDoesNotTransition(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-unpushed"
+	dir := setupUnblockedRecoveryWorktree(t, "fix/unpushed")
+	runGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", dir}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unpushed.txt"), []byte("local only"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "unpushed local commit")
+
+	tk, err := tasks.Create("Recover task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:      task.Ptr(task.StatusHumanRequired),
+		ProjectID:   task.Ptr("Automaat/sybra"),
+		WorktreeDir: task.Ptr(dir),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID, Role: string(agent.RoleHumanReview), Mode: "headless", State: "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"pushed the fix","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want unchanged %q (unpushed commit must not be trusted)", got.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("expected unblocked note in body even though status did not transition; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("sink calls = %d, want 0", sink.calls)
 	}
 }
 
