@@ -147,6 +147,50 @@ func TestAssignerRouteIsIdempotentOnceStamped(t *testing.T) {
 	}
 }
 
+func TestAssignerPushUpdateReSyncsAlreadyStampedTask(t *testing.T) {
+	stub := &followerStub{}
+	srv := stub.server(t)
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	assigner := NewAssigner(cfg, mgr, roster, func(string) bool { return false }, nil, nil)
+
+	if _, _, err := mgr.Put(task.Task{ID: "task-pet", Title: "t", Status: task.StatusTodo, ProjectID: "owner/pet"}); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := mgr.Get("task-pet")
+	if routed, err := assigner.Route(context.Background(), cur); err != nil || !routed {
+		t.Fatalf("first Route: routed=%v err=%v", routed, err)
+	}
+
+	// Simulate a leader-side edit after the initial push (e.g. the umbrella
+	// gate clearing a dependency block) — Route alone would never re-push
+	// this since AssignedNode already matches home.
+	stamped, _ := mgr.Get("task-pet")
+	stamped.StatusReason = "umbrella dependencies satisfied"
+	edited, _, err := mgr.Put(stamped)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pushed, err := assigner.PushUpdate(context.Background(), edited)
+	if err != nil || !pushed {
+		t.Fatalf("PushUpdate: pushed=%v err=%v", pushed, err)
+	}
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.assigned) != 2 {
+		t.Fatalf("follower received %d pushes, want 2 (initial Route + PushUpdate)", len(stub.assigned))
+	}
+	if got := stub.assigned[1]; got.StatusReason != "umbrella dependencies satisfied" {
+		t.Errorf("second push StatusReason = %q, want the edited value", got.StatusReason)
+	}
+}
+
 func TestAssignerLeavesLocalTaskAlone(t *testing.T) {
 	stub := &followerStub{}
 	srv := stub.server(t)
