@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -878,6 +879,105 @@ func TestReleaseUnblockedChildren_ConfidentialityDeclineDoesNotConsumeCap(t *tes
 	}
 	if gotLocal.Status != task.StatusTodo || slices.Contains(gotLocal.Tags, umbrellaGatedTag) {
 		t.Fatalf("local child = status=%q tags=%v, want released — the confidentiality decline must not have consumed cap=1's only slot", gotLocal.Status, gotLocal.Tags)
+	}
+}
+
+// TestReleaseUnblockedChildren_SurvivesPostPushBookkeepingFailure covers a
+// second adversarial-review finding: Assigner.route's local bookkeeping write
+// after a successful AssignTask (re-stamping AssignedNode) can itself fail,
+// in which case PushUpdate reports routed=true *and* a non-nil error. If
+// releaseCapped read any non-nil error as "the follower never got it" and
+// rolled back, the leader's local copy would revert to gated while the
+// follower already holds the release — a split brain, and the exact silent
+// divergence #2349 exists to close. The follower's AssignTask handler here
+// deletes the task's on-disk file the instant it receives the push (after
+// already recording receipt), deterministically forcing route()'s trailing
+// a.tasks.Get to fail without relying on OS-specific permission semantics.
+func TestReleaseUnblockedChildren_SurvivesPostPushBookkeepingFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
+	var logBuf bytes.Buffer
+	app := &App{tasks: tasks, logger: slog.New(slog.NewTextHandler(&logBuf, nil)), umbrellaRecoveryInFlight: make(map[string]bool)}
+
+	const childID = "task-remote"
+	var received atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/TaskService/AssignTask" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		received.Add(1)
+		// Simulate the push having already landed on the follower, then a
+		// local-store fault on the leader before it finishes stamping
+		// AssignedNode — the exact fault window route() documents handling.
+		if err := os.Remove(filepath.Join(dir, childID+".md")); err != nil {
+			t.Errorf("remove task file to force post-push bookkeeping failure: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role: config.ClusterRoleLeader,
+		Followers: []config.Follower{{
+			Name:      "home-nas",
+			Endpoints: []string{srv.URL},
+			Homes:     []string{"Automaat/sybra"},
+		}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	app.cfg = cfg
+	app.ctx = context.Background()
+	app.assigner = clusterlead.NewAssigner(cfg, tasks, roster, func(string) bool { return false }, nil, nil)
+
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	if _, _, err := tasks.Put(task.Task{
+		ID:            childID,
+		Title:         "remote child",
+		Status:        task.StatusBlocked,
+		ProjectID:     "Automaat/sybra",
+		Issue:         "Automaat/sybra#1",
+		UmbrellaIssue: umb,
+		Tags:          []string{umbrellaGatedTag},
+		AssignedNode:  "home-nas",
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	if received.Load() != 1 {
+		t.Fatalf("follower received %d pushes, want 1", received.Load())
+	}
+	// The handler deletes the task file the instant it receives the push, so
+	// route()'s trailing a.tasks.Get is guaranteed to fail — confirming the
+	// fault actually fired before asserting on how releaseCapped handled it.
+	if _, err := os.Stat(filepath.Join(dir, childID+".md")); err == nil {
+		t.Fatalf("task file unexpectedly still present — fault injection did not fire as intended")
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "umbrella.child.released") {
+		t.Errorf("logs missing umbrella.child.released — a follower-acknowledged push must still count as a real release:\n%s", logs)
+	}
+	if !strings.Contains(logs, "umbrella.release.push_bookkeeping_failed") {
+		t.Errorf("logs missing umbrella.release.push_bookkeeping_failed — the trailing local-write error must still be surfaced:\n%s", logs)
+	}
+	if strings.Contains(logs, "umbrella.release.push_failed") {
+		t.Errorf("logs contain umbrella.release.push_failed — a push the follower already acknowledged must not be reported as a transport failure:\n%s", logs)
+	}
+	if strings.Contains(logs, "umbrella.release.rollback_failed") || strings.Contains(logs, "umbrella.release.rollback") {
+		t.Errorf("logs show a rollback attempt — rolling back a release the follower already holds would split-brain leader and follower:\n%s", logs)
 	}
 }
 

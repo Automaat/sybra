@@ -275,13 +275,23 @@ const pushReleaseTimeout = 5 * time.Second
 //
 // Returns pushed=true, err=nil when the task is homed locally (nothing to
 // push), the assigner/config aren't wired up (test doubles), or the push
-// reached the follower. Returns pushed=false, err=nil when PushUpdate
-// declined to push without a transport error — currently only the
-// confidentiality gate (clusterlead.blockForConfidentiality), which already
-// moves the task to its own terminal blocked state — so the caller must not
-// treat that as either a release or a transient failure to retry. A non-nil
-// err means the push itself failed (network/timeout/remote error) and the
-// caller should roll back and let the next tick retry.
+// reached the follower — PushUpdate's own routed/pushed return is the
+// authority on that even when it also reports an error: AssignTask lands
+// before PushUpdate's trailing local bookkeeping write (re-stamping
+// AssignedNode, already-correct here), so a failure in that last step must
+// not be read as "the follower never got it" — the caller must not roll back
+// a release the follower already holds, or leader and follower go split
+// brain (leader thinks gated, follower thinks released).
+//
+// Returns pushed=false, err=nil when PushUpdate declined to push without any
+// transport error — currently only the confidentiality gate
+// (clusterlead.blockForConfidentiality), which already moves the task to its
+// own terminal blocked state — so the caller must not treat that as either a
+// release or a transient failure to retry.
+//
+// Returns pushed=false, err!=nil only when the push itself never reached the
+// follower (network/timeout/remote error); the caller should roll back and
+// let the next tick retry.
 func (a *App) pushReleaseToHomeNode(ctx context.Context, t task.Task) (pushed bool, err error) {
 	if a.assigner == nil || a.cfg == nil {
 		return true, nil
@@ -293,10 +303,16 @@ func (a *App) pushReleaseToHomeNode(ctx context.Context, t task.Task) (pushed bo
 	pushCtx, cancel := context.WithTimeout(ctx, pushReleaseTimeout)
 	defer cancel()
 	ok, err := a.assigner.PushUpdate(pushCtx, t)
+	if ok {
+		if err != nil {
+			a.logger.Warn("umbrella.release.push_bookkeeping_failed", "task_id", t.ID, "node", home.Name, "err", err)
+		}
+		return true, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("push release to %q: %w", home.Name, err)
 	}
-	return ok, nil
+	return false, nil
 }
 
 func (st *umbrellaState) setChildStatus(id string, status task.Status) {
