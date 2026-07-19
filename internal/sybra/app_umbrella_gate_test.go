@@ -781,6 +781,106 @@ func TestReleaseUnblockedChildren_RollsBackReleaseOnPushFailure(t *testing.T) {
 	}
 }
 
+// TestReleaseUnblockedChildren_ConfidentialityDeclineDoesNotConsumeCap covers
+// an adversarial-review finding: PushUpdate can decline to push (pushed=false)
+// with no error at all — Assigner's confidentiality gate refuses to send a
+// work-typed task to an untrusted/unencrypted follower and moves the task to
+// its own Blocked+reason state instead. If releaseCapped read that nil-error
+// as "released" (ignoring the pushed=false signal), it would count a task
+// that never reached any follower against the umbrella's parallelism cap,
+// starving a sibling that was genuinely ready. Cap=1 with a declined remote
+// child and a releasable local child makes that starvation observable: the
+// local child must still get the slot.
+func TestReleaseUnblockedChildren_ConfidentialityDeclineDoesNotConsumeCap(t *testing.T) {
+	t.Parallel()
+	var attempts atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux) // plain HTTP: Encrypted() is false, same as an unconfigured follower
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role: config.ClusterRoleLeader,
+		Followers: []config.Follower{{
+			Name:      "home-nas",
+			Endpoints: []string{srv.URL},
+			Homes:     []string{"Automaat/sybra"},
+			// Trusted defaults to false.
+		}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+
+	app, m := newUmbrellaGateApp(t)
+	app.cfg = cfg
+	app.ctx = context.Background()
+	app.assigner = clusterlead.NewAssigner(cfg, m, roster, func(string) bool { return true }, nil, nil)
+
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	mkTracker(t, m, umb, 1) // cap=1: only one real release should fit this tick
+
+	// IDs are ordered so os.ReadDir's lexical sort (Store.List's iteration
+	// order, and thus ReadyToRelease's) puts the declined task first — the
+	// scenario that actually exercises the cap-consumption bug. If the local
+	// task were processed first it would legitimately take the cap=1 slot
+	// before the declined task is even reached, masking the defect.
+	declined, _, err := m.Put(task.Task{
+		ID:            "task-a-declined",
+		Title:         "remote child",
+		Status:        task.StatusBlocked,
+		ProjectID:     "Automaat/sybra", // homes to the untrusted follower above
+		Issue:         "Automaat/sybra#1",
+		UmbrellaIssue: umb,
+		Tags:          []string{umbrellaGatedTag},
+		AssignedNode:  "home-nas",
+	})
+	if err != nil {
+		t.Fatalf("Put(declined): %v", err)
+	}
+	// Not in any follower's Homes list, so HomeNodeFor resolves it Local —
+	// genuinely releasable this tick if the cap isn't wrongly consumed above.
+	local, _, err := m.Put(task.Task{
+		ID:            "task-b-local",
+		Title:         "local child",
+		Status:        task.StatusTodo,
+		ProjectID:     "Automaat/other",
+		Issue:         "Automaat/sybra#2",
+		UmbrellaIssue: umb,
+		Tags:          []string{umbrellaGatedTag},
+	})
+	if err != nil {
+		t.Fatalf("Put(local): %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	if attempts.Load() != 0 {
+		t.Fatalf("follower endpoint was hit %d times, want 0 — a work task must never reach an untrusted follower", attempts.Load())
+	}
+	gotDeclined, err := m.Get(declined.ID)
+	if err != nil {
+		t.Fatalf("Get(declined): %v", err)
+	}
+	if gotDeclined.Status != task.StatusBlocked {
+		t.Fatalf("declined child status = %q, want %q (confidentiality-blocked, not released)", gotDeclined.Status, task.StatusBlocked)
+	}
+	if !strings.Contains(gotDeclined.StatusReason, "withheld") {
+		t.Fatalf("declined child status reason = %q, want the confidentiality block's own reason", gotDeclined.StatusReason)
+	}
+	gotLocal, err := m.Get(local.ID)
+	if err != nil {
+		t.Fatalf("Get(local): %v", err)
+	}
+	if gotLocal.Status != task.StatusTodo || slices.Contains(gotLocal.Tags, umbrellaGatedTag) {
+		t.Fatalf("local child = status=%q tags=%v, want released — the confidentiality decline must not have consumed cap=1's only slot", gotLocal.Status, gotLocal.Tags)
+	}
+}
+
 func TestReleaseUnblockedChildren_IgnoresSybraBugBlock(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)

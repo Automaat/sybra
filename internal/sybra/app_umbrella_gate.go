@@ -219,7 +219,8 @@ func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string
 			a.logger.Error("umbrella.release.failed", "task_id", id, "err", err)
 			continue
 		}
-		if err := a.pushReleaseToHomeNode(ctx, updated); err != nil {
+		pushed, err := a.pushReleaseToHomeNode(ctx, updated)
+		if err != nil {
 			a.logger.Error("umbrella.release.push_failed", "task_id", id, "err", err)
 			// The follower never saw the release, so it must not look released
 			// here either — restore the pre-release state so ReadyToRelease
@@ -232,6 +233,19 @@ func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string
 			}); rerr != nil {
 				a.logger.Error("umbrella.release.rollback_failed", "task_id", id, "err", rerr)
 			}
+			continue
+		}
+		if !pushed {
+			// No transport error, but the release did not reach the follower
+			// and, unlike a failed push, retrying it would not help — e.g.
+			// Assigner declined for confidentiality and has already moved the
+			// task to its own terminal blocked state with an operator-facing
+			// reason (clusterlead.blockForConfidentiality). Rolling back here
+			// would stomp that reason with a generic "gated" state and retry
+			// forever against a follower that will never accept the push.
+			// Leave whatever state the push path already applied alone and
+			// just decline to report a release that never happened.
+			a.logger.Warn("umbrella.release.not_pushed", "task_id", id)
 			continue
 		}
 		st.setChildStatus(id, updated.Status)
@@ -257,22 +271,32 @@ const pushReleaseTimeout = 5 * time.Second
 // the node that actually dispatches it — stays stuck on its pre-release copy.
 // Released children are always still-gated/todo, so pushing them verbatim can
 // never roll back a follower's in-progress execution state (see
-// Assigner.PushUpdate). Returns nil when the task is homed locally (nothing
-// to push) or the assigner/config aren't wired up (test doubles).
-func (a *App) pushReleaseToHomeNode(ctx context.Context, t task.Task) error {
+// Assigner.PushUpdate).
+//
+// Returns pushed=true, err=nil when the task is homed locally (nothing to
+// push), the assigner/config aren't wired up (test doubles), or the push
+// reached the follower. Returns pushed=false, err=nil when PushUpdate
+// declined to push without a transport error — currently only the
+// confidentiality gate (clusterlead.blockForConfidentiality), which already
+// moves the task to its own terminal blocked state — so the caller must not
+// treat that as either a release or a transient failure to retry. A non-nil
+// err means the push itself failed (network/timeout/remote error) and the
+// caller should roll back and let the next tick retry.
+func (a *App) pushReleaseToHomeNode(ctx context.Context, t task.Task) (pushed bool, err error) {
 	if a.assigner == nil || a.cfg == nil {
-		return nil
+		return true, nil
 	}
 	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
 	if home.Local {
-		return nil
+		return true, nil
 	}
 	pushCtx, cancel := context.WithTimeout(ctx, pushReleaseTimeout)
 	defer cancel()
-	if _, err := a.assigner.PushUpdate(pushCtx, t); err != nil {
-		return fmt.Errorf("push release to %q: %w", home.Name, err)
+	ok, err := a.assigner.PushUpdate(pushCtx, t)
+	if err != nil {
+		return false, fmt.Errorf("push release to %q: %w", home.Name, err)
 	}
-	return nil
+	return ok, nil
 }
 
 func (st *umbrellaState) setChildStatus(id string, status task.Status) {
