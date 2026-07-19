@@ -485,12 +485,13 @@ func (m *Manager) reuseFixWorktree(ctx context.Context, taskID, clonePath, wtPat
 			// own remote head. Deterministically reconcile it with a real
 			// merge first instead.
 			merged, mergeErr := project.MergeDivergedRemote(ctx, wtPath, wantBranch)
-			if mergeErr != nil {
+			switch {
+			case mergeErr != nil:
 				m.logger.Warn("fix.worktree.reconcile-diverged-merge-failed", "task_id", taskID, "branch", wantBranch, "err", mergeErr)
-			} else if merged {
+			case merged:
 				m.logger.Info("fix.worktree.reconcile-diverged-merged", "task_id", taskID, "branch", wantBranch)
 				return true, nil
-			} else {
+			default:
 				// Genuine content conflict merging the branch's own remote
 				// head into local — a real semantic blocker between two
 				// copies of the same branch, not something a recreate can
