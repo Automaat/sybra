@@ -491,6 +491,48 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("plan_contract_expected_exact_deletion_is_downgraded", func(t *testing.T) {
+		allow := documentedDeletionAllowlistForTrustedSpec(TaskInfo{
+			PlanContract: strings.Replace(validPlanContract("t1"),
+				`  "verification": [`,
+				`  "expected_deletions": ["internal/mesh/mesh_helpers_test.go"],
+  "verification": [`, 1),
+		})
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/mesh/mesh_helpers_test.go"},
+		}, allow)
+		if r.highCount() != 0 {
+			t.Fatalf("highCount = %d, want 0 (%v)", r.highCount(), r.Findings)
+		}
+		if len(r.Findings) != 1 {
+			t.Fatalf("Findings = %v, want 1 downgraded deletion finding", r.Findings)
+		}
+		if got := r.Findings[0].Detail; !strings.Contains(got, "expected_deletions") {
+			t.Fatalf("detail = %q, want expected_deletions marker", got)
+		}
+	})
+
+	t.Run("plan_contract_expected_glob_deletion_is_downgraded", func(t *testing.T) {
+		allow := documentedDeletionAllowlistForTrustedSpec(TaskInfo{
+			PlanContract: strings.Replace(validPlanContract("t1"),
+				`  "verification": [`,
+				`  "expected_deletions": ["app/foo/testdata/*.golden"],
+  "verification": [`, 1),
+		})
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "app/foo/testdata/get-circuit-breaker.golden"},
+		}, allow)
+		if r.highCount() != 0 {
+			t.Fatalf("highCount = %d, want 0 (%v)", r.highCount(), r.Findings)
+		}
+		if len(r.Findings) != 1 {
+			t.Fatalf("Findings = %v, want 1 downgraded deletion finding", r.Findings)
+		}
+		if got := r.Findings[0].Detail; !strings.Contains(got, "expected_deletions") {
+			t.Fatalf("detail = %q, want expected_deletions marker", got)
+		}
+	})
+
 	t.Run("documented_delete_cases_from_test_file_is_downgraded", func(t *testing.T) {
 		body := "## Scope\n- delete mode cases from mesh_helpers_test.go\n"
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
@@ -782,6 +824,31 @@ func TestDocumentedDeletionAllowlist(t *testing.T) {
 		got := documentedDeletionAllowlist(body)
 		if !got.ExactPaths["internal/foo/obsolete_test.go"] {
 			t.Fatalf("ExactPaths = %v, want explicit deletion after comma boundary", got.ExactPaths)
+		}
+	})
+
+	t.Run("plan_contract_expected_deletions_add_exact_and_glob_entries", func(t *testing.T) {
+		allow := documentedDeletionAllowlistForTrustedSpec(TaskInfo{
+			Body: "## Scope\n- delete body_only_test.go\n",
+			PlanContract: strings.Replace(validPlanContract("t1"),
+				`  "verification": [`,
+				`  "expected_deletions": ["internal/foo/legacy_test.go", "testdata/*.golden"],
+  "verification": [`, 1),
+		})
+		if !allow.ExactPaths["body_only_test.go"] {
+			t.Fatalf("ExactPaths = %v, want body_only_test.go", allow.ExactPaths)
+		}
+		if !allow.ExactPaths["internal/foo/legacy_test.go"] {
+			t.Fatalf("ExactPaths = %v, want internal/foo/legacy_test.go", allow.ExactPaths)
+		}
+		if got := allow.ExactPathSource["internal/foo/legacy_test.go"]; !strings.Contains(got, "expected_deletions") {
+			t.Fatalf("ExactPathSource = %v, want expected_deletions marker", allow.ExactPathSource)
+		}
+		if len(allow.Globs) != 1 || allow.Globs[0] != "testdata/*.golden" {
+			t.Fatalf("Globs = %v, want testdata/*.golden", allow.Globs)
+		}
+		if got := allow.GlobSource["testdata/*.golden"]; !strings.Contains(got, "expected_deletions") {
+			t.Fatalf("GlobSource = %v, want expected_deletions marker", allow.GlobSource)
 		}
 	})
 }

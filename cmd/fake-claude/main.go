@@ -885,6 +885,7 @@ func fakePlanContract(taskID string) string {
     {"path": "internal/sybra/e2e_workflow_test.go", "purpose": "test"}
   ],
   "steps": ["drive the fake workflow"],
+  "expected_deletions": [],
   "verification": [
     {"command": "go test ./internal/sybra", "expected": "tests pass"}
   ],
