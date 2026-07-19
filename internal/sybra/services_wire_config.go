@@ -2,6 +2,7 @@ package sybra
 
 func (a *App) wireConfigService() {
 	a.configSvc.cfg = a.cfg
+	a.configSvc.persisted = cloneConfig(a.cfg)
 	a.configSvc.logLevel = a.logLevel
 	a.configSvc.notifier = a.notifier
 	a.configSvc.agents = a.agents
@@ -9,5 +10,4 @@ func (a *App) wireConfigService() {
 	a.configSvc.workflowEngine = a.workflowEngine
 	a.configSvc.logger = a.logger
 	a.configSvc.policy = a.limitPolicy
-	a.configSvc.reloadHook = a.reloadTodoist
 }

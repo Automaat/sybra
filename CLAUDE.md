@@ -10,7 +10,7 @@ Applies to:
 
 - Issues and PRs opened against `Automaat/sybra` — manually, via Claude Code, or via any sybra automation
 - Task bodies, decision logs, plan sidecars, commit messages, audit logs that may end up in PRs
-- Auto-sources that ingest external content into tasks: Todoist polling, GitHub Issues fetcher, Renovate fixer, orchestrator brain, review automations
+- Auto-sources that ingest external content into tasks: GitHub Issues fetcher, Renovate fixer, orchestrator brain, review automations
 - Logs, screenshots, and pasted snippets uploaded to issues/PRs
 
 Forbidden content: work-org repo URLs, branch names, commit SHAs from work repos, ticket IDs (e.g. Jira keys), internal hostnames, customer names, code snippets from work repos.
@@ -295,7 +295,6 @@ through the same work-project scrub context.
 Sybra can run on multiple machines (e.g. laptop + remote server). Each instance has its own `~/.sybra/` and runs background automations independently. Two routing axes prevent duplicate work:
 
 **1. Per-feature `enabled` toggle** (kill-switch per machine):
-- `todoist.enabled` — Todoist polling (`internal/sybra/app_todoist.go`)
 - `github.enabled` — GitHub Issues fetcher (`internal/sybra/app.go`)
 - `umbrella.enabled` — auto-expand ☂️ umbrella issues into a gated task DAG (`internal/sybra/app_init.go` wires `umbrella.Expand` onto the issues fetcher)
 - `renovate.enabled` — Renovate CI fixer (`internal/sybra/app_renovate.go`)
@@ -311,7 +310,6 @@ Sybra can run on multiple machines (e.g. laptop + remote server). Each instance 
 ```yaml
 # server config
 project_types: [pet]
-todoist:  { enabled: true, api_token: ... }
 github:   { enabled: true }
 renovate: { enabled: true }
 ```
@@ -319,7 +317,6 @@ renovate: { enabled: true }
 ```yaml
 # laptop config
 project_types: [work]
-todoist:  { enabled: false }
 github:   { enabled: true }
 renovate: { enabled: true }
 ```
@@ -491,7 +488,7 @@ config   dump | doctor
 - `--json` for machine-parseable output (used by skills)
 - Reuses `internal/task.Store` + `internal/config.Load()` — same validation as GUI
 - `mise run dev` auto-installs latest CLI before launching the desktop app
-- `config dump` prints the resolved `~/.sybra/config.yaml` (env overrides applied, `todoist.api_token` redacted); `config doctor` sanity-checks data dirs, `agent.provider`, `agent.headless_permission_mode`, and enabled integrations missing required credentials. See `docs/CONFIG.md` (generated from `internal/config` struct tags via `go generate ./internal/config/...`) for the full key reference.
+- `config dump` prints the resolved `~/.sybra/config.yaml` (env overrides applied, `server.auth_token` redacted); `config doctor` sanity-checks data dirs, `agent.provider`, `agent.headless_permission_mode`, and enabled integrations missing required credentials. See `docs/CONFIG.md` (generated from `internal/config` struct tags via `go generate ./internal/config/...`) for the full key reference.
 
 ### Skills
 

@@ -151,7 +151,6 @@ const (
 var durationAliasSpecs = []durationAliasSpec{
 	{aliasPath: []string{"sandbox", "retention"}, legacyPath: []string{"sandbox", "retention_hours"}, fieldPath: []string{"Sandbox", "RetentionHours"}, unit: unitHours, kind: kindInt},
 	{aliasPath: []string{"task_snapshot", "interval"}, legacyPath: []string{"task_snapshot", "interval_seconds"}, fieldPath: []string{"TaskSnapshot", "IntervalSeconds"}, unit: unitSeconds, kind: kindInt},
-	{aliasPath: []string{"todoist", "poll"}, legacyPath: []string{"todoist", "poll_seconds"}, fieldPath: []string{"Todoist", "PollSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"triage", "poll"}, legacyPath: []string{"triage", "poll_seconds"}, fieldPath: []string{"Triage", "PollSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"monitor", "interval"}, legacyPath: []string{"monitor", "interval_seconds"}, fieldPath: []string{"Monitor", "IntervalSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"monitor", "issue_cooldown"}, legacyPath: []string{"monitor", "issue_cooldown_minutes"}, fieldPath: []string{"Monitor", "IssueCooldownMinutes"}, unit: unitMinutes, kind: kindInt},

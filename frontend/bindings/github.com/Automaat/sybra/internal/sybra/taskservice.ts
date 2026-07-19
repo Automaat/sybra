@@ -59,7 +59,7 @@ export function CreateTask(title: string, body: string, mode: string): $Cancella
 
 /**
  * CreateTaskWithInit is CreateTask plus caller-supplied initial field
- * overrides (e.g. TodoistID) applied atomically in the same first-write as
+ * overrides (e.g. Issue) applied atomically in the same first-write as
  * task creation. Callers that need a dedupe key persisted alongside the task
  * — so a crash between create and a second update can never re-import the
  * same source item — should use this instead of CreateTask followed by a

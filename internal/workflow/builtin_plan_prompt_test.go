@@ -80,6 +80,15 @@ func TestBuiltinSimpleTaskPlan_PromptStatesScrutinyInline(t *testing.T) {
 	if !strings.Contains(block, "alternative you rejected") {
 		t.Error("scrutiny block does not require naming a rejected alternative")
 	}
+	for _, required := range []string{
+		`"expected_deletions": [`,
+		"omit it or write `[]`",
+		"no verification-file deletions are planned",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Errorf("plan prompt is missing %q from the contract instructions", required)
+		}
+	}
 }
 
 // TestBuiltinSimpleTaskPlan_PlanStepGrantsNoSkillOrAgent makes the council's

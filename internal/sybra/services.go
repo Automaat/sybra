@@ -76,7 +76,6 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 		"ConfigService": httpapi.NewService(a.configSvc,
 			"GetSettings",
 			"GetDefaultSettings",
-			"UpdateTodoistToken",
 			"UpdateSettings",
 			"GetRawConfig",
 			"SaveRawConfig",
@@ -199,9 +198,6 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			// OpenInTerminal and OpenInEditor open local GUI apps.
 		),
 		"IntegrationService": httpapi.NewService(a.intgSvc,
-			"SyncTodoist",
-			"GetTodoistProjects",
-			"TodoistEnabled",
 			"FetchRenovatePRs",
 			"MergeRenovatePR",
 			"ApproveRenovatePR",

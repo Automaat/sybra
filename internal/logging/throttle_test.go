@@ -30,7 +30,7 @@ func TestErrorThrottle_FirstErrorAtError(t *testing.T) {
 	logger, buf := newTestLogger(t)
 	th := NewErrorThrottle()
 
-	th.Log(logger, "todoist.import", "import", errors.New("dial: no host"))
+	th.Log(logger, "poller.import", "import", errors.New("dial: no host"))
 
 	if got := countLines(buf, "level=ERROR"); got != 1 {
 		t.Fatalf("ERROR lines = %d, want 1", got)
@@ -43,7 +43,7 @@ func TestErrorThrottle_RepeatDowngradedToDebug(t *testing.T) {
 	th := NewErrorThrottle()
 
 	for range 5 {
-		th.Log(logger, "todoist.import", "import", errors.New("dial: no host"))
+		th.Log(logger, "poller.import", "import", errors.New("dial: no host"))
 	}
 
 	if got := countLines(buf, "level=ERROR"); got != 1 {
@@ -59,9 +59,9 @@ func TestErrorThrottle_DifferentErrorReArms(t *testing.T) {
 	logger, buf := newTestLogger(t)
 	th := NewErrorThrottle()
 
-	th.Log(logger, "todoist.import", "import", errors.New("dial: no host"))
-	th.Log(logger, "todoist.import", "import", errors.New("dial: no host"))
-	th.Log(logger, "todoist.import", "import", errors.New("HTTP 500"))
+	th.Log(logger, "poller.import", "import", errors.New("dial: no host"))
+	th.Log(logger, "poller.import", "import", errors.New("dial: no host"))
+	th.Log(logger, "poller.import", "import", errors.New("HTTP 500"))
 
 	if got := countLines(buf, "level=ERROR"); got != 2 {
 		t.Errorf("ERROR lines = %d, want 2", got)
@@ -74,9 +74,9 @@ func TestErrorThrottle_ClearReArms(t *testing.T) {
 	th := NewErrorThrottle()
 
 	err := errors.New("dial: no host")
-	th.Log(logger, "todoist.import", "import", err)
+	th.Log(logger, "poller.import", "import", err)
 	th.Clear("import")
-	th.Log(logger, "todoist.import", "import", err)
+	th.Log(logger, "poller.import", "import", err)
 
 	if got := countLines(buf, "level=ERROR"); got != 2 {
 		t.Errorf("ERROR lines = %d, want 2", got)
@@ -88,8 +88,8 @@ func TestErrorThrottle_NilErrorClears(t *testing.T) {
 	logger, _ := newTestLogger(t)
 	th := NewErrorThrottle()
 
-	th.Log(logger, "todoist.import", "import", errors.New("boom"))
-	th.Log(logger, "todoist.import", "import", nil) // success: clears state
+	th.Log(logger, "poller.import", "import", errors.New("boom"))
+	th.Log(logger, "poller.import", "import", nil) // success: clears state
 	th.mu.Lock()
 	_, present := th.last["import"]
 	th.mu.Unlock()

@@ -87,6 +87,14 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 		hcheck.SetSandboxQuarantine(a.sandboxes.QuarantinedEntries)
 	}
 	hcheck.SetPressureStatus(a.healthPressureStatus)
+	if a.cfg.GitHub.Enabled {
+		// Proactive counterpart to checkGHPushAuthFailure/checkGHIssueAuthFailure
+		// (both reactive, only firing after a push/issue-filing attempt has
+		// already failed): samples live gh-auth health every health tick so
+		// credential loss (an expired interactive `gh auth login` session,
+		// see #2315) is caught before it blocks the next push, not after.
+		hcheck.SetGHAuthProbe(github.Authenticated)
+	}
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
 	lm.startMonitorService(ctx, emit)
@@ -114,7 +122,6 @@ func (lm *LifecycleManager) StartPollers(ctx context.Context, emit func(string, 
 	lm.startAppAuthLoop(ctx)
 	lm.startRateBudgetLoop(ctx)
 	lm.startPollHub(ctx, issuesFetcher)
-	a.startTodoistLoop(ctx)
 }
 
 // appTokenRefreshInterval is how often the GitHub App installation token is
@@ -240,13 +247,13 @@ func (lm *LifecycleManager) StartWatchers(ctx context.Context) {
 	a := lm.app
 	cfgPath := filepath.Join(config.HomeDir(), "config.yaml")
 	cw := confighot.New(cfgPath, func() {
-		changed, err := a.configSvc.ReloadFromDisk()
+		result, err := a.configSvc.ReloadFromDisk()
 		if err != nil {
 			a.logger.Error("config.reload.failed", "err", err)
 			return
 		}
-		if len(changed) > 0 {
-			a.logger.Info("config.reloaded", "changed", changed)
+		if len(result.Applied) > 0 || len(result.RestartRequired) > 0 {
+			a.logger.Info("config.reloaded", "applied", result.Applied, "restart_required", result.RestartRequired)
 		}
 	}, a.logger)
 	if err := cw.Start(ctx); err != nil {

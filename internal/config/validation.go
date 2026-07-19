@@ -89,29 +89,9 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	if cfg.Audit.RetentionDays < 1 || cfg.Audit.RetentionDays > 365 {
 		add("audit.retention_days: retentionDays must be 1–365")
 	}
-	validateAttachmentAndTodoistConfig(cfg, add)
-	validateIntegrationConfig(cfg, add)
-	validateK8sSecretEnv(cfg, add)
-
-	if len(msgs) == 0 {
-		return nil
-	}
-	return &ValidationError{Messages: msgs}
-}
-
-func validateAttachmentAndTodoistConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if cfg.Attachments.MaxSizeMB < 1 || cfg.Attachments.MaxSizeMB > 20 {
 		add("attachments.max_size_mb: maxSizeMB must be 1–20")
 	}
-	if cfg.Todoist.PollSeconds < 30 || cfg.Todoist.PollSeconds > 3600 {
-		add("todoist.poll_seconds: todoist poll interval must be 30–3600 seconds")
-	}
-	if cfg.Todoist.Enabled && cfg.Todoist.APIToken == "" {
-		add("todoist.enabled: todoist API token required when enabled")
-	}
-}
-
-func validateIntegrationConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if cfg.GitHub.PollerRole != "" && cfg.GitHub.PollerRole != "primary" && cfg.GitHub.PollerRole != "secondary" {
 		add("github.poller_role must be \"primary\", \"secondary\", or empty, got %q", cfg.GitHub.PollerRole)
 	}
@@ -146,6 +126,12 @@ func validateIntegrationConfig(cfg *ResolvedConfig, add func(format string, a ..
 	if cfg.Monitor.DispatchLimit < 0 {
 		add("monitor.dispatch_limit must be 0 or greater, got %d", cfg.Monitor.DispatchLimit)
 	}
+	validateK8sSecretEnv(cfg, add)
+
+	if len(msgs) == 0 {
+		return nil
+	}
+	return &ValidationError{Messages: msgs}
 }
 
 func validateK8sSecretEnv(cfg *ResolvedConfig, add func(format string, a ...any)) {

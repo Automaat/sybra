@@ -4,7 +4,6 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 const mockGetSettings = vi.fn()
 const mockGetDefaultSettings = vi.fn()
 const mockUpdateSettings = vi.fn()
-const mockUpdateTodoistToken = vi.fn()
 const mockGetRawConfig = vi.fn()
 const mockSaveRawConfig = vi.fn()
 const mockGetVersion = vi.fn()
@@ -21,7 +20,6 @@ vi.mock('$lib/api', () => ({
   GetSettings: (...args: unknown[]) => mockGetSettings(...args),
   GetDefaultSettings: (...args: unknown[]) => mockGetDefaultSettings(...args),
   UpdateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
-  UpdateTodoistToken: (...args: unknown[]) => mockUpdateTodoistToken(...args),
   GetRawConfig: (...args: unknown[]) => mockGetRawConfig(...args),
   SaveRawConfig: (...args: unknown[]) => mockSaveRawConfig(...args),
   GetVersion: (...args: unknown[]) => mockGetVersion(...args),
@@ -66,7 +64,6 @@ function baseSettings() {
     orchestrator: { dispatchIntervalSeconds: 10, maintenanceIntervalSeconds: 60 },
     logging: { level: 'info', maxSizeMB: 100, maxFiles: 10 },
     audit: { retentionDays: 30, enabled: true },
-    todoist: { enabled: false, apiToken: '', projectId: '', pollSeconds: 300 },
     renovate: { enabled: false, author: 'app/renovate' },
     providers: {
       claude: { enabled: true },
@@ -85,7 +82,6 @@ function baseSettings() {
     metrics: { enabled: false },
     browser: { inApp: null },
     projectTypes: [],
-    todoistTokenSet: false,
     directories: {
       tasks: '/home/.sybra/tasks',
       skills: '/home/.sybra/skills',
@@ -105,7 +101,6 @@ describe('Settings', () => {
     mockGetDefaultSettings.mockReset()
     mockGetDefaultSettings.mockResolvedValue(baseSettings())
     mockUpdateSettings.mockReset()
-    mockUpdateTodoistToken.mockResolvedValue(undefined)
     mockGetRawConfig.mockResolvedValue('agent:\n  provider: claude\n')
     mockSaveRawConfig.mockResolvedValue(undefined)
     mockGetVersion.mockResolvedValue({ server: 'v1.0.0', client: 'v1.0.0' })
@@ -215,7 +210,6 @@ describe('Settings', () => {
       ['Triage & Umbrella', 'Triage'],
       ['GitHub', 'GitHub'],
       ['Monitor', 'Monitor'],
-      ['Todoist', 'Todoist'],
       ['Renovate', 'Renovate'],
       ['Machine & Testing', 'Machine routing'],
       ['Logging & Audit', 'Logging & audit'],
@@ -294,25 +288,6 @@ describe('Settings', () => {
     await fireEvent.click(screen.getByText('Save'))
     await vi.waitFor(() => {
       expect(screen.getByText('save error')).toBeDefined()
-    })
-  })
-
-  it('renders Todoist pane when selected', async () => {
-    mockGetSettings.mockResolvedValue(baseSettings())
-    render(Settings)
-    await vi.waitFor(() => screen.getByRole('button', { name: 'Todoist' }))
-    await goTo('Todoist')
-    await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Todoist' })).toBeDefined())
-  })
-
-  it('shows Todoist fields when Todoist enabled', async () => {
-    mockGetSettings.mockResolvedValue({ ...baseSettings(), todoist: { enabled: true, apiToken: '', projectId: '', pollSeconds: 300 } })
-    render(Settings)
-    await vi.waitFor(() => screen.getByRole('button', { name: 'Todoist' }))
-    await goTo('Todoist')
-    await vi.waitFor(() => {
-      expect(screen.getByLabelText('API token')).toBeDefined()
-      expect(screen.getByLabelText('Project ID')).toBeDefined()
     })
   })
 

@@ -1151,20 +1151,25 @@ func newProviderUnhealthy(prov, reason string) *provider.UnhealthyError {
 	}
 }
 
-// firstHealthyProvider returns the first candidate (other than exclude) for
-// which healthy reports true, or "" if none qualify. Used for the in-flight
-// cap redirect, which must pick deterministically without consulting the
-// limits store's quota-pressure heuristics.
+// firstHealthyProvider returns a uniformly random candidate (other than
+// exclude) for which healthy reports true, or "" if none qualify. Used for
+// the in-flight cap redirect, which picks without consulting the limits
+// store's quota-pressure heuristics — but must still not always land on the
+// same peer, so no single provider is systematically favored or starved.
 func firstHealthyProvider(exclude string, candidates []string, healthy func(string) bool) string {
+	eligible := make([]string, 0, len(candidates))
 	for _, p := range candidates {
 		if p == exclude {
 			continue
 		}
 		if healthy(p) {
-			return p
+			eligible = append(eligible, p)
 		}
 	}
-	return ""
+	if len(eligible) == 0 {
+		return ""
+	}
+	return eligible[rand.IntN(len(eligible))]
 }
 
 func (m *Manager) providerForRun(name string) (string, error) {

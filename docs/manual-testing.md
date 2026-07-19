@@ -6,7 +6,7 @@ Use this guide when automated tests pass but a feature needs to be exercised thr
 
 - Use an isolated `SYBRA_HOME` for every manual run. Do not write test tasks, stats, logs, projects, or workflows into your real `~/.sybra`.
 - Use only public/pet repositories for project/worktree tests. Do not use work-typed repos or paste work-derived content into test artifacts.
-- Disable unrelated automations unless they are the feature under test. In particular, disable monitor, GitHub fetcher, Todoist, Renovate, umbrella expansion, and orchestrator auto-plan/auto-triage.
+- Disable unrelated automations unless they are the feature under test. In particular, disable monitor, GitHub fetcher, Renovate, umbrella expansion, and orchestrator auto-plan/auto-triage.
 - Prefer fake local provider CLIs for routing/accounting tests. Use real Claude/Codex/Copilot only when the behavior being tested requires the real provider.
 - Bind servers to an ephemeral port and clean up processes and temp directories afterward.
 
@@ -59,7 +59,6 @@ providers:
 monitor: { enabled: false }
 github: { enabled: false }
 renovate: { enabled: false }
-todoist: { enabled: false }
 umbrella: { enabled: false }
 triage: { enabled: false }
 evaluation:

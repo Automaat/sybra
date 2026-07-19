@@ -70,7 +70,7 @@ func isLegacyRetryableStop(reason string) bool {
 			return false
 		}
 	}
-	return !strings.Contains(reason, "budget")
+	return strings.Contains(strings.ToLower(reason), "loop")
 }
 
 func withDetail(prefix, detail string) string {

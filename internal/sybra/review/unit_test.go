@@ -28,7 +28,7 @@ import (
 func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
 	t.Parallel()
 
-	prompt := buildConflictPrompt(github.PullRequest{
+	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
 	}, "\n\nFiles changed in this PR:\n- internal/workflow/engine.go\n")
@@ -57,7 +57,7 @@ func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
 func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	t.Parallel()
 
-	prompt := buildConflictPrompt(github.PullRequest{
+	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
 	}, "")
@@ -85,7 +85,7 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
 	t.Parallel()
 
-	prompt := buildConflictPrompt(github.PullRequest{
+	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
 		BaseRefName: "master",
@@ -102,7 +102,7 @@ func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
 func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 	t.Parallel()
 
-	prompt := branchConflictPrompt(task.Task{Branch: "fix/example"}, "main")
+	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main")
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 }
@@ -110,7 +110,7 @@ func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 func TestBranchConflictPrompt_AllowsRebaseBeforePRExists(t *testing.T) {
 	t.Parallel()
 
-	prompt := branchConflictPrompt(task.Task{Branch: "fix/example"}, "main")
+	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main")
 
 	for _, want := range []string{
 		"git merge refs/remotes/origin/main",
@@ -137,11 +137,39 @@ func TestConflictPrompt_TestsRunSynchronously(t *testing.T) {
 	t.Parallel()
 
 	for _, prompt := range []string{
-		buildConflictPrompt(github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, ""),
-		branchConflictPrompt(task.Task{Branch: "fix/example"}, "main"),
+		buildConflictPrompt(context.Background(), github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, ""),
+		branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main"),
 	} {
 		if !strings.Contains(prompt, "never background a test run or narrate/poll its progress") {
 			t.Fatalf("conflict prompt does not forbid backgrounding/narrating test runs:\n%s", prompt)
+		}
+	}
+}
+
+// A conflict-fix agent that hardcodes `git commit -s -S` fails outright on a
+// keyless host (gpg-agent absent, no user.signingkey) — see project.CommitSignFlags.
+// Both conflict prompts must interpolate the host-appropriate flags instead.
+func TestConflictPrompt_UsesHostCommitSignFlags(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	wantFlags := project.CommitSignFlags(ctx)
+
+	prPrompt := buildConflictPrompt(ctx, github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, "")
+	if !strings.Contains(prPrompt, "git add and git commit "+wantFlags+" to") {
+		t.Fatalf("PR conflict prompt missing host commit sign flags %q:\n%s", wantFlags, prPrompt)
+	}
+
+	branchPrompt := branchConflictPrompt(ctx, task.Task{Branch: "fix/example"}, "main")
+	if !strings.Contains(branchPrompt, "git add and git\n# commit "+wantFlags+" to") {
+		t.Fatalf("branch conflict prompt missing host commit sign flags %q:\n%s", wantFlags, branchPrompt)
+	}
+
+	if !project.GPGSigningAvailable(ctx) {
+		for _, prompt := range []string{prPrompt, branchPrompt} {
+			if strings.Contains(prompt, "git commit -s -S") {
+				t.Fatalf("conflict prompt hardcodes -S on a keyless host:\n%s", prompt)
+			}
 		}
 	}
 }
@@ -232,7 +260,7 @@ func TestCommentsPrompt_DetectsForkRemote(t *testing.T) {
 func TestConflictPrompt_DetectsForkRemote(t *testing.T) {
 	t.Parallel()
 
-	prompt := buildConflictPrompt(github.PullRequest{
+	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
 	}, "")
@@ -473,8 +501,28 @@ func TestPRMonitorEligible(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "todo with PR — not eligible, not in monitored states",
+			name: "todo with PR — eligible; skipTaskCreatedWorkflow skips the fresh-implementation lane for this exact shape and pr-fix is the only other path",
 			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42},
+			want: true,
+		},
+		{
+			name: "todo with branch only — not eligible (avoid WIP false positives, same as in-progress)",
+			tk:   task.Task{Status: task.StatusTodo, Branch: "sybra/wip"},
+			want: false,
+		},
+		{
+			name: "todo with nothing — not eligible, a normal fresh-dispatch candidate",
+			tk:   task.Task{Status: task.StatusTodo},
+			want: false,
+		},
+		{
+			name: "todo with PR and review tag — excluded (inbound review task, not ours)",
+			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42, Tags: []string{"review"}},
+			want: false,
+		},
+		{
+			name: "todo with PR and handoff tag — excluded (handoff owns its own re-entry lane)",
+			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42, Tags: []string{"handoff", "handoff-ready-pr"}},
 			want: false,
 		},
 		{
@@ -535,9 +583,9 @@ func TestPrClosedEligible(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "todo with PR — not eligible",
+			name: "todo with PR — eligible (via prMonitorEligible)",
 			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42},
-			want: false,
+			want: true,
 		},
 		{
 			name: "done with PR — not eligible (terminal)",

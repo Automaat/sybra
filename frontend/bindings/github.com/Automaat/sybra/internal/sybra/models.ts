@@ -122,7 +122,6 @@ export class AppSettings {
     "logging": LoggingSettings;
     "audit": config$0.AuditConfig;
     "attachments": config$0.AttachmentConfig;
-    "todoist": config$0.TodoistConfig;
     "renovate": config$0.RenovateConfig;
     "providers": config$0.ProvidersConfig;
     "github": config$0.GitHubConfig;
@@ -136,14 +135,6 @@ export class AppSettings {
     "browser": config$0.BrowserConfig;
     "projectTypes": string[];
     "directories": { [_ in string]?: string };
-
-    /**
-     * TodoistTokenSet reports whether a Todoist API token is stored, without
-     * leaking the token itself (which GetSettings always redacts). The UI uses
-     * this to show a "token set" state and route rotation through
-     * UpdateTodoistToken rather than the generic UpdateSettings payload.
-     */
-    "todoistTokenSet": boolean;
 
     /** Creates a new AppSettings instance. */
     constructor($$source: Partial<AppSettings> = {}) {
@@ -164,9 +155,6 @@ export class AppSettings {
         }
         if (!("attachments" in $$source)) {
             this["attachments"] = (new config$0.AttachmentConfig());
-        }
-        if (!("todoist" in $$source)) {
-            this["todoist"] = (new config$0.TodoistConfig());
         }
         if (!("renovate" in $$source)) {
             this["renovate"] = (new config$0.RenovateConfig());
@@ -207,9 +195,6 @@ export class AppSettings {
         if (!("directories" in $$source)) {
             this["directories"] = {};
         }
-        if (!("todoistTokenSet" in $$source)) {
-            this["todoistTokenSet"] = false;
-        }
 
         Object.assign(this, $$source);
     }
@@ -237,7 +222,6 @@ export class AppSettings {
         const $$createField16_0 = $$createType18;
         const $$createField17_0 = $$createType19;
         const $$createField18_0 = $$createType20;
-        const $$createField19_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("agent" in $$parsedSource) {
             $$parsedSource["agent"] = $$createField0_0($$parsedSource["agent"]);
@@ -257,47 +241,44 @@ export class AppSettings {
         if ("attachments" in $$parsedSource) {
             $$parsedSource["attachments"] = $$createField5_0($$parsedSource["attachments"]);
         }
-        if ("todoist" in $$parsedSource) {
-            $$parsedSource["todoist"] = $$createField6_0($$parsedSource["todoist"]);
-        }
         if ("renovate" in $$parsedSource) {
-            $$parsedSource["renovate"] = $$createField7_0($$parsedSource["renovate"]);
+            $$parsedSource["renovate"] = $$createField6_0($$parsedSource["renovate"]);
         }
         if ("providers" in $$parsedSource) {
-            $$parsedSource["providers"] = $$createField8_0($$parsedSource["providers"]);
+            $$parsedSource["providers"] = $$createField7_0($$parsedSource["providers"]);
         }
         if ("github" in $$parsedSource) {
-            $$parsedSource["github"] = $$createField9_0($$parsedSource["github"]);
+            $$parsedSource["github"] = $$createField8_0($$parsedSource["github"]);
         }
         if ("monitor" in $$parsedSource) {
-            $$parsedSource["monitor"] = $$createField10_0($$parsedSource["monitor"]);
+            $$parsedSource["monitor"] = $$createField9_0($$parsedSource["monitor"]);
         }
         if ("selfMonitor" in $$parsedSource) {
-            $$parsedSource["selfMonitor"] = $$createField11_0($$parsedSource["selfMonitor"]);
+            $$parsedSource["selfMonitor"] = $$createField10_0($$parsedSource["selfMonitor"]);
         }
         if ("triage" in $$parsedSource) {
-            $$parsedSource["triage"] = $$createField12_0($$parsedSource["triage"]);
+            $$parsedSource["triage"] = $$createField11_0($$parsedSource["triage"]);
         }
         if ("umbrella" in $$parsedSource) {
-            $$parsedSource["umbrella"] = $$createField13_0($$parsedSource["umbrella"]);
+            $$parsedSource["umbrella"] = $$createField12_0($$parsedSource["umbrella"]);
         }
         if ("testing" in $$parsedSource) {
-            $$parsedSource["testing"] = $$createField14_0($$parsedSource["testing"]);
+            $$parsedSource["testing"] = $$createField13_0($$parsedSource["testing"]);
         }
         if ("experience" in $$parsedSource) {
-            $$parsedSource["experience"] = $$createField15_0($$parsedSource["experience"]);
+            $$parsedSource["experience"] = $$createField14_0($$parsedSource["experience"]);
         }
         if ("metrics" in $$parsedSource) {
-            $$parsedSource["metrics"] = $$createField16_0($$parsedSource["metrics"]);
+            $$parsedSource["metrics"] = $$createField15_0($$parsedSource["metrics"]);
         }
         if ("browser" in $$parsedSource) {
-            $$parsedSource["browser"] = $$createField17_0($$parsedSource["browser"]);
+            $$parsedSource["browser"] = $$createField16_0($$parsedSource["browser"]);
         }
         if ("projectTypes" in $$parsedSource) {
-            $$parsedSource["projectTypes"] = $$createField18_0($$parsedSource["projectTypes"]);
+            $$parsedSource["projectTypes"] = $$createField17_0($$parsedSource["projectTypes"]);
         }
         if ("directories" in $$parsedSource) {
-            $$parsedSource["directories"] = $$createField19_0($$parsedSource["directories"]);
+            $$parsedSource["directories"] = $$createField18_0($$parsedSource["directories"]);
         }
         return new AppSettings($$parsedSource as Partial<AppSettings>);
     }
@@ -359,12 +340,91 @@ export class CodexModel {
      * Creates a new CodexModel instance from a string or object.
      */
     static createFrom($$source: any = {}): CodexModel {
-        const $$createField2_0 = $$createType20;
+        const $$createField2_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("supported_reasoning_levels" in $$parsedSource) {
             $$parsedSource["supported_reasoning_levels"] = $$createField2_0($$parsedSource["supported_reasoning_levels"]);
         }
         return new CodexModel($$parsedSource as Partial<CodexModel>);
+    }
+}
+
+export class ConfigMutationResult {
+    "applied": string[];
+    "restartRequired": string[];
+    "unchanged": string[];
+    "rejected": string[];
+    "recovery"?: ConfigRecovery | null;
+
+    /** Creates a new ConfigMutationResult instance. */
+    constructor($$source: Partial<ConfigMutationResult> = {}) {
+        if (!("applied" in $$source)) {
+            this["applied"] = [];
+        }
+        if (!("restartRequired" in $$source)) {
+            this["restartRequired"] = [];
+        }
+        if (!("unchanged" in $$source)) {
+            this["unchanged"] = [];
+        }
+        if (!("rejected" in $$source)) {
+            this["rejected"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConfigMutationResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ConfigMutationResult {
+        const $$createField0_0 = $$createType19;
+        const $$createField1_0 = $$createType19;
+        const $$createField2_0 = $$createType19;
+        const $$createField3_0 = $$createType19;
+        const $$createField4_0 = $$createType22;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("applied" in $$parsedSource) {
+            $$parsedSource["applied"] = $$createField0_0($$parsedSource["applied"]);
+        }
+        if ("restartRequired" in $$parsedSource) {
+            $$parsedSource["restartRequired"] = $$createField1_0($$parsedSource["restartRequired"]);
+        }
+        if ("unchanged" in $$parsedSource) {
+            $$parsedSource["unchanged"] = $$createField2_0($$parsedSource["unchanged"]);
+        }
+        if ("rejected" in $$parsedSource) {
+            $$parsedSource["rejected"] = $$createField3_0($$parsedSource["rejected"]);
+        }
+        if ("recovery" in $$parsedSource) {
+            $$parsedSource["recovery"] = $$createField4_0($$parsedSource["recovery"]);
+        }
+        return new ConfigMutationResult($$parsedSource as Partial<ConfigMutationResult>);
+    }
+}
+
+export class ConfigRecovery {
+    "restoredLastKnownGood": boolean;
+    "message": string;
+
+    /** Creates a new ConfigRecovery instance. */
+    constructor($$source: Partial<ConfigRecovery> = {}) {
+        if (!("restoredLastKnownGood" in $$source)) {
+            this["restoredLastKnownGood"] = false;
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConfigRecovery instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ConfigRecovery {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ConfigRecovery($$parsedSource as Partial<ConfigRecovery>);
     }
 }
 
@@ -504,7 +564,7 @@ export class MonitorReportBinding {
      * Creates a new MonitorReportBinding instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorReportBinding {
-        const $$createField2_0 = $$createType22;
+        const $$createField2_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("report" in $$parsedSource) {
             $$parsedSource["report"] = $$createField2_0($$parsedSource["report"]);
@@ -524,6 +584,7 @@ export class RuntimeInfo {
     "version"?: string;
     "error"?: string;
     "informationalOnly"?: boolean;
+    "attachmentSupport"?: string;
 
     /** Creates a new RuntimeInfo instance. */
     constructor($$source: Partial<RuntimeInfo> = {}) {
@@ -622,8 +683,8 @@ export class TamperReportDTO {
      * Creates a new TamperReportDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TamperReportDTO {
-        const $$createField4_0 = $$createType20;
-        const $$createField5_0 = $$createType24;
+        const $$createField4_0 = $$createType19;
+        const $$createField5_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField4_0($$parsedSource["files"]);
@@ -713,7 +774,7 @@ export class TaskAuditEventDTO {
      * Creates a new TaskAuditEventDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskAuditEventDTO {
-        const $$createField4_0 = $$createType25;
+        const $$createField4_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("data" in $$parsedSource) {
             $$parsedSource["data"] = $$createField4_0($$parsedSource["data"]);
@@ -783,21 +844,22 @@ const $$createType4 = config$0.OrchestratorConfig.createFrom;
 const $$createType5 = LoggingSettings.createFrom;
 const $$createType6 = config$0.AuditConfig.createFrom;
 const $$createType7 = config$0.AttachmentConfig.createFrom;
-const $$createType8 = config$0.TodoistConfig.createFrom;
-const $$createType9 = config$0.RenovateConfig.createFrom;
-const $$createType10 = config$0.ProvidersConfig.createFrom;
-const $$createType11 = config$0.GitHubConfig.createFrom;
-const $$createType12 = config$0.MonitorConfig.createFrom;
-const $$createType13 = config$0.SelfMonitorConfig.createFrom;
-const $$createType14 = config$0.TriageConfig.createFrom;
-const $$createType15 = config$0.UmbrellaConfig.createFrom;
-const $$createType16 = config$0.TestingConfig.createFrom;
-const $$createType17 = config$0.ExperienceConfig.createFrom;
-const $$createType18 = config$0.MetricsConfig.createFrom;
-const $$createType19 = config$0.BrowserConfig.createFrom;
-const $$createType20 = $Create.Array($Create.Any);
-const $$createType21 = $Create.Map($Create.Any, $Create.Any);
-const $$createType22 = monitor$0.Report.createFrom;
-const $$createType23 = TamperFindingDTO.createFrom;
-const $$createType24 = $Create.Array($$createType23);
-const $$createType25 = $Create.Map($Create.Any, $Create.Any);
+const $$createType8 = config$0.RenovateConfig.createFrom;
+const $$createType9 = config$0.ProvidersConfig.createFrom;
+const $$createType10 = config$0.GitHubConfig.createFrom;
+const $$createType11 = config$0.MonitorConfig.createFrom;
+const $$createType12 = config$0.SelfMonitorConfig.createFrom;
+const $$createType13 = config$0.TriageConfig.createFrom;
+const $$createType14 = config$0.UmbrellaConfig.createFrom;
+const $$createType15 = config$0.TestingConfig.createFrom;
+const $$createType16 = config$0.ExperienceConfig.createFrom;
+const $$createType17 = config$0.MetricsConfig.createFrom;
+const $$createType18 = config$0.BrowserConfig.createFrom;
+const $$createType19 = $Create.Array($Create.Any);
+const $$createType20 = $Create.Map($Create.Any, $Create.Any);
+const $$createType21 = ConfigRecovery.createFrom;
+const $$createType22 = $Create.Nullable($$createType21);
+const $$createType23 = monitor$0.Report.createFrom;
+const $$createType24 = TamperFindingDTO.createFrom;
+const $$createType25 = $Create.Array($$createType24);
+const $$createType26 = $Create.Map($Create.Any, $Create.Any);

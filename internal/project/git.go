@@ -952,15 +952,29 @@ func PushUpstream(ctx context.Context, worktreePath, branch string) error {
 // run at once, and the resulting host CPU contention is what flakes
 // timing-sensitive tests unrelated to any of their diffs. The push lock is
 // intentionally separate from bareRepoLocks because hooks can run for minutes.
+//
+// pushEnv carries a cached GitHub App installation token via GH_TOKEN when one
+// is configured (see checkGHAuthStatus, which validates the same credential
+// path). Without it, the actual `git push` here would fall through to
+// whatever ambient `gh auth login` session ConfigureGitHubAuth's credential
+// helper finds — App auth would then validate clean in PreflightPushCredentials
+// while the push itself still depended on the single interactive session it
+// exists to back up (#2315).
 func pushLocked(ctx context.Context, worktreePath string, args ...string) error {
 	gitDir, err := gitCommonDir(ctx, worktreePath)
 	if err != nil {
 		return err
 	}
 	return withBareRepoPushLock(gitDir, func() error {
-		return executil.Run(ctx, worktreePath, "git", args...)
+		return executil.RunEnv(ctx, worktreePath, pushEnv(), "git", args...)
 	})
 }
+
+// pushEnv is indirected so tests can stub the environment `git push` runs
+// with (see checkGHAuthStatus's identical use of github.GHEnv, and
+// forceRefreshAppToken above for the same test-seam pattern) without needing
+// a real minted GitHub App installation token.
+var pushEnv = github.GHEnv
 
 // SetBranchTo force-sets a branch ref in the bare clone to point at commit,
 // creating the branch if it does not already exist. Used by best-of-N
@@ -1325,7 +1339,25 @@ var (
 	// token-refresh call without depending on internal/github's package-global
 	// App-auth state.
 	forceRefreshAppToken = github.ForceRefreshAppToken
+	// pushAuthFailureHook is called with the final error every time
+	// PreflightPushCredentials exhausts its retries and still can't
+	// authenticate. It's the single choke point both real callers
+	// (review.Handler and workflow.Engine both default to calling this
+	// function directly) go through, so wiring host-level alerting here once
+	// — rather than in each caller — can't be missed by a new call site. nil
+	// by default (no-op); wired once at startup via SetPushAuthFailureHook to
+	// record an audit event (see internal/health's checkGHPushAuthFailure).
+	pushAuthFailureHook = func(err error) {}
 )
+
+// SetPushAuthFailureHook overrides the push-preflight failure hook. Pass nil
+// to restore the no-op default.
+func SetPushAuthFailureHook(f func(err error)) {
+	if f == nil {
+		f = func(error) {}
+	}
+	pushAuthFailureHook = f
+}
 
 // PreflightPushCredentials cheaply validates the GitHub credential path before
 // Sybra spends an agent turn or starts push-dependent git work. It intentionally
@@ -1349,9 +1381,12 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 		// PAT / ambient-auth path still gets its retry either way.
 		_ = forceRefreshAppToken(ctx)
 		if err := pushPreflightRetrySleep(ctx, pushPreflightRetryBackoffs[attempt]); err != nil {
-			return authErr
+			break
 		}
 		authErr = checkGHAuthStatus(ctx, worktreePath)
+	}
+	if authErr != nil {
+		pushAuthFailureHook(authErr)
 	}
 	return authErr
 }

@@ -36,9 +36,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Attachments.MaxSizeMB != DefaultAttachmentMaxSizeMB {
 		t.Errorf("Attachments.MaxSizeMB = %d, want %d", cfg.Attachments.MaxSizeMB, DefaultAttachmentMaxSizeMB)
 	}
-	if cfg.Todoist.PollSeconds != 120 {
-		t.Errorf("Todoist.PollSeconds = %d, want 120", cfg.Todoist.PollSeconds)
-	}
 	if cfg.Triage.PollSeconds != 60 {
 		t.Errorf("Triage.PollSeconds = %d, want 60", cfg.Triage.PollSeconds)
 	}
@@ -131,9 +128,6 @@ func cmpConfigSubset(got, want *Config) string {
 	}
 	if got.GitHub.Enabled != want.GitHub.Enabled {
 		diffs = append(diffs, fmt.Sprintf("GitHub.Enabled: got %v want %v", got.GitHub.Enabled, want.GitHub.Enabled))
-	}
-	if got.Todoist.PollSeconds != want.Todoist.PollSeconds {
-		diffs = append(diffs, fmt.Sprintf("Todoist.PollSeconds: got %d want %d", got.Todoist.PollSeconds, want.Todoist.PollSeconds))
 	}
 	if got.Triage.PollSeconds != want.Triage.PollSeconds {
 		diffs = append(diffs, fmt.Sprintf("Triage.PollSeconds: got %d want %d", got.Triage.PollSeconds, want.Triage.PollSeconds))
@@ -232,6 +226,34 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	}
 	if reloaded.Agent.Provider != "codex" {
 		t.Fatalf("reloaded provider = %q, want codex", reloaded.Agent.Provider)
+	}
+}
+
+func TestWriteRawConfig_PreservesLastKnownGoodWithRestrictivePerms(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("logging:\n  level: info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRawConfig([]byte("logging:\n  level: debug\n")); err != nil {
+		t.Fatalf("WriteRawConfig: %v", err)
+	}
+
+	backupPath := LastKnownGoodConfigPath()
+	backup, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read last-known-good: %v", err)
+	}
+	if string(backup) != "logging:\n  level: info\n" {
+		t.Fatalf("last-known-good = %q, want previous config", string(backup))
+	}
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatalf("stat last-known-good: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("last-known-good perm = %o, want 0600", perm)
 	}
 }
 

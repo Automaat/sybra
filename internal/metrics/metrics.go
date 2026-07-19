@@ -46,10 +46,6 @@ var (
 	tasksUpdated metric.Int64Counter
 	tasksDeleted metric.Int64Counter
 
-	todoistPolls     metric.Int64Counter
-	todoistImported  metric.Int64Counter
-	todoistCompleted metric.Int64Counter
-
 	githubFetches  metric.Int64Counter
 	githubImported metric.Int64Counter
 
@@ -229,24 +225,6 @@ func createPollInstruments() error {
 		return nil
 	}
 	var err error
-	if todoistPolls, err = m.Int64Counter(
-		"sybra_todoist_polls_total",
-		metric.WithDescription("Todoist poll attempts, by result."),
-	); err != nil {
-		return err
-	}
-	if todoistImported, err = m.Int64Counter(
-		"sybra_todoist_items_imported_total",
-		metric.WithDescription("Todoist items imported as new tasks."),
-	); err != nil {
-		return err
-	}
-	if todoistCompleted, err = m.Int64Counter(
-		"sybra_todoist_items_completed_total",
-		metric.WithDescription("Todoist items marked complete by Sybra."),
-	); err != nil {
-		return err
-	}
 	if githubFetches, err = m.Int64Counter(
 		"sybra_github_fetches_total",
 		metric.WithDescription("GitHub Issues fetch attempts, by result."),
@@ -548,28 +526,6 @@ func TaskDeleted() {
 		return
 	}
 	tasksDeleted.Add(context.Background(), 1)
-}
-
-func TodoistPoll(ctx context.Context, ok bool) {
-	if todoistPolls == nil {
-		return
-	}
-	todoistPolls.Add(ctx, 1,
-		metric.WithAttributes(attribute.String("result", resultLabel(ok))))
-}
-
-func TodoistImported(ctx context.Context, n int) {
-	if todoistImported == nil || n <= 0 {
-		return
-	}
-	todoistImported.Add(ctx, int64(n))
-}
-
-func TodoistCompleted(ctx context.Context, n int) {
-	if todoistCompleted == nil || n <= 0 {
-		return
-	}
-	todoistCompleted.Add(ctx, int64(n))
 }
 
 func GitHubFetch(ctx context.Context, ok bool) {

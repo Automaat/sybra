@@ -21,7 +21,6 @@ type Config struct {
 	Testing        TestingConfig        `yaml:"testing" json:"testing"`
 	Notification   NotificationConfig   `yaml:"notification" json:"notification"`
 	Orchestrator   OrchestratorConfig   `yaml:"orchestrator" json:"orchestrator"`
-	Todoist        TodoistConfig        `yaml:"todoist" json:"todoist"`
 	Renovate       RenovateConfig       `yaml:"renovate" json:"renovate"`
 	GitHub         GitHubConfig         `yaml:"github" json:"github"`
 	Umbrella       UmbrellaConfig       `yaml:"umbrella" json:"umbrella"`

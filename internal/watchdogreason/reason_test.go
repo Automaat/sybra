@@ -13,6 +13,7 @@ func TestIsRetryableStop(t *testing.T) {
 		{"structured loop stop", "watchdog: loop stop: repeating command", true},
 		{"budget stop", "watchdog: budget stop: repeating command", false},
 		{"legacy budget stop", "watchdog: burned through budget with no forward progress", false},
+		{"natural watchdog reason", "watchdog: repeating command", false},
 		{"reward hacking kind", "watchdog: reward_hacking", false},
 		{"reward hacking kind with detail", "watchdog: reward_hacking: repeated fake progress", false},
 		{"reward hacking retry", "watchdog: reward-hacking retry: repeated fake progress", false},

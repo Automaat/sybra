@@ -17,7 +17,6 @@ func TestMergeAuthoritySplit(t *testing.T) {
 		AssignedNode: "pet-box",
 		Title:        "leader ingested title",
 		Issue:        "https://github.com/owner/repo/issues/9",
-		TodoistID:    "td-1",
 		Status:       task.StatusTodo,
 		CreatedAt:    t0,
 		UpdatedAt:    t0,
@@ -61,7 +60,7 @@ func TestMergeAuthoritySplit(t *testing.T) {
 
 	if out.ProjectID != "owner/repo" || out.AssignedNode != "pet-box" ||
 		out.Title != "leader ingested title" || out.Issue != canonical.Issue ||
-		out.TodoistID != "td-1" || !out.CreatedAt.Equal(t0) {
+		!out.CreatedAt.Equal(t0) {
 		t.Errorf("identity fields must stay leader-authoritative: %+v", out)
 	}
 

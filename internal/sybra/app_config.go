@@ -24,7 +24,6 @@ type AppSettings struct {
 	Logging      LoggingSettings           `json:"logging"`
 	Audit        config.AuditConfig        `json:"audit"`
 	Attachments  config.AttachmentConfig   `json:"attachments"`
-	Todoist      config.TodoistConfig      `json:"todoist"`
 	Renovate     config.RenovateConfig     `json:"renovate"`
 	Providers    config.ProvidersConfig    `json:"providers"`
 	GitHub       config.GitHubConfig       `json:"github"`
@@ -38,9 +37,4 @@ type AppSettings struct {
 	Browser      config.BrowserConfig      `json:"browser"`
 	ProjectTypes []string                  `json:"projectTypes"`
 	Directories  map[string]string         `json:"directories"`
-	// TodoistTokenSet reports whether a Todoist API token is stored, without
-	// leaking the token itself (which GetSettings always redacts). The UI uses
-	// this to show a "token set" state and route rotation through
-	// UpdateTodoistToken rather than the generic UpdateSettings payload.
-	TodoistTokenSet bool `json:"todoistTokenSet"`
 }

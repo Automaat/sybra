@@ -37,8 +37,6 @@ export function GetRawConfig(): $CancellablePromise<string> {
 
 /**
  * GetSettings returns the current app settings for the config UI.
- * Secret fields (e.g. Todoist.APIToken) are redacted — callers must use
- * dedicated write-only methods (UpdateTodoistToken) to rotate them.
  */
 export function GetSettings(): $CancellablePromise<$models.AppSettings> {
     return $Call.ByID(1300186602).then(($result: any) => {
@@ -48,11 +46,10 @@ export function GetSettings(): $CancellablePromise<$models.AppSettings> {
 
 /**
  * ReloadFromDisk re-reads ~/.sybra/config.yaml, validates it, diffs against
- * the in-memory config, and applies hot-reloadable changes. Returns the list
- * of hot-reloadable keys that changed. On any error the in-memory config is
- * left unchanged. Never writes to disk.
+ * the persisted intent snapshot, and applies only hot-reloadable changes.
+ * Restart-required values stay pending until process restart. Never writes to disk.
  */
-export function ReloadFromDisk(): $CancellablePromise<string[]> {
+export function ReloadFromDisk(): $CancellablePromise<$models.ConfigMutationResult> {
     return $Call.ByID(742653545).then(($result: any) => {
         return $$createType1($result);
     });
@@ -70,19 +67,12 @@ export function SaveRawConfig(raw: string): $CancellablePromise<void> {
 /**
  * UpdateSettings validates, persists, and hot-reloads the provided settings.
  */
-export function UpdateSettings(settings: $models.AppSettings): $CancellablePromise<void> {
-    return $Call.ByID(659336121, settings);
-}
-
-/**
- * UpdateTodoistToken sets or clears the Todoist API token and persists the config.
- * Pass an empty string to remove the stored token.
- * This is the only write path for the token — GetSettings never returns it.
- */
-export function UpdateTodoistToken(token: string): $CancellablePromise<void> {
-    return $Call.ByID(1514278165, token);
+export function UpdateSettings(settings: $models.AppSettings): $CancellablePromise<$models.ConfigMutationResult> {
+    return $Call.ByID(659336121, settings).then(($result: any) => {
+        return $$createType1($result);
+    });
 }
 
 // Private type creation functions
 const $$createType0 = $models.AppSettings.createFrom;
-const $$createType1 = $Create.Array($Create.Any);
+const $$createType1 = $models.ConfigMutationResult.createFrom;

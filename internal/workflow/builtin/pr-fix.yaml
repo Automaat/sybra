@@ -94,7 +94,7 @@ steps:
         changes and report human-required rather than guessing.
 
 
-        Once the named tests pass, commit (git commit -s -S) and push the
+        Once the named tests pass, commit (git commit {{ getvar .Vars "commit_sign_flags" }}) and push the
         fix back to this same PR branch:
 
         ```sh

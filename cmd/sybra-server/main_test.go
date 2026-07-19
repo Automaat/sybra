@@ -93,7 +93,6 @@ func startupLikeServerTestConfig(home string) *config.Config {
 	cfg.Notification.Desktop = false
 	cfg.GitHub.Enabled = false
 	cfg.Renovate.Enabled = false
-	cfg.Todoist.Enabled = false
 	cfg.Triage.Enabled = false
 	cfg.Umbrella.Enabled = false
 	cfg.Watchdog.Enabled = false
