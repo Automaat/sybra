@@ -9,7 +9,9 @@ func TestIsRetryableStop(t *testing.T) {
 		want   bool
 	}{
 		{"legacy bare stop", "watchdog stop", true},
-		{"natural watchdog reason", "watchdog: repeating command", true},
+		{"structured loop stop", "watchdog: loop stop: repeating command", true},
+		{"budget stop", "watchdog: budget stop: repeating command", false},
+		{"natural watchdog reason", "watchdog: repeating command", false},
 		{"reward hacking kind", "watchdog: reward_hacking", false},
 		{"reward hacking kind with detail", "watchdog: reward_hacking: repeated fake progress", false},
 		{"rate limit", "watchdog: rate limit: quota exhausted", false},

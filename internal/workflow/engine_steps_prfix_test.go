@@ -1,11 +1,17 @@
 package workflow
 
 import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 // scriptedPRStateFetcher returns a fixed state or error for every probe,
@@ -227,6 +233,549 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "Human review is required") {
 		t.Errorf("reason = %q, want agent output excerpt", reason)
 	}
+}
+
+func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
+	t.Parallel()
+
+	bare, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-recovery")
+	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved on disk but merge not finalized.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: git still reports an unmerged path\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2230,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-recovery",
+		Workflow:  wf,
+	})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2230,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-recovery",
+	})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output != "continue" {
+		t.Fatalf("output = %q, want continue", out.Output)
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want unchanged in-progress", got.Status)
+	}
+
+	statusOut, err := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v: %s", err, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("worktree not clean after recovery: %s", statusOut)
+	}
+
+	subject, err := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%s").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git log: %v: %s", err, subject)
+	}
+	if got := strings.TrimSpace(string(subject)); got != "fix(recovery): finalize merge resolution" {
+		t.Fatalf("last subject = %q, want recovery commit", got)
+	}
+
+	localSHA := headSHA(t, wtPath)
+	remoteSHAOut, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "rev-parse", "refs/heads/feat/conflict-recovery").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse remote branch: %v: %s", err, remoteSHAOut)
+	}
+	if remoteSHA := strings.TrimSpace(string(remoteSHAOut)); remoteSHA != localSHA {
+		t.Fatalf("remote SHA = %q, want pushed local SHA %q", remoteSHA, localSHA)
+	}
+}
+
+// TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict is the exact
+// repro from #2232: an agent edited the conflicted file to a marker-free
+// resolution but never ran `git add`, so the path is still unmerged in the
+// index (`UU`). Unlike TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict,
+// this test deliberately skips staging the resolved file to prove the
+// recovery path also fires from that unstaged state, not just once the file
+// is already staged.
+func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) {
+	t.Parallel()
+
+	bare, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-recovery-unstaged")
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved on disk but merge not finalized.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: git still reports an unmerged path\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2232,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-recovery-unstaged",
+		Workflow:  wf,
+	})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2232,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-recovery-unstaged",
+	})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output != "continue" {
+		t.Fatalf("output = %q, want continue", out.Output)
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want unchanged in-progress", got.Status)
+	}
+
+	statusOut, err := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v: %s", err, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("worktree not clean after recovery: %s", statusOut)
+	}
+
+	subject, err := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%s").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git log: %v: %s", err, subject)
+	}
+	if got := strings.TrimSpace(string(subject)); got != "fix(recovery): finalize merge resolution" {
+		t.Fatalf("last subject = %q, want recovery commit", got)
+	}
+
+	localSHA := headSHA(t, wtPath)
+	remoteSHAOut, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "rev-parse", "refs/heads/feat/conflict-recovery-unstaged").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse remote branch: %v: %s", err, remoteSHAOut)
+	}
+	if remoteSHA := strings.TrimSpace(string(remoteSHAOut)); remoteSHA != localSHA {
+		t.Fatalf("remote SHA = %q, want pushed local SHA %q", remoteSHA, localSHA)
+	}
+}
+
+func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *testing.T) {
+	t.Parallel()
+
+	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-retry")
+	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	preflight := &fakePushPreflighter{errs: []error{errors.New("i/o timeout")}}
+	engine.SetPushCredentialPreflighter(preflight)
+
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved on disk but merge not finalized.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: git still reports an unmerged path\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	task := TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2234,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-retry",
+		Workflow:  wf,
+	}
+	tasks.Put(task)
+
+	_, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, task)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("first execRoutePRFixResult err = %v, want errStepParked", err)
+	}
+	if got := wf.Variables[resolvedMergeCheckpointVar("route_pr_fix_result")]; got != "true" {
+		t.Fatalf("checkpoint marker = %q, want true", got)
+	}
+	resolved, err := project.ResolvedUnmergedPaths(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("ResolvedUnmergedPaths after checkpoint: %v", err)
+	}
+	if len(resolved) != 0 {
+		t.Fatalf("resolved paths after checkpoint = %v, want none", resolved)
+	}
+
+	resumedTask, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, resumedTask.Workflow, resumedTask)
+	if err != nil {
+		t.Fatalf("resumed execRoutePRFixResult: %v", err)
+	}
+	if out.Output != "continue" {
+		t.Fatalf("resumed output = %q, want continue", out.Output)
+	}
+	if preflight.calls != 2 {
+		t.Fatalf("preflight calls = %d, want 2", preflight.calls)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == "human-required" {
+		t.Fatalf("status = human-required after retry: %s", tasks.Reason("t1"))
+	}
+}
+
+func TestExecRoutePRFixResult_ResolvedMergeRejectsUnexpectedDirtyPath(t *testing.T) {
+	t.Parallel()
+
+	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-unexpected-dirty")
+	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
+	if err := os.WriteFile(filepath.Join(wtPath, "scratch.txt"), []byte("unverified\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	beforeSHA := headSHA(t, wtPath)
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved on disk but merge not finalized.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: git still reports an unmerged path\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2233,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-unexpected-dirty",
+		Workflow:  wf,
+	})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2233,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-unexpected-dirty",
+	})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output == "continue" {
+		t.Fatal("route output = continue, want human-required dirty-path stop")
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "scratch.txt") {
+		t.Fatalf("reason = %q, want unexpected dirty path", reason)
+	}
+	if got := headSHA(t, wtPath); got != beforeSHA {
+		t.Fatalf("HEAD = %q, want unchanged %q", got, beforeSHA)
+	}
+}
+
+func TestExecRoutePRFixResult_HumanRequiredApprovalStopSkipsResolvedMergeRecovery(t *testing.T) {
+	t.Parallel()
+
+	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/approved-noop")
+	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	beforeSHA := headSHA(t, wtPath)
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved locally, but this approved PR needs no substantive fix.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: already approved; no substantive fix needed; clean/base-only merge would only change the merge-base\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2232,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/approved-noop",
+		Workflow:  wf,
+	})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2232,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/approved-noop",
+	})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output == "continue" {
+		t.Fatal("route output = continue, want explicit human-required approval stop")
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got := headSHA(t, wtPath); got != beforeSHA {
+		t.Fatalf("HEAD = %q, want unchanged %q; approval-preservation stop must not checkpoint/push", got, beforeSHA)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "no substantive fix needed") {
+		t.Fatalf("reason = %q, want agent's approval-preservation reason", reason)
+	}
+}
+
+func TestExecRoutePRFixResult_ResolvedUnmergedWithFailingTestsRoutesToTestFix(t *testing.T) {
+	t.Parallel()
+
+	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-with-tests")
+	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	beforeSHA := headSHA(t, wtPath)
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Conflict resolved on disk but targeted tests still fail.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: targeted tests still fail after resolving the merge\n" +
+				"SYBRA_PR_FIX_FAILING_TEST: internal/workflow/engine_steps_prfix_test.go:1 TestStillFailing\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2231,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-with-tests",
+		Workflow:  wf,
+	})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		PRNumber:  2231,
+		ProjectID: "acme/widgets",
+		Branch:    "feat/conflict-with-tests",
+	})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output == "continue" {
+		t.Fatal("route output = continue, want scoped test-fix before resolved-merge recovery")
+	}
+	if v := wf.Variables["step.route_pr_fix_result."+prFixTestFixEligibleVar]; v != "true" {
+		t.Errorf("pr_fix_test_fix_eligible = %q, want \"true\"", v)
+	}
+	if got := headSHA(t, wtPath); got != beforeSHA {
+		t.Fatalf("HEAD = %q, want unchanged %q; route must not checkpoint before test_fix", got, beforeSHA)
+	}
+}
+
+func TestResolvedMergeFocusedCommandsReturnsChangedFilesError(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"true"},
+	}}})
+
+	cmds, files, err := engine.resolvedMergeFocusedCommands(
+		context.Background(),
+		"t1",
+		t.TempDir(),
+		[]string{"internal/workflow/engine_advance.go"},
+	)
+	if err == nil {
+		t.Fatalf("resolvedMergeFocusedCommands err = nil, cmds = %v; want changed-file discovery error", cmds)
+	}
+	if len(cmds) != 0 {
+		t.Fatalf("cmds = %v, want none on changed-file discovery error", cmds)
+	}
+	if len(files) != 0 {
+		t.Fatalf("files = %v, want none on changed-file discovery error", files)
+	}
+}
+
+func newResolvedUnmergedPRFixWorktree(t *testing.T, branch string) (bare, wtPath string) {
+	t.Helper()
+
+	bare, wtPath = newPRWorktree(t, branch)
+	conflictPath := filepath.Join("internal", "workflow", "engine_advance.go")
+	if err := os.MkdirAll(filepath.Join(wtPath, "internal", "workflow"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, conflictPath), []byte("feature branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtPath, "add", conflictPath)
+	runGitAt(t, wtPath, "commit", "-m", "feat: branch side")
+	if err := project.PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	baseWT := filepath.Join(t.TempDir(), "base")
+	if err := project.CreateWorktreeExisting(context.Background(), bare, baseWT, "main"); err != nil {
+		t.Fatalf("CreateWorktreeExisting(main): %v", err)
+	}
+	runGitAt(t, baseWT, "config", "user.email", "test@test.com")
+	runGitAt(t, baseWT, "config", "user.name", "Test")
+	if err := os.MkdirAll(filepath.Join(baseWT, "internal", "workflow"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(baseWT, conflictPath), []byte("main branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, baseWT, "add", conflictPath)
+	runGitAt(t, baseWT, "commit", "-m", "feat: base side")
+	runGitAt(t, wtPath, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
+
+	cmd := exec.Command("git", "merge", "refs/heads/main")
+	cmd.Dir = wtPath
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("git merge unexpectedly succeeded: %s", out)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, conflictPath), []byte("feature branch\nmain branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return bare, wtPath
 }
 
 // A human-required verdict carrying SYBRA_PR_FIX_FAILING_TEST: lines must

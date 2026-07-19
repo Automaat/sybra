@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -60,6 +61,47 @@ func TestTaskService_WithEstimatedAgentRunCosts(t *testing.T) {
 	}
 	if got.AgentRuns[3].CostUSD != 0.42 {
 		t.Fatalf("reported cost = %g, want 0.42", got.AgentRuns[3].CostUSD)
+	}
+}
+
+// TestTaskService_RecoverLostAgent_ForwardsAppContext is a regression guard
+// for sybra#2291: RecoverLostAgent is a Wails-bound method with no
+// request-scoped context of its own, so it used to hand recoverLostAgent a
+// bare context.Background() — permanently invisible to
+// workflow.IsShutdownCancellation (ctx.Err() is always nil on
+// context.Background()). A leader→follower RecoverLostAgent RPC racing a
+// follower's graceful shutdown would then never have its resulting
+// context.Canceled recognized as shutdown-induced, reproducing the same
+// mass-status-reason-overwrite symptom the primary fix targets, just through
+// this one call site. s.ctx (wired from the app's root context) must be what
+// actually reaches recoverLostAgent.
+func TestTaskService_RecoverLostAgent_ForwardsAppContext(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+
+	created, err := svc.tasks.Create("lost agent recover", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type ctxKey struct{}
+	marker := context.WithValue(context.Background(), ctxKey{}, "app-root-ctx")
+	svc.ctx = marker
+
+	// Extract the marker value inside the closure rather than storing the raw
+	// ctx in an outer variable, since a stashed-away context.Context is a
+	// footgun the fatcontext linter rightly flags even in test code.
+	var gotMarker any
+	svc.recoverLostAgent = func(ctx context.Context, _ string) error {
+		gotMarker = ctx.Value(ctxKey{})
+		return nil
+	}
+
+	if err := svc.RecoverLostAgent(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if gotMarker != "app-root-ctx" {
+		t.Fatalf("recoverLostAgent received ctx marker %v, want svc.ctx (marked app-root context)", gotMarker)
 	}
 }
 

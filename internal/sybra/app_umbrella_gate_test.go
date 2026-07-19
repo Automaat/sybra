@@ -128,7 +128,7 @@ func TestReleaseUnblockedChildren_RetryableWatchdogStopKeepsTrackerInProgress(t 
 		Issue:         task.Ptr("Automaat/sybra#1"),
 		UmbrellaIssue: task.Ptr(umb),
 		Status:        task.Ptr(task.StatusHumanRequired),
-		StatusReason:  task.Ptr("watchdog: Agent re-running failing test `go test ./cmd/sybra-cli` despite no code change"),
+		StatusReason:  task.Ptr("watchdog: loop stop: Agent re-running failing test `go test ./cmd/sybra-cli` despite no code change"),
 	})
 	if err != nil {
 		t.Fatalf("create stopped child: %v", err)

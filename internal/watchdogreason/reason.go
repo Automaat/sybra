@@ -4,6 +4,8 @@ import "strings"
 
 const (
 	hangPrefix                 = "watchdog hang"
+	loopStopPrefix             = "watchdog: loop stop"
+	budgetStopPrefix           = "watchdog: budget stop"
 	rateLimitPrefix            = "watchdog: rate limit"
 	rewardHackingPrefix        = "watchdog: reward_hacking"
 	verifyFailedPrefix         = "watchdog: verify suite still fails after loop stop:"
@@ -21,6 +23,18 @@ func IsRateLimit(reason string) bool {
 	return reason == rateLimitPrefix || strings.HasPrefix(reason, rateLimitPrefix+":")
 }
 
+func LoopStop(reason string) string {
+	return withDetail(loopStopPrefix, reason)
+}
+
+func BudgetStop(reason string) string {
+	return withDetail(budgetStopPrefix, reason)
+}
+
+func RewardHacking(reason string) string {
+	return withDetail(rewardHackingPrefix, reason)
+}
+
 // IsRetryableStop reports whether a human-required watchdog stop is a
 // recoverable loop/stop verdict rather than a verified blocker. This is the
 // class ResumeStalled may safely re-dispatch for workflow-owned implementation
@@ -30,14 +44,14 @@ func IsRetryableStop(reason string) bool {
 	if reason == "watchdog stop" {
 		return true
 	}
-	if !strings.HasPrefix(reason, "watchdog:") || IsRateLimit(reason) {
-		return false
+	return (reason == loopStopPrefix || strings.HasPrefix(reason, loopStopPrefix+":")) &&
+		!strings.Contains(reason, retryBudgetExhaustedPhrase)
+}
+
+func withDetail(prefix, detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return prefix
 	}
-	if reason == rewardHackingPrefix || strings.HasPrefix(reason, rewardHackingPrefix+":") {
-		return false
-	}
-	if strings.HasPrefix(reason, verifyFailedPrefix) || strings.HasPrefix(reason, verifyUnconfirmedPrefix) {
-		return false
-	}
-	return !strings.Contains(reason, retryBudgetExhaustedPhrase)
+	return prefix + ": " + detail
 }

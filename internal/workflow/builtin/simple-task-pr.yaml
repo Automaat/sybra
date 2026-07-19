@@ -8,6 +8,9 @@ trigger:
     - field: task.status
       operator: equals
       value: ready-pr
+    - field: task.role
+      operator: not_in
+      value: review,test-runner,human-review
 steps:
   # Proactive, best-effort branch sync with origin/main right before the PR
   # handoff — shrinks the window in which the branch can go stale between the

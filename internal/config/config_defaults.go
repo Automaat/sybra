@@ -577,7 +577,20 @@ func HomeDir() string {
 }
 
 func DefaultConfig() *Config {
-	return &Config{
+	fileCfg, err := ParseFileConfig([]byte("{}\n"))
+	if err != nil {
+		panic(fmt.Sprintf("config: parse built-in empty config: %v", err))
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		panic(fmt.Sprintf("config: resolve built-in empty config: %v", err))
+	}
+	return resolved.Config
+}
+
+func defaultSeedConfig() *Config {
+	cfg := &Config{
+		SchemaVersion: CurrentSchemaVersion,
 		Logging: LoggingConfig{
 			Level:     "info",
 			Dir:       defaultLogDir(),
@@ -667,6 +680,8 @@ func DefaultConfig() *Config {
 		},
 		TasksDir: defaultTasksDir(),
 	}
+	applyResolvedDefaults(cfg, nil)
+	return cfg
 }
 
 func (c *Config) AuditDir() string {
@@ -777,14 +792,14 @@ func (c *Config) ExperiencesDir() string {
 	return filepath.Join(HomeDir(), "experience")
 }
 
-func Load() (*Config, error) {
+func Load() (*ResolvedConfig, error) {
 	return load(loadOptions{persistLoadReconciles: true})
 }
 
 // LoadNoPersist reads config.yaml and applies in-memory defaults/reconciles
 // without writing any migration back to disk. Reload paths use this to keep
 // their read-only contract and to preserve raw-editor formatting/comments.
-func LoadNoPersist() (*Config, error) {
+func LoadNoPersist() (*ResolvedConfig, error) {
 	return load(loadOptions{})
 }
 
@@ -792,161 +807,115 @@ type loadOptions struct {
 	persistLoadReconciles bool
 }
 
-func load(opts loadOptions) (*Config, error) {
-	cfg := DefaultConfig()
-
+func load(opts loadOptions) (*ResolvedConfig, error) {
 	path := configPath()
 	data, err := os.ReadFile(path)
 	existingFile := err == nil
-	if existingFile {
-		// Keep the rest of DefaultConfig pre-seeded, but let builtin_version
-		// reflect the document exactly: nil means "key absent" on older files.
-		cfg.ABTesting.BuiltinVersion = nil
-		if err := yaml.Unmarshal(data, cfg); err != nil {
+	var fileCfg *FileConfig
+	switch {
+	case existingFile:
+		fileCfg, err = ParseFileConfig(data)
+		if err != nil {
 			return nil, err
 		}
-		applyLegacyGitHubDefault(data, cfg)
-	} else if os.IsNotExist(err) {
+	case os.IsNotExist(err):
 		if writeErr := writeDefaultConfig(path); writeErr != nil {
 			return nil, writeErr
 		}
+	default:
+		return nil, err
 	}
 	if opts.persistLoadReconciles {
 		tightenConfigPerms(path, existingFile)
 	}
-
-	if v := os.Getenv("SYBRA_LOG_LEVEL"); v != "" {
-		cfg.Logging.Level = v
+	resolved, err := Resolve(fileCfg, environmentFromOS(), ResolveOptions{
+		GenerateSecrets: opts.persistLoadReconciles,
+		ExistingFile:    existingFile,
+	})
+	if err != nil {
+		return nil, err
 	}
-	if v := os.Getenv("SYBRA_LOG_DIR"); v != "" {
-		cfg.Logging.Dir = v
-	}
-
-	if cfg.Logging.Dir == "" {
-		cfg.Logging.Dir = defaultLogDir()
-	}
-	if cfg.TasksDir == "" {
-		cfg.TasksDir = defaultTasksDir()
-	}
-	if v := os.Getenv("SYBRA_TASKS_DIR"); v != "" {
-		cfg.TasksDir = v
-	}
-
-	if cfg.SkillsDir == "" {
-		cfg.SkillsDir = defaultSkillsDir()
-	}
-
-	// Migration: previous releases defaulted to ~/.sybra/skills which Claude
-	// Code never reads. Silently retarget the old default so users with stale
-	// configs get the fix without manual intervention. cdb6dc5 changed the
-	// default but did not migrate persisted overrides.
-	if cfg.SkillsDir == filepath.Join(HomeDir(), "skills") {
-		cfg.SkillsDir = defaultSkillsDir()
-	}
-	if cfg.ProjectsDir == "" {
-		cfg.ProjectsDir = defaultProjectsDir()
-	}
-	if cfg.ClonesDir == "" {
-		cfg.ClonesDir = defaultClonesDir()
-	}
-	if cfg.WorktreesDir == "" {
-		cfg.WorktreesDir = defaultWorktreesDir()
-	}
-	if cfg.LoopAgentsDir == "" {
-		cfg.LoopAgentsDir = defaultLoopAgentsDir()
-	}
-
-	if v := os.Getenv("SYBRA_TODOIST_TOKEN"); v != "" {
-		cfg.Todoist.APIToken = v
-	}
-	if cfg.Todoist.PollSeconds <= 0 {
-		cfg.Todoist.PollSeconds = 120
-	}
-
-	if cfg.Renovate.Author == "" {
-		cfg.Renovate.Author = "app/renovate"
-	}
-	if cfg.Triage.PollSeconds <= 0 {
-		cfg.Triage.PollSeconds = 60
-	}
-	// Triage.Model intentionally has no default override here: an empty
-	// model lets triage.FallbackClassifier fall through to its llmjob.SuperCheap
-	// tier (haiku), which is ~10x cheaper than sonnet for a structured
-	// classification job. A non-empty value (set explicitly by a user)
-	// still overrides the tier via claudeModelOverride.
-	if cfg.Agent.Provider == "" {
-		cfg.Agent.Provider = "claude"
-	}
-
-	applyProvidersDefaults(cfg)
-	applyMonitorDefaults(cfg)
-	applyWatchdogDefaults(cfg)
-	applySelfMonitorDefaults(cfg)
-	applyEvaluationDefaults(cfg)
-	applyLearningDigestDefaults(cfg)
-	applyHarnessEvolveDefaults(cfg)
-	applyPromptLabDefaults(cfg)
-	applyExperienceDefaults(cfg)
-	abTestingReconciled := applyABTestingDefaults(cfg, opts.persistLoadReconciles)
-	applyOrchestratorDefaults(cfg)
-	applyAutoUpdateDefaults(cfg)
-	applyReviewHoldDefaults(cfg)
-	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
-
-	persistLoadReconciles(cfg, opts, existingFile, abTestingReconciled, serverTokenGenerated)
-
-	return cfg, nil
+	ensureServerAuthToken(resolved.Config, opts.persistLoadReconciles)
+	return resolved.Config, nil
 }
 
-// persistLoadReconciles writes back in-memory-only changes made during load()
-// that must survive a restart: the ab_testing builtin reconcile (existing
-// files only) and a freshly generated server auth token (even for a
-// brand-new install — sybra-server reads Server.AuthToken once at startup,
-// so an unsaved token would silently rotate on every restart and lock
-// operators out).
-func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestingReconciled, serverTokenGenerated bool) {
-	if opts.persistLoadReconciles && existingFile && abTestingReconciled {
-		if saveErr := cfg.Save(); saveErr != nil {
-			slog.Warn("config: failed to persist ab_testing builtin reconcile", "err", saveErr)
-		}
-	}
-	if opts.persistLoadReconciles && serverTokenGenerated {
-		if saveErr := cfg.Save(); saveErr != nil {
-			slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
-		}
-	}
+// AuthTokenPath is where sybra-server's generated bearer token is persisted
+// when config.yaml does not declare server.auth_token itself. Keeping the
+// generated secret out of config.yaml means an externally-rendered file
+// (Ansible, Nix, Chezmoi, a git-tracked file) is never written to just to
+// carry state Sybra invented at runtime — see #2180. An operator who wants
+// the token declared in config.yaml (e.g. pinned from a secrets manager)
+// can still set server.auth_token there directly; it always wins over this
+// file.
+func AuthTokenPath() string {
+	return filepath.Join(HomeDir(), "server_auth_token")
 }
 
-// applyServerDefaults resolves sybra-server's auth token and CORS allowlist:
-// env vars win when set, otherwise a missing token is auto-generated so the
-// HTTP control plane always fails closed instead of silently running
-// unauthenticated. Returns true when a new token was generated (the caller
-// must persist it — see load()). Read-only config loads pass allowGenerate=false
-// so they never invent an in-memory-only secret that diverges from disk.
-func applyServerDefaults(cfg *Config, allowGenerate bool) bool {
-	if v := os.Getenv("SYBRA_AUTH_TOKEN"); v != "" {
-		cfg.Server.AuthToken = v
+// readAuthTokenFile returns the token persisted at AuthTokenPath(), or "" if
+// it's absent or unreadable.
+func readAuthTokenFile() string {
+	data, err := os.ReadFile(AuthTokenPath())
+	if err != nil {
+		return ""
 	}
-	if v := os.Getenv("SYBRA_ALLOWED_ORIGINS"); v != "" {
-		origins := strings.Split(v, ",")
-		for i := range origins {
-			origins[i] = strings.TrimSpace(origins[i])
-		}
-		cfg.Server.AllowedOrigins = origins
+	return strings.TrimSpace(string(data))
+}
+
+// writeAuthTokenFile persists token to AuthTokenPath() via temp file + rename,
+// mirroring WriteRawConfig's crash-safety, but targeting the dedicated token
+// file instead of config.yaml.
+func writeAuthTokenFile(token string) error {
+	path := AuthTokenPath()
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".server_auth_token-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // harmless once the rename below consumes it
+	if _, err := tmp.WriteString(token + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(configFilePerm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// ensureServerAuthToken completes the server auth-token precedence after
+// Resolve() applied file values and environment overrides. Tokens generated by
+// Sybra live in AuthTokenPath(), never in config.yaml.
+func ensureServerAuthToken(cfg *Config, allowGenerate bool) {
+	if cfg == nil {
+		return
 	}
 	if cfg.Server.AuthToken != "" {
-		return false
+		return
+	}
+	if token := readAuthTokenFile(); token != "" {
+		cfg.Server.AuthToken = token
+		return
 	}
 	if !allowGenerate {
-		return false
+		return
 	}
 	token, err := generateAuthToken()
 	if err != nil {
 		slog.Warn("config: failed to generate server auth token", "err", err)
-		return false
+		return
+	}
+	if err := writeAuthTokenFile(token); err != nil {
+		slog.Warn("config: failed to persist generated server auth token", "err", err)
+		return
 	}
 	cfg.Server.AuthToken = token
-	return true
 }
 
 // generateAuthToken returns a random 256-bit hex-encoded shared secret for
@@ -976,7 +945,7 @@ func applyReviewHoldDefaults(cfg *Config) {
 	if !cfg.ReviewHold.Enabled {
 		return
 	}
-	if !validReviewHoldMode(cfg.ReviewHold.Mode) {
+	if cfg.ReviewHold.Mode == "" {
 		cfg.ReviewHold.Mode = DefaultReviewHoldMode
 	}
 	if cfg.ReviewHold.NitMaxLines <= 0 {
@@ -1079,12 +1048,14 @@ func hasYAMLPath(data []byte, path ...string) bool {
 }
 
 // applyABTestingDefaults fills zero-value A/B testing config and reconciles
-// built-in experiments against the current code defaults. Returns true when
-// a builtin experiment reconcile actually rewrote cfg.ABTesting.Experiments,
-// so the caller knows whether the change needs persisting.
-func applyABTestingDefaults(cfg *Config, persist bool) bool {
+// built-in experiments against the current code defaults. The reconcile is
+// in-memory only and re-runs on every load — it never writes config.yaml, so
+// a config file that pins a stale builtin_version keeps reconciling (and thus
+// keeps taking effect) on every restart instead of drifting until someone
+// bumps the file by hand.
+func applyABTestingDefaults(cfg *Config) {
 	if cfg == nil {
-		return false
+		return
 	}
 	def := abtest.DefaultConfig()
 	if cfg.ABTesting.Enabled == nil {
@@ -1096,27 +1067,22 @@ func applyABTestingDefaults(cfg *Config, persist bool) bool {
 	if len(cfg.ABTesting.Experiments) == 0 {
 		cfg.ABTesting.Experiments = def.Experiments
 		cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
-		return false
+		return
 	}
-	return reconcileBuiltinExperiments(cfg, def, persist)
+	reconcileBuiltinExperiments(cfg, def)
 }
 
 // reconcileBuiltinExperiments refreshes a persisted config's built-in A/B
 // experiments (see abtest.BuiltinExperimentIDs) when they lag the code's
 // current defaults. Experiments outside that ID set — i.e. user-authored —
-// are left untouched. A one-generation backup of the prior experiment list is
-// written before the built-ins are replaced, so a same-ID hand-tuned built-in
-// is recoverable even though reconcile treats the ID as Sybra-owned.
-func reconcileBuiltinExperiments(cfg *Config, def abtest.Config, persist bool) bool {
+// are left untouched. The result lives only in cfg (never written back to
+// config.yaml — see applyABTestingDefaults), so a same-ID hand-tuned built-in
+// stays fully recoverable simply by reading the operator's own file; no
+// separate backup is needed.
+func reconcileBuiltinExperiments(cfg *Config, def abtest.Config) {
 	priorVersion := cfg.ABTesting.BuiltinVersionValue()
 	if priorVersion >= def.BuiltinVersionValue() {
-		return false
-	}
-	if persist {
-		if err := backupABTestingExperiments(cfg.ABTesting.Experiments, priorVersion); err != nil {
-			slog.Warn("config: ab_testing builtin reconcile backup failed; skipping refresh", "err", err)
-			return false
-		}
+		return
 	}
 	builtin := make(map[string]bool, len(abtest.BuiltinExperimentIDs))
 	for _, id := range abtest.BuiltinExperimentIDs {
@@ -1132,32 +1098,6 @@ func reconcileBuiltinExperiments(cfg *Config, def abtest.Config, persist bool) b
 	cfg.ABTesting.Experiments = kept
 	cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
 	slog.Info("config: ab_testing builtin experiments reconciled", "builtin_version", def.BuiltinVersionValue())
-	return true
-}
-
-// abTestingBackupPath returns the version-stamped backup path written before a
-// builtin reconcile overwrites persisted experiments. Each prior builtin
-// version keeps its own snapshot so successive builtin-version bumps do not
-// destroy the true pre-migration original.
-func abTestingBackupPath(priorVersion int) string {
-	return filepath.Join(HomeDir(), fmt.Sprintf("config.ab_testing.backup.v%d.yaml", priorVersion))
-}
-
-type abTestingBackup struct {
-	PriorBuiltinVersion int                 `yaml:"prior_builtin_version"`
-	Experiments         []abtest.Experiment `yaml:"experiments"`
-}
-
-func backupABTestingExperiments(experiments []abtest.Experiment, priorVersion int) error {
-	data, err := yaml.Marshal(abTestingBackup{PriorBuiltinVersion: priorVersion, Experiments: experiments})
-	if err != nil {
-		return err
-	}
-	path := abTestingBackupPath(priorVersion)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
 }
 
 // applyWatchdogDefaults fills the Watchdog model default. Enabled and
@@ -1269,7 +1209,7 @@ func applyPromptLabDefaults(cfg *Config) {
 // applySelfMonitorDefaults fills zero values for the SelfMonitor block so
 // older configs behave deterministically and the service can rely on every
 // field. Enabled stays false until operators opt in.
-func applySelfMonitorDefaults(cfg *Config) {
+func applySelfMonitorDefaults(cfg *Config, file *FileConfig) {
 	s := &cfg.SelfMonitor
 	if s.IntervalHours < 1 {
 		s.IntervalHours = 6
@@ -1302,14 +1242,15 @@ func applySelfMonitorDefaults(cfg *Config) {
 	// when none of the user-facing knobs were set. This avoids silently
 	// re-enabling DryRun on an operator who explicitly disabled it.
 	//
-	// Proxy for "freshly populated": IssueLabel is the last field the
-	// operator typically edits; if it's empty after the above defaults
-	// ran, we know nothing in the block was user-specified.
+	// With FileConfig we can check the field directly instead of guessing via
+	// a later sibling's zero value.
 	if s.IssueCooldownHours <= 0 {
 		s.IssueCooldownHours = 24
 	}
 	if s.IssueLabel == "" {
 		s.IssueLabel = "selfmonitor"
+	}
+	if file == nil || !file.Has("self_monitor", "dry_run") {
 		s.DryRun = true
 	}
 	if s.MaxCostPerTickUSD <= 0 {
@@ -1365,7 +1306,7 @@ func applyPressureDefaults(cfg *Config) {
 // applyMonitorDefaults fills zero values for the Monitor block so older
 // configs behave deterministically and the service can rely on every field.
 // Enabled stays false until users opt in.
-func applyMonitorDefaults(cfg *Config) {
+func applyMonitorDefaults(cfg *Config, file *FileConfig) {
 	if cfg.Monitor.IntervalSeconds < 60 {
 		cfg.Monitor.IntervalSeconds = 300
 	}
@@ -1377,7 +1318,9 @@ func applyMonitorDefaults(cfg *Config) {
 	if cfg.Monitor.IssueCooldownMinutes <= 0 {
 		cfg.Monitor.IssueCooldownMinutes = 30
 	}
-	if cfg.Monitor.DispatchLimit <= 0 {
+	if file == nil || !file.Has("monitor", "dispatch_limit") {
+		cfg.Monitor.DispatchLimit = cfg.Agent.MaxConcurrent
+	} else if cfg.Monitor.DispatchLimit <= 0 {
 		cfg.Monitor.DispatchLimit = cfg.Agent.MaxConcurrent
 	}
 	if cfg.Monitor.StuckHumanHours <= 0 {
@@ -1466,11 +1409,14 @@ const (
 	configFilePerm os.FileMode = 0o600
 )
 
+// defaultConfigStub is the minimal document written for a brand-new install.
+var defaultConfigStub = []byte("# Sybra configuration\nschema_version: 2\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n")
+
 func writeDefaultConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Sybra configuration\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n"), configFilePerm)
+	return os.WriteFile(path, defaultConfigStub, configFilePerm)
 }
 
 // tightenConfigPerms retrofits the config directory and file to 0o700/0o600

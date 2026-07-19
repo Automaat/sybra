@@ -1,10 +1,18 @@
 package workflow
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"os/exec"
+	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/project"
 )
 
 var prFixSentinelRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_RESULT:\s*([a-z_-]+)\s*$`)
@@ -37,6 +45,10 @@ const routePRFixResultStepID = "route_pr_fix_result"
 // "true" when redirecting to test_fix instead of parking, so pr-fix.yaml's
 // `next` transitions can branch on it with a single equality check.
 const prFixTestFixEligibleVar = "pr_fix_test_fix_eligible"
+
+const resolvedMergeCheckpointedVar = "resolved_merge_checkpointed"
+
+const resolvedMergeCheckpointMessage = "fix(recovery): finalize merge resolution\n\nroute_pr_fix_result recovered a marker-free merge the pr-fix agent resolved on disk but never staged/committed."
 
 // PRFixVerdict is the outcome a pr-fix agent reported via its SYBRA_PR_FIX_RESULT sentinel.
 type PRFixVerdict string
@@ -105,6 +117,11 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "routing to scoped test-fix: " + reason}, nil
 		}
 	}
+	if !reviewHoldForced && prFixAllowsResolvedMergeRecovery(reason) {
+		if out, err, handled := e.tryRecoverResolvedMerge(taskID, step, wfExec, t); handled {
+			return out, err
+		}
+	}
 	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)
 	}
@@ -125,6 +142,242 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		}
 	}
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
+}
+
+func prFixAllowsResolvedMergeRecovery(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return false
+	}
+	for _, blocker := range []string{"approval", "base-only", "no substantive", "do not push", "without pushing", "declining to push"} {
+		if strings.Contains(reason, blocker) {
+			return false
+		}
+	}
+	for _, signal := range []string{"unmerged", "merge not finalized", "merge still", "merge in progress"} {
+		if strings.Contains(reason, signal) {
+			return true
+		}
+	}
+	return strings.Contains(reason, "merge conflict") && strings.Contains(reason, "git")
+}
+
+func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error, bool) {
+	if e.worktrees == nil {
+		return StepOutput{}, nil, false
+	}
+	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	if !ok {
+		return StepOutput{}, nil, false
+	}
+	if wfExec != nil && wfExec.Variables[resolvedMergeCheckpointVar(step.ID)] == "true" {
+		return e.pushRecoveredResolvedMergeCommit(taskID, step, wfExec, t, wtPath)
+	}
+	if e.checks == nil {
+		return StepOutput{}, nil, false
+	}
+
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	resolved, err := project.ResolvedUnmergedPaths(ctx, wtPath)
+	if err != nil {
+		e.logger.Warn("workflow.pr-fix.recover-resolved-merge.detect", "task_id", taskID, "err", err)
+		return StepOutput{}, nil, false
+	}
+	if len(resolved) == 0 {
+		return StepOutput{}, nil, false
+	}
+
+	cmds, checkedFiles, err := e.resolvedMergeFocusedCommands(ctx, taskID, wtPath, resolved)
+	if err != nil {
+		out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict could not determine a focused sanity gate: "+trimDiffLine(err.Error()))
+		return out, err, true
+	}
+	if len(cmds) == 0 {
+		return StepOutput{}, nil, false
+	}
+
+	timeout := e.verifyTimeout
+	if timeout <= 0 {
+		timeout = verifyChecksDefaultTimeout
+	}
+	checkCtx, checkCancel := context.WithTimeout(e.ctx, timeout)
+	defer checkCancel()
+	maybeMiseTrust(checkCtx, wtPath)
+	failedCmd, output, runErr := e.runVerifyCommands(checkCtx, taskID, wtPath, cmds)
+	if runErr != nil {
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			out, err := e.humanRequiredPR(taskID, step, fmt.Sprintf("resolved merge conflict sanity gate exceeded the time budget (%s)", timeout))
+			return out, err, true
+		}
+		if errors.Is(runErr, context.Canceled) && e.ctx.Err() != nil {
+			e.logger.Warn("workflow.pr-fix.recover-resolved-merge.canceled", "task_id", taskID, "err", runErr)
+			out, err := stepDone(step, "skipped: context canceled")
+			return out, err, true
+		}
+		out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict sanity gate could not run cleanly: "+trimDiffLine(runErr.Error()))
+		return out, err, true
+	}
+	if failedCmd != "" {
+		reason := "resolved merge conflict sanity gate failed: " + trimDiffLine(failedCmd)
+		if tail := strings.TrimSpace(tailString(output, 500)); tail != "" {
+			reason += " (" + tail + ")"
+		}
+		out, err := e.humanRequiredPR(taskID, step, reason)
+		return out, err, true
+	}
+
+	if out, err, handled := e.rejectUnexpectedResolvedMergeDirtyPaths(taskID, step, wtPath, checkedFiles); handled {
+		return out, err, true
+	}
+
+	commitCtx, commitCancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer commitCancel()
+	committed, err := project.CheckpointCommit(commitCtx, wtPath, resolvedMergeCheckpointMessage)
+	if err != nil {
+		out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict could not be checkpoint-committed: "+trimDiffLine(err.Error()))
+		return out, err, true
+	}
+	if !committed {
+		out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict left no checkpointable changes after recovery")
+		return out, err, true
+	}
+	if wfExec != nil {
+		wfExec.SetVar(resolvedMergeCheckpointVar(step.ID), "true")
+		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+			out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict commit landed but recovery state could not be persisted: "+trimDiffLine(err.Error()))
+			return out, err, true
+		}
+	}
+
+	return e.pushRecoveredResolvedMergeCommit(taskID, step, wfExec, t, wtPath)
+}
+
+func (e *Engine) pushRecoveredResolvedMergeCommit(taskID string, step *Step, wfExec *Execution, t TaskInfo, wtPath string) (StepOutput, error, bool) {
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	branch := t.Branch
+	if branch == "" {
+		var err error
+		branch, err = project.CurrentBranch(ctx, wtPath)
+		if err != nil || branch == "" {
+			reason := "resolved merge conflict commit landed but the task branch could not be determined"
+			if err != nil {
+				reason += ": " + trimDiffLine(err.Error())
+			}
+			out, err := e.humanRequiredPR(taskID, step, reason)
+			return out, err, true
+		}
+	}
+	if out, err, ok := e.pushTaskBranch(taskID, step, wfExec, t, wtPath, branch); !ok {
+		return out, err, true
+	}
+	if e.prHeads != nil && t.PRNumber > 0 && t.ProjectID != "" {
+		e.verifyPushedHead(taskID, wtPath, t)
+	}
+	e.logger.Info("workflow.pr-fix.recovered-resolved-merge", "task_id", taskID, "branch", branch)
+	return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil, true
+}
+
+func resolvedMergeCheckpointVar(stepID string) string {
+	return "step." + stepID + "." + resolvedMergeCheckpointedVar
+}
+
+func (e *Engine) rejectUnexpectedResolvedMergeDirtyPaths(taskID string, step *Step, wtPath string, checkedFiles []string) (StepOutput, error, bool) {
+	unexpectedDirty, err := resolvedMergeUnexpectedDirtyPaths(e.ctx, wtPath, checkedFiles)
+	if err != nil {
+		out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict dirty-path audit failed: "+trimDiffLine(err.Error()))
+		return out, err, true
+	}
+	if len(unexpectedDirty) == 0 {
+		return StepOutput{}, nil, false
+	}
+	out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict left dirty paths outside the focused sanity gate: "+trimDiffLine(strings.Join(unexpectedDirty, ", ")))
+	return out, err, true
+}
+
+func (e *Engine) resolvedMergeFocusedCommands(ctx context.Context, taskID, wtPath string, resolved []string) (commands, files []string, err error) {
+	files = slices.Clone(resolved)
+	changed, err := changedFilesSinceProjectBase(ctx, wtPath, e.focusedChecksBaseRef(taskID))
+	if err != nil {
+		e.logger.Warn("workflow.pr-fix.recover-resolved-merge.changed-files", "task_id", taskID, "err", err)
+		return nil, nil, err
+	}
+	for _, file := range changed {
+		if !slices.Contains(files, file) {
+			files = append(files, file)
+		}
+	}
+	_, commands = selectFocusedChecks(e.checks.FocusedChecks(ctx, taskID), files)
+	return commands, files, nil
+}
+
+func resolvedMergeUnexpectedDirtyPaths(ctx context.Context, wtPath string, allowed []string) ([]string, error) {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, file := range allowed {
+		clean, ok := cleanGitRelPath(file)
+		if !ok {
+			return nil, fmt.Errorf("unsafe focused path %q", file)
+		}
+		allowedSet[clean] = struct{}{}
+	}
+
+	dirty, err := gitStatusPorcelainPaths(ctx, wtPath)
+	if err != nil {
+		return nil, err
+	}
+	var unexpected []string
+	for _, file := range dirty {
+		clean, ok := cleanGitRelPath(file)
+		if !ok {
+			return nil, fmt.Errorf("unsafe dirty path %q", file)
+		}
+		if _, ok := allowedSet[clean]; !ok {
+			unexpected = append(unexpected, clean)
+		}
+	}
+	return unexpected, nil
+}
+
+func gitStatusPorcelainPaths(ctx context.Context, wtPath string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			return nil, fmt.Errorf("git status --porcelain -z: %w", err)
+		}
+		return nil, fmt.Errorf("git status --porcelain -z: %w: %s", err, detail)
+	}
+
+	var paths []string
+	parts := bytes.Split(out, []byte{0})
+	for i := 0; i < len(parts); i++ {
+		entry := parts[i]
+		if len(entry) == 0 {
+			continue
+		}
+		if len(entry) < 4 {
+			return nil, fmt.Errorf("parse git status --porcelain -z entry %q", string(entry))
+		}
+		paths = append(paths, string(entry[3:]))
+		if entry[0] == 'R' || entry[0] == 'C' {
+			i++
+		}
+	}
+	return paths, nil
+}
+
+func cleanGitRelPath(file string) (string, bool) {
+	if file == "" || path.IsAbs(file) {
+		return "", false
+	}
+	clean := path.Clean(file)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+	return clean, true
 }
 
 // checkPRAlreadyResolved re-probes the live PR when the pr-fix agent (or a

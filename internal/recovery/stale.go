@@ -138,7 +138,7 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 		// file-backed Tasks.Update never blocks the fleet-wide sweep.
 		taskID, currentStatus := t.ID, t.Status
 		r.WG.Go(func() {
-			r.surfaceStartFailure(taskID, currentStatus, err)
+			r.surfaceStartFailure(ctx, taskID, currentStatus, err)
 		})
 		return
 	}
@@ -152,7 +152,7 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			metrics.OrchestratorStaleRestart(ctx, err == nil)
 			r.Throttle.Log(r.Logger, "restart.pr-fix.failed", "pr-fix:"+taskID, err, "task_id", taskID)
 			if err != nil {
-				r.surfaceStartFailure(taskID, currentStatus, err)
+				r.surfaceStartFailure(ctx, taskID, currentStatus, err)
 			}
 		})
 		return
@@ -174,7 +174,7 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 		metrics.OrchestratorStaleRestart(ctx, err == nil)
 		r.Throttle.Log(r.Logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
 		if err != nil {
-			r.surfaceStartFailure(taskID, currentStatus, err)
+			r.surfaceStartFailure(ctx, taskID, currentStatus, err)
 		}
 	})
 }
@@ -383,7 +383,19 @@ func (r *Recovery) recoverCancelledPRFix(t *task.Task) bool {
 // recovery path: write a UI-visible reason on every retry, and flip to
 // human-required when the error is permanent (e.g. project not registered)
 // so the periodic resume loop stops hammering it.
-func (r *Recovery) surfaceStartFailure(taskID string, currentStatus task.Status, err error) {
+//
+// ctx is the same context RestartStaleInProgress/RestartTaskIfStale received
+// (ultimately the app's root context) — checked via
+// workflow.IsShutdownCancellation before writing anything, so a graceful
+// restart's mass context.Canceled burst across every stale in-progress task
+// (sybra#2291's own "restart-stale.failed" log line) never overwrites
+// StatusReason with a misleading "agent start failed: ...context canceled..."
+// message during the shutdown window.
+func (r *Recovery) surfaceStartFailure(ctx context.Context, taskID string, currentStatus task.Status, err error) {
+	if workflow.IsShutdownCancellation(ctx, err) {
+		r.Logger.Info("restart-stale.shutdown-cancellation.suppress", "task_id", taskID)
+		return
+	}
 	reason, permanent := workflow.ClassifyAgentStartError(err)
 	if reason == "" {
 		return
