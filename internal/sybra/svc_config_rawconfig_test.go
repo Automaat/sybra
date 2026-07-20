@@ -473,6 +473,70 @@ func TestSaveRawConfig_ValidRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveRawConfig_AcceptsLegacyGitHubPollingDurationAliases(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	raw := strings.Join([]string{
+		"github:",
+		"  enabled: true",
+		"  poller_role: secondary",
+		"  polling:",
+		"    issues:",
+		"      enabled: true",
+		"      interval: 11m",
+		"    sybra_prs:",
+		"      enabled: true",
+		"      active_interval: 2m",
+		"      idle_interval: 9m",
+		"    assigned_prs:",
+		"      enabled: false",
+		"      active_interval: 3m",
+		"      idle_interval: 8m",
+		"",
+	}, "\n")
+
+	if err := svc.SaveRawConfig(raw); err != nil {
+		t.Fatalf("SaveRawConfig: %v", err)
+	}
+	got := svc.GetSettings().GitHub
+	if got.PollerRole != "secondary" {
+		t.Fatalf("PollerRole = %q, want secondary", got.PollerRole)
+	}
+	if got := got.Polling.Issues.IntervalSeconds; got != 11*60 {
+		t.Fatalf("Issues.IntervalSeconds = %d, want %d", got, 11*60)
+	}
+	if got := got.Polling.SybraPRs.ActiveIntervalSeconds; got != 2*60 {
+		t.Fatalf("SybraPRs.ActiveIntervalSeconds = %d, want %d", got, 2*60)
+	}
+	if got := got.Polling.SybraPRs.IdleIntervalSeconds; got != 9*60 {
+		t.Fatalf("SybraPRs.IdleIntervalSeconds = %d, want %d", got, 9*60)
+	}
+	if got := got.Polling.AssignedPRs.ActiveIntervalSeconds; got != 3*60 {
+		t.Fatalf("AssignedPRs.ActiveIntervalSeconds = %d, want %d", got, 3*60)
+	}
+	if got := got.Polling.AssignedPRs.IdleIntervalSeconds; got != 8*60 {
+		t.Fatalf("AssignedPRs.IdleIntervalSeconds = %d, want %d", got, 8*60)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedText := string(saved)
+	for _, want := range []string{
+		"interval: 11m",
+		"active_interval: 2m",
+		"idle_interval: 9m",
+		"active_interval: 3m",
+		"idle_interval: 8m",
+	} {
+		if !strings.Contains(savedText, want) {
+			t.Fatalf("saved config missing %q:\n%s", want, savedText)
+		}
+	}
+}
+
 func TestSaveRawConfig_PreservesServerAuthTokenWhenOmitted(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	svc.cfg.Server.AuthToken = "persist-me"

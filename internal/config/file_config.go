@@ -340,12 +340,8 @@ func unitSuffix(unit durationUnit) string {
 	}
 }
 
-func validateKnownConfigKeys(root *yaml.Node, schemaVersion int) error {
-	aliases := aliasIndex{}
-	if schemaVersion >= CurrentSchemaVersion {
-		aliases = schemaV2Aliases
-	}
-	return validateNodeAgainstType(root, reflect.TypeFor[Config](), nil, aliases)
+func validateKnownConfigKeys(root *yaml.Node, _ int) error {
+	return validateNodeAgainstType(root, reflect.TypeFor[Config](), nil, schemaV2Aliases)
 }
 
 func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, aliases aliasIndex) error {
@@ -524,7 +520,7 @@ func min3(a, b, c int) int {
 }
 
 func applyDurationAliases(file *FileConfig, cfg *ResolvedConfig) error {
-	if file == nil || file.SchemaVersion() < CurrentSchemaVersion {
+	if file == nil {
 		return nil
 	}
 	for _, spec := range durationAliasSpecs {

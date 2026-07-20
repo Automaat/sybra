@@ -138,6 +138,51 @@ func TestResolveRejectsNonIntegralDurationAliasForIntField(t *testing.T) {
 	}
 }
 
+func TestResolveAcceptsLegacyGitHubPollingDurationAliases(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"github:",
+		"  enabled: true",
+		"  poller_role: secondary",
+		"  polling:",
+		"    issues:",
+		"      enabled: true",
+		"      interval: 11m",
+		"    sybra_prs:",
+		"      enabled: true",
+		"      active_interval: 2m",
+		"      idle_interval: 9m",
+		"    assigned_prs:",
+		"      enabled: false",
+		"      active_interval: 3m",
+		"      idle_interval: 8m",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolved.Config.GitHub.Polling.Issues.IntervalSeconds; got != 11*60 {
+		t.Fatalf("Issues.IntervalSeconds = %d, want %d", got, 11*60)
+	}
+	if got := resolved.Config.GitHub.Polling.SybraPRs.ActiveIntervalSeconds; got != 2*60 {
+		t.Fatalf("SybraPRs.ActiveIntervalSeconds = %d, want %d", got, 2*60)
+	}
+	if got := resolved.Config.GitHub.Polling.SybraPRs.IdleIntervalSeconds; got != 9*60 {
+		t.Fatalf("SybraPRs.IdleIntervalSeconds = %d, want %d", got, 9*60)
+	}
+	if got := resolved.Config.GitHub.Polling.AssignedPRs.ActiveIntervalSeconds; got != 3*60 {
+		t.Fatalf("AssignedPRs.ActiveIntervalSeconds = %d, want %d", got, 3*60)
+	}
+	if got := resolved.Config.GitHub.Polling.AssignedPRs.IdleIntervalSeconds; got != 8*60 {
+		t.Fatalf("AssignedPRs.IdleIntervalSeconds = %d, want %d", got, 8*60)
+	}
+}
+
 func TestResolveLoadsNamespacedV2Config(t *testing.T) {
 	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
 		"schema_version: 2",
