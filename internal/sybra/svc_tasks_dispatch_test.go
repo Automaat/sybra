@@ -210,7 +210,7 @@ func newReadyPRHumanRequiredTask(t *testing.T, a *App, engine *workflow.Engine) 
 }
 
 func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
-	for _, target := range []string{"in-progress", "testing"} {
+	for _, target := range []string{"in-progress", "ready-review", "testing"} {
 		t.Run(target, func(t *testing.T) {
 			launcher := &fakeAgentLauncher{}
 			svc, a := setupDispatchTestService(t, launcher)
@@ -262,14 +262,14 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 
 // TestDispatchFromHumanRequired_WithStatusHook reproduces the production wiring
 // the other tests miss: App.initStatusHook fires synchronously inside UpdateMap
-// and, for testing/ready-pr, already dispatches the workflow via
+// and, for ready-review/testing/ready-pr, already dispatches the workflow via
 // dispatchStatusWorkflow before DispatchFromHumanRequired issues its own
 // dispatch. Without treating the resulting ErrWorkflowAlreadyActive as success,
 // the method reverts the task to human-required while the hook-started agent
 // keeps running orphaned. Here the dispatch must succeed and leave the task in
 // the target status.
 func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
-	for _, target := range []string{"testing", "in-progress"} {
+	for _, target := range []string{"testing", "ready-review", "in-progress"} {
 		t.Run(target, func(t *testing.T) {
 			launcher := &fakeAgentLauncher{}
 			svc, a := setupDispatchTestService(t, launcher)

@@ -950,10 +950,11 @@ type dispatchTargetSpec struct {
 }
 
 var dispatchTargets = map[string]dispatchTargetSpec{
-	string(task.StatusInProgress): {dispatches: true},
-	string(task.StatusTesting):    {dispatches: true},
-	string(task.StatusReadyPR):    {dispatches: true},
-	string(task.StatusInReview):   {requiresPR: true, dispatches: false},
+	string(task.StatusInProgress):  {dispatches: true},
+	string(task.StatusReadyReview): {dispatches: true},
+	string(task.StatusTesting):     {dispatches: true},
+	string(task.StatusReadyPR):     {dispatches: true},
+	string(task.StatusInReview):    {requiresPR: true, dispatches: false},
 }
 
 func readyPRNoWorkflowAllowed(role, target string) bool {
@@ -969,18 +970,22 @@ func readyPRNoWorkflowAllowed(role, target string) bool {
 }
 
 // DispatchFromHumanRequired flips a task parked in human-required to target
-// (one of in-progress/testing/ready-pr/in-review), recording reason as the
-// audit-visible status_reason. For dispatching targets it synchronously
-// re-enters the workflow via task.status_changed; on any failure to do so it
-// fails closed, reverting the task to human-required with an explanatory
-// status_reason so the operator is never left with a task silently stuck in
-// a target status with no workflow driving it.
+// (one of in-progress/ready-review/testing/ready-pr/in-review), recording
+// reason as the audit-visible status_reason. For dispatching targets it
+// synchronously re-enters the workflow via task.status_changed; on any failure
+// to do so it fails closed, reverting the task to human-required with an
+// explanatory status_reason so the operator is never left with a task silently
+// stuck in a target status with no workflow driving it.
 //
 // The whole check-then-write sequence runs under the workflow engine's
 // per-task human-action lock (shared with plan-review's
 // HandleHumanActionRecovering), so a double-click or a second operator cannot
 // race the same stuck task between the guard reads and the status write.
 func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task.Task, error) {
+	return s.dispatchFromHumanRequiredAllowingAgent(id, target, reason, "")
+}
+
+func (s *TaskService) dispatchFromHumanRequiredAllowingAgent(id, target, reason, exceptAgentID string) (task.Task, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return task.Task{}, conflictError("a decision reason is required")
@@ -991,7 +996,7 @@ func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task
 
 	var result task.Task
 	run := func() error {
-		out, err := s.dispatchFromHumanRequiredLocked(id, target, reason)
+		out, err := s.dispatchFromHumanRequiredLockedAllowingAgent(id, target, reason, exceptAgentID)
 		result = out
 		return err
 	}
@@ -1011,7 +1016,7 @@ func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task
 	return result, nil
 }
 
-func (s *TaskService) dispatchFromHumanRequiredLocked(id, target, reason string) (task.Task, error) {
+func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, reason, exceptAgentID string) (task.Task, error) {
 	cur, err := s.tasks.Get(id)
 	if err != nil {
 		return task.Task{}, err
@@ -1023,7 +1028,11 @@ func (s *TaskService) dispatchFromHumanRequiredLocked(id, target, reason string)
 	if spec.requiresPR && cur.PRNumber == 0 {
 		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch to %q: task has no linked PR", target))
 	}
-	if s.agents.HasRunningAgentForTask(id) {
+	hasRunning := s.agents.HasRunningAgentForTask(id)
+	if exceptAgentID != "" {
+		hasRunning = s.agents.HasOtherRunningAgentForTask(id, exceptAgentID)
+	}
+	if hasRunning {
 		return task.Task{}, conflictError("cannot dispatch: an agent is already running for this task")
 	}
 	if cur.Workflow != nil && cur.Workflow.State != workflow.ExecCompleted && cur.Workflow.State != workflow.ExecFailed {

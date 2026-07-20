@@ -1,0 +1,89 @@
+id: simple-task-pr
+name: Simple Task — Open PR
+description: Create (or push to) the GitHub PR after manual testing passes, link it to the task, and ensure it closes any linked issue. Triggered by the cascade after testing-task flips status to ready-pr.
+trigger:
+    "on": task.status_changed
+    conditions:
+        - field: task.status
+          operator: equals
+          value: ready-pr
+        - field: task.role
+          operator: not_in
+          value: review,test-runner,human-review
+steps:
+    - id: sync_branch
+      name: Sync Branch
+      type: sync_branch
+      config: {}
+      next:
+        - goto: maybe_create_pr
+    - id: maybe_create_pr
+      name: Maybe Create PR
+      type: condition
+      config: {}
+      next:
+        - when:
+            field: task.pr_number
+            operator: exists
+            value: ""
+          goto: push_existing_pr
+        - goto: create_pr
+    - id: push_existing_pr
+      name: Push to Existing PR
+      type: push_branch
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - goto: link_pr_and_review
+    - id: create_pr
+      name: Create PR
+      type: create_pr
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - goto: link_pr_and_review
+    - id: link_pr_and_review
+      name: Link PR and Review
+      type: link_pr_and_review
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: in-review
+          goto: ensure_pr_closes_issue
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - goto: evaluate
+    - id: evaluate
+      name: Evaluate
+      type: evaluate
+      config: {}
+      next:
+        - goto: ""
+    - id: ensure_pr_closes_issue
+      name: Ensure PR Closes Issue
+      type: ensure_pr_closes_issue
+      config: {}
+      next:
+        - goto: stamp_pr_attribution
+    - id: stamp_pr_attribution
+      name: Stamp PR Attribution
+      type: stamp_pr_attribution
+      config: {}
+      next:
+        - goto: ""
+builtin: true
+created_at: 2026-07-20T19:57:16.116775329Z
+updated_at: 2026-07-20T19:57:16.116775329Z

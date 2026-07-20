@@ -521,6 +521,9 @@ func TestMaterialize_DegradedFreshTrackerCarriesFallbackTag(t *testing.T) {
 	if !slices.Contains(tracker.Tags, FallbackTag) {
 		t.Errorf("fresh degraded tracker tags = %v, want to contain %q", tracker.Tags, FallbackTag)
 	}
+	if slices.Contains(tracker.Tags, ExpandingTag) {
+		t.Errorf("fresh tracker tags = %v, want %q cleared after materialize", tracker.Tags, ExpandingTag)
+	}
 }
 
 func TestMaterialize_DegradedExistingTrackerGetsFallbackTagIdempotently(t *testing.T) {
@@ -548,6 +551,9 @@ func TestMaterialize_DegradedExistingTrackerGetsFallbackTagIdempotently(t *testi
 	}
 	if !slices.Contains(got.Tags, FallbackTag) {
 		t.Fatalf("existing tracker tags = %v, want to contain %q after degraded re-expansion", got.Tags, FallbackTag)
+	}
+	if slices.Contains(got.Tags, ExpandingTag) {
+		t.Fatalf("existing tracker tags = %v, want %q cleared after materialize", got.Tags, ExpandingTag)
 	}
 
 	// A second degraded re-expansion against the same tracker must not
