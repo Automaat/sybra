@@ -137,6 +137,9 @@ func run(args []string) int {
 			fmt.Fprintf(os.Stderr, "hook: load config: %v (continuing fail-open)\n", err)
 			return 0
 		}
+		if code, handled := dispatchTaskStoreFallback(cmd, rest, jsonOut, err); handled {
+			return code
+		}
 		return fatal(jsonOut, "load config: %v", err)
 	}
 
@@ -342,6 +345,48 @@ func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
 		return nil, nil, fmt.Errorf("open project store: %w", err)
 	}
 	return task.NewManager(rawStore, nil), projStore, nil
+}
+
+func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr error) (code int, handled bool) {
+	if !supportsTaskStoreFallback(cmd) {
+		return 0, false
+	}
+	store, tasksDir, err := openFallbackTaskStore()
+	if err != nil {
+		return fatal(jsonOut, "load config: %v (fallback task store: %v)", loadErr, err), true
+	}
+	fmt.Fprintf(os.Stderr,
+		"warning: load config: %v; falling back to direct task store at %s for `%s`\n",
+		loadErr, tasksDir, cmd)
+	switch cmd {
+	case "get":
+		return cmdGet(store, rest, jsonOut), true
+	case "update":
+		return cmdUpdate(store, nil, rest, jsonOut), true
+	default:
+		return 0, false
+	}
+}
+
+func supportsTaskStoreFallback(cmd string) bool {
+	switch cmd {
+	case "get", "update":
+		return true
+	default:
+		return false
+	}
+}
+
+func openFallbackTaskStore() (manager *task.Manager, tasksDir string, err error) {
+	tasksDir = strings.TrimSpace(os.Getenv("SYBRA_TASKS_DIR"))
+	if tasksDir == "" {
+		tasksDir = filepath.Join(config.HomeDir(), "tasks")
+	}
+	rawStore, err := task.NewStore(tasksDir)
+	if err != nil {
+		return nil, "", fmt.Errorf("open store %q: %w", tasksDir, err)
+	}
+	return task.NewManager(rawStore, nil), tasksDir, nil
 }
 
 func cmdList(s *task.Manager, args []string, jsonOut bool) int {

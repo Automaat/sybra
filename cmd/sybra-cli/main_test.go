@@ -59,6 +59,30 @@ func captureStdout(t *testing.T, fn func() int) (exitCode int, output string) {
 	return code, string(buf[:n])
 }
 
+func runCLIWithStderr(t *testing.T, args ...string) (exitCode int, stdout, stderr string) {
+	t.Helper()
+	oldOut := os.Stdout
+	outR, outW, _ := os.Pipe()
+	os.Stdout = outW
+
+	oldErr := os.Stderr
+	errR, errW, _ := os.Pipe()
+	os.Stderr = errW
+
+	code := run(args)
+
+	_ = outW.Close()
+	_ = errW.Close()
+	os.Stdout = oldOut
+	os.Stderr = oldErr
+
+	outBuf := make([]byte, 64*1024)
+	outN, _ := outR.Read(outBuf)
+	errBuf := make([]byte, 64*1024)
+	errN, _ := errR.Read(errBuf)
+	return code, string(outBuf[:outN]), string(errBuf[:errN])
+}
+
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -227,6 +251,100 @@ func TestUpdateStatus(t *testing.T) {
 	mustUnmarshal(t, out, &updated)
 	if updated.Status != "in-progress" {
 		t.Errorf("status = %q", updated.Status)
+	}
+}
+
+func TestCLIWorksWithV2ObservabilityConfig(t *testing.T) {
+	dir := setupStore(t)
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	cfg := strings.Join([]string{
+		"schema_version: 2",
+		"observability:",
+		"  logging:",
+		"    level: debug",
+		"  audit:",
+		"    enabled: true",
+		"server:",
+		"  auth_token: local-test-token",
+		"",
+	}, "\n")
+	if err := os.WriteFile(config.ConfigPath(), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	created, err := manager.Create("observability task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	code, out := runCLI(t, "--json", "get", "--compact", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.ID != created.ID {
+		t.Fatalf("get id = %q, want %q", got.ID, created.ID)
+	}
+
+	code, out = runCLI(t, "--json", "update", created.ID, "--status", "in-progress")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	mustUnmarshal(t, out, &got)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+}
+
+func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
+	dir := setupStore(t)
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	created, err := manager.Create("fallback task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	code, stdout, stderr := runCLIWithStderr(t, "--json", "get", "--compact", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "falling back to direct task store") {
+		t.Fatalf("stderr missing fallback warning:\n%s", stderr)
+	}
+	var got task.Task
+	mustUnmarshal(t, stdout, &got)
+	if got.ID != created.ID {
+		t.Fatalf("get id = %q, want %q", got.ID, created.ID)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "update", created.ID, "--status", "in-progress", "--status-reason", "fallback path")
+	if code != 0 {
+		t.Fatalf("update exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "falling back to direct task store") {
+		t.Fatalf("stderr missing fallback warning on update:\n%s", stderr)
+	}
+	mustUnmarshal(t, stdout, &got)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if got.StatusReason != "fallback path" {
+		t.Fatalf("status reason = %q, want fallback path", got.StatusReason)
 	}
 }
 
