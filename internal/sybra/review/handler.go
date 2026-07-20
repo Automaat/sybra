@@ -253,10 +253,6 @@ func (r *Handler) runsSybraPRs() bool {
 	return r.cfg == nil || r.cfg.GitHub.RunsSybraPRs()
 }
 
-func (r *Handler) runsAssignedPRs() bool {
-	return r.cfg == nil || r.cfg.GitHub.RunsAssignedPRs()
-}
-
 func (r *Handler) runsSybraPRSearches() bool {
 	return r.cfg == nil || r.cfg.GitHub.RunsSybraPRSearches()
 }
@@ -488,86 +484,9 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 		return r.nextInterval(false, false)
 	}
 
-	runSybraSearch := r.runsSybraPRSearches()
-	runAssignedSearch := r.runsAssignedPRSearches()
-
-	var (
-		summary  github.ReviewSummary
-		fetchErr error
-	)
-	switch {
-	case runSybraSearch && runAssignedSearch && r.fetchReviewsFn != nil &&
-		r.fetchCreatedByMePRsFn == nil && r.fetchAssignedReviewSummaryFn == nil:
-		summary, fetchErr = r.fetchReviewsFn()
-	default:
-		if runSybraSearch {
-			fetchCreated := github.FetchCreatedByMePRs
-			if r.fetchCreatedByMePRsFn != nil {
-				fetchCreated = r.fetchCreatedByMePRsFn
-			}
-			summary.CreatedByMe, fetchErr = fetchCreated()
-		}
-		if fetchErr == nil && runAssignedSearch {
-			fetchAssigned := github.FetchAssignedReviewSummary
-			if r.fetchAssignedReviewSummaryFn != nil {
-				fetchAssigned = r.fetchAssignedReviewSummaryFn
-			}
-			var assigned github.ReviewSummary
-			assigned, fetchErr = fetchAssigned()
-			if fetchErr == nil {
-				summary.ReviewRequested = assigned.ReviewRequested
-				summary.ReviewedByMe = assigned.ReviewedByMe
-			}
-		}
-	}
+	summary, runSybraSearch, runAssignedSearch, fetchErr := r.fetchReviewSummary()
 	if fetchErr != nil {
-		switch {
-		case github.IsTransientError(fetchErr):
-			r.transientFetchFails++
-			if r.transientFetchFails < TransientFetchWarnThreshold {
-				r.logger.Info("pr-monitor.fetch", "err", fetchErr)
-			} else {
-				r.logger.Warn("pr-monitor.fetch", "err", fetchErr, "consecutive", r.transientFetchFails)
-			}
-			// GraphQL budget exhausted: the per-PR fetch falls back to the idle
-			// REST bucket, so keep conflict/CI handling moving instead of stalling
-			// until the hourly reset. Thread-driven kinds are skipped (REST lacks
-			// thread data) and resume when GraphQL recovers.
-			if errors.Is(fetchErr, github.ErrBudgetExhausted) {
-				if r.runsSybraPRs() {
-					r.handleKnownPRConflictsViaREST(ctx, tasks)
-				}
-				if r.runsAssignedPRSearches() {
-					fetchState := github.FetchPRStateViaREST
-					if r.fetchPRStateFn != nil {
-						fetchState = r.fetchPRStateFn
-					}
-					r.closeFinishedReviewTasksWithFetch(tasks, nil, fetchState)
-				}
-			} else {
-				// Reconcile stale review tasks on transient failures only.
-				// Non-transient errors (auth, 4xx) mean the per-task FetchPRState
-				// calls will also fail or be wasted, compounding backoff under an
-				// already-throttled API. Budget exhaustion uses the REST fallback
-				// above instead of this GraphQL-backed path.
-				if r.runsAssignedPRSearches() {
-					r.closeFinishedReviewTasks(tasks, nil)
-				}
-			}
-		case github.IsAuthError(fetchErr):
-			r.transientFetchFails = 0
-			r.authCircuit.RecordFailure(fetchErr)
-			if r.authCircuit.Open() {
-				return poll.AuthCircuitBackoff
-			}
-			// Pre-trip: log at Info so the up-to-threshold auth failures don't
-			// flood at WARN before the circuit's single ERROR trip line.
-			r.logger.Info("pr-monitor.fetch", "err", fetchErr)
-		default:
-			r.transientFetchFails = 0
-			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
-		}
-		return r.nextInterval(false, false)
+		return r.handleReviewSummaryFetchError(ctx, tasks, fetchErr)
 	}
 	r.transientFetchFails = 0
 	r.authCircuit.RecordSuccess()
@@ -576,49 +495,161 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 		r.emit("reviews:updated", summary)
 	}
 
-	var monitoredPRs []github.PullRequest
+	sybraAttention := false
 	if r.runsSybraPRs() {
-		monitoredPRs = r.monitoredPRs(summary)
-		monitoredPRs = r.includeKnownTaskPRs(tasks, monitoredPRs)
-
-		// Recover PRs orphaned by a workflow that exited before linking — e.g. a
-		// task stranded in human-required while a late-finishing agent opened the
-		// PR (PRNumber never recorded). Re-link by branch and re-activate so the
-		// normal pr-fix/auto-merge path resumes. Runs before matcher assembly so an
-		// adopted task is monitored in this same poll.
-		r.adoptOrphanPRs(ctx, tasks, monitoredPRs)
-		r.adoptTasklessPRs(tasks, monitoredPRs)
-
-		matchers, closedMatchers := buildOutboundMatchers(tasks)
-		issues := r.handleMatchedOwnPRs(ctx, tasks, monitoredPRs, matchers)
-
-		r.logPollSummary(monitoredPRs, len(matchers), len(issues))
-
-		if len(closedMatchers) > 0 {
-			r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
-		}
-
-		r.scanForReverts(ctx, tasks)
-		r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
-		r.reconcilePRPhases(tasks, monitoredPRs)
-		// monitoredPRs here is the author:@me search result (r.monitoredPRs), which
-		// already spans every open PR the user authored regardless of task status —
-		// no separate fetch is needed to reach a human-required task's own PR.
-		reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
-		issues = r.mergeReconciledReady(reconciledReady, issues)
-		r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
+		sybraAttention = r.processSybraPRPoll(ctx, tasks, summary)
 	}
+
+	assignedAttention := false
 	if r.runsAssignedPRSearches() {
-		r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
-		// reconcileReviewTask's gh calls (FetchMyReviewState, FetchPRState,
-		// FetchPRHeadSHA) use the package's legacy ctx-less runGHAPIWith path,
-		// shared by many other github package callers; re-plumbing ctx through
-		// that whole package is out of scope for this pass.
-		r.reconcileReviewPhases(tasks, summary) //nolint:contextcheck // github package's legacy ctx-less gh path, see comment above
-		r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
+		assignedAttention = r.processAssignedPRPoll(ctx, tasks, summary)
 	}
 
-	return r.nextInterval(prNeedsAttention(monitoredPRs), reviewNeedsAttention(summary))
+	return r.nextInterval(sybraAttention, assignedAttention)
+}
+
+func (r *Handler) fetchReviewSummary() (summary github.ReviewSummary, runSybraSearch, runAssignedSearch bool, err error) {
+	runSybraSearch = r.runsSybraPRSearches()
+	runAssignedSearch = r.runsAssignedPRSearches()
+
+	switch {
+	case runSybraSearch && runAssignedSearch && r.fetchReviewsFn != nil &&
+		r.fetchCreatedByMePRsFn == nil && r.fetchAssignedReviewSummaryFn == nil:
+		summary, err = r.fetchReviewsFn()
+		return summary, runSybraSearch, runAssignedSearch, err
+	default:
+		return r.fetchSplitReviewSummary(runSybraSearch, runAssignedSearch)
+	}
+}
+
+func (r *Handler) fetchSplitReviewSummary(runSybraSearch, runAssignedSearch bool) (summary github.ReviewSummary, sybraSearchEnabled, assignedSearchEnabled bool, err error) {
+	sybraSearchEnabled = runSybraSearch
+	assignedSearchEnabled = runAssignedSearch
+	if runSybraSearch {
+		fetchCreated := github.FetchCreatedByMePRs
+		if r.fetchCreatedByMePRsFn != nil {
+			fetchCreated = r.fetchCreatedByMePRsFn
+		}
+		var created []github.PullRequest
+		created, err = fetchCreated()
+		if err != nil {
+			return summary, sybraSearchEnabled, assignedSearchEnabled, err
+		}
+		summary.CreatedByMe = created
+	}
+	if runAssignedSearch {
+		fetchAssigned := github.FetchAssignedReviewSummary
+		if r.fetchAssignedReviewSummaryFn != nil {
+			fetchAssigned = r.fetchAssignedReviewSummaryFn
+		}
+		var assigned github.ReviewSummary
+		assigned, err = fetchAssigned()
+		if err != nil {
+			return summary, sybraSearchEnabled, assignedSearchEnabled, err
+		}
+		summary.ReviewRequested = assigned.ReviewRequested
+		summary.ReviewedByMe = assigned.ReviewedByMe
+	}
+	return summary, sybraSearchEnabled, assignedSearchEnabled, nil
+}
+
+func (r *Handler) handleReviewSummaryFetchError(ctx context.Context, tasks []task.Task, fetchErr error) time.Duration {
+	switch {
+	case github.IsTransientError(fetchErr):
+		r.handleTransientReviewFetchError(ctx, tasks, fetchErr)
+	case github.IsAuthError(fetchErr):
+		r.transientFetchFails = 0
+		r.authCircuit.RecordFailure(fetchErr)
+		if r.authCircuit.Open() {
+			return poll.AuthCircuitBackoff
+		}
+		// Pre-trip: log at Info so the up-to-threshold auth failures don't
+		// flood at WARN before the circuit's single ERROR trip line.
+		r.logger.Info("pr-monitor.fetch", "err", fetchErr)
+	default:
+		r.transientFetchFails = 0
+		r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
+	}
+	return r.nextInterval(false, false)
+}
+
+func (r *Handler) handleTransientReviewFetchError(ctx context.Context, tasks []task.Task, fetchErr error) {
+	r.transientFetchFails++
+	if r.transientFetchFails < TransientFetchWarnThreshold {
+		r.logger.Info("pr-monitor.fetch", "err", fetchErr)
+	} else {
+		r.logger.Warn("pr-monitor.fetch", "err", fetchErr, "consecutive", r.transientFetchFails)
+	}
+	// GraphQL budget exhausted: the per-PR fetch falls back to the idle
+	// REST bucket, so keep conflict/CI handling moving instead of stalling
+	// until the hourly reset. Thread-driven kinds are skipped (REST lacks
+	// thread data) and resume when GraphQL recovers.
+	if errors.Is(fetchErr, github.ErrBudgetExhausted) {
+		if r.runsSybraPRs() {
+			r.handleKnownPRConflictsViaREST(ctx, tasks)
+		}
+		if r.runsAssignedPRSearches() {
+			fetchState := github.FetchPRStateViaREST
+			if r.fetchPRStateFn != nil {
+				fetchState = r.fetchPRStateFn
+			}
+			r.closeFinishedReviewTasksWithFetch(tasks, nil, fetchState)
+		}
+		return
+	}
+
+	// Reconcile stale review tasks on transient failures only. Non-transient
+	// errors (auth, 4xx) mean the per-task FetchPRState calls will also fail or
+	// be wasted, compounding backoff under an already-throttled API. Budget
+	// exhaustion uses the REST fallback above instead of this GraphQL path.
+	if r.runsAssignedPRSearches() {
+		r.closeFinishedReviewTasks(tasks, nil)
+	}
+}
+
+func (r *Handler) processSybraPRPoll(ctx context.Context, tasks []task.Task, summary github.ReviewSummary) bool {
+	monitoredPRs := r.monitoredPRs(summary)
+	monitoredPRs = r.includeKnownTaskPRs(tasks, monitoredPRs)
+
+	// Recover PRs orphaned by a workflow that exited before linking — e.g. a
+	// task stranded in human-required while a late-finishing agent opened the
+	// PR (PRNumber never recorded). Re-link by branch and re-activate so the
+	// normal pr-fix/auto-merge path resumes. Runs before matcher assembly so an
+	// adopted task is monitored in this same poll.
+	r.adoptOrphanPRs(ctx, tasks, monitoredPRs)
+	r.adoptTasklessPRs(tasks, monitoredPRs)
+
+	matchers, closedMatchers := buildOutboundMatchers(tasks)
+	issues := r.handleMatchedOwnPRs(ctx, tasks, monitoredPRs, matchers)
+
+	r.logPollSummary(monitoredPRs, len(matchers), len(issues))
+	if len(closedMatchers) > 0 {
+		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
+	}
+
+	r.scanForReverts(ctx, tasks)
+	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
+	r.reconcilePRPhases(tasks, monitoredPRs)
+	// monitoredPRs here is the author:@me search result (r.monitoredPRs), which
+	// already spans every open PR the user authored regardless of task status —
+	// no separate fetch is needed to reach a human-required task's own PR.
+	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
+	issues = r.mergeReconciledReady(reconciledReady, issues)
+	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
+
+	return prNeedsAttention(monitoredPRs)
+}
+
+func (r *Handler) processAssignedPRPoll(ctx context.Context, tasks []task.Task, summary github.ReviewSummary) bool {
+	_ = ctx
+	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
+	// reconcileReviewTask's gh calls (FetchMyReviewState, FetchPRState,
+	// FetchPRHeadSHA) use the package's legacy ctx-less runGHAPIWith path,
+	// shared by many other github package callers; re-plumbing ctx through
+	// that whole package is out of scope for this pass.
+	r.reconcileReviewPhases(tasks, summary) //nolint:contextcheck // github package's legacy ctx-less gh path, see comment above
+	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
+	return reviewNeedsAttention(summary)
 }
 
 // buildOutboundMatchers builds the pr-fix dispatch and closed-task matcher
