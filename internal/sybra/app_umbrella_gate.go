@@ -89,11 +89,22 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 			st := stateFor(t.Issue)
 			st.tracker = t
 			st.cap = umbrella.ParseMaxParallel(t.Tags)
-			st.expanding = slices.Contains(t.Tags, umbrella.ExpandingTag)
+			st.expanding = umbrella.HasActiveExpandPhase(t.Tags) || slices.Contains(t.Tags, umbrella.ExpandingTag)
 		}
 		if t.UmbrellaIssue != "" {
 			hasUmbrella = true
 			accumulateChild(stateFor(t.UmbrellaIssue), t)
+		}
+	}
+	if !hasUmbrella {
+		return
+	}
+
+	for i := range tasks {
+		t := &tasks[i]
+		expanding := false
+		if t.UmbrellaIssue != "" {
+			expanding = stateFor(t.UmbrellaIssue).expanding
 		}
 		nodes[i] = umbrella.Node{
 			ID:        t.ID,
@@ -110,12 +121,10 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 			// concurrently, so this tick must not release from a partial graph.
 			Awaiting: t.UmbrellaIssue != "" &&
 				!inFlight[umbrella.NormalizeIssueRef(t.UmbrellaIssue)] &&
+				!expanding &&
 				(t.Status == task.StatusTodo || t.Status == task.StatusBlocked) &&
 				slices.Contains(t.Tags, umbrellaGatedTag),
 		}
-	}
-	if !hasUmbrella {
-		return
 	}
 
 	g := umbrella.Build(nodes)
@@ -463,6 +472,7 @@ func umbrellaProgressIssueSuffix(ref string) string {
 // open on GitHub (#1570).
 func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status, reason string, doClose bool) {
 	expandFailing := st.tracker != nil && umbrella.ParseExpandFailCount(st.tracker.Tags) > 0
+	expandActive := st.tracker != nil && umbrella.HasActiveExpandPhase(st.tracker.Tags)
 	switch {
 	case cyclic:
 		return task.StatusHumanRequired, "umbrella dependency cycle detected", false
@@ -480,7 +490,7 @@ func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status,
 		return st.tracker.Status, st.tracker.StatusReason, false
 	case st.total > 0 && st.doneCount == st.total:
 		return task.StatusDone, "all umbrella children complete", true
-	case st.total == 0 && settled:
+	case st.total == 0 && settled && !expandActive:
 		return task.StatusDone, "umbrella has no open sub-issues", true
 	default:
 		return task.StatusInProgress, "umbrella in progress", false

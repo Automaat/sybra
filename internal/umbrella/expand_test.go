@@ -160,6 +160,237 @@ func TestExpand_ConcurrentCallsMaterializeSingleDAG(t *testing.T) {
 	}
 
 	assertSingleDAG(t, tasks, "https://github.com/o/r/issues/100", 3)
+	tracker := mustGetByIssue(t, tasks, "https://github.com/o/r/issues/100", task.TaskTypeUmbrella)
+	if HasActiveExpandPhase(tracker.Tags) {
+		t.Fatalf("tracker kept active expansion phase after successful materialize: %v", tracker.Tags)
+	}
+}
+
+func TestExpand_ResumeFromFetchedCheckpointRefetchesLiveTopology(t *testing.T) {
+	umb := github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+		Body:       "body",
+	}
+	subs := makeTestIssues(3)
+	origFetch := fetchUmbrella
+	t.Cleanup(func() {
+		fetchUmbrella = origFetch
+		expandFailAfter = ""
+	})
+	fetchCalls := 0
+	fetchUmbrella = func(_ context.Context, _ string, _ int) (github.Issue, []github.Issue, error) {
+		fetchCalls++
+		return umb, subs, nil
+	}
+
+	tasks := newTestTaskManager(t)
+	expandFailAfter = expandCheckpointAfterFetched
+	if _, err := Expand(context.Background(), tasks, func(context.Context, string, string) (string, error) {
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2"},{"issue":"o/r#3"}],"maxParallel":3}`, nil
+	}, umb.URL); !errors.Is(err, errInjectedFailure) {
+		t.Fatalf("Expand first run = %v, want injected failure after fetched checkpoint", err)
+	}
+
+	expandFailAfter = ""
+	res, err := Expand(context.Background(), tasks, func(context.Context, string, string) (string, error) {
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2"},{"issue":"o/r#3"}],"maxParallel":3}`, nil
+	}, umb.URL)
+	if err != nil {
+		t.Fatalf("Expand resume: %v", err)
+	}
+	if fetchCalls != 2 {
+		t.Fatalf("fetch calls = %d, want 2 so resume rechecks GitHub topology", fetchCalls)
+	}
+	if res.Created != 3 || res.Skipped != 0 {
+		t.Fatalf("resume result = %+v, want Created=3 Skipped=0", res)
+	}
+	assertSingleDAG(t, tasks, umb.URL, 3)
+}
+
+func TestExpand_FetchedCheckpointTopologyDriftRefetchesAndReplans(t *testing.T) {
+	umb := github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+		Body:       "body",
+	}
+	currentSubs := makeTestIssues(3)
+	origFetch := fetchUmbrella
+	t.Cleanup(func() {
+		fetchUmbrella = origFetch
+		expandFailAfter = ""
+	})
+	fetchCalls := 0
+	fetchUmbrella = func(_ context.Context, _ string, _ int) (github.Issue, []github.Issue, error) {
+		fetchCalls++
+		return umb, slices.Clone(currentSubs), nil
+	}
+
+	tasks := newTestTaskManager(t)
+	expandFailAfter = expandCheckpointAfterFetched
+	if _, err := Expand(context.Background(), tasks, func(context.Context, string, string) (string, error) {
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2"},{"issue":"o/r#3"}],"maxParallel":3}`, nil
+	}, umb.URL); !errors.Is(err, errInjectedFailure) {
+		t.Fatalf("Expand first run = %v, want injected failure after fetched checkpoint", err)
+	}
+
+	currentSubs = makeTestIssues(4)
+	expandFailAfter = ""
+	res, err := Expand(context.Background(), tasks, func(context.Context, string, string) (string, error) {
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2"},{"issue":"o/r#3"},{"issue":"o/r#4"}],"maxParallel":4}`, nil
+	}, umb.URL)
+	if err != nil {
+		t.Fatalf("Expand resume after topology drift: %v", err)
+	}
+	if fetchCalls != 2 {
+		t.Fatalf("fetch calls = %d, want 2 so the retry sees the added sub-issue", fetchCalls)
+	}
+	if res.Created != 4 || res.Skipped != 0 || res.ChildCount != 4 {
+		t.Fatalf("resume result = %+v, want Created=4 Skipped=0 ChildCount=4", res)
+	}
+	mustGetByIssue(t, tasks, "https://github.com/o/r/issues/4", "")
+	assertSingleDAG(t, tasks, umb.URL, 4)
+}
+
+func TestExpand_RefetchesAfterSuccessfulCheckpointedExpansion(t *testing.T) {
+	umb := github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+		Body:       "body",
+	}
+	currentSubs := makeTestIssues(3)
+	origFetch := fetchUmbrella
+	t.Cleanup(func() { fetchUmbrella = origFetch })
+	fetchCalls := 0
+	fetchUmbrella = func(_ context.Context, _ string, _ int) (github.Issue, []github.Issue, error) {
+		fetchCalls++
+		return umb, slices.Clone(currentSubs), nil
+	}
+
+	tasks := newTestTaskManager(t)
+	runCalls := 0
+	run := func(context.Context, string, string) (string, error) {
+		runCalls++
+		return fmt.Sprintf(`{"children":[%s],"maxParallel":3}`, planJSONChildren(len(currentSubs))), nil
+	}
+
+	res, err := Expand(context.Background(), tasks, run, umb.URL)
+	if err != nil {
+		t.Fatalf("Expand first run: %v", err)
+	}
+	if res.Created != 3 {
+		t.Fatalf("first result = %+v, want Created=3", res)
+	}
+
+	currentSubs = makeTestIssues(4)
+	res, err = Expand(context.Background(), tasks, run, umb.URL)
+	if err != nil {
+		t.Fatalf("Expand second run: %v", err)
+	}
+	if fetchCalls != 2 {
+		t.Fatalf("fetch calls = %d, want 2 so a completed checkpoint cannot stale-cache GitHub topology", fetchCalls)
+	}
+	if runCalls != 2 {
+		t.Fatalf("planner calls = %d, want 2 after a new sub-issue appears", runCalls)
+	}
+	if res.Created != 1 || res.Skipped != 3 || res.ChildCount != 4 {
+		t.Fatalf("second result = %+v, want Created=1 Skipped=3 ChildCount=4", res)
+	}
+	mustGetByIssue(t, tasks, "https://github.com/o/r/issues/4", "")
+	assertSingleDAG(t, tasks, umb.URL, 4)
+}
+
+func TestExpand_ResumeFromPlannedCheckpointWithoutReplanning(t *testing.T) {
+	umb := github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+		Body:       "body",
+	}
+	origFetch := fetchUmbrella
+	t.Cleanup(func() {
+		fetchUmbrella = origFetch
+		expandFailAfter = ""
+	})
+	fetchCalls := 0
+	fetchUmbrella = func(_ context.Context, _ string, _ int) (github.Issue, []github.Issue, error) {
+		fetchCalls++
+		return umb, makeTestIssues(3), nil
+	}
+	tasks := newTestTaskManager(t)
+	expandFailAfter = expandCheckpointAfterPlanned
+
+	runCalls := 0
+	run := func(context.Context, string, string) (string, error) {
+		runCalls++
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2","dependsOn":["o/r#1"]},{"issue":"o/r#3","dependsOn":["o/r#2"]}],"maxParallel":1}`, nil
+	}
+	if _, err := Expand(context.Background(), tasks, run, umb.URL); !errors.Is(err, errInjectedFailure) {
+		t.Fatalf("Expand first run = %v, want injected failure after planned checkpoint", err)
+	}
+
+	expandFailAfter = ""
+	res, err := Expand(context.Background(), tasks, run, umb.URL)
+	if err != nil {
+		t.Fatalf("Expand resume: %v", err)
+	}
+	if runCalls != 1 {
+		t.Fatalf("planner calls = %d, want 1 across failed+resumed runs", runCalls)
+	}
+	if fetchCalls != 2 {
+		t.Fatalf("fetch calls = %d, want 2 so planned resume still rechecks GitHub topology", fetchCalls)
+	}
+	if res.Created != 3 || res.MaxParallel != 1 {
+		t.Fatalf("resume result = %+v, want Created=3 MaxParallel=1", res)
+	}
+	assertSingleDAG(t, tasks, umb.URL, 3)
+}
+
+func TestExpand_PlannedCheckpointTopologyDriftReplans(t *testing.T) {
+	umb := github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+		Body:       "body",
+	}
+	currentSubs := makeTestIssues(3)
+	origFetch := fetchUmbrella
+	t.Cleanup(func() {
+		fetchUmbrella = origFetch
+		expandFailAfter = ""
+	})
+	fetchUmbrella = func(_ context.Context, _ string, _ int) (github.Issue, []github.Issue, error) {
+		return umb, slices.Clone(currentSubs), nil
+	}
+
+	tasks := newTestTaskManager(t)
+	expandFailAfter = expandCheckpointAfterPlanned
+	runCalls := 0
+	run := func(context.Context, string, string) (string, error) {
+		runCalls++
+		return fmt.Sprintf(`{"children":[%s],"maxParallel":%d}`, planJSONChildren(len(currentSubs)), len(currentSubs)), nil
+	}
+	if _, err := Expand(context.Background(), tasks, run, umb.URL); !errors.Is(err, errInjectedFailure) {
+		t.Fatalf("Expand first run = %v, want injected failure after planned checkpoint", err)
+	}
+
+	currentSubs = makeTestIssues(4)
+	expandFailAfter = ""
+	res, err := Expand(context.Background(), tasks, run, umb.URL)
+	if err != nil {
+		t.Fatalf("Expand resume after topology drift: %v", err)
+	}
+	if runCalls != 2 {
+		t.Fatalf("planner calls = %d, want 2 after topology drift invalidates planned checkpoint", runCalls)
+	}
+	if res.Created != 4 || res.MaxParallel != 4 || res.ChildCount != 4 {
+		t.Fatalf("resume result = %+v, want Created=4 MaxParallel=4 ChildCount=4", res)
+	}
+	mustGetByIssue(t, tasks, "https://github.com/o/r/issues/4", "")
+	assertSingleDAG(t, tasks, umb.URL, 4)
 }
 
 func TestExpand_RechecksExistingStateBeforeMaterialize(t *testing.T) {
@@ -192,16 +423,7 @@ func TestExpand_RechecksExistingStateBeforeMaterialize(t *testing.T) {
 
 	<-plannerStarted
 
-	tracker, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
-		Issue:     task.Ptr(umb.URL),
-		TaskType:  task.Ptr(task.TaskTypeUmbrella),
-		ProjectID: task.Ptr(umb.Repository),
-		Status:    task.Ptr(task.StatusInProgress),
-		Tags:      task.Ptr([]string{"umbrella", MaxParallelTag(DefaultMaxParallel)}),
-	})
-	if err != nil {
-		t.Fatalf("create tracker: %v", err)
-	}
+	tracker := mustGetByIssue(t, tasks, umb.URL, task.TaskTypeUmbrella)
 	for _, issue := range []string{
 		"https://github.com/o/r/issues/1",
 		"https://github.com/o/r/issues/2",
@@ -233,8 +455,8 @@ func TestExpand_RechecksExistingStateBeforeMaterialize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get tracker: %v", err)
 	}
-	if ParseMaxParallel(gotTracker.Tags) != DefaultMaxParallel {
-		t.Fatalf("tracker tags changed unexpectedly = %v", gotTracker.Tags)
+	if HasActiveExpandPhase(gotTracker.Tags) {
+		t.Fatalf("tracker kept active expansion phase after all-materialized short-circuit: %v", gotTracker.Tags)
 	}
 	assertSingleDAG(t, tasks, umb.URL, 3)
 }
@@ -262,6 +484,14 @@ func makeTestIssues(n int) []github.Issue {
 		}
 	}
 	return out
+}
+
+func planJSONChildren(n int) string {
+	children := make([]string, n)
+	for i := range children {
+		children[i] = fmt.Sprintf(`{"issue":"o/r#%d"}`, i+1)
+	}
+	return strings.Join(children, ",")
 }
 
 func TestMaterialize_DegradedFreshTrackerCarriesFallbackTag(t *testing.T) {
@@ -484,12 +714,19 @@ func TestRecordExpandFailure_UsesLiveTagCount(t *testing.T) {
 func TestClearExpandFailure_StripsTagOnSuccess(t *testing.T) {
 	t.Parallel()
 	tasks := newTestTaskManager(t)
+	body := upsertExpandCheckpointBody("tracker body", trackerExpandCheckpoint{
+		Fetched: &trackerExpandFetchedCheckpoint{
+			Umbrella: github.Issue{URL: "https://github.com/o/r/issues/100"},
+			Subs:     []github.Issue{{URL: "https://github.com/o/r/issues/1"}},
+		},
+	})
 	tracker, err := tasks.CreateFull("umbrella", "", task.AgentModeHeadless, task.Update{
 		Issue:        task.Ptr("https://github.com/o/r/issues/100"),
 		TaskType:     task.Ptr(task.TaskTypeUmbrella),
 		Status:       task.Ptr(task.StatusInProgress),
 		StatusReason: task.Ptr("umbrella expansion failed (attempt 2): planner killed"),
-		Tags:         task.Ptr([]string{"umbrella", ExpandFailTag(2), ExpandingTag}),
+		Body:         task.Ptr(body),
+		Tags:         task.Ptr([]string{"umbrella", ExpandFailTag(2), ExpandPhaseTag(ExpandPhaseMaterializing)}),
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
@@ -506,11 +743,14 @@ func TestClearExpandFailure_StripsTagOnSuccess(t *testing.T) {
 	if ParseExpandFailCount(got.Tags) != 0 {
 		t.Fatalf("fail count = %d, want 0 after clear", ParseExpandFailCount(got.Tags))
 	}
-	if slices.Contains(got.Tags, ExpandingTag) {
-		t.Fatalf("tags = %v, want %q cleared after success", got.Tags, ExpandingTag)
+	if HasActiveExpandPhase(got.Tags) {
+		t.Fatalf("active phase tags left behind after clear: %v", got.Tags)
 	}
 	if got.StatusReason != "" {
 		t.Fatalf("StatusReason = %q, want cleared with the failure tag", got.StatusReason)
+	}
+	if strings.Contains(got.Body, expandCheckpointStart) {
+		t.Fatalf("checkpoint block left behind after successful clear: %q", got.Body)
 	}
 
 	// Idempotent: clearing an already-clean tracker is a no-op, not an error.
