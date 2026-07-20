@@ -935,6 +935,33 @@ func TestRunConfigDumpDoesNotMutateSparseConfig(t *testing.T) {
 	}
 }
 
+func TestBinaryWorktreeDriftWarning(t *testing.T) {
+	t.Run("same revision", func(t *testing.T) {
+		if got := binaryWorktreeDriftWarning("abc123", "abc123"); got != "" {
+			t.Fatalf("warning = %q, want empty", got)
+		}
+	})
+
+	t.Run("missing revision", func(t *testing.T) {
+		if got := binaryWorktreeDriftWarning("", "abc123"); got != "" {
+			t.Fatalf("warning = %q, want empty", got)
+		}
+	})
+
+	t.Run("different revisions", func(t *testing.T) {
+		got := binaryWorktreeDriftWarning(
+			"1111111111111111111111111111111111111111",
+			"2222222222222222222222222222222222222222",
+		)
+		if !strings.Contains(got, "111111111111") || !strings.Contains(got, "222222222222") {
+			t.Fatalf("warning %q missing short revisions", got)
+		}
+		if !strings.Contains(got, "go run ./cmd/sybra-cli") || !strings.Contains(got, "go install ./cmd/sybra-cli") {
+			t.Fatalf("warning %q missing remediation", got)
+		}
+	})
+}
+
 func TestListFilterStatus(t *testing.T) {
 	setupStore(t)
 

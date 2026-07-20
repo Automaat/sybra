@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -117,6 +118,10 @@ func run(args []string) int {
 	}
 	defer restoreHome()
 
+	if !isHook {
+		warnBinaryWorktreeDrift()
+	}
+
 	if isReadOnlyConfigCommand(cmd) {
 		cfg, err := config.LoadNoPersist()
 		if err != nil {
@@ -192,6 +197,62 @@ func applyCLIHome(home string) (func(), error) {
 		}
 		_ = os.Unsetenv("SYBRA_HOME")
 	}, nil
+}
+
+func warnBinaryWorktreeDrift() {
+	msg := binaryWorktreeDriftWarning(currentBuildRevision(), currentWorktreeRevision())
+	if msg == "" {
+		return
+	}
+	fmt.Fprintln(os.Stderr, msg)
+}
+
+func binaryWorktreeDriftWarning(buildRev, worktreeRev string) string {
+	buildRev = strings.TrimSpace(buildRev)
+	worktreeRev = strings.TrimSpace(worktreeRev)
+	if buildRev == "" || worktreeRev == "" || buildRev == worktreeRev {
+		return ""
+	}
+	return fmt.Sprintf(
+		"warning: sybra-cli binary built from %s, current worktree at %s; use `go run ./cmd/sybra-cli` or reinstall with `go install ./cmd/sybra-cli`",
+		shortRevision(buildRev),
+		shortRevision(worktreeRev),
+	)
+}
+
+func currentBuildRevision() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" {
+			return setting.Value
+		}
+	}
+	return ""
+}
+
+func currentWorktreeRevision() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", wd, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+func shortRevision(rev string) string {
+	rev = strings.TrimSpace(rev)
+	if len(rev) <= 12 {
+		return rev
+	}
+	return rev[:12]
 }
 
 // dispatch routes a parsed subcommand (with its own args and the global
