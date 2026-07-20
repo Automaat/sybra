@@ -179,9 +179,9 @@ func buildAppOptions(
 }
 
 // desktopBrowserOptions returns the sybra.Option(s) that wire the in-app
-// browser opener, or none when the config toggle disables it. When omitted,
-// BrowserService.Open keeps its nil-opener "unavailable" behavior, and the
-// frontend's existing catch handler falls back to the system browser.
+// browser opener, or none unless browser.in_app is explicitly enabled. When
+// omitted, BrowserService.Open keeps its nil-opener "unavailable" behavior,
+// and the frontend's existing catch handler falls back to the system browser.
 func desktopBrowserOptions(cfg *config.Config, opener func(string)) []sybra.Option {
 	if !cfg.InAppBrowserEnabled() {
 		return nil

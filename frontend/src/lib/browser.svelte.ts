@@ -3,22 +3,34 @@
 // Opening a GitHub link in Sybra's own webview window keeps the login session in
 // one place — the user stays in a single app. The system browser is still one
 // modifier-click (or one opt-out) away, so nothing is taken away.
-import { OpenInAppBrowser, BrowserOpenURL } from './api.js'
+import { GetSettings, OpenInAppBrowser, BrowserOpenURL } from './api.js'
 
 const STORAGE_KEY = 'inAppBrowser'
 
 function loadStored(): boolean {
   try {
-    const v = localStorage.getItem(STORAGE_KEY)
-    return v === null ? true : v === 'true' // default: open links in-app
+    return localStorage.getItem(STORAGE_KEY) === 'true'
   } catch {
     // localStorage unavailable (SSR / restricted context)
-    return true
+    return false
   }
 }
 
 function createStore() {
   let enabled = $state<boolean>(loadStored())
+
+  // Keep explicit browser.inApp: true installs enabled even when localStorage
+  // has never been written on this machine.
+  void Promise.resolve(GetSettings()).then((settings) => {
+    if (settings?.browser?.inApp === true) {
+      enabled = true
+      try {
+        localStorage.setItem(STORAGE_KEY, 'true')
+      } catch {
+        // ignore
+      }
+    }
+  }).catch(() => {})
 
   return {
     get enabled(): boolean {

@@ -448,8 +448,8 @@ func TestReloadFromDisk_BrowserRestartRequiredWarned(t *testing.T) {
 	}
 
 	next := *cfg
-	disabled := false
-	next.Browser.InApp = &disabled
+	enabled := true
+	next.Browser.InApp = &enabled
 	writeConfigYAML(t, cfgPath, &next)
 
 	result, err := svc.ReloadFromDisk()
@@ -479,10 +479,10 @@ func TestReloadFromDisk_BrowserRestartRequiredWarned(t *testing.T) {
 	if !found {
 		t.Error("expected browser restart warning, got none")
 	}
-	if svc.cfg.Browser.InApp != nil && !*svc.cfg.Browser.InApp {
+	if svc.cfg.InAppBrowserEnabled() {
 		t.Error("active cfg unexpectedly published restart-required browser change")
 	}
-	if got := svc.GetSettings().Browser.InApp; got == nil || *got {
+	if got := svc.GetSettings().Browser.InApp; got == nil || !*got {
 		t.Error("persisted browser setting not retained as pending")
 	}
 }
@@ -581,8 +581,8 @@ func TestReloadFromDisk_ResultListsAppliedRestartAndUnchanged(t *testing.T) {
 
 	next := *svc.cfg
 	next.Logging.Level = "debug"
-	disabled := false
-	next.Browser.InApp = &disabled
+	enabled := true
+	next.Browser.InApp = &enabled
 	writeConfigYAML(t, cfgPath, &next)
 
 	result, err := svc.ReloadFromDisk()
@@ -612,11 +612,11 @@ func TestReloadFromDisk_ReadersSeeWholePersistedSnapshots(t *testing.T) {
 				return
 			default:
 				got := svc.GetSettings()
-				inApp := got.Browser.InApp == nil || *got.Browser.InApp
+				inApp := got.Browser.InApp != nil && *got.Browser.InApp
 				key := got.Agent.Provider + "|" + got.Logging.Level
 				switch {
-				case key == "claude|info" && inApp:
-				case key == "codex|debug" && !inApp:
+				case key == "claude|info" && !inApp:
+				case key == "codex|debug" && inApp:
 				default:
 					errCh <- errors.New("observed mixed settings snapshot during reload")
 					return
@@ -628,8 +628,8 @@ func TestReloadFromDisk_ReadersSeeWholePersistedSnapshots(t *testing.T) {
 	next := *svc.cfg
 	next.Agent.Provider = "codex"
 	next.Logging.Level = "debug"
-	disabled := false
-	next.Browser.InApp = &disabled
+	enabled := true
+	next.Browser.InApp = &enabled
 	writeConfigYAML(t, cfgPath, &next)
 	if _, err := svc.ReloadFromDisk(); err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
