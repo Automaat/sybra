@@ -1,49 +1,63 @@
 package config
 
 type AgentDefaults struct {
-	Provider           string  `yaml:"provider" json:"provider"`
-	Model              string  `yaml:"model" json:"model"`
-	Mode               string  `yaml:"mode" json:"mode"`
-	MaxConcurrent      int     `yaml:"max_concurrent" json:"maxConcurrent"`
-	ResearchMachineDir string  `yaml:"research_machine_dir" json:"researchMachineDir"`
-	MaxCostUSD         float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
-	MaxTurns           int     `yaml:"max_turns" json:"maxTurns"`
+	Provider           string `yaml:"provider" json:"provider"`
+	Model              string `yaml:"model" json:"model"`
+	Mode               string `yaml:"mode" json:"mode"`
+	MaxConcurrent      int    `yaml:"max_concurrent" json:"maxConcurrent"`
+	ResearchMachineDir string `yaml:"research_machine_dir" json:"researchMachineDir"`
+	// PostResultCostUSD is a reactive per-run USD circuit breaker: Sybra checks
+	// it only when the provider emits a terminal result event, after that spend
+	// is already incurred. 0 (default in raw zero values, 5 in fresh installs)
+	// disables the breaker.
+	MaxCostUSD float64 `yaml:"post_result_cost_usd" json:"postResultCostUsd"`
+	// MaxAssistantEvents caps top-level assistant stream events per run, not
+	// provider CLI turns. 0 disables the ceiling.
+	MaxTurns int `yaml:"max_assistant_events" json:"maxAssistantEvents"`
 	// MaxCheckpoints bounds how many times a single workflow step may
-	// checkpoint-and-handoff after hitting the per-run turn ceiling. 0 means
-	// use DefaultMaxCheckpoints (3).
+	// checkpoint-and-handoff after hitting the per-run assistant-event ceiling.
+	// 0 means use DefaultMaxCheckpoints (3).
 	MaxCheckpoints int `yaml:"max_checkpoints" json:"maxCheckpoints"`
-	// CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
-	// a checkpoint-and-handoff to a fresh run when an eligible code-author
-	// headless run hits its per-run turn ceiling. nil means not configured
-	// (defaults to true). Set false to restore the legacy in-process
-	// auto-continue behavior with no code revert.
-	CheckpointOnTurnCeiling *bool `yaml:"checkpoint_on_turn_ceiling" json:"checkpointOnTurnCeiling"`
+	// CheckpointOnTurnCeiling swaps the legacy raise-the-assistant-event-ceiling
+	// auto-continue for a checkpoint-and-handoff to a fresh run when an
+	// eligible code-author headless run hits its per-run assistant-event
+	// ceiling. nil means not configured (defaults to true). Set false to
+	// restore the legacy in-process auto-continue behavior with no code revert.
+	CheckpointOnTurnCeiling *bool `yaml:"checkpoint_on_assistant_event_ceiling" json:"checkpointOnTurnCeiling"`
 	// MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
-	// has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
-	// where each retry stays under the per-run cap but the task's total spend
-	// still balloons unbounded. Checked once per dispatch, before an agent is
-	// started — StartAgentWithAssignment refuses to start and flips the task
-	// to human-required when the task's already-recorded AgentRuns.CostUSD sum
-	// meets or exceeds this. 0 (default) disables the check.
+	// has ever had (unlike PostResultCostUSD, which resets every run). Closes
+	// the gap where each retry stays under the per-run cap but the task's total
+	// spend still balloons unbounded. Checked once per dispatch, before an
+	// agent is started — StartAgentWithAssignment refuses to start and flips
+	// the task to human-required when the task's already-recorded
+	// AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the
+	// check.
 	MaxTaskCostUSD float64 `yaml:"max_task_cost_usd" json:"maxTaskCostUsd"`
-	// TurnCostFraction is the fraction of MaxCostUSD below which a turns
-	// escalation is auto-continued. Default 0.8 when unset.
-	TurnCostFraction float64 `yaml:"turn_cost_fraction" json:"turnCostFraction"`
-	// TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset.
-	TurnMultiplier float64 `yaml:"turn_multiplier" json:"turnMultiplier"`
+	// TurnCostFraction is the fraction of PostResultCostUSD below which an
+	// assistant-event escalation is auto-continued. Default 0.8 when unset.
+	TurnCostFraction float64 `yaml:"assistant_event_cost_fraction" json:"turnCostFraction"`
+	// TurnMultiplier scales the assistant-event ceiling on each
+	// auto-continuation. Default 2 when unset.
+	TurnMultiplier float64 `yaml:"assistant_event_multiplier" json:"turnMultiplier"`
 	// RequirePermissions sets the default permission requirement for agents.
 	// nil means not configured (falls back to true — safe default).
 	// Set to false in config to opt all tasks into skip-permissions mode.
 	RequirePermissions *bool `yaml:"require_permissions" json:"requirePermissions"`
 	// ReviewUntilClean keeps simple-task-review cycling review→fix→review
 	// until the reviewer returns a CLEAN verdict, so the fix agent's diff is
-	// never the last word. nil means not configured (falls back to true).
-	// The cycle is uncapped by design — a round cap would censor the
-	// review-rounds distribution the stats page reports — and is bounded only
-	// by MaxTaskCostUSD, which is enforced before every dispatch. false falls
-	// back to a single review pass per task: cheaper and more predictable when
-	// no per-task budget is configured.
+	// never the last word. nil means not configured (falls back to true). false
+	// falls back to a single review pass per task: cheaper and more
+	// predictable when no per-task budget is configured.
 	ReviewUntilClean *bool `yaml:"review_until_clean" json:"reviewUntilClean"`
+	// MaxReviewRounds bounds how many automated review rounds a single
+	// simple-task-review execution may spend before Sybra parks the task
+	// human-required. 0 means use DefaultMaxReviewRounds (3). Ignored when
+	// ReviewUntilClean is false or AllowUnboundedReviewRounds is true.
+	MaxReviewRounds int `yaml:"max_review_rounds" json:"maxReviewRounds"`
+	// AllowUnboundedReviewRounds restores the legacy "loop until CLEAN with no
+	// review-round cap" posture. nil means not configured (defaults to false).
+	// Use only with a deliberate MaxTaskCostUSD backstop.
+	AllowUnboundedReviewRounds *bool `yaml:"allow_unbounded_review_rounds" json:"allowUnboundedReviewRounds"`
 	// BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
 	// claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
 	// vars (claude has no equivalent CLI flag). 0 means use

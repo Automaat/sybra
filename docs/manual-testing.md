@@ -43,8 +43,8 @@ audit:
 agent:
   provider: claude
   max_concurrent: 20
-  max_cost_usd: 5
-  max_turns: 50
+  post_result_cost_usd: 5
+  max_assistant_events: 50
   require_permissions: false
 orchestrator:
   dispatch_interval_seconds: 3600

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/config"
 )
 
 const triageRetryableStatusReasonPrefix = "triage retryable: "
@@ -688,6 +690,7 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 	// follows the documented default instead of silently shipping
 	// single-pass review.
 	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled)
+	fields["task.review_round_limit_reached"] = strconv.FormatBool(e.reviewRoundLimitReached(t))
 
 	nextID, tErr := ResolveTransition(current.Next, fields)
 	if tErr != nil {
@@ -724,6 +727,32 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 		return nil, nil, err
 	}
 	return nextStep, nil, nil
+}
+
+func (e *Engine) reviewRoundLimitReached(t TaskInfo) bool {
+	if e.reviewLoopDisabled || e.allowUnboundedReviewRounds {
+		return false
+	}
+	limit := e.maxReviewRounds
+	if limit <= 0 {
+		limit = config.DefaultMaxReviewRounds
+	}
+	startedAt := time.Time{}
+	if t.Workflow != nil {
+		startedAt = t.Workflow.StartedAt
+	}
+	rounds := 0
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if run.Role != "review" {
+			continue
+		}
+		if !startedAt.IsZero() && run.StartedAt.Before(startedAt) {
+			continue
+		}
+		rounds++
+	}
+	return rounds >= limit
 }
 
 // maxCascadeDepth bounds how many workflows may chain synchronously off a

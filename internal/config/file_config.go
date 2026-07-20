@@ -148,6 +148,7 @@ func ParseFileConfig(data []byte) (*FileConfig, error) {
 			return nil, err
 		}
 		validateRoot = normalized
+		cfg.warnings = append(cfg.warnings, legacyFieldAliasWarnings(normalized)...)
 	}
 	if err := validateKnownConfigKeys(validateRoot, cfg.schemaVersion); err != nil {
 		return nil, err
@@ -196,6 +197,12 @@ type durationAliasSpec struct {
 	fieldPath  []string
 	unit       durationUnit
 	kind       durationKind
+}
+
+type fieldAliasSpec struct {
+	aliasPath  []string
+	legacyPath []string
+	fieldPath  []string
 }
 
 type durationUnit int
@@ -264,8 +271,20 @@ var durationAliasSpecs = []durationAliasSpec{
 	{aliasPath: []string{"agent", "k8s_jobs", "failed_ttl_after_finished"}, legacyPath: []string{"agent", "k8s_jobs", "failed_ttl_seconds_after_finished"}, fieldPath: []string{"Agent", "K8sJobs", "FailedTTL"}, unit: unitSeconds, kind: kindInt},
 }
 
+var fieldAliasSpecs = []fieldAliasSpec{
+	{aliasPath: []string{"agent", "post_result_cost_usd"}, legacyPath: []string{"agent", "max_cost_usd"}, fieldPath: []string{"Agent", "MaxCostUSD"}},
+	{aliasPath: []string{"agent", "max_assistant_events"}, legacyPath: []string{"agent", "max_turns"}, fieldPath: []string{"Agent", "MaxTurns"}},
+	{aliasPath: []string{"agent", "checkpoint_on_assistant_event_ceiling"}, legacyPath: []string{"agent", "checkpoint_on_turn_ceiling"}, fieldPath: []string{"Agent", "CheckpointOnTurnCeiling"}},
+	{aliasPath: []string{"agent", "assistant_event_cost_fraction"}, legacyPath: []string{"agent", "turn_cost_fraction"}, fieldPath: []string{"Agent", "TurnCostFraction"}},
+	{aliasPath: []string{"agent", "assistant_event_multiplier"}, legacyPath: []string{"agent", "turn_multiplier"}, fieldPath: []string{"Agent", "TurnMultiplier"}},
+}
+
 type aliasIndex struct {
 	byParent map[string]map[string]durationAliasSpec
+}
+
+type fieldAliasIndex struct {
+	byParent map[string]map[string]fieldAliasSpec
 }
 
 func newAliasIndex(specs []durationAliasSpec) aliasIndex {
@@ -280,7 +299,22 @@ func newAliasIndex(specs []durationAliasSpec) aliasIndex {
 	return idx
 }
 
+func newFieldAliasIndex(specs []fieldAliasSpec) fieldAliasIndex {
+	idx := fieldAliasIndex{byParent: map[string]map[string]fieldAliasSpec{}}
+	for _, spec := range specs {
+		for _, path := range [][]string{spec.aliasPath, spec.legacyPath} {
+			parent := strings.Join(path[:len(path)-1], ".")
+			if idx.byParent[parent] == nil {
+				idx.byParent[parent] = map[string]fieldAliasSpec{}
+			}
+			idx.byParent[parent][path[len(path)-1]] = spec
+		}
+	}
+	return idx
+}
+
 var schemaV2Aliases = newAliasIndex(durationAliasSpecs)
+var schemaV2FieldAliases = newFieldAliasIndex(fieldAliasSpecs)
 
 // DurationAliasPathForLegacy reports the schema-v2 duration alias key path for a
 // legacy numeric config path (dotted, e.g. "agent.bash_timeout_seconds" ->
@@ -294,6 +328,25 @@ func DurationAliasPathForLegacy(legacyPath string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func fieldAliasPathForLegacy(legacyPath string) (string, bool) {
+	for _, spec := range fieldAliasSpecs {
+		if joinPath(spec.legacyPath) == legacyPath {
+			return joinPath(spec.aliasPath), true
+		}
+	}
+	return "", false
+}
+
+func legacyFieldAliasPathsForRuntime(runtimePath string) []string {
+	var paths []string
+	for _, spec := range fieldAliasSpecs {
+		if joinPath(spec.aliasPath) == runtimePath {
+			paths = append(paths, joinPath(spec.legacyPath))
+		}
+	}
+	return paths
 }
 
 // FormatDurationAliasValue renders a legacy numeric value (int or float) into a
@@ -340,16 +393,18 @@ func unitSuffix(unit durationUnit) string {
 	}
 }
 
-func validateKnownConfigKeys(root *yaml.Node, _ int) error {
-	return validateNodeAgainstType(root, reflect.TypeFor[Config](), nil, schemaV2Aliases)
+func validateKnownConfigKeys(root *yaml.Node, schemaVersion int) error {
+	fieldAliases := schemaV2FieldAliases
+	aliases := schemaV2Aliases
+	return validateNodeAgainstType(root, reflect.TypeFor[Config](), nil, aliases, fieldAliases)
 }
 
-func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, aliases aliasIndex) error {
+func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, aliases aliasIndex, fieldAliases fieldAliasIndex) error {
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
-		return validateNodeAgainstType(node.Content[0], typ, path, aliases)
+		return validateNodeAgainstType(node.Content[0], typ, path, aliases, fieldAliases)
 	}
 	switch typ.Kind() {
 	case reflect.Struct:
@@ -359,12 +414,13 @@ func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, a
 		fields := yamlFieldsForType(typ)
 		parent := strings.Join(path, ".")
 		allowedAliases := aliases.byParent[parent]
+		allowedFieldAliases := fieldAliases.byParent[parent]
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			keyNode := node.Content[i]
 			valNode := node.Content[i+1]
 			key := keyNode.Value
 			if field, ok := fields[key]; ok {
-				if err := validateNodeAgainstType(valNode, field, append(path, key), aliases); err != nil {
+				if err := validateNodeAgainstType(valNode, field, append(path, key), aliases, fieldAliases); err != nil {
 					return err
 				}
 				continue
@@ -375,7 +431,10 @@ func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, a
 				}
 				continue
 			}
-			suggestion := nearestKey(key, knownKeys(fields, allowedAliases))
+			if _, ok := allowedFieldAliases[key]; ok {
+				continue
+			}
+			suggestion := nearestKey(key, knownKeys(fields, allowedAliases, allowedFieldAliases))
 			msg := fmt.Sprintf("unknown config key %q", joinPath(append(path, key)))
 			if suggestion != "" {
 				msg += fmt.Sprintf(" (did you mean %q?)", suggestion)
@@ -387,7 +446,7 @@ func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, a
 			return nil
 		}
 		for i, child := range node.Content {
-			if err := validateNodeAgainstType(child, typ.Elem(), append(path, fmt.Sprintf("[%d]", i)), aliases); err != nil {
+			if err := validateNodeAgainstType(child, typ.Elem(), append(path, fmt.Sprintf("[%d]", i)), aliases, fieldAliases); err != nil {
 				return err
 			}
 		}
@@ -398,7 +457,7 @@ func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, a
 		if elem := typ.Elem(); elem.Kind() == reflect.Struct || elem.Kind() == reflect.Pointer || elem.Kind() == reflect.Slice || elem.Kind() == reflect.Map {
 			for i := 0; i+1 < len(node.Content); i += 2 {
 				key := node.Content[i].Value
-				if err := validateNodeAgainstType(node.Content[i+1], elem, append(path, key), aliases); err != nil {
+				if err := validateNodeAgainstType(node.Content[i+1], elem, append(path, key), aliases, fieldAliases); err != nil {
 					return err
 				}
 			}
@@ -436,12 +495,15 @@ func yamlFieldsForType(typ reflect.Type) map[string]reflect.Type {
 	return fields
 }
 
-func knownKeys(fields map[string]reflect.Type, aliases map[string]durationAliasSpec) []string {
-	keys := make([]string, 0, len(fields)+len(aliases))
+func knownKeys(fields map[string]reflect.Type, aliases map[string]durationAliasSpec, fieldAliases map[string]fieldAliasSpec) []string {
+	keys := make([]string, 0, len(fields)+len(aliases)+len(fieldAliases))
 	for key := range fields {
 		keys = append(keys, key)
 	}
 	for key := range aliases {
+		keys = append(keys, key)
+	}
+	for key := range fieldAliases {
 		keys = append(keys, key)
 	}
 	return keys
@@ -547,6 +609,31 @@ func applyDurationAliases(file *FileConfig, cfg *ResolvedConfig) error {
 	return nil
 }
 
+func applyFieldAliases(file *FileConfig, cfg *ResolvedConfig) error {
+	if file == nil {
+		return nil
+	}
+	for _, spec := range fieldAliasSpecs {
+		legacyNode, hasLegacy := file.nodeAt(spec.legacyPath...)
+		if !hasLegacy {
+			continue
+		}
+		if canonicalNode, hasCanonical := file.nodeAt(spec.aliasPath...); hasCanonical {
+			same, err := aliasNodesEqualForField(spec.fieldPath, canonicalNode, legacyNode)
+			if err != nil {
+				return fmt.Errorf("%s: %w", joinPath(spec.aliasPath), err)
+			}
+			if !same {
+				return fmt.Errorf("%s conflicts with legacy compatibility field %q", joinPath(spec.aliasPath), joinPath(spec.legacyPath))
+			}
+		}
+		if err := setFieldByPathFromNode(cfg, spec.fieldPath, legacyNode); err != nil {
+			return fmt.Errorf("%s: %w", joinPath(spec.legacyPath), err)
+		}
+	}
+	return nil
+}
+
 func convertDurationAliasValue(raw string, unit durationUnit, kind durationKind) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("must be a duration string")
@@ -620,6 +707,68 @@ func unitName(unit durationUnit) string {
 	}
 }
 
+func aliasNodesEqualForField(path []string, a, b *yaml.Node) (bool, error) {
+	av, err := decodeFieldNodeByPath(path, a)
+	if err != nil {
+		return false, err
+	}
+	bv, err := decodeFieldNodeByPath(path, b)
+	if err != nil {
+		return false, err
+	}
+	return reflect.DeepEqual(av.Interface(), bv.Interface()), nil
+}
+
+func decodeFieldNodeByPath(path []string, node *yaml.Node) (reflect.Value, error) {
+	fieldType, err := structFieldTypeByPath(reflect.TypeFor[Config](), path)
+	if err != nil {
+		return reflect.Value{}, err
+	}
+	if fieldType.Kind() == reflect.Pointer {
+		dst := reflect.New(fieldType.Elem())
+		if err := node.Decode(dst.Interface()); err != nil {
+			return reflect.Value{}, err
+		}
+		return dst, nil
+	}
+	dst := reflect.New(fieldType)
+	if err := node.Decode(dst.Interface()); err != nil {
+		return reflect.Value{}, err
+	}
+	return dst.Elem(), nil
+}
+
+func structFieldTypeByPath(typ reflect.Type, path []string) (reflect.Type, error) {
+	current := typ
+	for current.Kind() == reflect.Pointer {
+		current = current.Elem()
+	}
+	for _, name := range path {
+		if current.Kind() != reflect.Struct {
+			return nil, fmt.Errorf("path %q does not resolve to a struct field", strings.Join(path, "."))
+		}
+		field, ok := current.FieldByName(name)
+		if !ok {
+			return nil, fmt.Errorf("unknown field %q in path %q", name, strings.Join(path, "."))
+		}
+		current = field.Type
+	}
+	return current, nil
+}
+
+func legacyFieldAliasWarnings(root *yaml.Node) []string {
+	var warnings []string
+	for _, spec := range fieldAliasSpecs {
+		if _, ok := yamlNodeAt(root, spec.legacyPath...); !ok {
+			continue
+		}
+		warnings = append(warnings,
+			fmt.Sprintf("config key %q is deprecated in schema_version %d; migrate to %q",
+				joinPath(spec.legacyPath), CurrentSchemaVersion, joinPath(spec.aliasPath)))
+	}
+	return warnings
+}
+
 func setStringFieldByPath(cfg *ResolvedConfig, path []string, raw string) error {
 	val := reflect.ValueOf(cfg).Elem()
 	for _, name := range path[:len(path)-1] {
@@ -642,5 +791,27 @@ func setStringFieldByPath(cfg *ResolvedConfig, path []string, raw string) error 
 	default:
 		return fmt.Errorf("unsupported destination kind %s", field.Kind())
 	}
+	return nil
+}
+
+func setFieldByPathFromNode(cfg *ResolvedConfig, path []string, node *yaml.Node) error {
+	val := reflect.ValueOf(cfg).Elem()
+	for _, name := range path[:len(path)-1] {
+		val = val.FieldByName(name)
+	}
+	field := val.FieldByName(path[len(path)-1])
+	if field.Kind() == reflect.Pointer {
+		dst := reflect.New(field.Type().Elem())
+		if err := node.Decode(dst.Interface()); err != nil {
+			return err
+		}
+		field.Set(dst)
+		return nil
+	}
+	dst := reflect.New(field.Type())
+	if err := node.Decode(dst.Interface()); err != nil {
+		return err
+	}
+	field.Set(dst.Elem())
 	return nil
 }

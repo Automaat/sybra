@@ -376,19 +376,7 @@ func (s *ConfigService) applyHotChangesLocked(result ConfigMutationResult, nextA
 				return err
 			}
 		case configApplyGuardrails:
-			if s.agents != nil {
-				s.agents.SetGuardrails(agent.Guardrails{
-					MaxCostUSD:              nextActive.Agent.MaxCostUSD,
-					MaxTurns:                nextActive.Agent.MaxTurns,
-					MaxCheckpoints:          nextActive.MaxCheckpoints(),
-					TurnCostFraction:        nextActive.Agent.TurnCostFraction,
-					TurnMultiplier:          nextActive.Agent.TurnMultiplier,
-					CheckpointOnTurnCeiling: nextActive.CheckpointOnTurnCeilingEnabled(),
-				})
-			}
-			if s.workflowEngine != nil {
-				s.workflowEngine.SetMaxCheckpoints(nextActive.MaxCheckpoints())
-			}
+			s.applyAgentGuardrails(*nextActive)
 		case configApplyNotification:
 			if s.notifier != nil {
 				s.notifier.SetDesktop(nextActive.Notification.Desktop)
@@ -400,21 +388,33 @@ func (s *ConfigService) applyHotChangesLocked(result ConfigMutationResult, nextA
 		}
 	}
 	if slices.Contains(result.Applied, "agent") {
-		if s.agents != nil {
-			s.agents.SetGuardrails(agent.Guardrails{
-				MaxCostUSD:              nextActive.Agent.MaxCostUSD,
-				MaxTurns:                nextActive.Agent.MaxTurns,
-				MaxCheckpoints:          nextActive.MaxCheckpoints(),
-				TurnCostFraction:        nextActive.Agent.TurnCostFraction,
-				TurnMultiplier:          nextActive.Agent.TurnMultiplier,
-				CheckpointOnTurnCeiling: nextActive.CheckpointOnTurnCeilingEnabled(),
-			})
-		}
-		if s.workflowEngine != nil {
-			s.workflowEngine.SetMaxCheckpoints(nextActive.MaxCheckpoints())
-		}
+		s.applyAgentGuardrails(*nextActive)
 	}
 	return nil
+}
+
+func (s *ConfigService) applyAgentGuardrails(cfg config.Config) {
+	if s.agents != nil {
+		s.agents.SetGuardrails(agent.Guardrails{
+			MaxCostUSD:              cfg.Agent.MaxCostUSD,
+			MaxTurns:                cfg.Agent.MaxTurns,
+			MaxCheckpoints:          cfg.MaxCheckpoints(),
+			TurnCostFraction:        cfg.Agent.TurnCostFraction,
+			TurnMultiplier:          cfg.Agent.TurnMultiplier,
+			CheckpointOnTurnCeiling: cfg.CheckpointOnTurnCeilingEnabled(),
+		})
+	}
+	s.applyWorkflowGuardrails(cfg)
+}
+
+func (s *ConfigService) applyWorkflowGuardrails(cfg config.Config) {
+	if s.workflowEngine == nil {
+		return
+	}
+	s.workflowEngine.SetMaxCheckpoints(cfg.MaxCheckpoints())
+	s.workflowEngine.SetReviewUntilClean(cfg.ReviewUntilClean())
+	s.workflowEngine.SetMaxReviewRounds(cfg.MaxReviewRounds())
+	s.workflowEngine.SetAllowUnboundedReviewRounds(cfg.AllowUnboundedReviewRounds())
 }
 
 func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) error {

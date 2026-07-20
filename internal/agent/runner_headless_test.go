@@ -1313,6 +1313,7 @@ func TestGuardrails_CostHardStopsStream(t *testing.T) {
 
 	var (
 		blocked int
+		last    EscalationEvent
 		mu      sync.Mutex
 	)
 	emit := func(event string, data any) {
@@ -1322,6 +1323,7 @@ func TestGuardrails_CostHardStopsStream(t *testing.T) {
 		if e, ok := data.(EscalationEvent); ok && e.Reason == "cost" {
 			mu.Lock()
 			blocked++
+			last = e
 			mu.Unlock()
 		}
 	}
@@ -1336,6 +1338,9 @@ func TestGuardrails_CostHardStopsStream(t *testing.T) {
 	defer mu.Unlock()
 	if blocked != 1 {
 		t.Errorf("got %d cost escalation events, want 1", blocked)
+	}
+	if last.Guardrail != "execution.agent.post_result_cost_usd" || last.CostSource != "reported" || last.Measurement != "post_result_usd" {
+		t.Fatalf("escalation metadata = %+v, want post-result reported-cost metadata", last)
 	}
 	// Only the result event should have been appended; the trailing
 	// assistant line must never reach the stream after the reject.
@@ -1353,6 +1358,7 @@ func TestGuardrails_CostHardStopMarksStopped(t *testing.T) {
 
 	var (
 		blocked int
+		last    EscalationEvent
 		mu      sync.Mutex
 	)
 	emit := func(event string, data any) {
@@ -1362,6 +1368,7 @@ func TestGuardrails_CostHardStopMarksStopped(t *testing.T) {
 		if e, ok := data.(EscalationEvent); ok && e.Reason == "cost" {
 			mu.Lock()
 			blocked++
+			last = e
 			mu.Unlock()
 		}
 	}
@@ -1376,6 +1383,9 @@ func TestGuardrails_CostHardStopMarksStopped(t *testing.T) {
 	defer mu.Unlock()
 	if blocked == 0 {
 		t.Error("expected cost escalation event, got none")
+	}
+	if last.MeasuredValue != 11.0 || last.Limit != 10.0 {
+		t.Fatalf("measured guardrail values = %+v, want measured=11 limit=10", last)
 	}
 	if !a.WasStopped() {
 		t.Error("WasStopped() = false, want true after cost hard-stop")
@@ -2984,7 +2994,7 @@ func TestCheckCostGuardrail_PreservesCheckpointEscalationReason(t *testing.T) {
 	ag := &Agent{ID: "a1", TaskID: "t1", done: make(chan struct{})}
 	ag.SetEscalationReason(EscalationReasonCheckpoint)
 
-	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0); keepGoing {
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated"); keepGoing {
 		t.Fatal("checkCostGuardrail = true, want false (a cost breach always stops the run)")
 	}
 	if got := ag.GetEscalationReason(); got != EscalationReasonCheckpoint {
@@ -3009,7 +3019,7 @@ func TestCheckCostGuardrail_PreservesCheckpointFailedEscalationReason(t *testing
 	ag := &Agent{ID: "a3", TaskID: "t3", done: make(chan struct{})}
 	ag.SetEscalationReason(EscalationReasonCheckpointFailed)
 
-	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0); keepGoing {
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated"); keepGoing {
 		t.Fatal("checkCostGuardrail = true, want false")
 	}
 	if got := ag.GetEscalationReason(); got != EscalationReasonCheckpointFailed {
@@ -3028,7 +3038,7 @@ func TestCheckCostGuardrail_StampsCostWhenNoCheckpoint(t *testing.T) {
 
 	ag := &Agent{ID: "a2", TaskID: "t2", done: make(chan struct{})}
 
-	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0); keepGoing {
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated"); keepGoing {
 		t.Fatal("checkCostGuardrail = true, want false")
 	}
 	if got := ag.GetEscalationReason(); got != EscalationReasonCost {

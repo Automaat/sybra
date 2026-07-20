@@ -11,44 +11,58 @@ export class AgentDefaults {
     "mode": string;
     "maxConcurrent": number;
     "researchMachineDir": string;
-    "maxCostUsd": number;
-    "maxTurns": number;
+
+    /**
+     * PostResultCostUSD is a reactive per-run USD circuit breaker: Sybra checks
+     * it only when the provider emits a terminal result event, after that spend
+     * is already incurred. 0 (default in raw zero values, 5 in fresh installs)
+     * disables the breaker.
+     */
+    "postResultCostUsd": number;
+
+    /**
+     * MaxAssistantEvents caps top-level assistant stream events per run, not
+     * provider CLI turns. 0 disables the ceiling.
+     */
+    "maxAssistantEvents": number;
 
     /**
      * MaxCheckpoints bounds how many times a single workflow step may
-     * checkpoint-and-handoff after hitting the per-run turn ceiling. 0 means
-     * use DefaultMaxCheckpoints (3).
+     * checkpoint-and-handoff after hitting the per-run assistant-event ceiling.
+     * 0 means use DefaultMaxCheckpoints (3).
      */
     "maxCheckpoints": number;
 
     /**
-     * CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
-     * a checkpoint-and-handoff to a fresh run when an eligible code-author
-     * headless run hits its per-run turn ceiling. nil means not configured
-     * (defaults to true). Set false to restore the legacy in-process
-     * auto-continue behavior with no code revert.
+     * CheckpointOnTurnCeiling swaps the legacy raise-the-assistant-event-ceiling
+     * auto-continue for a checkpoint-and-handoff to a fresh run when an
+     * eligible code-author headless run hits its per-run assistant-event
+     * ceiling. nil means not configured (defaults to true). Set false to
+     * restore the legacy in-process auto-continue behavior with no code revert.
      */
     "checkpointOnTurnCeiling": boolean | null;
 
     /**
      * MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
-     * has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
-     * where each retry stays under the per-run cap but the task's total spend
-     * still balloons unbounded. Checked once per dispatch, before an agent is
-     * started — StartAgentWithAssignment refuses to start and flips the task
-     * to human-required when the task's already-recorded AgentRuns.CostUSD sum
-     * meets or exceeds this. 0 (default) disables the check.
+     * has ever had (unlike PostResultCostUSD, which resets every run). Closes
+     * the gap where each retry stays under the per-run cap but the task's total
+     * spend still balloons unbounded. Checked once per dispatch, before an
+     * agent is started — StartAgentWithAssignment refuses to start and flips
+     * the task to human-required when the task's already-recorded
+     * AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the
+     * check.
      */
     "maxTaskCostUsd": number;
 
     /**
-     * TurnCostFraction is the fraction of MaxCostUSD below which a turns
-     * escalation is auto-continued. Default 0.8 when unset.
+     * TurnCostFraction is the fraction of PostResultCostUSD below which an
+     * assistant-event escalation is auto-continued. Default 0.8 when unset.
      */
     "turnCostFraction": number;
 
     /**
-     * TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset.
+     * TurnMultiplier scales the assistant-event ceiling on each
+     * auto-continuation. Default 2 when unset.
      */
     "turnMultiplier": number;
 
@@ -62,14 +76,26 @@ export class AgentDefaults {
     /**
      * ReviewUntilClean keeps simple-task-review cycling review→fix→review
      * until the reviewer returns a CLEAN verdict, so the fix agent's diff is
-     * never the last word. nil means not configured (falls back to true).
-     * The cycle is uncapped by design — a round cap would censor the
-     * review-rounds distribution the stats page reports — and is bounded only
-     * by MaxTaskCostUSD, which is enforced before every dispatch. false falls
-     * back to a single review pass per task: cheaper and more predictable when
-     * no per-task budget is configured.
+     * never the last word. nil means not configured (falls back to true). false
+     * falls back to a single review pass per task: cheaper and more
+     * predictable when no per-task budget is configured.
      */
     "reviewUntilClean": boolean | null;
+
+    /**
+     * MaxReviewRounds bounds how many automated review rounds a single
+     * simple-task-review execution may spend before Sybra parks the task
+     * human-required. 0 means use DefaultMaxReviewRounds (3). Ignored when
+     * ReviewUntilClean is false or AllowUnboundedReviewRounds is true.
+     */
+    "maxReviewRounds": number;
+
+    /**
+     * AllowUnboundedReviewRounds restores the legacy "loop until CLEAN with no
+     * review-round cap" posture. nil means not configured (defaults to false).
+     * Use only with a deliberate MaxTaskCostUSD backstop.
+     */
+    "allowUnboundedReviewRounds": boolean | null;
 
     /**
      * BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
@@ -249,11 +275,11 @@ export class AgentDefaults {
         if (!("researchMachineDir" in $$source)) {
             this["researchMachineDir"] = "";
         }
-        if (!("maxCostUsd" in $$source)) {
-            this["maxCostUsd"] = 0;
+        if (!("postResultCostUsd" in $$source)) {
+            this["postResultCostUsd"] = 0;
         }
-        if (!("maxTurns" in $$source)) {
-            this["maxTurns"] = 0;
+        if (!("maxAssistantEvents" in $$source)) {
+            this["maxAssistantEvents"] = 0;
         }
         if (!("maxCheckpoints" in $$source)) {
             this["maxCheckpoints"] = 0;
@@ -275,6 +301,12 @@ export class AgentDefaults {
         }
         if (!("reviewUntilClean" in $$source)) {
             this["reviewUntilClean"] = null;
+        }
+        if (!("maxReviewRounds" in $$source)) {
+            this["maxReviewRounds"] = 0;
+        }
+        if (!("allowUnboundedReviewRounds" in $$source)) {
+            this["allowUnboundedReviewRounds"] = null;
         }
         if (!("bashTimeoutSeconds" in $$source)) {
             this["bashTimeoutSeconds"] = 0;
@@ -338,22 +370,22 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField28_0 = $$createType0;
-        const $$createField29_0 = $$createType1;
-        const $$createField30_0 = $$createType2;
-        const $$createField31_0 = $$createType3;
+        const $$createField30_0 = $$createType0;
+        const $$createField31_0 = $$createType1;
+        const $$createField32_0 = $$createType2;
+        const $$createField33_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField28_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField30_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField29_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField31_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField30_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField32_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField31_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField33_0($$parsedSource["queue"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }

@@ -329,8 +329,169 @@ func TestMigrateRawConfigKeepsCanonicalGitHubReviewHoldConfig(t *testing.T) {
 	}
 }
 
+func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"execution:",
+		"  agent:",
+		"    post_result_cost_usd: 7.5",
+		"    max_assistant_events: 42",
+		"    checkpoint_on_assistant_event_ceiling: false",
+		"    assistant_event_cost_fraction: 0.6",
+		"    assistant_event_multiplier: 3",
+		"    max_review_rounds: 4",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.MaxCostUSD; got != 7.5 {
+		t.Fatalf("Agent.MaxCostUSD = %v, want 7.5", got)
+	}
+	if got := resolved.Config.Agent.MaxTurns; got != 42 {
+		t.Fatalf("Agent.MaxTurns = %d, want 42", got)
+	}
+	if got := resolved.Config.Agent.TurnCostFraction; got != 0.6 {
+		t.Fatalf("Agent.TurnCostFraction = %v, want 0.6", got)
+	}
+	if got := resolved.Config.Agent.TurnMultiplier; got != 3 {
+		t.Fatalf("Agent.TurnMultiplier = %v, want 3", got)
+	}
+	if got := resolved.Config.MaxReviewRounds(); got != 4 {
+		t.Fatalf("MaxReviewRounds() = %d, want 4", got)
+	}
+	if resolved.Config.CheckpointOnTurnCeilingEnabled() {
+		t.Fatal("CheckpointOnTurnCeilingEnabled() = true, want false")
+	}
+}
+
+func TestResolveV2GuardrailAliasesWarnAndKeepBoundedReviewLoop(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"execution:",
+		"  agent:",
+		"    max_cost_usd: 8",
+		"    max_turns: 55",
+		"    turn_cost_fraction: 0.7",
+		"    turn_multiplier: 4",
+		"    review_until_clean: true",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnings := strings.Join(fileCfg.Warnings(), "\n")
+	for _, want := range []string{
+		"agent.max_cost_usd",
+		"agent.max_turns",
+		"agent.turn_cost_fraction",
+		"agent.turn_multiplier",
+	} {
+		if !strings.Contains(warnings, want) {
+			t.Fatalf("warnings missing %q:\n%s", want, warnings)
+		}
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.MaxCostUSD; got != 8 {
+		t.Fatalf("Agent.MaxCostUSD = %v, want 8", got)
+	}
+	if got := resolved.Config.Agent.MaxTurns; got != 55 {
+		t.Fatalf("Agent.MaxTurns = %d, want 55", got)
+	}
+	if got := resolved.Config.Agent.TurnCostFraction; got != 0.7 {
+		t.Fatalf("Agent.TurnCostFraction = %v, want 0.7", got)
+	}
+	if got := resolved.Config.Agent.TurnMultiplier; got != 4 {
+		t.Fatalf("Agent.TurnMultiplier = %v, want 4", got)
+	}
+	if !resolved.Config.ReviewUntilClean() {
+		t.Fatal("ReviewUntilClean() = false, want true")
+	}
+	if resolved.Config.AllowUnboundedReviewRounds() {
+		t.Fatal("AllowUnboundedReviewRounds() = true, want false for schema-v2 review_until_clean=true")
+	}
+}
+
+func TestResolveLegacyReviewUntilCleanPreservesUnboundedLoop(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"agent:",
+		"  review_until_clean: true",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved.Config.AllowUnboundedReviewRounds() {
+		t.Fatal("AllowUnboundedReviewRounds() = false, want true for schema-v1 review_until_clean=true")
+	}
+}
+
+func TestMigrateRawConfigRewritesGuardrailAliasesAndPreservesExplicitReviewLoop(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"agent:",
+		"  max_cost_usd: 9",
+		"  max_turns: 60",
+		"  review_until_clean: true",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(result.MigratedRaw)
+	for _, want := range []string{
+		"post_result_cost_usd: 9",
+		"max_assistant_events: 60",
+		"review_until_clean: true",
+		"allow_unbounded_review_rounds: true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("migrated config missing %q:\n%s", want, text)
+		}
+	}
+	for _, old := range []string{"max_cost_usd:", "max_turns:"} {
+		if strings.Contains(text, old) {
+			t.Fatalf("migrated config still contains %q:\n%s", old, text)
+		}
+	}
+}
+
+func TestMigrateRawConfigKeepsV2ReviewUntilCleanBounded(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"schema_version: 2",
+		"execution:",
+		"  agent:",
+		"    review_until_clean: true",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(result.MigratedRaw)
+	if strings.Contains(text, "allow_unbounded_review_rounds") {
+		t.Fatalf("migration opted v2 config into unbounded review rounds:\n%s", text)
+	}
+	if result.Changed {
+		t.Fatalf("canonical v2 config should be a no-op migration:\n%s", text)
+	}
+}
+
 func TestMigrateNodeToCanonicalPreservesNilAsYAMLNull(t *testing.T) {
-	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil)
+	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
