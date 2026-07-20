@@ -107,7 +107,7 @@ func (s *Service) Run(ctx context.Context) {
 	}
 	s.logger.Info("routing.start", "enabled", s.cfg.Enabled, "interval", interval.String())
 
-	s.tick(ctx)
+	s.tick()
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -115,9 +115,19 @@ func (s *Service) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.tick(ctx)
+			s.tick()
 		}
 	}
+}
+
+// Prime synchronously publishes whatever routing state should exist before the
+// app starts accepting work: any persisted overlay from a prior run plus, on a
+// fresh enabled install with no evaluation report yet, generation 1 bootstrapped
+// from base weights so the first assignment already records DecisionVersion.
+func (s *Service) Prime() {
+	s.loadOverlay()
+	s.ApplyPersistedOverlay()
+	s.tick()
 }
 
 // ApplyPersistedOverlay pushes the last-saved overlay (if any) through Apply
@@ -172,7 +182,7 @@ func (s *Service) loadOverlay() {
 	}
 }
 
-func (s *Service) tick(_ context.Context) {
+func (s *Service) tick() {
 	if s.store == nil {
 		return
 	}

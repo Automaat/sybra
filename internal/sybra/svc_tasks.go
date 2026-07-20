@@ -25,8 +25,6 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/stats"
-	"github.com/Automaat/sybra/internal/sybra/agentorch"
-	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -76,16 +74,6 @@ type TaskService struct {
 }
 
 const enrichPendingRetryCooldown = time.Hour
-
-func (s *TaskService) abTestingConfig() abtest.Config {
-	if s.abTesting != nil {
-		return s.abTesting()
-	}
-	if s.cfg == nil {
-		return abtest.Config{}
-	}
-	return cloneABTestingConfig(s.cfg.ABTesting)
-}
 
 type TamperReportDTO struct {
 	TaskID          string             `json:"taskId"`
@@ -1201,55 +1189,6 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	s.enrichRetryCooldown.Delete(taskID)
 }
 
-// startPRReviewAgent starts a headless agent that runs /staff-code-review on the PR.
-func (s *TaskService) startPRReviewAgent(t task.Task) error {
-	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, s.cfg)
-	if postureErr != nil {
-		return postureErr
-	}
-
-	dir := config.HomeDir()
-	if t.ProjectID != "" {
-		// context.Background(): reached from CreateTask's async enrich-from-PR
-		// goroutine (and the enrich-reconcile maintenance retry), both fired
-		// from a Wails-bound entry point with no ctx to thread through.
-		d, err := s.worktrees.PrepareForReview(context.Background(), t)
-		if err != nil {
-			s.logger.Warn("enrich-pr.worktree", "task_id", t.ID, "err", err)
-		} else {
-			dir = d
-		}
-	}
-
-	prompt := review.StaffCodeReviewPrompt(t.ProjectID, t.PRNumber)
-	cfg := s.agents.ApplyABVariant(review.StaffCodeReviewRunConfig(t, prompt, dir, posture), s.abTestingConfig(), t.ID, string(agent.RoleReview))
-	ag, err := s.agents.Run(cfg)
-	if err != nil {
-		return err
-	}
-	if err := s.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID:         ag.ID,
-		Role:            string(agent.RoleReview),
-		Mode:            "headless",
-		Provider:        ag.Provider,
-		Model:           ag.Model,
-		ExperimentID:    ag.ExperimentID,
-		VariantID:       ag.VariantID,
-		AssignmentUnit:  ag.AssignmentUnit,
-		AssignmentKey:   ag.AssignmentKey,
-		DecisionVersion: ag.DecisionVersion,
-		State:           string(agent.StateRunning),
-		StartedAt:       ag.StartedAt,
-		Prompt:          cfg.Prompt,
-	}); err != nil {
-		s.logger.Error("task.add-run", "task_id", t.ID, "err", err)
-	}
-	if _, err := s.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
-		s.logger.Error("enrich-pr.status", "task_id", t.ID, "err", err)
-	}
-	s.logger.Info("enrich-pr.review-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
-	return nil
-}
 // enrichFromIssue fetches a GitHub issue and updates the task with real title/body.
 func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 	issue, err := s.fetchIssueFunc()(repo, number)

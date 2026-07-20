@@ -183,7 +183,7 @@ func TestService_ShadowTicks_StayWithinMaxStepOfBase(t *testing.T) {
 
 	svc.loadOverlay()
 	for range 5 {
-		svc.tick(context.Background())
+		svc.tick()
 	}
 
 	overlay, ok, err := store.Load()

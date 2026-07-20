@@ -11,7 +11,10 @@ func (a *App) initializeABTesting(cfg abtest.Config) {
 
 func (a *App) baseABTestingConfig() abtest.Config {
 	if v := a.baseABTesting.Load(); v != nil {
-		return cloneABTestingConfig(v.(abtest.Config))
+		if cfg, ok := v.(abtest.Config); ok {
+			return cloneABTestingConfig(cfg)
+		}
+		return abtest.Config{}
 	}
 	if a.cfg == nil {
 		return abtest.Config{}
@@ -21,7 +24,10 @@ func (a *App) baseABTestingConfig() abtest.Config {
 
 func (a *App) abTestingConfig() abtest.Config {
 	if v := a.liveABTesting.Load(); v != nil {
-		return cloneABTestingConfig(v.(abtest.Config))
+		if cfg, ok := v.(abtest.Config); ok {
+			return cloneABTestingConfig(cfg)
+		}
+		return abtest.Config{}
 	}
 	return a.baseABTestingConfig()
 }

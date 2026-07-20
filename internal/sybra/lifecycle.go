@@ -104,7 +104,6 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	lm.startEvaluationService(ctx, emit)
 	lm.startLearningDigestService(ctx, emit)
 	lm.startPromptLabService(ctx, emit)
-	lm.startRoutingService(ctx, emit)
 	lm.startAutoUpdate(ctx)
 	lm.startAgentLogPruneLoop(ctx)
 	lm.startTrashPruneLoop(ctx)
@@ -689,9 +688,9 @@ func (lm *LifecycleManager) startPromptLabService(ctx context.Context, _ func(st
 // launches its ticker. Built and run even when disabled (Deps below apply
 // nothing in that case — see routing.Service): this keeps the shadow-mode
 // audit trail live for every install, matching startEvaluationService's
-// "build always, gate behavior on Cfg.Enabled" pattern. Runs after
-// startEvaluationService so Report can read the evaluation service's own
-// cache instead of re-scanning stats/audit on routing's own interval.
+// "build always, gate behavior on Cfg.Enabled" pattern. Startup calls this
+// synchronously before returning so routing version 1 exists before the first
+// workflow dispatch on a fresh enabled home.
 func (lm *LifecycleManager) startRoutingService(ctx context.Context, emit func(string, any)) {
 	a := lm.app
 	store, err := routing.NewStore(config.RoutingDir())
@@ -721,10 +720,9 @@ func (lm *LifecycleManager) startRoutingService(ctx context.Context, emit func(s
 	}
 	svc := routing.NewService(deps)
 	a.routingSvc = svc
-	// Push any weights persisted from a prior run before the first tick's
-	// interval elapses, so a restart with routing already enabled does not
-	// briefly dispatch on unweighted base config.
-	svc.ApplyPersistedOverlay()
+	// Prime before Startup returns so persisted overlays are live immediately
+	// and a fresh enabled home bootstraps version 1 before the first dispatch.
+	svc.Prime()
 	a.wg.Go(func() { svc.Run(ctx) })
 }
 
