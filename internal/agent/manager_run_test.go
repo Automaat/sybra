@@ -435,6 +435,29 @@ func TestTryReserveSlot(t *testing.T) {
 	}
 }
 
+func TestTryHoldCapacity(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 1
+	m.mu.Unlock()
+
+	reservation, ok := m.TryHoldCapacity()
+	if !ok || reservation == nil {
+		t.Fatal("expected reservation under the cap")
+	}
+	if m.TryReserveSlot() {
+		t.Fatal("held reservation must consume visible capacity")
+	}
+	if _, ok := m.TryHoldCapacity(); ok {
+		t.Fatal("second reservation at cap must fail")
+	}
+
+	reservation.Release()
+	if !m.TryReserveSlot() {
+		t.Fatal("released reservation must free capacity")
+	}
+}
+
 func TestAvailableQueueDrainSlots(t *testing.T) {
 	m, _ := newTestManager(t)
 
@@ -592,6 +615,37 @@ func TestTryReserveSlot_RegisterNoDoubleCount(t *testing.T) {
 	}
 	if got := m.InFlightByProvider()["claude"]; got != 1 {
 		t.Fatalf("claude in-flight = %d, want 1", got)
+	}
+	assertAccountingInvariant(t, m)
+}
+
+func TestRunWithCapacityReservation_ConsumesHeldSlot(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 1
+	m.mu.Unlock()
+
+	reservation, ok := m.TryHoldCapacity()
+	if !ok || reservation == nil {
+		t.Fatal("expected reservation under the cap")
+	}
+
+	a := &Agent{ID: "held-slot", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{capacityReservation: reservation}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent with reservation: %v", err)
+	}
+	if got := m.RunningCount(); got != 1 {
+		t.Fatalf("RunningCount = %d, want 1", got)
+	}
+	if m.TryReserveSlot() {
+		t.Fatal("live agent should still occupy the only slot after reservation consumption")
+	}
+
+	// Consumed reservation is already inactive; a deferred caller Release must
+	// be a no-op rather than freeing the live agent's slot.
+	reservation.Release()
+	if m.TryReserveSlot() {
+		t.Fatal("Release after consumption must not free a live agent slot")
 	}
 	assertAccountingInvariant(t, m)
 }
