@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -13,7 +14,7 @@ func RerunFailedChecks(repo string, number int) error {
 }
 
 func rerunFailedChecksWith(e execer, repo string, number int) error {
-	headSHA, err := fetchPRHeadSHAWith(nil, e, repo, number)
+	headSHA, err := fetchPRHeadSHAWith(context.TODO(), e, repo, number)
 	if err != nil {
 		return err
 	}

@@ -1353,6 +1353,7 @@ func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) b
 	switch fresh.Workflow.State {
 	case workflow.ExecCompleted, workflow.ExecFailed:
 		return false
+	case workflow.ExecRunning, workflow.ExecWaiting:
 	}
 
 	update := task.Update{Status: task.Ptr(task.StatusInReview)}

@@ -77,7 +77,7 @@ func TestLatestFailedRunIDOnCommitWith_BlockingConclusions(t *testing.T) {
 			t.Parallel()
 			execer := &recordingSequenceExecer{
 				results: []scriptedResult{
-					{output: []byte(fmt.Sprintf(`[{"databaseId":987,"conclusion":%q,"headSha":"abc123"}]`, tt.conclusion))},
+					{output: fmt.Appendf(nil, `[{"databaseId":987,"conclusion":%q,"headSha":"abc123"}]`, tt.conclusion)},
 					{output: []byte(`{"jobs":[{"name":"test","conclusion":"failure","status":"completed"}]}`)},
 				},
 			}
@@ -176,7 +176,7 @@ func TestLatestFailedRunIDOnCommitWith_ErrsWhenNoFailuresRemain(t *testing.T) {
 }
 
 func callHasArgPair(call []string, flag, value string) bool {
-	for i := 0; i < len(call)-1; i++ {
+	for i := range len(call) - 1 {
 		if call[i] == flag && call[i+1] == value {
 			return true
 		}
