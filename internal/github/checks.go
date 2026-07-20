@@ -13,11 +13,11 @@ func RerunFailedChecks(repo string, number int) error {
 }
 
 func rerunFailedChecksWith(e execer, repo string, number int) error {
-	branch, err := fetchPRBranchWith(e, repo, number)
+	headSHA, err := fetchPRHeadSHAWith(nil, e, repo, number)
 	if err != nil {
 		return err
 	}
-	runID, err := latestFailedRunIDOnBranchWith(e, repo, branch)
+	runID, err := latestFailedRunIDOnCommitWith(e, repo, headSHA)
 	if err != nil {
 		return err
 	}
@@ -32,26 +32,30 @@ func rerunFailedChecksWith(e execer, repo string, number int) error {
 	return nil
 }
 
-func latestFailedRunIDOnBranchWith(e execer, repo, branch string) (int, error) {
+func latestFailedRunIDOnCommitWith(e execer, repo, headSHA string) (int, error) {
 	out, err := e.run("run", "list",
 		"--repo", repo,
-		"--branch", branch,
+		"--commit", headSHA,
 		"--limit", "50",
-		"--json", "databaseId,conclusion")
+		"--json", "databaseId,conclusion,headSha")
 	if err != nil {
-		return 0, fmt.Errorf("gh run list failed branch %q: %s: %w", branch, strings.TrimSpace(string(out)), err)
+		return 0, fmt.Errorf("gh run list failed commit %q: %s: %w", headSHA, strings.TrimSpace(string(out)), err)
 	}
 	var runs []struct {
 		DatabaseID int    `json:"databaseId"`
 		Conclusion string `json:"conclusion"`
+		HeadSHA    string `json:"headSha"`
 	}
 	if err := json.Unmarshal(out, &runs); err != nil {
 		return 0, fmt.Errorf("parse failed run list: %w", err)
 	}
 	for _, run := range runs {
+		if run.HeadSHA != "" && !strings.EqualFold(run.HeadSHA, headSHA) {
+			continue
+		}
 		if run.DatabaseID != 0 && isBlockingCheckRunConclusion(run.Conclusion) {
 			return run.DatabaseID, nil
 		}
 	}
-	return 0, fmt.Errorf("gh run list failed branch %q: no failed workflow runs found", branch)
+	return 0, fmt.Errorf("gh run list failed commit %q: no failed workflow runs found", headSHA)
 }

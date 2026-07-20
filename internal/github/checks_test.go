@@ -26,8 +26,8 @@ func TestRerunFailedChecksWith_UsesFailedRunID(t *testing.T) {
 
 	execer := &recordingSequenceExecer{
 		results: []scriptedResult{
-			{output: []byte(`{"headRefName":"feat/rerun-me"}`)},
-			{output: []byte(`[{"databaseId":12345,"conclusion":"failure"}]`)},
+			{output: []byte(`{"headRefOid":"abc123"}`)},
+			{output: []byte(`[{"databaseId":12345,"conclusion":"failure","headSha":"abc123"}]`)},
 			{output: nil},
 		},
 	}
@@ -49,13 +49,17 @@ func TestRerunFailedChecksWith_UsesFailedRunID(t *testing.T) {
 		}
 	}
 	for _, arg := range execer.calls[1] {
-		if arg == "--status" {
-			t.Fatalf("run list args = %v, want local conclusion filtering without --status", execer.calls[1])
+		switch arg {
+		case "--branch", "--status":
+			t.Fatalf("run list args = %v, want commit-scoped local conclusion filtering", execer.calls[1])
 		}
+	}
+	if !callHasArgPair(execer.calls[1], "--commit", "abc123") {
+		t.Fatalf("run list args = %v, want --commit abc123", execer.calls[1])
 	}
 }
 
-func TestLatestFailedRunIDOnBranchWith_BlockingConclusions(t *testing.T) {
+func TestLatestFailedRunIDOnCommitWith_BlockingConclusions(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -70,10 +74,10 @@ func TestLatestFailedRunIDOnBranchWith_BlockingConclusions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			execer := &fakeExecer{output: []byte(fmt.Sprintf(`[{"databaseId":987,"conclusion":%q}]`, tt.conclusion))}
-			got, err := latestFailedRunIDOnBranchWith(execer, "owner/repo", "feat/red")
+			execer := &fakeExecer{output: []byte(fmt.Sprintf(`[{"databaseId":987,"conclusion":%q,"headSha":"abc123"}]`, tt.conclusion))}
+			got, err := latestFailedRunIDOnCommitWith(execer, "owner/repo", "abc123")
 			if err != nil {
-				t.Fatalf("latestFailedRunIDOnBranchWith() err = %v", err)
+				t.Fatalf("latestFailedRunIDOnCommitWith() err = %v", err)
 			}
 			if got != 987 {
 				t.Fatalf("run id = %d, want 987", got)
@@ -82,30 +86,39 @@ func TestLatestFailedRunIDOnBranchWith_BlockingConclusions(t *testing.T) {
 	}
 }
 
-func TestLatestFailedRunIDOnBranchWith_UsesNewestBlockingRun(t *testing.T) {
+func TestLatestFailedRunIDOnCommitWith_UsesNewestBlockingRunForHeadSHA(t *testing.T) {
 	t.Parallel()
 
 	execer := &fakeExecer{output: []byte(`[
-		{"databaseId":1,"conclusion":"success"},
-		{"databaseId":2,"conclusion":"cancelled"},
-		{"databaseId":3,"conclusion":"timed_out"},
-		{"databaseId":4,"conclusion":"failure"}
+		{"databaseId":1,"conclusion":"failure","headSha":"old456","headBranch":"feat/red"},
+		{"databaseId":2,"conclusion":"success","headSha":"abc123","headBranch":"feat/red"},
+		{"databaseId":3,"conclusion":"timed_out","headSha":"abc123","headBranch":"feat/red"},
+		{"databaseId":4,"conclusion":"failure","headSha":"abc123","headBranch":"feat/red"}
 	]`)}
-	got, err := latestFailedRunIDOnBranchWith(execer, "owner/repo", "feat/red")
+	got, err := latestFailedRunIDOnCommitWith(execer, "owner/repo", "abc123")
 	if err != nil {
-		t.Fatalf("latestFailedRunIDOnBranchWith() err = %v", err)
+		t.Fatalf("latestFailedRunIDOnCommitWith() err = %v", err)
 	}
 	if got != 3 {
 		t.Fatalf("run id = %d, want 3", got)
 	}
 }
 
-func TestLatestFailedRunIDOnBranchWith_ErrsWhenNoFailuresRemain(t *testing.T) {
+func TestLatestFailedRunIDOnCommitWith_ErrsWhenNoFailuresRemain(t *testing.T) {
 	t.Parallel()
 
 	execer := &fakeExecer{output: []byte(`[]`)}
-	_, err := latestFailedRunIDOnBranchWith(execer, "owner/repo", "feat/green")
+	_, err := latestFailedRunIDOnCommitWith(execer, "owner/repo", "abc123")
 	if err == nil {
-		t.Fatal("latestFailedRunIDOnBranchWith() err = nil, want error")
+		t.Fatal("latestFailedRunIDOnCommitWith() err = nil, want error")
 	}
+}
+
+func callHasArgPair(call []string, flag, value string) bool {
+	for i := 0; i < len(call)-1; i++ {
+		if call[i] == flag && call[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
