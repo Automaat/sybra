@@ -244,6 +244,29 @@ func TestReleaseUnblockedChildren_UpdatesTrackerProgressChecklist(t *testing.T) 
 	}
 }
 
+func TestReleaseUnblockedChildren_ActiveExpansionPhaseHoldsReadyChild(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	if _, err := m.Update(tracker.ID, task.Update{
+		Tags: task.Ptr([]string{"umbrella", umbrella.MaxParallelTag(5), umbrella.ExpandPhaseTag(umbrella.ExpandPhasePlanned)}),
+	}); err != nil {
+		t.Fatalf("mark tracker expanding: %v", err)
+	}
+	root := mkChild(t, m, "root", "Automaat/sybra#1", umb, nil, task.StatusTodo)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	got := mustTask(t, m, root.ID)
+	if got.Status != task.StatusTodo {
+		t.Fatalf("root status = %q, want todo while expansion is still active", got.Status)
+	}
+	if !slices.Contains(got.Tags, umbrellaGatedTag) {
+		t.Fatalf("root tags = %v, want child to stay gated until the full DAG is durable", got.Tags)
+	}
+}
+
 func TestUmbrellaTrackerBody_ReplacesBlockAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 	children := []umbrellaProgressChild{
@@ -320,6 +343,13 @@ func TestTrackerRollup(t *testing.T) {
 		{"in progress", umbrellaState{total: 2, doneCount: 1}, false, true, task.StatusInProgress, false},
 		{"zero children settled completes", umbrellaState{total: 0}, false, true, task.StatusDone, true},
 		{"zero children not settled holds", umbrellaState{total: 0}, false, false, task.StatusInProgress, false},
+		{
+			"zero children settled with active expansion holds",
+			umbrellaState{total: 0, tracker: &task.Task{
+				Tags: []string{"umbrella", umbrella.ExpandPhaseTag(umbrella.ExpandPhaseMaterializing)},
+			}},
+			false, true, task.StatusInProgress, false,
+		},
 		{
 			"zero children expand-failing below threshold never auto-closes",
 			umbrellaState{total: 0, tracker: &task.Task{

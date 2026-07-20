@@ -19,6 +19,99 @@ func subs(refs ...string) []SubIssue {
 	return out
 }
 
+func progressKinds(events []PlannerProgress) []PlannerProgressKind {
+	out := make([]PlannerProgressKind, len(events))
+	for i, ev := range events {
+		out[i] = ev.Kind
+	}
+	return out
+}
+
+func TestGenerate_EmitsRepairAndSuccessProgress(t *testing.T) {
+	t.Parallel()
+	var events []PlannerProgress
+	calls := 0
+	run := func(context.Context, string, string) (string, error) {
+		calls++
+		if calls == 1 {
+			return `not json`, nil
+		}
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2","dependsOn":["o/r#1"]}],"maxParallel":2}`, nil
+	}
+
+	plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"), WithProgress(func(ev PlannerProgress) {
+		events = append(events, ev)
+	}))
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if plan.MaxParallel != 2 {
+		t.Fatalf("plan = %+v, want MaxParallel=2", plan)
+	}
+	if got, want := progressKinds(events), []PlannerProgressKind{
+		PlannerProgressAttempt,
+		PlannerProgressRepair,
+		PlannerProgressAttempt,
+		PlannerProgressSuccess,
+	}; !slices.Equal(got, want) {
+		t.Fatalf("progress kinds = %v, want %v", got, want)
+	}
+}
+
+func TestGenerate_EmitsCriticReaskProgress(t *testing.T) {
+	t.Parallel()
+	var events []PlannerProgress
+	calls := 0
+	run := func(context.Context, string, string) (string, error) {
+		calls++
+		if calls == 1 {
+			return `{"children":[{"issue":"o/r#1","parallelJustification":{"o/r#2":"disjoint","o/r#3":"disjoint"}},{"issue":"o/r#2","parallelJustification":{"o/r#3":"disjoint"}},{"issue":"o/r#3"}],"maxParallel":3}`, nil
+		}
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2","dependsOn":["o/r#1"]},{"issue":"o/r#3","dependsOn":["o/r#2"]}],"maxParallel":1}`, nil
+	}
+
+	plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"), WithProgress(func(ev PlannerProgress) {
+		events = append(events, ev)
+	}))
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if plan.MaxParallel != 1 {
+		t.Fatalf("plan = %+v, want critic re-ask plan to win", plan)
+	}
+	if got, want := progressKinds(events), []PlannerProgressKind{
+		PlannerProgressAttempt,
+		PlannerProgressCriticReask,
+		PlannerProgressAttempt,
+		PlannerProgressSuccess,
+	}; !slices.Equal(got, want) {
+		t.Fatalf("progress kinds = %v, want %v", got, want)
+	}
+}
+
+func TestGenerate_EmitsExhaustedFallbackProgress(t *testing.T) {
+	t.Parallel()
+	var events []PlannerProgress
+	plan, err := Generate(context.Background(), func(context.Context, string, string) (string, error) {
+		return "", context.DeadlineExceeded
+	}, "o/r#100", "body", subs("o/r#1", "o/r#2"), WithProgress(func(ev PlannerProgress) {
+		events = append(events, ev)
+	}))
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !plan.Fallback {
+		t.Fatalf("plan = %+v, want fallback plan", plan)
+	}
+	if got, want := progressKinds(events), []PlannerProgressKind{
+		PlannerProgressAttempt,
+		PlannerProgressExhausted,
+		PlannerProgressFallback,
+	}; !slices.Equal(got, want) {
+		t.Fatalf("progress kinds = %v, want %v", got, want)
+	}
+}
+
 func TestBuildPrompt_SerializesSameFileSubIssues(t *testing.T) {
 	t.Parallel()
 	prompt := BuildPrompt("o/r#100", "body", subs("o/r#1", "o/r#2"))

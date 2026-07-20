@@ -161,6 +161,34 @@ func TestReplaceTagPrefix(t *testing.T) {
 	}
 }
 
+func TestParseExpandPhase(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		tags []string
+		want ExpandPhase
+	}{
+		{"present", []string{"umbrella", ExpandPhaseTag(ExpandPhasePlanning)}, ExpandPhasePlanning},
+		{"absent", []string{"umbrella"}, ""},
+		{"malformed", []string{"umbrella-expand-phase:not-real"}, ""},
+		{"last valid wins", []string{ExpandPhaseTag(ExpandPhasePlanning), ExpandPhaseTag(ExpandPhaseMaterializing)}, ExpandPhaseMaterializing},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ParseExpandPhase(c.tags); got != c.want {
+				t.Fatalf("ParseExpandPhase(%v) = %q, want %q", c.tags, got, c.want)
+			}
+		})
+	}
+	if HasActiveExpandPhase([]string{"umbrella"}) {
+		t.Fatal("HasActiveExpandPhase = true without an expand phase")
+	}
+	if !HasActiveExpandPhase([]string{"umbrella", ExpandPhaseTag(ExpandPhaseFetched)}) {
+		t.Fatal("HasActiveExpandPhase = false with an expand phase present")
+	}
+}
+
 // TestRecoveryTagsAreNotInheritable guards against a recovery control tag
 // leaking onto a child task's inherited GitHub labels — recovery tags carry
 // the "umbrella-" prefix InheritableLabels already filters, so this test
