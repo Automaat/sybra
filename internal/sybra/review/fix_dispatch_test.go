@@ -3,7 +3,6 @@ package review
 import (
 	"context"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,15 +59,6 @@ func TestDispatchPRIssueWithOptions_RecoversRetryableHumanRequiredPRFix(t *testi
 			Field: "pr.issue_kind", Operator: "equals", Value: string(github.PRIssueCIFailure),
 		}}},
 		Steps: []workflow.Step{
-			{
-				ID:   "set_in_progress",
-				Name: "Mark In Progress",
-				Type: workflow.StepSetStatus,
-				Config: workflow.StepConfig{
-					Status: string(task.StatusInProgress),
-				},
-				Next: []workflow.Transition{{GoTo: "fix"}},
-			},
 			{
 				ID:   "fix",
 				Name: "Fix PR Issue",
@@ -169,30 +159,27 @@ func TestDispatchPRIssueWithOptions_DoesNotRewritePermanentFailure(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "pr-fix.yaml"), []byte(`id: pr-fix
-trigger:
-  on: pr.event
-  conditions:
-    - field: pr.issue_kind
-      operator: equals
-      value: ci_failure
-steps:
-  - id: set_in_progress
-    type: set_status
-    config:
-      status: in-progress
-    next:
-      - goto: fix
-  - id: fix
-    type: run_agent
-    config:
-      role: pr-fix
-      mode: headless
-      model: sonnet
-      prompt: fix
-    next:
-      - goto: ""
-`), 0o644); err != nil {
+	if err := wfStore.Save(workflow.Definition{
+		ID:   prFixWorkflowID,
+		Name: "PR Fix",
+		Trigger: workflow.Trigger{On: "pr.event", Conditions: []workflow.Condition{{
+			Field: "pr.issue_kind", Operator: "equals", Value: string(github.PRIssueCIFailure),
+		}}},
+		Steps: []workflow.Step{
+			{
+				ID:   "fix",
+				Name: "Fix PR Issue",
+				Type: workflow.StepRunAgent,
+				Config: workflow.StepConfig{
+					Role:   "pr-fix",
+					Mode:   "headless",
+					Model:  "sonnet",
+					Prompt: "fix",
+				},
+				Next: []workflow.Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 
