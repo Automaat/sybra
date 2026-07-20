@@ -361,6 +361,9 @@ func assertStartupCoreWiring(t *testing.T, app *App, logger *slog.Logger, cfg *c
 	if app.agentCompletion == nil || app.recovery == nil {
 		t.Fatal("completion/recovery handlers were not initialized")
 	}
+	if app.evaluationSvc == nil || app.routingSvc == nil {
+		t.Fatal("evaluation/routing services were not initialized before Startup returned")
+	}
 	if app.watcher == nil || app.configWatcher == nil {
 		t.Fatal("file/config watchers were not started")
 	}

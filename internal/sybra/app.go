@@ -315,6 +315,10 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
 
 	lm := newLifecycleManager(a)
+	// Routing reads the evaluation service's cached report on its own
+	// goroutine, so the service pointer must be published before routing
+	// primes or starts ticking.
+	lm.startEvaluationService(ctx, emit)
 	// Routing must prime before Startup returns; otherwise the first workflow
 	// dispatch after a fresh enabled boot can beat version 1 publication.
 	lm.startRoutingService(ctx, emit)

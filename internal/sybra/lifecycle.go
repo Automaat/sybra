@@ -101,7 +101,6 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 
 	lm.startMonitorService(ctx, emit)
 	lm.startSelfMonitorService(ctx, emit)
-	lm.startEvaluationService(ctx, emit)
 	lm.startLearningDigestService(ctx, emit)
 	lm.startPromptLabService(ctx, emit)
 	lm.startAutoUpdate(ctx)
