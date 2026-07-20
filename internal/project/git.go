@@ -984,7 +984,7 @@ func pushLocked(ctx context.Context, worktreePath string, args ...string) error 
 				continue
 			}
 			if injectedErr != nil {
-				return fmt.Errorf("%w (after injected GH_TOKEN auth failed: %v)", err, injectedErr)
+				return fmt.Errorf("%w (after injected GH_TOKEN auth failed: %w)", err, injectedErr)
 			}
 			return err
 		}
