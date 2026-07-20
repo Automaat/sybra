@@ -38,6 +38,7 @@ export class AgentRun {
     "variantId"?: string;
     "assignmentUnit"?: string;
     "assignmentKey"?: string;
+    "decisionVersion"?: number;
     "reasoningEffort"?: string;
     "requestedSkill"?: string;
 
