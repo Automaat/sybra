@@ -392,7 +392,7 @@ func splitRawLines(raw []byte) []string {
 	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	text = strings.TrimRight(text, "\n")
 	if text == "" {
-		return nil
+		return []string{}
 	}
 	return strings.Split(text, "\n")
 }

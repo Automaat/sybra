@@ -40,16 +40,17 @@ func RedactedCopy(cfg *Config) Config {
 }
 
 func initSecretMetadata() {
-	secretYAMLPathSet = map[string]struct{}{}
-	collectSecretYAMLPaths(reflect.TypeFor[Config](), nil)
-	secretYAMLPaths = make([]string, 0, len(secretYAMLPathSet))
-	for path := range secretYAMLPathSet {
+	pathSet := map[string]struct{}{}
+	collectSecretYAMLPaths(pathSet, reflect.TypeFor[Config](), nil)
+	secretYAMLPathSet = pathSet
+	secretYAMLPaths = make([]string, 0, len(pathSet))
+	for path := range pathSet {
 		secretYAMLPaths = append(secretYAMLPaths, path)
 	}
 	slices.Sort(secretYAMLPaths)
 }
 
-func collectSecretYAMLPaths(typ reflect.Type, prefix []string) {
+func collectSecretYAMLPaths(pathSet map[string]struct{}, typ reflect.Type, prefix []string) {
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
@@ -63,14 +64,14 @@ func collectSecretYAMLPaths(typ reflect.Type, prefix []string) {
 		}
 		path := append(slices.Clone(prefix), name)
 		if sf.Tag.Get("secret") == "true" {
-			secretYAMLPathSet[strings.Join(path, ".")] = struct{}{}
+			pathSet[strings.Join(path, ".")] = struct{}{}
 		}
 		fieldType := sf.Type
 		for fieldType.Kind() == reflect.Pointer {
 			fieldType = fieldType.Elem()
 		}
 		if fieldType.Kind() == reflect.Struct {
-			collectSecretYAMLPaths(fieldType, path)
+			collectSecretYAMLPaths(pathSet, fieldType, path)
 		}
 	}
 }
