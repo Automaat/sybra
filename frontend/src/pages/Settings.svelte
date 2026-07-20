@@ -218,35 +218,44 @@
   type TabId =
     | 'appearance' | 'notifications' | 'agent' | 'provider-health'
     | 'orchestrator' | 'automation' | 'github' | 'monitor' | 'renovate'
-    | 'system' | 'logging' | 'version' | 'directories' | 'raw'
+    | 'instance-routing' | 'testing' | 'observability-system'
+    | 'logging' | 'version' | 'directories' | 'raw'
 
   type RailItem = { id: TabId; label: string; keywords: string; keys: (keyof AppSettings)[] }
   type RailGroup = { label: string; items: RailItem[] }
 
   const allGroups = $derived<RailGroup[]>([
-    { label: 'General', items: [
+    { label: 'Instance', items: [
       { id: 'appearance', label: 'Appearance', keywords: 'theme color dark light focus mode browser', keys: [] },
-      { id: 'notifications', label: 'Notifications', keywords: 'desktop macos notify', keys: ['notification'] },
+      { id: 'instance-routing', label: 'Machine routing', keywords: 'project types machine routing node role', keys: ['projectTypes'] },
     ] },
-    { label: 'Agents', items: [
+    { label: 'Execution', items: [
       { id: 'agent', label: 'Defaults', keywords: 'provider model mode concurrent permissions fallback turns cost claude codex copilot opencode openrouter glm log retention gzip compression size', keys: ['agent'] },
       ...(providerHealthEnabled ? [{ id: 'provider-health' as TabId, label: 'Providers', keywords: 'health limits failover subscription', keys: ['providers'] as (keyof AppSettings)[] }] : []),
     ] },
-    { label: 'Automation', items: [
+    { label: 'Workflow', items: [
       { id: 'orchestrator', label: 'Orchestrator', keywords: 'auto triage plan dispatch maintenance interval', keys: ['orchestrator'] },
       { id: 'automation', label: 'Triage & Umbrella', keywords: 'triage classify umbrella grounding expand', keys: ['triage', 'umbrella'] },
-      { id: 'github', label: 'GitHub', keywords: 'github issues pr poller role app token merge renovate', keys: ['github'] },
-      { id: 'monitor', label: 'Monitor', keywords: 'monitor anomaly self-monitor bottleneck failure lost agent', keys: ['monitor', 'selfMonitor'] },
+      { id: 'testing', label: 'Testing', keywords: 'testing test runner adversarial attempts concurrency', keys: ['testing'] },
+    ] },
+    { label: 'Integrations', items: [
+      { id: 'notifications', label: 'Notifications', keywords: 'desktop macos notify', keys: ['notification'] },
+      { id: 'github', label: 'GitHub', keywords: 'github issues pr poller role app token merge renovate review hold', keys: ['github'] },
       { id: 'renovate', label: 'Renovate', keywords: 'renovate dependency bot author', keys: ['renovate'] },
     ] },
-    { label: 'System', items: [
-      { id: 'system', label: 'Machine & Testing', keywords: 'project types machine routing testing experience metrics prometheus', keys: ['testing', 'experience', 'metrics', 'projectTypes'] },
+    { label: 'Supervision', items: [
+      { id: 'monitor', label: 'Monitor', keywords: 'monitor anomaly self-monitor bottleneck failure lost agent human review', keys: ['monitor', 'selfMonitor'] },
+    ] },
+    { label: 'Storage', items: [
+      { id: 'directories', label: 'Directories', keywords: 'paths dirs tasks clones worktrees storage', keys: [] },
+    ] },
+    { label: 'Observability', items: [
       { id: 'logging', label: 'Logging & Audit', keywords: 'log level size files audit retention', keys: ['logging', 'audit'] },
+      { id: 'observability-system', label: 'Experience & Metrics', keywords: 'experience metrics prometheus memory observability', keys: ['experience', 'metrics'] },
     ] },
     { label: 'Advanced', items: [
       { id: 'raw', label: 'Config file (YAML)', keywords: 'yaml raw config file editor everything advanced', keys: [] },
       { id: 'version', label: 'Version', keywords: 'version server client build', keys: [] },
-      { id: 'directories', label: 'Directories', keywords: 'paths dirs tasks clones worktrees', keys: [] },
     ] },
   ])
 
@@ -421,8 +430,14 @@
           {#if active === 'renovate'}
             <RenovatePanel bind:settings {defaults} />
           {/if}
-          {#if active === 'system'}
-            <SystemPanel bind:settings {defaults} />
+          {#if active === 'instance-routing'}
+            <SystemPanel bind:settings {defaults} showTesting={false} showObservability={false} />
+          {/if}
+          {#if active === 'testing'}
+            <SystemPanel bind:settings {defaults} showProjectTypes={false} showObservability={false} />
+          {/if}
+          {#if active === 'observability-system'}
+            <SystemPanel bind:settings {defaults} showProjectTypes={false} showTesting={false} />
           {/if}
           {#if active === 'logging'}
             <LoggingPanel bind:settings {defaults} />

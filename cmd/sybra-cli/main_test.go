@@ -935,6 +935,148 @@ func TestRunConfigDumpDoesNotMutateSparseConfig(t *testing.T) {
 	}
 }
 
+func TestRunConfigMigrateDryRunAndApply(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	before := []byte(strings.Join([]string{
+		"agent:",
+		"  provider: codex",
+		"  bash_timeout_seconds: 120",
+		"review_hold:",
+		"  enabled: true",
+		"server:",
+		"  auth_token: super-secret",
+		"",
+	}, "\n"))
+	if err := os.WriteFile(cfgPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2", "--dry-run")
+	if code != 0 {
+		t.Fatalf("config migrate dry-run exit %d:\n%s", code, out)
+	}
+	var dry configMigrateReport
+	mustUnmarshal(t, out, &dry)
+	if !dry.DryRun || !dry.Changed {
+		t.Fatalf("dry-run report = %+v, want changed dry-run", dry)
+	}
+	if dry.BackupPath != "" {
+		t.Fatalf("dry-run unexpectedly wrote backup path %q", dry.BackupPath)
+	}
+	foundSecretMove := false
+	for _, move := range dry.Moves {
+		if move.From == "server.auth_token" {
+			foundSecretMove = true
+			if move.ValueFrom != config.RedactedPlaceholder || move.ValueTo != config.RedactedPlaceholder {
+				t.Fatalf("secret move not redacted: %+v", move)
+			}
+		}
+	}
+	if !foundSecretMove {
+		t.Fatal("dry-run moves missing server.auth_token")
+	}
+	afterDryRun, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterDryRun, before) {
+		t.Fatalf("dry-run mutated config:\nbefore:\n%s\nafter:\n%s", before, afterDryRun)
+	}
+
+	code, out = runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2")
+	if code != 0 {
+		t.Fatalf("config migrate apply exit %d:\n%s", code, out)
+	}
+	var applied configMigrateReport
+	mustUnmarshal(t, out, &applied)
+	if applied.DryRun || !applied.Changed || applied.BackupPath == "" {
+		t.Fatalf("apply report = %+v", applied)
+	}
+	backup, err := os.ReadFile(applied.BackupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if !bytes.Equal(backup, before) {
+		t.Fatalf("backup mismatch:\nwant:\n%s\ngot:\n%s", before, backup)
+	}
+	migrated, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(migrated)
+	for _, want := range []string{
+		"schema_version: 2",
+		"execution:",
+		"  agent:",
+		"    provider: codex",
+		"    bash_timeout: 120s",
+		"integrations:",
+		"  github:",
+		"    review_hold:",
+		"      enabled: true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("migrated config missing %q:\n%s", want, text)
+		}
+	}
+
+	code, out = runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2")
+	if code != 0 {
+		t.Fatalf("config migrate second apply exit %d:\n%s", code, out)
+	}
+	var second configMigrateReport
+	mustUnmarshal(t, out, &second)
+	if second.Changed {
+		t.Fatalf("second apply should be a no-op: %+v", second)
+	}
+}
+
+func TestRunConfigMigrateDryRunNoOpForCanonicalGitHubReviewHoldConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	raw := []byte(strings.Join([]string{
+		"schema_version: 2",
+		"integrations:",
+		"  github:",
+		"    enabled: false",
+		"    review_hold:",
+		"      enabled: true",
+		"",
+	}, "\n"))
+	if err := os.WriteFile(cfgPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2", "--dry-run")
+	if code != 0 {
+		t.Fatalf("config migrate dry-run exit %d:\n%s", code, out)
+	}
+	var report configMigrateReport
+	mustUnmarshal(t, out, &report)
+	if !report.DryRun || report.Changed {
+		t.Fatalf("dry-run report = %+v, want no-op dry-run", report)
+	}
+
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, raw) {
+		t.Fatalf("dry-run mutated canonical config:\nbefore:\n%s\nafter:\n%s", raw, after)
+	}
+}
+
 func TestBinaryWorktreeDriftWarning(t *testing.T) {
 	t.Run("same revision", func(t *testing.T) {
 		if got := binaryWorktreeDriftWarning("abc123", "abc123"); got != "" {

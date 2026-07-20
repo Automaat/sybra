@@ -815,6 +815,9 @@ func load(opts loadOptions) (*ResolvedConfig, error) {
 		if err != nil {
 			return nil, err
 		}
+		for _, warning := range fileCfg.Warnings() {
+			slog.Warn("config: deprecated schema v2 alias", "warning", warning)
+		}
 	case os.IsNotExist(err):
 		if opts.persistLoadReconciles {
 			if writeErr := writeDefaultConfig(path); writeErr != nil {
@@ -1513,7 +1516,7 @@ const (
 )
 
 // defaultConfigStub is the minimal document written for a brand-new install.
-var defaultConfigStub = []byte("# Sybra configuration\nschema_version: 2\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n")
+var defaultConfigStub = []byte("# Sybra configuration\nschema_version: 2\n# GitHub automations are opt-in on first run.\nintegrations:\n  github:\n    enabled: false\n")
 
 func writeDefaultConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {

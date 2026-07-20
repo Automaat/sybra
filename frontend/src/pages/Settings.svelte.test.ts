@@ -211,8 +211,10 @@ describe('Settings', () => {
       ['GitHub', 'GitHub'],
       ['Monitor', 'Monitor'],
       ['Renovate', 'Renovate'],
-      ['Machine & Testing', 'Machine routing'],
+      ['Machine routing', 'Machine routing'],
+      ['Testing', 'Testing'],
       ['Logging & Audit', 'Logging & audit'],
+      ['Experience & Metrics', 'Experience memory & metrics'],
       ['Version', 'Version'],
       ['Directories', 'Directories'],
     ]

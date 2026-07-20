@@ -121,6 +121,165 @@ func TestResolveRejectsNonIntegralDurationAliasForIntField(t *testing.T) {
 	}
 }
 
+func TestResolveLoadsNamespacedV2Config(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"instance:",
+		"  project_types: [work]",
+		"execution:",
+		"  agent:",
+		"    provider: codex",
+		"    bash_timeout: 2m",
+		"integrations:",
+		"  github:",
+		"    review_hold:",
+		"      enabled: true",
+		"storage:",
+		"  sandboxes:",
+		"    retention: 48h",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.Provider; got != "codex" {
+		t.Fatalf("Agent.Provider = %q, want codex", got)
+	}
+	if got := resolved.Config.Agent.BashTimeoutSeconds; got != 120 {
+		t.Fatalf("Agent.BashTimeoutSeconds = %d, want 120", got)
+	}
+	if got := resolved.Config.Sandbox.RetentionHours; got != 48 {
+		t.Fatalf("Sandbox.RetentionHours = %d, want 48", got)
+	}
+	if !resolved.Config.ReviewHold.Enabled {
+		t.Fatal("ReviewHold.Enabled = false, want true")
+	}
+	if len(resolved.Config.ProjectTypes) != 1 || resolved.Config.ProjectTypes[0] != "work" {
+		t.Fatalf("ProjectTypes = %v, want [work]", resolved.Config.ProjectTypes)
+	}
+}
+
+func TestParseFileConfigRejectsMixedLegacyAndNamespacedV2Config(t *testing.T) {
+	_, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"agent:",
+		"  provider: claude",
+		"execution:",
+		"  agent:",
+		"    provider: codex",
+		"",
+	}, "\n")))
+	if err == nil {
+		t.Fatal("expected ambiguous-key error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "agent") {
+		t.Fatalf("error = %q, want ambiguous agent key error", err.Error())
+	}
+}
+
+func TestMigrateRawConfigToNamespacedV2IsIdempotent(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"agent:",
+		"  provider: codex",
+		"  bash_timeout_seconds: 120",
+		"review_hold:",
+		"  enabled: true",
+		"project_types: [work]",
+		"server:",
+		"  auth_token: super-secret",
+		"",
+	}, "\n"))
+
+	first, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Changed {
+		t.Fatal("first migration reported Changed=false")
+	}
+	text := string(first.MigratedRaw)
+	for _, want := range []string{
+		"schema_version: 2",
+		"instance:",
+		"  project_types:",
+		"execution:",
+		"  agent:",
+		"    provider: codex",
+		"    bash_timeout: 120s",
+		"integrations:",
+		"  github:",
+		"    review_hold:",
+		"      enabled: true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("migrated config missing %q:\n%s", want, text)
+		}
+	}
+	foundRedacted := false
+	for _, move := range first.Moves {
+		if move.From == "server.auth_token" {
+			foundRedacted = true
+			if move.ValueFrom != RedactedPlaceholder || move.ValueTo != RedactedPlaceholder {
+				t.Fatalf("secret move not redacted: %+v", move)
+			}
+		}
+	}
+	if !foundRedacted {
+		t.Fatal("migration moves missing server.auth_token")
+	}
+
+	second, err := MigrateRawConfig(first.MigratedRaw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Changed {
+		t.Fatalf("second migration reported Changed=true:\n%s", second.MigratedRaw)
+	}
+	if !bytes.Equal(normalizeYAMLBytes(first.MigratedRaw), normalizeYAMLBytes(second.MigratedRaw)) {
+		t.Fatal("second migration rewrote the canonical config")
+	}
+}
+
+func TestMigrateRawConfigKeepsCanonicalGitHubReviewHoldConfig(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"schema_version: 2",
+		"integrations:",
+		"  github:",
+		"    enabled: false",
+		"    review_hold:",
+		"      enabled: true",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatalf("canonical v2 config should be a no-op migration:\n%s", result.MigratedRaw)
+	}
+	if !bytes.Equal(normalizeYAMLBytes(raw), normalizeYAMLBytes(result.MigratedRaw)) {
+		t.Fatalf("migration rewrote canonical config:\nwant:\n%s\ngot:\n%s", raw, result.MigratedRaw)
+	}
+}
+
+func TestMigrateNodeToCanonicalPreservesNilAsYAMLNull(t *testing.T) {
+	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("got nil node, want YAML null scalar")
+	}
+	if got.Kind != yamlv3.ScalarNode || got.Tag != "!!null" || got.Value != "null" {
+		t.Fatalf("got node = %#v, want YAML null scalar", got)
+	}
+}
+
 func cmpConfigSubset(got, want *Config) string {
 	var diffs []string
 	if got.SchemaVersion != want.SchemaVersion {

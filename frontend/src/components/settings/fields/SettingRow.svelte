@@ -4,7 +4,7 @@
   interface Props {
     label: string
     description?: string
-    /** Dotted config key path, e.g. "agent.maxConcurrent" — shown on hover, copyable. */
+    /** Dotted config key path, e.g. "execution.agent.max_concurrent" — shown on hover, copyable. */
     keyPath?: string
     /** True when the live value differs from the shipped default. */
     modified?: boolean
