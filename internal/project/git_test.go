@@ -3566,35 +3566,51 @@ func setGitHubOriginPushURL(t *testing.T, wtPath string) {
 	}
 }
 
-// writeFakeGhFailingNTimes installs a `gh` on dir that fails its first
-// failCount invocations (as `gh auth status` would on a bad/rotating
-// credential) and succeeds on every call after that. Call count persists in a
-// sibling file since each invocation is a separate process.
-func writeFakeGhFailingNTimes(t *testing.T, dir string, failCount int) {
+// writeGitLSRemoteFailingNTimes installs a `git` wrapper on dir that fails its
+// first failCount `ls-remote` invocations (as a bad/rotating credential would)
+// and succeeds on every call after that. Call count persists in a sibling file
+// since each invocation is a separate process.
+func writeGitLSRemoteFailingNTimes(t *testing.T, dir, realGit string, failCount int) {
 	t.Helper()
-	counterFile := filepath.Join(dir, "gh-calls")
+	counterFile := filepath.Join(dir, "git-ls-remote-calls")
 	if err := os.WriteFile(counterFile, []byte("0"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	script := fmt.Sprintf("#!/bin/sh\nn=$(cat %s)\nn=$((n+1))\necho \"$n\" > %s\nif [ \"$n\" -le %d ]; then\n  echo 'Bad credentials' >&2\n  exit 1\nfi\nexit 0\n",
-		counterFile, counterFile, failCount)
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "ls-remote" ]; then
+  n=$(cat %s)
+  n=$((n+1))
+  echo "$n" > %s
+  if [ "$n" -le %d ]; then
+    echo 'remote: Bad credentials' >&2
+    exit 1
+  fi
+  printf 'deadbeef\tHEAD\n'
+  exit 0
+fi
+exec %q "$@"
+`, counterFile, counterFile, failCount, realGit)
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func writeFakeGhRejectingInjectedToken(t *testing.T, dir, badToken string) string {
+func writeGitLSRemoteWrapperRejectingInjectedToken(t *testing.T, dir, realGit, badToken string) string {
 	t.Helper()
-	logFile := filepath.Join(dir, "gh-token-log")
+	logFile := filepath.Join(dir, "git-ls-remote-token-log")
 	script := fmt.Sprintf(`#!/bin/sh
-printf '%%s\n' "${GH_TOKEN:-<empty>}" >> %s
-if [ "${GH_TOKEN:-}" = %q ]; then
-  echo 'The token in GH_TOKEN is invalid.' >&2
-  exit 1
+if [ "$1" = "ls-remote" ]; then
+  printf '%%s\n' "${GH_TOKEN:-<empty>}" >> %s
+  if [ "${GH_TOKEN:-}" = %q ]; then
+    echo 'remote: Bad credentials' >&2
+    exit 1
+  fi
+  printf 'deadbeef\tHEAD\n'
+  exit 0
 fi
-exit 0
-`, logFile, badToken)
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+exec %q "$@"
+`, logFile, badToken, realGit)
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return logFile
@@ -3632,9 +3648,9 @@ func readLogLines(t *testing.T, path string) []string {
 	return strings.Split(trimmed, "\n")
 }
 
-func readGhCallCount(t *testing.T, dir string) int {
+func readGitLSRemoteCallCount(t *testing.T, dir string) int {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, "gh-calls"))
+	data, err := os.ReadFile(filepath.Join(dir, "git-ls-remote-calls"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3674,16 +3690,20 @@ func TestPreflightPushCredentials_RetriesTransientFailureThenSucceeds(t *testing
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
 
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath(git): %v", err)
+	}
 	dir := t.TempDir()
-	writeFakeGhFailingNTimes(t, dir, 1)
+	writeGitLSRemoteFailingNTimes(t, dir, realGit, 1)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	refreshCalls := stubPushPreflightRetry(t)
 
 	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
 		t.Fatalf("PreflightPushCredentials = %v, want nil after retry succeeds", err)
 	}
-	if got := readGhCallCount(t, dir); got != 2 {
-		t.Fatalf("gh invoked %d times, want 2 (1 failure + 1 retry)", got)
+	if got := readGitLSRemoteCallCount(t, dir); got != 2 {
+		t.Fatalf("git ls-remote invoked %d times, want 2 (1 failure + 1 retry)", got)
 	}
 	if *refreshCalls != 1 {
 		t.Fatalf("forceRefreshAppToken called %d times, want 1", *refreshCalls)
@@ -3694,14 +3714,18 @@ func TestPreflightPushCredentials_FallsBackToAmbientAuthWhenInjectedTokenIsBad(t
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
 
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath(git): %v", err)
+	}
 	dir := t.TempDir()
-	logFile := writeFakeGhRejectingInjectedToken(t, dir, "bad-token")
+	logFile := writeGitLSRemoteWrapperRejectingInjectedToken(t, dir, realGit, "bad-token")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	refreshCalls := stubPushPreflightRetry(t)
 
-	origEnv := ghAuthEnv
-	ghAuthEnv = func() []string { return append(os.Environ(), "GH_TOKEN=bad-token") }
-	t.Cleanup(func() { ghAuthEnv = origEnv })
+	origEnv := pushEnv
+	pushEnv = func() []string { return append(os.Environ(), "GH_TOKEN=bad-token") }
+	t.Cleanup(func() { pushEnv = origEnv })
 
 	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
 		t.Fatalf("PreflightPushCredentials = %v, want ambient fallback success", err)
@@ -3710,7 +3734,7 @@ func TestPreflightPushCredentials_FallsBackToAmbientAuthWhenInjectedTokenIsBad(t
 		t.Fatalf("forceRefreshAppToken called %d times, want 0 when ambient fallback succeeds immediately", *refreshCalls)
 	}
 	if got := readLogLines(t, logFile); len(got) != 2 || got[0] != "bad-token" || got[1] == "bad-token" {
-		t.Fatalf("gh auth status GH_TOKEN log = %v, want injected bad token then ambient/non-bad token", got)
+		t.Fatalf("git ls-remote GH_TOKEN log = %v, want injected bad token then ambient/non-bad token", got)
 	}
 }
 
@@ -3718,18 +3742,22 @@ func TestPreflightPushCredentials_ExhaustsRetriesReturnsError(t *testing.T) {
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
 
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath(git): %v", err)
+	}
 	dir := t.TempDir()
-	writeFakeGhFailingNTimes(t, dir, 100)
+	writeGitLSRemoteFailingNTimes(t, dir, realGit, 100)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	refreshCalls := stubPushPreflightRetry(t)
 
-	err := PreflightPushCredentials(context.Background(), wtPath)
-	if !errors.Is(err, ErrPushAuthPreflight) {
-		t.Fatalf("PreflightPushCredentials error = %v, want ErrPushAuthPreflight", err)
+	preflightErr := PreflightPushCredentials(context.Background(), wtPath)
+	if !errors.Is(preflightErr, ErrPushAuthPreflight) {
+		t.Fatalf("PreflightPushCredentials error = %v, want ErrPushAuthPreflight", preflightErr)
 	}
 	wantCalls := len(pushPreflightRetryBackoffs) + 1
-	if got := readGhCallCount(t, dir); got != wantCalls {
-		t.Fatalf("gh invoked %d times, want %d (1 initial + %d retries)", got, wantCalls, len(pushPreflightRetryBackoffs))
+	if got := readGitLSRemoteCallCount(t, dir); got != wantCalls {
+		t.Fatalf("git ls-remote invoked %d times, want %d (1 initial + %d retries)", got, wantCalls, len(pushPreflightRetryBackoffs))
 	}
 	if *refreshCalls != len(pushPreflightRetryBackoffs) {
 		t.Fatalf("forceRefreshAppToken called %d times, want %d", *refreshCalls, len(pushPreflightRetryBackoffs))
@@ -3759,8 +3787,12 @@ func TestPreflightPushCredentials_HookFiresOnExhaustedRetries(t *testing.T) {
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
 
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath(git): %v", err)
+	}
 	dir := t.TempDir()
-	writeFakeGhFailingNTimes(t, dir, 100)
+	writeGitLSRemoteFailingNTimes(t, dir, realGit, 100)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubPushPreflightRetry(t)
 	hook := stubPushAuthFailureHook(t)
@@ -3780,8 +3812,12 @@ func TestPreflightPushCredentials_HookNotCalledOnSuccess(t *testing.T) {
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
 
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath(git): %v", err)
+	}
 	dir := t.TempDir()
-	writeFakeGhFailingNTimes(t, dir, 0)
+	writeGitLSRemoteFailingNTimes(t, dir, realGit, 0)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubPushPreflightRetry(t)
 	hook := stubPushAuthFailureHook(t)

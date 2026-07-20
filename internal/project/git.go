@@ -960,8 +960,8 @@ func PushUpstream(ctx context.Context, worktreePath, branch string) error {
 // intentionally separate from bareRepoLocks because hooks can run for minutes.
 //
 // pushEnv carries a cached GitHub App installation token via GH_TOKEN when one
-// is configured (see checkGHAuthStatus, which validates the same credential
-// path). Without it, the actual `git push` here would fall through to
+// is configured (see PreflightPushCredentials, which probes the same Git
+// credential path). Without it, the actual `git push` here would fall through to
 // whatever ambient `gh auth login` session ConfigureGitHubAuth's credential
 // helper finds — App auth would then validate clean in PreflightPushCredentials
 // while the push itself still depended on the single interactive session it
@@ -992,10 +992,9 @@ func pushLocked(ctx context.Context, worktreePath string, args ...string) error 
 	})
 }
 
-// pushEnv is indirected so tests can stub the environment `git push` runs
-// with (see checkGHAuthStatus's identical use of github.GHEnv, and
-// forceRefreshAppToken above for the same test-seam pattern) without needing
-// a real minted GitHub App installation token.
+// pushEnv is indirected so tests can stub the environment `git push` and the
+// Git-based push preflight both run with, without needing a real minted GitHub
+// App installation token.
 var pushEnv = github.GHEnv
 
 // SetBranchTo force-sets a branch ref in the bare clone to point at commit,
@@ -1417,9 +1416,6 @@ var (
 	// token-refresh call without depending on internal/github's package-global
 	// App-auth state.
 	forceRefreshAppToken = github.ForceRefreshAppToken
-	// ghAuthEnv is indirected so tests can force the preflight down the
-	// injected-token path without mutating internal/github's package state.
-	ghAuthEnv = github.GHEnv
 	// pushAuthFailureHook is called with the final error every time
 	// PreflightPushCredentials exhausts its retries and still can't
 	// authenticate. It's the single choke point both real callers
@@ -1460,7 +1456,7 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 		return nil
 	}
 
-	authErr := checkGHAuthStatus(ctx, worktreePath)
+	authErr := checkGitRemoteAuth(ctx, worktreePath, remote)
 	for attempt := 0; attempt < len(pushPreflightRetryBackoffs) && authErr != nil; attempt++ {
 		// Best-effort: a mint failure here (e.g. a transient network blip
 		// talking to GitHub) shouldn't itself abort the retry loop — the plain
@@ -1469,7 +1465,7 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 		if err := pushPreflightRetrySleep(ctx, pushPreflightRetryBackoffs[attempt]); err != nil {
 			break
 		}
-		authErr = checkGHAuthStatus(ctx, worktreePath)
+		authErr = checkGitRemoteAuth(ctx, worktreePath, remote)
 	}
 	if authErr != nil {
 		pushAuthFailureHook(authErr)
@@ -1477,16 +1473,16 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 	return authErr
 }
 
-func checkGHAuthStatus(ctx context.Context, worktreePath string) error {
+func checkGitRemoteAuth(ctx context.Context, worktreePath, remote string) error {
 	failures := make([]string, 0, 2)
-	for _, attempt := range credentialAttempts(ghAuthEnv()) {
-		msg, err := ghAuthStatusMessage(ctx, worktreePath, attempt.env)
+	for _, attempt := range credentialAttempts(pushEnv()) {
+		msg, err := gitRemoteAuthMessage(ctx, worktreePath, remote, attempt.env)
 		if err == nil {
 			return nil
 		}
 		failures = append(failures, attempt.label+": "+msg)
 	}
-	return fmt.Errorf("%w: gh auth status: %s", ErrPushAuthPreflight, strings.Join(failures, "; "))
+	return fmt.Errorf("%w: git ls-remote %s HEAD: %s", ErrPushAuthPreflight, remote, strings.Join(failures, "; "))
 }
 
 func credentialAttempts(injectedEnv []string) []credentialAttempt {
@@ -1499,8 +1495,8 @@ func credentialAttempts(injectedEnv []string) []credentialAttempt {
 	}
 }
 
-func ghAuthStatusMessage(ctx context.Context, worktreePath string, env []string) (string, error) {
-	cmd := exec.CommandContext(ctx, "gh", "auth", "status", "--hostname", "github.com")
+func gitRemoteAuthMessage(ctx context.Context, worktreePath, remote string, env []string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", remote, "HEAD")
 	cmd.Dir = worktreePath
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
