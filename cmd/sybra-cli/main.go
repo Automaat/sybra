@@ -359,11 +359,11 @@ func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
 	return task.NewManager(rawStore, nil), projStore, nil
 }
 
-func openFallbackTaskStore(cmd string) (*task.Manager, string, bool, error) {
+func openFallbackTaskStore(cmd string) (store *task.Manager, dir string, ok bool, err error) {
 	if !supportsTaskStoreFallback(cmd) {
 		return nil, "", false, nil
 	}
-	dir := fallbackTasksDir()
+	dir = fallbackTasksDir()
 	rawStore, err := task.NewStore(dir)
 	if err != nil {
 		return nil, dir, true, fmt.Errorf("open fallback task store: %w", err)
