@@ -1027,6 +1027,7 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 		VariantID:               ag.VariantID,
 		AssignmentUnit:          ag.AssignmentUnit,
 		AssignmentKey:           ag.AssignmentKey,
+		DecisionVersion:         ag.DecisionVersion,
 		ReasoningEffort:         ag.ReasoningEffort,
 		RequestedSkill:          ag.RequestedSkill,
 		SkillExecutionMode:      ag.SkillExecutionMode,

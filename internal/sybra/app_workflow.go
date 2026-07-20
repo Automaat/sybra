@@ -914,6 +914,7 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 		VariantID:               ag.VariantID,
 		AssignmentUnit:          ag.AssignmentUnit,
 		AssignmentKey:           ag.AssignmentKey,
+		DecisionVersion:         ag.DecisionVersion,
 		ReasoningEffort:         ag.ReasoningEffort,
 		RequestedSkill:          ag.RequestedSkill,
 		SkillExecutionMode:      ag.SkillExecutionMode,

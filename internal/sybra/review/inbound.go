@@ -180,8 +180,19 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		return err
 	}
 	if err := r.tasks.AddRun(current.ID, task.AgentRun{
-		AgentID: ag.ID, Role: string(agent.RoleReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
-		Prompt: cfg.Prompt,
+		AgentID:         ag.ID,
+		Role:            string(agent.RoleReview),
+		Mode:            "headless",
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		ExperimentID:    ag.ExperimentID,
+		VariantID:       ag.VariantID,
+		AssignmentUnit:  ag.AssignmentUnit,
+		AssignmentKey:   ag.AssignmentKey,
+		DecisionVersion: ag.DecisionVersion,
+		State:           string(agent.StateRunning),
+		StartedAt:       ag.StartedAt,
+		Prompt:          cfg.Prompt,
 	}); err != nil {
 		r.logger.Error("task.add-run", "task_id", current.ID, "err", err)
 		if stopErr := r.agents.StopAgent(ag.ID); stopErr != nil {

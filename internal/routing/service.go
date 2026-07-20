@@ -173,22 +173,29 @@ func (s *Service) loadOverlay() {
 }
 
 func (s *Service) tick(_ context.Context) {
-	if s.report == nil || s.store == nil {
+	if s.store == nil {
 		return
 	}
-	rep, ok := s.report()
-	if !ok {
-		s.logger.Debug("routing.tick.no_report")
-		return
-	}
-
 	base := s.base()
-	scores := ScoreVariants(flattenRows(rep), coefficientsFromConfig(s.cfg.Coefficients))
-
 	s.mu.Lock()
 	prevOverlay := s.overlay
 	s.mu.Unlock()
 
+	if s.report == nil {
+		s.logger.Debug("routing.tick.no_report")
+		return
+	}
+	rep, ok := s.report()
+	if !ok {
+		if s.cfg.Enabled && prevOverlay.Version == 0 && len(prevOverlay.Experiments) == 0 {
+			s.persistAndApply(bootstrapOverlay(1, s.now(), base), base)
+		} else {
+			s.logger.Debug("routing.tick.no_report")
+		}
+		return
+	}
+
+	scores := ScoreVariants(flattenRows(rep), coefficientsFromConfig(s.cfg.Coefficients))
 	current := currentWeights(base, prevOverlay, s.cfg.Enabled)
 	plan := PlanWeights(scores, current, PlanOptions{
 		WeightBudget:      s.cfg.WeightBudget,
@@ -487,6 +494,35 @@ func pruneOverlay(prev Overlay, base abtest.Config, now time.Time) (Overlay, boo
 		pruned.GeneratedAt = now
 	}
 	return pruned, changed
+}
+
+func bootstrapOverlay(version int, now time.Time, base abtest.Config) Overlay {
+	overlay := Overlay{Version: version, GeneratedAt: now}
+	for i := range base.Experiments {
+		exp := base.Experiments[i]
+		if exp.ID == "" {
+			continue
+		}
+		ov := OverlayExperiment{ExperimentID: exp.ID}
+		for j := range exp.Variants {
+			variant := exp.Variants[j]
+			if variant.ID == "" || variant.Weight <= 0 {
+				continue
+			}
+			ov.Variants = append(ov.Variants, OverlayVariant{
+				VariantID:        variant.ID,
+				Weight:           variant.Weight,
+				InsufficientData: true,
+			})
+		}
+		if len(ov.Variants) > 0 {
+			overlay.Experiments = append(overlay.Experiments, ov)
+		}
+	}
+	sort.Slice(overlay.Experiments, func(i, j int) bool {
+		return overlay.Experiments[i].ExperimentID < overlay.Experiments[j].ExperimentID
+	})
+	return overlay
 }
 
 // mergeWeights clones base and overwrites each configured variant's Weight

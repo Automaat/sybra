@@ -315,14 +315,19 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 	h.mu.Unlock()
 
 	if err := h.tasks.AddRun(taskID, task.AgentRun{
-		AgentID:   ag.ID,
-		Role:      string(agent.RoleHumanReview),
-		Mode:      "headless",
-		Provider:  ag.Provider,
-		Model:     ag.Model,
-		State:     string(agent.StateRunning),
-		StartedAt: ag.StartedAt,
-		Prompt:    cfg.Prompt,
+		AgentID:         ag.ID,
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		ExperimentID:    ag.ExperimentID,
+		VariantID:       ag.VariantID,
+		AssignmentUnit:  ag.AssignmentUnit,
+		AssignmentKey:   ag.AssignmentKey,
+		DecisionVersion: ag.DecisionVersion,
+		State:           string(agent.StateRunning),
+		StartedAt:       ag.StartedAt,
+		Prompt:          cfg.Prompt,
 	}); err != nil {
 		h.logger.Error("human-review.add-run", "task_id", taskID, "agent_id", ag.ID, "err", err)
 	}

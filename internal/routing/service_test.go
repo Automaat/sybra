@@ -198,7 +198,7 @@ func TestService_ShadowTicks_StayWithinMaxStepOfBase(t *testing.T) {
 	}
 }
 
-func TestService_Tick_NoReportYet_NoOp(t *testing.T) {
+func TestService_Tick_NoReportYet_BootstrapsEnabledOverlay(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -218,11 +218,52 @@ func TestService_Tick_NoReportYet_NoOp(t *testing.T) {
 		Logger:   slog.New(slog.DiscardHandler),
 	})
 	runOnceSync(svc)
+	if len(applied) != 1 || len(audited) != 1 {
+		t.Fatalf("applied=%d audited=%d, want 1/1 bootstrap generation", len(applied), len(audited))
+	}
+	if applied[0].WeightsVersion == nil || *applied[0].WeightsVersion != 1 {
+		t.Fatalf("applied WeightsVersion = %+v, want 1", applied[0].WeightsVersion)
+	}
+	overlay, ok, err := store.Load()
+	if err != nil || !ok {
+		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+	}
+	if overlay.Version != 1 {
+		t.Fatalf("overlay.Version = %d, want 1", overlay.Version)
+	}
+	if w, has := overlay.WeightAt("exp", "v1"); !has || w != 1 {
+		t.Fatalf("exp/v1 weight = (%d, %v), want (1, true)", w, has)
+	}
+	if w, has := overlay.WeightAt("exp", "v2"); !has || w != 1 {
+		t.Fatalf("exp/v2 weight = (%d, %v), want (1, true)", w, has)
+	}
+}
+
+func TestService_Tick_NoReportYet_ShadowModeNoOp(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	var applied []abtest.Config
+	var audited []audit.Event
+	svc := NewService(Deps{
+		Cfg:    config.RoutingConfig{Enabled: false, IntervalHours: 6},
+		Base:   testBaseConfig,
+		Report: func() (evaluation.Report, bool) { return evaluation.Report{}, false },
+		Store:  store,
+		Apply: func(cfg abtest.Config) error {
+			applied = append(applied, cfg)
+			return nil
+		},
+		AuditLog: func(e audit.Event) error { audited = append(audited, e); return nil },
+		Logger:   slog.New(slog.DiscardHandler),
+	})
+	runOnceSync(svc)
 	if len(applied) != 0 || len(audited) != 0 {
-		t.Fatalf("applied=%d audited=%d, want 0/0 with no report available", len(applied), len(audited))
+		t.Fatalf("applied=%d audited=%d, want 0/0 with no report in shadow mode", len(applied), len(audited))
 	}
 	if _, ok, _ := store.Load(); ok {
-		t.Fatalf("overlay persisted with no report available, want none")
+		t.Fatalf("overlay persisted with no report in shadow mode, want none")
 	}
 }
 
@@ -738,13 +779,13 @@ func TestService_ApplyPersistedOverlay_DisabledIsNoOp(t *testing.T) {
 }
 
 func weightOf(cfg abtest.Config, expID, variantID string) int {
-	for _, exp := range cfg.Experiments {
-		if exp.ID != expID {
+	for i := range cfg.Experiments {
+		if cfg.Experiments[i].ID != expID {
 			continue
 		}
-		for _, variant := range exp.Variants {
-			if variant.ID == variantID {
-				return variant.Weight
+		for j := range cfg.Experiments[i].Variants {
+			if cfg.Experiments[i].Variants[j].ID == variantID {
+				return cfg.Experiments[i].Variants[j].Weight
 			}
 		}
 	}

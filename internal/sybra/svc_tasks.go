@@ -1228,12 +1228,19 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 		return err
 	}
 	if err := s.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID:   ag.ID,
-		Role:      string(agent.RoleReview),
-		Mode:      "headless",
-		State:     string(agent.StateRunning),
-		StartedAt: ag.StartedAt,
-		Prompt:    cfg.Prompt,
+		AgentID:         ag.ID,
+		Role:            string(agent.RoleReview),
+		Mode:            "headless",
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		ExperimentID:    ag.ExperimentID,
+		VariantID:       ag.VariantID,
+		AssignmentUnit:  ag.AssignmentUnit,
+		AssignmentKey:   ag.AssignmentKey,
+		DecisionVersion: ag.DecisionVersion,
+		State:           string(agent.StateRunning),
+		StartedAt:       ag.StartedAt,
+		Prompt:          cfg.Prompt,
 	}); err != nil {
 		s.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
