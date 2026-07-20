@@ -49,6 +49,19 @@ func lintVerifyCommand(file string) string {
 		" || { printf '" + file + ":3:1: unnamedResult: consider giving a name to these results (gocritic)\\n' >&2; exit 1; } # golangci-lint"
 }
 
+func lintVerifyOutput(files ...string) string {
+	var b strings.Builder
+	for _, file := range files {
+		b.WriteString(file)
+		b.WriteString(":3:1: unnamedResult: consider giving a name to these results (gocritic)\n")
+	}
+	return b.String()
+}
+
+func lintVerifyCommandForFiles(files ...string) string {
+	return "printf '" + strings.ReplaceAll(lintVerifyOutput(files...), "\n", "\\n") + "' >&2; exit 1 # golangci-lint"
+}
+
 func frontendVerifyCommand() string {
 	return "(cd frontend && mise exec -- npm run test:coverage)"
 }
@@ -138,6 +151,39 @@ func TestExecVerifyChecks_AutoFixCapEscalates(t *testing.T) {
 	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required after cap", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_AutoFixMultipleChangedLintFiles(t *testing.T) {
+	t.Parallel()
+	wt := makeLintVerifyRepo(t)
+	writeRepoFile(t, wt, "internal/bar/bar.go", "package bar\n\nfunc Value() (int, error) { return 2, nil }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "--amend", "--no-edit")
+
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{
+		lintVerifyCommandForFiles("internal/foo/foo.go", "internal/bar/bar.go"),
+	})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("parked output should be zero, got %+v", out)
+	}
+	if wf.CurrentStep != verifyChecksImplStepID || wf.State != ExecWaiting {
+		t.Fatalf("workflow after rewind = %+v, want implement/ExecWaiting", wf)
+	}
+	if got := wf.Variables["step.verify_checks.auto_fix"]; got != "1" {
+		t.Fatalf("auto_fix counter = %q, want 1", got)
+	}
+	note := wf.Variables[verifyReaskNoteVar]
+	if !strings.Contains(note, "internal/foo/foo.go:3:1: unnamedResult") ||
+		!strings.Contains(note, "internal/bar/bar.go:3:1: unnamedResult") {
+		t.Fatalf("reask note missing multi-file lint detail:\n%s", note)
 	}
 }
 
