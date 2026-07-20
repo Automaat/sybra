@@ -106,6 +106,47 @@ func TestFetchReviewsWith_success(t *testing.T) {
 	}
 }
 
+func TestFetchReviewSplitFnsOnlyRunTheirOwnSearchLegs(t *testing.T) {
+	t.Parallel()
+
+	emptyResponse := `{
+		"data": {
+			"viewer": {"login": "me"},
+			"search": {"nodes": []}
+		}
+	}`
+
+	t.Run("created by me uses one search", func(t *testing.T) {
+		t.Parallel()
+		fe := &sequenceExecer{outputs: [][]byte{[]byte(emptyResponse)}}
+		prs, err := fetchCreatedByMePRsWith(fe)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(prs) != 0 {
+			t.Fatalf("created prs len = %d, want 0", len(prs))
+		}
+		if fe.calls != 1 {
+			t.Fatalf("calls = %d, want 1", fe.calls)
+		}
+	})
+
+	t.Run("assigned summary uses two searches", func(t *testing.T) {
+		t.Parallel()
+		fe := &sequenceExecer{outputs: [][]byte{[]byte(emptyResponse), []byte(emptyResponse)}}
+		summary, err := fetchAssignedReviewSummaryWith(fe)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(summary.ReviewRequested) != 0 || len(summary.ReviewedByMe) != 0 {
+			t.Fatalf("summary = %+v, want both assigned slices empty", summary)
+		}
+		if fe.calls != 2 {
+			t.Fatalf("calls = %d, want 2", fe.calls)
+		}
+	})
+}
+
 func TestFetchReviewsWith_failedCheckRunConclusion(t *testing.T) {
 	t.Parallel()
 	createdResponse := `{

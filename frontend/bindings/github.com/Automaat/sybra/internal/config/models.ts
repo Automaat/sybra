@@ -561,17 +561,23 @@ export class GitHubConfig {
     "enabled": boolean;
 
     /**
+     * Polling is the primary stream-level control surface for GitHub polling.
+     * The legacy fields below remain as compatibility inputs during load but new
+     * code should read this block through the effective helper methods.
+     */
+    "polling": GitHubPollingConfig;
+
+    /**
      * IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to
-     * true (see DefaultConfig). Effective state is Enabled && IssuesEnabled —
-     * use RunsIssuesFetcher() rather than reading this field directly.
+     * true for legacy configs. Deprecated compatibility input for
+     * github.polling.issues.enabled.
      */
     "issuesEnabled": boolean;
 
     /**
      * ReviewsEnabled gates PR reviewer poll registration specifically.
-     * Defaults to true (see DefaultConfig). Effective state is
-     * Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this
-     * field directly.
+     * Deprecated compatibility input for both github.polling.sybra_prs.enabled
+     * and github.polling.assigned_prs.enabled.
      */
     "reviewsEnabled": boolean;
 
@@ -588,6 +594,7 @@ export class GitHubConfig {
      * Poll-interval overrides in seconds. Zero falls back to the built-in
      * default. Raised defaults (vs. the original 1m/5m) cut steady-state request
      * volume; lower them only on a high-limit (App-token) instance.
+     * Deprecated compatibility input for both PR streams' active intervals.
      */
     "reviewsFastSeconds": number;
 
@@ -600,6 +607,10 @@ export class GitHubConfig {
      * ~5/hour for 23 hours).
      */
     "reviewRoundsPerHour": number;
+
+    /**
+     * Deprecated compatibility input for both PR streams' idle intervals.
+     */
     "reviewsSlowSeconds": number;
 
     /**
@@ -616,6 +627,10 @@ export class GitHubConfig {
      * backoff entirely.
      */
     "reviewsStableBackoffMaxTicks": number;
+
+    /**
+     * Deprecated compatibility input for github.polling.issues.interval.
+     */
     "issuesSeconds": number;
 
     /**
@@ -681,6 +696,9 @@ export class GitHubConfig {
         if (!("enabled" in $$source)) {
             this["enabled"] = false;
         }
+        if (!("polling" in $$source)) {
+            this["polling"] = (new GitHubPollingConfig());
+        }
         if (!("issuesEnabled" in $$source)) {
             this["issuesEnabled"] = false;
         }
@@ -740,12 +758,111 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField13_0 = $$createType4;
+        const $$createField1_0 = $$createType4;
+        const $$createField14_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("polling" in $$parsedSource) {
+            $$parsedSource["polling"] = $$createField1_0($$parsedSource["polling"]);
+        }
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField13_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField14_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
+    }
+}
+
+export class GitHubPRPollingConfig {
+    "enabled": boolean;
+    "activeIntervalSeconds": number;
+    "idleIntervalSeconds": number;
+
+    /** Creates a new GitHubPRPollingConfig instance. */
+    constructor($$source: Partial<GitHubPRPollingConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("activeIntervalSeconds" in $$source)) {
+            this["activeIntervalSeconds"] = 0;
+        }
+        if (!("idleIntervalSeconds" in $$source)) {
+            this["idleIntervalSeconds"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubPRPollingConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubPRPollingConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitHubPRPollingConfig($$parsedSource as Partial<GitHubPRPollingConfig>);
+    }
+}
+
+export class GitHubPollingConfig {
+    "issues": GitHubPollingStreamConfig;
+    "sybraPrs": GitHubPRPollingConfig;
+    "assignedPrs": GitHubPRPollingConfig;
+
+    /** Creates a new GitHubPollingConfig instance. */
+    constructor($$source: Partial<GitHubPollingConfig> = {}) {
+        if (!("issues" in $$source)) {
+            this["issues"] = (new GitHubPollingStreamConfig());
+        }
+        if (!("sybraPrs" in $$source)) {
+            this["sybraPrs"] = (new GitHubPRPollingConfig());
+        }
+        if (!("assignedPrs" in $$source)) {
+            this["assignedPrs"] = (new GitHubPRPollingConfig());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubPollingConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubPollingConfig {
+        const $$createField0_0 = $$createType6;
+        const $$createField1_0 = $$createType7;
+        const $$createField2_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("issues" in $$parsedSource) {
+            $$parsedSource["issues"] = $$createField0_0($$parsedSource["issues"]);
+        }
+        if ("sybraPrs" in $$parsedSource) {
+            $$parsedSource["sybraPrs"] = $$createField1_0($$parsedSource["sybraPrs"]);
+        }
+        if ("assignedPrs" in $$parsedSource) {
+            $$parsedSource["assignedPrs"] = $$createField2_0($$parsedSource["assignedPrs"]);
+        }
+        return new GitHubPollingConfig($$parsedSource as Partial<GitHubPollingConfig>);
+    }
+}
+
+export class GitHubPollingStreamConfig {
+    "enabled": boolean;
+    "intervalSeconds": number;
+
+    /** Creates a new GitHubPollingStreamConfig instance. */
+    constructor($$source: Partial<GitHubPollingStreamConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("intervalSeconds" in $$source)) {
+            this["intervalSeconds"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubPollingStreamConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubPollingStreamConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitHubPollingStreamConfig($$parsedSource as Partial<GitHubPollingStreamConfig>);
     }
 }
 
@@ -912,10 +1029,10 @@ export class K8sJobsConfig {
      * Creates a new K8sJobsConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): K8sJobsConfig {
-        const $$createField3_0 = $$createType5;
-        const $$createField8_0 = $$createType7;
-        const $$createField9_0 = $$createType9;
-        const $$createField10_0 = $$createType11;
+        const $$createField3_0 = $$createType8;
+        const $$createField8_0 = $$createType10;
+        const $$createField9_0 = $$createType12;
+        const $$createField10_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("command" in $$parsedSource) {
             $$parsedSource["command"] = $$createField3_0($$parsedSource["command"]);
@@ -1026,7 +1143,7 @@ export class MonitorConfig {
      * Creates a new MonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorConfig {
-        const $$createField9_0 = $$createType12;
+        const $$createField9_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bottleneckHours" in $$parsedSource) {
             $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
@@ -1153,7 +1270,7 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
-        const $$createField6_0 = $$createType13;
+        const $$createField6_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
             $$parsedSource["pressure"] = $$createField6_0($$parsedSource["pressure"]);
@@ -1191,10 +1308,10 @@ export class PathDescriptor {
      * Creates a new PathDescriptor instance from a string or object.
      */
     static createFrom($$source: any = {}): PathDescriptor {
-        const $$createField2_0 = $$createType5;
-        const $$createField3_0 = $$createType5;
-        const $$createField4_0 = $$createType5;
-        const $$createField7_0 = $$createType5;
+        const $$createField2_0 = $$createType8;
+        const $$createField3_0 = $$createType8;
+        const $$createField4_0 = $$createType8;
+        const $$createField7_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("queryPaths" in $$parsedSource) {
             $$parsedSource["queryPaths"] = $$createField2_0($$parsedSource["queryPaths"]);
@@ -1275,7 +1392,7 @@ export class PlaywrightMCPConfig {
      * Creates a new PlaywrightMCPConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): PlaywrightMCPConfig {
-        const $$createField1_0 = $$createType5;
+        const $$createField1_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("extraArgs" in $$parsedSource) {
             $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
@@ -1537,12 +1654,12 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType14;
-        const $$createField1_0 = $$createType15;
-        const $$createField2_0 = $$createType15;
-        const $$createField3_0 = $$createType15;
-        const $$createField4_0 = $$createType15;
-        const $$createField5_0 = $$createType16;
+        const $$createField0_0 = $$createType17;
+        const $$createField1_0 = $$createType18;
+        const $$createField2_0 = $$createType18;
+        const $$createField3_0 = $$createType18;
+        const $$createField4_0 = $$createType18;
+        const $$createField5_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -1701,9 +1818,9 @@ export class RoutingSummary {
      * Creates a new RoutingSummary instance from a string or object.
      */
     static createFrom($$source: any = {}): RoutingSummary {
-        const $$createField6_0 = $$createType5;
-        const $$createField7_0 = $$createType18;
-        const $$createField8_0 = $$createType5;
+        const $$createField6_0 = $$createType8;
+        const $$createField7_0 = $$createType21;
+        const $$createField8_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("precedence" in $$parsedSource) {
             $$parsedSource["precedence"] = $$createField6_0($$parsedSource["precedence"]);
@@ -1795,7 +1912,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType5;
+        const $$createField6_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -1969,18 +2086,21 @@ const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = PlaywrightMCPConfig.createFrom;
 const $$createType2 = K8sJobsConfig.createFrom;
 const $$createType3 = QueueConfig.createFrom;
-const $$createType4 = GitHubAppConfig.createFrom;
-const $$createType5 = $Create.Array($Create.Any);
-const $$createType6 = K8sJobEnvVar.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = K8sJobSecretEnvVar.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = K8sJobVolume.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = $Create.Map($Create.Any, $Create.Any);
-const $$createType13 = PressureConfig.createFrom;
-const $$createType14 = ProviderHealthCheckConfig.createFrom;
-const $$createType15 = ProviderEntryConfig.createFrom;
-const $$createType16 = ProviderLimitsConfig.createFrom;
-const $$createType17 = RoutingEligibleVariant.createFrom;
-const $$createType18 = $Create.Array($$createType17);
+const $$createType4 = GitHubPollingConfig.createFrom;
+const $$createType5 = GitHubAppConfig.createFrom;
+const $$createType6 = GitHubPollingStreamConfig.createFrom;
+const $$createType7 = GitHubPRPollingConfig.createFrom;
+const $$createType8 = $Create.Array($Create.Any);
+const $$createType9 = K8sJobEnvVar.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = K8sJobSecretEnvVar.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = K8sJobVolume.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = $Create.Map($Create.Any, $Create.Any);
+const $$createType16 = PressureConfig.createFrom;
+const $$createType17 = ProviderHealthCheckConfig.createFrom;
+const $$createType18 = ProviderEntryConfig.createFrom;
+const $$createType19 = ProviderLimitsConfig.createFrom;
+const $$createType20 = RoutingEligibleVariant.createFrom;
+const $$createType21 = $Create.Array($$createType20);

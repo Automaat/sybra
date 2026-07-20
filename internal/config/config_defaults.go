@@ -434,13 +434,37 @@ func (c GitHubConfig) RunsSearchPollers() bool {
 // RunsIssuesFetcher reports the effective state of the GitHub Issues fetcher:
 // the top-level kill-switch AND the issues-specific sub-toggle.
 func (c GitHubConfig) RunsIssuesFetcher() bool {
-	return c.Enabled && c.IssuesEnabled
+	return c.Enabled && c.Polling.Issues.Enabled
 }
 
-// RunsReviewer reports the effective state of PR reviewer poll registration:
-// the top-level kill-switch AND the reviews-specific sub-toggle.
+// RunsSybraPRs reports whether Sybra's own PR-monitoring stream is enabled on
+// this machine. A secondary still monitors known linked task PRs even when the
+// global author:@me search leg is skipped.
+func (c GitHubConfig) RunsSybraPRs() bool {
+	return c.Enabled && c.Polling.SybraPRs.Enabled
+}
+
+// RunsAssignedPRs reports whether inbound review discovery is enabled before
+// poller-role gating is applied.
+func (c GitHubConfig) RunsAssignedPRs() bool {
+	return c.Enabled && c.Polling.AssignedPRs.Enabled
+}
+
+// RunsSybraPRSearches reports whether the self-authored PR search leg runs on
+// this machine.
+func (c GitHubConfig) RunsSybraPRSearches() bool {
+	return c.RunsSybraPRs() && c.RunsSearchPollers()
+}
+
+// RunsAssignedPRSearches reports whether the assigned/reviewed-by search legs
+// run on this machine.
+func (c GitHubConfig) RunsAssignedPRSearches() bool {
+	return c.RunsAssignedPRs() && c.RunsSearchPollers()
+}
+
+// RunsReviewer is the compatibility aggregate for the shared review handler.
 func (c GitHubConfig) RunsReviewer() bool {
-	return c.Enabled && c.ReviewsEnabled
+	return c.RunsSybraPRs() || c.RunsAssignedPRs()
 }
 
 // ReviewRoundsPerHourLimit resolves the per-PR review rate cap. 0 means unset
@@ -452,12 +476,20 @@ func (c GitHubConfig) ReviewRoundsPerHourLimit() int {
 	return c.ReviewRoundsPerHour
 }
 
-func (c GitHubConfig) reviewsFast() time.Duration {
-	return secsOr(c.ReviewsFastSeconds, DefaultReviewsFastSeconds)
+func (c GitHubConfig) sybraPRsActive() time.Duration {
+	return secsOr(c.Polling.SybraPRs.ActiveIntervalSeconds, DefaultReviewsFastSeconds)
 }
 
-func (c GitHubConfig) reviewsSlow() time.Duration {
-	return secsOr(c.ReviewsSlowSeconds, DefaultReviewsSlowSeconds)
+func (c GitHubConfig) sybraPRsIdle() time.Duration {
+	return secsOr(c.Polling.SybraPRs.IdleIntervalSeconds, DefaultReviewsSlowSeconds)
+}
+
+func (c GitHubConfig) assignedPRsActive() time.Duration {
+	return secsOr(c.Polling.AssignedPRs.ActiveIntervalSeconds, DefaultReviewsFastSeconds)
+}
+
+func (c GitHubConfig) assignedPRsIdle() time.Duration {
+	return secsOr(c.Polling.AssignedPRs.IdleIntervalSeconds, DefaultReviewsSlowSeconds)
 }
 
 // ReviewsMaxPRsPerTick returns the configured per-tick linked-PR cap.
@@ -495,12 +527,24 @@ func (c *Config) ReviewsStableBackoffMaxTicks() int {
 	}
 }
 
-// ReviewsFast/ReviewsSlow/Issues/RenovateFast/RenovateSlow return resolved poll
-// intervals (override or raised default).
-func (c GitHubConfig) ReviewsFast() time.Duration { return c.reviewsFast() }
-func (c GitHubConfig) ReviewsSlow() time.Duration { return c.reviewsSlow() }
+// ReviewsFast/ReviewsSlow remain compatibility helpers for the legacy single
+// review stream. New code should use the per-stream helpers below.
+func (c GitHubConfig) ReviewsFast() time.Duration { return c.sybraPRsActive() }
+func (c GitHubConfig) ReviewsSlow() time.Duration { return c.sybraPRsIdle() }
+func (c GitHubConfig) SybraPRsActive() time.Duration {
+	return c.sybraPRsActive()
+}
+func (c GitHubConfig) SybraPRsIdle() time.Duration {
+	return c.sybraPRsIdle()
+}
+func (c GitHubConfig) AssignedPRsActive() time.Duration {
+	return c.assignedPRsActive()
+}
+func (c GitHubConfig) AssignedPRsIdle() time.Duration {
+	return c.assignedPRsIdle()
+}
 func (c GitHubConfig) Issues() time.Duration {
-	return secsOr(c.IssuesSeconds, DefaultIssuesSeconds)
+	return secsOr(c.Polling.Issues.IntervalSeconds, DefaultIssuesSeconds)
 }
 func (c GitHubConfig) RenovateFast() time.Duration {
 	return secsOr(c.RenovateFastSeconds, DefaultRenovateFastSeconds)
@@ -652,8 +696,11 @@ func defaultSeedConfig() *Config {
 			Author:  "app/renovate",
 		},
 		GitHub: GitHubConfig{
-			IssuesEnabled:  true,
-			ReviewsEnabled: true,
+			Polling: GitHubPollingConfig{
+				Issues:      GitHubPollingStreamConfig{Enabled: true},
+				SybraPRs:    GitHubPRPollingConfig{Enabled: true},
+				AssignedPRs: GitHubPRPollingConfig{Enabled: true},
+			},
 		},
 		Monitor: MonitorConfig{
 			Enabled: true,
@@ -1081,6 +1128,42 @@ func applyLegacyGitHubDefault(data []byte, cfg *Config) {
 		return
 	}
 	cfg.GitHub.Enabled = true
+}
+
+func applyGitHubPollingCompat(cfg *Config, file *FileConfig) {
+	if cfg == nil || file == nil {
+		return
+	}
+	if file.Has("github", "issues_enabled") && !file.Has("github", "polling", "issues", "enabled") {
+		cfg.GitHub.Polling.Issues.Enabled = cfg.GitHub.IssuesEnabled
+	}
+	if file.Has("github", "reviews_enabled") {
+		if !file.Has("github", "polling", "sybra_prs", "enabled") {
+			cfg.GitHub.Polling.SybraPRs.Enabled = cfg.GitHub.ReviewsEnabled
+		}
+		if !file.Has("github", "polling", "assigned_prs", "enabled") {
+			cfg.GitHub.Polling.AssignedPRs.Enabled = cfg.GitHub.ReviewsEnabled
+		}
+	}
+	if file.Has("github", "issues_seconds") && !file.Has("github", "polling", "issues", "interval") {
+		cfg.GitHub.Polling.Issues.IntervalSeconds = cfg.GitHub.IssuesSeconds
+	}
+	if file.Has("github", "reviews_fast_seconds") {
+		if !file.Has("github", "polling", "sybra_prs", "active_interval") {
+			cfg.GitHub.Polling.SybraPRs.ActiveIntervalSeconds = cfg.GitHub.ReviewsFastSeconds
+		}
+		if !file.Has("github", "polling", "assigned_prs", "active_interval") {
+			cfg.GitHub.Polling.AssignedPRs.ActiveIntervalSeconds = cfg.GitHub.ReviewsFastSeconds
+		}
+	}
+	if file.Has("github", "reviews_slow_seconds") {
+		if !file.Has("github", "polling", "sybra_prs", "idle_interval") {
+			cfg.GitHub.Polling.SybraPRs.IdleIntervalSeconds = cfg.GitHub.ReviewsSlowSeconds
+		}
+		if !file.Has("github", "polling", "assigned_prs", "idle_interval") {
+			cfg.GitHub.Polling.AssignedPRs.IdleIntervalSeconds = cfg.GitHub.ReviewsSlowSeconds
+		}
+	}
 }
 
 func hasYAMLPath(data []byte, path ...string) bool {

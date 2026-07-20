@@ -2885,6 +2885,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 			add("error", "%s", msg)
 		}
 	}
+	addGitHubPollingFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
 	for _, warning := range routing.Warnings {
@@ -2936,6 +2937,30 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		return 1
 	}
 	return 0
+}
+
+func addGitHubPollingFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil {
+		return
+	}
+	add("ok", "github issues polling: %s", githubPollingStatus(cfg.GitHub.Enabled, cfg.GitHub.Polling.Issues.Enabled, cfg.GitHub.RunsSearchPollers(), false))
+	add("ok", "github sybra prs polling: %s", githubPollingStatus(cfg.GitHub.Enabled, cfg.GitHub.Polling.SybraPRs.Enabled, cfg.GitHub.RunsSearchPollers(), true))
+	add("ok", "github assigned prs polling: %s", githubPollingStatus(cfg.GitHub.Enabled, cfg.GitHub.Polling.AssignedPRs.Enabled, cfg.GitHub.RunsSearchPollers(), false))
+}
+
+func githubPollingStatus(githubEnabled, streamEnabled, ownsSearches, localMonitorOnly bool) string {
+	switch {
+	case !githubEnabled:
+		return "disabled by github.enabled=false"
+	case !streamEnabled:
+		return "disabled by stream toggle"
+	case localMonitorOnly && !ownsSearches:
+		return "active (known linked PR monitor only; poller_role=secondary)"
+	case !ownsSearches:
+		return "inactive on this machine (poller_role=secondary)"
+	default:
+		return "active"
+	}
 }
 
 // addK8sFailedTTLFindings warns when ttl_seconds_after_finished is set low

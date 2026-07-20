@@ -188,5 +188,6 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	applyExperienceDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
+	applyGitHubPollingCompat(cfg, file)
 	applyReviewHoldDefaults(cfg)
 }

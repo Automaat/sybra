@@ -45,6 +45,23 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 		msgs = append(msgs, fmt.Sprintf(format, a...))
 	}
 
+	validateAgentConfig(cfg, add)
+	validateLoggingConfig(cfg, add)
+	validateGitHubConfig(cfg, add)
+	validateClusterConfig(cfg, add)
+	validateHumanReviewConfig(cfg, add)
+	validateReviewHoldConfig(cfg, add)
+	validateEvaluationConfig(cfg, add)
+	validateMonitorConfig(cfg, add)
+	validateK8sSecretEnv(cfg, add)
+
+	if len(msgs) == 0 {
+		return nil
+	}
+	return &ValidationError{Messages: msgs}
+}
+
+func validateAgentConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if cfg.Agent.Provider != "" && !providerid.IsKnown(cfg.Agent.Provider) {
 		add("agent.provider: invalid provider: %q (valid: %s)", cfg.Agent.Provider, providerid.List())
 	}
@@ -80,6 +97,9 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	} else if mode == "enforce" && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		add("agent.sandbox_mode=enforce requires darwin or linux; current host is %s", runtime.GOOS)
 	}
+}
+
+func validateLoggingConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if cfg.Logging.Level != "debug" && cfg.Logging.Level != "info" && cfg.Logging.Level != "warn" && cfg.Logging.Level != "error" {
 		add("logging.level: invalid log level: %q", cfg.Logging.Level)
 	}
@@ -95,12 +115,29 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	if cfg.Attachments.MaxSizeMB < 1 || cfg.Attachments.MaxSizeMB > 20 {
 		add("attachments.max_size_mb: maxSizeMB must be 1–20")
 	}
+}
+
+func validateGitHubConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if cfg.GitHub.PollerRole != "" && cfg.GitHub.PollerRole != "primary" && cfg.GitHub.PollerRole != "secondary" {
 		add("github.poller_role must be \"primary\", \"secondary\", or empty, got %q", cfg.GitHub.PollerRole)
+	}
+	for path, value := range map[string]int{
+		"github.polling.issues.interval_seconds":              cfg.GitHub.Polling.Issues.IntervalSeconds,
+		"github.polling.sybra_prs.active_interval_seconds":    cfg.GitHub.Polling.SybraPRs.ActiveIntervalSeconds,
+		"github.polling.sybra_prs.idle_interval_seconds":      cfg.GitHub.Polling.SybraPRs.IdleIntervalSeconds,
+		"github.polling.assigned_prs.active_interval_seconds": cfg.GitHub.Polling.AssignedPRs.ActiveIntervalSeconds,
+		"github.polling.assigned_prs.idle_interval_seconds":   cfg.GitHub.Polling.AssignedPRs.IdleIntervalSeconds,
+	} {
+		if value < 0 {
+			add("%s must be 0 or greater, got %d", path, value)
+		}
 	}
 	if cfg.GitHub.App.Enabled && strings.TrimSpace(cfg.GitHub.App.PrivateKeyPath) == "" {
 		add("github.app.enabled requires github.app.private_key_path")
 	}
+}
+
+func validateClusterConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if _, err := NormalizeClusterRole(cfg.Cluster.Role); err != nil {
 		add("%v", err)
 	}
@@ -110,31 +147,37 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	if err := cfg.ValidateCluster(); err != nil {
 		add("%v", err)
 	}
+}
+
+func validateHumanReviewConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	switch action := strings.ToLower(strings.TrimSpace(cfg.HumanReview.SybraBugAction)); action {
 	case "", HumanReviewSybraBugActionFileIssue, HumanReviewSybraBugActionLocalTask, HumanReviewSybraBugActionBlockOnly, HumanReviewSybraBugActionNoteOnly:
 	default:
 		add("human_review.sybra_bug_action must be one of note_only, local_task, block_only, or legacy file_issue, got %q", cfg.HumanReview.SybraBugAction)
 	}
+}
+
+func validateReviewHoldConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if cfg.ReviewHold.Enabled && !validReviewHoldMode(cfg.ReviewHold.Mode) {
 		add("review_hold.mode must be push, push_nits, or hold, got %q", cfg.ReviewHold.Mode)
 	}
 	if cfg.ReviewHold.Enabled && cfg.ReviewHold.NitMaxLines < 0 {
 		add("review_hold.nit_max_lines must be 0 or greater, got %d", cfg.ReviewHold.NitMaxLines)
 	}
+}
+
+func validateEvaluationConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if cfg.Evaluation.Offline.UnavailablePolicy != "" &&
 		cfg.Evaluation.Offline.UnavailablePolicy != "fail" &&
 		cfg.Evaluation.Offline.UnavailablePolicy != "pass" {
 		add("evaluation.offline.unavailable_policy must be \"fail\" or \"pass\", got %q", cfg.Evaluation.Offline.UnavailablePolicy)
 	}
+}
+
+func validateMonitorConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if cfg.Monitor.DispatchLimit < 0 {
 		add("monitor.dispatch_limit must be 0 or greater, got %d", cfg.Monitor.DispatchLimit)
 	}
-	validateK8sSecretEnv(cfg, add)
-
-	if len(msgs) == 0 {
-		return nil
-	}
-	return &ValidationError{Messages: msgs}
 }
 
 func validateK8sSecretEnv(cfg *ResolvedConfig, add func(format string, a ...any)) {

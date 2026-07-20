@@ -250,7 +250,7 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 	if !a.cfg.GitHub.RunsIssuesFetcher() {
 		a.logger.Info("github.issues.disabled",
 			"github_enabled", a.cfg.GitHub.Enabled,
-			"issues_enabled", a.cfg.GitHub.IssuesEnabled,
+			"issues_polling_enabled", a.cfg.GitHub.Polling.Issues.Enabled,
 		)
 		return nil
 	}
@@ -300,7 +300,10 @@ func (a *App) logAutomationsSummary() {
 		"scheduler", a.cfg.Orchestrator.RunsScheduler(),
 		"github", a.cfg.GitHub.Enabled,
 		"github_issues", a.cfg.GitHub.RunsIssuesFetcher(),
-		"github_reviews", a.cfg.GitHub.RunsReviewer(),
+		"github_sybra_prs", a.cfg.GitHub.RunsSybraPRs(),
+		"github_sybra_pr_searches", a.cfg.GitHub.RunsSybraPRSearches(),
+		"github_assigned_prs", a.cfg.GitHub.RunsAssignedPRs(),
+		"github_assigned_pr_searches", a.cfg.GitHub.RunsAssignedPRSearches(),
 		"renovate", a.cfg.Renovate.Enabled,
 		"triage", a.cfg.Triage.Enabled,
 		"human_review", a.humanReview != nil,

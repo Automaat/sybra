@@ -589,6 +589,35 @@ func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONReportsGitHubPollingStates(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.GitHub.PollerRole = "secondary"
+	cfg.GitHub.Polling.AssignedPRs.Enabled = false
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected status-only doctor to stay non-fatal, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, want := range []string{
+		"github issues polling: inactive on this machine (poller_role=secondary)",
+		"github sybra prs polling: active (known linked PR monitor only; poller_role=secondary)",
+		"github assigned prs polling: disabled by stream toggle",
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "ok" && strings.Contains(f.Message, want)
+		}) {
+			t.Fatalf("expected %q in doctor report: %+v", want, report.Findings)
+		}
+	}
+}
+
 func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	setupStore(t)
 

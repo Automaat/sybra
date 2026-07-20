@@ -2615,7 +2615,11 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 		projects:  projects,
 		agents:    agentMgr,
 		prTracker: github.NewIssueTracker(0),
-		cfg:       &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}},
+		cfg: func() *config.Config {
+			gh := testGitHubConfig()
+			gh.PollerRole = "secondary"
+			return &config.Config{GitHub: gh}
+		}(),
 		fetchReviewsFn: func() (github.ReviewSummary, error) {
 			fetchReviewsCalled = true
 			return github.ReviewSummary{}, nil
