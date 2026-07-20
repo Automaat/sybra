@@ -230,13 +230,6 @@ func fetchExpandState(ctx context.Context, tasks *task.Manager, repo string, num
 	if tracker.exists {
 		state.checkpoint, _ = parseExpandCheckpoint(tracker.body)
 	}
-	if fetched := checkpointFetchedState(state.checkpoint); fetched.ok {
-		state.umb = fetched.umbrella
-		state.subs = fetched.subs
-		state.planSubs = fetched.planSubs
-		state.byRef = fetched.byRef
-		return state, nil
-	}
 
 	umb, subs, err := fetchUmbrellaBounded(ctx, repo, number)
 	if err != nil {
@@ -246,16 +239,20 @@ func fetchExpandState(ctx context.Context, tasks *task.Manager, repo string, num
 		return fetchedExpandState{}, fmt.Errorf("umbrella %s has no sub-issues", issueURL)
 	}
 	planSubs, byRef := buildPlanIndex(subs)
+	nextCheckpoint := trackerExpandCheckpoint{
+		Version: expandCheckpointVersion,
+		Fetched: &trackerExpandFetchedCheckpoint{Umbrella: umb, Subs: slices.Clone(subs)},
+	}
+	if fetched := checkpointFetchedState(state.checkpoint); fetched.ok && sameFetchedTopology(fetched.subs, subs) {
+		nextCheckpoint.Planned = state.checkpoint.Planned
+	}
 	state = fetchedExpandState{
-		tracker: tracker,
-		checkpoint: trackerExpandCheckpoint{
-			Version: expandCheckpointVersion,
-			Fetched: &trackerExpandFetchedCheckpoint{Umbrella: umb, Subs: slices.Clone(subs)},
-		},
-		umb:      umb,
-		subs:     subs,
-		planSubs: planSubs,
-		byRef:    byRef,
+		tracker:    tracker,
+		checkpoint: nextCheckpoint,
+		umb:        umb,
+		subs:       subs,
+		planSubs:   planSubs,
+		byRef:      byRef,
 	}
 	state.tracker, err = upsertExpandTracker(tasks, state.tracker, umb, ExpandPhaseFetched, state.checkpoint)
 	if err != nil {
@@ -265,6 +262,36 @@ func fetchExpandState(ctx context.Context, tasks *task.Manager, repo string, num
 		return fetchedExpandState{}, err
 	}
 	return state, nil
+}
+
+func sameFetchedTopology(a, b []github.Issue) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]bool, len(a))
+	for i := range a {
+		ref := NormalizeIssueRef(a[i].URL)
+		if ref == "" {
+			return false
+		}
+		if _, ok := seen[ref]; ok {
+			return false
+		}
+		seen[ref] = strings.EqualFold(a[i].State, "CLOSED")
+	}
+	matched := make(map[string]bool, len(b))
+	for i := range b {
+		ref := NormalizeIssueRef(b[i].URL)
+		if matched[ref] {
+			return false
+		}
+		matched[ref] = true
+		closed, ok := seen[ref]
+		if !ok || closed != strings.EqualFold(b[i].State, "CLOSED") {
+			return false
+		}
+	}
+	return true
 }
 
 func expandAllMaterialized(tasks *task.Manager, tracker existingTracker, umbrellaURL string, subs []github.Issue, planSubs []SubIssue, existing map[string]bool) (Result, bool) {

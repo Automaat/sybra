@@ -166,7 +166,7 @@ func TestExpand_ConcurrentCallsMaterializeSingleDAG(t *testing.T) {
 	}
 }
 
-func TestExpand_ResumeFromFetchedCheckpointWithoutRefetch(t *testing.T) {
+func TestExpand_ResumeFromFetchedCheckpointRefetchesLiveTopology(t *testing.T) {
 	umb := github.Issue{
 		Title:      "umbrella",
 		URL:        "https://github.com/o/r/issues/100",
@@ -200,13 +200,58 @@ func TestExpand_ResumeFromFetchedCheckpointWithoutRefetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand resume: %v", err)
 	}
-	if fetchCalls != 1 {
-		t.Fatalf("fetch calls = %d, want 1 across failed+resumed runs", fetchCalls)
+	if fetchCalls != 2 {
+		t.Fatalf("fetch calls = %d, want 2 so resume rechecks GitHub topology", fetchCalls)
 	}
 	if res.Created != 3 || res.Skipped != 0 {
 		t.Fatalf("resume result = %+v, want Created=3 Skipped=0", res)
 	}
 	assertSingleDAG(t, tasks, umb.URL, 3)
+}
+
+func TestExpand_FetchedCheckpointTopologyDriftRefetchesAndReplans(t *testing.T) {
+	umb := github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+		Body:       "body",
+	}
+	currentSubs := makeTestIssues(3)
+	origFetch := fetchUmbrella
+	t.Cleanup(func() {
+		fetchUmbrella = origFetch
+		expandFailAfter = ""
+	})
+	fetchCalls := 0
+	fetchUmbrella = func(_ context.Context, _ string, _ int) (github.Issue, []github.Issue, error) {
+		fetchCalls++
+		return umb, slices.Clone(currentSubs), nil
+	}
+
+	tasks := newTestTaskManager(t)
+	expandFailAfter = expandCheckpointAfterFetched
+	if _, err := Expand(context.Background(), tasks, func(context.Context, string, string) (string, error) {
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2"},{"issue":"o/r#3"}],"maxParallel":3}`, nil
+	}, umb.URL); !errors.Is(err, errInjectedFailure) {
+		t.Fatalf("Expand first run = %v, want injected failure after fetched checkpoint", err)
+	}
+
+	currentSubs = makeTestIssues(4)
+	expandFailAfter = ""
+	res, err := Expand(context.Background(), tasks, func(context.Context, string, string) (string, error) {
+		return `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2"},{"issue":"o/r#3"},{"issue":"o/r#4"}],"maxParallel":4}`, nil
+	}, umb.URL)
+	if err != nil {
+		t.Fatalf("Expand resume after topology drift: %v", err)
+	}
+	if fetchCalls != 2 {
+		t.Fatalf("fetch calls = %d, want 2 so the retry sees the added sub-issue", fetchCalls)
+	}
+	if res.Created != 4 || res.Skipped != 0 || res.ChildCount != 4 {
+		t.Fatalf("resume result = %+v, want Created=4 Skipped=0 ChildCount=4", res)
+	}
+	mustGetByIssue(t, tasks, "https://github.com/o/r/issues/4", "")
+	assertSingleDAG(t, tasks, umb.URL, 4)
 }
 
 func TestExpand_RefetchesAfterSuccessfulCheckpointedExpansion(t *testing.T) {
@@ -265,11 +310,18 @@ func TestExpand_ResumeFromPlannedCheckpointWithoutReplanning(t *testing.T) {
 		Repository: "o/r",
 		Body:       "body",
 	}
-	restore := githubFetchUmbrellaForTest(t, umb, makeTestIssues(3))
-	defer restore()
+	origFetch := fetchUmbrella
+	t.Cleanup(func() {
+		fetchUmbrella = origFetch
+		expandFailAfter = ""
+	})
+	fetchCalls := 0
+	fetchUmbrella = func(_ context.Context, _ string, _ int) (github.Issue, []github.Issue, error) {
+		fetchCalls++
+		return umb, makeTestIssues(3), nil
+	}
 	tasks := newTestTaskManager(t)
 	expandFailAfter = expandCheckpointAfterPlanned
-	t.Cleanup(func() { expandFailAfter = "" })
 
 	runCalls := 0
 	run := func(context.Context, string, string) (string, error) {
@@ -288,10 +340,57 @@ func TestExpand_ResumeFromPlannedCheckpointWithoutReplanning(t *testing.T) {
 	if runCalls != 1 {
 		t.Fatalf("planner calls = %d, want 1 across failed+resumed runs", runCalls)
 	}
+	if fetchCalls != 2 {
+		t.Fatalf("fetch calls = %d, want 2 so planned resume still rechecks GitHub topology", fetchCalls)
+	}
 	if res.Created != 3 || res.MaxParallel != 1 {
 		t.Fatalf("resume result = %+v, want Created=3 MaxParallel=1", res)
 	}
 	assertSingleDAG(t, tasks, umb.URL, 3)
+}
+
+func TestExpand_PlannedCheckpointTopologyDriftReplans(t *testing.T) {
+	umb := github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+		Body:       "body",
+	}
+	currentSubs := makeTestIssues(3)
+	origFetch := fetchUmbrella
+	t.Cleanup(func() {
+		fetchUmbrella = origFetch
+		expandFailAfter = ""
+	})
+	fetchUmbrella = func(_ context.Context, _ string, _ int) (github.Issue, []github.Issue, error) {
+		return umb, slices.Clone(currentSubs), nil
+	}
+
+	tasks := newTestTaskManager(t)
+	expandFailAfter = expandCheckpointAfterPlanned
+	runCalls := 0
+	run := func(context.Context, string, string) (string, error) {
+		runCalls++
+		return fmt.Sprintf(`{"children":[%s],"maxParallel":%d}`, planJSONChildren(len(currentSubs)), len(currentSubs)), nil
+	}
+	if _, err := Expand(context.Background(), tasks, run, umb.URL); !errors.Is(err, errInjectedFailure) {
+		t.Fatalf("Expand first run = %v, want injected failure after planned checkpoint", err)
+	}
+
+	currentSubs = makeTestIssues(4)
+	expandFailAfter = ""
+	res, err := Expand(context.Background(), tasks, run, umb.URL)
+	if err != nil {
+		t.Fatalf("Expand resume after topology drift: %v", err)
+	}
+	if runCalls != 2 {
+		t.Fatalf("planner calls = %d, want 2 after topology drift invalidates planned checkpoint", runCalls)
+	}
+	if res.Created != 4 || res.MaxParallel != 4 || res.ChildCount != 4 {
+		t.Fatalf("resume result = %+v, want Created=4 MaxParallel=4 ChildCount=4", res)
+	}
+	mustGetByIssue(t, tasks, "https://github.com/o/r/issues/4", "")
+	assertSingleDAG(t, tasks, umb.URL, 4)
 }
 
 func TestExpand_RechecksExistingStateBeforeMaterialize(t *testing.T) {
