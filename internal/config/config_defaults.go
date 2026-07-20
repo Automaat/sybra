@@ -359,13 +359,13 @@ func (c *Config) SurviveRestartEnabled() bool {
 }
 
 // InAppBrowserEnabled reports whether the desktop app should open external
-// links in the in-app Sybra Browser webview. Defaults to true when unset so
-// existing installs keep their current behavior without migration.
+// links in the in-app Sybra Browser webview. Defaults to false when unset;
+// the embedded browser is opt-in via explicit browser.in_app: true.
 func (c *Config) InAppBrowserEnabled() bool {
 	if c != nil && c.Browser.InApp != nil {
 		return *c.Browser.InApp
 	}
-	return true
+	return false
 }
 
 // DefaultTestingMaxConcurrent bounds concurrent test-runner agents (each owns

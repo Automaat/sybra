@@ -527,8 +527,8 @@ func TestInAppBrowserEnabled(t *testing.T) {
 		cfg  *Config
 		want bool
 	}{
-		{"nil config", nil, true},
-		{"nil field", &Config{}, true},
+		{"nil config", nil, false},
+		{"nil field", &Config{}, false},
 		{"explicit true", &Config{Browser: BrowserConfig{InApp: &truthy}}, true},
 		{"explicit false", &Config{Browser: BrowserConfig{InApp: &falsy}}, false},
 	}

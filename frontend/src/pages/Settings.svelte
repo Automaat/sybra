@@ -54,6 +54,11 @@
     if (on) viewModeStore.set('list')
   }
 
+  function setInAppBrowserEnabled(checked: boolean) {
+    if (!settings) return
+    settings.browser.inApp = checked ? true : null
+  }
+
   type ColorScheme = 'system' | 'light' | 'dark'
   let colorScheme = $state<ColorScheme>((localStorage.getItem('colorScheme') ?? 'system') as ColorScheme)
   function applyColorScheme(scheme: ColorScheme) {
@@ -167,6 +172,7 @@
     successMsg = ''
     try {
       await UpdateSettings(settings)
+      inAppBrowserStore.set(settings.browser.inApp === true)
       original = JSON.stringify(settings)
       originalSettings = JSON.parse(JSON.stringify($state.snapshot(settings)))
       explanations = await GetPathExplanations() as ConfigPathExplanation[]
@@ -183,6 +189,7 @@
     if (!original) return
     settings = JSON.parse(original)
     originalSettings = JSON.parse(original)
+    inAppBrowserStore.set(settings?.browser.inApp === true)
     prevProvider = settings?.agent.provider ?? null
   }
 
@@ -263,7 +270,7 @@
 
   const allGroups = $derived<RailGroup[]>([
     { label: 'Instance', items: [
-      { id: 'appearance', label: 'Appearance', keywords: 'theme color dark light focus mode browser', keys: [], paths: [] },
+      { id: 'appearance', label: 'Appearance', keywords: 'theme color dark light focus mode browser', keys: ['browser'], paths: ['browser'] },
       { id: 'instance-routing', label: 'Machine routing', keywords: 'project types machine routing node role', keys: ['projectTypes'], paths: ['project_types'] },
     ] },
     { label: 'Execution', items: [
@@ -380,7 +387,7 @@
   <!-- Sticky save bar -->
   <div class="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-surface-200 bg-surface-50/95 px-4 py-2.5 backdrop-blur dark:border-surface-700 dark:bg-surface-900/95 md:px-6">
     <p class="hidden min-w-0 truncate text-xs text-surface-500 dark:text-surface-400 sm:block">
-      Appearance, provider &amp; token changes apply instantly · other settings save together
+      Color scheme and focus mode apply instantly · config-backed settings save together
     </p>
     <div class="flex shrink-0 items-center gap-2">
       {#if successMsg}<span class="text-sm font-medium text-success-600 dark:text-success-400">{successMsg}</span>{/if}
@@ -493,10 +500,15 @@
               </span>
             </label>
             <label class="mt-5 flex items-start gap-3">
-              <input type="checkbox" class="mt-0.5 h-4 w-4 accent-primary-500" checked={inAppBrowserStore.enabled} onchange={(e) => inAppBrowserStore.set((e.target as HTMLInputElement).checked)} />
+              <input
+                type="checkbox"
+                class="mt-0.5 h-4 w-4 accent-primary-500"
+                checked={settings?.browser.inApp === true}
+                onchange={(e) => setInAppBrowserEnabled((e.target as HTMLInputElement).checked)}
+              />
               <span class="flex flex-col">
                 <span class="text-sm font-medium">Open links in-app</span>
-                <span class="text-xs text-surface-500 dark:text-surface-400">Open GitHub issue &amp; PR links in a Sybra browser window. Hold ⌘/Ctrl when clicking to use the system browser instead.</span>
+                <span class="text-xs text-surface-500 dark:text-surface-400">Opt-in. Save and restart to open GitHub issue &amp; PR links in a Sybra browser window. Hold ⌘/Ctrl when clicking to use the system browser instead.</span>
               </span>
             </label>
           </section>

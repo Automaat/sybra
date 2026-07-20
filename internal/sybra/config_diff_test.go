@@ -103,8 +103,8 @@ func TestDiffConfig_BrowserRestart(t *testing.T) {
 	t.Parallel()
 	old := config.DefaultConfig()
 	next := *old
-	disabled := false
-	next.Browser.InApp = &disabled
+	enabled := true
+	next.Browser.InApp = &enabled
 
 	got := diffConfig(*old, next)
 	if len(got.Applied) != 0 {
@@ -112,6 +112,19 @@ func TestDiffConfig_BrowserRestart(t *testing.T) {
 	}
 	if !slices.Contains(got.RestartRequired, "browser") {
 		t.Errorf("expected browser in restart, got %+v", got)
+	}
+}
+
+func TestDiffConfig_BrowserOmittedAndExplicitFalseMatch(t *testing.T) {
+	t.Parallel()
+	old := config.DefaultConfig()
+	next := *old
+	disabled := false
+	next.Browser.InApp = &disabled
+
+	got := diffConfig(*old, next)
+	if len(got.Applied) != 0 || len(got.RestartRequired) != 0 || len(got.Rejected) != 0 {
+		t.Errorf("omitted and explicit false should match effective browser config, got %+v", got)
 	}
 }
 

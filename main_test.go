@@ -25,10 +25,10 @@ func TestDesktopBrowserOptions(t *testing.T) {
 		cfg     *config.Config
 		wantLen int
 	}{
-		{"default/nil config wires the opener", nil, 1},
-		{"nil field wires the opener", &config.Config{}, 1},
-		{"explicit true wires the opener", &config.Config{Browser: config.BrowserConfig{InApp: &truthy}}, 1},
-		{"explicit false omits the opener", &config.Config{Browser: config.BrowserConfig{InApp: &falsy}}, 0},
+		{"default/nil config omits browser options", nil, 0},
+		{"nil field omits browser options", &config.Config{}, 0},
+		{"explicit true enables browser options", &config.Config{Browser: config.BrowserConfig{InApp: &truthy}}, 1},
+		{"explicit false omits browser options", &config.Config{Browser: config.BrowserConfig{InApp: &falsy}}, 0},
 	}
 
 	for _, tc := range cases {

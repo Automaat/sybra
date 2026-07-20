@@ -279,6 +279,10 @@ func configApplyGroups(paths []string) []configApplyGroup {
 }
 
 func configValueAtPath(cfg config.Config, path string) any {
+	switch path {
+	case "browser", "browser.in_app":
+		return cfg.InAppBrowserEnabled()
+	}
 	v := reflect.ValueOf(cfg)
 	return fieldByYAMLPath(v, path).Interface()
 }

@@ -51,7 +51,7 @@ function uninstallNotification() {
   delete (window as unknown as { Notification?: unknown }).Notification
 }
 
-function baseSettings() {
+function baseSettings(): any {
   return {
     agent: {
       provider: 'claude',
@@ -118,6 +118,26 @@ function baseSettings() {
 // rail entry, then the pane mounts.
 async function goTo(name: string) {
   await fireEvent.click(screen.getByRole('button', { name }))
+}
+
+async function waitForSettingsLoaded() {
+  await goTo('Defaults')
+  await vi.waitFor(() => expect((screen.getByLabelText('Max concurrent') as HTMLInputElement).value).toBe('3'))
+  await goTo('Appearance')
+}
+
+function getCheckboxByLabelText(text: string): HTMLInputElement {
+  const label = getLabelByText(text)
+  if (!label) throw new Error(`label not found for ${text}`)
+  const input = label.querySelector('input[type="checkbox"]')
+  if (!(input instanceof HTMLInputElement)) throw new Error(`checkbox not found for ${text}`)
+  return input
+}
+
+function getLabelByText(text: string): HTMLLabelElement {
+  const label = screen.getByText(text).closest('label')
+  if (!(label instanceof HTMLLabelElement)) throw new Error(`label not found for ${text}`)
+  return label
 }
 
 describe('Settings', () => {
@@ -342,6 +362,52 @@ describe('Settings', () => {
     expect(screen.getByRole('heading', { name: 'Appearance' })).toBeDefined()
     expect(screen.getByText('Color scheme')).toBeDefined()
     expect(screen.getByRole('group', { name: 'Color scheme' })).toBeDefined()
+  })
+
+  it('shows the in-app browser toggle as inherited-disabled when browser.inApp is omitted', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false))
+  })
+
+  it('shows the in-app browser toggle as enabled when browser.inApp is explicitly true', async () => {
+    const settings = baseSettings()
+    settings.browser.inApp = true
+    mockGetSettings.mockResolvedValue(settings)
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(true))
+  })
+
+  it('saves browser.inApp=true when enabling the in-app browser toggle', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    mockUpdateSettings.mockResolvedValue(undefined)
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false))
+    await fireEvent.click(getLabelByText('Open links in-app'))
+    await fireEvent.click(screen.getByText('Save'))
+    await vi.waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalled()
+      expect(mockUpdateSettings.mock.calls.at(-1)?.[0]?.browser?.inApp).toBe(true)
+      expect(localStorage.getItem('inAppBrowser')).toBe('true')
+    })
+  })
+
+  it('Reset restores the inherited-disabled browser state', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false))
+    await fireEvent.click(getLabelByText('Open links in-app'))
+    await vi.waitFor(() => expect(screen.getByText('Reset')).toBeDefined())
+    await fireEvent.click(screen.getByText('Reset'))
+    await vi.waitFor(() => {
+      expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false)
+      expect(localStorage.getItem('inAppBrowser')).toBe('false')
+      expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(true)
+    })
   })
 
   it('shows Providers pane when providerHealthEnabled is true', async () => {
