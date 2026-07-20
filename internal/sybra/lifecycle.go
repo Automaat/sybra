@@ -8,7 +8,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/autoupdate"
@@ -632,7 +631,7 @@ func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit fun
 	a := lm.app
 	deps := evaluation.Deps{
 		Cfg:        a.cfg.Evaluation,
-		ABTesting:  a.cfg.ABTesting,
+		ABTesting:  a.abTestingConfig(),
 		Audit:      evaluation.AuditDirReader(a.cfg.AuditDir()),
 		Emit:       emit,
 		Logger:     a.logger,
@@ -654,7 +653,7 @@ func (lm *LifecycleManager) startLearningDigestService(ctx context.Context, emit
 	a := lm.app
 	deps := learning.Deps{
 		Cfg:       a.cfg.LearningDigest,
-		ABTesting: a.cfg.ABTesting,
+		ABTesting: a.abTestingConfig(),
 		Audit:     learning.AuditDirReader(a.cfg.AuditDir()),
 		AuditLog:  a.audit,
 		Store:     a.learning,
@@ -702,7 +701,7 @@ func (lm *LifecycleManager) startRoutingService(ctx context.Context, emit func(s
 	}
 	deps := routing.Deps{
 		Cfg:  a.cfg.Routing,
-		Base: func() abtest.Config { return a.cfg.ABTesting },
+		Base: a.baseABTestingConfig,
 		Report: func() (evaluation.Report, bool) {
 			if a.evaluationSvc == nil {
 				return evaluation.Report{}, false

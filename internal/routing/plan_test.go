@@ -66,6 +66,24 @@ func TestPlanWeights_FloorKeepsLowSampleExplorationTraffic(t *testing.T) {
 	}
 }
 
+func TestPlanWeights_DistributesFullBudgetRemainder(t *testing.T) {
+	current := map[string]map[string]int{"exp": {"a": 1, "b": 1, "c": 1}}
+	scores := []Score{
+		{ExperimentID: "exp", VariantID: "a", Value: 3, ResolvedRuns: 100},
+		{ExperimentID: "exp", VariantID: "b", Value: 2, ResolvedRuns: 100},
+		{ExperimentID: "exp", VariantID: "c", Value: 1, ResolvedRuns: 100},
+	}
+	plan := PlanWeights(scores, current, PlanOptions{WeightBudget: 10, FloorWeight: 1, MaxStep: 100, MinSamplesToShift: 20})
+	got := plan.Experiments["exp"]
+	sum := got["a"] + got["b"] + got["c"]
+	if sum != 10 {
+		t.Fatalf("planned weight sum = %d (%+v), want full budget 10", sum, got)
+	}
+	if got["a"] <= got["b"] || got["b"] <= got["c"] {
+		t.Fatalf("planned weights = %+v, want rank order preserved", got)
+	}
+}
+
 func TestPlanWeights_CostLowersButNeverZeroesWeight(t *testing.T) {
 	current := map[string]map[string]int{"exp": {"cheap": 1, "expensive": 1}}
 	scores := []Score{

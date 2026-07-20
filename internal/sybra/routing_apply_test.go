@@ -9,9 +9,9 @@ import (
 
 // TestApplyRoutingWeights_PropagatesToConfigAndOrchestrator verifies the
 // routing.WeightApplier push path reaches the two directly-inspectable live
-// selection sites: a.cfg.ABTesting (what app_human_review.go and
-// svc_tasks.go's staff-review dispatch read on every call) and
-// orchSvc.abTesting (what StartOrchestrator dispatches the brain under).
+// selection sites: App's live A/B snapshot (what human-review and staff-review
+// dispatch read on every call) and orchSvc.abTesting (what StartOrchestrator
+// dispatches the brain under).
 // workflowEngine.SetABTestingConfig and evaluationSvc.SetABTesting are each a
 // trivial one-line delegation to an already-tested setter on those packages
 // (see internal/workflow's SetABTestingConfig and
@@ -35,14 +35,40 @@ func TestApplyRoutingWeights_PropagatesToConfigAndOrchestrator(t *testing.T) {
 		t.Fatalf("applyRoutingWeights: %v", err)
 	}
 
-	if a.cfg.ABTesting.WeightsVersion == nil || *a.cfg.ABTesting.WeightsVersion != 7 {
-		t.Fatalf("cfg.ABTesting.WeightsVersion = %+v, want 7", a.cfg.ABTesting.WeightsVersion)
+	got := a.abTestingConfig()
+	if got.WeightsVersion == nil || *got.WeightsVersion != 7 {
+		t.Fatalf("live ABTesting.WeightsVersion = %+v, want 7", got.WeightsVersion)
 	}
-	if len(a.cfg.ABTesting.Experiments) != 1 || a.cfg.ABTesting.Experiments[0].Variants[0].Weight != 9 {
-		t.Fatalf("cfg.ABTesting.Experiments = %+v, want weight 9", a.cfg.ABTesting.Experiments)
+	if len(got.Experiments) != 1 || got.Experiments[0].Variants[0].Weight != 9 {
+		t.Fatalf("live ABTesting.Experiments = %+v, want weight 9", got.Experiments)
 	}
 	if orchSvc.abTesting.WeightsVersion == nil || *orchSvc.abTesting.WeightsVersion != 7 {
 		t.Fatalf("orchSvc.abTesting.WeightsVersion = %+v, want 7", orchSvc.abTesting.WeightsVersion)
+	}
+}
+
+func TestApplyRoutingWeights_DoesNotMutateBaseConfig(t *testing.T) {
+	cfg := &config.Config{ABTesting: abtest.Config{MinSamplesPerVariant: 20}}
+	a := &App{cfg: cfg}
+	a.initializeABTesting(cfg.ABTesting)
+
+	version := 7
+	if err := a.applyRoutingWeights(abtest.Config{
+		MinSamplesPerVariant: 20,
+		WeightsVersion:       &version,
+		Experiments: []abtest.Experiment{
+			{ID: "exp", Variants: []abtest.Variant{{ID: "v1", Weight: 9}}},
+		},
+	}); err != nil {
+		t.Fatalf("applyRoutingWeights: %v", err)
+	}
+
+	if cfg.ABTesting.WeightsVersion != nil || len(cfg.ABTesting.Experiments) != 0 {
+		t.Fatalf("base cfg.ABTesting = %+v, want untouched operator base", cfg.ABTesting)
+	}
+	got := a.abTestingConfig()
+	if got.WeightsVersion == nil || *got.WeightsVersion != 7 {
+		t.Fatalf("live ABTesting.WeightsVersion = %+v, want 7", got.WeightsVersion)
 	}
 }
 

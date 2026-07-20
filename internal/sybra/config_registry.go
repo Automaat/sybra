@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
 	"gopkg.in/yaml.v3"
 )
@@ -155,15 +156,7 @@ func cloneConfig(src *config.Config) *config.Config {
 	cp.Agent.K8sJobs.Env = slices.Clone(src.Agent.K8sJobs.Env)
 	cp.Agent.K8sJobs.SecretEnv = slices.Clone(src.Agent.K8sJobs.SecretEnv)
 	cp.Agent.K8sJobs.Volumes = slices.Clone(src.Agent.K8sJobs.Volumes)
-	cp.ABTesting.Experiments = slices.Clone(src.ABTesting.Experiments)
-	if src.ABTesting.BuiltinVersion != nil {
-		v := *src.ABTesting.BuiltinVersion
-		cp.ABTesting.BuiltinVersion = &v
-	}
-	if src.ABTesting.WeightsVersion != nil {
-		v := *src.ABTesting.WeightsVersion
-		cp.ABTesting.WeightsVersion = &v
-	}
+	cp.ABTesting = abtest.CloneConfig(src.ABTesting)
 	return &cp
 }
 

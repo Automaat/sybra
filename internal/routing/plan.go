@@ -157,9 +157,15 @@ func distributeBudget(variantIDs []string, eligible []rankedVariant, o PlanOptio
 		return target
 	}
 	totalRankWeight := len(eligible) * (len(eligible) + 1) / 2
+	assigned := 0
 	for i, r := range eligible {
 		rank := len(eligible) - i // top-ranked gets the largest share
-		target[r.id] += remaining * rank / totalRankWeight
+		share := remaining * rank / totalRankWeight
+		target[r.id] += share
+		assigned += share
+	}
+	for remainder, i := remaining-assigned, 0; remainder > 0; remainder, i = remainder-1, i+1 {
+		target[eligible[i%len(eligible)].id]++
 	}
 	return target
 }

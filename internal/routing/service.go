@@ -18,10 +18,9 @@ import (
 const OverlayEvent = "routing:overlay"
 
 // WeightApplier pushes a merged (base + overlay) abtest.Config to every live
-// A/B selection site (workflow engine, orchestrator, evaluation service, the
-// shared app config struct read directly by human-review/staff-review
-// dispatch) — see internal/sybra's applyRoutingWeights. Never written to
-// config.yaml.
+// A/B selection site (workflow engine, orchestrator, evaluation service, and
+// direct human-review/staff-review dispatch snapshots) — see internal/sybra's
+// applyRoutingWeights. Never written to config.yaml.
 type WeightApplier func(abtest.Config) error
 
 // Deps are the collaborators for the routing service.

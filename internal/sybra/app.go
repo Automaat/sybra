@@ -117,6 +117,8 @@ type App struct {
 	triage            *triageCoordinator
 	humanReview       *humanReviewHandler
 	cfg               *config.Config
+	baseABTesting     atomic.Value
+	liveABTesting     atomic.Value
 	logLevel          *slog.LevelVar
 	emit              func(string, any)
 	emitFactory       func(context.Context) func(string, any)
@@ -260,6 +262,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	for _, o := range opts {
 		o(a)
 	}
+	a.initializeABTesting(cfg.ABTesting)
 	return a
 }
 
@@ -454,6 +457,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.agentOrch.SetContext(ctx)
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
+	a.reviewer.SetABTestingSource(a.abTestingConfig)
 
 	a.initWorkflowEngine()
 

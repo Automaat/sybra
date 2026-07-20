@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
@@ -35,6 +36,9 @@ type ConfigService struct {
 	// selection site. Called after an ab_testing hot change so a base edit
 	// does not silently drop the live overlay until the next routing tick.
 	reapplyRouting func()
+	// applyABTestingBase publishes an operator-authored ab_testing hot reload
+	// to direct dispatch sites before any persisted routing overlay is remerged.
+	applyABTestingBase func(abtest.Config)
 }
 
 // GetSettings returns the current app settings for the config UI.
@@ -302,11 +306,13 @@ func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() er
 	}
 	*s.cfg = *nextActive
 	s.persisted = cloneConfig(candidate)
-	// A base ab_testing hot change replaced s.cfg.ABTesting with the plain
-	// operator-saved weights, dropping any live routing overlay. Re-merge the
-	// persisted overlay on top of the new base now (reads the just-updated live
-	// base) so every selection site stays weight-consistent instead of drifting
-	// on unweighted base until the next routing tick.
+	if slices.Contains(result.Applied, "ab_testing") && s.applyABTestingBase != nil {
+		s.applyABTestingBase(nextActive.ABTesting)
+	}
+	// A base ab_testing hot change replaces live routing weights with the plain
+	// operator-saved base. Re-merge the persisted overlay on top of that new
+	// base now so every selection site stays weight-consistent instead of
+	// drifting on unweighted base until the next routing tick.
 	if s.reapplyRouting != nil && slices.Contains(result.Applied, "ab_testing") {
 		s.reapplyRouting()
 	}

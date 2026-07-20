@@ -174,7 +174,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 
 	prompt := StaffCodeReviewPrompt(current.ProjectID, current.PRNumber)
 
-	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.cfg.ABTesting, current.ID, string(agent.RoleReview))
+	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.abTestingConfig(), current.ID, string(agent.RoleReview))
 	ag, err := r.agents.Run(cfg)
 	if err != nil {
 		return err

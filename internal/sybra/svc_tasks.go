@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
@@ -45,6 +46,7 @@ type TaskService struct {
 	logger         *slog.Logger
 	audit          *audit.Logger
 	cfg            *config.Config
+	abTesting      func() abtest.Config
 	// ctx is the app's root context (wireTaskService sets it from a.ctx), used
 	// only where a Wails-bound method has no request-scoped context of its own
 	// to thread through — see RecoverLostAgent. nil in tests that construct
@@ -74,6 +76,16 @@ type TaskService struct {
 }
 
 const enrichPendingRetryCooldown = time.Hour
+
+func (s *TaskService) abTestingConfig() abtest.Config {
+	if s.abTesting != nil {
+		return s.abTesting()
+	}
+	if s.cfg == nil {
+		return abtest.Config{}
+	}
+	return cloneABTestingConfig(s.cfg.ABTesting)
+}
 
 type TamperReportDTO struct {
 	TaskID          string             `json:"taskId"`
@@ -1210,7 +1222,7 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 	}
 
 	prompt := review.StaffCodeReviewPrompt(t.ProjectID, t.PRNumber)
-	cfg := s.agents.ApplyABVariant(review.StaffCodeReviewRunConfig(t, prompt, dir, posture), s.cfg.ABTesting, t.ID, string(agent.RoleReview))
+	cfg := s.agents.ApplyABVariant(review.StaffCodeReviewRunConfig(t, prompt, dir, posture), s.abTestingConfig(), t.ID, string(agent.RoleReview))
 	ag, err := s.agents.Run(cfg)
 	if err != nil {
 		return err

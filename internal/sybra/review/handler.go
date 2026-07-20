@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
@@ -60,6 +61,7 @@ type Handler struct {
 	worktrees      *worktree.Manager
 	WorkflowEngine *workflow.Engine
 	cfg            *config.Config
+	abTesting      func() abtest.Config
 	experience     *experience.Store
 	// renovatePRsFn returns Renovate-bot PRs to fold into the monitor pass.
 	// FetchReviews uses author:@me which excludes bot-authored PRs, so without
@@ -275,6 +277,20 @@ func (r *Handler) Name() string { return "reviews" }
 
 func (r *Handler) SetAutoMergeAppliedHook(fn func()) {
 	r.onAutoMergeApplied = fn
+}
+
+func (r *Handler) SetABTestingSource(fn func() abtest.Config) {
+	r.abTesting = fn
+}
+
+func (r *Handler) abTestingConfig() abtest.Config {
+	if r.abTesting != nil {
+		return r.abTesting()
+	}
+	if r.cfg == nil {
+		return abtest.Config{}
+	}
+	return abtest.CloneConfig(r.cfg.ABTesting)
 }
 
 // AuthCircuitOpen reports whether repeated GitHub auth failures have
