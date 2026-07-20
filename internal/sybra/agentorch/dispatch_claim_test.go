@@ -160,6 +160,7 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 
 	agentMgr, err := agent.NewManager(context.Background(), nil, discardSlogLogger(), t.TempDir(), agent.ManagerConfig{
 		SandboxHome: func(string) (string, error) { return t.TempDir(), nil },
+		Runtime:     agent.ManagerRuntimeConfig{MaxConcurrent: 1},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -171,6 +172,8 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 		recoveryCalled       bool
 		claimHeldOnRecovery  bool
 		claimAvailableToTake bool
+		slotHeldOnRecovery   bool
+		slotAvailableToTake  bool
 	)
 	o.SetConflictRecovery(func(taskID string) bool {
 		recoveryCalled = true
@@ -180,6 +183,14 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 		if claimAvailableToTake {
 			agentMgr.ReleaseTaskDispatch(taskID)
 		}
+		// Nested same-task dispatch also tries to hold pool capacity before
+		// PrepareForTask. If the outer reservation were still held (the bug),
+		// this would fail and recovery would re-park on ErrAgentPoolBusy.
+		if res, ok := agentMgr.TryHoldCapacity(); ok {
+			slotAvailableToTake = true
+			res.Release()
+		}
+		slotHeldOnRecovery = !slotAvailableToTake
 		// Decline recovery (return false) so the caller falls through to its
 		// normal error path instead of this test needing to fake an entire
 		// fix-agent dispatch.
@@ -196,6 +207,9 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 	if claimHeldOnRecovery {
 		t.Fatal("dispatch claim was still held when conflict recovery ran — a nested fix-agent dispatch for this task would observe ErrDispatchInFlight and never start")
 	}
+	if slotHeldOnRecovery {
+		t.Fatal("capacity reservation was still held when conflict recovery ran — a nested fix-agent dispatch for this task would observe ErrAgentPoolBusy and re-park")
+	}
 
 	// The outer claim must also be free after the call returns (no leak from
 	// the early release + deferred double-release guard).
@@ -203,4 +217,9 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 		t.Fatal("dispatch claim leaked after StartAgentWithAssignment returned")
 	}
 	agentMgr.ReleaseTaskDispatch(tk.ID)
+	if res, ok := agentMgr.TryHoldCapacity(); !ok {
+		t.Fatal("capacity reservation leaked after StartAgentWithAssignment returned")
+	} else {
+		res.Release()
+	}
 }
