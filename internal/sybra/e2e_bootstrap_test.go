@@ -315,7 +315,7 @@ func TestE2E_StartAgentWithAssignment_ReservesCapacityBeforeSetup(t *testing.T) 
 		Mode:     "headless",
 		Prompt:   "hold",
 		Dir:      t.TempDir(),
-		ExtraEnv: []string{"FAKE_CLAUDE_SCENARIO=block_silent"},
+		ExtraEnv: []string{"FAKE_CLAUDE_SCENARIO=hang"},
 	})
 	if err != nil {
 		t.Fatalf("start blocker: %v", err)
