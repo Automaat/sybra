@@ -1123,15 +1123,15 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 		"require_permissions": requirePerm,
 	})
 	if err := o.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID:   ag.ID,
-		Role:      "chat",
-		Mode:      "interactive",
-		Provider:  ag.Provider,
-		Model:     ag.Model,
+		AgentID:       ag.ID,
+		Role:          "chat",
+		Mode:          "interactive",
+		Provider:      ag.Provider,
+		Model:         ag.Model,
 		RoutingReason: ag.RoutingReason,
-		State:     string(agent.StateRunning),
-		StartedAt: ag.StartedAt,
-		Prompt:    prompt,
+		State:         string(agent.StateRunning),
+		StartedAt:     ag.StartedAt,
+		Prompt:        prompt,
 	}); err != nil {
 		o.logger.Error("chat.add-run", "task_id", t.ID, "err", err)
 	}

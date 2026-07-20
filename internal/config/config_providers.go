@@ -50,15 +50,15 @@ type RoutingEligibleVariant struct {
 }
 
 type RoutingSummary struct {
-	ProviderPreference    string                   `json:"providerPreference"`
-	ABTestingEnabled      bool                     `json:"abTestingEnabled"`
-	ABTestingExplicit     bool                     `json:"abTestingExplicit"`
-	AdaptiveRoutingEnabled bool                    `json:"adaptiveRoutingEnabled"`
-	AutoFailoverEnabled   bool                     `json:"autoFailoverEnabled"`
-	ProviderLimitsEnabled bool                     `json:"providerLimitsEnabled"`
-	Precedence            []string                 `json:"precedence"`
-	EligibleVariants      []RoutingEligibleVariant `json:"eligibleVariants,omitempty"`
-	Warnings              []string                 `json:"warnings,omitempty"`
+	ProviderPreference     string                   `json:"providerPreference"`
+	ABTestingEnabled       bool                     `json:"abTestingEnabled"`
+	ABTestingExplicit      bool                     `json:"abTestingExplicit"`
+	AdaptiveRoutingEnabled bool                     `json:"adaptiveRoutingEnabled"`
+	AutoFailoverEnabled    bool                     `json:"autoFailoverEnabled"`
+	ProviderLimitsEnabled  bool                     `json:"providerLimitsEnabled"`
+	Precedence             []string                 `json:"precedence"`
+	EligibleVariants       []RoutingEligibleVariant `json:"eligibleVariants,omitempty"`
+	Warnings               []string                 `json:"warnings,omitempty"`
 }
 
 func BuildRoutingSummary(cfg *Config) RoutingSummary {
