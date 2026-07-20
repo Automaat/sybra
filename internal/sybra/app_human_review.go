@@ -437,7 +437,7 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 		h.markVerdictRendered(current.ID, agentID)
 		return
 	}
-	if h.appendNote(current.ID, "Auto-review: unblocked", note) {
+	if h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
 		h.markVerdictRendered(current.ID, agentID)
 	}
 }

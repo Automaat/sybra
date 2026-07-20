@@ -670,8 +670,11 @@ func TestOnComplete_UnblockedVerdict_DirtyWorktreeDoesNotTransition(t *testing.T
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want unchanged %q (dirty worktree must not be trusted)", got.Status, task.StatusHumanRequired)
 	}
-	if !strings.Contains(got.Body, "Auto-review: unblocked") {
-		t.Fatalf("expected unblocked note in body even though status did not transition; got:\n%s", got.Body)
+	if strings.Contains(got.Body, "Auto-review: unblocked\n") {
+		t.Fatalf("body must not claim success when verification failed; got:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked claim not verified") {
+		t.Fatalf("expected verification-failure note in body; got:\n%s", got.Body)
 	}
 	if sink.calls != 0 {
 		t.Fatalf("sink calls = %d, want 0", sink.calls)
@@ -734,8 +737,11 @@ func TestOnComplete_UnblockedVerdict_UnpushedBranchDoesNotTransition(t *testing.
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want unchanged %q (unpushed commit must not be trusted)", got.Status, task.StatusHumanRequired)
 	}
-	if !strings.Contains(got.Body, "Auto-review: unblocked") {
-		t.Fatalf("expected unblocked note in body even though status did not transition; got:\n%s", got.Body)
+	if strings.Contains(got.Body, "Auto-review: unblocked\n") {
+		t.Fatalf("body must not claim success when verification failed; got:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked claim not verified") {
+		t.Fatalf("expected verification-failure note in body; got:\n%s", got.Body)
 	}
 	if sink.calls != 0 {
 		t.Fatalf("sink calls = %d, want 0", sink.calls)
