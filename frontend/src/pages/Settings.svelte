@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import {
-    GetSettings, GetDefaultSettings, UpdateSettings,
+    GetSettings, GetPathExplanations, GetDefaultSettings, UpdateSettings,
     GetVersion, GetCodexModels, GetCopilotModels, GetAvailableRuntimes, ProviderHealthEnabled,
   } from '$lib/api'
   import { CLAUDE_MODEL_OPTIONS } from '$lib/claude-models'
-  import type { AppSettings, RuntimeInfo } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+  import type { AppSettings, ConfigPathExplanation, RuntimeInfo } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import ProviderHealthPanel from '../components/settings/ProviderHealthPanel.svelte'
   import LoggingPanel from '../components/settings/LoggingPanel.svelte'
   import RenovatePanel from '../components/settings/RenovatePanel.svelte'
@@ -71,7 +71,9 @@
 
   let settings = $state<AppSettings | null>(null)
   let defaults = $state<AppSettings | null>(null)
+  let explanations = $state<ConfigPathExplanation[]>([])
   let original = $state<string>('')
+  let originalSettings = $state<AppSettings | null>(null)
   let saving = $state(false)
   let error = $state('')
   let successMsg = $state('')
@@ -142,10 +144,16 @@
 
   async function load() {
     try {
-      const [s, d] = await Promise.all([GetSettings() as Promise<AppSettings>, GetDefaultSettings() as Promise<AppSettings>])
+      const [s, d, meta] = await Promise.all([
+        GetSettings() as Promise<AppSettings>,
+        GetDefaultSettings() as Promise<AppSettings>,
+        GetPathExplanations() as Promise<ConfigPathExplanation[]>,
+      ])
       settings = s
       defaults = d
+      explanations = meta ?? []
       original = JSON.stringify(s)
+      originalSettings = JSON.parse(JSON.stringify(s))
       prevProvider = s.agent.provider
     } catch (e) {
       error = String(e)
@@ -160,6 +168,8 @@
     try {
       await UpdateSettings(settings)
       original = JSON.stringify(settings)
+      originalSettings = JSON.parse(JSON.stringify($state.snapshot(settings)))
+      explanations = await GetPathExplanations() as ConfigPathExplanation[]
       successMsg = 'Settings saved'
       setTimeout(() => { successMsg = '' }, 3000)
     } catch (e) {
@@ -172,6 +182,7 @@
   function reset() {
     if (!original) return
     settings = JSON.parse(original)
+    originalSettings = JSON.parse(original)
     prevProvider = settings?.agent.provider ?? null
   }
 
@@ -183,8 +194,10 @@
       const base = original ? JSON.parse(original) : JSON.parse(JSON.stringify($state.snapshot(settings)))
       patch(base)
       original = JSON.stringify(base)
+      originalSettings = JSON.parse(JSON.stringify(base))
     } catch {
       original = JSON.stringify(settings)
+      originalSettings = JSON.parse(JSON.stringify($state.snapshot(settings)))
     }
   }
 
@@ -221,56 +234,130 @@
     | 'instance-routing' | 'testing' | 'observability-system'
     | 'logging' | 'version' | 'directories' | 'raw'
 
-  type RailItem = { id: TabId; label: string; keywords: string; keys: (keyof AppSettings)[] }
+  type RailItem = { id: TabId; label: string; keywords: string; keys: (keyof AppSettings)[]; paths: string[] }
   type RailGroup = { label: string; items: RailItem[] }
+  const keyPaths: Partial<Record<keyof AppSettings, string[]>> = {
+    agent: ['agent'],
+    notification: ['notification'],
+    orchestrator: ['orchestrator'],
+    logging: ['logging'],
+    audit: ['audit'],
+    attachments: ['attachments'],
+    renovate: ['renovate'],
+    providers: ['providers'],
+    github: ['github'],
+    monitor: ['monitor'],
+    selfMonitor: ['self_monitor'],
+    triage: ['triage'],
+    umbrella: ['umbrella'],
+    testing: ['testing'],
+    experience: ['experience'],
+    metrics: ['metrics'],
+    browser: ['browser'],
+    projectTypes: ['project_types'],
+  }
 
   const allGroups = $derived<RailGroup[]>([
     { label: 'Instance', items: [
-      { id: 'appearance', label: 'Appearance', keywords: 'theme color dark light focus mode browser', keys: [] },
-      { id: 'instance-routing', label: 'Machine routing', keywords: 'project types machine routing node role', keys: ['projectTypes'] },
+      { id: 'appearance', label: 'Appearance', keywords: 'theme color dark light focus mode browser', keys: [], paths: [] },
+      { id: 'instance-routing', label: 'Machine routing', keywords: 'project types machine routing node role', keys: ['projectTypes'], paths: ['project_types'] },
     ] },
     { label: 'Execution', items: [
-      { id: 'agent', label: 'Defaults', keywords: 'provider model mode concurrent permissions fallback turns cost claude codex copilot opencode openrouter glm log retention gzip compression size', keys: ['agent'] },
-      ...(providerHealthEnabled ? [{ id: 'provider-health' as TabId, label: 'Providers', keywords: 'health limits failover subscription', keys: ['providers'] as (keyof AppSettings)[] }] : []),
+      { id: 'agent', label: 'Defaults', keywords: 'provider model mode concurrent permissions fallback turns cost claude codex copilot opencode openrouter glm log retention gzip compression size', keys: ['agent'], paths: ['agent'] },
+      ...(providerHealthEnabled ? [{ id: 'provider-health' as TabId, label: 'Providers', keywords: 'health limits failover subscription', keys: ['providers'] as (keyof AppSettings)[], paths: ['providers'] }] : []),
     ] },
     { label: 'Workflow', items: [
-      { id: 'orchestrator', label: 'Orchestrator', keywords: 'auto triage plan dispatch maintenance interval', keys: ['orchestrator'] },
-      { id: 'automation', label: 'Triage & Umbrella', keywords: 'triage classify umbrella grounding expand', keys: ['triage', 'umbrella'] },
-      { id: 'testing', label: 'Testing', keywords: 'testing test runner adversarial attempts concurrency', keys: ['testing'] },
+      { id: 'orchestrator', label: 'Orchestrator', keywords: 'auto triage plan dispatch maintenance interval', keys: ['orchestrator'], paths: ['orchestrator'] },
+      { id: 'automation', label: 'Triage & Umbrella', keywords: 'triage classify umbrella grounding expand', keys: ['triage', 'umbrella'], paths: ['triage', 'umbrella'] },
+      { id: 'testing', label: 'Testing', keywords: 'testing test runner adversarial attempts concurrency', keys: ['testing'], paths: ['testing'] },
     ] },
     { label: 'Integrations', items: [
-      { id: 'notifications', label: 'Notifications', keywords: 'desktop macos notify', keys: ['notification'] },
-      { id: 'github', label: 'GitHub', keywords: 'github issues pr poller role app token merge renovate review hold', keys: ['github'] },
-      { id: 'renovate', label: 'Renovate', keywords: 'renovate dependency bot author', keys: ['renovate'] },
+      { id: 'notifications', label: 'Notifications', keywords: 'desktop macos notify', keys: ['notification'], paths: ['notification'] },
+      { id: 'github', label: 'GitHub', keywords: 'github issues pr poller role app token merge renovate review hold', keys: ['github'], paths: ['github'] },
+      { id: 'renovate', label: 'Renovate', keywords: 'renovate dependency bot author', keys: ['renovate'], paths: ['renovate'] },
     ] },
     { label: 'Supervision', items: [
-      { id: 'monitor', label: 'Monitor', keywords: 'monitor anomaly self-monitor bottleneck failure lost agent human review', keys: ['monitor', 'selfMonitor'] },
+      { id: 'monitor', label: 'Monitor', keywords: 'monitor anomaly self-monitor bottleneck failure lost agent human review', keys: ['monitor', 'selfMonitor'], paths: ['monitor', 'self_monitor'] },
     ] },
     { label: 'Storage', items: [
-      { id: 'directories', label: 'Directories', keywords: 'paths dirs tasks clones worktrees storage', keys: [] },
+      { id: 'directories', label: 'Directories', keywords: 'paths dirs tasks clones worktrees storage', keys: [], paths: [] },
     ] },
     { label: 'Observability', items: [
-      { id: 'logging', label: 'Logging & Audit', keywords: 'log level size files audit retention', keys: ['logging', 'audit'] },
-      { id: 'observability-system', label: 'Experience & Metrics', keywords: 'experience metrics prometheus memory observability', keys: ['experience', 'metrics'] },
+      { id: 'logging', label: 'Logging & Audit', keywords: 'log level size files audit retention', keys: ['logging', 'audit'], paths: ['logging', 'audit'] },
+      { id: 'observability-system', label: 'Experience & Metrics', keywords: 'experience metrics prometheus memory observability', keys: ['experience', 'metrics'], paths: ['experience', 'metrics'] },
     ] },
     { label: 'Advanced', items: [
-      { id: 'raw', label: 'Config file (YAML)', keywords: 'yaml raw config file editor everything advanced', keys: [] },
-      { id: 'version', label: 'Version', keywords: 'version server client build', keys: [] },
+      { id: 'raw', label: 'Config file (YAML)', keywords: 'yaml raw config file editor everything advanced', keys: [], paths: [] },
+      { id: 'version', label: 'Version', keywords: 'version server client build', keys: [], paths: [] },
     ] },
   ])
 
   let query = $state('')
   let modifiedOnly = $state(false)
 
-  function sectionModified(keys: (keyof AppSettings)[]): boolean {
-    if (!settings || !defaults || keys.length === 0) return false
-    return keys.some((k) => JSON.stringify(settings![k]) !== JSON.stringify(defaults![k]))
+  function explanationsFor(paths: string[]): ConfigPathExplanation[] {
+    return explanations.filter((entry) => paths.some((path) => entry.descriptor.runtimePath === path || entry.descriptor.runtimePath.startsWith(`${path}.`)))
+  }
+
+  function sectionModified(paths: string[]): boolean {
+    if (paths.length === 0) return false
+    return explanationsFor(paths).some((entry) => entry.intent.declared || entry.override !== null || entry.pendingRestart)
+  }
+
+  function sectionDirty(keys: (keyof AppSettings)[]): boolean {
+    if (!settings || !originalSettings || keys.length === 0) return false
+    const current = settings
+    const baseline = originalSettings
+    return keys.some((key) => JSON.stringify(current[key]) !== JSON.stringify(baseline[key]))
+  }
+
+  function sectionBadge(paths: string[]): { label: string; tone: string } | null {
+    const entries = explanationsFor(paths)
+    if (entries.some((entry) => entry.pendingRestart)) return { label: 'Restart', tone: 'text-warning-700 dark:text-warning-300' }
+    if (entries.some((entry) => entry.override !== null)) return { label: 'Env', tone: 'text-secondary-700 dark:text-secondary-300' }
+    if (entries.some((entry) => entry.intent.declared)) return { label: 'Explicit', tone: 'text-primary-700 dark:text-primary-300' }
+    return null
+  }
+
+  const explanationCounts = $derived.by(() => {
+    let explicit = 0
+    let inherited = 0
+    let overridden = 0
+    let pending = 0
+    for (const entry of explanations) {
+      if (entry.pendingRestart) pending += 1
+      if (entry.override !== null) {
+        overridden += 1
+        continue
+      }
+      if (entry.intent.declared) {
+        explicit += 1
+        continue
+      }
+      inherited += 1
+    }
+    return { explicit, inherited, overridden, pending }
+  })
+
+  const restartAfterSave = $derived.by(() => allGroups
+    .flatMap((group) => group.items)
+    .filter((item) => item.keys.some((key) =>
+      settings && originalSettings &&
+      JSON.stringify(settings[key]) !== JSON.stringify(originalSettings[key]) &&
+      (keyPaths[key] ?? []).some((path) =>
+        explanationsFor([path]).some((entry) => entry.reloadPolicy === 'restart'),
+      ),
+    )))
+
+  function badgeText(paths: string[]): string {
+    const badge = sectionBadge(paths)
+    return badge ? badge.label : ''
   }
 
   function itemVisible(it: RailItem): boolean {
     const q = query.trim().toLowerCase()
     if (q && !(`${it.label} ${it.keywords}`.toLowerCase().includes(q))) return false
-    if (modifiedOnly && !sectionModified(it.keys)) return false
+    if (modifiedOnly && !sectionModified(it.paths)) return false
     return true
   }
 
@@ -279,7 +366,7 @@
     .filter((g) => g.items.length > 0))
   const tabs = $derived(groups.flatMap(g => g.items))
 
-  const modifiedCount = $derived(allGroups.flatMap(g => g.items).filter(it => sectionModified(it.keys)).length)
+  const modifiedCount = $derived(allGroups.flatMap(g => g.items).filter(it => sectionModified(it.paths)).length)
 
   let active = $state<TabId>('appearance')
   $effect(() => { if (tabs.length > 0 && !tabs.some(t => t.id === active)) active = tabs[0].id })
@@ -338,7 +425,10 @@
               onclick={() => (active = item.id)}
             >
               {item.label}
-              {#if sectionModified(item.keys)}<span class="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-primary-500" title="Modified"></span>{/if}
+              {#if sectionModified(item.paths)}<span class="h-1.5 w-1.5 shrink-0 rounded-full bg-primary-500" title="Modified"></span>{/if}
+              {#if badgeText(item.paths)}
+                <span class={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-semibold ${sectionBadge(item.paths)?.tone ?? ''}`}>{badgeText(item.paths)}</span>
+              {/if}
             </button>
           {/each}
         {/each}
@@ -351,6 +441,31 @@
     <!-- Content -->
     <div class="min-w-0 flex-1">
       <div class="mx-auto max-w-3xl space-y-4 p-4 md:p-6">
+        <section class="grid gap-2 sm:grid-cols-4">
+          <div class="rounded-xl border border-surface-200 bg-surface-50 px-4 py-3 text-sm shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+            <div class="text-xs uppercase tracking-wide text-surface-500 dark:text-surface-400">Explicit</div>
+            <div class="mt-1 font-semibold text-primary-700 dark:text-primary-300">{explanationCounts.explicit}</div>
+          </div>
+          <div class="rounded-xl border border-surface-200 bg-surface-50 px-4 py-3 text-sm shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+            <div class="text-xs uppercase tracking-wide text-surface-500 dark:text-surface-400">Inherited</div>
+            <div class="mt-1 font-semibold text-surface-700 dark:text-surface-200">{explanationCounts.inherited}</div>
+          </div>
+          <div class="rounded-xl border border-surface-200 bg-surface-50 px-4 py-3 text-sm shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+            <div class="text-xs uppercase tracking-wide text-surface-500 dark:text-surface-400">Env override</div>
+            <div class="mt-1 font-semibold text-secondary-700 dark:text-secondary-300">{explanationCounts.overridden}</div>
+          </div>
+          <div class="rounded-xl border border-surface-200 bg-surface-50 px-4 py-3 text-sm shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+            <div class="text-xs uppercase tracking-wide text-surface-500 dark:text-surface-400">Pending restart</div>
+            <div class="mt-1 font-semibold text-warning-700 dark:text-warning-300">{explanationCounts.pending}</div>
+          </div>
+        </section>
+
+        {#if dirty && restartAfterSave.length > 0}
+          <section class="rounded-xl border border-warning-300/70 bg-warning-500/10 px-4 py-3 text-sm text-warning-800 dark:border-warning-800/60 dark:text-warning-300">
+            Saving will require restart for: {restartAfterSave.map((item) => item.label).join(', ')}.
+          </section>
+        {/if}
+
         {#if active === 'appearance'}
           <section class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
             <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Appearance</h2>
@@ -443,7 +558,7 @@
             <LoggingPanel bind:settings {defaults} />
           {/if}
           {#if active === 'raw'}
-            <RawConfigPanel onsaved={load} />
+            <RawConfigPanel onsaved={load} pendingRestartCount={explanationCounts.pending} overrideCount={explanationCounts.overridden} />
           {/if}
 
           {#if active === 'version'}

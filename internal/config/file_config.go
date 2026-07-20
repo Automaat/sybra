@@ -83,6 +83,39 @@ func (f *FileConfig) nodeAt(path ...string) (*yaml.Node, bool) {
 	return node, true
 }
 
+func (f *FileConfig) authoredNodeAt(path ...string) (*yaml.Node, bool) {
+	if f == nil {
+		return nil, false
+	}
+	return yamlNodeAt(f.root, path...)
+}
+
+func yamlNodeAt(node *yaml.Node, path ...string) (*yaml.Node, bool) {
+	if node == nil {
+		return nil, false
+	}
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		node = node.Content[0]
+	}
+	for _, key := range path {
+		if node.Kind != yaml.MappingNode {
+			return nil, false
+		}
+		found := false
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == key {
+				node = node.Content[i+1]
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, false
+		}
+	}
+	return node, true
+}
+
 func ParseFileConfig(data []byte) (*FileConfig, error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {

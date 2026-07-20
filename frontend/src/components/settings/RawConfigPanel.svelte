@@ -4,9 +4,11 @@
   interface Props {
     /** Called after a successful save so the parent can reload the form state. */
     onsaved?: () => void
+    pendingRestartCount?: number
+    overrideCount?: number
   }
 
-  const { onsaved }: Props = $props()
+  const { onsaved, pendingRestartCount = 0, overrideCount = 0 }: Props = $props()
 
   let text = $state('')
   let original = $state('')
@@ -16,6 +18,12 @@
   let saved = $state(false)
 
   const dirty = $derived(!loading && text !== original)
+  const statusSummary = $derived.by(() => {
+    const parts: string[] = []
+    if (pendingRestartCount > 0) parts.push(`${pendingRestartCount} value(s) are waiting on restart.`)
+    if (overrideCount > 0) parts.push(`${overrideCount} value(s) are currently overridden by environment variables.`)
+    return parts.join(' ')
+  })
 
   async function load() {
     loading = true
@@ -66,6 +74,7 @@
       <p class="mt-1 text-xs text-surface-500 dark:text-surface-400">
         The complete <code>config.yaml</code> — every setting, including sections without a form. Edits are validated before saving; invalid YAML is rejected without touching disk.
       </p>
+      {#if statusSummary}<p class="mt-2 text-xs text-surface-500 dark:text-surface-400">{statusSummary}</p>{/if}
     </div>
     <div class="flex shrink-0 items-center gap-2">
       {#if saved}<span class="text-sm font-medium text-success-600 dark:text-success-400">Saved</span>{/if}

@@ -29,6 +29,7 @@ import (
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
+	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -2265,6 +2266,9 @@ func usageProjectAndOps() {
 
   config dump                  Print the resolved ~/.sybra/config.yaml (env
                                overrides applied, secrets redacted).
+  config explain <path>        Explain a public config path: effective value,
+                               operator intent, overrides, aliases, and reload
+                               policy. Secrets stay redacted.
   config doctor                Sanity-check config: data dirs, agent.provider,
                                agent.headless_permission_mode,
                                agent.sandbox_mode, and enabled integrations
@@ -2661,11 +2665,13 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 
 func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: config <dump|doctor|migrate>")
+		return fatal(jsonOut, "usage: config <dump|explain|doctor|migrate>")
 	}
 	switch sub := args[0]; sub {
 	case "dump":
 		return cmdConfigDump(cfg, jsonOut)
+	case "explain":
+		return cmdConfigExplain(cfg, args[1:], jsonOut)
 	case "doctor":
 		return cmdConfigDoctor(cfg, jsonOut)
 	case "migrate":
@@ -2690,6 +2696,58 @@ func cmdConfigDump(cfg *config.Config, jsonOut bool) int {
 	}
 	_, _ = os.Stdout.Write(data)
 	return 0
+}
+
+func cmdConfigExplain(cfg *config.Config, args []string, jsonOut bool) int {
+	if len(args) != 1 {
+		return fatal(jsonOut, "usage: config explain <path>")
+	}
+	explanation, err := sybra.LoadConfigPathExplanation(args[0], cfg, cfg)
+	if err != nil {
+		return fatal(jsonOut, "config explain: %v", err)
+	}
+	if jsonOut {
+		return printJSON(explanation)
+	}
+	fmt.Printf("path:\t%s\n", explanation.Descriptor.Path)
+	if explanation.Descriptor.RuntimePath != explanation.Descriptor.Path {
+		fmt.Printf("runtime path:\t%s\n", explanation.Descriptor.RuntimePath)
+	}
+	fmt.Printf("effective:\t%s\n", renderPathValue(explanation.Effective))
+	fmt.Printf("intent:\t%s\n", renderPathValue(explanation.Intent))
+	fmt.Printf("default:\t%s\n", renderPathValue(explanation.Default))
+	fmt.Printf("reload:\t%s\n", explanation.ReloadPolicy)
+	fmt.Printf("visibility:\t%s\n", explanation.Visibility)
+	if explanation.Override != nil {
+		fmt.Printf("override:\t%s\n", renderPathValue(*explanation.Override))
+	}
+	if len(explanation.Descriptor.EnvVars) > 0 {
+		fmt.Printf("env vars:\t%s\n", strings.Join(explanation.Descriptor.EnvVars, ", "))
+	}
+	if len(explanation.Descriptor.LegacyPaths) > 0 {
+		fmt.Printf("aliases:\t%s\n", strings.Join(explanation.Descriptor.LegacyPaths, ", "))
+	}
+	if explanation.Descriptor.Unit != "" {
+		fmt.Printf("unit:\t%s\n", explanation.Descriptor.Unit)
+	}
+	if len(explanation.Descriptor.Constraints) > 0 {
+		fmt.Printf("constraints:\t%s\n", strings.Join(explanation.Descriptor.Constraints, "; "))
+	}
+	return 0
+}
+
+func renderPathValue(v config.PathValue) string {
+	if !v.Declared {
+		return "(none)"
+	}
+	value := fmt.Sprintf("%v", v.Value)
+	if !v.Present && !v.Redacted {
+		value = fmt.Sprintf("%v", v.Value)
+	}
+	if v.Path != "" {
+		return fmt.Sprintf("%s [%s via %s]", value, v.Source, v.Path)
+	}
+	return fmt.Sprintf("%s [%s]", value, v.Source)
 }
 
 type configDoctorFinding struct {

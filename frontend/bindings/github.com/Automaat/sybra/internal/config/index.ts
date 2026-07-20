@@ -17,6 +17,8 @@ export {
     MonitorConfig,
     NotificationConfig,
     OrchestratorConfig,
+    PathDescriptor,
+    PathValue,
     PlaywrightMCPConfig,
     PressureConfig,
     ProviderEntryConfig,
@@ -28,5 +30,6 @@ export {
     SelfMonitorConfig,
     TestingConfig,
     TriageConfig,
-    UmbrellaConfig
+    UmbrellaConfig,
+    ValueSource
 } from "./models.js";

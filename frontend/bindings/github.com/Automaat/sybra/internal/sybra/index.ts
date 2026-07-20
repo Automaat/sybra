@@ -45,6 +45,7 @@ export {
     ClusterNodeDTO,
     CodexModel,
     ConfigMutationResult,
+    ConfigPathExplanation,
     ConfigRecovery,
     CopilotModel,
     LoggingSettings,

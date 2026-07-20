@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 
 const mockGetSettings = vi.fn()
+const mockGetPathExplanations = vi.fn()
 const mockGetDefaultSettings = vi.fn()
 const mockUpdateSettings = vi.fn()
 const mockGetRawConfig = vi.fn()
@@ -18,6 +19,7 @@ const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 
 vi.mock('$lib/api', () => ({
   GetSettings: (...args: unknown[]) => mockGetSettings(...args),
+  GetPathExplanations: (...args: unknown[]) => mockGetPathExplanations(...args),
   GetDefaultSettings: (...args: unknown[]) => mockGetDefaultSettings(...args),
   UpdateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
   GetRawConfig: (...args: unknown[]) => mockGetRawConfig(...args),
@@ -98,6 +100,8 @@ async function goTo(name: string) {
 describe('Settings', () => {
   beforeEach(() => {
     mockGetSettings.mockReset()
+    mockGetPathExplanations.mockReset()
+    mockGetPathExplanations.mockResolvedValue([])
     mockGetDefaultSettings.mockReset()
     mockGetDefaultSettings.mockResolvedValue(baseSettings())
     mockUpdateSettings.mockReset()

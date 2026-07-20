@@ -1129,6 +1129,85 @@ export class OrchestratorConfig {
     }
 }
 
+export class PathDescriptor {
+    "path": string;
+    "runtimePath": string;
+    "queryPaths"?: string[];
+    "legacyPaths"?: string[];
+    "envVars"?: string[];
+    "secret": boolean;
+    "unit"?: string;
+    "constraints"?: string[];
+
+    /** Creates a new PathDescriptor instance. */
+    constructor($$source: Partial<PathDescriptor> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("runtimePath" in $$source)) {
+            this["runtimePath"] = "";
+        }
+        if (!("secret" in $$source)) {
+            this["secret"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PathDescriptor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PathDescriptor {
+        const $$createField2_0 = $$createType5;
+        const $$createField3_0 = $$createType5;
+        const $$createField4_0 = $$createType5;
+        const $$createField7_0 = $$createType5;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("queryPaths" in $$parsedSource) {
+            $$parsedSource["queryPaths"] = $$createField2_0($$parsedSource["queryPaths"]);
+        }
+        if ("legacyPaths" in $$parsedSource) {
+            $$parsedSource["legacyPaths"] = $$createField3_0($$parsedSource["legacyPaths"]);
+        }
+        if ("envVars" in $$parsedSource) {
+            $$parsedSource["envVars"] = $$createField4_0($$parsedSource["envVars"]);
+        }
+        if ("constraints" in $$parsedSource) {
+            $$parsedSource["constraints"] = $$createField7_0($$parsedSource["constraints"]);
+        }
+        return new PathDescriptor($$parsedSource as Partial<PathDescriptor>);
+    }
+}
+
+export class PathValue {
+    "declared": boolean;
+    "present": boolean;
+    "redacted"?: boolean;
+    "source"?: ValueSource;
+    "path"?: string;
+    "value"?: any;
+
+    /** Creates a new PathValue instance. */
+    constructor($$source: Partial<PathValue> = {}) {
+        if (!("declared" in $$source)) {
+            this["declared"] = false;
+        }
+        if (!("present" in $$source)) {
+            this["present"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PathValue instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PathValue {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PathValue($$parsedSource as Partial<PathValue>);
+    }
+}
+
 /**
  * PlaywrightMCPConfig opts test-runner runs into a headless Playwright MCP
  * server for visual/console verification. Default-off: Manager.prepareRunConfig
@@ -1742,6 +1821,18 @@ export class UmbrellaConfig {
         return new UmbrellaConfig($$parsedSource as Partial<UmbrellaConfig>);
     }
 }
+
+export enum ValueSource {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    ValueSourceDefault = "default",
+    ValueSourceFile = "file",
+    ValueSourceEnv = "env",
+    ValueSourceGenerated = "generated",
+};
 
 // Private type creation functions
 const $$createType0 = $Create.Map($Create.Any, $Create.Any);

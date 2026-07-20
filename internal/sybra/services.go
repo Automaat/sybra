@@ -75,6 +75,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 		),
 		"ConfigService": httpapi.NewService(a.configSvc,
 			"GetSettings",
+			"GetPathExplanations",
 			"GetDefaultSettings",
 			"UpdateSettings",
 			"GetRawConfig",
