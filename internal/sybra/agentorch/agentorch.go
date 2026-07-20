@@ -568,7 +568,13 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 
 	reservation, ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts)
 	if handled {
-		return ag, baselineRef, err
+		if ag != nil {
+			return ag, baselineRef, nil
+		}
+		if err != nil {
+			return nil, baselineRef, err
+		}
+		return nil, "", fmt.Errorf("task %s: saturated dispatch returned neither agent nor error", taskID)
 	}
 	if reservation != nil {
 		defer reservation.Release()
@@ -626,7 +632,13 @@ func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTask
 	if err != nil {
 		o.handleProviderGateStartError(taskID, err)
 		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts); handled {
-			return ag, baselineRef, capErr
+			if ag != nil {
+				return ag, baselineRef, nil
+			}
+			if capErr != nil {
+				return nil, baselineRef, capErr
+			}
+			return nil, "", fmt.Errorf("task %s: capacity race handler returned neither agent nor error", taskID)
 		}
 		return nil, "", translatePoolBusy(err)
 	}
