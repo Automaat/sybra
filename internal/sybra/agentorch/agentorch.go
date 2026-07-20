@@ -654,6 +654,7 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 		Model:                   p.model,
 		ExperimentID:            p.assignment.ExperimentID,
 		VariantID:               p.assignment.VariantID,
+		RoutingReason:           p.assignment.RoutingReason,
 		AssignmentUnit:          p.assignment.AssignmentUnit,
 		AssignmentKey:           p.assignment.AssignmentKey,
 		DecisionVersion:         p.assignment.DecisionVersion,
@@ -1025,6 +1026,7 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 		Model:                   ag.Model,
 		ExperimentID:            ag.ExperimentID,
 		VariantID:               ag.VariantID,
+		RoutingReason:           ag.RoutingReason,
 		AssignmentUnit:          ag.AssignmentUnit,
 		AssignmentKey:           ag.AssignmentKey,
 		DecisionVersion:         ag.DecisionVersion,
@@ -1125,6 +1127,8 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 		Role:      "chat",
 		Mode:      "interactive",
 		Provider:  ag.Provider,
+		Model:     ag.Model,
+		RoutingReason: ag.RoutingReason,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
 		Prompt:    prompt,
@@ -1271,6 +1275,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	})
 	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,
+		Provider: ag.Provider, Model: ag.Model, RoutingReason: ag.RoutingReason,
 		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 		Prompt: prompt,
 	}); err != nil {

@@ -68,6 +68,7 @@ type agentRunRecord struct {
 	Model                   string    `yaml:"model,omitempty"`
 	ExperimentID            string    `yaml:"experiment_id,omitempty"`
 	VariantID               string    `yaml:"variant_id,omitempty"`
+	RoutingReason           string    `yaml:"routing_reason,omitempty"`
 	AssignmentUnit          string    `yaml:"assignment_unit,omitempty"`
 	AssignmentKey           string    `yaml:"assignment_key,omitempty"`
 	DecisionVersion         int       `yaml:"decision_version,omitempty"`

@@ -203,7 +203,10 @@
 
   function syncOriginal() {
     if (!settings) return
-    foldIntoBaseline((base) => { base.providers = JSON.parse(JSON.stringify($state.snapshot(settings!.providers))) })
+    foldIntoBaseline((base) => {
+      base.providers = JSON.parse(JSON.stringify($state.snapshot(settings!.providers)))
+      base.providerRouting = JSON.parse(JSON.stringify($state.snapshot(settings!.providerRouting)))
+    })
   }
 
   const modelOptions = $derived.by(() => {
@@ -245,6 +248,7 @@
     attachments: ['attachments'],
     renovate: ['renovate'],
     providers: ['providers'],
+    providerRouting: ['ab_testing', 'routing', 'providers'],
     github: ['github'],
     monitor: ['monitor'],
     selfMonitor: ['self_monitor'],
@@ -264,7 +268,7 @@
     ] },
     { label: 'Execution', items: [
       { id: 'agent', label: 'Defaults', keywords: 'provider model mode concurrent permissions fallback turns cost claude codex copilot opencode openrouter glm log retention gzip compression size', keys: ['agent'], paths: ['agent'] },
-      ...(providerHealthEnabled ? [{ id: 'provider-health' as TabId, label: 'Providers', keywords: 'health limits failover subscription', keys: ['providers'] as (keyof AppSettings)[], paths: ['providers'] }] : []),
+      ...(providerHealthEnabled ? [{ id: 'provider-health' as TabId, label: 'Providers', keywords: 'health limits failover subscription ab testing routing variants experiments', keys: ['providers', 'providerRouting'] as (keyof AppSettings)[], paths: ['providers', 'ab_testing', 'routing'] }] : []),
     ] },
     { label: 'Workflow', items: [
       { id: 'orchestrator', label: 'Orchestrator', keywords: 'auto triage plan dispatch maintenance interval', keys: ['orchestrator'], paths: ['orchestrator'] },

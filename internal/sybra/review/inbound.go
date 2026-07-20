@@ -187,6 +187,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		Model:           ag.Model,
 		ExperimentID:    ag.ExperimentID,
 		VariantID:       ag.VariantID,
+		RoutingReason:   ag.RoutingReason,
 		AssignmentUnit:  ag.AssignmentUnit,
 		AssignmentKey:   ag.AssignmentKey,
 		DecisionVersion: ag.DecisionVersion,

@@ -111,6 +111,7 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 				ExperimentID:    exp.ID,
 				Kind:            exp.KindValue(),
 				VariantID:       v.ID,
+				RoutingReason:   "ab",
 				Provider:        v.Provider,
 				Model:           v.Model,
 				ReasoningEffort: v.ReasoningEffort,

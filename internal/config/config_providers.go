@@ -39,3 +39,106 @@ type ProviderLimitsConfig struct {
 	// cannot silently no-op.
 	MaxInFlightPerProvider int `yaml:"max_in_flight_per_provider" json:"maxInFlightPerProvider"`
 }
+
+type RoutingEligibleVariant struct {
+	ExperimentID string `json:"experimentId"`
+	VariantID    string `json:"variantId"`
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	Eligible     bool   `json:"eligible"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type RoutingSummary struct {
+	ProviderPreference    string                   `json:"providerPreference"`
+	ABTestingEnabled      bool                     `json:"abTestingEnabled"`
+	ABTestingExplicit     bool                     `json:"abTestingExplicit"`
+	AdaptiveRoutingEnabled bool                    `json:"adaptiveRoutingEnabled"`
+	AutoFailoverEnabled   bool                     `json:"autoFailoverEnabled"`
+	ProviderLimitsEnabled bool                     `json:"providerLimitsEnabled"`
+	Precedence            []string                 `json:"precedence"`
+	EligibleVariants      []RoutingEligibleVariant `json:"eligibleVariants,omitempty"`
+	Warnings              []string                 `json:"warnings,omitempty"`
+}
+
+func BuildRoutingSummary(cfg *Config) RoutingSummary {
+	if cfg == nil {
+		return RoutingSummary{}
+	}
+	summary := RoutingSummary{
+		ProviderPreference:     cfg.Agent.Provider,
+		ABTestingEnabled:       cfg.ABTesting.EnabledValue(),
+		ABTestingExplicit:      cfg.ABTesting.Enabled != nil,
+		AdaptiveRoutingEnabled: cfg.Routing.Enabled,
+		AutoFailoverEnabled:    cfg.Providers.AutoFailover,
+		ProviderLimitsEnabled:  cfg.Providers.Limits.Enabled,
+	}
+	summary.Precedence = append(summary.Precedence, "agent.provider")
+	if summary.ABTestingEnabled {
+		summary.Precedence = append([]string{"ab_testing"}, summary.Precedence...)
+	}
+	if summary.AutoFailoverEnabled {
+		summary.Precedence = append(summary.Precedence, "providers.auto_failover")
+	}
+	if summary.ProviderLimitsEnabled {
+		summary.Precedence = append(summary.Precedence, "providers.limits")
+	}
+	if summary.AdaptiveRoutingEnabled {
+		summary.Precedence = append(summary.Precedence, "routing.overlay")
+	}
+
+	hasEligible := false
+	for i := range cfg.ABTesting.Experiments {
+		exp := cfg.ABTesting.Experiments[i]
+		if !exp.EnabledValue() {
+			continue
+		}
+		expEligible := 0
+		for j := range exp.Variants {
+			v := exp.Variants[j]
+			if v.Weight <= 0 {
+				continue
+			}
+			entry := RoutingEligibleVariant{
+				ExperimentID: exp.ID,
+				VariantID:    v.ID,
+				Provider:     v.Provider,
+				Model:        v.Model,
+				Eligible:     providerEnabledForRouting(cfg, v.Provider),
+			}
+			if !entry.Eligible {
+				entry.Reason = "provider_disabled"
+			} else {
+				entry.Reason = "eligible"
+				expEligible++
+				hasEligible = true
+			}
+			summary.EligibleVariants = append(summary.EligibleVariants, entry)
+		}
+		if summary.ABTestingEnabled && expEligible == 0 {
+			summary.Warnings = append(summary.Warnings, "ab_testing experiment "+exp.ID+" has zero eligible variants")
+		}
+	}
+	if summary.ABTestingEnabled && summary.ProviderPreference != "" && len(summary.EligibleVariants) > 0 {
+		summary.Warnings = append(summary.Warnings, "agent.provider is a fallback once ab_testing selects a matching variant")
+	}
+	if summary.ABTestingEnabled && !hasEligible {
+		summary.Warnings = append(summary.Warnings, "ab_testing is enabled but no provider-enabled variants are eligible")
+	}
+	return summary
+}
+
+func providerEnabledForRouting(cfg *Config, provider string) bool {
+	switch provider {
+	case "claude":
+		return cfg.Providers.Claude.Enabled
+	case "codex":
+		return cfg.Providers.Codex.Enabled
+	case "copilot":
+		return cfg.Providers.Copilot.Enabled
+	case "opencode":
+		return cfg.Providers.OpenCode.Enabled
+	default:
+		return false
+	}
+}

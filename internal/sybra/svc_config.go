@@ -62,6 +62,11 @@ func (s *ConfigService) GetSettings() AppSettings {
 		Audit:        c.Audit,
 		Renovate:     c.Renovate,
 		Providers:    c.Providers,
+		ProviderRouting: ProviderRoutingSettings{
+			ABTestingEnabled:              c.ABTesting.Enabled,
+			ABTestingMinSamplesPerVariant: c.ABTesting.MinSamplesPerVariant,
+			Summary:                       config.BuildRoutingSummary(c),
+		},
 		GitHub:       c.GitHub,
 		Monitor:      c.Monitor,
 		SelfMonitor:  c.SelfMonitor,
@@ -480,6 +485,12 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 	}
 	next.Renovate = settings.Renovate
 	next.Providers = settings.Providers
+	if settings.ProviderRouting.ABTestingEnabled != nil {
+		next.ABTesting.Enabled = settings.ProviderRouting.ABTestingEnabled
+	}
+	if settings.ProviderRouting.ABTestingMinSamplesPerVariant > 0 {
+		next.ABTesting.MinSamplesPerVariant = settings.ProviderRouting.ABTestingMinSamplesPerVariant
+	}
 	next.GitHub = settings.GitHub
 	next.Monitor = settings.Monitor
 	next.SelfMonitor = settings.SelfMonitor

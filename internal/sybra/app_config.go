@@ -11,6 +11,12 @@ type LoggingSettings struct {
 	MaxFiles  int    `json:"maxFiles"`
 }
 
+type ProviderRoutingSettings struct {
+	ABTestingEnabled             *bool                 `json:"abTestingEnabled"`
+	ABTestingMinSamplesPerVariant int                  `json:"abTestingMinSamplesPerVariant"`
+	Summary                      config.RoutingSummary `json:"summary"`
+}
+
 // AppSettings is the shape of data exchanged with the frontend for the config view.
 //
 // Every section here is round-tripped by GetSettings → UpdateSettings. Adding a
@@ -26,6 +32,7 @@ type AppSettings struct {
 	Attachments  config.AttachmentConfig   `json:"attachments"`
 	Renovate     config.RenovateConfig     `json:"renovate"`
 	Providers    config.ProvidersConfig    `json:"providers"`
+	ProviderRouting ProviderRoutingSettings `json:"providerRouting"`
 	GitHub       config.GitHubConfig       `json:"github"`
 	Monitor      config.MonitorConfig      `json:"monitor"`
 	SelfMonitor  config.SelfMonitorConfig  `json:"selfMonitor"`
