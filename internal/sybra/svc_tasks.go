@@ -950,10 +950,11 @@ type dispatchTargetSpec struct {
 }
 
 var dispatchTargets = map[string]dispatchTargetSpec{
-	string(task.StatusInProgress): {dispatches: true},
-	string(task.StatusTesting):    {dispatches: true},
-	string(task.StatusReadyPR):    {dispatches: true},
-	string(task.StatusInReview):   {requiresPR: true, dispatches: false},
+	string(task.StatusInProgress):  {dispatches: true},
+	string(task.StatusReadyReview): {dispatches: true},
+	string(task.StatusTesting):     {dispatches: true},
+	string(task.StatusReadyPR):     {dispatches: true},
+	string(task.StatusInReview):    {requiresPR: true, dispatches: false},
 }
 
 func readyPRNoWorkflowAllowed(role, target string) bool {
@@ -969,12 +970,12 @@ func readyPRNoWorkflowAllowed(role, target string) bool {
 }
 
 // DispatchFromHumanRequired flips a task parked in human-required to target
-// (one of in-progress/testing/ready-pr/in-review), recording reason as the
-// audit-visible status_reason. For dispatching targets it synchronously
-// re-enters the workflow via task.status_changed; on any failure to do so it
-// fails closed, reverting the task to human-required with an explanatory
-// status_reason so the operator is never left with a task silently stuck in
-// a target status with no workflow driving it.
+// (one of in-progress/ready-review/testing/ready-pr/in-review), recording
+// reason as the audit-visible status_reason. For dispatching targets it
+// synchronously re-enters the workflow via task.status_changed; on any failure
+// to do so it fails closed, reverting the task to human-required with an
+// explanatory status_reason so the operator is never left with a task silently
+// stuck in a target status with no workflow driving it.
 //
 // The whole check-then-write sequence runs under the workflow engine's
 // per-task human-action lock (shared with plan-review's

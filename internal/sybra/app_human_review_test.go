@@ -516,7 +516,7 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 		dispatchedTarget = target
 		dispatchedReason = reason
 		return tasks.Update(id, task.Update{
-			Status:       task.Ptr(task.StatusInProgress),
+			Status:       task.Ptr(task.StatusReadyReview),
 			StatusReason: task.Ptr(reason),
 		})
 	}
@@ -524,7 +524,7 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
 	ag.AppendOutput(agent.StreamEvent{
 		Type:    "assistant",
-		Content: `{"decision":"unblocked","reason":"opened the PR and the host should resume review","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+		Content: `{"decision":"unblocked","reason":"fixed the issue and the host should resume review","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
 	})
 	h.inflight[tk.ID] = agentID
 	h.onComplete(ag)
@@ -533,11 +533,11 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
 	}
-	if dispatchedTarget != string(task.StatusInProgress) {
-		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusInProgress)
+	if dispatchedTarget != string(task.StatusReadyReview) {
+		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusReadyReview)
 	}
-	if got.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
 	}
 	if !strings.Contains(dispatchedReason, "auto-review recovery") || !strings.Contains(got.StatusReason, "auto-review recovery") {
 		t.Fatalf("status_reason = %q, want auto-review recovery note", got.StatusReason)
