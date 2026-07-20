@@ -122,6 +122,76 @@ func TestCreateAndGet(t *testing.T) {
 	}
 }
 
+func TestCLIWorksWithV2ObservabilityConfig(t *testing.T) {
+	dir := setupStore(t)
+	raw := strings.Join([]string{
+		"schema_version: 2",
+		"observability:",
+		"  logging:",
+		"    level: debug",
+		"  ab_testing:",
+		"    enabled: true",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--json", "create", "--title", "observability task")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, out = runCLI(t, "--json", "get", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.ID != created.ID {
+		t.Fatalf("get returned id %q, want %q", got.ID, created.ID)
+	}
+}
+
+func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "fallback task")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	origLoad := loadCLIConfig
+	loadCLIConfig = func() (*config.Config, error) {
+		return nil, fmt.Errorf("unknown config key %q", "observability")
+	}
+	t.Cleanup(func() { loadCLIConfig = origLoad })
+
+	code, out = runCLI(t, "--json", "get", created.ID)
+	if code != 0 {
+		t.Fatalf("fallback get exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.ID != created.ID {
+		t.Fatalf("fallback get returned id %q, want %q", got.ID, created.ID)
+	}
+
+	code, out = runCLI(t, "--json", "update", created.ID, "--status", "in-progress")
+	if code != 0 {
+		t.Fatalf("fallback update exit %d: %s", code, out)
+	}
+	var updated task.Task
+	mustUnmarshal(t, out, &updated)
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("fallback update status = %q, want %q", updated.Status, task.StatusInProgress)
+	}
+}
+
 func TestGetCompactOmitsPlanningSupportSidecars(t *testing.T) {
 	setupStore(t)
 

@@ -41,6 +41,11 @@ import (
 // in sync without an import cycle.
 var hookTaskIDRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 
+var (
+	loadCLIConfig          = config.Load
+	loadCLIConfigNoPersist = config.LoadNoPersist
+)
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -124,18 +129,28 @@ func run(args []string) int {
 	}
 
 	if isReadOnlyConfigCommand(cmd) {
-		cfg, err := config.LoadNoPersist()
+		cfg, err := loadCLIConfigNoPersist()
 		if err != nil {
 			return fatal(jsonOut, "load config: %v", err)
 		}
 		return cmdConfig(cfg, rest, jsonOut)
 	}
 
-	cfg, err := config.Load()
+	cfg, err := loadCLIConfig()
 	if err != nil {
 		if isHook {
 			fmt.Fprintf(os.Stderr, "hook: load config: %v (continuing fail-open)\n", err)
 			return 0
+		}
+		if store, dir, ok, openErr := openFallbackTaskStore(cmd); ok {
+			if openErr != nil {
+				return fatal(jsonOut, "load config: %v (task-store fallback failed: %v)", err, openErr)
+			}
+			fmt.Fprintf(os.Stderr,
+				"warning: load config failed (%v); falling back to task store at %s for `%s`\n",
+				err, dir, cmd,
+			)
+			return dispatch(cmd, rest, nil, store, nil, false, jsonOut)
 		}
 		return fatal(jsonOut, "load config: %v", err)
 	}
@@ -342,6 +357,34 @@ func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
 		return nil, nil, fmt.Errorf("open project store: %w", err)
 	}
 	return task.NewManager(rawStore, nil), projStore, nil
+}
+
+func openFallbackTaskStore(cmd string) (*task.Manager, string, bool, error) {
+	if !supportsTaskStoreFallback(cmd) {
+		return nil, "", false, nil
+	}
+	dir := fallbackTasksDir()
+	rawStore, err := task.NewStore(dir)
+	if err != nil {
+		return nil, dir, true, fmt.Errorf("open fallback task store: %w", err)
+	}
+	return task.NewManager(rawStore, nil), dir, true, nil
+}
+
+func supportsTaskStoreFallback(cmd string) bool {
+	switch cmd {
+	case "list", "get", "create", "update", "delete", "reopen", "link-pr", "board", "trash":
+		return true
+	default:
+		return false
+	}
+}
+
+func fallbackTasksDir() string {
+	if dir := strings.TrimSpace(os.Getenv("SYBRA_TASKS_DIR")); dir != "" {
+		return dir
+	}
+	return filepath.Join(config.HomeDir(), "tasks")
 }
 
 func cmdList(s *task.Manager, args []string, jsonOut bool) int {
