@@ -439,7 +439,7 @@ func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
 // Otherwise it auto-assigns a project if needed, optionally resets the
 // worktree for a clean retry, and prepares the task's worktree, returning
 // the (possibly project-assigned) task and its worktree directory.
-func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim) (task.Task, string, error) {
+func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim, reservation *agent.CapacityReservation) (task.Task, string, error) {
 	if skipWT {
 		return t, dir, nil
 	}
@@ -472,12 +472,13 @@ func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, task
 		// o.conflictRecovery (wired to review.Handler.RecoverStaleBranchConflict)
 		// synchronously starts the branch-conflict-fix workflow, whose "fix"
 		// step dispatches a new agent for this SAME taskID through this same
-		// StartAgentWithAssignment choke point. Release the outer claim first
-		// — we are bailing out of this dispatch regardless of the recovery
-		// result — or that nested dispatch always observes the claim as still
-		// held and bails with ErrDispatchInFlight without ever starting an
-		// agent (the branch-conflict-fix workflow never actually dispatches).
+		// StartAgentWithAssignment choke point. Release the outer claim and the
+		// held pool slot first — we are bailing out of this dispatch regardless
+		// of the recovery result — or that nested dispatch can observe either
+		// the claim as still held (ErrDispatchInFlight) or the pool as still
+		// saturated (ErrAgentPoolBusy) without ever starting the fix agent.
 		claim.Release()
+		reservation.Release()
 		if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
 			return t, "", workflow.ErrDispatchInFlight
 		}
@@ -565,11 +566,21 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		}
 	}
 
-	if ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts); handled {
-		return ag, baselineRef, err
+	reservation, ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts)
+	if handled {
+		if ag != nil {
+			return ag, baselineRef, nil
+		}
+		if err != nil {
+			return nil, baselineRef, err
+		}
+		return nil, "", fmt.Errorf("task %s: saturated dispatch returned neither agent nor error", taskID)
+	}
+	if reservation != nil {
+		defer reservation.Release()
 	}
 
-	t, dir, dirErr := o.resolveDispatchDir(ctx, t, taskID, cleanRetryRef, skipWT, dir, claim)
+	t, dir, dirErr := o.resolveDispatchDir(ctx, t, taskID, cleanRetryRef, skipWT, dir, claim, reservation)
 	if dirErr != nil {
 		return nil, "", dirErr
 	}
@@ -577,7 +588,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		return nil, "", fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
 	}
 
-	baselineRef := CurrentWorktreeHead(ctx, dir)
+	baselineRef = CurrentWorktreeHead(ctx, dir)
 
 	var workflowStart time.Time
 	if t.Workflow != nil {
@@ -591,28 +602,43 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	if postureErr != nil {
 		return nil, "", postureErr
 	}
-	return o.runImplementationAgent(taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, model, t, assignment, opts)
+	return o.runImplementationAgent(taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, model, t, assignment, opts, reservation)
 }
 
 // runImplementationAgent builds the RunConfig for an implementation dispatch,
 // launches it, and translates a launch failure through the same
 // capacity-race / provider-gate handling startAgent used inline before this
 // was split out to satisfy funlen.
-func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions) (*agent.Agent, string, error) {
+func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions, reservation *agent.CapacityReservation) (*agent.Agent, string, error) {
 	ignoreConcurrencyLimit := effMode == "interactive"
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	o.logSandboxEscapeHatch(taskID, t)
-	ag, err := o.agents.Run(o.implementationRunConfig(implementationRunParams{
+	runCfg := o.implementationRunConfig(implementationRunParams{
 		taskID: taskID, t: t, effMode: effMode, prompt: prompt, fullPrompt: fullPrompt, dir: dir,
 		assignment: assignment, model: model, requirePerm: requirePerm, posture: posture,
 		oneShot: oneShot, ignoreConcurrencyLimit: ignoreConcurrencyLimit,
 		resumeSessionID: resumeSessionID, extraEnv: extraEnv, opts: opts,
-	}))
+	})
+	var (
+		ag  *agent.Agent
+		err error
+	)
+	if reservation != nil {
+		ag, err = o.agents.RunWithCapacityReservation(runCfg, reservation)
+	} else {
+		ag, err = o.agents.Run(runCfg)
+	}
 	if err != nil {
 		o.handleProviderGateStartError(taskID, err)
 		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts); handled {
-			return ag, baselineRef, capErr
+			if ag != nil {
+				return ag, baselineRef, nil
+			}
+			if capErr != nil {
+				return nil, baselineRef, capErr
+			}
+			return nil, "", fmt.Errorf("task %s: capacity race handler returned neither agent nor error", taskID)
 		}
 		return nil, "", translatePoolBusy(err)
 	}
@@ -688,33 +714,41 @@ func requestedWorkflowSkill(prompt string) string {
 	return names[0]
 }
 
-func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.Agent, string, error, bool) {
+func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.CapacityReservation, *agent.Agent, string, error, bool) {
 	// Admission gate: workflow implementation dispatches park their token in
 	// the workflow-owned queue, while saturated manual headless starts persist
 	// their replay intent in the manual queue and return a synthetic queued
 	// agent. Interactive/chat starts bypass the cap entirely.
-	if ignoreConcurrencyLimit || o.queue == nil || o.agents.TryReserveSlot() {
-		return nil, "", nil, false
+	if ignoreConcurrencyLimit {
+		return nil, nil, "", nil, false
+	}
+	if reservation, ok := o.agents.TryHoldCapacity(); ok {
+		return reservation, nil, "", nil, false
+	}
+	if o.queue == nil {
+		return nil, nil, "", nil, false
 	}
 	switch {
 	case opts.admissionGate:
-		return nil, "", o.admitQueueFullOrEnqueue(t, taskID), true
+		return nil, nil, "", o.admitQueueFullOrEnqueue(t, taskID), true
 	case opts.manualDrain:
-		return nil, "", workflow.ErrAgentPoolBusy, true
+		return nil, nil, "", workflow.ErrAgentPoolBusy, true
 	default:
 		ag, baselineRef, err := o.enqueueManualStart(t, taskID, mode, prompt, includeTaskDescription, skipWT)
-		return ag, baselineRef, err, true
+		return nil, ag, baselineRef, err, true
 	}
 }
 
 func (o *Orchestrator) handleCapacityRace(runErr error, t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.Agent, string, error, bool) {
-	// TryReserveSlot above is advisory only — a concurrent dispatch can win
-	// the last slot between that peek and this Run call. Close the race the
-	// same way as the preflight saturation path so durable work is not dropped.
+	// Queue-nil degraded mode still relies on registerRunningAgent's final cap
+	// check, so a concurrent dispatch can steal the last slot after startAgent's
+	// earlier preflight. Re-enqueue the same way as the normal saturation path
+	// when the queue exists.
 	if o.queue == nil || !errors.Is(runErr, agent.ErrMaxConcurrentReached) {
 		return nil, "", nil, false
 	}
-	return o.handleSaturatedDispatch(t, taskID, mode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts)
+	_, ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, mode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts)
+	return ag, baselineRef, err, handled
 }
 
 // admitQueueFullOrEnqueue offers taskID's implementation dispatch to the
