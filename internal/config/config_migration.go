@@ -563,19 +563,23 @@ func normalizeGitHubNamespace(builder *flatConfigBuilder, node *yaml.Node) error
 		return fmt.Errorf("integrations.github must be a mapping")
 	}
 	var githubContent []*yaml.Node
+	var reviewHold *yaml.Node
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key := node.Content[i].Value
 		value := node.Content[i+1]
 		if key == "review_hold" {
-			if err := builder.setTopLevel("review_hold", value, "integrations.github.review_hold"); err != nil {
-				return err
-			}
+			reviewHold = cloneYAMLNode(value)
 			continue
 		}
 		githubContent = append(githubContent, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, cloneYAMLNode(value))
 	}
 	if len(githubContent) > 0 {
 		if err := builder.setTopLevel("github", &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: githubContent}, "integrations.github"); err != nil {
+			return err
+		}
+	}
+	if reviewHold != nil {
+		if err := builder.setTopLevel("review_hold", reviewHold, "integrations.github.review_hold"); err != nil {
 			return err
 		}
 	}

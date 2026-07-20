@@ -244,6 +244,29 @@ func TestMigrateRawConfigToNamespacedV2IsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateRawConfigKeepsCanonicalGitHubReviewHoldConfig(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"schema_version: 2",
+		"integrations:",
+		"  github:",
+		"    enabled: false",
+		"    review_hold:",
+		"      enabled: true",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatalf("canonical v2 config should be a no-op migration:\n%s", result.MigratedRaw)
+	}
+	if !bytes.Equal(normalizeYAMLBytes(raw), normalizeYAMLBytes(result.MigratedRaw)) {
+		t.Fatalf("migration rewrote canonical config:\nwant:\n%s\ngot:\n%s", raw, result.MigratedRaw)
+	}
+}
+
 func TestMigrateNodeToCanonicalPreservesNilAsYAMLNull(t *testing.T) {
 	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil)
 	if err != nil {

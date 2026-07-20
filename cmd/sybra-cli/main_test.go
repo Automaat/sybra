@@ -1037,6 +1037,46 @@ func TestRunConfigMigrateDryRunAndApply(t *testing.T) {
 	}
 }
 
+func TestRunConfigMigrateDryRunNoOpForCanonicalGitHubReviewHoldConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	raw := []byte(strings.Join([]string{
+		"schema_version: 2",
+		"integrations:",
+		"  github:",
+		"    enabled: false",
+		"    review_hold:",
+		"      enabled: true",
+		"",
+	}, "\n"))
+	if err := os.WriteFile(cfgPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2", "--dry-run")
+	if code != 0 {
+		t.Fatalf("config migrate dry-run exit %d:\n%s", code, out)
+	}
+	var report configMigrateReport
+	mustUnmarshal(t, out, &report)
+	if !report.DryRun || report.Changed {
+		t.Fatalf("dry-run report = %+v, want no-op dry-run", report)
+	}
+
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, raw) {
+		t.Fatalf("dry-run mutated canonical config:\nbefore:\n%s\nafter:\n%s", raw, after)
+	}
+}
+
 func TestBinaryWorktreeDriftWarning(t *testing.T) {
 	t.Run("same revision", func(t *testing.T) {
 		if got := binaryWorktreeDriftWarning("abc123", "abc123"); got != "" {
