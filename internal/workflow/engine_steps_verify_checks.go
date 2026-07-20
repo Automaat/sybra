@@ -100,6 +100,17 @@ var verifyGoInfraFailureRes = []*regexp.Regexp{
 
 var verifyGolangCILintFindingRe = regexp.MustCompile(`^([^\s:][^:\n]*\.go):\d+:\d+:\s.+$`)
 
+var verifyFrontendPathMentionRe = regexp.MustCompile(`(?:^|[\s("'` + "`" + `])((?:frontend/)[A-Za-z0-9._/\-]+\.(?:[cm]?[jt]sx?|svelte))(?:[:(]\d+(?::\d+)?)?`)
+
+var verifyFrontendDeterministicSignalRes = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\[vitest\].*no ".*" export is defined`),
+	regexp.MustCompile(`(?i)\[vitest\].*did you forget to return it from "vi\.mock"`),
+	regexp.MustCompile(`(?i)^(?:AssertionError|TypeError|ReferenceError|SyntaxError|Error):`),
+	regexp.MustCompile(`(?i)\bexpected\b.+\bto\b`),
+	regexp.MustCompile(`(?i)\bdoes not provide an export named\b`),
+	regexp.MustCompile(`(?i)\bcannot find module\b`),
+}
+
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
 	Commands       []string `json:"commands"`
@@ -423,6 +434,20 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 			AutoFixable:  true,
 		}
 	}
+	if excerpt, changedFiles, ok := classifyDeterministicFrontendVerifyFailure(
+		e.ctx, taskID, wtPath, failedCmd, output, e.focusedChecksBaseRef(taskID)); ok {
+		reason := "verify suite failed on deterministic frontend check in " + trimDiffLine(failedCmd) +
+			" — re-ask implementation to fix the code without weakening the check"
+		if excerpt != "" {
+			reason += " (latest failure: " + trimDiffLine(excerpt) + ")"
+		}
+		return &verifyFailureClassification{
+			Kind:         "frontend_deterministic_failure",
+			Reason:       reason,
+			ChangedFiles: changedFiles,
+			AutoFixable:  true,
+		}
+	}
 	pkgs, changedFiles, ok := classifyUnrelatedVerifyGoFailure(e.ctx, taskID, wtPath, failedCmd, output, e.focusedChecksBaseRef(taskID))
 	if !ok {
 		return nil
@@ -433,6 +458,37 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 		FailedPackages: pkgs,
 		ChangedFiles:   changedFiles,
 	}
+}
+
+func classifyDeterministicFrontendVerifyFailure(
+	parentCtx context.Context,
+	taskID, wtPath, failedCmd, output, worktreeBaseRef string,
+) (excerpt string, changedFiles []string, ok bool) {
+	if !looksLikeFrontendVerifyCommand(failedCmd) {
+		return "", nil, false
+	}
+	excerpt = highestSignalVerifyFailureExcerpt(failedCmd, output)
+	if excerpt == "" {
+		return "", nil, false
+	}
+	changedFiles, err := changedFilesSinceProjectBase(parentCtx, wtPath, worktreeBaseRef)
+	if err != nil {
+		return "", nil, false
+	}
+	changed := changedFrontendFiles(changedFiles)
+	if len(changed) == 0 {
+		return "", changedFiles, false
+	}
+	mentioned := frontendPathsMentioned(output)
+	if len(mentioned) == 0 {
+		return excerpt, changedFiles, true
+	}
+	for _, file := range mentioned {
+		if changed[file] {
+			return excerpt, changedFiles, true
+		}
+	}
+	return "", changedFiles, false
 }
 
 func verifyGoInfraFailure(output string) bool {
@@ -497,6 +553,99 @@ func normalizeRepoGoFile(file string) (string, bool) {
 		return "", false
 	}
 	return clean, true
+}
+
+func looksLikeFrontendVerifyCommand(cmd string) bool {
+	lower := strings.ToLower(strings.Join(strings.Fields(cmd), " "))
+	if lower == "" {
+		return false
+	}
+	if !strings.Contains(lower, "frontend") &&
+		!strings.Contains(lower, "vitest") &&
+		!strings.Contains(lower, "svelte-check") &&
+		!strings.Contains(lower, "test:coverage") {
+		return false
+	}
+	return strings.Contains(lower, "npm") ||
+		strings.Contains(lower, "pnpm") ||
+		strings.Contains(lower, "yarn") ||
+		strings.Contains(lower, "vitest") ||
+		strings.Contains(lower, "svelte-check")
+}
+
+func changedFrontendFiles(files []string) map[string]bool {
+	out := map[string]bool{}
+	for _, file := range files {
+		file = filepath.ToSlash(strings.TrimSpace(file))
+		if strings.HasPrefix(file, "frontend/") {
+			out[file] = true
+		}
+	}
+	return out
+}
+
+func frontendPathsMentioned(output string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range verifyFrontendPathMentionRe.FindAllStringSubmatch(output, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		file := filepath.ToSlash(filepath.Clean(strings.TrimSpace(match[1])))
+		if file == "." || strings.HasPrefix(file, "../") || seen[file] {
+			continue
+		}
+		seen[file] = true
+		out = append(out, file)
+	}
+	return out
+}
+
+func highestSignalVerifyFailureExcerpt(failedCmd, output string) string {
+	if looksLikeFrontendVerifyCommand(failedCmd) {
+		if excerpt := frontendFailureExcerpt(output); excerpt != "" {
+			return excerpt
+		}
+	}
+	return ""
+}
+
+func frontendFailureExcerpt(output string) string {
+	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(output), "\r\n", "\n"), "\n")
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || line == "$" || strings.HasPrefix(line, "$ ") {
+			continue
+		}
+		if !matchesAnyVerifyFrontendSignal(line) {
+			continue
+		}
+		var excerpt []string
+		for j := i; j < len(lines) && len(excerpt) < 4; j++ {
+			next := strings.TrimSpace(lines[j])
+			if next == "" {
+				if len(excerpt) > 0 {
+					break
+				}
+				continue
+			}
+			if strings.HasPrefix(next, "$ ") {
+				break
+			}
+			excerpt = append(excerpt, next)
+		}
+		return strings.Join(excerpt, "\n")
+	}
+	return ""
+}
+
+func matchesAnyVerifyFrontendSignal(line string) bool {
+	for _, re := range verifyFrontendDeterministicSignalRes {
+		if re.MatchString(line) {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyUnrelatedVerifyGoFailure(
@@ -686,11 +835,18 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 
 func buildVerifyReaskNote(failedCmd, output string) string {
 	var b strings.Builder
+	excerpt := highestSignalVerifyFailureExcerpt(failedCmd, output)
 	b.WriteString("A prior implementation FAILED the project verify suite. Fix the ROOT CAUSE ")
 	b.WriteString("so the failing command passes on a clean run — do NOT weaken, skip, or edit ")
 	b.WriteString("the check to make it pass.\n\n## Failing verify command\n\n`")
 	b.WriteString(failedCmd)
-	b.WriteString("`\n\n## Output (tail)\n\n```\n")
+	b.WriteString("`")
+	if excerpt != "" {
+		b.WriteString("\n\n## Highest-signal failure excerpt\n\n```\n")
+		b.WriteString(excerpt)
+		b.WriteString("\n```")
+	}
+	b.WriteString("\n\n## Output (tail)\n\n```\n")
 	b.WriteString(tailString(strings.TrimSpace(output), 3000))
 	b.WriteString("\n```")
 	return b.String()
