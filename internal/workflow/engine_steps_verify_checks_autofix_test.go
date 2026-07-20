@@ -61,6 +61,12 @@ func frontendVerifyOutput() string {
 		"frontend/src/pages/Settings.svelte:150:8\n"
 }
 
+func frontendVerifyOutputForPath(path string) string {
+	return " RUN  v3.2.4 /tmp/verify/frontend\n\n" +
+		"stderr | " + path + " > Settings > loads path explanations\n" +
+		"Error: [vitest] No \"GetPathExplanations\" export is defined on the \"$lib/api\" mock. Did you forget to return it from \"vi.mock\"?\n"
+}
+
 func writeFrontendVerifyMise(t *testing.T) string {
 	t.Helper()
 	binDir := t.TempDir()
@@ -198,6 +204,37 @@ func TestExecVerifyChecks_DeterministicFrontendFailureCapEscalates(t *testing.T)
 	}
 	if !strings.Contains(ti.StatusReason, "deterministic frontend check") {
 		t.Fatalf("reason = %q, want deterministic frontend classification", ti.StatusReason)
+	}
+}
+
+func TestClassifyDeterministicFrontendVerifyFailureMatchesFrontendCwdPath(t *testing.T) {
+	t.Parallel()
+	wt := makeFrontendVerifyRepo(t)
+
+	excerpt, changedFiles, ok := classifyDeterministicFrontendVerifyFailure(
+		t.Context(), "t1", wt, frontendVerifyCommand(),
+		frontendVerifyOutputForPath("src/pages/Settings.svelte:150:8"),
+		"",
+	)
+	if !ok {
+		t.Fatalf("ok = false, want true; changedFiles=%v excerpt=%q", changedFiles, excerpt)
+	}
+	if !strings.Contains(excerpt, "GetPathExplanations") {
+		t.Fatalf("excerpt = %q, want frontend failure detail", excerpt)
+	}
+}
+
+func TestClassifyDeterministicFrontendVerifyFailureIgnoresUnchangedFrontendCwdPath(t *testing.T) {
+	t.Parallel()
+	wt := makeFrontendVerifyRepo(t)
+
+	_, changedFiles, ok := classifyDeterministicFrontendVerifyFailure(
+		t.Context(), "t1", wt, frontendVerifyCommand(),
+		frontendVerifyOutputForPath("src/routes/Login.test.ts:42:1"),
+		"",
+	)
+	if ok {
+		t.Fatalf("ok = true for unchanged frontend-cwd citation; changedFiles=%v", changedFiles)
 	}
 }
 

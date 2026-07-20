@@ -100,7 +100,7 @@ var verifyGoInfraFailureRes = []*regexp.Regexp{
 
 var verifyGolangCILintFindingRe = regexp.MustCompile(`^([^\s:][^:\n]*\.go):\d+:\d+:\s.+$`)
 
-var verifyFrontendPathMentionRe = regexp.MustCompile(`(?:^|[\s("'` + "`" + `])((?:frontend/)[A-Za-z0-9._/\-]+\.(?:[cm]?[jt]sx?|svelte))(?:[:(]\d+(?::\d+)?)?`)
+var verifyFrontendPathMentionRe = regexp.MustCompile(`(?:^|[\s("'` + "`" + `])((?:frontend/|(?:\./)?src/)[A-Za-z0-9._/\-]+\.(?:[cm]?[jt]sx?|svelte))(?:[:(]\d+(?::\d+)?)?`)
 
 var verifyFrontendDeterministicSignalRes = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\[vitest\].*no ".*" export is defined`),
@@ -591,14 +591,29 @@ func frontendPathsMentioned(output string) []string {
 		if len(match) < 2 {
 			continue
 		}
-		file := filepath.ToSlash(filepath.Clean(strings.TrimSpace(match[1])))
-		if file == "." || strings.HasPrefix(file, "../") || seen[file] {
+		file, ok := normalizeFrontendMentionedPath(match[1])
+		if !ok || seen[file] {
 			continue
 		}
 		seen[file] = true
 		out = append(out, file)
 	}
 	return out
+}
+
+func normalizeFrontendMentionedPath(file string) (string, bool) {
+	file = filepath.ToSlash(filepath.Clean(strings.TrimSpace(file)))
+	if file == "." || strings.HasPrefix(file, "../") || filepath.IsAbs(file) {
+		return "", false
+	}
+	file = strings.TrimPrefix(file, "./")
+	if strings.HasPrefix(file, "src/") {
+		file = "frontend/" + file
+	}
+	if !strings.HasPrefix(file, "frontend/") {
+		return "", false
+	}
+	return file, true
 }
 
 func highestSignalVerifyFailureExcerpt(failedCmd, output string) string {
