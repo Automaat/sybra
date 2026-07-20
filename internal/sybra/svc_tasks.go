@@ -1136,8 +1136,11 @@ func (s *TaskService) DeleteTask(id string) error {
 }
 
 // enrichFromPR fetches a GitHub PR and updates the task.
-// If the PR was authored by the current viewer, moves to in-review for PR monitoring.
-// Otherwise, starts a headless review agent with /staff-code-review.
+// If the PR was authored by the current viewer, moves to in-review for PR
+// monitoring. Otherwise, it tags the task as an inbound review and hands it to
+// the pr-review workflow. Keeping PR review dispatch behind the workflow engine
+// gives it the same assignment, rate, and prompt-contract gates as review
+// request polling.
 func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	pr, err := s.fetchPRFunc()(repo, number)
 	if err != nil {
@@ -1182,7 +1185,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 		return
 	}
 
-	// Not my PR: add review tag and start review agent.
+	// Not my PR: add review tag and let the pr-review workflow own dispatch.
 	labels = append(labels, "review")
 	u.Tags = &labels
 	if _, err := s.tasks.Update(taskID, u); err != nil {
@@ -1194,10 +1197,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 		s.logger.Error("enrich-pr.get", "task_id", taskID, "err", err)
 		return
 	}
-	if err := s.startPRReviewAgent(t); err != nil {
-		s.logger.Error("enrich-pr.review-agent", "task_id", taskID, "err", err)
-		return
-	}
+	s.startCreatedWorkflow(t)
 	s.enrichRetryCooldown.Delete(taskID)
 }
 
@@ -1250,7 +1250,6 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 	s.logger.Info("enrich-pr.review-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
 	return nil
 }
-
 // enrichFromIssue fetches a GitHub issue and updates the task with real title/body.
 func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 	issue, err := s.fetchIssueFunc()(repo, number)
