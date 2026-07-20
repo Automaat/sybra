@@ -1015,10 +1015,6 @@ func (s *TaskService) dispatchFromHumanRequiredAllowingAgent(id, target, reason,
 	return result, nil
 }
 
-func (s *TaskService) dispatchFromHumanRequiredLocked(id, target, reason string) (task.Task, error) {
-	return s.dispatchFromHumanRequiredLockedAllowingAgent(id, target, reason, "")
-}
-
 func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, reason, exceptAgentID string) (task.Task, error) {
 	cur, err := s.tasks.Get(id)
 	if err != nil {
@@ -1031,11 +1027,9 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 	if spec.requiresPR && cur.PRNumber == 0 {
 		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch to %q: task has no linked PR", target))
 	}
-	hasRunning := false
+	hasRunning := s.agents.HasRunningAgentForTask(id)
 	if exceptAgentID != "" {
 		hasRunning = s.agents.HasOtherRunningAgentForTask(id, exceptAgentID)
-	} else {
-		hasRunning = s.agents.HasRunningAgentForTask(id)
 	}
 	if hasRunning {
 		return task.Task{}, conflictError("cannot dispatch: an agent is already running for this task")
