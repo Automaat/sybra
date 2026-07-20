@@ -224,23 +224,27 @@
   type RailGroup = { label: string; items: RailItem[] }
 
   const allGroups = $derived<RailGroup[]>([
-    { label: 'General', items: [
+    { label: 'Instance', items: [
       { id: 'appearance', label: 'Appearance', keywords: 'theme color dark light focus mode browser', keys: [] },
-      { id: 'notifications', label: 'Notifications', keywords: 'desktop macos notify', keys: ['notification'] },
+      { id: 'system', label: 'Machine & Testing', keywords: 'project types machine routing testing experience metrics prometheus', keys: ['testing', 'experience', 'metrics', 'projectTypes'] },
     ] },
-    { label: 'Agents', items: [
+    { label: 'Execution', items: [
       { id: 'agent', label: 'Defaults', keywords: 'provider model mode concurrent permissions fallback turns cost claude codex copilot opencode openrouter glm log retention gzip compression size', keys: ['agent'] },
       ...(providerHealthEnabled ? [{ id: 'provider-health' as TabId, label: 'Providers', keywords: 'health limits failover subscription', keys: ['providers'] as (keyof AppSettings)[] }] : []),
     ] },
-    { label: 'Automation', items: [
+    { label: 'Workflow', items: [
       { id: 'orchestrator', label: 'Orchestrator', keywords: 'auto triage plan dispatch maintenance interval', keys: ['orchestrator'] },
       { id: 'automation', label: 'Triage & Umbrella', keywords: 'triage classify umbrella grounding expand', keys: ['triage', 'umbrella'] },
-      { id: 'github', label: 'GitHub', keywords: 'github issues pr poller role app token merge renovate', keys: ['github'] },
-      { id: 'monitor', label: 'Monitor', keywords: 'monitor anomaly self-monitor bottleneck failure lost agent', keys: ['monitor', 'selfMonitor'] },
+    ] },
+    { label: 'Integrations', items: [
+      { id: 'notifications', label: 'Notifications', keywords: 'desktop macos notify', keys: ['notification'] },
+      { id: 'github', label: 'GitHub', keywords: 'github issues pr poller role app token merge renovate review hold', keys: ['github'] },
       { id: 'renovate', label: 'Renovate', keywords: 'renovate dependency bot author', keys: ['renovate'] },
     ] },
-    { label: 'System', items: [
-      { id: 'system', label: 'Machine & Testing', keywords: 'project types machine routing testing experience metrics prometheus', keys: ['testing', 'experience', 'metrics', 'projectTypes'] },
+    { label: 'Supervision', items: [
+      { id: 'monitor', label: 'Monitor', keywords: 'monitor anomaly self-monitor bottleneck failure lost agent human review', keys: ['monitor', 'selfMonitor'] },
+    ] },
+    { label: 'Observability', items: [
       { id: 'logging', label: 'Logging & Audit', keywords: 'log level size files audit retention', keys: ['logging', 'audit'] },
     ] },
     { label: 'Advanced', items: [

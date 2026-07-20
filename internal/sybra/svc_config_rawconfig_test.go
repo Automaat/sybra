@@ -236,6 +236,55 @@ func TestUpdateSettings_UpdatesDurationAliasInPlace(t *testing.T) {
 	}
 }
 
+func TestUpdateSettings_KeepsNamespacedV2Layout(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"schema_version: 2",
+		"execution:",
+		"  agent:",
+		"    provider: claude",
+		"    bash_timeout: 2m",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	settings := svc.GetSettings()
+	settings.Agent.MaxConcurrent = 7
+	settings.Agent.BashTimeoutSeconds = 300
+
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(saved)
+	if regexp.MustCompile(`(?m)^agent:`).MatchString(text) {
+		t.Fatalf("settings patch fell back to flat top-level agent block:\n%s", text)
+	}
+	for _, want := range []string{
+		"execution:",
+		"  agent:",
+		"    provider: claude",
+		"    bash_timeout: 300s",
+		"    max_concurrent: 7",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("saved namespaced config missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestUpdateSettings_ResetToDefaultRemovesDurationAlias(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	raw := strings.Join([]string{

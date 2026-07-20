@@ -64,6 +64,24 @@ func patchSettingsRawConfig(raw []byte, before, after *config.Config) ([]byte, e
 // would produce a mixed file that fails the next reload's alias/legacy
 // conflict check.
 func setConfigLeafPath(raw []byte, path string, value any) ([]byte, error) {
+	if aliasPath, ok := config.DurationAliasPathForLegacy(path); ok {
+		if canonicalAliasPath, ok := config.CanonicalFilePathForLegacy(aliasPath); ok && rawHasYAMLParent(raw, canonicalAliasPath) {
+			if aliasValue, formatted := config.FormatDurationAliasValue(path, value); formatted {
+				out, err := upsertYAMLPath(raw, splitYAMLPath(canonicalAliasPath), aliasValue)
+				if err != nil {
+					return nil, err
+				}
+				out, err = deleteYAMLPath(out, splitYAMLPath(path))
+				if err != nil {
+					return nil, err
+				}
+				if canonicalPath, ok := config.CanonicalFilePathForLegacy(path); ok {
+					return deleteYAMLPath(out, splitYAMLPath(canonicalPath))
+				}
+				return out, nil
+			}
+		}
+	}
 	if aliasPath, ok := config.DurationAliasPathForLegacy(path); ok && rawHasYAMLPath(raw, aliasPath) {
 		if aliasValue, formatted := config.FormatDurationAliasValue(path, value); formatted {
 			out, err := upsertYAMLPath(raw, splitYAMLPath(aliasPath), aliasValue)
@@ -73,6 +91,13 @@ func setConfigLeafPath(raw []byte, path string, value any) ([]byte, error) {
 			// Drop any stale legacy key so the reload never sees an alias+legacy conflict.
 			return deleteYAMLPath(out, splitYAMLPath(path))
 		}
+	}
+	if canonicalPath, ok := config.CanonicalFilePathForLegacy(path); ok && rawHasYAMLParent(raw, canonicalPath) {
+		out, err := upsertYAMLPath(raw, splitYAMLPath(canonicalPath), value)
+		if err != nil {
+			return nil, err
+		}
+		return deleteYAMLPath(out, splitYAMLPath(path))
 	}
 	return upsertYAMLPath(raw, splitYAMLPath(path), value)
 }
@@ -85,11 +110,24 @@ func deleteConfigLeafPath(raw []byte, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if canonicalPath, ok := config.CanonicalFilePathForLegacy(path); ok {
+		out, err = deleteYAMLPath(out, splitYAMLPath(canonicalPath))
+		if err != nil {
+			return nil, err
+		}
+	}
 	aliasPath, ok := config.DurationAliasPathForLegacy(path)
 	if !ok {
 		return out, nil
 	}
-	return deleteYAMLPath(out, splitYAMLPath(aliasPath))
+	out, err = deleteYAMLPath(out, splitYAMLPath(aliasPath))
+	if err != nil {
+		return nil, err
+	}
+	if canonicalAliasPath, ok := config.CanonicalFilePathForLegacy(aliasPath); ok {
+		return deleteYAMLPath(out, splitYAMLPath(canonicalAliasPath))
+	}
+	return out, nil
 }
 
 func rawHasYAMLPath(raw []byte, path string) bool {
@@ -98,6 +136,19 @@ func rawHasYAMLPath(raw []byte, path string) bool {
 		return false
 	}
 	_, ok := findYAMLEntry(root, splitYAMLPath(path))
+	return ok
+}
+
+func rawHasYAMLParent(raw []byte, path string) bool {
+	parts := splitYAMLPath(path)
+	if len(parts) <= 1 {
+		return true
+	}
+	root, err := parseYAMLRoot(raw)
+	if err != nil {
+		return false
+	}
+	_, ok := findYAMLEntry(root, parts[:len(parts)-1])
 	return ok
 }
 

@@ -2269,6 +2269,10 @@ func usageProjectAndOps() {
                                agent.headless_permission_mode,
                                agent.sandbox_mode, and enabled integrations
                                missing required credentials.%s
+  config migrate --to 2 [--dry-run]
+                               Rewrite config.yaml into the canonical schema v2
+                               namespace layout. Dry-run prints semantic moves
+                               only; apply creates a timestamped backup first.
 
 Global flags:
   --json   Output as JSON
@@ -2657,13 +2661,15 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 
 func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: config <dump|doctor>")
+		return fatal(jsonOut, "usage: config <dump|doctor|migrate>")
 	}
 	switch sub := args[0]; sub {
 	case "dump":
 		return cmdConfigDump(cfg, jsonOut)
 	case "doctor":
 		return cmdConfigDoctor(cfg, jsonOut)
+	case "migrate":
+		return cmdConfigMigrate(args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown config command: %s", sub)
 	}
@@ -2693,6 +2699,93 @@ type configDoctorFinding struct {
 
 type configDoctorReport struct {
 	Findings []configDoctorFinding `json:"findings"`
+}
+
+type configMigrateReport struct {
+	ToVersion  int                    `json:"toVersion"`
+	DryRun     bool                   `json:"dryRun"`
+	Changed    bool                   `json:"changed"`
+	BackupPath string                 `json:"backupPath,omitempty"`
+	Moves      []config.MigrationMove `json:"moves,omitempty"`
+	Warnings   []string               `json:"warnings,omitempty"`
+}
+
+func cmdConfigMigrate(args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("config migrate", flag.ContinueOnError)
+	to := fs.Int("to", 0, "target schema version")
+	dryRun := fs.Bool("dry-run", false, "show the migration plan without writing config.yaml")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "usage: config migrate --to %d [--dry-run]", config.CurrentSchemaVersion)
+	}
+	if *to != config.CurrentSchemaVersion {
+		return fatal(jsonOut, "config migrate: only --to %d is supported", config.CurrentSchemaVersion)
+	}
+	if extra := fs.Args(); len(extra) > 0 {
+		return fatal(jsonOut, "config migrate: unexpected args: %s", strings.Join(extra, " "))
+	}
+
+	path := config.ConfigPath()
+	raw, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+		raw = []byte{}
+	case err != nil:
+		return fatal(jsonOut, "config migrate: read %s: %v", path, err)
+	}
+
+	result, err := config.MigrateRawConfig(raw, *to)
+	if err != nil {
+		return fatal(jsonOut, "config migrate: %v", err)
+	}
+
+	report := configMigrateReport{
+		ToVersion: result.ToVersion,
+		DryRun:    *dryRun,
+		Changed:   result.Changed,
+		Moves:     result.Moves,
+		Warnings:  result.Warnings,
+	}
+	if !*dryRun && result.Changed {
+		backupPath := filepath.Join(filepath.Dir(path), config.TimestampedMigrationBackupName(time.Now()))
+		if err := os.WriteFile(backupPath, raw, 0o600); err != nil {
+			return fatal(jsonOut, "config migrate: write backup %s: %v", backupPath, err)
+		}
+		if err := config.WriteRawConfig(result.MigratedRaw); err != nil {
+			return fatal(jsonOut, "config migrate: write migrated config: %v", err)
+		}
+		report.BackupPath = backupPath
+	}
+
+	if jsonOut {
+		return printJSON(report)
+	}
+	if !report.Changed {
+		fmt.Printf("config already at schema_version %d; no changes\n", report.ToVersion)
+		if len(report.Warnings) > 0 {
+			for _, warning := range report.Warnings {
+				fmt.Printf("warning: %s\n", warning)
+			}
+		}
+		return 0
+	}
+	if report.DryRun {
+		fmt.Printf("would migrate %s to schema_version %d\n", path, report.ToVersion)
+	} else {
+		fmt.Printf("migrated %s to schema_version %d\n", path, report.ToVersion)
+		fmt.Printf("backup: %s\n", report.BackupPath)
+	}
+	for _, move := range report.Moves {
+		if move.ValueFrom != "" || move.ValueTo != "" {
+			fmt.Printf("%s -> %s (%s -> %s)\n", move.From, move.To, move.ValueFrom, move.ValueTo)
+			continue
+		}
+		fmt.Printf("%s -> %s\n", move.From, move.To)
+	}
+	for _, warning := range report.Warnings {
+		fmt.Printf("warning: %s\n", warning)
+	}
+	return 0
 }
 
 func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {

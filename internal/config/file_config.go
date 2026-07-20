@@ -21,7 +21,10 @@ type FileConfig struct {
 	schemaVersion    int
 	hasSchemaVersion bool
 	root             *yaml.Node
+	normalizedRoot   *yaml.Node
 	data             []byte
+	normalizedData   []byte
+	warnings         []string
 }
 
 func (f *FileConfig) SchemaVersion() int {
@@ -40,11 +43,24 @@ func (f *FileConfig) Has(path ...string) bool {
 	return ok
 }
 
+func (f *FileConfig) Warnings() []string {
+	if f == nil {
+		return nil
+	}
+	return append([]string(nil), f.warnings...)
+}
+
 func (f *FileConfig) nodeAt(path ...string) (*yaml.Node, bool) {
-	if f == nil || f.root == nil {
+	if f == nil {
 		return nil, false
 	}
 	node := f.root
+	if f.normalizedRoot != nil {
+		node = f.normalizedRoot
+	}
+	if node == nil {
+		return nil, false
+	}
 	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
 		node = node.Content[0]
 	}
@@ -83,7 +99,21 @@ func ParseFileConfig(data []byte) (*FileConfig, error) {
 	}
 	cfg.schemaVersion = schemaVersion
 	cfg.hasSchemaVersion = hasVersion
-	if err := validateKnownConfigKeys(&root, cfg.schemaVersion); err != nil {
+	validateRoot := &root
+	if cfg.schemaVersion >= CurrentSchemaVersion {
+		normalized, warnings, err := NormalizeV2Document(&root)
+		if err != nil {
+			return nil, err
+		}
+		cfg.normalizedRoot = normalized
+		cfg.warnings = warnings
+		cfg.normalizedData, err = marshalYAMLDocument(normalized)
+		if err != nil {
+			return nil, err
+		}
+		validateRoot = normalized
+	}
+	if err := validateKnownConfigKeys(validateRoot, cfg.schemaVersion); err != nil {
 		return nil, err
 	}
 	return cfg, nil

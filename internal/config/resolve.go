@@ -58,7 +58,11 @@ func Resolve(file *FileConfig, env Environment, opts ResolveOptions) (*ResolveRe
 
 	if file != nil && len(file.data) > 0 {
 		cfg.ABTesting.BuiltinVersion = nil
-		if err := yaml.Unmarshal(file.data, cfg); err != nil {
+		raw := file.data
+		if len(file.normalizedData) > 0 {
+			raw = file.normalizedData
+		}
+		if err := yaml.Unmarshal(raw, cfg); err != nil {
 			return nil, err
 		}
 		if err := applyDurationAliases(file, cfg); err != nil {
