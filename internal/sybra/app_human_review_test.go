@@ -727,6 +727,68 @@ func TestOnComplete_UnblockedVerdict_TamperRerouteAddsBlessTag(t *testing.T) {
 	}
 }
 
+func TestOnComplete_UnblockedVerdict_TamperReadyReviewAddsBlessTag(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-tamper-ready-review"
+	tk, err := tasks.Create("Recover tamper review task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		cur, gErr := tasks.Get(id)
+		if gErr != nil {
+			return task.Task{}, gErr
+		}
+		if !slices.Contains(cur.Tags, workflow.TamperBlessedTag) {
+			t.Fatalf("expected %q tag before dispatch, tags=%v", workflow.TamperBlessedTag, cur.Tags)
+		}
+		if target != string(task.StatusReadyReview) {
+			t.Fatalf("dispatch target = %q, want %q", target, task.StatusReadyReview)
+		}
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"resume review after accepting the tamper finding","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if !slices.Contains(got.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("tags = %v, want %q", got.Tags, workflow.TamperBlessedTag)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+}
+
 // TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions is the happy
 // path for verifyUnblocked against a real worktree: a clean, fully pushed
 // branch is exactly the state a genuinely self-unblocked task should be in,

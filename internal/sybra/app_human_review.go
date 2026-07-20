@@ -445,12 +445,19 @@ func (h *humanReviewHandler) prepareRecoveryDispatch(current task.Task, status t
 	if target == task.StatusReadyReview && current.PRNumber != 0 {
 		target = task.StatusInReview
 	}
-	if target == task.StatusInProgress && workflow.IsTamperFlaggedReason(current.StatusReason) {
+	if recoveryNeedsTamperBless(current, target) {
 		if err := h.ensureTaskTag(current.ID, workflow.TamperBlessedTag); err != nil {
 			return "", err
 		}
 	}
 	return target, nil
+}
+
+func recoveryNeedsTamperBless(current task.Task, target task.Status) bool {
+	if !workflow.IsTamperFlaggedReason(current.StatusReason) {
+		return false
+	}
+	return target == task.StatusInProgress || target == task.StatusReadyReview
 }
 
 func (h *humanReviewHandler) ensureTaskTag(taskID, tag string) error {
