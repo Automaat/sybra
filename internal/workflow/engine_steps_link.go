@@ -45,7 +45,7 @@ const (
 // the workflow to fall through to the LLM eval step.
 func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	setInReview := func(prNumber int, source string) (StepOutput, error) {
-		if err := e.tasks.UpdateTaskPR(taskID, prNumber); err != nil {
+		if err := e.linkTaskPR(taskID, t, prNumber); err != nil {
 			return StepOutput{}, fmt.Errorf("link pr: %w", err)
 		}
 		if err := e.tasks.UpdateTaskStatus(taskID, "in-review", ""); err != nil {
@@ -130,7 +130,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 			jsonErr := json.Unmarshal(out, &prs)
 			if jsonErr == nil && len(prs) == 1 {
 				prNum := prs[0].Number
-				if linkErr := e.tasks.UpdateTaskPR(taskID, prNum); linkErr != nil {
+				if linkErr := e.linkTaskPR(taskID, t, prNum); linkErr != nil {
 					return StepOutput{}, fmt.Errorf("evaluate: link pr: %w", linkErr)
 				}
 				if linkErr := e.tasks.UpdateTaskStatus(taskID, "in-review", ""); linkErr != nil {

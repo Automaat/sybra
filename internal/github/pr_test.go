@@ -646,6 +646,38 @@ func TestEnableAutoMerge(t *testing.T) {
 	})
 }
 
+func TestClosePRWith(t *testing.T) {
+	t.Parallel()
+	t.Run("success passes args with comment", func(t *testing.T) {
+		t.Parallel()
+		fe := &recordingExecer{}
+		if err := closePRWith(t.Context(), fe, "owner/repo", 42, "Superseded by #43."); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"pr", "close", "42", "--repo", "owner/repo", "--comment", "Superseded by #43."}
+		if len(fe.lastArgs) != len(want) {
+			t.Fatalf("args = %v, want %v", fe.lastArgs, want)
+		}
+		for i, a := range fe.lastArgs {
+			if a != want[i] {
+				t.Errorf("arg[%d] = %q, want %q", i, a, want[i])
+			}
+		}
+	})
+
+	t.Run("gh error passthrough", func(t *testing.T) {
+		t.Parallel()
+		fe := &fakeExecer{output: []byte("not authorized"), err: fmt.Errorf("exit 1")}
+		err := closePRWith(t.Context(), fe, "owner/repo", 42, "Superseded")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "gh pr close 42") {
+			t.Errorf("error = %v, want it to mention 'gh pr close 42'", err)
+		}
+	})
+}
+
 func TestSupportsNativeAutoMerge(t *testing.T) {
 	t.Parallel()
 	repoAllowed := `{"allow_auto_merge":true}`

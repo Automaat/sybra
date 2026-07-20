@@ -39,6 +39,7 @@ var (
 	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
 	_ workflow.PRHeadFetcher          = (*prHeadFetcherAdapter)(nil)
 	_ workflow.PRCreator              = (*prCreatorAdapter)(nil)
+	_ workflow.PRCloser               = (*prCloserAdapter)(nil)
 	_ workflow.PRFinder               = (*prFinderAdapter)(nil)
 	_ workflow.PRContentGenerator     = (*prContentGeneratorAdapter)(nil)
 	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
@@ -384,6 +385,14 @@ func (prCreatorAdapter) CreatePR(ctx context.Context, dir string, req workflow.P
 		Title: req.Title,
 		Body:  req.Body,
 	})
+}
+
+// prCloserAdapter wires the workflow engine's best-effort superseded-PR
+// cleanup to the github package.
+type prCloserAdapter struct{}
+
+func (prCloserAdapter) ClosePR(ctx context.Context, repo string, number int, comment string) error {
+	return github.ClosePR(ctx, repo, number, comment)
 }
 
 // prFinderAdapter wires the workflow engine's PRFinder interface to the github

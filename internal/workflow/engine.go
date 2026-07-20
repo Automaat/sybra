@@ -233,6 +233,13 @@ type PRCreator interface {
 	CreatePR(ctx context.Context, dir string, req PRCreateRequest) (number int, headSHA string, err error)
 }
 
+// PRCloser closes an open pull request that has been superseded by a newer PR
+// for the same task. Engine treats this as best-effort cleanup: a close failure
+// must not roll back linking the replacement PR.
+type PRCloser interface {
+	ClosePR(ctx context.Context, repo string, number int, comment string) error
+}
+
 // PRFinder looks up an open PR by its head branch, backing the create_pr
 // idempotency guard (a prior run may have created the PR but crashed before
 // persisting pr_number). Engine operates with a nil finder — the guard is
@@ -315,6 +322,7 @@ type Engine struct {
 	prHeads          PRHeadFetcher
 	pushPreflight    PushCredentialPreflighter
 	prCreator        PRCreator
+	prCloser         PRCloser
 	prFinder         PRFinder
 	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
@@ -511,6 +519,10 @@ func (e *Engine) SetPushCredentialPreflighter(p PushCredentialPreflighter) {
 // `create_pr` step. Leaving it unset flips the task to human-required when
 // create_pr is reached, since a PR cannot be opened without it.
 func (e *Engine) SetPRCreator(c PRCreator) { e.prCreator = c }
+
+// SetPRCloser wires best-effort cleanup for superseded PRs after a task is
+// relinked to a replacement PR.
+func (e *Engine) SetPRCloser(c PRCloser) { e.prCloser = c }
 
 // SetPRFinder wires the open-PR-by-branch lookup used by create_pr's
 // idempotency guard. Leaving it unset skips the guard.

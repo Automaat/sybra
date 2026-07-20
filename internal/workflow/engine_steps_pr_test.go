@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/project"
@@ -111,6 +112,22 @@ type fakePRFinder struct {
 func (f *fakePRFinder) FindPRForBranch(context.Context, string, string) (number int, found bool, err error) {
 	f.calls++
 	return f.number, f.found, f.err
+}
+
+type fakePRCloser struct {
+	err      error
+	calls    int
+	repo     string
+	number   int
+	comments []string
+}
+
+func (f *fakePRCloser) ClosePR(_ context.Context, repo string, number int, comment string) error {
+	f.calls++
+	f.repo = repo
+	f.number = number
+	f.comments = append(f.comments, comment)
+	return f.err
 }
 
 type fakePRContentGenerator struct {
@@ -530,6 +547,84 @@ func TestExecCreatePR_Success(t *testing.T) {
 	}
 	if creator.gotReq.Title != "feat(x): y" {
 		t.Errorf("CreatePR title = %q", creator.gotReq.Title)
+	}
+}
+
+func TestExecCreatePR_ClosesSupersededLinkedPR(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/my-branch-recovered")
+	commitFile(t, wtPath, "change.txt", "feat: recovered task work")
+
+	tasks := newMemTasks()
+	task := TaskInfo{
+		ID:          "t1",
+		Status:      "ready-pr",
+		Branch:      "feat/my-branch-recovered",
+		ProjectID:   "acme/widgets",
+		ProjectType: "pet",
+		PRNumber:    41,
+		Title:       "feat(x): y",
+		Body:        "body",
+	}
+	tasks.Put(task)
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRCreator(&fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)})
+	closer := &fakePRCloser{}
+	engine.SetPRCloser(closer)
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.PRNumber != 42 {
+		t.Errorf("PRNumber = %d, want 42", ti.PRNumber)
+	}
+	if closer.calls != 1 {
+		t.Fatalf("ClosePR calls = %d, want 1", closer.calls)
+	}
+	if closer.repo != "acme/widgets" || closer.number != 41 {
+		t.Fatalf("ClosePR target = %s#%d, want acme/widgets#41", closer.repo, closer.number)
+	}
+	if len(closer.comments) != 1 || !strings.Contains(closer.comments[0], "#42") || !strings.Contains(closer.comments[0], "t1") {
+		t.Fatalf("ClosePR comment = %q, want superseded-by PR and task", closer.comments)
+	}
+}
+
+func TestExecCreatePR_SupersededCloseFailureDoesNotBlockRelink(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/my-branch-recovered")
+	commitFile(t, wtPath, "change.txt", "feat: recovered task work")
+
+	tasks := newMemTasks()
+	task := TaskInfo{
+		ID:          "t1",
+		Status:      "ready-pr",
+		Branch:      "feat/my-branch-recovered",
+		ProjectID:   "acme/widgets",
+		ProjectType: "pet",
+		PRNumber:    41,
+		Title:       "feat(x): y",
+		Body:        "body",
+	}
+	tasks.Put(task)
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRCreator(&fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)})
+	engine.SetPRCloser(&fakePRCloser{err: errors.New("github unavailable")})
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.PRNumber != 42 {
+		t.Errorf("PRNumber = %d, want 42 even when superseded close fails", ti.PRNumber)
 	}
 }
 
