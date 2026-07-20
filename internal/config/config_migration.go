@@ -25,7 +25,9 @@ var v2NamespaceDocs = []V2NamespaceDoc{
 	{Name: "supervision", OwnershipRule: "Health checks, review escalation, and autonomous oversight loops.", Paths: []string{"supervision.human_review", "supervision.monitor", "supervision.watchdog", "supervision.self_monitor", "supervision.evaluation", "supervision.learning_digest", "supervision.harness_evolution", "supervision.prompt_lab"}},
 	{Name: "storage", OwnershipRule: "Filesystem-backed retention and path layout under SYBRA_HOME.", Paths: []string{"storage.attachments", "storage.trash", "storage.sandboxes", "storage.task_snapshot", "storage.paths"}},
 	{Name: "observability", OwnershipRule: "Logs, audit, metrics, experimentation, and operator evidence retention.", Paths: []string{"observability.logging", "observability.audit", "observability.metrics", "observability.experience", "observability.ab_testing"}},
+	{Name: "routing", OwnershipRule: "Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes.", Paths: []string{"routing"}},
 	{Name: "server", OwnershipRule: "Local API/server exposure and auth for the running Sybra instance.", Paths: []string{"server"}},
+	{Name: "webhook", OwnershipRule: "Inbound external task-creation webhook listener and request-signing controls.", Paths: []string{"webhook"}},
 	{Name: "cluster", OwnershipRule: "Cluster/task-trust policy for multi-node execution backends.", Paths: []string{"cluster"}},
 	{Name: "auto_update", OwnershipRule: "Deployment self-update behavior for long-running Sybra installs.", Paths: []string{"auto_update"}},
 }

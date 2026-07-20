@@ -17,7 +17,9 @@ Regenerate with `go generate ./internal/config/...` after changing a struct tag 
 | `supervision` | Health checks, review escalation, and autonomous oversight loops. | `supervision.human_review`, `supervision.monitor`, `supervision.watchdog`, `supervision.self_monitor`, `supervision.evaluation`, `supervision.learning_digest`, `supervision.harness_evolution`, `supervision.prompt_lab` |
 | `storage` | Filesystem-backed retention and path layout under SYBRA_HOME. | `storage.attachments`, `storage.trash`, `storage.sandboxes`, `storage.task_snapshot`, `storage.paths` |
 | `observability` | Logs, audit, metrics, experimentation, and operator evidence retention. | `observability.logging`, `observability.audit`, `observability.metrics`, `observability.experience`, `observability.ab_testing` |
+| `routing` | Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes. | `routing` |
 | `server` | Local API/server exposure and auth for the running Sybra instance. | `server` |
+| `webhook` | Inbound external task-creation webhook listener and request-signing controls. | `webhook` |
 | `cluster` | Cluster/task-trust policy for multi-node execution backends. | `cluster` |
 | `auto_update` | Deployment self-update behavior for long-running Sybra installs. | `auto_update` |
 
@@ -669,6 +671,58 @@ Prometheus-format output for external scrapers.
 |---|---|---|---|
 | `observability.metrics.enabled` | `bool` |  |  |
 
+## Routing
+
+Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes.
+
+### RoutingConfig (`routing`)
+
+RoutingConfig controls the adaptive provider-routing service, which turns
+the periodic evaluation scorecard into bounded, versioned weight nudges for
+internal/abtest's per-experiment variants. It never writes to config.yaml —
+learned weights live in a side-store overlay (routing.Store) applied
+in-process — so a bad tick is trivially recoverable (delete the overlay,
+restart) and the operator's own ab_testing.yaml stays the source of truth
+for which variants exist at all.
+
+Enabled defaults to false: a fresh install computes and audits weight
+proposals (shadow mode) without ever pushing them live, matching
+PromptLabConfig's opt-in posture for a new autonomous loop.
+
+Coefficients is left zero-valued by most operators; applyRoutingDefaults
+fills any zero field from DefaultCoefficients so a partial override (e.g.
+only CostWeight) leaves every other term at its shipped default.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `routing.enabled` | `bool` |  |  |
+| `routing.interval` | `float64` | `6` |  |
+| `routing.weight_budget` | `int` | `40` | WeightBudget is the total weight distributed across a single experiment's variants each tick (floor allocation included). Higher values let the top-ranked variant pull further ahead of the floor. |
+| `routing.floor_weight` | `int` | `1` | FloorWeight is the minimum weight every configured variant keeps regardless of score, guaranteeing exploration traffic to low-sample and parity-unknown cohorts (acceptance criterion: "low-sample cohorts retain exploration traffic"). |
+| `routing.max_step` | `int` | `5` | MaxStep bounds how far a single tick may move one variant's weight, up or down, so a noisy score swing cannot re-route most traffic in one generation. |
+| `routing.min_samples_to_shift` | `int` | `20` | MinSamplesToShift is the resolved-run threshold below which a variant is treated as insufficiently sampled and held at FloorWeight instead of being ranked — distinct from ab_testing.min_samples_per_variant, which gates the evaluation scorecard's InsufficientData display flag. |
+| `routing.coefficients` | `RoutingCoefficients` | _(see below)_ |  |
+
+### RoutingCoefficients (`routing.coefficients`)
+
+RoutingCoefficients weights each score input's contribution to a variant's
+composite outcome score. Positive fields reward the metric (landed, merge,
+CI-first-pass rate); the rework/failure/cost/duration fields are already
+applied as penalties by routing.ScoreVariants, so a larger value here means
+a stronger penalty, never a sign flip.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `routing.coefficients.landed_weight` | `float64` | `1` |  |
+| `routing.coefficients.merge_weight` | `float64` | `0.5` |  |
+| `routing.coefficients.ci_first_pass_weight` | `float64` | `0.25` |  |
+| `routing.coefficients.rework_weight` | `float64` | `0.75` |  |
+| `routing.coefficients.failure_weight` | `float64` | `1` |  |
+| `routing.coefficients.cost_weight` | `float64` | `0.2` | CostWeight and DurationWeight scale a normalized (0..1-clamped) cost/ duration penalty — see CostNormalizer/DurationNormalizer — so cost only ever lowers a variant's rank, never zeroes its weight (FloorWeight is the hard floor no penalty can cross). |
+| `routing.coefficients.duration_weight` | `float64` | `0.1` |  |
+| `routing.coefficients.cost_normalizer` | `float64` | `5` |  |
+| `routing.coefficients.duration_normalizer` | `float64` | `3600` |  |
+
 ## Server
 
 Local API/server exposure and auth for the running Sybra instance.
@@ -687,6 +741,23 @@ if left empty, never to config.yaml — see applyServerDefaults.
 |---|---|---|---|
 | `server.auth_token` | `string` | `[redacted]` |  |
 | `server.allowed_origins` | `[]string` |  |  |
+
+## Webhook
+
+Inbound external task-creation webhook listener and request-signing controls.
+
+### WebhookConfig (`webhook`)
+
+WebhookConfig controls the optional inbound HTTP webhook used for external
+task creation. When Enabled is true, sybra-server starts a separate listener
+on Port and serves POST /webhook/task. Secret optionally enables HMAC-SHA256
+request signing via X-Sybra-Signature: sha256=<hex>.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `webhook.enabled` | `bool` |  |  |
+| `webhook.port` | `int` | `8081` |  |
+| `webhook.secret` | `string` | `[redacted]` |  |
 
 ## Cluster
 

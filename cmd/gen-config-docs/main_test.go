@@ -35,6 +35,12 @@ func TestWalkRendersRepeatedLocalStructsAtEachYAMLPath(t *testing.T) {
 		"| `execution.providers.claude.enabled` |",
 		"| `execution.providers.codex.enabled` |",
 		"| `execution.providers.copilot.enabled` |",
+		"| `routing` | Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes. | `routing` |",
+		"## Routing",
+		"### RoutingConfig (`routing`)",
+		"| `webhook` | Inbound external task-creation webhook listener and request-signing controls. | `webhook` |",
+		"## Webhook",
+		"### WebhookConfig (`webhook`)",
 	} {
 		if !strings.Contains(doc, want) {
 			t.Fatalf("generated docs missing %q", want)
