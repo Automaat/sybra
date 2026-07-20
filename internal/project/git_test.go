@@ -3583,6 +3583,55 @@ func writeFakeGhFailingNTimes(t *testing.T, dir string, failCount int) {
 	}
 }
 
+func writeFakeGhRejectingInjectedToken(t *testing.T, dir, badToken string) string {
+	t.Helper()
+	logFile := filepath.Join(dir, "gh-token-log")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "${GH_TOKEN:-<empty>}" >> %s
+if [ "${GH_TOKEN:-}" = %q ]; then
+  echo 'The token in GH_TOKEN is invalid.' >&2
+  exit 1
+fi
+exit 0
+`, logFile, badToken)
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return logFile
+}
+
+func writeGitPushWrapperRejectingInjectedToken(t *testing.T, dir, realGit, badToken string) string {
+	t.Helper()
+	logFile := filepath.Join(dir, "git-push-token-log")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "push" ]; then
+  printf '%%s\n' "${GH_TOKEN:-<empty>}" >> %s
+  if [ "${GH_TOKEN:-}" = %q ]; then
+    echo 'remote: Bad credentials' >&2
+    exit 1
+  fi
+fi
+exec %q "$@"
+`, logFile, badToken, realGit)
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return logFile
+}
+
+func readLogLines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
+}
+
 func readGhCallCount(t *testing.T, dir string) int {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, "gh-calls"))
@@ -3638,6 +3687,30 @@ func TestPreflightPushCredentials_RetriesTransientFailureThenSucceeds(t *testing
 	}
 	if *refreshCalls != 1 {
 		t.Fatalf("forceRefreshAppToken called %d times, want 1", *refreshCalls)
+	}
+}
+
+func TestPreflightPushCredentials_FallsBackToAmbientAuthWhenInjectedTokenIsBad(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	setGitHubOriginPushURL(t, wtPath)
+
+	dir := t.TempDir()
+	logFile := writeFakeGhRejectingInjectedToken(t, dir, "bad-token")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	refreshCalls := stubPushPreflightRetry(t)
+
+	origEnv := ghAuthEnv
+	ghAuthEnv = func() []string { return append(os.Environ(), "GH_TOKEN=bad-token") }
+	t.Cleanup(func() { ghAuthEnv = origEnv })
+
+	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
+		t.Fatalf("PreflightPushCredentials = %v, want ambient fallback success", err)
+	}
+	if *refreshCalls != 0 {
+		t.Fatalf("forceRefreshAppToken called %d times, want 0 when ambient fallback succeeds immediately", *refreshCalls)
+	}
+	if got := readLogLines(t, logFile); len(got) != 2 || got[0] != "bad-token" || got[1] == "bad-token" {
+		t.Fatalf("gh auth status GH_TOKEN log = %v, want injected bad token then ambient/non-bad token", got)
 	}
 }
 
@@ -3718,6 +3791,29 @@ func TestPreflightPushCredentials_HookNotCalledOnSuccess(t *testing.T) {
 	}
 	if hook.count != 0 {
 		t.Fatalf("pushAuthFailureHook called %d times, want 0", hook.count)
+	}
+}
+
+func TestPushUpstream_FallsBackToAmbientAuthWhenInjectedTokenIsBad(t *testing.T) {
+	_, wtPath := initWorktree(t)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath(git): %v", err)
+	}
+	dir := t.TempDir()
+	logFile := writeGitPushWrapperRejectingInjectedToken(t, dir, realGit, "bad-token")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	orig := pushEnv
+	pushEnv = func() []string { return append(os.Environ(), "GH_TOKEN=bad-token") }
+	t.Cleanup(func() { pushEnv = orig })
+
+	if err := PushUpstream(context.Background(), wtPath, "synapse/test"); err != nil {
+		t.Fatalf("PushUpstream = %v, want ambient fallback success", err)
+	}
+	if got := readLogLines(t, logFile); len(got) != 2 || got[0] != "bad-token" || got[1] == "bad-token" {
+		t.Fatalf("git push GH_TOKEN log = %v, want injected bad token then ambient/non-bad token", got)
 	}
 }
 
