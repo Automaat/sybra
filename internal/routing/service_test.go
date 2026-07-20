@@ -413,6 +413,99 @@ func TestService_Tick_NoOp_PrunesRemovedExperiment(t *testing.T) {
 	}
 }
 
+func TestService_Tick_IgnoresHistoricalRowsForRemovedCohorts(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Save(Overlay{
+		Version: 1,
+		Experiments: []OverlayExperiment{
+			{ExperimentID: "exp", Variants: []OverlayVariant{
+				{VariantID: "v1", Weight: 1},
+				{VariantID: "v-gone", Weight: 9},
+			}},
+			{ExperimentID: "exp-gone", Variants: []OverlayVariant{{VariantID: "v1", Weight: 9}}},
+		},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	base := func() abtest.Config {
+		return abtest.Config{Experiments: []abtest.Experiment{{
+			ID: "exp",
+			Variants: []abtest.Variant{
+				{ID: "v1", Provider: "claude", Model: "sonnet", Weight: 1},
+			},
+		}}}
+	}
+	report := func() (evaluation.Report, bool) {
+		return evaluation.Report{
+			ByExperimentKind: []evaluation.ExperimentKindBreakdown{
+				{Kind: "model", Groups: []evaluation.ExperimentGroup{{
+					ExperimentID: "exp",
+					Rows: []evaluation.ComparisonBreakdown{
+						{
+							ExperimentID: "exp", VariantID: "v1",
+							Runs: 100, ResolvedRuns: 100,
+							LandedEstimate: evaluation.RateEstimate{WilsonLower: 0.9, HasData: true},
+						},
+						{
+							ExperimentID: "exp", VariantID: "v-gone",
+							Runs: 100, ResolvedRuns: 100,
+							LandedEstimate: evaluation.RateEstimate{WilsonLower: 0.95, HasData: true},
+						},
+					},
+				}}},
+				{Kind: "unknown", Groups: []evaluation.ExperimentGroup{{
+					ExperimentID: "exp-gone",
+					Rows: []evaluation.ComparisonBreakdown{
+						{
+							ExperimentID: "exp-gone", VariantID: "v1",
+							Runs: 100, ResolvedRuns: 100,
+							LandedEstimate: evaluation.RateEstimate{WilsonLower: 0.99, HasData: true},
+						},
+					},
+				}}},
+			},
+		}, true
+	}
+
+	svc := NewService(Deps{
+		Cfg: config.RoutingConfig{
+			Enabled:           true,
+			IntervalHours:     6,
+			WeightBudget:      20,
+			FloorWeight:       1,
+			MaxStep:           100,
+			MinSamplesToShift: 0,
+			Coefficients:      config.DefaultRoutingCoefficients(),
+		},
+		Base:   base,
+		Report: report,
+		Store:  store,
+		Apply:  func(abtest.Config) error { return nil },
+		Logger: slog.New(slog.DiscardHandler),
+		Now:    func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+	})
+
+	runOnceSync(svc)
+
+	o, ok, err := store.Load()
+	if err != nil || !ok {
+		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+	}
+	if _, has := o.WeightAt("exp-gone", "v1"); has {
+		t.Fatalf("exp-gone/v1 was rebuilt from unknown historical rows, want absent")
+	}
+	if _, has := o.WeightAt("exp", "v-gone"); has {
+		t.Fatalf("exp/v-gone was rebuilt from historical rows, want absent")
+	}
+	if w, has := o.WeightAt("exp", "v1"); !has || w != 20 {
+		t.Fatalf("exp/v1 weight = (%d, %v), want (20, true)", w, has)
+	}
+}
+
 func TestService_VersionBumpsOnlyOnChange(t *testing.T) {
 	var applied []abtest.Config
 	var audited []audit.Event

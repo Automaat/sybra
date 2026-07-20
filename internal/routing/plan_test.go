@@ -27,6 +27,21 @@ func TestPlanWeights_EmptyInputIsNoOp(t *testing.T) {
 	}
 }
 
+func TestPlanWeights_IgnoresScoreOnlyRetiredCohorts(t *testing.T) {
+	current := map[string]map[string]int{"exp": {"live": 1}}
+	scores := []Score{
+		{ExperimentID: "exp-gone", VariantID: "a", Value: 100, ResolvedRuns: 100},
+		{ExperimentID: "exp-gone", VariantID: "b", Value: 1, ResolvedRuns: 100},
+		{ExperimentID: "exp", VariantID: "variant-gone", Value: 100, ResolvedRuns: 100},
+	}
+
+	plan := PlanWeights(scores, current, PlanOptions{WeightBudget: 20, FloorWeight: 1, MaxStep: 100, MinSamplesToShift: 20})
+
+	if plan.Changed || len(plan.Experiments) != 0 {
+		t.Fatalf("PlanWeights() = %+v, want no-op for score-only retired cohorts", plan)
+	}
+}
+
 func TestPlanWeights_FloorKeepsLowSampleExplorationTraffic(t *testing.T) {
 	current := map[string]map[string]int{"exp": {"winner": 1, "new": 1, "insufficient": 1}}
 	scores := []Score{

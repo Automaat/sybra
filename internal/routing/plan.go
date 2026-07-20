@@ -31,13 +31,16 @@ func (o PlanOptions) withDefaults(variantsPerExperiment int) PlanOptions {
 //
 // current is the full universe of configured (experimentID -> variantID ->
 // weight) — including variants ScoreVariants never saw (no runs yet) — so
-// every configured variant gets a plan entry. A variant absent from scores,
-// or present but InsufficientData/SkillParityUnknown, or below
-// MinSamplesToShift resolved runs, is exploration-only: it is never ranked
-// and always lands at FloorWeight. Every other variant is ranked by Score
-// descending and the remaining budget above the floor is distributed by
-// rank, so a lower (or penalized) score can only ever lose relative share,
-// never be pushed below the floor.
+// every configured variant gets a plan entry. Scores for experiments or
+// variants absent from current are historical-only and ignored: a removed
+// cohort must not become routable again just because the evaluation report
+// still keeps its old rows visible. A current variant absent from scores, or
+// present but InsufficientData/SkillParityUnknown, or below MinSamplesToShift
+// resolved runs, is exploration-only: it is never ranked and always lands at
+// FloorWeight. Every other variant is ranked by Score descending and the
+// remaining budget above the floor is distributed by rank, so a lower (or
+// penalized) score can only ever lose relative share, never be pushed below
+// the floor.
 //
 // Each variant's weight moves at most opts.MaxStep per call, in either
 // direction, from its current value — bounding how much traffic one
@@ -53,11 +56,6 @@ func PlanWeights(scores []Score, current map[string]map[string]int, opts PlanOpt
 	expIDs := make([]string, 0, len(current))
 	for expID := range current {
 		expIDs = append(expIDs, expID)
-	}
-	for expID := range byExp {
-		if _, ok := current[expID]; !ok {
-			expIDs = append(expIDs, expID)
-		}
 	}
 	sort.Strings(expIDs)
 
@@ -78,9 +76,6 @@ func planExperiment(curWeights map[string]int, variantScores []Score, opts PlanO
 	variantSet := map[string]bool{}
 	for vid := range curWeights {
 		variantSet[vid] = true
-	}
-	for _, s := range variantScores {
-		variantSet[s.VariantID] = true
 	}
 	if len(variantSet) == 0 {
 		return nil, false
