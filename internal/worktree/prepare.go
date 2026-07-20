@@ -514,6 +514,43 @@ func (m *Manager) reuseFixWorktree(ctx context.Context, taskID, clonePath, wtPat
 	return true, nil
 }
 
+// reconcileFreshFixWorktree ensures a newly created fix/branch-fix worktree is
+// normalized to a single branch head before dispatch. A recreated worktree can
+// still start from a stale local branch ref in the bare clone; if that branch
+// had unpushed local commits and the remote also advanced, simply re-checking
+// it out reproduces the same ahead/behind divergence that forced recovery.
+func (m *Manager) reconcileFreshFixWorktree(ctx context.Context, taskID, clonePath, wtPath, branch string) error {
+	if err := project.ReconcileWithRemote(ctx, wtPath, branch); err != nil {
+		if errors.Is(err, project.ErrBranchDiverged) {
+			merged, mergeErr := project.MergeDivergedRemote(ctx, wtPath, branch)
+			switch {
+			case mergeErr != nil:
+				if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
+					m.logger.Warn("fix.worktree.cleanup-after-diverged-merge-failed", "task_id", taskID, "branch", branch, "err", rerr)
+				}
+				return fmt.Errorf("reconcile fresh %s with remote: %w", branch, mergeErr)
+			case merged:
+				m.logger.Info("fix.worktree.reconcile-fresh-diverged-merged", "task_id", taskID, "branch", branch)
+				return nil
+			default:
+				m.logger.Warn("fix.worktree.reconcile-fresh-diverged-conflict", "task_id", taskID, "branch", branch)
+				if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
+					m.logger.Warn("fix.worktree.cleanup-after-diverged-conflict", "task_id", taskID, "branch", branch, "err", rerr)
+				}
+				return fmt.Errorf("%w: branch %s has a genuine content conflict against its own remote head", project.ErrBranchDiverged, branch)
+			}
+		}
+		if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
+			m.logger.Warn("fix.worktree.cleanup-after-fresh-reconcile-failed", "task_id", taskID, "branch", branch, "err", rerr)
+		}
+		if project.IsTransientNetworkError(err) {
+			return fmt.Errorf("%w: reconcile %s with remote: %w", ErrTransientFetch, branch, err)
+		}
+		return fmt.Errorf("reconcile fresh %s with remote: %w", branch, err)
+	}
+	return nil
+}
+
 // finalizeWorktree runs post-checkout hooks shared by the "reuse existing
 // worktree" and "checkout existing branch" fast-paths in PrepareForTask.
 func (m *Manager) finalizeWorktree(ctx context.Context, t task.Task, wtPath, wtBranch string, proj project.Project) (string, error) {
@@ -715,6 +752,9 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
 		m.logger.Warn("branch-fix.worktree.sanitize", "task_id", t.ID, "err", err)
 	}
+	if err := m.reconcileFreshFixWorktree(ctx, t.ID, proj.ClonePath, wtPath, branch); err != nil {
+		return "", fmt.Errorf("reconcile fresh branch-fix worktree: %w", err)
+	}
 	m.ensureBranch(t, branch)
 	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
 		m.logger.Warn("branch-fix.worktree.signoff-hook", "task_id", t.ID, "err", err)
@@ -851,6 +891,9 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 	}
 	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
 		m.logger.Warn("fix.worktree.sanitize", "task_id", t.ID, "err", err)
+	}
+	if err := m.reconcileFreshFixWorktree(ctx, t.ID, proj.ClonePath, wtPath, branch); err != nil {
+		return "", fmt.Errorf("reconcile fresh fix worktree: %w", err)
 	}
 	m.ensureBranch(t, branch)
 	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
