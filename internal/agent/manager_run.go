@@ -28,6 +28,13 @@ func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt, dir string, allowe
 	return m.Run(RunConfig{TaskID: taskID, Name: taskTitle, Mode: mode, Prompt: prompt, AllowedTools: allowedTools, Dir: dir})
 }
 
+// RunWithCapacityReservation consumes reservation if the run reaches
+// registerRunningAgent; otherwise the caller still owns it and must release it.
+func (m *Manager) RunWithCapacityReservation(cfg RunConfig, reservation *CapacityReservation) (*Agent, error) {
+	cfg.capacityReservation = reservation
+	return m.Run(cfg)
+}
+
 func (a *Agent) setAssignment(cfg RunConfig) {
 	a.ExperimentID = cfg.ExperimentID
 	a.VariantID = cfg.VariantID
@@ -818,7 +825,11 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 
 func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.CancelFunc) error {
 	m.mu.Lock()
-	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.liveCount >= m.maxConcurrent {
+	reserved := false
+	if !cfg.IgnoreConcurrencyLimit && cfg.capacityReservation != nil && cfg.capacityReservation.manager == m {
+		reserved = cfg.capacityReservation.consumeLocked()
+	}
+	if !cfg.IgnoreConcurrencyLimit && !reserved && m.maxConcurrent > 0 && m.liveCount+m.reservedCount >= m.maxConcurrent {
 		m.mu.Unlock()
 		cancel()
 		return fmt.Errorf("%w (%d)", ErrMaxConcurrentReached, m.maxConcurrent)
