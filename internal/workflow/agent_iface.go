@@ -99,6 +99,7 @@ type AgentAssignment struct {
 	ExperimentID    string
 	Kind            string
 	VariantID       string
+	RoutingReason   string
 	Provider        string
 	Model           string
 	AssignmentUnit  string

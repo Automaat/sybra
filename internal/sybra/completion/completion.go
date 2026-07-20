@@ -820,6 +820,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		ReasoningEffort:          ag.ReasoningEffort,
 		ExperimentID:             ag.ExperimentID,
 		VariantID:                ag.VariantID,
+		RoutingReason:            ag.RoutingReason,
 		AssignmentUnit:           ag.AssignmentUnit,
 		AssignmentKey:            ag.AssignmentKey,
 		RoutingDecisionVersion:   ag.DecisionVersion,

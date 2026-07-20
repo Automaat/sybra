@@ -42,6 +42,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Monitor.DispatchLimit != cfg.Agent.MaxConcurrent {
 		t.Errorf("Monitor.DispatchLimit = %d, want Agent.MaxConcurrent %d", cfg.Monitor.DispatchLimit, cfg.Agent.MaxConcurrent)
 	}
+	if cfg.ABTesting.EnabledValue() {
+		t.Fatal("ABTesting.EnabledValue() = true, want false until explicitly opted in")
+	}
 }
 
 func TestDefaultConfigMatchesEmptyFileResolution(t *testing.T) {
@@ -608,6 +611,92 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	}
 	if reloaded.Agent.Provider != "codex" {
 		t.Fatalf("reloaded provider = %q, want codex", reloaded.Agent.Provider)
+	}
+}
+
+func TestLoadFreshInstallDoesNotPersistBuiltinABExperiments(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ABTesting.EnabledValue() {
+		t.Fatal("ABTesting.EnabledValue() = true, want false on a fresh install")
+	}
+	if len(cfg.ABTesting.Experiments) == 0 {
+		t.Fatal("ABTesting.Experiments = 0, want built-ins loaded in memory")
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "ab_testing:") {
+		t.Fatalf("fresh-install config.yaml should not materialize ab_testing defaults:\n%s", text)
+	}
+	for _, id := range abtest.BuiltinExperimentIDs {
+		if strings.Contains(text, id) {
+			t.Fatalf("fresh-install config.yaml persisted built-in experiment %q:\n%s", id, text)
+		}
+	}
+}
+
+func TestLoadABTestingOmittedEnabledStaysDisabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("ab_testing:\n  min_samples_per_variant: 11\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ABTesting.EnabledValue() {
+		t.Fatal("ABTesting.EnabledValue() = true, want false when enabled is omitted")
+	}
+}
+
+func TestLoadABTestingExplicitEnabledTrue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("ab_testing:\n  enabled: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ABTesting.EnabledValue() {
+		t.Fatal("ABTesting.EnabledValue() = false, want true for explicit enabled: true")
+	}
+}
+
+func TestLoadV2ObservabilityABTestingExplicitEnabledTrue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	raw := strings.Join([]string{
+		"schema_version: 2",
+		"observability:",
+		"  ab_testing:",
+		"    enabled: true",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ABTesting.EnabledValue() {
+		t.Fatal("ABTesting.EnabledValue() = false, want true for observability.ab_testing.enabled")
 	}
 }
 

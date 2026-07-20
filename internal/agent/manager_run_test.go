@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
 )
 
@@ -293,6 +294,89 @@ func TestNewProviderUnhealthy_RateLimitedFlag(t *testing.T) {
 			t.Errorf("newProviderUnhealthy dropped fields: %+v", ue)
 		}
 	}
+}
+
+func TestResolveProviderDecision_ComputesRoutingReason(t *testing.T) {
+	t.Run("default provider when request omitted", func(t *testing.T) {
+		m, _ := newTestManager(t)
+		m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true}})
+
+		got, reason, _, err := m.resolveProviderDecision(RunConfig{})
+		if err != nil {
+			t.Fatalf("resolveProviderDecision: %v", err)
+		}
+		if got != "claude" {
+			t.Fatalf("provider = %q, want claude", got)
+		}
+		if reason != "default" {
+			t.Fatalf("routing reason = %q, want default", reason)
+		}
+	})
+
+	t.Run("explicit provider stays explicit when healthy", func(t *testing.T) {
+		m, _ := newTestManager(t)
+		m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true}})
+
+		got, reason, _, err := m.resolveProviderDecision(RunConfig{Provider: "codex"})
+		if err != nil {
+			t.Fatalf("resolveProviderDecision: %v", err)
+		}
+		if got != "codex" {
+			t.Fatalf("provider = %q, want codex", got)
+		}
+		if reason != "explicit" {
+			t.Fatalf("routing reason = %q, want explicit", reason)
+		}
+	})
+
+	t.Run("health failover marks failover", func(t *testing.T) {
+		m, _ := newTestManager(t)
+		m.SetHealthGate(&fakeGate{
+			healthy:  map[string]bool{"claude": false, "codex": true},
+			failover: map[string]string{"claude": "codex"},
+			reasons:  map[string]string{"claude": "rate_limited"},
+		})
+
+		got, reason, _, err := m.resolveProviderDecision(RunConfig{Provider: "claude"})
+		if err != nil {
+			t.Fatalf("resolveProviderDecision: %v", err)
+		}
+		if got != "codex" {
+			t.Fatalf("provider = %q, want codex", got)
+		}
+		if reason != "failover" {
+			t.Fatalf("routing reason = %q, want failover", reason)
+		}
+	})
+
+	t.Run("limit redirect marks limit", func(t *testing.T) {
+		m, _ := newTestManager(t)
+		m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+		if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+			DefaultProvider: "claude",
+			LimitGate:       &fakeLimitGate{chooseReason: "lower quota pressure"},
+			LimitPolicy:     providerLimitTestPolicy(true),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		got, reason, _, err := m.resolveProviderDecision(RunConfig{Provider: "claude"})
+		if err != nil {
+			t.Fatalf("resolveProviderDecision: %v", err)
+		}
+		if got != "codex" {
+			t.Fatalf("provider = %q, want codex", got)
+		}
+		if reason != "limit" {
+			t.Fatalf("routing reason = %q, want limit", reason)
+		}
+	})
+}
+
+func providerLimitTestPolicy(preferUnderused bool) limits.Policy {
+	policy := limits.DefaultPolicy()
+	policy.PreferUnderused = preferUnderused
+	return policy
 }
 
 func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {

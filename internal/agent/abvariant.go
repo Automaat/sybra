@@ -55,6 +55,7 @@ func (m *Manager) ApplyABVariant(cfg RunConfig, ab abtest.Config, taskID, role s
 	}
 	cfg.ExperimentID = a.ExperimentID
 	cfg.VariantID = a.VariantID
+	cfg.RoutingReason = a.RoutingReason
 	cfg.AssignmentUnit = a.AssignmentUnit
 	cfg.AssignmentKey = a.AssignmentKey
 	cfg.DecisionVersion = a.DecisionVersion

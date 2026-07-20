@@ -273,6 +273,7 @@ func spawnProviderProcess(t *testing.T, root string) *exec.Cmd {
 	}
 	cmd := exec.Command(link, "30")
 	cmd.Dir = cwd
+	cmd.Env = scrubAmbientOwnerEnv(os.Environ())
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start provider-shaped process: %v", err)
 	}
@@ -295,7 +296,7 @@ func spawnOwnedProviderDescendantProcess(t *testing.T, root string, owner proces
 	}
 	cmd := exec.Command(script)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), processOwnerAssignments(owner)...)
+	cmd.Env = append(scrubAmbientOwnerEnv(os.Environ()), processOwnerAssignments(owner)...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start provider script: %v", err)
 	}
@@ -329,7 +330,7 @@ func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner)
 	}
 	cmd := exec.Command(link, "30")
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), mcpOwnerAssignments(owner)...)
+	cmd.Env = append(scrubAmbientOwnerEnv(os.Environ()), mcpOwnerAssignments(owner)...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start owned helper: %v", err)
 	}
@@ -351,6 +352,7 @@ func spawnGenericProcess(t *testing.T, root, name string) (cmd *exec.Cmd, cwd st
 	}
 	cmd = exec.Command(bin, "30")
 	cmd.Dir = cwd
+	cmd.Env = scrubAmbientOwnerEnv(os.Environ())
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start generic process: %v", err)
 	}
@@ -401,4 +403,18 @@ func waitForProcessExit(t *testing.T, pid int) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("pid %d still alive after reap", pid)
+}
+
+func scrubAmbientOwnerEnv(env []string) []string {
+	return stripEnvKeys(
+		env,
+		processOwnerFlagEnv,
+		processAgentIDEnv,
+		processTaskIDEnv,
+		processAgentModeEnv,
+		mcpOwnerFlagEnv,
+		mcpAgentIDEnv,
+		mcpTaskIDEnv,
+		mcpAgentModeEnv,
+	)
 }

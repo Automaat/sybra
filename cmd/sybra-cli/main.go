@@ -2757,6 +2757,7 @@ type configDoctorFinding struct {
 
 type configDoctorReport struct {
 	Findings []configDoctorFinding `json:"findings"`
+	Routing  config.RoutingSummary `json:"routing"`
 }
 
 type configMigrateReport struct {
@@ -2851,6 +2852,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	add := func(severity, format string, a ...any) {
 		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
 	}
+	routing := config.BuildRoutingSummary(cfg)
 
 	addConfigPermFindings(add)
 
@@ -2886,6 +2888,9 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	addGitHubPollingFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
+	for _, warning := range routing.Warnings {
+		add("warning", "routing: %s", warning)
+	}
 
 	if len(findings) == 0 {
 		add("ok", "no issues found")
@@ -2898,7 +2903,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		}
 	}
 
-	report := configDoctorReport{Findings: findings}
+	report := configDoctorReport{Findings: findings, Routing: routing}
 	if jsonOut {
 		if code := printJSON(report); code != 0 {
 			return code
@@ -2909,6 +2914,22 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		return 0
 	}
 
+	fmt.Printf("routing provider preference: %s\n", report.Routing.ProviderPreference)
+	fmt.Printf("routing ab_testing: %t", report.Routing.ABTestingEnabled)
+	if report.Routing.ABTestingExplicit {
+		fmt.Print(" (explicit)")
+	}
+	fmt.Print("\n")
+	fmt.Printf("routing adaptive routing: %t\n", report.Routing.AdaptiveRoutingEnabled)
+	if len(report.Routing.Precedence) > 0 {
+		fmt.Printf("routing precedence: %s\n", strings.Join(report.Routing.Precedence, " -> "))
+	}
+	if len(report.Routing.EligibleVariants) > 0 {
+		fmt.Println("routing eligible variants:")
+		for _, variant := range report.Routing.EligibleVariants {
+			fmt.Printf("  - %s/%s %s %s (%s)\n", variant.ExperimentID, variant.VariantID, variant.Provider, variant.Model, variant.Reason)
+		}
+	}
 	for _, f := range findings {
 		fmt.Printf("[%s] %s\n", f.Severity, f.Message)
 	}

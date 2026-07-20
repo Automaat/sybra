@@ -4545,6 +4545,47 @@ func TestExecRunAgent_ABTestingOverridesProviderModel(t *testing.T) {
 	if call.Assignment.ExperimentID != "exp" || call.Assignment.VariantID != "codex-gpt" || call.Assignment.ReasoningEffort != "high" {
 		t.Fatalf("assignment = %+v", call.Assignment)
 	}
+	if call.Assignment.RoutingReason != "ab" {
+		t.Fatalf("assignment routing reason = %q, want ab", call.Assignment.RoutingReason)
+	}
+}
+
+func TestExecRunAgent_DefaultProviderPathWinsWhenABTestingOmitted(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetABTestingConfig(abtest.DefaultConfig())
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{
+		ID:   "implement",
+		Type: StepRunAgent,
+		Config: StepConfig{
+			Role:   "implementation",
+			Model:  "sonnet",
+			Prompt: "test prompt",
+		},
+	}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: make(map[string]string)}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	call := agents.LastCall()
+	if call.Provider != "" || call.Model != "sonnet" {
+		t.Fatalf("provider/model = %q/%q, want empty/sonnet so manager default-provider routing stays in control", call.Provider, call.Model)
+	}
+	if call.Assignment.ExperimentID != "" || call.Assignment.VariantID != "" {
+		t.Fatalf("assignment = %+v, want no A/B assignment when ab_testing.enabled is omitted", call.Assignment)
+	}
+	if call.Assignment.RoutingReason != "" {
+		t.Fatalf("assignment routing reason = %q, want empty", call.Assignment.RoutingReason)
+	}
 }
 
 func TestExecRunAgentVariantPrompt(t *testing.T) {

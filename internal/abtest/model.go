@@ -128,6 +128,7 @@ type Assignment struct {
 	ExperimentID    string
 	Kind            string
 	VariantID       string
+	RoutingReason   string
 	Provider        string
 	Model           string
 	ReasoningEffort string
@@ -154,7 +155,7 @@ type Assignment struct {
 // per-provider breakdown after rollout — a provider that regresses a role can
 // be down-weighted here without code changes.
 func DefaultConfig() Config {
-	enabled := true
+	enabled := false
 	expEnabled := true
 	builtinVersion := CurrentBuiltinVersion
 	cheap := modeltier.Models(modeltier.Cheap)
@@ -260,7 +261,7 @@ func (c Config) Validate() error {
 
 // EnabledValue reports whether A/B assignment should run.
 func (c Config) EnabledValue() bool {
-	return c.Enabled == nil || *c.Enabled
+	return c.Enabled != nil && *c.Enabled
 }
 
 func (c Config) BuiltinVersionValue() int {
