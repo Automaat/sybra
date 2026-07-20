@@ -791,6 +791,8 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 	for _, want := range []string{
 		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
 		"never fabricate", "/data/worktrees/queue", "feat/queue",
+		"do NOT jump straight to `ready-pr`",
+		"Prefer the first safe downstream stage (`in-progress`/`testing`/`in-review`) over `ready-pr`",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q", want)
