@@ -36,20 +36,22 @@ func latestFailedRunIDOnBranchWith(e execer, repo, branch string) (int, error) {
 	out, err := e.run("run", "list",
 		"--repo", repo,
 		"--branch", branch,
-		"--status", "failure",
-		"--limit", "1",
-		"--json", "databaseId")
+		"--limit", "50",
+		"--json", "databaseId,conclusion")
 	if err != nil {
 		return 0, fmt.Errorf("gh run list failed branch %q: %s: %w", branch, strings.TrimSpace(string(out)), err)
 	}
 	var runs []struct {
-		DatabaseID int `json:"databaseId"`
+		DatabaseID int    `json:"databaseId"`
+		Conclusion string `json:"conclusion"`
 	}
 	if err := json.Unmarshal(out, &runs); err != nil {
 		return 0, fmt.Errorf("parse failed run list: %w", err)
 	}
-	if len(runs) == 0 || runs[0].DatabaseID == 0 {
-		return 0, fmt.Errorf("gh run list failed branch %q: no failed workflow runs found", branch)
+	for _, run := range runs {
+		if run.DatabaseID != 0 && isBlockingCheckRunConclusion(run.Conclusion) {
+			return run.DatabaseID, nil
+		}
 	}
-	return runs[0].DatabaseID, nil
+	return 0, fmt.Errorf("gh run list failed branch %q: no failed workflow runs found", branch)
 }

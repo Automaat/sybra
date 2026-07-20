@@ -27,7 +27,7 @@ func TestRerunFailedChecksWith_UsesFailedRunID(t *testing.T) {
 	execer := &recordingSequenceExecer{
 		results: []scriptedResult{
 			{output: []byte(`{"headRefName":"feat/rerun-me"}`)},
-			{output: []byte(`[{"databaseId":12345}]`)},
+			{output: []byte(`[{"databaseId":12345,"conclusion":"failure"}]`)},
 			{output: nil},
 		},
 	}
@@ -47,6 +47,56 @@ func TestRerunFailedChecksWith_UsesFailedRunID(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("rerun arg[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+	for _, arg := range execer.calls[1] {
+		if arg == "--status" {
+			t.Fatalf("run list args = %v, want local conclusion filtering without --status", execer.calls[1])
+		}
+	}
+}
+
+func TestLatestFailedRunIDOnBranchWith_BlockingConclusions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		conclusion string
+	}{
+		{"failure", "failure"},
+		{"timed out", "timed_out"},
+		{"startup failure", "startup_failure"},
+		{"action required", "action_required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			execer := &fakeExecer{output: []byte(fmt.Sprintf(`[{"databaseId":987,"conclusion":%q}]`, tt.conclusion))}
+			got, err := latestFailedRunIDOnBranchWith(execer, "owner/repo", "feat/red")
+			if err != nil {
+				t.Fatalf("latestFailedRunIDOnBranchWith() err = %v", err)
+			}
+			if got != 987 {
+				t.Fatalf("run id = %d, want 987", got)
+			}
+		})
+	}
+}
+
+func TestLatestFailedRunIDOnBranchWith_UsesNewestBlockingRun(t *testing.T) {
+	t.Parallel()
+
+	execer := &fakeExecer{output: []byte(`[
+		{"databaseId":1,"conclusion":"success"},
+		{"databaseId":2,"conclusion":"cancelled"},
+		{"databaseId":3,"conclusion":"timed_out"},
+		{"databaseId":4,"conclusion":"failure"}
+	]`)}
+	got, err := latestFailedRunIDOnBranchWith(execer, "owner/repo", "feat/red")
+	if err != nil {
+		t.Fatalf("latestFailedRunIDOnBranchWith() err = %v", err)
+	}
+	if got != 3 {
+		t.Fatalf("run id = %d, want 3", got)
 	}
 }
 
