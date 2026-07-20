@@ -752,8 +752,10 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
 		m.logger.Warn("branch-fix.worktree.sanitize", "task_id", t.ID, "err", err)
 	}
-	if err := m.reconcileFreshFixWorktree(ctx, t.ID, proj.ClonePath, wtPath, branch); err != nil {
-		return "", fmt.Errorf("reconcile fresh branch-fix worktree: %w", err)
+	if remote := project.PushRemote(ctx, wtPath); project.RemoteConfigured(ctx, wtPath, remote) {
+		if err := m.reconcileFreshFixWorktree(ctx, t.ID, proj.ClonePath, wtPath, branch); err != nil {
+			return "", fmt.Errorf("reconcile fresh branch-fix worktree: %w", err)
+		}
 	}
 	m.ensureBranch(t, branch)
 	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {

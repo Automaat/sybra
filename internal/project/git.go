@@ -872,6 +872,12 @@ func PushRemote(ctx context.Context, repoPath string) string {
 	return "origin"
 }
 
+// RemoteConfigured reports whether repoPath has a configured URL for remote.
+func RemoteConfigured(ctx context.Context, repoPath, remote string) bool {
+	_, err := executil.Output(ctx, repoPath, "git", "config", "--get", "remote."+remote+".url")
+	return err == nil
+}
+
 // forkOnlyDisabledPushURL is the sentinel pushURL written to origin when a
 // fork remote exists. Agents using `git push origin <branch>` (with or
 // without --no-verify) hit a transport-level failure naming this sentinel,
