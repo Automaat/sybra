@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -66,6 +67,37 @@ func TestGetDefaultSettings_MatchesDefaultConfig(t *testing.T) {
 	}
 	if def.Audit.RetentionDays != want.Audit.RetentionDays {
 		t.Errorf("default audit retention = %d, want %d", def.Audit.RetentionDays, want.Audit.RetentionDays)
+	}
+}
+
+func TestGetDefaultSettings_UsesRenamedGuardrailJSONFields(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	raw, err := json.Marshal(svc.GetDefaultSettings())
+	if err != nil {
+		t.Fatalf("Marshal(GetDefaultSettings): %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal(GetDefaultSettings): %v", err)
+	}
+	agent, ok := payload["agent"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent payload type = %T, want object", payload["agent"])
+	}
+	if _, ok := agent["postResultCostUsd"]; !ok {
+		t.Fatalf("agent JSON missing postResultCostUsd: %s", raw)
+	}
+	if _, ok := agent["maxAssistantEvents"]; !ok {
+		t.Fatalf("agent JSON missing maxAssistantEvents: %s", raw)
+	}
+	if _, ok := agent["maxCostUsd"]; ok {
+		t.Fatalf("agent JSON still exposes legacy maxCostUsd: %s", raw)
+	}
+	if _, ok := agent["maxTurns"]; ok {
+		t.Fatalf("agent JSON still exposes legacy maxTurns: %s", raw)
 	}
 }
 

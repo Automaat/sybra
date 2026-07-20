@@ -13,18 +13,18 @@ export class AgentDefaults {
     "researchMachineDir": string;
 
     /**
-     * MaxCostUSD is a reactive post-result per-run USD ceiling: Sybra checks it
-     * only when the provider emits a terminal result event, after that spend is
-     * already incurred. 0 (default in raw zero values, 5 in fresh installs)
+     * PostResultCostUSD is a reactive per-run USD circuit breaker: Sybra checks
+     * it only when the provider emits a terminal result event, after that spend
+     * is already incurred. 0 (default in raw zero values, 5 in fresh installs)
      * disables the breaker.
      */
-    "maxCostUsd": number;
+    "postResultCostUsd": number;
 
     /**
-     * MaxTurns caps top-level assistant stream events per run, not provider CLI
-     * turns. 0 disables the ceiling.
+     * MaxAssistantEvents caps top-level assistant stream events per run, not
+     * provider CLI turns. 0 disables the ceiling.
      */
-    "maxTurns": number;
+    "maxAssistantEvents": number;
 
     /**
      * MaxCheckpoints bounds how many times a single workflow step may
@@ -34,27 +34,28 @@ export class AgentDefaults {
     "maxCheckpoints": number;
 
     /**
-     * CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
-     * a checkpoint-and-handoff to a fresh run when an eligible code-author
-     * headless run hits its per-run assistant-event ceiling. nil means not
-     * configured (defaults to true). Set false to restore the legacy
-     * in-process auto-continue behavior with no code revert.
+     * CheckpointOnTurnCeiling swaps the legacy raise-the-assistant-event-ceiling
+     * auto-continue for a checkpoint-and-handoff to a fresh run when an
+     * eligible code-author headless run hits its per-run assistant-event
+     * ceiling. nil means not configured (defaults to true). Set false to
+     * restore the legacy in-process auto-continue behavior with no code revert.
      */
     "checkpointOnTurnCeiling": boolean | null;
 
     /**
      * MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
-     * has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
-     * where each retry stays under the per-run cap but the task's total spend
-     * still balloons unbounded. Checked once per dispatch, before an agent is
-     * started — StartAgentWithAssignment refuses to start and flips the task
-     * to human-required when the task's already-recorded AgentRuns.CostUSD sum
-     * meets or exceeds this. 0 (default) disables the check.
+     * has ever had (unlike PostResultCostUSD, which resets every run). Closes
+     * the gap where each retry stays under the per-run cap but the task's total
+     * spend still balloons unbounded. Checked once per dispatch, before an
+     * agent is started — StartAgentWithAssignment refuses to start and flips
+     * the task to human-required when the task's already-recorded
+     * AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the
+     * check.
      */
     "maxTaskCostUsd": number;
 
     /**
-     * TurnCostFraction is the fraction of MaxCostUSD below which an
+     * TurnCostFraction is the fraction of PostResultCostUSD below which an
      * assistant-event escalation is auto-continued. Default 0.8 when unset.
      */
     "turnCostFraction": number;
@@ -274,11 +275,11 @@ export class AgentDefaults {
         if (!("researchMachineDir" in $$source)) {
             this["researchMachineDir"] = "";
         }
-        if (!("maxCostUsd" in $$source)) {
-            this["maxCostUsd"] = 0;
+        if (!("postResultCostUsd" in $$source)) {
+            this["postResultCostUsd"] = 0;
         }
-        if (!("maxTurns" in $$source)) {
-            this["maxTurns"] = 0;
+        if (!("maxAssistantEvents" in $$source)) {
+            this["maxAssistantEvents"] = 0;
         }
         if (!("maxCheckpoints" in $$source)) {
             this["maxCheckpoints"] = 0;

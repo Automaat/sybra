@@ -6,33 +6,34 @@ type AgentDefaults struct {
 	Mode               string `yaml:"mode" json:"mode"`
 	MaxConcurrent      int    `yaml:"max_concurrent" json:"maxConcurrent"`
 	ResearchMachineDir string `yaml:"research_machine_dir" json:"researchMachineDir"`
-	// MaxCostUSD is a reactive post-result per-run USD ceiling: Sybra checks it
-	// only when the provider emits a terminal result event, after that spend is
-	// already incurred. 0 (default in raw zero values, 5 in fresh installs)
+	// PostResultCostUSD is a reactive per-run USD circuit breaker: Sybra checks
+	// it only when the provider emits a terminal result event, after that spend
+	// is already incurred. 0 (default in raw zero values, 5 in fresh installs)
 	// disables the breaker.
-	MaxCostUSD float64 `yaml:"post_result_cost_usd" json:"maxCostUsd"`
-	// MaxTurns caps top-level assistant stream events per run, not provider CLI
-	// turns. 0 disables the ceiling.
-	MaxTurns int `yaml:"max_assistant_events" json:"maxTurns"`
+	MaxCostUSD float64 `yaml:"post_result_cost_usd" json:"postResultCostUsd"`
+	// MaxAssistantEvents caps top-level assistant stream events per run, not
+	// provider CLI turns. 0 disables the ceiling.
+	MaxTurns int `yaml:"max_assistant_events" json:"maxAssistantEvents"`
 	// MaxCheckpoints bounds how many times a single workflow step may
 	// checkpoint-and-handoff after hitting the per-run assistant-event ceiling.
 	// 0 means use DefaultMaxCheckpoints (3).
 	MaxCheckpoints int `yaml:"max_checkpoints" json:"maxCheckpoints"`
-	// CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
-	// a checkpoint-and-handoff to a fresh run when an eligible code-author
-	// headless run hits its per-run assistant-event ceiling. nil means not
-	// configured (defaults to true). Set false to restore the legacy
-	// in-process auto-continue behavior with no code revert.
+	// CheckpointOnTurnCeiling swaps the legacy raise-the-assistant-event-ceiling
+	// auto-continue for a checkpoint-and-handoff to a fresh run when an
+	// eligible code-author headless run hits its per-run assistant-event
+	// ceiling. nil means not configured (defaults to true). Set false to
+	// restore the legacy in-process auto-continue behavior with no code revert.
 	CheckpointOnTurnCeiling *bool `yaml:"checkpoint_on_assistant_event_ceiling" json:"checkpointOnTurnCeiling"`
 	// MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
-	// has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
-	// where each retry stays under the per-run cap but the task's total spend
-	// still balloons unbounded. Checked once per dispatch, before an agent is
-	// started — StartAgentWithAssignment refuses to start and flips the task
-	// to human-required when the task's already-recorded AgentRuns.CostUSD sum
-	// meets or exceeds this. 0 (default) disables the check.
+	// has ever had (unlike PostResultCostUSD, which resets every run). Closes
+	// the gap where each retry stays under the per-run cap but the task's total
+	// spend still balloons unbounded. Checked once per dispatch, before an
+	// agent is started — StartAgentWithAssignment refuses to start and flips
+	// the task to human-required when the task's already-recorded
+	// AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the
+	// check.
 	MaxTaskCostUSD float64 `yaml:"max_task_cost_usd" json:"maxTaskCostUsd"`
-	// TurnCostFraction is the fraction of MaxCostUSD below which an
+	// TurnCostFraction is the fraction of PostResultCostUSD below which an
 	// assistant-event escalation is auto-continued. Default 0.8 when unset.
 	TurnCostFraction float64 `yaml:"assistant_event_cost_fraction" json:"turnCostFraction"`
 	// TurnMultiplier scales the assistant-event ceiling on each

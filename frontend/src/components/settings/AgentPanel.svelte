@@ -164,14 +164,14 @@
 
       <NumberField id="agent-maxcost" label="Post-result cost ceiling (USD)" keyPath="execution.agent.post_result_cost_usd" min={0} step={0.5}
         description="Reactive: checked only when a run reports its terminal result"
-        bind:value={settings.agent.maxCostUsd}
-        modified={a.maxCostUsd !== d.maxCostUsd}
-        onreset={() => (settings.agent.maxCostUsd = d.maxCostUsd)} />
+        bind:value={settings.agent.postResultCostUsd}
+        modified={a.postResultCostUsd !== d.postResultCostUsd}
+        onreset={() => (settings.agent.postResultCostUsd = d.postResultCostUsd)} />
       <NumberField id="agent-maxturns" label="Max assistant events" keyPath="execution.agent.max_assistant_events" min={0}
         description="Counts top-level assistant stream events, not provider CLI turns"
-        bind:value={settings.agent.maxTurns}
-        modified={a.maxTurns !== d.maxTurns}
-        onreset={() => (settings.agent.maxTurns = d.maxTurns)} />
+        bind:value={settings.agent.maxAssistantEvents}
+        modified={a.maxAssistantEvents !== d.maxAssistantEvents}
+        onreset={() => (settings.agent.maxAssistantEvents = d.maxAssistantEvents)} />
       <NumberField id="agent-bash" label="Bash timeout (seconds)" keyPath="execution.agent.bash_timeout" min={0}
         description="0 = default (300)"
         bind:value={settings.agent.bashTimeoutSeconds}
