@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -447,6 +448,222 @@ func TestHandleAutoMerge_ArmsNative(t *testing.T) {
 				t.Errorf("merged=%v (repo=%q num=%d), want merged=%v", merged, mergedRepo, mergedNum, tt.wantMerged)
 			}
 		})
+	}
+}
+
+func TestHandleAutoMerge_FallsBackToNativeWhenDirectMergeBlockedByPolicy(t *testing.T) {
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(2385),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+		Reviewed:  task.Ptr(true),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	tracker := github.NewIssueTracker(time.Minute)
+	var mergeCalled bool
+	var armedRepo string
+	var armedNum int
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: tracker,
+		cfg:       &config.Config{GitHub: config.GitHubConfig{NativeAutoMerge: true}},
+		mergePR: func(repo string, number int) error {
+			mergeCalled = true
+			return fmt.Errorf("gh pr merge %d: X Pull request owner/repo#%d is not mergeable: the base branch policy prohibits the merge.\nTo have the pull request merged after all the requirements have been met, add the `--auto` flag.: exit status 1", number, number)
+		},
+		supportsAutoMergeFn: func(repo, baseBranch string) (bool, error) {
+			if baseBranch != "main" {
+				t.Errorf("supportsAutoMergeFn called with baseBranch = %q, want %q", baseBranch, "main")
+			}
+			return true, nil
+		},
+		enableAutoMergeFn: func(repo string, number int) error {
+			armedRepo, armedNum = repo, number
+			return nil
+		},
+	}
+
+	r.handleAutoMerge(github.PRIssue{
+		Kind:   github.PRIssueReadyToMerge,
+		TaskID: created.ID,
+		PR: github.PullRequest{
+			Repository:  "pet-owner/pet-repo",
+			Number:      2385,
+			BaseRefName: "main",
+			HeadSHA:     "sha2385",
+			Mergeable:   "MERGEABLE",
+			CIStatus:    "SUCCESS",
+		},
+	})
+
+	if !mergeCalled {
+		t.Fatal("direct merge was not attempted before fallback")
+	}
+	if armedRepo != "pet-owner/pet-repo" || armedNum != 2385 {
+		t.Fatalf("armed native auto-merge for %s#%d, want pet-owner/pet-repo#2385", armedRepo, armedNum)
+	}
+	if got := tracker.Retries(created.ID, github.PRIssueReadyToMerge); got != 1 {
+		t.Fatalf("ready_to_merge retries = %d, want 1 after native handoff", got)
+	}
+}
+
+func TestHandleAutoMerge_DirectMergePolicyBlockedHonorsNativeKillSwitch(t *testing.T) {
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(2385),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+		Reviewed:  task.Ptr(true),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	tracker := github.NewIssueTracker(time.Minute)
+	var mergeCalled bool
+	var supportChecked bool
+	var armed bool
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: tracker,
+		cfg:       &config.Config{GitHub: config.GitHubConfig{NativeAutoMerge: false}},
+		mergePR: func(repo string, number int) error {
+			mergeCalled = true
+			return fmt.Errorf("gh pr merge %d: X Pull request owner/repo#%d is not mergeable: the base branch policy prohibits the merge.\nTo have the pull request merged after all the requirements have been met, add the `--auto` flag.: exit status 1", number, number)
+		},
+		supportsAutoMergeFn: func(repo, baseBranch string) (bool, error) {
+			supportChecked = true
+			return true, nil
+		},
+		enableAutoMergeFn: func(repo string, number int) error {
+			armed = true
+			return nil
+		},
+	}
+
+	r.handleAutoMerge(github.PRIssue{
+		Kind:   github.PRIssueReadyToMerge,
+		TaskID: created.ID,
+		PR: github.PullRequest{
+			Repository:  "pet-owner/pet-repo",
+			Number:      2385,
+			BaseRefName: "main",
+			HeadSHA:     "sha2385",
+			Mergeable:   "MERGEABLE",
+			CIStatus:    "SUCCESS",
+		},
+	})
+
+	if !mergeCalled {
+		t.Fatal("direct merge was not attempted")
+	}
+	if supportChecked {
+		t.Fatal("native auto-merge support was checked while kill-switch was disabled")
+	}
+	if armed {
+		t.Fatal("native auto-merge was armed while kill-switch was disabled")
+	}
+	if got := tracker.Retries(created.ID, github.PRIssueReadyToMerge); got != 0 {
+		t.Fatalf("ready_to_merge retries = %d, want 0 when native auto-merge is disabled", got)
+	}
+}
+
+func TestHandleAutoMerge_DirectMergeOrdinaryFailureDoesNotArmNative(t *testing.T) {
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(42),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+		Reviewed:  task.Ptr(true),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var armed bool
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: github.NewIssueTracker(time.Minute),
+		cfg:       &config.Config{GitHub: config.GitHubConfig{NativeAutoMerge: true}},
+		mergePR: func(repo string, number int) error {
+			return fmt.Errorf("gh pr merge %d: transient network failure: exit status 1", number)
+		},
+		supportsAutoMergeFn: func(repo, baseBranch string) (bool, error) {
+			return true, nil
+		},
+		enableAutoMergeFn: func(repo string, number int) error {
+			armed = true
+			return nil
+		},
+	}
+
+	r.handleAutoMerge(github.PRIssue{
+		Kind:   github.PRIssueReadyToMerge,
+		TaskID: created.ID,
+		PR: github.PullRequest{
+			Repository:  "pet-owner/pet-repo",
+			Number:      42,
+			BaseRefName: "main",
+			HeadSHA:     "sha42",
+			Mergeable:   "MERGEABLE",
+			CIStatus:    "SUCCESS",
+		},
+	})
+
+	if armed {
+		t.Fatal("ordinary direct merge failure armed native auto-merge")
 	}
 }
 

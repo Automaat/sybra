@@ -199,31 +199,10 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	// poll on GitHub's side) than Sybra's GraphQL merge-gate polling. Only
 	// tried once the CI-green-gated legacy path would otherwise fire, so this
 	// never delays a merge; it just lets GitHub finish the last mile.
-	if r.cfg != nil && r.cfg.GitHub.NativeAutoMerge && readyToArmNativeAutoMerge(issue.PR) {
-		supportsFn := r.supportsAutoMergeFn
-		if supportsFn == nil {
-			supportsFn = github.SupportsNativeAutoMerge
-		}
-		ok, serr := supportsFn(issue.PR.Repository, issue.PR.BaseRefName)
-		if serr != nil {
-			r.logger.Error("auto-merge.native-support-check-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", serr)
-		}
-		if serr == nil && ok {
-			enableFn := r.enableAutoMergeFn
-			if enableFn == nil {
-				enableFn = github.EnableAutoMerge
-			}
-			if aerr := enableFn(issue.PR.Repository, issue.PR.Number); aerr != nil {
-				r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", aerr)
-			} else {
-				r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
-				r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
-				r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", map[string]any{
-					"pr": issue.PR.Number, "repo": issue.PR.Repository,
-				})
-				r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", issue.PR.Number)
-				return
-			}
+	if r.nativeAutoMergeEnabled() && readyToArmNativeAutoMerge(issue.PR) {
+		if r.tryArmNativeAutoMerge(t, issue, "") {
+			r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
+			return
 		}
 	}
 
@@ -276,6 +255,11 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	}
 	r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
 	if mergeErr != nil {
+		if r.nativeAutoMergeEnabled() && !issue.PR.SourcedViaREST && requiresNativeAutoMerge(mergeErr) {
+			if r.tryArmNativeAutoMerge(t, issue, "direct_merge_rejected") {
+				return
+			}
+		}
 		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", mergeErr)
 		return
 	}
@@ -294,6 +278,56 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	if r.onAutoMergeApplied != nil {
 		r.onAutoMergeApplied()
 	}
+}
+
+func (r *Handler) nativeAutoMergeEnabled() bool {
+	return r.cfg != nil && r.cfg.GitHub.NativeAutoMerge
+}
+
+func (r *Handler) tryArmNativeAutoMerge(t task.Task, issue github.PRIssue, fallback string) bool {
+	supportsFn := r.supportsAutoMergeFn
+	if supportsFn == nil {
+		supportsFn = github.SupportsNativeAutoMerge
+	}
+	ok, serr := supportsFn(issue.PR.Repository, issue.PR.BaseRefName)
+	if serr != nil {
+		r.logger.Error("auto-merge.native-support-check-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", serr)
+		return false
+	}
+	if !ok {
+		return false
+	}
+
+	enableFn := r.enableAutoMergeFn
+	if enableFn == nil {
+		enableFn = github.EnableAutoMerge
+	}
+	if aerr := enableFn(issue.PR.Repository, issue.PR.Number); aerr != nil {
+		r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", aerr)
+		return false
+	}
+
+	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
+	auditData := map[string]any{"pr": issue.PR.Number, "repo": issue.PR.Repository}
+	if fallback != "" {
+		auditData["fallback"] = fallback
+	}
+	r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", auditData)
+	if fallback != "" {
+		r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", issue.PR.Number, "fallback", fallback)
+	} else {
+		r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", issue.PR.Number)
+	}
+	return true
+}
+
+func requiresNativeAutoMerge(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "base branch policy prohibits the merge") &&
+		strings.Contains(msg, "--auto")
 }
 
 // escalateExhaustedFix parks a task whose pr-fix retry budget is spent. Trying
