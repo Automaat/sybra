@@ -1023,12 +1023,12 @@ func (m *Manager) emitProviderGateEvents(gateEvents []providerGateEvent) {
 // would dispatch to, applying health-gate / limit-gate failover logic. It is
 // side-effect free: metrics/log emissions are returned as providerGateEvent
 // values for the caller to apply (gateProvider) or discard (ResolveProvider).
-func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, string, []providerGateEvent, error) {
+func (m *Manager) resolveProviderDecision(cfg RunConfig) (resolvedProvider, routingReason string, gateEvents []providerGateEvent, err error) {
 	resolved, err := m.providerForRun(cfg.Provider)
 	if err != nil {
 		return "", "", nil, err
 	}
-	routingReason := cfg.RoutingReason
+	routingReason = cfg.RoutingReason
 	if routingReason == "" {
 		if strings.TrimSpace(cfg.Provider) == "" {
 			routingReason = "default"
@@ -1052,7 +1052,6 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, string, []prov
 	healthy := func(p string) bool {
 		return (g == nil || g.IsHealthy(p)) && underCap(p)
 	}
-	var gateEvents []providerGateEvent
 	candidateProviders := providerid.All()
 	if g != nil && !g.IsHealthy(resolved) {
 		if cfg.DisableProviderFailover {
@@ -1146,7 +1145,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, string, []prov
 	}
 }
 
-func (m *Manager) softLimitLastResort(resolved, routingReason, reason string, gateEvents []providerGateEvent, taskID string) (string, string, []providerGateEvent, error) {
+func (m *Manager) softLimitLastResort(resolved, routingReason, reason string, gateEvents []providerGateEvent, taskID string) (selectedProvider, selectedRoutingReason string, updatedGateEvents []providerGateEvent, err error) {
 	if limits.IsSoftThresholdReason(reason) {
 		gateEvents = append(gateEvents, providerGateEvent{
 			kind: "soft_limit", provider: resolved, reason: reason, logKey: "agent.run.soft_limit_last_resort", taskID: taskID,
