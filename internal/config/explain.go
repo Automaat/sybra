@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -118,11 +119,13 @@ var descriptorConstraints = map[string][]string{
 	"schema_version": {"supported values: 1, 2"},
 }
 
+var errNilYAMLNode = errors.New("nil yaml node")
+
 func YAMLLeafPaths() []string {
 	initPathMetadata()
 	out := make([]string, len(pathDescriptors))
-	for i, desc := range pathDescriptors {
-		out[i] = desc.RuntimePath
+	for i := range pathDescriptors {
+		out[i] = pathDescriptors[i].RuntimePath
 	}
 	return out
 }
@@ -154,9 +157,9 @@ func ExplainPath(path string, file *FileConfig, env Environment, resolved *Confi
 		return PathExplanation{}, unknownConfigPathError(path)
 	}
 	explanations := ExplainAll(file, env, resolved)
-	for _, explanation := range explanations {
-		if explanation.Descriptor.RuntimePath == desc.RuntimePath {
-			return explanation, nil
+	for i := range explanations {
+		if explanations[i].Descriptor.RuntimePath == desc.RuntimePath {
+			return explanations[i], nil
 		}
 	}
 	return PathExplanation{}, unknownConfigPathError(path)
@@ -170,18 +173,20 @@ func ExplainAll(file *FileConfig, env Environment, resolved *Config) []PathExpla
 	}
 
 	out := make([]PathExplanation, 0, len(pathDescriptors))
-	for _, desc := range pathDescriptors {
+	for i := range pathDescriptors {
+		desc := pathDescriptors[i]
 		defaultVal := valueAtRuntimePath(*defaults, desc.RuntimePath)
 		effectiveVal := valueAtRuntimePath(*resolved, desc.RuntimePath)
 		intent := intentValueForDescriptor(file, desc)
 		override := envOverrideValueForDescriptor(env, desc)
 
 		effectiveSource := ValueSourceDefault
-		if override != nil {
+		switch {
+		case override != nil:
 			effectiveSource = ValueSourceEnv
-		} else if intent.Declared {
+		case intent.Declared:
 			effectiveSource = ValueSourceFile
-		} else if generatedValueForDescriptor(desc, effectiveVal) {
+		case generatedValueForDescriptor(desc, effectiveVal):
 			effectiveSource = ValueSourceGenerated
 		}
 
@@ -228,7 +233,7 @@ func initPathMetadata() {
 	})
 }
 
-func collectLeafPaths(typ reflect.Type, prefix []string, out []string) []string {
+func collectLeafPaths(typ reflect.Type, prefix, out []string) []string {
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
@@ -491,7 +496,7 @@ func dedupeStrings(items []string) []string {
 
 func nodeValue(node *yaml.Node) (any, error) {
 	if node == nil {
-		return nil, nil
+		return nil, errNilYAMLNode
 	}
 	var out any
 	if err := node.Decode(&out); err != nil {

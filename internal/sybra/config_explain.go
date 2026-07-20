@@ -36,7 +36,8 @@ func LoadConfigPathExplanations(active, persisted *config.Config) ([]ConfigPathE
 	activeExplanations := config.ExplainAll(fileCfg, env, activeCfg)
 
 	out := make([]ConfigPathExplanation, 0, len(activeExplanations))
-	for _, explanation := range activeExplanations {
+	for i := range activeExplanations {
+		explanation := activeExplanations[i]
 		meta, ok := ConfigRegistryMetadataByRuntimePath(explanation.Descriptor.RuntimePath)
 		if !ok {
 			continue
@@ -70,9 +71,9 @@ func LoadConfigPathExplanation(path string, active, persisted *config.Config) (C
 	if err != nil {
 		return ConfigPathExplanation{}, err
 	}
-	for _, explanation := range explanations {
-		if explanation.Descriptor.RuntimePath == runtimePath {
-			return explanation, nil
+	for i := range explanations {
+		if explanations[i].Descriptor.RuntimePath == runtimePath {
+			return explanations[i], nil
 		}
 	}
 	return ConfigPathExplanation{}, errors.New(configUnknownPathError(path))
@@ -84,7 +85,7 @@ func currentFileConfig() (*config.FileConfig, error) {
 	case err == nil:
 		return config.ParseFileConfig([]byte(raw))
 	case os.IsNotExist(err):
-		return nil, nil
+		return config.ParseFileConfig(nil)
 	default:
 		return nil, err
 	}
