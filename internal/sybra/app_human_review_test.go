@@ -1,7 +1,6 @@
 package sybra
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -9,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -54,28 +52,6 @@ func setupUnblockedRecoveryWorktree(t *testing.T, branch string) string {
 	return clone
 }
 
-type fakeIssueSink struct {
-	mu      sync.Mutex
-	calls   int
-	created bool
-	url     string
-	err     error
-
-	gotTitle  string
-	gotBody   string
-	gotLabels []string
-}
-
-func (f *fakeIssueSink) SubmitIssue(_ context.Context, title, body string, labels []string) (created bool, url string, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls++
-	f.gotTitle = title
-	f.gotBody = body
-	f.gotLabels = labels
-	return f.created, f.url, f.err
-}
-
 type fakeHumanReviewAgentRunner struct {
 	apply func(agent.RunConfig) agent.RunConfig
 	run   func(agent.RunConfig) (*agent.Agent, error)
@@ -95,7 +71,7 @@ func (f *fakeHumanReviewAgentRunner) Run(cfg agent.RunConfig) (*agent.Agent, err
 	return &agent.Agent{ID: "fake-human-review", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
 }
 
-func newReviewTestEnv(t *testing.T) (*humanReviewHandler, *task.Manager, *fakeIssueSink, func()) {
+func newReviewTestEnv(t *testing.T) (*humanReviewHandler, *task.Manager, func()) {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := task.NewStore(dir)
@@ -107,10 +83,9 @@ func newReviewTestEnv(t *testing.T) (*humanReviewHandler, *task.Manager, *fakeIs
 	cfg.HumanReview.Enabled = true
 	cfg.HumanReview.SybraRepoDir = dir
 	cfg.HumanReview.MaxPerHour = 3
-	sink := &fakeIssueSink{created: true, url: "https://github.com/Automaat/sybra/issues/42"}
 	logger := slog.New(slog.DiscardHandler)
 	h := newHumanReviewHandler(cfg, tasks, nil, nil, logger, dir, filepath.Join(dir, "missing.log"), nil)
-	return h, tasks, sink, func() {}
+	return h, tasks, func() {}
 }
 
 // TestVerdictDecisionIsSharedParserType pins that this package's local
@@ -184,7 +159,7 @@ func TestHumanReviewDispatchDir_ReadOnlyFallback(t *testing.T) {
 // prompt just names the JSON fields to return.
 func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Some task", "body", "headless")
@@ -208,7 +183,7 @@ func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 // plausible causes alone.
 func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Some task", "body", "headless")
@@ -229,7 +204,7 @@ func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 // approval authority is human-only.
 func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Review draft task", "body", "headless")
@@ -269,7 +244,7 @@ func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
 // human-required status_reason from a stale verdict.
 func TestBuildPrompt_RequiresRecheckingSupersededFailures(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Some task", "body", "headless")
@@ -298,7 +273,7 @@ func TestBuildPrompt_RequiresRecheckingSupersededFailures(t *testing.T) {
 
 func TestRateLimiter(t *testing.T) {
 	t.Parallel()
-	h, _, _, cleanup := newReviewTestEnv(t)
+	h, _, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	now := time.Now()
@@ -338,7 +313,7 @@ func TestRateLimiter(t *testing.T) {
 // this test env) and starve every other task's diagnosis.
 func TestPerTaskRateLimiter(t *testing.T) {
 	t.Parallel()
-	h, _, _, cleanup := newReviewTestEnv(t)
+	h, _, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	now := time.Now()
@@ -382,7 +357,7 @@ func TestPerTaskRateLimiter(t *testing.T) {
 
 func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Refactor billing", "Original body.", "headless")
@@ -419,9 +394,6 @@ func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 	if !strings.Contains(got.Body, "needs product input on scope") {
 		t.Errorf("expected summary in body; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called for human verdict; calls=%d", sink.calls)
-	}
 	if _, busy := h.inflight[tk.ID]; busy {
 		t.Errorf("inflight should be cleared after onComplete")
 	}
@@ -429,7 +401,7 @@ func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 
 func TestOnComplete_StaleHumanVerdictMarksRendered(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Prompt Lab approval", "Original body.", "headless")
@@ -471,14 +443,11 @@ func TestOnComplete_StaleHumanVerdictMarksRendered(t *testing.T) {
 	if !verdictAlreadyRendered(got) {
 		t.Fatal("verdictAlreadyRendered should accept the stale run's rendered marker")
 	}
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called for stale human verdict; calls=%d", sink.calls)
-	}
 }
 
 func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Fix flaky test", "Original body.", "headless")
@@ -512,9 +481,6 @@ func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 	if !strings.Contains(got.Body, "Auto-review: unblocked") {
 		t.Errorf("expected unblocked note in body; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called without an issue payload; calls=%d", sink.calls)
-	}
 	if _, busy := h.inflight[tk.ID]; busy {
 		t.Errorf("inflight should be cleared after onComplete")
 	}
@@ -522,7 +488,7 @@ func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 
 func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const agentID = "agent-unblocked-action"
@@ -566,9 +532,6 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	if !strings.Contains(got.Body, "Auto-review: unblocked") {
 		t.Fatalf("expected unblocked note in body; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Fatalf("sink calls = %d, want 0", sink.calls)
-	}
 	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
 		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
 	}
@@ -580,7 +543,7 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 // and the status transition must still go through.
 func TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const agentID = "agent-unblocked-clean"
@@ -617,9 +580,6 @@ func TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions(t *testing.T) 
 	if got.Status != task.StatusReadyPR {
 		t.Fatalf("status = %q, want %q (clean, pushed branch must be trusted)", got.Status, task.StatusReadyPR)
 	}
-	if sink.calls != 0 {
-		t.Fatalf("sink calls = %d, want 0", sink.calls)
-	}
 }
 
 // TestOnComplete_UnblockedVerdict_DirtyWorktreeDoesNotTransition is the
@@ -629,7 +589,7 @@ func TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions(t *testing.T) 
 // unverified claim.
 func TestOnComplete_UnblockedVerdict_DirtyWorktreeDoesNotTransition(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const agentID = "agent-unblocked-dirty"
@@ -676,9 +636,6 @@ func TestOnComplete_UnblockedVerdict_DirtyWorktreeDoesNotTransition(t *testing.T
 	if !strings.Contains(got.Body, "Auto-review: unblocked claim not verified") {
 		t.Fatalf("expected verification-failure note in body; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Fatalf("sink calls = %d, want 0", sink.calls)
-	}
 }
 
 // TestOnComplete_UnblockedVerdict_UnpushedBranchDoesNotTransition is the
@@ -687,7 +644,7 @@ func TestOnComplete_UnblockedVerdict_DirtyWorktreeDoesNotTransition(t *testing.T
 // dirty" symptom from the incident) must also not be trusted.
 func TestOnComplete_UnblockedVerdict_UnpushedBranchDoesNotTransition(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const agentID = "agent-unblocked-unpushed"
@@ -743,14 +700,11 @@ func TestOnComplete_UnblockedVerdict_UnpushedBranchDoesNotTransition(t *testing.
 	if !strings.Contains(got.Body, "Auto-review: unblocked claim not verified") {
 		t.Fatalf("expected verification-failure note in body; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Fatalf("sink calls = %d, want 0", sink.calls)
-	}
 }
 
 func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 	t.Parallel()
-	h, _, _, cleanup := newReviewTestEnv(t)
+	h, _, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk := task.Task{
@@ -775,7 +729,7 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 // by --json-schema enforcement, previously untested end-to-end.
 func TestOnComplete_BareJSONVerdict_HumanDecision(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Refactor billing", "Original body.", "headless")
@@ -807,9 +761,6 @@ func TestOnComplete_BareJSONVerdict_HumanDecision(t *testing.T) {
 	if !strings.Contains(got.Body, "needs product input on scope") {
 		t.Errorf("expected summary in body; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called for human verdict; calls=%d", sink.calls)
-	}
 }
 
 // TestOnComplete_BareJSONVerdict_SybraBug is the sybra_bug counterpart of
@@ -817,7 +768,7 @@ func TestOnComplete_BareJSONVerdict_HumanDecision(t *testing.T) {
 // no fence, driving the default non-filing note side effect.
 func TestOnComplete_BareJSONVerdict_SybraBug(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
@@ -842,10 +793,6 @@ func TestOnComplete_BareJSONVerdict_SybraBug(t *testing.T) {
 	h.inflight[tk.ID] = "agent-4"
 	h.onComplete(ag)
 
-	if sink.calls != 0 {
-		t.Fatalf("sink calls: got %d want 0", sink.calls)
-	}
-
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
@@ -864,7 +811,7 @@ func TestOnComplete_BareJSONVerdict_SybraBug(t *testing.T) {
 
 func TestOnComplete_SybraBugVerdict_DefaultNotesWithoutFiling(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
@@ -889,10 +836,6 @@ func TestOnComplete_SybraBugVerdict_DefaultNotesWithoutFiling(t *testing.T) {
 	h.inflight[tk.ID] = "agent-2"
 	h.onComplete(ag)
 
-	if sink.calls != 0 {
-		t.Fatalf("sink calls: got %d want 0", sink.calls)
-	}
-
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
@@ -911,7 +854,7 @@ func TestOnComplete_SybraBugVerdict_DefaultNotesWithoutFiling(t *testing.T) {
 
 func TestOnComplete_SybraBugVerdict_NoteOnly(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 	h.cfg.HumanReview.SybraBugAction = config.HumanReviewSybraBugActionNoteOnly
 
@@ -950,9 +893,6 @@ func TestOnComplete_SybraBugVerdict_NoteOnly(t *testing.T) {
 		!strings.Contains(got.Body, "fix(workflow): verify_commits race") {
 		t.Errorf("expected note-only diagnosis in body; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called in note_only mode; calls=%d", sink.calls)
-	}
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
@@ -964,7 +904,7 @@ func TestOnComplete_SybraBugVerdict_NoteOnly(t *testing.T) {
 
 func TestOnComplete_SybraBugVerdict_BlockOnly(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 	h.cfg.HumanReview.SybraBugAction = config.HumanReviewSybraBugActionBlockOnly
 
@@ -1001,9 +941,6 @@ func TestOnComplete_SybraBugVerdict_BlockOnly(t *testing.T) {
 	if !strings.Contains(got.Body, "issue filing disabled") {
 		t.Errorf("expected block-only note in body; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called in block_only mode; calls=%d", sink.calls)
-	}
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
@@ -1015,7 +952,7 @@ func TestOnComplete_SybraBugVerdict_BlockOnly(t *testing.T) {
 
 func TestOnComplete_SybraBugVerdict_NoteOnlyScrubsWorkProject(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 	h.cfg.HumanReview.SybraBugAction = config.HumanReviewSybraBugActionNoteOnly
 
@@ -1060,14 +997,11 @@ func TestOnComplete_SybraBugVerdict_NoteOnlyScrubsWorkProject(t *testing.T) {
 			t.Fatalf("note_only body leaks %q:\n%s", leak, got.Body)
 		}
 	}
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called in note_only mode; calls=%d", sink.calls)
-	}
 }
 
 func TestOnComplete_StaleVerdictSkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Transient failure", "Original body.", "headless")
@@ -1104,9 +1038,6 @@ func TestOnComplete_StaleVerdictSkipsWhenTaskNoLongerHumanRequired(t *testing.T)
 	if got.Body != "Original body." {
 		t.Errorf("stale verdict should not mutate body; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Errorf("stale verdict should not file an issue; calls=%d", sink.calls)
-	}
 	if _, busy := h.inflight[tk.ID]; busy {
 		t.Errorf("inflight should be cleared after stale onComplete")
 	}
@@ -1114,7 +1045,7 @@ func TestOnComplete_StaleVerdictSkipsWhenTaskNoLongerHumanRequired(t *testing.T)
 
 func TestOnComplete_WorkProject_ConfiguredLocalTaskScrubbed(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 	h.cfg.HumanReview.SybraBugAction = config.HumanReviewSybraBugActionLocalTask
 
@@ -1156,10 +1087,6 @@ func TestOnComplete_WorkProject_ConfiguredLocalTaskScrubbed(t *testing.T) {
 	})
 	h.inflight[tk.ID] = "agent-work"
 	h.onComplete(ag)
-
-	if sink.calls != 0 {
-		t.Errorf("public sink must NOT be called for work-typed project; calls=%d", sink.calls)
-	}
 
 	// Original task: flipped to blocked with a pointer to the local task.
 	got, err := tasks.Get(tk.ID)
@@ -1212,7 +1139,7 @@ func TestOnComplete_WorkProject_ConfiguredLocalTaskScrubbed(t *testing.T) {
 
 func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Mystery", "Body.", "headless")
@@ -1237,14 +1164,11 @@ func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {
 	if !strings.Contains(got.Body, "unparseable verdict") {
 		t.Errorf("expected unparseable header; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called on malformed verdict; calls=%d", sink.calls)
-	}
 }
 
 func TestOnComplete_StructuredVerdictFailure_RetriesAlternateProvider(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const firstAgentID = "hr-structured-1"
@@ -1321,14 +1245,11 @@ func TestOnComplete_StructuredVerdictFailure_RetriesAlternateProvider(t *testing
 	if strings.Contains(got.Body, "unparseable verdict") {
 		t.Fatalf("fallback spawn should not append a terminal note yet; body:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Fatalf("sink calls = %d, want 0", sink.calls)
-	}
 }
 
 func TestOnComplete_StructuredVerdictFailure_SecondFailureRendersDurableNote(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const currentAgentID = "hr-structured-2"
@@ -1391,9 +1312,6 @@ func TestOnComplete_StructuredVerdictFailure_SecondFailureRendersDurableNote(t *
 	if !strings.Contains(got.Body, "did not return a usable structured verdict") {
 		t.Fatalf("expected durable structured-verdict note; got:\n%s", got.Body)
 	}
-	if sink.calls != 0 {
-		t.Fatalf("sink calls = %d, want 0", sink.calls)
-	}
 }
 
 // TestOnComplete_PlaceholderVerdict_RejectedNotFiled pins task 2379fece's
@@ -1403,7 +1321,7 @@ func TestOnComplete_StructuredVerdictFailure_SecondFailureRendersDurableNote(t *
 // onComplete treats it like any other unparseable verdict.
 func TestOnComplete_PlaceholderVerdict_RejectedNotFiled(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Some task", "Body.", "headless")
@@ -1421,9 +1339,6 @@ func TestOnComplete_PlaceholderVerdict_RejectedNotFiled(t *testing.T) {
 	})
 	h.onComplete(ag)
 
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called for placeholder verdict; calls=%d", sink.calls)
-	}
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
@@ -1438,7 +1353,7 @@ func TestOnComplete_PlaceholderVerdict_RejectedNotFiled(t *testing.T) {
 
 func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Quota limited", "Body.", "headless")
@@ -1469,9 +1384,6 @@ func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
 			t.Fatal("rate-limited human-review must not mark verdict_rendered")
 		}
 	}
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called on quota failure; calls=%d", sink.calls)
-	}
 }
 
 // TestOnComplete_ExecutionCrashRendersDiagnosis pins the no-dead-end contract
@@ -1487,7 +1399,7 @@ func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
 // than deferring into a dead-end that strands it silently.
 func TestOnComplete_ExecutionCrashRendersDiagnosis(t *testing.T) {
 	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Crashed review", "Body.", "headless")
@@ -1539,16 +1451,13 @@ func TestOnComplete_ExecutionCrashRendersDiagnosis(t *testing.T) {
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("crashed review must leave task in human-required; got %s", got.Status)
 	}
-	if sink.calls != 0 {
-		t.Errorf("sink should not be called on execution crash; calls=%d", sink.calls)
-	}
 }
 
 func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	t.Parallel()
 	// h.agents is nil in newReviewTestEnv — if maybeSpawn tries to spawn an
 	// agent past the gate it will panic, which is the test's failure signal.
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Stale task", "Body.", "headless")
@@ -1585,7 +1494,7 @@ func TestMaybeSpawn_SkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
 	t.Parallel()
 	// h.agents is nil in newReviewTestEnv — a stale human-required hook must
 	// exit before attempting a real spawn.
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Stale hook task", "Body.", "headless")
@@ -1612,7 +1521,7 @@ func TestMaybeSpawn_SkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
 func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
 	t.Parallel()
 
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Racey hook task", "Body.", "headless")
@@ -1676,7 +1585,7 @@ func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
 
 func TestMaybeSpawn_IdempotencyGate_IgnoresRenderedVerdictBeforeTestingCycle(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Re-tested task", "Body.", "headless")
@@ -1723,7 +1632,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenVerdictSetButNotRendered(t *testin
 	// but the process crashed before onComplete appended the "## Auto-review"
 	// section. The gate must allow a re-spawn so the task is not permanently
 	// stranded at human-required with no diagnosis.
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Crash-window task", "Body without auto-review section.", "headless")
@@ -1767,7 +1676,7 @@ func TestMaybeSpawn_IdempotencyGate_PreexistingAutoReviewTextDoesNotBlock(t *tes
 	// NOT satisfy the idempotency gate when onComplete has not run.
 	// The gate now checks AgentRun.VerdictRendered, not body text, so
 	// pre-existing headings never falsely block a re-spawn.
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	body := "Original task body.\n\n## Auto-review requirements\n\nThis task is about auto-review diagnostics, but no diagnostic has been rendered yet.\n"
@@ -1806,7 +1715,7 @@ func TestMaybeSpawn_IdempotencyGate_PreexistingAutoReviewTextDoesNotBlock(t *tes
 
 func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Fresh task", "Body.", "headless")
@@ -1845,7 +1754,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 
 func TestMaybeSpawn_SkipsProjectlessTask(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Orphan smoke-test task", "queued", "headless")
@@ -1868,7 +1777,7 @@ func TestMaybeSpawn_SkipsProjectlessTask(t *testing.T) {
 
 func TestMaybeSpawn_SkipsStaleNonHumanRequiredTask(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	tk, err := tasks.Create("Already handled task", "queued", "headless")
@@ -1896,7 +1805,7 @@ func TestOnComplete_SetsVerdictRendered(t *testing.T) {
 	t.Parallel()
 	// Verifies that onComplete sets VerdictRendered on the matching AgentRun so
 	// verdictAlreadyRendered can use it as the durable rendered-marker on restart.
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const agentID = "agent-hr-1"
@@ -1950,7 +1859,7 @@ func TestOnComplete_SetsVerdictRendered(t *testing.T) {
 // TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered relies on.
 func TestOnComplete_CrashedVerdict_RetriesOnce(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const agentID = "agent-hr-crash-1"
@@ -1995,7 +1904,7 @@ func TestOnComplete_CrashedVerdict_RetriesOnce(t *testing.T) {
 // task — not the generic "unparseable verdict" text, and not silence.
 func TestOnComplete_CrashedVerdict_ExhaustedRetriesMarksDistinguishableNote(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const agentID = "agent-hr-crash-2"
@@ -2056,7 +1965,7 @@ func TestOnComplete_CrashedVerdict_ExhaustedRetriesMarksDistinguishableNote(t *t
 // it has no budget logic of its own to get out of sync with.
 func TestOnComplete_CrashedVerdict_GlobalCapDeclinesRetrySilently(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	h.cfg.HumanReview.MaxPerHour = 1
@@ -2116,7 +2025,7 @@ func TestOnComplete_CrashedVerdict_GlobalCapDeclinesRetrySilently(t *testing.T) 
 // instead of being discarded for a pointless retry.
 func TestOnComplete_TerminalErrorWithToolCalls_SkipsCrashPath(t *testing.T) {
 	t.Parallel()
-	h, tasks, _, cleanup := newReviewTestEnv(t)
+	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const agentID = "agent-hr-worked-then-errored"

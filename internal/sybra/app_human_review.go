@@ -874,13 +874,6 @@ func (h *humanReviewHandler) recordUnblocked(current task.Task, agentID string, 
 	h.applyUnblockedRecovery(current, agentID, v)
 }
 
-func (h *humanReviewHandler) workCtxFor(projectID string) *WorkScrubContext {
-	if h.workCtx == nil {
-		return nil
-	}
-	return h.workCtx(projectID)
-}
-
 func (h *humanReviewHandler) findExistingLocalBugTaskOnRoute(title, routeTag string) *task.Task {
 	title = strings.TrimSpace(title)
 	routeTag = strings.TrimSpace(routeTag)
@@ -1346,13 +1339,6 @@ func defaultStr(s, fallback string) string {
 		return fallback
 	}
 	return s
-}
-
-func urlOrPlaceholder(url, title string) string {
-	if url != "" {
-		return url
-	}
-	return "(issue: " + title + ")"
 }
 
 // verdictAlreadyRendered reports whether any completed human-review agent run

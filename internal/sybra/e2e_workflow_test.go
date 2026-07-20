@@ -1208,7 +1208,6 @@ func TestE2E_HumanReview_StructuredFallbackUnblocksTask(t *testing.T) {
 	cfg.HumanReview.Enabled = true
 	cfg.HumanReview.SybraRepoDir = env.agentDir
 	cfg.HumanReview.MaxPerHour = 3
-	sink := &fakeIssueSink{created: true, url: "https://github.com/Automaat/sybra/issues/42"}
 	h := newHumanReviewHandler(cfg, env.tasks, env.agents, nil, e2eLogger(t), config.HomeDir(), "", nil)
 	env.onAgentComplete = h.onComplete
 
@@ -1253,9 +1252,6 @@ func TestE2E_HumanReview_StructuredFallbackUnblocksTask(t *testing.T) {
 	}
 	if !strings.Contains(tk.StatusReason, "auto-review recovery") {
 		t.Fatalf("status_reason = %q, want auto-review recovery marker", tk.StatusReason)
-	}
-	if sink.calls != 0 {
-		t.Fatalf("sink calls = %d, want 0", sink.calls)
 	}
 }
 
