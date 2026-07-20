@@ -39,6 +39,9 @@ func (f *FileConfig) HasSchemaVersion() bool {
 }
 
 func (f *FileConfig) Has(path ...string) bool {
+	if _, ok := f.authoredNodeAt(path...); ok {
+		return true
+	}
 	_, ok := f.nodeAt(path...)
 	return ok
 }
@@ -249,6 +252,11 @@ var durationAliasSpecs = []durationAliasSpec{
 	{aliasPath: []string{"github", "reviews_fast"}, legacyPath: []string{"github", "reviews_fast_seconds"}, fieldPath: []string{"GitHub", "ReviewsFastSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"github", "reviews_slow"}, legacyPath: []string{"github", "reviews_slow_seconds"}, fieldPath: []string{"GitHub", "ReviewsSlowSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"github", "issues"}, legacyPath: []string{"github", "issues_seconds"}, fieldPath: []string{"GitHub", "IssuesSeconds"}, unit: unitSeconds, kind: kindInt},
+	{aliasPath: []string{"github", "polling", "issues", "interval"}, legacyPath: []string{"github", "polling", "issues", "interval_seconds"}, fieldPath: []string{"GitHub", "Polling", "Issues", "IntervalSeconds"}, unit: unitSeconds, kind: kindInt},
+	{aliasPath: []string{"github", "polling", "sybra_prs", "active_interval"}, legacyPath: []string{"github", "polling", "sybra_prs", "active_interval_seconds"}, fieldPath: []string{"GitHub", "Polling", "SybraPRs", "ActiveIntervalSeconds"}, unit: unitSeconds, kind: kindInt},
+	{aliasPath: []string{"github", "polling", "sybra_prs", "idle_interval"}, legacyPath: []string{"github", "polling", "sybra_prs", "idle_interval_seconds"}, fieldPath: []string{"GitHub", "Polling", "SybraPRs", "IdleIntervalSeconds"}, unit: unitSeconds, kind: kindInt},
+	{aliasPath: []string{"github", "polling", "assigned_prs", "active_interval"}, legacyPath: []string{"github", "polling", "assigned_prs", "active_interval_seconds"}, fieldPath: []string{"GitHub", "Polling", "AssignedPRs", "ActiveIntervalSeconds"}, unit: unitSeconds, kind: kindInt},
+	{aliasPath: []string{"github", "polling", "assigned_prs", "idle_interval"}, legacyPath: []string{"github", "polling", "assigned_prs", "idle_interval_seconds"}, fieldPath: []string{"GitHub", "Polling", "AssignedPRs", "IdleIntervalSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"github", "renovate_fast"}, legacyPath: []string{"github", "renovate_fast_seconds"}, fieldPath: []string{"GitHub", "RenovateFastSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"github", "renovate_slow"}, legacyPath: []string{"github", "renovate_slow_seconds"}, fieldPath: []string{"GitHub", "RenovateSlowSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"experience", "ttl"}, legacyPath: []string{"experience", "ttl_days"}, fieldPath: []string{"Experience", "TTLDays"}, unit: unitDays, kind: kindInt},

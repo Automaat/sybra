@@ -95,6 +95,17 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	if cfg.GitHub.PollerRole != "" && cfg.GitHub.PollerRole != "primary" && cfg.GitHub.PollerRole != "secondary" {
 		add("github.poller_role must be \"primary\", \"secondary\", or empty, got %q", cfg.GitHub.PollerRole)
 	}
+	for path, value := range map[string]int{
+		"github.polling.issues.interval_seconds":             cfg.GitHub.Polling.Issues.IntervalSeconds,
+		"github.polling.sybra_prs.active_interval_seconds":   cfg.GitHub.Polling.SybraPRs.ActiveIntervalSeconds,
+		"github.polling.sybra_prs.idle_interval_seconds":     cfg.GitHub.Polling.SybraPRs.IdleIntervalSeconds,
+		"github.polling.assigned_prs.active_interval_seconds": cfg.GitHub.Polling.AssignedPRs.ActiveIntervalSeconds,
+		"github.polling.assigned_prs.idle_interval_seconds":   cfg.GitHub.Polling.AssignedPRs.IdleIntervalSeconds,
+	} {
+		if value < 0 {
+			add("%s must be 0 or greater, got %d", path, value)
+		}
+	}
 	if cfg.GitHub.App.Enabled && strings.TrimSpace(cfg.GitHub.App.PrivateKeyPath) == "" {
 		add("github.app.enabled requires github.app.private_key_path")
 	}

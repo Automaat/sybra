@@ -20,6 +20,17 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+func testGitHubConfig() config.GitHubConfig {
+	return config.GitHubConfig{
+		Enabled: true,
+		Polling: config.GitHubPollingConfig{
+			Issues:      config.GitHubPollingStreamConfig{Enabled: true},
+			SybraPRs:    config.GitHubPRPollingConfig{Enabled: true},
+			AssignedPRs: config.GitHubPRPollingConfig{Enabled: true},
+		},
+	}
+}
+
 func buildPRFixHandler(t *testing.T, tasks *task.Manager, fetchReviewsFn func() (github.ReviewSummary, error)) *Handler {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
@@ -50,6 +61,7 @@ func buildPRFixHandler(t *testing.T, tasks *task.Manager, fetchReviewsFn func() 
 		agents:          agentMgr,
 		prTracker:       github.NewIssueTracker(time.Minute),
 		WorkflowEngine:  engine,
+		cfg:             &config.Config{GitHub: testGitHubConfig()},
 		fetchReviewsFn:  fetchReviewsFn,
 		pushPreflightFn: stubPushPreflight(nil),
 	}
@@ -399,7 +411,9 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsAndLogsFlakeEvent(t *testing.T) {
 		return github.ReviewSummary{CreatedByMe: []github.PullRequest{failingPR}}, nil
 	})
 	r.audit = auditLog
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{FlakyDetection: true}}
+	gh := testGitHubConfig()
+	gh.FlakyDetection = true
+	r.cfg = &config.Config{GitHub: gh}
 	var classifiedRepo, classifiedSHA string
 	var classifiedThreshold float64
 	r.classifyFlakiness = func(repo, sha string, threshold float64) (bool, []string, error) {
@@ -511,7 +525,9 @@ func TestPollAndMonitorPRs_DeterministicCIFailureSkipsFlakeEventEvenWhenEnabled(
 		return github.ReviewSummary{CreatedByMe: []github.PullRequest{failingPR}}, nil
 	})
 	r.audit = auditLog
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{FlakyDetection: true}}
+	gh := testGitHubConfig()
+	gh.FlakyDetection = true
+	r.cfg = &config.Config{GitHub: gh}
 	var classifyCalled bool
 	r.classifyFlakiness = func(repo, sha string, threshold float64) (bool, []string, error) {
 		classifyCalled = true

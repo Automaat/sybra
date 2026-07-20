@@ -317,15 +317,16 @@ External systems Sybra talks to on the operator's behalf.
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `integrations.github.enabled` | `bool` | `true` |  |  | `github.enabled` | `false` | `restart` |  | Enabled is the top-level kill-switch: false forces every GitHub automation off regardless of the sub-toggles below. Fresh generated configs set this to false so first-run GitHub polling is opt-in. Legacy configs that omit this key keep the old enabled behavior during load. true defers to IssuesEnabled/ReviewsEnabled. |
-| `integrations.github.issues_enabled` | `bool` | `true` |  |  | `github.issues_enabled` | `false` | `restart` |  | IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && IssuesEnabled — use RunsIssuesFetcher() rather than reading this field directly. |
-| `integrations.github.reviews_enabled` | `bool` | `true` |  |  | `github.reviews_enabled` | `false` | `restart` |  | ReviewsEnabled gates PR reviewer poll registration specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this field directly. |
+| `integrations.github.polling` | `GitHubPollingConfig` | _(see below)_ |  |  |  | `false` |  |  | Polling is the primary stream-level control surface for GitHub polling. The legacy fields below remain as compatibility inputs during load but new code should read this block through the effective helper methods. |
+| `integrations.github.issues_enabled` | `bool` | `false` |  |  | `github.issues_enabled` | `false` | `restart` |  | IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to true for legacy configs. Deprecated compatibility input for github.polling.issues.enabled. |
+| `integrations.github.reviews_enabled` | `bool` | `false` |  |  | `github.reviews_enabled` | `false` | `restart` |  | ReviewsEnabled gates PR reviewer poll registration specifically. Deprecated compatibility input for both github.polling.sybra_prs.enabled and github.polling.assigned_prs.enabled. |
 | `integrations.github.poller_role` | `string` | `""` |  |  | `github.poller_role` | `false` | `restart` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |
-| `integrations.github.reviews_fast` | `int` | `0` | `seconds` |  | `github.reviews_fast_seconds`, `github.reviews_fast` | `false` | `restart` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. |
+| `integrations.github.reviews_fast` | `int` | `0` | `seconds` |  | `github.reviews_fast_seconds`, `github.reviews_fast` | `false` | `restart` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. Deprecated compatibility input for both PR streams' active intervals. |
 | `integrations.github.review_rounds_per_hour` | `int` | `0` |  |  | `github.review_rounds_per_hour` | `false` | `restart` |  | ReviewRoundsPerHour caps automated review runs one PR may receive in a rolling hour before the task is parked for a human. 0 uses the default; negative disables the cap. Rate-based rather than a lifetime total so a long-lived PR that is legitimately re-reviewed after each push is never blocked, while a runaway loop is stopped within the hour (#2164 sustained ~5/hour for 23 hours). |
-| `integrations.github.reviews_slow` | `int` | `0` | `seconds` |  | `github.reviews_slow_seconds`, `github.reviews_slow` | `false` | `restart` |  |  |
+| `integrations.github.reviews_slow` | `int` | `0` | `seconds` |  | `github.reviews_slow_seconds`, `github.reviews_slow` | `false` | `restart` |  | Deprecated compatibility input for both PR streams' idle intervals. |
 | `integrations.github.reviews_max_prs_per_tick` | `int` | `0` |  |  | `github.reviews_max_prs_per_tick` | `false` | `restart` |  | ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR poller fetches in one tick. Zero falls back to the built-in default; resolved non-positive values mean "unlimited". |
 | `integrations.github.reviews_stable_backoff_max_ticks` | `int` | `0` |  |  | `github.reviews_stable_backoff_max_ticks` | `false` | `restart` |  | ReviewsStableBackoffMaxTicks caps the exponential skip window for linked PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls back to the built-in default; resolved non-positive values disable the backoff entirely. |
-| `integrations.github.issues` | `int` | `0` | `seconds` |  | `github.issues_seconds`, `github.issues` | `false` | `restart` |  |  |
+| `integrations.github.issues` | `int` | `0` | `seconds` |  | `github.issues_seconds`, `github.issues` | `false` | `restart` |  | Deprecated compatibility input for github.polling.issues.interval. |
 | `integrations.github.mention_trigger_phrase` | `string` | `""` |  |  | `github.mention_trigger_phrase` | `false` | `restart` |  | MentionTriggerPhrase, when set, gates a comment-mention search alongside the existing assigned/labeled issue paths: an open issue whose comments contain this phrase (e.g. "@sybra") gets a task via the same dedup/creation path. Empty (default) disables the feature — existing installs see no behavior change. |
 | `integrations.github.renovate_fast` | `int` | `0` | `seconds` |  | `github.renovate_fast_seconds`, `github.renovate_fast` | `false` | `restart` |  |  |
 | `integrations.github.renovate_slow` | `int` | `0` | `seconds` |  | `github.renovate_slow_seconds`, `github.renovate_slow` | `false` | `restart` |  |  |
@@ -334,6 +335,37 @@ External systems Sybra talks to on the operator's behalf.
 | `integrations.github.auto_resolve_clean_merges` | `bool` | `false` |  |  | `github.auto_resolve_clean_merges` | `false` | `restart` |  | AutoResolveCleanMerges is a kill-switch for the deterministic clean-merge fast-path: before dispatching a conflict-recovery agent, Sybra attempts a plain `git merge` of the PR's base branch in Go. When that merge creates a commit with no conflicting hunks, it is pushed and no agent is spawned; conflicts, no-op merges, and errors still fall through to the agent-assisted path. Default off (zero value = false). |
 | `integrations.github.flaky_detection` | `bool` | `false` |  |  | `github.flaky_detection` | `false` | `restart` |  | FlakyDetection is a kill-switch for same-commit CI flakiness classification. When true, a lone ci_failure issue is classified via ClassifyCIFlakiness (the head commit's full check-run history, not just the latest attempt) before it is escalated to a fix agent or a human: a check that both passed and failed on the same SHA at or above FlakySuccessThreshold is flaky, and gets a targeted rerun plus a distinct audit event instead. Default off (zero value = false). |
 | `integrations.github.flaky_success_threshold` | `float64` | `0` |  |  | `github.flaky_success_threshold` | `false` | `restart` |  | FlakySuccessThreshold is the minimum same-check success rate (0-1) for a currently-failing gating check to be classified flaky rather than deterministic. Zero falls back to the built-in default; see GitHubConfig.FlakyThreshold(). |
+
+### GitHubPollingConfig (`integrations.github.polling`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.issues` | `GitHubPollingStreamConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `integrations.github.polling.sybra_prs` | `GitHubPRPollingConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `integrations.github.polling.assigned_prs` | `GitHubPRPollingConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+
+### GitHubPollingStreamConfig (`integrations.github.polling.issues`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.issues.enabled` | `bool` | `true` |  |  | `github.polling.issues.enabled` | `false` | `restart` |  |  |
+| `integrations.github.polling.issues.interval` | `int` | `0` | `seconds` |  | `github.polling.issues.interval_seconds`, `github.polling.issues.interval` | `false` | `restart` |  |  |
+
+### GitHubPRPollingConfig (`integrations.github.polling.sybra_prs`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.sybra_prs.enabled` | `bool` | `true` |  |  | `github.polling.sybra_prs.enabled` | `false` | `restart` |  |  |
+| `integrations.github.polling.sybra_prs.active_interval` | `int` | `0` | `seconds` |  | `github.polling.sybra_prs.active_interval_seconds`, `github.polling.sybra_prs.active_interval` | `false` | `restart` |  |  |
+| `integrations.github.polling.sybra_prs.idle_interval` | `int` | `0` | `seconds` |  | `github.polling.sybra_prs.idle_interval_seconds`, `github.polling.sybra_prs.idle_interval` | `false` | `restart` |  |  |
+
+### GitHubPRPollingConfig (`integrations.github.polling.assigned_prs`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.assigned_prs.enabled` | `bool` | `true` |  |  | `github.polling.assigned_prs.enabled` | `false` | `restart` |  |  |
+| `integrations.github.polling.assigned_prs.active_interval` | `int` | `0` | `seconds` |  | `github.polling.assigned_prs.active_interval_seconds`, `github.polling.assigned_prs.active_interval` | `false` | `restart` |  |  |
+| `integrations.github.polling.assigned_prs.idle_interval` | `int` | `0` | `seconds` |  | `github.polling.assigned_prs.idle_interval_seconds`, `github.polling.assigned_prs.idle_interval` | `false` | `restart` |  |  |
 
 ### GitHubAppConfig (`integrations.github.app`)
 

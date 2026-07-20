@@ -365,7 +365,9 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 func TestPollKnownTaskPRs_CancelsBranchOnlySettledImplementationWorkflow(t *testing.T) {
 	r, tasks := newOutboundWorkflowTestHandler(t)
 	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+	gh := testGitHubConfig()
+	gh.PollerRole = "secondary"
+	r.cfg = &config.Config{GitHub: gh}
 
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
@@ -1200,7 +1202,9 @@ func TestPollKnownTaskPRs_ReconcilesHumanRequiredBlocker(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 	r.prTracker = github.NewIssueTracker(0)
 	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+	gh := testGitHubConfig()
+	gh.PollerRole = "secondary"
+	r.cfg = &config.Config{GitHub: gh}
 
 	parked := mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
 
@@ -1238,7 +1242,9 @@ func TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 	r.prTracker = github.NewIssueTracker(0)
 	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+	gh := testGitHubConfig()
+	gh.PollerRole = "secondary"
+	r.cfg = &config.Config{GitHub: gh}
 
 	projDir := t.TempDir()
 	projStore, err := project.NewStore(projDir, t.TempDir())

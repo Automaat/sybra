@@ -201,13 +201,13 @@ func runsGitHubRateBudgetLoop(cfg *config.Config) bool {
 	if cfg == nil {
 		return false
 	}
-	if cfg.GitHub.RunsReviewer() {
+	if cfg.GitHub.RunsSybraPRs() {
 		return true
 	}
 	if !cfg.GitHub.RunsSearchPollers() {
 		return false
 	}
-	return cfg.GitHub.RunsIssuesFetcher() || cfg.Renovate.Enabled
+	return cfg.GitHub.RunsIssuesFetcher() || cfg.GitHub.RunsAssignedPRs() || cfg.Renovate.Enabled
 }
 
 func (a *App) healthPressureStatus() *health.PressureStatus {
@@ -749,12 +749,14 @@ func registerPollHandlers(a *App, reg pollRegistrar, issuesFetcher *poll.IssuesF
 		a.logger.Info("github.pollers.secondary", "reason", "poller_role=secondary; skipping reviews/issues/renovate searches")
 	}
 	if a.reviewer != nil {
-		if a.cfg.GitHub.RunsReviewer() {
+		if a.cfg.GitHub.RunsSybraPRs() || a.cfg.GitHub.RunsAssignedPRSearches() {
 			reg.Register(a.reviewer, 10*time.Second)
 		} else {
 			a.logger.Info("github.reviews.disabled",
 				"github_enabled", a.cfg.GitHub.Enabled,
-				"reviews_enabled", a.cfg.GitHub.ReviewsEnabled,
+				"github_sybra_prs_enabled", a.cfg.GitHub.RunsSybraPRs(),
+				"github_assigned_prs_enabled", a.cfg.GitHub.RunsAssignedPRs(),
+				"search_owner", runSearch,
 			)
 		}
 	}

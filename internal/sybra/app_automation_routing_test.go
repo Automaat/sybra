@@ -14,6 +14,17 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/review"
 )
 
+func testGitHubRoutingConfig(enabled, issuesEnabled, sybraPRsEnabled, assignedPRsEnabled bool) config.GitHubConfig {
+	return config.GitHubConfig{
+		Enabled: enabled,
+		Polling: config.GitHubPollingConfig{
+			Issues:      config.GitHubPollingStreamConfig{Enabled: issuesEnabled},
+			SybraPRs:    config.GitHubPRPollingConfig{Enabled: sybraPRsEnabled},
+			AssignedPRs: config.GitHubPRPollingConfig{Enabled: assignedPRsEnabled},
+		},
+	}
+}
+
 // TestInitIssuesFetcher_GitHubDisabled_NoFetcherRegistered verifies the
 // machine-level kill switch and the issues-specific sub-toggle: either one
 // being off means the Issues fetcher is never constructed, so startPollHub
@@ -38,7 +49,7 @@ func TestInitIssuesFetcher_GitHubDisabled_NoFetcherRegistered(t *testing.T) {
 			t.Parallel()
 
 			a := setupApp(t)
-			a.cfg = &config.Config{GitHub: config.GitHubConfig{Enabled: tt.enabled, IssuesEnabled: tt.issuesEnabled}}
+			a.cfg = &config.Config{GitHub: testGitHubRoutingConfig(tt.enabled, tt.issuesEnabled, true, true)}
 
 			got := a.initIssuesFetcher(func(string, any) {})
 
@@ -73,13 +84,14 @@ func TestPollHubReviewerRegistration_GitHubReviewToggles(t *testing.T) {
 	tests := []struct {
 		name           string
 		enabled        bool
-		reviewsEnabled bool
+		sybraPRsEnabled  bool
+		assignedEnabled  bool
 		wantRegistered bool
 	}{
-		{"github enabled, reviews enabled registers reviewer", true, true, true},
-		{"github enabled, reviews_enabled false skips reviewer", true, false, false},
-		{"github disabled skips reviewer even if reviews_enabled true", false, true, false},
-		{"github disabled and reviews_enabled false skips reviewer", false, false, false},
+		{"github enabled, sybra pr stream enabled registers reviewer", true, true, true, true},
+		{"github enabled, assigned stream enabled registers reviewer", true, false, true, true},
+		{"github enabled, both pr streams disabled skips reviewer", true, false, false, false},
+		{"github disabled skips reviewer even if pr streams enabled", false, true, true, false},
 	}
 
 	for _, tt := range tests {
@@ -87,7 +99,7 @@ func TestPollHubReviewerRegistration_GitHubReviewToggles(t *testing.T) {
 			t.Parallel()
 
 			a := &App{
-				cfg:      &config.Config{GitHub: config.GitHubConfig{Enabled: tt.enabled, ReviewsEnabled: tt.reviewsEnabled}},
+				cfg:      &config.Config{GitHub: testGitHubRoutingConfig(tt.enabled, true, tt.sybraPRsEnabled, tt.assignedEnabled)},
 				logger:   discardLogger(),
 				reviewer: review.New(nil, nil, nil, nil, discardLogger(), nil, nil, nil, nil, nil, nil),
 			}
@@ -112,7 +124,7 @@ func TestPollHubFollowerDisablesAllPollers(t *testing.T) {
 	follower := &App{
 		cfg: &config.Config{
 			Cluster: config.ClusterConfig{Role: config.ClusterRoleFollower},
-			GitHub:  config.GitHubConfig{Enabled: true, ReviewsEnabled: true, IssuesEnabled: true},
+			GitHub:  testGitHubRoutingConfig(true, true, true, true),
 		},
 		logger:   discardLogger(),
 		reviewer: review.New(nil, nil, nil, nil, discardLogger(), nil, nil, nil, nil, nil, nil),
@@ -126,7 +138,7 @@ func TestPollHubFollowerDisablesAllPollers(t *testing.T) {
 	leader := &App{
 		cfg: &config.Config{
 			Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader},
-			GitHub:  config.GitHubConfig{Enabled: true, ReviewsEnabled: true, IssuesEnabled: true},
+			GitHub:  testGitHubRoutingConfig(true, true, true, true),
 		},
 		logger:   discardLogger(),
 		reviewer: review.New(nil, nil, nil, nil, discardLogger(), nil, nil, nil, nil, nil, nil),
@@ -145,7 +157,8 @@ func TestRunsGitHubRateBudgetLoop(t *testing.T) {
 		name            string
 		enabled         bool
 		issuesEnabled   bool
-		reviewsEnabled  bool
+		sybraPRsEnabled bool
+		assignedEnabled bool
 		renovateEnabled bool
 		pollerRole      string
 		want            bool
@@ -154,43 +167,66 @@ func TestRunsGitHubRateBudgetLoop(t *testing.T) {
 			name:           "top-level disabled skips budget loop",
 			enabled:        false,
 			issuesEnabled:  true,
-			reviewsEnabled: true,
+			sybraPRsEnabled: true,
+			assignedEnabled: true,
 			want:           false,
 		},
 		{
 			name:           "both sub-toggles disabled skips budget loop",
 			enabled:        true,
 			issuesEnabled:  false,
-			reviewsEnabled: false,
+			sybraPRsEnabled: false,
+			assignedEnabled: false,
 			want:           false,
 		},
 		{
 			name:           "issues fetcher enabled runs budget loop",
 			enabled:        true,
 			issuesEnabled:  true,
-			reviewsEnabled: false,
+			sybraPRsEnabled: false,
+			assignedEnabled: false,
 			want:           true,
 		},
 		{
-			name:           "reviewer enabled runs budget loop",
+			name:           "sybra pr stream enabled runs budget loop",
 			enabled:        true,
 			issuesEnabled:  false,
-			reviewsEnabled: true,
+			sybraPRsEnabled: true,
+			assignedEnabled: false,
 			want:           true,
 		},
 		{
-			name:           "secondary reviewer still runs budget loop",
+			name:           "secondary sybra pr monitoring still runs budget loop",
 			enabled:        true,
 			issuesEnabled:  false,
-			reviewsEnabled: true,
+			sybraPRsEnabled: true,
+			assignedEnabled: false,
 			pollerRole:     "secondary",
 			want:           true,
+		},
+		{
+			name:           "assigned pr discovery on primary runs budget loop",
+			enabled:        true,
+			issuesEnabled:  false,
+			sybraPRsEnabled: false,
+			assignedEnabled: true,
+			want:           true,
+		},
+		{
+			name:           "assigned pr discovery on secondary skips budget loop",
+			enabled:        true,
+			issuesEnabled:  false,
+			sybraPRsEnabled: false,
+			assignedEnabled: true,
+			pollerRole:     "secondary",
+			want:           false,
 		},
 		{
 			name:           "secondary issues-only skips budget loop",
 			enabled:        true,
 			issuesEnabled:  true,
-			reviewsEnabled: false,
+			sybraPRsEnabled: false,
+			assignedEnabled: false,
 			pollerRole:     "secondary",
 			want:           false,
 		},
@@ -198,7 +234,8 @@ func TestRunsGitHubRateBudgetLoop(t *testing.T) {
 			name:            "renovate enabled on primary runs budget loop",
 			enabled:         true,
 			issuesEnabled:   false,
-			reviewsEnabled:  false,
+			sybraPRsEnabled: false,
+			assignedEnabled: false,
 			renovateEnabled: true,
 			want:            true,
 		},
@@ -206,7 +243,8 @@ func TestRunsGitHubRateBudgetLoop(t *testing.T) {
 			name:            "secondary renovate-only skips budget loop",
 			enabled:         true,
 			issuesEnabled:   false,
-			reviewsEnabled:  false,
+			sybraPRsEnabled: false,
+			assignedEnabled: false,
 			pollerRole:      "secondary",
 			renovateEnabled: true,
 			want:            false,
@@ -219,10 +257,13 @@ func TestRunsGitHubRateBudgetLoop(t *testing.T) {
 
 			cfg := &config.Config{
 				GitHub: config.GitHubConfig{
-					Enabled:        tt.enabled,
-					IssuesEnabled:  tt.issuesEnabled,
-					ReviewsEnabled: tt.reviewsEnabled,
-					PollerRole:     tt.pollerRole,
+					Enabled:    tt.enabled,
+					PollerRole: tt.pollerRole,
+					Polling: config.GitHubPollingConfig{
+						Issues:      config.GitHubPollingStreamConfig{Enabled: tt.issuesEnabled},
+						SybraPRs:    config.GitHubPRPollingConfig{Enabled: tt.sybraPRsEnabled},
+						AssignedPRs: config.GitHubPRPollingConfig{Enabled: tt.assignedEnabled},
+					},
 				},
 				Renovate: config.RenovateConfig{
 					Enabled: tt.renovateEnabled,
