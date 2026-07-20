@@ -1446,6 +1446,12 @@ func SetPushAuthFailureHook(f func(err error)) {
 // skips SSH and non-GitHub remotes: those either use OS-level ssh-agent state or
 // an unknown host-specific credential mechanism, so a false-negative preflight
 // would be worse than letting the actual push report the error.
+//
+// The probe must be write-shaped, not read-shaped: a public GitHub repo can let
+// anonymous `git ls-remote` succeed while rejecting the real `git push`. Use a
+// dry-run push to a synthetic ref instead — it exercises the same credential
+// helper path without mutating remote state or depending on the live task branch
+// being fast-forwardable.
 func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 	remote := PushRemote(ctx, worktreePath)
 	pushURL, err := executil.Output(ctx, worktreePath, "git", "remote", "get-url", "--push", remote)
@@ -1456,7 +1462,7 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 		return nil
 	}
 
-	authErr := checkGitRemoteAuth(ctx, worktreePath, remote)
+	authErr := checkGitPushAuth(ctx, worktreePath, remote)
 	for attempt := 0; attempt < len(pushPreflightRetryBackoffs) && authErr != nil; attempt++ {
 		// Best-effort: a mint failure here (e.g. a transient network blip
 		// talking to GitHub) shouldn't itself abort the retry loop — the plain
@@ -1465,7 +1471,7 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 		if err := pushPreflightRetrySleep(ctx, pushPreflightRetryBackoffs[attempt]); err != nil {
 			break
 		}
-		authErr = checkGitRemoteAuth(ctx, worktreePath, remote)
+		authErr = checkGitPushAuth(ctx, worktreePath, remote)
 	}
 	if authErr != nil {
 		pushAuthFailureHook(authErr)
@@ -1473,16 +1479,26 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 	return authErr
 }
 
-func checkGitRemoteAuth(ctx context.Context, worktreePath, remote string) error {
+func checkGitPushAuth(ctx context.Context, worktreePath, remote string) error {
+	refspec, err := pushPreflightRefspec(ctx, worktreePath)
+	if err != nil {
+		return fmt.Errorf("%w: resolve preflight refspec: %w", ErrPushAuthPreflight, err)
+	}
+
 	failures := make([]string, 0, 2)
-	for _, attempt := range credentialAttempts(pushEnv()) {
-		msg, err := gitRemoteAuthMessage(ctx, worktreePath, remote, attempt.env)
-		if err == nil {
+	attempts := credentialAttempts(pushEnv())
+	for idx, attempt := range attempts {
+		msg, attemptErr := gitPushDryRunAuthMessage(ctx, worktreePath, remote, refspec, attempt.env)
+		if attemptErr == nil {
 			return nil
 		}
 		failures = append(failures, attempt.label+": "+msg)
+		if idx == 0 && len(attempts) > 1 && github.IsAuthError(attemptErr) {
+			continue
+		}
+		break
 	}
-	return fmt.Errorf("%w: git ls-remote %s HEAD: %s", ErrPushAuthPreflight, remote, strings.Join(failures, "; "))
+	return fmt.Errorf("%w: git push --dry-run %s %s: %s", ErrPushAuthPreflight, remote, refspec, strings.Join(failures, "; "))
 }
 
 func credentialAttempts(injectedEnv []string) []credentialAttempt {
@@ -1495,8 +1511,16 @@ func credentialAttempts(injectedEnv []string) []credentialAttempt {
 	}
 }
 
-func gitRemoteAuthMessage(ctx context.Context, worktreePath, remote string, env []string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", remote, "HEAD")
+func pushPreflightRefspec(ctx context.Context, worktreePath string) (string, error) {
+	head, err := CurrentCommit(ctx, worktreePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve HEAD commit: %w", err)
+	}
+	return "HEAD:refs/heads/sybra-preflight/" + head, nil
+}
+
+func gitPushDryRunAuthMessage(ctx context.Context, worktreePath, remote, refspec string, env []string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "push", "--dry-run", remote, refspec)
 	cmd.Dir = worktreePath
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
@@ -1507,7 +1531,8 @@ func gitRemoteAuthMessage(ctx context.Context, worktreePath, remote string, env 
 	if msg == "" {
 		msg = err.Error()
 	}
-	return scrubCredentialPreflightMessage(msg), err
+	msg = scrubCredentialPreflightMessage(msg)
+	return msg, fmt.Errorf("git push --dry-run %s %s: %w: %s", remote, refspec, err, msg)
 }
 
 func isGitHubHTTPSRemote(remoteURL string) bool {

@@ -563,8 +563,8 @@ func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) str
 	}
 	b.WriteString("PUSH_REMOTE=origin\n")
 	b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
-	b.WriteString("PUSH_URL=$(git remote get-url --push \"$PUSH_REMOTE\")\n")
-	b.WriteString("case \"$PUSH_URL\" in https://github.com/*|http://github.com/*|https://github.com:[0-9]*/*|http://github.com:[0-9]*/*) gh auth status --hostname github.com >/dev/null ;; esac\n")
+	b.WriteString("PREFLIGHT_REF=HEAD:refs/heads/sybra-preflight/$(git rev-parse --verify HEAD)\n")
+	b.WriteString("git push --dry-run \"$PUSH_REMOTE\" \"$PREFLIGHT_REF\"\n")
 	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
 	if allowHistoryRewrite {
 		fmt.Fprintf(&b, "\n# If you rebased or otherwise rewrote this branch's history, use lease-protected force-push instead.\ngit push --force-with-lease \"$PUSH_REMOTE\" HEAD:%s", branch)

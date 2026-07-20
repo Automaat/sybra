@@ -3570,14 +3570,14 @@ func setGitHubOriginPushURL(t *testing.T, wtPath string) {
 // first failCount `ls-remote` invocations (as a bad/rotating credential would)
 // and succeeds on every call after that. Call count persists in a sibling file
 // since each invocation is a separate process.
-func writeGitLSRemoteFailingNTimes(t *testing.T, dir, realGit string, failCount int) {
+func writeGitPushDryRunFailingNTimes(t *testing.T, dir, realGit string, failCount int) {
 	t.Helper()
-	counterFile := filepath.Join(dir, "git-ls-remote-calls")
+	counterFile := filepath.Join(dir, "git-push-dry-run-calls")
 	if err := os.WriteFile(counterFile, []byte("0"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	script := fmt.Sprintf(`#!/bin/sh
-if [ "$1" = "ls-remote" ]; then
+if [ "$1" = "push" ] && [ "$2" = "--dry-run" ]; then
   n=$(cat %s)
   n=$((n+1))
   echo "$n" > %s
@@ -3585,7 +3585,6 @@ if [ "$1" = "ls-remote" ]; then
     echo 'remote: Bad credentials' >&2
     exit 1
   fi
-  printf 'deadbeef\tHEAD\n'
   exit 0
 fi
 exec %q "$@"
@@ -3595,17 +3594,16 @@ exec %q "$@"
 	}
 }
 
-func writeGitLSRemoteWrapperRejectingInjectedToken(t *testing.T, dir, realGit, badToken string) string {
+func writeGitPushDryRunWrapperRejectingInjectedToken(t *testing.T, dir, realGit, badToken string) string {
 	t.Helper()
-	logFile := filepath.Join(dir, "git-ls-remote-token-log")
+	logFile := filepath.Join(dir, "git-push-dry-run-token-log")
 	script := fmt.Sprintf(`#!/bin/sh
-if [ "$1" = "ls-remote" ]; then
+if [ "$1" = "push" ] && [ "$2" = "--dry-run" ]; then
   printf '%%s\n' "${GH_TOKEN:-<empty>}" >> %s
   if [ "${GH_TOKEN:-}" = %q ]; then
     echo 'remote: Bad credentials' >&2
     exit 1
   fi
-  printf 'deadbeef\tHEAD\n'
   exit 0
 fi
 exec %q "$@"
@@ -3614,6 +3612,34 @@ exec %q "$@"
 		t.Fatal(err)
 	}
 	return logFile
+}
+
+func writeGitPreflightFalsePassRegressionWrapper(t *testing.T, dir, realGit string) (pushLog, lsRemoteLog string) {
+	t.Helper()
+	pushLog = filepath.Join(dir, "git-push-dry-run-log")
+	lsRemoteLog = filepath.Join(dir, "git-ls-remote-log")
+	for _, path := range []string{pushLog, lsRemoteLog} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "ls-remote" ]; then
+  printf 'ls-remote\n' >> %s
+  printf 'deadbeef\tHEAD\n'
+  exit 0
+fi
+if [ "$1" = "push" ] && [ "$2" = "--dry-run" ]; then
+  printf 'push --dry-run\n' >> %s
+  echo 'remote: write access to repository not granted' >&2
+  exit 1
+fi
+exec %q "$@"
+`, lsRemoteLog, pushLog, realGit)
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return pushLog, lsRemoteLog
 }
 
 func writeGitPushWrapperRejectingInjectedToken(t *testing.T, dir, realGit, badToken string) string {
@@ -3648,9 +3674,9 @@ func readLogLines(t *testing.T, path string) []string {
 	return strings.Split(trimmed, "\n")
 }
 
-func readGitLSRemoteCallCount(t *testing.T, dir string) int {
+func readGitPushDryRunCallCount(t *testing.T, dir string) int {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, "git-ls-remote-calls"))
+	data, err := os.ReadFile(filepath.Join(dir, "git-push-dry-run-calls"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3695,15 +3721,15 @@ func TestPreflightPushCredentials_RetriesTransientFailureThenSucceeds(t *testing
 		t.Fatalf("LookPath(git): %v", err)
 	}
 	dir := t.TempDir()
-	writeGitLSRemoteFailingNTimes(t, dir, realGit, 1)
+	writeGitPushDryRunFailingNTimes(t, dir, realGit, 1)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	refreshCalls := stubPushPreflightRetry(t)
 
 	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
 		t.Fatalf("PreflightPushCredentials = %v, want nil after retry succeeds", err)
 	}
-	if got := readGitLSRemoteCallCount(t, dir); got != 2 {
-		t.Fatalf("git ls-remote invoked %d times, want 2 (1 failure + 1 retry)", got)
+	if got := readGitPushDryRunCallCount(t, dir); got != 2 {
+		t.Fatalf("git push --dry-run invoked %d times, want 2 (1 failure + 1 retry)", got)
 	}
 	if *refreshCalls != 1 {
 		t.Fatalf("forceRefreshAppToken called %d times, want 1", *refreshCalls)
@@ -3719,7 +3745,7 @@ func TestPreflightPushCredentials_FallsBackToAmbientAuthWhenInjectedTokenIsBad(t
 		t.Fatalf("LookPath(git): %v", err)
 	}
 	dir := t.TempDir()
-	logFile := writeGitLSRemoteWrapperRejectingInjectedToken(t, dir, realGit, "bad-token")
+	logFile := writeGitPushDryRunWrapperRejectingInjectedToken(t, dir, realGit, "bad-token")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	refreshCalls := stubPushPreflightRetry(t)
 
@@ -3734,7 +3760,7 @@ func TestPreflightPushCredentials_FallsBackToAmbientAuthWhenInjectedTokenIsBad(t
 		t.Fatalf("forceRefreshAppToken called %d times, want 0 when ambient fallback succeeds immediately", *refreshCalls)
 	}
 	if got := readLogLines(t, logFile); len(got) != 2 || got[0] != "bad-token" || got[1] == "bad-token" {
-		t.Fatalf("git ls-remote GH_TOKEN log = %v, want injected bad token then ambient/non-bad token", got)
+		t.Fatalf("git push --dry-run GH_TOKEN log = %v, want injected bad token then ambient/non-bad token", got)
 	}
 }
 
@@ -3747,7 +3773,7 @@ func TestPreflightPushCredentials_ExhaustsRetriesReturnsError(t *testing.T) {
 		t.Fatalf("LookPath(git): %v", err)
 	}
 	dir := t.TempDir()
-	writeGitLSRemoteFailingNTimes(t, dir, realGit, 100)
+	writeGitPushDryRunFailingNTimes(t, dir, realGit, 100)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	refreshCalls := stubPushPreflightRetry(t)
 
@@ -3756,11 +3782,36 @@ func TestPreflightPushCredentials_ExhaustsRetriesReturnsError(t *testing.T) {
 		t.Fatalf("PreflightPushCredentials error = %v, want ErrPushAuthPreflight", preflightErr)
 	}
 	wantCalls := len(pushPreflightRetryBackoffs) + 1
-	if got := readGitLSRemoteCallCount(t, dir); got != wantCalls {
-		t.Fatalf("git ls-remote invoked %d times, want %d (1 initial + %d retries)", got, wantCalls, len(pushPreflightRetryBackoffs))
+	if got := readGitPushDryRunCallCount(t, dir); got != wantCalls {
+		t.Fatalf("git push --dry-run invoked %d times, want %d (1 initial + %d retries)", got, wantCalls, len(pushPreflightRetryBackoffs))
 	}
 	if *refreshCalls != len(pushPreflightRetryBackoffs) {
 		t.Fatalf("forceRefreshAppToken called %d times, want %d", *refreshCalls, len(pushPreflightRetryBackoffs))
+	}
+}
+
+func TestPreflightPushCredentials_DoesNotFalsePassOnReadOnlyProbe(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	setGitHubOriginPushURL(t, wtPath)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath(git): %v", err)
+	}
+	dir := t.TempDir()
+	pushLog, lsRemoteLog := writeGitPreflightFalsePassRegressionWrapper(t, dir, realGit)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubPushPreflightRetry(t)
+
+	err = PreflightPushCredentials(context.Background(), wtPath)
+	if !errors.Is(err, ErrPushAuthPreflight) {
+		t.Fatalf("PreflightPushCredentials error = %v, want ErrPushAuthPreflight", err)
+	}
+	if got := readLogLines(t, pushLog); len(got) == 0 {
+		t.Fatalf("git push --dry-run log = %v, want at least one probe", got)
+	}
+	if got := readLogLines(t, lsRemoteLog); len(got) != 0 {
+		t.Fatalf("git ls-remote log = %v, want no read-only probes", got)
 	}
 }
 
@@ -3792,7 +3843,7 @@ func TestPreflightPushCredentials_HookFiresOnExhaustedRetries(t *testing.T) {
 		t.Fatalf("LookPath(git): %v", err)
 	}
 	dir := t.TempDir()
-	writeGitLSRemoteFailingNTimes(t, dir, realGit, 100)
+	writeGitPushDryRunFailingNTimes(t, dir, realGit, 100)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubPushPreflightRetry(t)
 	hook := stubPushAuthFailureHook(t)
@@ -3817,7 +3868,7 @@ func TestPreflightPushCredentials_HookNotCalledOnSuccess(t *testing.T) {
 		t.Fatalf("LookPath(git): %v", err)
 	}
 	dir := t.TempDir()
-	writeGitLSRemoteFailingNTimes(t, dir, realGit, 0)
+	writeGitPushDryRunFailingNTimes(t, dir, realGit, 0)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubPushPreflightRetry(t)
 	hook := stubPushAuthFailureHook(t)
