@@ -93,6 +93,11 @@ type Manager struct {
 	// sum(liveByProvider) == liveCount always holds. Read by gateProvider to
 	// steer dispatch away from an at-cap provider.
 	liveByProvider map[string]int
+	// reservedCount tracks capacity reservations held across expensive pre-run
+	// work such as worktree setup. Reservations count against MaxConcurrent so
+	// another dispatcher cannot steal the slot between "capacity looks free"
+	// and registerRunningAgent's final claim.
+	reservedCount int
 	// maxInFlightPerProvider caps concurrent in-flight agents per provider.
 	// 0 disables the cap (soft cap: never blocks dispatch, only redirects).
 	maxInFlightPerProvider int
@@ -358,6 +363,16 @@ type DispatchClaim struct {
 	released bool
 }
 
+// CapacityReservation holds one reserved agent-pool slot across pre-run work.
+// Release is idempotent and nil-safe. A successful Run consumes the
+// reservation instead of re-checking the cap, so the slot stays owned across
+// worktree prep/setup.
+type CapacityReservation struct {
+	manager  *Manager
+	counted  bool
+	released bool
+}
+
 // TryClaimDispatch reserves the right to dispatch an agent for taskID. On a
 // true ok, the caller MUST release the returned claim exactly once dispatch
 // finishes (success or failure) — typically via `defer claim.Release()` —
@@ -382,6 +397,42 @@ func (c *DispatchClaim) Release() {
 	}
 	c.released = true
 	c.manager.ReleaseTaskDispatch(c.taskID)
+}
+
+func (r *CapacityReservation) consumeLocked() bool {
+	if r == nil || r.released {
+		return false
+	}
+	r.released = true
+	if r.counted && r.manager.reservedCount > 0 {
+		r.manager.reservedCount--
+	}
+	return true
+}
+
+// Release frees a reserved slot. Safe to call after a successful Run: the
+// reservation is already consumed and this becomes a no-op.
+func (r *CapacityReservation) Release() {
+	if r == nil {
+		return
+	}
+	m := r.manager
+	if m == nil {
+		return
+	}
+	shouldNudge := false
+	m.mu.Lock()
+	if !r.released {
+		r.released = true
+		if r.counted && m.reservedCount > 0 {
+			m.reservedCount--
+			shouldNudge = true
+		}
+	}
+	m.mu.Unlock()
+	if shouldNudge {
+		m.signalQueueNudge()
+	}
 }
 
 // ReplaceRuntimeConfig replaces the complete live runtime snapshot. Settings
@@ -801,18 +852,31 @@ func (m *Manager) RunningCount() int {
 	return m.liveCount
 }
 
+// TryHoldCapacity reserves one slot in the global agent pool until the caller
+// releases it or converts it into a live agent registration.
+func (m *Manager) TryHoldCapacity() (*CapacityReservation, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.maxConcurrent <= 0 {
+		return &CapacityReservation{manager: m}, true
+	}
+	if m.liveCount+m.reservedCount >= m.maxConcurrent {
+		return nil, false
+	}
+	m.reservedCount++
+	return &CapacityReservation{manager: m, counted: true}, true
+}
+
 // TryReserveSlot is an advisory peek at capacity: it reports whether a slot
 // is currently available (liveCount below maxConcurrent, or the cap
-// disabled) without claiming or mutating anything. registerRunningAgent
-// remains the sole authoritative slot claim — it re-checks the cap under the
-// same lock at registration time and additionally enforces
-// IgnoreConcurrencyLimit, which TryReserveSlot cannot honor since it has no
-// RunConfig to consult. Callers should treat a true result as "worth
-// attempting dispatch", not as a held reservation.
+// disabled) once both running agents and held reservations are counted, but
+// without claiming or mutating anything. registerRunningAgent remains the sole
+// authoritative live-agent claim, and TryHoldCapacity is the mutation path for
+// dispatchers that must actually own the slot across pre-run work.
 func (m *Manager) TryReserveSlot() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.maxConcurrent <= 0 || m.liveCount < m.maxConcurrent
+	return m.maxConcurrent <= 0 || m.liveCount+m.reservedCount < m.maxConcurrent
 }
 
 // AvailableQueueDrainSlots returns how many queued manual items can be drained
@@ -828,7 +892,7 @@ func (m *Manager) AvailableQueueDrainSlots(queueDepth int) int {
 	if m.maxConcurrent <= 0 {
 		return queueDepth
 	}
-	free := m.maxConcurrent - m.liveCount
+	free := m.maxConcurrent - m.liveCount - m.reservedCount
 	if free <= 0 {
 		return 0
 	}
