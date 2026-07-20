@@ -109,7 +109,7 @@ func newReviewTestEnv(t *testing.T) (*humanReviewHandler, *task.Manager, *fakeIs
 	cfg.HumanReview.MaxPerHour = 3
 	sink := &fakeIssueSink{created: true, url: "https://github.com/Automaat/sybra/issues/42"}
 	logger := slog.New(slog.DiscardHandler)
-	h := newHumanReviewHandler(cfg, tasks, nil, nil, logger, sink, dir, filepath.Join(dir, "missing.log"), nil)
+	h := newHumanReviewHandler(cfg, tasks, nil, nil, logger, dir, filepath.Join(dir, "missing.log"), nil)
 	return h, tasks, sink, func() {}
 }
 
@@ -814,7 +814,7 @@ func TestOnComplete_BareJSONVerdict_HumanDecision(t *testing.T) {
 
 // TestOnComplete_BareJSONVerdict_SybraBug is the sybra_bug counterpart of
 // TestOnComplete_BareJSONVerdict_HumanDecision — bare JSON assistant output,
-// no fence, driving the issue-filing side effect.
+// no fence, driving the default non-filing note side effect.
 func TestOnComplete_BareJSONVerdict_SybraBug(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
@@ -842,26 +842,27 @@ func TestOnComplete_BareJSONVerdict_SybraBug(t *testing.T) {
 	h.inflight[tk.ID] = "agent-4"
 	h.onComplete(ag)
 
-	if sink.calls != 1 {
-		t.Fatalf("sink calls: got %d want 1", sink.calls)
-	}
-	if sink.gotTitle != "fix(workflow): verify_commits race" {
-		t.Errorf("sink title: got %q", sink.gotTitle)
+	if sink.calls != 0 {
+		t.Fatalf("sink calls: got %d want 0", sink.calls)
 	}
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
 	}
-	if got.Status != task.StatusBlocked {
-		t.Errorf("status: got %q want blocked", got.Status)
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status: got %q want human-required", got.Status)
 	}
-	if got.BlockedByIssue != sink.url {
-		t.Errorf("BlockedByIssue: got %q want %q", got.BlockedByIssue, sink.url)
+	if got.BlockedByIssue != "" {
+		t.Errorf("BlockedByIssue: got %q want empty", got.BlockedByIssue)
+	}
+	if !strings.Contains(got.Body, "Auto-review verdict: Sybra bug (note only)") ||
+		!strings.Contains(got.Body, "fix(workflow): verify_commits race") {
+		t.Errorf("expected non-filing note in body; got:\n%s", got.Body)
 	}
 }
 
-func TestOnComplete_SybraBugVerdict_FilesIssueAndBlocks(t *testing.T) {
+func TestOnComplete_SybraBugVerdict_DefaultNotesWithoutFiling(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
 	defer cleanup()
@@ -888,34 +889,23 @@ func TestOnComplete_SybraBugVerdict_FilesIssueAndBlocks(t *testing.T) {
 	h.inflight[tk.ID] = "agent-2"
 	h.onComplete(ag)
 
-	if sink.calls != 1 {
-		t.Fatalf("sink calls: got %d want 1", sink.calls)
-	}
-	if sink.gotTitle != "fix(workflow): verify_commits race" {
-		t.Errorf("sink title: got %q", sink.gotTitle)
-	}
-	if !strings.Contains(sink.gotBody, "race condition") {
-		t.Errorf("sink body missing diagnosis: %q", sink.gotBody)
-	}
-	if len(sink.gotLabels) != 2 || sink.gotLabels[0] != "workflow" {
-		t.Errorf("sink labels: got %v", sink.gotLabels)
+	if sink.calls != 0 {
+		t.Fatalf("sink calls: got %d want 0", sink.calls)
 	}
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
 	}
-	if got.Status != task.StatusBlocked {
-		t.Errorf("status: got %q want blocked", got.Status)
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status: got %q want human-required", got.Status)
 	}
-	if got.BlockedByIssue != sink.url {
-		t.Errorf("BlockedByIssue: got %q want %q", got.BlockedByIssue, sink.url)
+	if got.BlockedByIssue != "" {
+		t.Errorf("BlockedByIssue: got %q want empty", got.BlockedByIssue)
 	}
-	if !strings.Contains(got.Body, "Auto-review verdict: blocked by Sybra bug") {
-		t.Errorf("expected blocked-by-Sybra-bug header; got:\n%s", got.Body)
-	}
-	if !strings.Contains(got.Body, sink.url) {
-		t.Errorf("expected issue URL in body; got:\n%s", got.Body)
+	if !strings.Contains(got.Body, "Auto-review verdict: Sybra bug (note only)") ||
+		!strings.Contains(got.Body, "race condition") {
+		t.Errorf("expected non-filing diagnosis note; got:\n%s", got.Body)
 	}
 }
 
@@ -1122,166 +1112,11 @@ func TestOnComplete_StaleVerdictSkipsWhenTaskNoLongerHumanRequired(t *testing.T)
 	}
 }
 
-func TestOnComplete_SinkError_CreatesLocalFallback(t *testing.T) {
+func TestOnComplete_WorkProject_ConfiguredLocalTaskScrubbed(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
 	defer cleanup()
-	sink.err = errors.New("rate limited")
-
-	tk, err := tasks.Create("Whatever", "Body.", "headless")
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
-		t.Fatalf("flip: %v", err)
-	}
-
-	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
-	ag.AppendOutput(agent.StreamEvent{
-		Type:    "assistant",
-		Content: "```sybra-verdict\n" + `{"decision":"sybra_bug","summary":"x","issue_title":"fix(x): y","issue_body":"z"}` + "\n```",
-	})
-	h.onComplete(ag)
-
-	got, err := tasks.Get(tk.ID)
-	if err != nil {
-		t.Fatalf("re-load: %v", err)
-	}
-	if got.Status != task.StatusBlocked {
-		t.Errorf("status: got %q want blocked (local fallback path)", got.Status)
-	}
-	if got.BlockedByIssue != "" {
-		t.Errorf("BlockedByIssue should be empty on sink error; got %q", got.BlockedByIssue)
-	}
-	if !strings.Contains(got.Body, "Auto-review verdict: blocked by Sybra bug (local fallback)") ||
-		!strings.Contains(got.Body, "GitHub issue filing failed: rate limited") {
-		t.Errorf("expected local fallback note in body; got:\n%s", got.Body)
-	}
-	if !strings.Contains(got.StatusReason, "issue filing failed") {
-		t.Errorf("status reason = %q, want issue filing failed context", got.StatusReason)
-	}
-	if !strings.Contains(got.StatusReason, "local task ") {
-		t.Errorf("status reason = %q, want local task pointer", got.StatusReason)
-	}
-}
-
-func TestOnComplete_SinkError_DedupesExistingLocalFallback(t *testing.T) {
-	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
-	defer cleanup()
-	sink.err = errors.New("rate limited")
-
-	tk, err := tasks.Create("Whatever", "Body.", "headless")
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	verdictContent := "```sybra-verdict\n" +
-		`{"decision":"sybra_bug","summary":"branch stale before agent start","issue_title":"fix(workflow): stale branch race","issue_body":"z"}` +
-		"\n```"
-
-	runOnce := func() {
-		if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
-			t.Fatalf("flip: %v", err)
-		}
-		ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
-		ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: verdictContent})
-		h.onComplete(ag)
-	}
-
-	runOnce()
-	runOnce()
-
-	all, err := tasks.List()
-	if err != nil {
-		t.Fatalf("list tasks: %v", err)
-	}
-	var localBugTasks []task.Task
-	for _, lt := range all {
-		if lt.ID == tk.ID {
-			continue
-		}
-		localBugTasks = append(localBugTasks, lt)
-	}
-	if len(localBugTasks) != 1 {
-		t.Fatalf("want exactly 1 local fallback task after two runs, got %d: %+v", len(localBugTasks), localBugTasks)
-	}
-
-	got, err := tasks.Get(tk.ID)
-	if err != nil {
-		t.Fatalf("re-load: %v", err)
-	}
-	if got.Status != task.StatusBlocked {
-		t.Errorf("status: got %q want blocked", got.Status)
-	}
-	if !strings.Contains(got.Body, "Auto-review verdict: blocked by Sybra bug (already filed)") {
-		t.Errorf("expected dedup note on second run; got:\n%s", got.Body)
-	}
-	if strings.Count(got.Body, "Linked local Sybra bug") > 1 {
-		t.Errorf("expected only one fresh-filing note, got body:\n%s", got.Body)
-	}
-}
-
-func TestOnComplete_SinkError_DoesNotDedupAgainstUnrelatedSybraBug(t *testing.T) {
-	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
-	defer cleanup()
-	sink.err = errors.New("rate limited")
-
-	if _, err := tasks.CreateFull("fix(workflow): stale branch race", "existing unrelated bug", task.AgentModeHeadless, task.Update{
-		Tags: task.Ptr([]string{"sybra-bug"}),
-	}); err != nil {
-		t.Fatalf("seed unrelated sybra-bug task: %v", err)
-	}
-	tk, err := tasks.Create("Whatever", "Body.", "headless")
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
-		t.Fatalf("flip: %v", err)
-	}
-
-	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
-	ag.AppendOutput(agent.StreamEvent{
-		Type: "assistant",
-		Content: "```sybra-verdict\n" +
-			`{"decision":"sybra_bug","summary":"branch stale before agent start","issue_title":"fix(workflow): stale branch race","issue_body":"z"}` +
-			"\n```",
-	})
-	h.onComplete(ag)
-
-	all, err := tasks.List()
-	if err != nil {
-		t.Fatalf("list tasks: %v", err)
-	}
-	localFallbackCount := 0
-	for _, got := range all {
-		if got.ID == tk.ID {
-			continue
-		}
-		if slices.Contains(got.Tags, "issue-filing-failed") {
-			localFallbackCount++
-		}
-	}
-	if localFallbackCount != 1 {
-		t.Fatalf("want exactly 1 new local fallback task, got %d", localFallbackCount)
-	}
-
-	got, err := tasks.Get(tk.ID)
-	if err != nil {
-		t.Fatalf("re-load: %v", err)
-	}
-	if !strings.Contains(got.Body, "blocked by Sybra bug (local fallback)") {
-		t.Errorf("expected fresh local fallback note, got:\n%s", got.Body)
-	}
-	if strings.Contains(got.Body, "already filed") {
-		t.Errorf("must not dedupe against unrelated sybra-bug task; got:\n%s", got.Body)
-	}
-}
-
-func TestOnComplete_WorkProject_LocalTaskScrubbed(t *testing.T) {
-	t.Parallel()
-	h, tasks, sink, cleanup := newReviewTestEnv(t)
-	defer cleanup()
+	h.cfg.HumanReview.SybraBugAction = config.HumanReviewSybraBugActionLocalTask
 
 	const workProject = "work-owner/work-repo"
 	h.workCtx = func(projectID string) *WorkScrubContext {
@@ -1306,7 +1141,8 @@ func TestOnComplete_WorkProject_LocalTaskScrubbed(t *testing.T) {
 	}
 
 	// Verdict body contains all three leak vectors: blocklist literal, GH
-	// URL, Jira key. After scrub, none must survive in the created task.
+	// URL, Jira key. With local_task explicitly configured, none may survive
+	// in the created task.
 	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
 	ag.AppendOutput(agent.StreamEvent{
 		Type: "assistant",

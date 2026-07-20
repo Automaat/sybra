@@ -508,6 +508,9 @@ func secsOr(v, def int) time.Duration {
 const DefaultHumanReviewMaxPerHour = 6
 
 const (
+	// HumanReviewSybraBugActionFileIssue is a legacy config value. It is
+	// accepted for compatibility but maps to note_only so the human-review
+	// automation no longer opens low-signal GitHub issues.
 	HumanReviewSybraBugActionFileIssue = "file_issue"
 	HumanReviewSybraBugActionLocalTask = "local_task"
 	HumanReviewSybraBugActionBlockOnly = "block_only"
@@ -522,7 +525,8 @@ func (c *Config) HumanReviewMaxPerHour() int {
 	return DefaultHumanReviewMaxPerHour
 }
 
-// HumanReviewRepo returns the configured target repo or "Automaat/sybra".
+// HumanReviewRepo returns the configured local tracking project or
+// "Automaat/sybra".
 func (c *Config) HumanReviewRepo() string {
 	if c != nil && c.HumanReview.Repo != "" {
 		return c.HumanReview.Repo
@@ -541,7 +545,9 @@ func (c *Config) HumanReviewModel() string {
 	return "claude-haiku-4-5-20251001"
 }
 
-// HumanReviewIssueLabel returns the configured label or "sybra-bug".
+// HumanReviewIssueLabel returns the legacy configured label or "sybra-bug".
+// Human-review no longer files GitHub issues directly, but the accessor is
+// kept so old configs and generated docs remain stable.
 func (c *Config) HumanReviewIssueLabel() string {
 	if c != nil && c.HumanReview.IssueLabel != "" {
 		return c.HumanReview.IssueLabel
@@ -551,11 +557,11 @@ func (c *Config) HumanReviewIssueLabel() string {
 
 func (c *Config) HumanReviewSybraBugAction() string {
 	if c == nil {
-		return HumanReviewSybraBugActionFileIssue
+		return HumanReviewSybraBugActionNoteOnly
 	}
 	switch strings.ToLower(strings.TrimSpace(c.HumanReview.SybraBugAction)) {
 	case "", HumanReviewSybraBugActionFileIssue:
-		return HumanReviewSybraBugActionFileIssue
+		return HumanReviewSybraBugActionNoteOnly
 	case HumanReviewSybraBugActionLocalTask:
 		return HumanReviewSybraBugActionLocalTask
 	case HumanReviewSybraBugActionBlockOnly:
@@ -563,8 +569,8 @@ func (c *Config) HumanReviewSybraBugAction() string {
 	case HumanReviewSybraBugActionNoteOnly:
 		return HumanReviewSybraBugActionNoteOnly
 	default:
-		slog.Warn("config: invalid human_review.sybra_bug_action; falling back to file_issue", "value", c.HumanReview.SybraBugAction)
-		return HumanReviewSybraBugActionFileIssue
+		slog.Warn("config: invalid human_review.sybra_bug_action; falling back to note_only", "value", c.HumanReview.SybraBugAction)
+		return HumanReviewSybraBugActionNoteOnly
 	}
 }
 

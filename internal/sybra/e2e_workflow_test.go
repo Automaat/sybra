@@ -1209,7 +1209,7 @@ func TestE2E_HumanReview_StructuredFallbackUnblocksTask(t *testing.T) {
 	cfg.HumanReview.SybraRepoDir = env.agentDir
 	cfg.HumanReview.MaxPerHour = 3
 	sink := &fakeIssueSink{created: true, url: "https://github.com/Automaat/sybra/issues/42"}
-	h := newHumanReviewHandler(cfg, env.tasks, env.agents, nil, e2eLogger(t), sink, config.HomeDir(), "", nil)
+	h := newHumanReviewHandler(cfg, env.tasks, env.agents, nil, e2eLogger(t), config.HomeDir(), "", nil)
 	env.onAgentComplete = h.onComplete
 
 	created, err := env.tasks.Create("human review structured fallback", "", "headless")

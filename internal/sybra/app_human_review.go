@@ -15,8 +15,6 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/github"
-	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
@@ -42,13 +40,6 @@ const (
 	humanReviewMaxPerTaskPerWindow = 2
 )
 
-// humanReviewIssueFiler is the subset of monitor.GHIssueSink the handler
-// depends on. Stub-friendly for tests; production wiring uses
-// monitor.NewGHIssueSink.
-type humanReviewIssueFiler interface {
-	SubmitIssue(ctx context.Context, title, body string, extraLabels []string) (created bool, url string, err error)
-}
-
 type humanReviewAgentRunner interface {
 	ApplyABVariant(cfg agent.RunConfig, ab abtest.Config, taskID, role string) agent.RunConfig
 	Run(cfg agent.RunConfig) (*agent.Agent, error)
@@ -58,8 +49,8 @@ type humanReviewAgentRunner interface {
 // transitions into status=human-required. The agent inspects task state,
 // agent runs and Sybra logs/source, then emits a structured verdict
 // (verdict.Decision, enforced via --json-schema) which the handler turns
-// into a side-effect: genuine -> append a note; sybra_bug -> file a
-// deduplicated GitHub issue and flip the task to status=blocked.
+// into a side-effect. sybra_bug verdicts are retained as task notes by
+// default; richer issue filing is handled by the why-human workflow.
 type humanReviewHandler struct {
 	cfg       *config.Config
 	abTesting func() abtest.Config
@@ -67,7 +58,6 @@ type humanReviewHandler struct {
 	agents    humanReviewAgentRunner
 	audit     *audit.Logger
 	logger    *slog.Logger
-	sink      humanReviewIssueFiler
 	homeDir   string
 	logFile   string
 	now       func() time.Time
@@ -115,7 +105,6 @@ func newHumanReviewHandler(
 	agents humanReviewAgentRunner,
 	al *audit.Logger,
 	logger *slog.Logger,
-	sink humanReviewIssueFiler,
 	homeDir, logFile string,
 	workCtx func(projectID string) *WorkScrubContext,
 ) *humanReviewHandler {
@@ -125,7 +114,6 @@ func newHumanReviewHandler(
 		agents:   agents,
 		audit:    al,
 		logger:   logger,
-		sink:     sink,
 		homeDir:  homeDir,
 		logFile:  logFile,
 		now:      time.Now,
@@ -150,24 +138,8 @@ func (a *App) initHumanReview() {
 		a.logger.Warn("human-review.disabled", "reason", "sybra_repo_dir not a directory", "dir", dir, "err", err)
 		return
 	}
-	// Auth preflight: mirrors the monitor service's check (see
-	// LifecycleManager.startMonitorService) — human-review issue filing
-	// shares the same GHIssueSink/credential source, so surface the same
-	// loud, non-fatal startup signal rather than only discovering an
-	// unauthenticated `gh` after a review verdict silently fails to file.
-	if !github.Authenticated() {
-		a.logger.Error("human-review.issue_filing.auth_unavailable",
-			"hint", "configure github.app or run `gh auth login`; issue filing will queue and retry via the durable outbox once credentials are available")
-	}
-	ghSink := monitor.NewGHIssueSink(a.cfg.HumanReviewIssueLabel(), a.cfg.HumanReviewRepo())
-	var sink humanReviewIssueFiler = ghSink
-	if durableSink, err := monitor.NewDurableGHIssueSink(ghSink, filepath.Join(config.GHIssueOutboxDir(), "human-review"), "human-review", a.logger, a.audit); err != nil {
-		a.logger.Error("human-review.issue_outbox.init_failed", "err", err)
-	} else {
-		sink = durableSink
-	}
 	logFile := filepath.Join(a.logDir, "sybra.log")
-	a.humanReview = newHumanReviewHandler(a.cfg, a.tasks, a.agents, a.audit, a.logger, sink, config.HomeDir(), logFile, a.workScrubContextForTask)
+	a.humanReview = newHumanReviewHandler(a.cfg, a.tasks, a.agents, a.audit, a.logger, config.HomeDir(), logFile, a.workScrubContextForTask)
 	a.humanReview.abTesting = a.abTestingConfig
 	a.logger.Info("human-review.enabled", "dir", dir, "repo", a.cfg.HumanReviewRepo(), "model", a.cfg.HumanReviewModel())
 }
@@ -601,7 +573,6 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 
 	switch v.Decision {
 	case "human":
-		h.fileAutonomyIssue(taskID, current.ProjectID, ag.ID, v)
 		if h.appendNote(taskID, "Auto-review verdict: needs human", h.scrubForTask(current.ProjectID, v.Summary)) {
 			h.markVerdictRendered(taskID, ag.ID)
 		}
@@ -712,10 +683,9 @@ func (h *humanReviewHandler) handleSybraBugVerdict(taskID string, ag *agent.Agen
 		}
 	default:
 		if wctx != nil {
-			h.fileLocalScrubbed(taskID, ag.ID, v, wctx)
-		} else {
-			h.fileIssue(taskID, ag.ID, v)
+			v = scrubVerdict(v, wctx)
 		}
+		h.noteSybraBugOnly(taskID, ag.ID, v)
 	}
 }
 
@@ -901,7 +871,6 @@ func (h *humanReviewHandler) recordUnblocked(current task.Task, agentID string, 
 		"decision": v.Decision, "summary": v.Summary, "verdict_source": string(source),
 		"recoverable_action": v.RecoverableAction, "confidence": v.Confidence,
 	})
-	h.fileAutonomyIssue(current.ID, current.ProjectID, agentID, v)
 	h.applyUnblockedRecovery(current, agentID, v)
 }
 
@@ -910,137 +879,6 @@ func (h *humanReviewHandler) workCtxFor(projectID string) *WorkScrubContext {
 		return nil
 	}
 	return h.workCtx(projectID)
-}
-
-func (h *humanReviewHandler) fileAutonomyIssue(taskID, projectID, agentID string, v verdictDecision) {
-	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
-		return
-	}
-	if wctx := h.workCtxFor(projectID); wctx != nil {
-		sv := scrubVerdict(v, wctx)
-		if _, ok := h.findExistingLocalBugTask(sv.IssueTitle); ok {
-			return
-		}
-		tags := append([]string{"sybra-bug", "scrubbed", "autonomy"}, sv.IssueLabels...)
-		init := task.Update{Tags: &tags}
-		if repo := strings.TrimSpace(h.cfg.HumanReviewRepo()); repo != "" {
-			init.ProjectID = &repo
-		}
-		if _, err := h.tasks.CreateFull(sv.IssueTitle, sv.IssueBody, task.AgentModeHeadless, init); err != nil {
-			h.logger.Warn("human-review.autonomy.local.create", "task_id", taskID, "agent_id", agentID, "err", err)
-		}
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	created, url, err := h.sink.SubmitIssue(ctx, v.IssueTitle, v.IssueBody, v.IssueLabels)
-	if err != nil {
-		h.logger.Warn("human-review.autonomy.file", "task_id", taskID, "agent_id", agentID, "err", err)
-		// Record the failure in the audit trail too — an autonomy issue is
-		// best-effort (nothing downstream blocks on it, unlike fileIssue's
-		// sybra_bug path), but a silent Warn-only log meant a filing failure
-		// left no trace an operator could distinguish from "nothing to file".
-		// The sink itself (DurableGHIssueSink) already queues an
-		// auth-classified failure for retry — this event is purely the
-		// audit-visible record that the attempt did not succeed.
-		h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
-			"created": false, "url": "", "title": v.IssueTitle, "autonomy": true, "err": err.Error(),
-		})
-		return
-	}
-	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
-		"created": created, "url": url, "title": v.IssueTitle, "autonomy": true,
-	})
-}
-
-func (h *humanReviewHandler) fileIssue(taskID, agentID string, v verdictDecision) {
-	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
-		h.logger.Warn("human-review.issue.empty", "task_id", taskID, "agent_id", agentID)
-		if h.appendNote(taskID, "Auto-review verdict: sybra_bug (no issue payload)", v.Summary) {
-			h.markVerdictRendered(taskID, agentID)
-		}
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	created, url, err := h.sink.SubmitIssue(ctx, v.IssueTitle, v.IssueBody, v.IssueLabels)
-	if err != nil {
-		h.logger.Error("human-review.issue.submit", "task_id", taskID, "agent_id", agentID, "err", err)
-		// On rate limit or transient failure, keep the diagnosis actionable by
-		// falling back to a local Sybra bug task and blocking the origin on it.
-		if h.fileLocalIssueFallback(taskID, agentID, v, err) {
-			return
-		}
-		if h.appendNote(taskID, "Auto-review verdict: sybra_bug (issue submission failed)", v.Summary+"\n\nError: "+err.Error()) {
-			h.markVerdictRendered(taskID, agentID)
-		}
-		return
-	}
-	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
-		"created": created, "url": url, "title": v.IssueTitle,
-	})
-
-	body := fmt.Sprintf("**Linked Sybra bug:** %s\n\n%s", urlOrPlaceholder(url, v.IssueTitle), v.Summary)
-	header := "Auto-review verdict: blocked by Sybra bug"
-	if !created {
-		header = "Auto-review verdict: blocked by existing Sybra bug"
-	}
-	t, err := h.tasks.Get(taskID)
-	if err != nil {
-		h.logger.Error("human-review.task.get-after-submit", "task_id", taskID, "err", err)
-		return
-	}
-	newBody := appendSection(t.Body, header, body)
-	upd := task.Update{
-		Body:           &newBody,
-		Status:         task.Ptr(task.StatusBlocked),
-		StatusReason:   task.Ptr(fmt.Sprintf("auto-review: %s (%s)", v.Summary, urlOrPlaceholder(url, v.IssueTitle))),
-		BlockedByIssue: task.Ptr(url),
-	}
-	if _, err := h.tasks.Update(taskID, upd); err != nil {
-		h.logger.Error("human-review.task.update", "task_id", taskID, "err", err)
-		return
-	}
-	h.markVerdictRendered(taskID, agentID)
-}
-
-func (h *humanReviewHandler) fileLocalIssueFallback(taskID, agentID string, v verdictDecision, submitErr error) bool {
-	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
-		return false
-	}
-	if existing, ok := h.findExistingLocalBugTask(v.IssueTitle); ok {
-		h.linkExistingLocalBug(taskID, agentID, existing, v)
-		return true
-	}
-	body := strings.TrimSpace(v.IssueBody) + "\n\n## Filing failure\n\nGitHub issue filing failed, so Sybra created this local fallback task instead.\n\nError: " + submitErr.Error()
-	tags := append([]string{"sybra-bug", "issue-filing-failed"}, v.IssueLabels...)
-	init := task.Update{Tags: &tags}
-	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
-		init.ProjectID = &projectID
-	}
-	if existing := h.findExistingLocalBugTaskOnRoute(v.IssueTitle, "issue-filing-failed"); existing != nil {
-		h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
-			"created": false, "url": "", "title": v.IssueTitle, "local_task_id": existing.ID,
-			"fallback": true, "err": submitErr.Error(),
-		})
-		h.blockOriginOnLocalBug(taskID, agentID, "Auto-review verdict: blocked by existing Sybra bug (local fallback)", v.Summary, existing.ID, "GitHub issue filing failed: "+submitErr.Error())
-		return true
-	}
-	newTask, err := h.tasks.CreateFull(v.IssueTitle, body, task.AgentModeHeadless, init)
-	if err != nil {
-		h.logger.Error("human-review.issue.local-fallback.create", "task_id", taskID, "agent_id", agentID, "err", err)
-		return false
-	}
-	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
-		"created":       true,
-		"url":           "",
-		"title":         v.IssueTitle,
-		"local_task_id": newTask.ID,
-		"fallback":      true,
-		"err":           submitErr.Error(),
-	})
-
-	return h.blockOriginOnLocalBug(taskID, agentID, "Auto-review verdict: blocked by Sybra bug (local fallback)", v.Summary, newTask.ID, "GitHub issue filing failed: "+submitErr.Error())
 }
 
 func (h *humanReviewHandler) findExistingLocalBugTaskOnRoute(title, routeTag string) *task.Task {
@@ -1095,13 +933,10 @@ func (h *humanReviewHandler) blockOriginOnLocalBug(taskID, agentID, header, summ
 }
 
 // findExistingLocalBugTask returns an already-filed local sybra-bug task with
-// an exact title match, if one exists. This is the local-fallback-path
-// counterpart to GHIssueSink.findOpenIssue's title-based dedup on the public
-// path: without it, a task that cycles human-required -> blocked -> todo ->
-// human-required for the same root cause spawns a brand-new local fallback
-// task on every fallback filing instead of pointing back at the one already
-// filed (see task 2379fece's repro: task 3e61e464 accumulated multiple
-// bug/fallback links for one underlying failure).
+// an exact title match, if one exists. This dedupes the local_task and
+// work-scrubbed routes so a task that cycles human-required -> blocked ->
+// todo -> human-required for the same root cause points back at the one
+// already filed instead of creating duplicates.
 func (h *humanReviewHandler) findExistingLocalBugTask(title string) (task.Task, bool) {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -1346,9 +1181,9 @@ func writeAutonomyMandate(b *strings.Builder) {
 	b.WriteString("   - Deterministic failures you can fix (lint/test/build): fix them in the task's worktree, re-run the exact check and SEE it pass, commit + push, then advance the task with sybra-cli (e.g. `sybra-cli update <id> --status ready-pr [--pr N]`) so it re-enters the pipeline.\n")
 	b.WriteString("   - Work is complete but stuck on a gate the harness genuinely cannot run: open or link a PR (`gh pr create` / `sybra-cli update <id> --pr N --status ready-pr`) and move it to review so CI + Copilot + a human reviewer verify it. Never fabricate or fake the verification you could not run.\n")
 	b.WriteString("   - If the task is parked on a pending GitHub review draft, pre-flight the draft before submitting anything: determine whether it is COMMENT, REQUEST_CHANGES, or APPROVE. COMMENT / REQUEST_CHANGES drafts may be submitted when that safely unblocks the task. APPROVE drafts must NEVER be auto-submitted: approval authority is human-only. If you cannot prove the draft is COMMENT or REQUEST_CHANGES, do not submit it.\n")
-	b.WriteString("   - A Sybra workflow bug: work around it to unblock the task if you safely can, and file an issue (phase 3).\n")
+	b.WriteString("   - A Sybra workflow bug: work around it to unblock the task if you safely can, then record the autonomy gap in your verdict (phase 3).\n")
 	b.WriteString("   HARD LIMITS: never fabricate results, never force-merge a PR, never push code whose checks you did not run and see pass. Only LEAVE the task at human-required when a human genuinely must decide — scope, creative direction, missing credentials, or an unreachable external system.\n\n")
-	b.WriteString("3. AUTONOMY — for anything that needed a human, OR that you had to do by hand here, ask: 'how should Sybra have handled this itself?' If there is a real gap, prepare an issue (issue_* fields) describing the gap and the fix so the next occurrence is automatic. Every human-required transition is a bug in Sybra's autonomy until proven otherwise; this issue is often your most valuable output. Do NOT run `gh issue create` yourself — return the payload so the host files it (and scrubs it for work-typed projects).\n\n")
+	b.WriteString("3. AUTONOMY — for anything that needed a human, OR that you had to do by hand here, ask: 'how should Sybra have handled this itself?' If there is a real gap, describe it in the issue_* fields so a follow-up workflow can turn it into a high-quality tracker. Every human-required transition is a bug in Sybra's autonomy until proven otherwise. Do NOT run `gh issue create` yourself.\n\n")
 }
 
 func (h *humanReviewHandler) writePromptTaskDetails(b *strings.Builder, t task.Task, dir string) {
@@ -1439,8 +1274,8 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScru
 
 	b.WriteString("## Investigation hints\n")
 	fmt.Fprintf(&b, "- Your working directory is %s. Use Grep/Read/Glob there directly; cd to the Sybra source tree path above (if listed) when a stack trace or error message points into Sybra's own internal/ instead of the task's repo.\n", dir)
-	fmt.Fprintf(&b, "- Audit events live under %s (newest file is today's). Run `gh issue list --repo %s --label %s` first to avoid duplicate filings.\n",
-		filepath.Join(h.homeDir, "audit"), h.cfg.HumanReviewRepo(), h.cfg.HumanReviewIssueLabel())
+	fmt.Fprintf(&b, "- Audit events live under %s (newest file is today's). Use them to understand prior human-review diagnoses before returning a verdict.\n",
+		filepath.Join(h.homeDir, "audit"))
 	b.WriteString("- Trust deterministic workflow signals before inferring from weak provider metadata: status history, exit state, parsed verdict, protocol_violation, test_outcome, failure fingerprint, task body delta, and log tail. Do NOT classify a Codex run as crashed solely because cost=0 or session is empty; confirm from log contents or exit failure.\n")
 	b.WriteString("- For test escalations, separate product_bug, test_protocol_violation, infra_failure, ambiguous_requirement, and missing_evidence. Only grounded product_bug failures should be described as implementation misses.\n")
 	b.WriteString("- A task parked with `Draft review ready — verify & submit on GitHub` needs extra care: before any submit attempt, inspect the pending review's intended verdict. APPROVE must stay human-required with explicit wording like `Review APPROVE verdict ready for human submission (approval authority required)`. Only COMMENT / REQUEST_CHANGES drafts are eligible for auto-submit. If a submit attempt is rejected by the approval hook or GitHub, surface that exact rejection and tell the human what to do next instead of leaving a vague dead-end.\n")
@@ -1454,13 +1289,13 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScru
 	b.WriteString("- `decision`: \"unblocked\" | \"human\" | \"sybra_bug\"\n")
 	b.WriteString("  - \"unblocked\": you moved the task forward yourself (fixed + pushed, opened/linked a PR, advanced its status) — it is no longer waiting on you.\n")
 	b.WriteString("  - \"human\": a human genuinely must act (scope, creative decision, missing credential, unreachable system); the task stays human-required.\n")
-	b.WriteString("  - \"sybra_bug\": you could not unblock it and the cause is a Sybra defect; the host files the issue and blocks the task pending the fix.\n")
+	b.WriteString("  - \"sybra_bug\": you could not unblock it and the cause is a Sybra defect; the host records the diagnosis on the task without opening a GitHub issue.\n")
 	b.WriteString("- `reason`: one sentence — what you did to unblock it, what a human must decide, or the diagnosis.\n")
 	b.WriteString("- `recoverable_action`: one of `none`, `todo`, `planning`, `plan-review`, `in-progress`, `ready-review`, `in-review`, `testing`, `ready-pr`, `done`.\n")
 	b.WriteString("  - Use `none` when you already moved the task yourself or when no safe host-side status change applies.\n")
 	b.WriteString("  - For `unblocked`, set this to the target workflow status when the host should move the task back into the pipeline for you.\n")
 	b.WriteString("- `confidence`: `low` | `medium` | `high`.\n")
-	b.WriteString("- `issue_title` / `issue_body` / `issue_labels`: the issue payload. REQUIRED for sybra_bug. For unblocked or human, fill these when there is a real Sybra autonomy gap worth tracking (the host files it) — leave null only when there is genuinely nothing to file. `issue_title` must be conventional-commit format (e.g. fix(workflow): ...); `issue_body` = \"## What happened\\n...\\n\\n## Repro\\n...\\n\\n## Suspected cause\\n...\\n\\n## Autonomy fix\\n...\".\n\n")
+	b.WriteString("- `issue_title` / `issue_body` / `issue_labels`: optional autonomy-gap tracker payload. Fill these only when there is a real Sybra gap worth tracking; otherwise set them to null. For sybra_bug, these fields are useful context but do not cause the host to open a GitHub issue. `issue_title` should be conventional-commit format (e.g. fix(workflow): ...); `issue_body` = \"## What happened\\n...\\n\\n## Repro\\n...\\n\\n## Suspected cause\\n...\\n\\n## Autonomy fix\\n...\".\n\n")
 	b.WriteString("Set unused issue_* fields to null (the schema requires the keys to be present).\n")
 	return b.String()
 }

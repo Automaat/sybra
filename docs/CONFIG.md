@@ -386,19 +386,18 @@ HumanReviewConfig controls the in-process automation that spawns a
 headless review agent every time a task transitions to human-required.
 The agent inspects the task, its agent runs, recent logs and the Sybra
 source tree, decides whether the transition is genuine or a Sybra bug,
-and (on bug) files a deduplicated GitHub issue + flips the task to
-blocked. Per-machine toggle: enable on the laptop with the source
-checkout, leave disabled on the server.
+and records the diagnosis on the task. Per-machine toggle: enable on the
+laptop with the source checkout, leave disabled on the server.
 
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `supervision.human_review.enabled` | `bool` | `false` |  |  | `human_review.enabled` | `false` | `hot` |  |  |
 | `supervision.human_review.sybra_repo_dir` | `string` | `""` |  |  | `human_review.sybra_repo_dir` | `false` | `hot` |  | SybraRepoDir is the fallback working directory used only when a task has no worktree of its own (e.g. project-less, or the recorded worktree was cleaned up) — see humanReviewDispatchDir. It must be a dedicated checkout, distinct from auto_update.repo_dir: the review agent is dispatched with RunConfig.ReadOnlyDir=true in that fallback case, so the OS process sandbox denies writes to it under enforce regardless, but pointing it at the live deploy/build checkout is still wrong on principle — this diagnostic agent has no business sharing a directory that autoupdate concurrently ff-merges and builds from. |
-| `supervision.human_review.repo` | `string` | `""` |  |  | `human_review.repo` | `false` | `hot` |  | Repo is the owner/name where bug issues are filed. Defaults to "Automaat/sybra" when empty. |
+| `supervision.human_review.repo` | `string` | `""` |  |  | `human_review.repo` | `false` | `hot` |  | Repo is the owner/name project_id assigned to local sybra-bug tasks. Defaults to "Automaat/sybra" when empty. |
 | `supervision.human_review.model` | `string` | `""` |  |  | `human_review.model` | `false` | `hot` |  | Model is the Claude model name or alias (e.g. "sonnet", "claude-haiku-4-5-20251001"). Defaults to "claude-haiku-4-5-20251001" when empty — diagnosis, not authoring. |
 | `supervision.human_review.max_per_hour` | `int` | `0` |  |  | `human_review.max_per_hour` | `false` | `hot` |  | MaxPerHour caps how many review agents may be spawned in any rolling 60-minute window across all tasks on this machine. Zero falls back to DefaultHumanReviewMaxPerHour. |
-| `supervision.human_review.issue_label` | `string` | `""` |  |  | `human_review.issue_label` | `false` | `hot` |  | IssueLabel is the label applied to filed issues (in addition to "bug"). Defaults to "sybra-bug". |
-| `supervision.human_review.sybra_bug_action` | `string` | `""` |  |  | `human_review.sybra_bug_action` | `false` | `hot` |  | SybraBugAction controls the side-effect for sybra_bug verdicts: file_issue (default), local_task, block_only, or note_only. |
+| `supervision.human_review.issue_label` | `string` | `""` |  |  | `human_review.issue_label` | `false` | `hot` |  | IssueLabel is a legacy setting from the removed GitHub issue filing path. Defaults to "sybra-bug". |
+| `supervision.human_review.sybra_bug_action` | `string` | `""` |  |  | `human_review.sybra_bug_action` | `false` | `hot` |  | SybraBugAction controls the side-effect for sybra_bug verdicts: note_only (default), local_task, or block_only. The legacy file_issue value is accepted but treated as note_only. |
 
 ### MonitorConfig (`supervision.monitor`)
 
