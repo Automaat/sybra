@@ -506,6 +506,92 @@ func TestService_Tick_IgnoresHistoricalRowsForRemovedCohorts(t *testing.T) {
 	}
 }
 
+func TestService_Tick_ZeroWeightVariantStaysDisabled(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Save(Overlay{
+		Version: 1,
+		Experiments: []OverlayExperiment{{
+			ExperimentID: "exp",
+			Variants: []OverlayVariant{
+				{VariantID: "v1", Weight: 1},
+				{VariantID: "v2", Weight: 9},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	base := func() abtest.Config {
+		return abtest.Config{Experiments: []abtest.Experiment{{
+			ID: "exp",
+			Variants: []abtest.Variant{
+				{ID: "v1", Provider: "claude", Model: "sonnet", Weight: 1},
+				{ID: "v2", Provider: "codex", Model: "gpt", Weight: 0},
+			},
+		}}}
+	}
+	report := func() (evaluation.Report, bool) {
+		return evaluation.Report{
+			ByExperimentKind: []evaluation.ExperimentKindBreakdown{{
+				Kind: "model",
+				Groups: []evaluation.ExperimentGroup{{
+					ExperimentID: "exp",
+					Rows: []evaluation.ComparisonBreakdown{
+						{
+							ExperimentID: "exp", VariantID: "v1",
+							Runs: 100, ResolvedRuns: 100,
+							LandedEstimate: evaluation.RateEstimate{WilsonLower: 0.1, HasData: true},
+						},
+						{
+							ExperimentID: "exp", VariantID: "v2",
+							Runs: 100, ResolvedRuns: 100,
+							LandedEstimate: evaluation.RateEstimate{WilsonLower: 0.99, HasData: true},
+						},
+					},
+				}},
+			}},
+		}, true
+	}
+
+	var applied []abtest.Config
+	svc := NewService(Deps{
+		Cfg: config.RoutingConfig{
+			Enabled:           true,
+			IntervalHours:     6,
+			WeightBudget:      20,
+			FloorWeight:       1,
+			MaxStep:           100,
+			MinSamplesToShift: 0,
+			Coefficients:      config.DefaultRoutingCoefficients(),
+		},
+		Base:   base,
+		Report: report,
+		Store:  store,
+		Apply:  func(cfg abtest.Config) error { applied = append(applied, cfg); return nil },
+		Logger: slog.New(slog.DiscardHandler),
+		Now:    func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+	})
+
+	runOnceSync(svc)
+
+	o, ok, err := store.Load()
+	if err != nil || !ok {
+		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+	}
+	if _, has := o.WeightAt("exp", "v2"); has {
+		t.Fatalf("zero-weight v2 survived overlay, want pruned")
+	}
+	if len(applied) != 1 {
+		t.Fatalf("apply calls = %d, want 1", len(applied))
+	}
+	if w := weightOf(applied[0], "exp", "v2"); w != 0 {
+		t.Fatalf("applied v2 weight = %d, want 0 (operator-disabled)", w)
+	}
+}
+
 func TestService_VersionBumpsOnlyOnChange(t *testing.T) {
 	var applied []abtest.Config
 	var audited []audit.Event
@@ -581,6 +667,54 @@ func TestService_ApplyPersistedOverlay_PushesPriorGeneration(t *testing.T) {
 	}
 }
 
+func TestService_ApplyPersistedOverlay_ZeroWeightVariantStaysDisabled(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Save(Overlay{
+		Version: 5,
+		Experiments: []OverlayExperiment{{
+			ExperimentID: "exp",
+			Variants: []OverlayVariant{
+				{VariantID: "v1", Weight: 7},
+				{VariantID: "v2", Weight: 9},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var applied []abtest.Config
+	svc := NewService(Deps{
+		Cfg: config.RoutingConfig{Enabled: true},
+		Base: func() abtest.Config {
+			return abtest.Config{Experiments: []abtest.Experiment{{
+				ID: "exp",
+				Variants: []abtest.Variant{
+					{ID: "v1", Provider: "claude", Model: "sonnet", Weight: 1},
+					{ID: "v2", Provider: "codex", Model: "gpt", Weight: 0},
+				},
+			}}}
+		},
+		Store:  store,
+		Apply:  func(cfg abtest.Config) error { applied = append(applied, cfg); return nil },
+		Logger: slog.New(slog.DiscardHandler),
+	})
+
+	svc.ApplyPersistedOverlay()
+
+	if len(applied) != 1 {
+		t.Fatalf("apply calls = %d, want 1", len(applied))
+	}
+	if w := weightOf(applied[0], "exp", "v1"); w != 7 {
+		t.Fatalf("applied v1 weight = %d, want 7", w)
+	}
+	if w := weightOf(applied[0], "exp", "v2"); w != 0 {
+		t.Fatalf("applied v2 weight = %d, want 0 (operator-disabled)", w)
+	}
+}
+
 func TestService_ApplyPersistedOverlay_DisabledIsNoOp(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -601,4 +735,18 @@ func TestService_ApplyPersistedOverlay_DisabledIsNoOp(t *testing.T) {
 	if len(applied) != 0 {
 		t.Fatalf("apply calls = %d, want 0 when routing disabled", len(applied))
 	}
+}
+
+func weightOf(cfg abtest.Config, expID, variantID string) int {
+	for _, exp := range cfg.Experiments {
+		if exp.ID != expID {
+			continue
+		}
+		for _, variant := range exp.Variants {
+			if variant.ID == variantID {
+				return variant.Weight
+			}
+		}
+	}
+	return 0
 }

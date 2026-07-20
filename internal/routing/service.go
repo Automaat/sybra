@@ -307,12 +307,11 @@ func flattenRows(rep evaluation.Report) []evaluation.ComparisonBreakdown {
 	return rows
 }
 
-// currentWeights builds the full configured (experimentID -> variantID ->
-// weight) universe from base, then overrides each entry with the
-// last-applied overlay weight when one was recorded — so PlanWeights' step
-// clamp is relative to what is actually live, not base's static defaults,
-// while every configured variant (even one with zero runs) still gets an
-// entry.
+// currentWeights builds the enabled configured (experimentID -> variantID ->
+// weight) universe from base, then overrides each entry with the last-applied
+// overlay weight when one was recorded — so PlanWeights' step clamp is
+// relative to what is actually live, not base's static defaults, while every
+// enabled configured variant (even one with zero runs) still gets an entry.
 //
 // overlayLive gates the overlay override to what is genuinely serving live
 // traffic. In shadow mode (routing disabled) Apply is never called, so live
@@ -338,7 +337,7 @@ func currentWeights(base abtest.Config, overlay Overlay, overlayLive bool) map[s
 			}
 			weight := v.Weight
 			if weight <= 0 {
-				weight = defaultFloorWeight
+				continue
 			}
 			if overlayLive {
 				if w, ok := overlay.WeightAt(exp.ID, v.ID); ok {
@@ -433,9 +432,10 @@ func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score, p
 	return overlay
 }
 
-// baseVariantSet indexes base as experimentID -> set of live variant IDs,
-// skipping empty IDs — the membership oracle used to decide which persisted
-// overlay entries are still declared by the operator.
+// baseVariantSet indexes base as experimentID -> set of enabled variant IDs,
+// skipping empty IDs and non-positive weights — the membership oracle used to
+// decide which persisted overlay entries are still declared live by the
+// operator.
 func baseVariantSet(base abtest.Config) map[string]map[string]bool {
 	out := map[string]map[string]bool{}
 	for i := range base.Experiments {
@@ -445,7 +445,7 @@ func baseVariantSet(base abtest.Config) map[string]map[string]bool {
 		}
 		vs := map[string]bool{}
 		for j := range exp.Variants {
-			if id := exp.Variants[j].ID; id != "" {
+			if id := exp.Variants[j].ID; id != "" && exp.Variants[j].Weight > 0 {
 				vs[id] = true
 			}
 		}
@@ -502,6 +502,9 @@ func mergeWeights(base abtest.Config, overlay Overlay) abtest.Config {
 		exp := base.Experiments[i]
 		exp.Variants = append([]abtest.Variant(nil), exp.Variants...)
 		for j := range exp.Variants {
+			if exp.Variants[j].Weight <= 0 {
+				continue
+			}
 			if w, ok := overlay.WeightAt(exp.ID, exp.Variants[j].ID); ok {
 				exp.Variants[j].Weight = w
 			}
