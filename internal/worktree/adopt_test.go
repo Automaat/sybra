@@ -624,6 +624,14 @@ func TestPrepareForFix_RecreatedWorktreeReconcilesDivergedTaskBranch(t *testing.
 		t.Fatalf("remove old worktree: %v", err)
 	}
 
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "init", "--bare", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("init fork bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+
 	got, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix (recreated diverged reconcile): %v", err)
@@ -653,6 +661,91 @@ func TestPrepareForFix_RecreatedWorktreeReconcilesDivergedTaskBranch(t *testing.
 	}
 	if out, err := exec.Command("git", "-C", got, "merge-base", "--is-ancestor", strings.TrimSpace(string(remoteHead)), "HEAD").CombinedOutput(); err != nil {
 		t.Fatalf("remote head not an ancestor of recreated HEAD (still diverged): %v: %s", err, out)
+	}
+}
+
+// TestPrepareForFix_PRHeadFallbackIgnoresSameNamedForkBranch covers PR-fix
+// worktrees created from refs/pull/<N>/head while a configured fork remote has
+// a same-named branch. Fresh preflight must compare against the fetched PR head,
+// not PushRemote's fork/<branch>.
+func TestPrepareForFix_PRHeadFallbackIgnoresSameNamedForkBranch(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	const prNumber = 24
+	const branch = "fix/fork-name-collision"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "pr-head.txt"), []byte("pr"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "pr head")
+	shaOut, err := exec.Command("git", "-C", h.src, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse pr head: %v: %s", err, shaOut)
+	}
+	prSHA := strings.TrimSpace(string(shaOut))
+	srcGit("update-ref", "refs/pull/24/head", prSHA)
+	srcGit("checkout", "main")
+	srcGit("branch", "-D", branch)
+
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "init", "--bare", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("init fork bare: %v: %s", err, out)
+	}
+	forkSrc := filepath.Join(t.TempDir(), "fork-src")
+	if out, err := exec.Command("git", "clone", h.src, forkSrc).CombinedOutput(); err != nil {
+		t.Fatalf("clone fork source: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "checkout", "-b", branch).CombinedOutput(); err != nil {
+		t.Fatalf("checkout fork branch: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(forkSrc, "fork-only.txt"), []byte("fork"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "add", ".").CombinedOutput(); err != nil {
+		t.Fatalf("git add fork: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "same named fork branch").CombinedOutput(); err != nil {
+		t.Fatalf("git commit fork: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "push", forkBare, branch).CombinedOutput(); err != nil {
+		t.Fatalf("push fork branch: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+
+	h.m.prBranch = func(_ string, _ int) (string, error) { return branch, nil }
+
+	tk, err := h.tasks.Create("fix fork collision pr", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+	headSHA, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v: %s", err, headSHA)
+	}
+	if got := strings.TrimSpace(string(headSHA)); got != prSHA {
+		t.Fatalf("worktree HEAD = %q, want PR head %q", got, prSHA)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "fork-only.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree unexpectedly merged fork branch file: %v", err)
 	}
 }
 
