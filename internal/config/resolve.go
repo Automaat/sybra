@@ -95,6 +95,9 @@ func applyLegacyReviewLoopCompat(file *FileConfig, cfg *ResolvedConfig) {
 	if file == nil || cfg == nil {
 		return
 	}
+	if file.SchemaVersion() >= CurrentSchemaVersion {
+		return
+	}
 	if file.Has("agent", "allow_unbounded_review_rounds") || file.Has("agent", "max_review_rounds") {
 		return
 	}

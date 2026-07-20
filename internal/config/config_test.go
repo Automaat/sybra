@@ -324,7 +324,7 @@ func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
 	}
 }
 
-func TestResolveLegacyGuardrailAliasesWarnAndPreserveExplicitReviewLoop(t *testing.T) {
+func TestResolveV2GuardrailAliasesWarnAndKeepBoundedReviewLoop(t *testing.T) {
 	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
 		"schema_version: 2",
 		"execution:",
@@ -366,8 +366,29 @@ func TestResolveLegacyGuardrailAliasesWarnAndPreserveExplicitReviewLoop(t *testi
 	if got := resolved.Config.Agent.TurnMultiplier; got != 4 {
 		t.Fatalf("Agent.TurnMultiplier = %v, want 4", got)
 	}
+	if !resolved.Config.ReviewUntilClean() {
+		t.Fatal("ReviewUntilClean() = false, want true")
+	}
+	if resolved.Config.AllowUnboundedReviewRounds() {
+		t.Fatal("AllowUnboundedReviewRounds() = true, want false for schema-v2 review_until_clean=true")
+	}
+}
+
+func TestResolveLegacyReviewUntilCleanPreservesUnboundedLoop(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"agent:",
+		"  review_until_clean: true",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !resolved.Config.AllowUnboundedReviewRounds() {
-		t.Fatal("AllowUnboundedReviewRounds() = false, want true for explicit legacy review_until_clean=true")
+		t.Fatal("AllowUnboundedReviewRounds() = false, want true for schema-v1 review_until_clean=true")
 	}
 }
 
@@ -402,8 +423,30 @@ func TestMigrateRawConfigRewritesGuardrailAliasesAndPreservesExplicitReviewLoop(
 	}
 }
 
+func TestMigrateRawConfigKeepsV2ReviewUntilCleanBounded(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"schema_version: 2",
+		"execution:",
+		"  agent:",
+		"    review_until_clean: true",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(result.MigratedRaw)
+	if strings.Contains(text, "allow_unbounded_review_rounds") {
+		t.Fatalf("migration opted v2 config into unbounded review rounds:\n%s", text)
+	}
+	if result.Changed {
+		t.Fatalf("canonical v2 config should be a no-op migration:\n%s", text)
+	}
+}
+
 func TestMigrateNodeToCanonicalPreservesNilAsYAMLNull(t *testing.T) {
-	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil)
+	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

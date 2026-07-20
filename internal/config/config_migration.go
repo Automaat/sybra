@@ -230,13 +230,14 @@ func MigrateRawConfig(raw []byte, toVersion int) (*MigrationResult, error) {
 	}
 	canonical := newCanonicalConfigBuilder()
 	canonical.setScalarTopLevel("schema_version", strconv.Itoa(CurrentSchemaVersion))
+	preserveLegacyReviewLoop := fileCfg.SchemaVersion() < CurrentSchemaVersion
 	for i := 0; i+1 < len(flatRoot.Content); i += 2 {
 		key := flatRoot.Content[i].Value
 		if key == "schema_version" {
 			continue
 		}
 		value := flatRoot.Content[i+1]
-		if err := migrateLegacyTopLevelIntoCanonical(canonical, key, value, nil); err != nil {
+		if err := migrateLegacyTopLevelIntoCanonical(canonical, key, value, nil, preserveLegacyReviewLoop); err != nil {
 			return nil, err
 		}
 	}
@@ -640,12 +641,12 @@ func normalizeStoragePathsNamespace(builder *flatConfigBuilder, node *yaml.Node)
 	}, "storage.paths")
 }
 
-func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key string, value *yaml.Node, parent []string) error {
+func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key string, value *yaml.Node, parent []string, preserveLegacyReviewLoop bool) error {
 	for _, rule := range topLevelNamespaceRules {
 		if key != rule.legacyKey {
 			continue
 		}
-		transformed, err := migrateNodeToCanonical([]string{key}, value)
+		transformed, err := migrateNodeToCanonical([]string{key}, value, preserveLegacyReviewLoop)
 		if err != nil {
 			return err
 		}
@@ -654,7 +655,7 @@ func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key str
 	return builder.setPath(append(slices.Clone(parent), key), value)
 }
 
-func migrateNodeToCanonical(path []string, node *yaml.Node) (*yaml.Node, error) {
+func migrateNodeToCanonical(path []string, node *yaml.Node, preserveLegacyReviewLoop bool) (*yaml.Node, error) {
 	if node == nil {
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}, nil
 	}
@@ -691,7 +692,7 @@ func migrateNodeToCanonical(path []string, node *yaml.Node) (*yaml.Node, error) 
 				)
 				continue
 			}
-			child, err := migrateNodeToCanonical(childPath, node.Content[i+1])
+			child, err := migrateNodeToCanonical(childPath, node.Content[i+1], preserveLegacyReviewLoop)
 			if err != nil {
 				return nil, err
 			}
@@ -700,7 +701,8 @@ func migrateNodeToCanonical(path []string, node *yaml.Node) (*yaml.Node, error) 
 				child,
 			)
 		}
-		if joinPath(path) == "agent" &&
+		if preserveLegacyReviewLoop &&
+			joinPath(path) == "agent" &&
 			!yamlMappingHasKey(out, "allow_unbounded_review_rounds") &&
 			!yamlMappingHasKey(out, "max_review_rounds") &&
 			yamlMappingBool(out, "review_until_clean") {
