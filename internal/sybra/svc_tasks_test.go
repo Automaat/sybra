@@ -1275,6 +1275,48 @@ func TestTaskService_EnrichFromPR_BranchAlreadyOwnedSkipsBranch(t *testing.T) {
 	}
 }
 
+func TestTaskService_EnrichFromPR_NotMyPRStartsPRReviewWorkflow(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	svc.fetchPR = func(string, int) (github.PullRequest, error) {
+		return github.PullRequest{
+			Number:      7,
+			Title:       "contributor PR",
+			HeadRefName: "fix/contributor",
+			Author:      "contributor",
+		}, nil
+	}
+	svc.viewerLogin = func() string { return "me" }
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/pull/7", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, "review") {
+		t.Fatalf("Tags = %v, want inbound review tag", got.Tags)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-review" {
+		t.Fatalf("Workflow = %+v, want pr-review", got.Workflow)
+	}
+	if len(got.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns = %+v, want one pr-review workflow agent", got.AgentRuns)
+	}
+	run := got.AgentRuns[0]
+	if run.Role != "review" || run.RequestedSkill != "staff-code-review" {
+		t.Fatalf("AgentRun = %+v, want staff review run", run)
+	}
+	if !strings.Contains(run.Prompt, "Create exactly one PENDING (draft) pull-request review") ||
+		!strings.Contains(run.Prompt, "inline comments, not one aggregated comment") {
+		t.Fatalf("AgentRun prompt missing pending inline review contract:\n%s", run.Prompt)
+	}
+}
+
 // TestTaskService_ReconcilePendingEnrichment_RetriesAfterLinkedPRsFailure
 // covers the recovery half of the above: once the title has already been
 // rewritten to the real issue title (so it no longer parses as a GitHub
@@ -1472,9 +1514,9 @@ func TestTaskService_ReconcilePendingEnrichment_SkipsNonStubs(t *testing.T) {
 }
 
 // An unresolvable viewer identity must not be guessed into "not my PR": that
-// branch spawns a /staff-code-review agent against what may be our own PR and,
-// by writing u.Tags, drops the enrich-pending marker
-// ReconcilePendingEnrichment retries on — permanently misrouting the task.
+// branch starts the inbound review workflow against what may be our own PR and,
+// by writing u.Tags, drops the enrich-pending marker ReconcilePendingEnrichment
+// retries on — permanently misrouting the task.
 // Reachable whenever the startup GET /app has not resolved yet (2165).
 func TestTaskService_EnrichFromPR_UnknownViewerDefersInsteadOfMisrouting(t *testing.T) {
 	svc, _ := setupTaskService(t)
