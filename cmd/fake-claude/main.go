@@ -425,7 +425,7 @@ git -c user.email=fake-claude@test.local -c user.name="Fake Claude" commit -m "f
 git push origin "HEAD:refs/heads/$branch" >/dev/null 2>&1
 rm -rf "$stage"
 `
-	cmd := exec.Command("bash", "-lc", script, "bash", remote, branch, fileName, content, stageDir)
+	cmd := exec.CommandContext(context.Background(), "bash", "-lc", script, "bash", remote, branch, fileName, content, stageDir)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -433,7 +433,7 @@ rm -rf "$stage"
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(context.Background(), "git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
