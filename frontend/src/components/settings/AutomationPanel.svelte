@@ -19,17 +19,17 @@
 
 <Section title="Triage" description="Background worker that classifies status=new tasks and atomically applies the verdict.">
   <ToggleField label="Enable auto-triage" description="Periodically classify new tasks via the triage model"
-    keyPath="triage.enabled"
+    keyPath="workflow.triage.enabled"
     bind:checked={settings.triage.enabled}
     modified={t.enabled !== td.enabled}
     onreset={() => (settings.triage.enabled = td.enabled)} />
   {#if settings.triage.enabled}
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <NumberField id="triage-poll" label="Poll interval (seconds)" keyPath="triage.poll_seconds" min={10}
+      <NumberField id="triage-poll" label="Poll interval (seconds)" keyPath="workflow.triage.poll" min={10}
         bind:value={settings.triage.pollSeconds}
         modified={t.pollSeconds !== td.pollSeconds}
         onreset={() => (settings.triage.pollSeconds = td.pollSeconds)} />
-      <TextField id="triage-model" label="Model" placeholder="sonnet" keyPath="triage.model"
+      <TextField id="triage-model" label="Model" placeholder="sonnet" keyPath="workflow.triage.model"
         bind:value={settings.triage.model}
         modified={t.model !== td.model}
         onreset={() => (settings.triage.model = td.model)} />
@@ -38,23 +38,23 @@
 </Section>
 
 <Section title="Umbrella issues" description="Auto-expand ☂️ umbrella issues into a gated task DAG (project-scoped via project types).">
-  <ToggleField label="Enable umbrella expansion" keyPath="umbrella.enabled"
+  <ToggleField label="Enable umbrella expansion" keyPath="workflow.umbrella.enabled"
     bind:checked={settings.umbrella.enabled}
     modified={u.enabled !== ud.enabled}
     onreset={() => (settings.umbrella.enabled = ud.enabled)} />
   {#if settings.umbrella.enabled}
-    <TextField id="umbrella-model" label="Planner model" placeholder="claude default" keyPath="umbrella.model"
+    <TextField id="umbrella-model" label="Planner model" placeholder="claude default" keyPath="workflow.umbrella.model"
       bind:value={settings.umbrella.model}
       modified={u.model !== ud.model}
       onreset={() => (settings.umbrella.model = ud.model)} />
     <ToggleField label="Ground sub-issues against repo files"
       description="Confirm each sub-issue's touches against the real repo (extra git/tool calls)"
-      keyPath="umbrella.ground"
+      keyPath="workflow.umbrella.ground"
       bind:checked={settings.umbrella.ground}
       modified={u.ground !== ud.ground}
       onreset={() => (settings.umbrella.ground = ud.ground)} />
     {#if settings.umbrella.ground}
-      <NumberField id="umbrella-min" label="Grounding min sub-issues" keyPath="umbrella.ground_min_sub_issues" min={0}
+      <NumberField id="umbrella-min" label="Grounding min sub-issues" keyPath="workflow.umbrella.ground_min_sub_issues" min={0}
         description="Only ground umbrellas with at least this many sub-issues (0 = always)"
         bind:value={settings.umbrella.groundMinSubIssues}
         modified={u.groundMinSubIssues !== ud.groundMinSubIssues}

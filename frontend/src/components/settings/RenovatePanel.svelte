@@ -15,12 +15,12 @@
 </script>
 
 <Section title="Renovate" description="Show Renovate bot PRs for registered projects and drive the CI fixer.">
-  <ToggleField label="Enable Renovate PR tracking" keyPath="renovate.enabled"
+  <ToggleField label="Enable Renovate PR tracking" keyPath="integrations.renovate.enabled"
     bind:checked={settings.renovate.enabled}
     modified={r.enabled !== d.enabled}
     onreset={() => (settings.renovate.enabled = d.enabled)} />
   {#if settings.renovate.enabled}
-    <TextField id="renovate-author" label="PR author" placeholder="app/renovate" keyPath="renovate.author"
+    <TextField id="renovate-author" label="PR author" placeholder="app/renovate" keyPath="integrations.renovate.author"
       description="GitHub author filter (default: app/renovate)"
       bind:value={settings.renovate.author}
       modified={r.author !== d.author}
