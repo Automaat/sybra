@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // setupUnblockedRecoveryWorktree creates a clone checked out on branch, with
@@ -510,11 +511,20 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add run: %v", err)
 	}
+	var dispatchedTarget, dispatchedReason string
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		dispatchedReason = reason
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(reason),
+		})
+	}
 
 	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
 	ag.AppendOutput(agent.StreamEvent{
 		Type:    "assistant",
-		Content: `{"decision":"unblocked","reason":"opened the PR and the host should resume review","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+		Content: `{"decision":"unblocked","reason":"fixed the issue and the host should resume review","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
 	})
 	h.inflight[tk.ID] = agentID
 	h.onComplete(ag)
@@ -523,10 +533,13 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
 	}
-	if got.Status != task.StatusReadyPR {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyPR)
+	if dispatchedTarget != string(task.StatusReadyReview) {
+		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusReadyReview)
 	}
-	if !strings.Contains(got.StatusReason, "auto-review recovery") {
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+	if !strings.Contains(dispatchedReason, "auto-review recovery") || !strings.Contains(got.StatusReason, "auto-review recovery") {
 		t.Fatalf("status_reason = %q, want auto-review recovery note", got.StatusReason)
 	}
 	if !strings.Contains(got.Body, "Auto-review: unblocked") {
@@ -534,6 +547,320 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	}
 	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
 		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_ReadyReviewWithPRResumesInReview(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-pr-review"
+	tk, err := tasks.Create("Recover PR task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+		PRNumber:  task.Ptr(42),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	var dispatchedTarget string
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.Status(target)),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"fixed the issue and the host should resume review","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if dispatchedTarget != string(task.StatusInReview) {
+		t.Fatalf("dispatch target = %q, want %q for linked PR recovery", dispatchedTarget, task.StatusInReview)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_DispatchNoteFailureKeepsVerdictUnrendered(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-note-failure"
+	tk, err := tasks.Create("Recover task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	taskDir := filepath.Dir(tk.FilePath)
+	info, err := os.Stat(taskDir)
+	if err != nil {
+		t.Fatalf("stat task dir: %v", err)
+	}
+	restoreMode := info.Mode().Perm()
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		updated, uErr := tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(reason),
+		})
+		if uErr != nil {
+			return task.Task{}, uErr
+		}
+		if err := os.Chmod(taskDir, 0o555); err != nil {
+			t.Fatalf("chmod task dir read-only: %v", err)
+		}
+		return updated, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"fixed the issue and the host should resume review","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	if err := os.Chmod(taskDir, restoreMode); err != nil {
+		t.Fatalf("restore task dir mode: %v", err)
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+	if strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("unexpected unblocked note after append failure; got:\n%s", got.Body)
+	}
+	if len(got.AgentRuns) != 1 {
+		t.Fatalf("agent runs = %+v, want single run", got.AgentRuns)
+	}
+	if got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("expected verdict to remain unrendered after note write failure; agent runs = %+v", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_ReadyPRWithoutPRStaysReadyPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-ready-pr"
+	tk, err := tasks.Create("Recover PR fallback task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	var dispatchedTarget string
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.Status(target)),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"the final gate cannot run locally; use the PR fallback","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if dispatchedTarget != string(task.StatusReadyPR) {
+		t.Fatalf("dispatch target = %q, want %q for no-PR fallback recovery", dispatchedTarget, task.StatusReadyPR)
+	}
+	if got.Status != task.StatusReadyPR {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyPR)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_TamperRerouteAddsBlessTag(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-tamper"
+	tk, err := tasks.Create("Recover tamper task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		cur, gErr := tasks.Get(id)
+		if gErr != nil {
+			return task.Task{}, gErr
+		}
+		if !slices.Contains(cur.Tags, workflow.TamperBlessedTag) {
+			t.Fatalf("expected %q tag before dispatch, tags=%v", workflow.TamperBlessedTag, cur.Tags)
+		}
+		if target != string(task.StatusInProgress) {
+			t.Fatalf("dispatch target = %q, want %q", target, task.StatusInProgress)
+		}
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"resume verification after the false-positive tamper gate","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if !slices.Contains(got.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("tags = %v, want %q", got.Tags, workflow.TamperBlessedTag)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_TamperReadyReviewAddsBlessTag(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-tamper-ready-review"
+	tk, err := tasks.Create("Recover tamper review task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		cur, gErr := tasks.Get(id)
+		if gErr != nil {
+			return task.Task{}, gErr
+		}
+		if !slices.Contains(cur.Tags, workflow.TamperBlessedTag) {
+			t.Fatalf("expected %q tag before dispatch, tags=%v", workflow.TamperBlessedTag, cur.Tags)
+		}
+		if target != string(task.StatusReadyReview) {
+			t.Fatalf("dispatch target = %q, want %q", target, task.StatusReadyReview)
+		}
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"resume review after accepting the tamper finding","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if !slices.Contains(got.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("tags = %v, want %q", got.Tags, workflow.TamperBlessedTag)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
 	}
 }
 
@@ -716,6 +1043,8 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 	for _, want := range []string{
 		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
 		"never fabricate", "/data/worktrees/queue", "feat/queue",
+		"do NOT jump straight to `ready-pr`",
+		"Prefer the first safe downstream stage (`in-progress`/`testing`/`in-review`) over `ready-pr`",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q", want)

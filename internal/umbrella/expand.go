@@ -715,19 +715,21 @@ func existingTrackerFromTask(t task.Task) existingTracker {
 // tracker created by an earlier, successful run.
 func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef map[string]github.Issue, trackerExists bool, trackerID string, maxParallel int, degraded bool) (int, error) {
 	if !trackerExists {
-		tags := []string{"umbrella", MaxParallelTag(maxParallel)}
+		tags := []string{"umbrella", MaxParallelTag(maxParallel), ExpandingTag}
 		if degraded {
 			tags = append(tags, FallbackTag)
 		}
-		if _, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+		tracker, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
 			Issue:     task.Ptr(umb.URL),
 			TaskType:  task.Ptr(task.TaskTypeUmbrella),
 			ProjectID: task.Ptr(umb.Repository),
 			Status:    task.Ptr(task.StatusInProgress),
 			Tags:      task.Ptr(tags),
-		}); err != nil {
+		})
+		if err != nil {
 			return 0, fmt.Errorf("create tracker: %w", err)
 		}
+		trackerID = tracker.ID
 	} else {
 		// A tracker can already exist without a MaxParallelTag: recordExpandFailure
 		// creates a placeholder tracker on a planner failure that never reaches
@@ -737,6 +739,9 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		if err := ensureMaxParallelTag(tasks, trackerID, maxParallel); err != nil {
 			return 0, err
 		}
+		if err := markTrackerExpanding(tasks, trackerID); err != nil {
+			return 0, err
+		}
 		if degraded {
 			if err := tagTrackerDegraded(tasks, trackerID); err != nil {
 				return 0, err
@@ -744,7 +749,14 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		}
 	}
 
-	return createChildren(tasks, umb, specs, byRef)
+	created, err := createChildren(tasks, umb, specs, byRef)
+	if err != nil {
+		return created, err
+	}
+	if err := clearTrackerExpanding(tasks, trackerID); err != nil {
+		return created, err
+	}
+	return created, nil
 }
 
 // createChildren creates one gated todo child task per spec, deriving each
@@ -787,6 +799,41 @@ func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
 			return nil
 		}
 		return fmt.Errorf("tag tracker degraded: %w", err)
+	}
+	return nil
+}
+
+func markTrackerExpanding(tasks *task.Manager, trackerID string) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if slices.Contains(cur.Tags, ExpandingTag) {
+			return task.Update{}, errSkipUpdate
+		}
+		return task.Update{Tags: task.Ptr(append(slices.Clone(cur.Tags), ExpandingTag))}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			return nil
+		}
+		return fmt.Errorf("mark tracker expanding: %w", err)
+	}
+	return nil
+}
+
+func clearTrackerExpanding(tasks *task.Manager, trackerID string) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if !slices.Contains(cur.Tags, ExpandingTag) {
+			return task.Update{}, errSkipUpdate
+		}
+		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
+			return t == ExpandingTag
+		})
+		return task.Update{Tags: task.Ptr(newTags)}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			return nil
+		}
+		return fmt.Errorf("clear tracker expanding: %w", err)
 	}
 	return nil
 }
@@ -874,11 +921,16 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 func clearExpandFailure(tasks *task.Manager, trackerID string) error {
 	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
 		nextBody := removeExpandCheckpointBody(cur.Body)
-		if ParseExpandFailCount(cur.Tags) == 0 && !HasActiveExpandPhase(cur.Tags) && nextBody == cur.Body {
+		if ParseExpandFailCount(cur.Tags) == 0 &&
+			!HasActiveExpandPhase(cur.Tags) &&
+			!slices.Contains(cur.Tags, ExpandingTag) &&
+			nextBody == cur.Body {
 			return task.Update{}, errSkipUpdate
 		}
 		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
-			return strings.HasPrefix(t, ExpandFailTagPrefix) || strings.HasPrefix(t, ExpandPhaseTagPrefix)
+			return strings.HasPrefix(t, ExpandFailTagPrefix) ||
+				strings.HasPrefix(t, ExpandPhaseTagPrefix) ||
+				t == ExpandingTag
 		})
 		upd := task.Update{Tags: task.Ptr(newTags)}
 		if nextBody != cur.Body {

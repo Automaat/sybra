@@ -18,6 +18,11 @@ const MaxParallelTagPrefix = "umbrella-max-parallel:"
 // silently masked.
 const FallbackTag = "umbrella-planner-fallback"
 
+// ExpandingTag marks a tracker whose child DAG is still being materialized.
+// The app gate holds release/rollup while this is present so a tracker created
+// before all children exist cannot expose a partial DAG to the orchestrator.
+const ExpandingTag = "umbrella-expanding"
+
 // MaxParallelTag renders the tracker tag encoding n.
 func MaxParallelTag(n int) string {
 	return MaxParallelTagPrefix + strconv.Itoa(n)
