@@ -1897,6 +1897,10 @@ type RunConfig struct {
 	// operators are forced to require_permissions:false, which collapses to
 	// --dangerously-skip-permissions. Never set by callers.
 	approvalAddr string
+	// capacityReservation is an optional held pool slot reserved before
+	// expensive pre-run work (worktree setup). registerRunningAgent consumes it
+	// atomically with the live-agent registration.
+	capacityReservation *CapacityReservation
 }
 
 // needsApprovalHook reports whether a run should wire the PreToolUse approval
