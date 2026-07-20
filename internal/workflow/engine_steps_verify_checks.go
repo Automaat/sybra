@@ -424,12 +424,16 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 			Reason: "verify suite hit Go toolchain/build-cache instability (linker terminated or cache artifacts vanished) — blocked as verifier infrastructure, not an implementation failure",
 		}
 	}
-	lintFile, changedFiles, ok := classifyCodeFixableLintFailure(
+	lintFiles, changedFiles, ok := classifyCodeFixableLintFailure(
 		e.ctx, taskID, wtPath, failedCmd, output, e.focusedChecksBaseRef(taskID))
 	if ok {
+		target := "changed Go file `" + lintFiles[0] + "`"
+		if len(lintFiles) > 1 {
+			target = "changed Go files `" + strings.Join(lintFiles, "`, `") + "`"
+		}
 		return &verifyFailureClassification{
 			Kind:         "code_fixable_lint",
-			Reason:       "verify suite failed on changed Go file " + lintFile + " in " + trimDiffLine(failedCmd) + " — deterministic lint finding; re-ask implementation to fix the code without weakening the check",
+			Reason:       "verify suite failed on " + target + " in " + trimDiffLine(failedCmd) + " — deterministic lint finding; re-ask implementation to fix the code without weakening the check",
 			ChangedFiles: changedFiles,
 			AutoFixable:  true,
 		}
@@ -503,22 +507,24 @@ func verifyGoInfraFailure(output string) bool {
 func classifyCodeFixableLintFailure(
 	parentCtx context.Context,
 	taskID, wtPath, failedCmd, output, worktreeBaseRef string,
-) (lintFile string, changedFiles []string, ok bool) {
+) (lintFiles, changedFiles []string, ok bool) {
 	if !strings.Contains(failedCmd, "golangci-lint") {
-		return "", nil, false
+		return nil, nil, false
 	}
 	changedFiles, err := changedFilesSinceProjectBase(parentCtx, wtPath, worktreeBaseRef)
 	if err != nil {
-		return "", nil, false
+		return nil, nil, false
 	}
-	lintFiles := parseGolangCILintGoFiles(output)
-	if len(lintFiles) != 1 {
-		return "", changedFiles, false
+	lintFiles = parseGolangCILintGoFiles(output)
+	if len(lintFiles) == 0 {
+		return nil, changedFiles, false
 	}
-	if !slices.Contains(changedFiles, lintFiles[0]) {
-		return "", changedFiles, false
+	for _, lintFile := range lintFiles {
+		if !slices.Contains(changedFiles, lintFile) {
+			return nil, changedFiles, false
+		}
 	}
-	return lintFiles[0], changedFiles, true
+	return lintFiles, changedFiles, true
 }
 
 func parseGolangCILintGoFiles(output string) []string {
