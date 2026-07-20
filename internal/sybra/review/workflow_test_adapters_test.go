@@ -89,6 +89,17 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	return a.tasks.UpdateRun(taskID, agentID, patch)
 }
 
+func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
+	patch := task.RunPatch{}
+	if headSHA != "" {
+		patch.HeadSHA = task.Ptr(headSHA)
+	}
+	if source != "" {
+		patch.FinalCommitSource = task.Ptr(source)
+	}
+	return a.tasks.UpdateRun(taskID, agentID, patch)
+}
+
 func (a *taskAdapter) AppendTaskBody(id, content string) error {
 	_, err := a.tasks.AppendBody(id, content)
 	return err
