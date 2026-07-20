@@ -220,7 +220,7 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 // work, and an approval from the operator's account can satisfy a
 // required-reviewer gate. Kept in lockstep with the pr-review builtin workflow
 // prompts and backed by the gh PATH shim (agent.writeGhShim), which refuses
-// approvals if this instruction ever drifts.
+// submitted review events if this instruction ever drifts.
 func StaffCodeReviewPrompt(projectID string, prNumber int) string {
 	return fmt.Sprintf(`Run /staff-code-review on https://github.com/%s/pull/%d
 
