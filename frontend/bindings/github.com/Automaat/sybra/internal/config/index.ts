@@ -30,6 +30,8 @@ export {
     ProvidersConfig,
     QueueConfig,
     RenovateConfig,
+    RoutingEligibleVariant,
+    RoutingSummary,
     SelfMonitorConfig,
     TestingConfig,
     TriageConfig,
