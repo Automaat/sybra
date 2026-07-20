@@ -36,6 +36,7 @@ export class AgentRun {
      */
     "experimentId"?: string;
     "variantId"?: string;
+    "routingReason"?: string;
     "assignmentUnit"?: string;
     "assignmentKey"?: string;
     "decisionVersion"?: number;

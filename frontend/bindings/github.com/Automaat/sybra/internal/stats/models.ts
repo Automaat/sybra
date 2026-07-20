@@ -118,6 +118,7 @@ export class RunRecord {
     "reasoningEffort"?: string;
     "experimentId"?: string;
     "variantId"?: string;
+    "routingReason"?: string;
     "assignmentUnit"?: string;
     "assignmentKey"?: string;
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -866,6 +867,64 @@ func TestConfigDoctorJSONAcceptsStricterConfigPermissions(t *testing.T) {
 			strings.Contains(f.Message, "config file permissions")
 	}) {
 		t.Fatalf("did not expect config permission warnings for stricter modes: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONReportsRoutingSummaryAndWarnings(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.Provider = "claude"
+	enabled := true
+	cfg.ABTesting.Enabled = &enabled
+	cfg.Routing.Enabled = true
+	cfg.Providers.Claude.Enabled = false
+	cfg.ABTesting.Experiments = []abtest.Experiment{{
+		ID:             "exp",
+		Enabled:        &enabled,
+		AssignmentUnit: "stage",
+		Roles:          []string{"implementation"},
+		Variants: []abtest.Variant{
+			{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Weight: 1},
+		},
+	}}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only routing doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if report.Routing.ProviderPreference != "claude" {
+		t.Fatalf("routing provider preference = %q, want claude", report.Routing.ProviderPreference)
+	}
+	if !report.Routing.ABTestingEnabled {
+		t.Fatal("routing abTestingEnabled = false, want true")
+	}
+	if !report.Routing.AdaptiveRoutingEnabled {
+		t.Fatal("routing adaptiveRoutingEnabled = false, want true")
+	}
+	if !slices.Equal(report.Routing.Precedence, []string{"ab_testing", "agent.provider", "providers.auto_failover", "providers.limits", "routing.overlay"}) {
+		t.Fatalf("routing precedence = %v", report.Routing.Precedence)
+	}
+	if len(report.Routing.EligibleVariants) != 1 {
+		t.Fatalf("routing eligible variants = %d, want 1", len(report.Routing.EligibleVariants))
+	}
+	if report.Routing.EligibleVariants[0].Reason != "provider_disabled" {
+		t.Fatalf("eligible variant reason = %q, want provider_disabled", report.Routing.EligibleVariants[0].Reason)
+	}
+	for _, want := range []string{
+		"routing: ab_testing experiment exp has zero eligible variants",
+		"routing: ab_testing is enabled but no provider-enabled variants are eligible",
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "warning" && f.Message == want
+		}) {
+			t.Fatalf("expected routing warning %q in %+v", want, report.Findings)
+		}
 	}
 }
 

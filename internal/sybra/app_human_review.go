@@ -322,6 +322,7 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		Model:           ag.Model,
 		ExperimentID:    ag.ExperimentID,
 		VariantID:       ag.VariantID,
+		RoutingReason:   ag.RoutingReason,
 		AssignmentUnit:  ag.AssignmentUnit,
 		AssignmentKey:   ag.AssignmentKey,
 		DecisionVersion: ag.DecisionVersion,

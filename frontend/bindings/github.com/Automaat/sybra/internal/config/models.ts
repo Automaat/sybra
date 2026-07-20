@@ -1620,6 +1620,103 @@ export class RenovateConfig {
     }
 }
 
+export class RoutingEligibleVariant {
+    "experimentId": string;
+    "variantId": string;
+    "provider": string;
+    "model": string;
+    "eligible": boolean;
+    "reason"?: string;
+
+    /** Creates a new RoutingEligibleVariant instance. */
+    constructor($$source: Partial<RoutingEligibleVariant> = {}) {
+        if (!("experimentId" in $$source)) {
+            this["experimentId"] = "";
+        }
+        if (!("variantId" in $$source)) {
+            this["variantId"] = "";
+        }
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+        if (!("eligible" in $$source)) {
+            this["eligible"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RoutingEligibleVariant instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RoutingEligibleVariant {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RoutingEligibleVariant($$parsedSource as Partial<RoutingEligibleVariant>);
+    }
+}
+
+export class RoutingSummary {
+    "providerPreference": string;
+    "abTestingEnabled": boolean;
+    "abTestingExplicit": boolean;
+    "adaptiveRoutingEnabled": boolean;
+    "autoFailoverEnabled": boolean;
+    "providerLimitsEnabled": boolean;
+    "precedence": string[];
+    "eligibleVariants"?: RoutingEligibleVariant[];
+    "warnings"?: string[];
+
+    /** Creates a new RoutingSummary instance. */
+    constructor($$source: Partial<RoutingSummary> = {}) {
+        if (!("providerPreference" in $$source)) {
+            this["providerPreference"] = "";
+        }
+        if (!("abTestingEnabled" in $$source)) {
+            this["abTestingEnabled"] = false;
+        }
+        if (!("abTestingExplicit" in $$source)) {
+            this["abTestingExplicit"] = false;
+        }
+        if (!("adaptiveRoutingEnabled" in $$source)) {
+            this["adaptiveRoutingEnabled"] = false;
+        }
+        if (!("autoFailoverEnabled" in $$source)) {
+            this["autoFailoverEnabled"] = false;
+        }
+        if (!("providerLimitsEnabled" in $$source)) {
+            this["providerLimitsEnabled"] = false;
+        }
+        if (!("precedence" in $$source)) {
+            this["precedence"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RoutingSummary instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RoutingSummary {
+        const $$createField6_0 = $$createType5;
+        const $$createField7_0 = $$createType18;
+        const $$createField8_0 = $$createType5;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("precedence" in $$parsedSource) {
+            $$parsedSource["precedence"] = $$createField6_0($$parsedSource["precedence"]);
+        }
+        if ("eligibleVariants" in $$parsedSource) {
+            $$parsedSource["eligibleVariants"] = $$createField7_0($$parsedSource["eligibleVariants"]);
+        }
+        if ("warnings" in $$parsedSource) {
+            $$parsedSource["warnings"] = $$createField8_0($$parsedSource["warnings"]);
+        }
+        return new RoutingSummary($$parsedSource as Partial<RoutingSummary>);
+    }
+}
+
 /**
  * SelfMonitorConfig controls the in-process selfmonitor service that
  * replaces the /loop 6h /sybra-self-monitor skill. Each tick snapshots
@@ -1884,3 +1981,5 @@ const $$createType13 = PressureConfig.createFrom;
 const $$createType14 = ProviderHealthCheckConfig.createFrom;
 const $$createType15 = ProviderEntryConfig.createFrom;
 const $$createType16 = ProviderLimitsConfig.createFrom;
+const $$createType17 = RoutingEligibleVariant.createFrom;
+const $$createType18 = $Create.Array($$createType17);

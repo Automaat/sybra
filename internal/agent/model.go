@@ -67,6 +67,7 @@ type Agent struct {
 	Model           string    `json:"model,omitempty"`
 	ExperimentID    string    `json:"experimentId,omitempty"`
 	VariantID       string    `json:"variantId,omitempty"`
+	RoutingReason   string    `json:"routingReason,omitempty"`
 	AssignmentUnit  string    `json:"assignmentUnit,omitempty"`
 	AssignmentKey   string    `json:"assignmentKey,omitempty"`
 	// DecisionVersion is the routing-overlay generation (internal/routing)
@@ -460,6 +461,7 @@ func (a *Agent) toRecord() Record {
 		Model:                   a.Model,
 		ExperimentID:            a.ExperimentID,
 		VariantID:               a.VariantID,
+		RoutingReason:           a.RoutingReason,
 		AssignmentUnit:          a.AssignmentUnit,
 		AssignmentKey:           a.AssignmentKey,
 		DecisionVersion:         a.DecisionVersion,
@@ -505,6 +507,7 @@ func fromRecord(r Record) *Agent {
 		Model:                   r.Model,
 		ExperimentID:            r.ExperimentID,
 		VariantID:               r.VariantID,
+		RoutingReason:           r.RoutingReason,
 		AssignmentUnit:          r.AssignmentUnit,
 		AssignmentKey:           r.AssignmentKey,
 		DecisionVersion:         r.DecisionVersion,
@@ -1743,6 +1746,7 @@ type RunConfig struct {
 	Model              string // "opus", "sonnet", or full model ID
 	ExperimentID       string
 	VariantID          string
+	RoutingReason      string
 	AssignmentUnit     string
 	AssignmentKey      string
 	DecisionVersion    int

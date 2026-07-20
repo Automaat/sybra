@@ -31,6 +31,7 @@ func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt, dir string, allowe
 func (a *Agent) setAssignment(cfg RunConfig) {
 	a.ExperimentID = cfg.ExperimentID
 	a.VariantID = cfg.VariantID
+	a.RoutingReason = cfg.RoutingReason
 	a.AssignmentUnit = cfg.AssignmentUnit
 	a.AssignmentKey = cfg.AssignmentKey
 	a.DecisionVersion = cfg.DecisionVersion
@@ -137,10 +138,13 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
 	cfg.Prompt = withBackgroundTaskGuardrail(cfg.Prompt, cfg)
-	resolvedProvider, gateErr := m.gateProvider(cfg)
+	resolvedProvider, routingReason, gateEvents, gateErr := m.resolveProviderDecision(cfg)
 	if gateErr != nil {
+		m.emitProviderGateEvents(gateEvents)
 		return cfg, nil, gateErr
 	}
+	m.emitProviderGateEvents(gateEvents)
+	cfg.RoutingReason = routingReason
 	prov, providerErr := lookupProvider(resolvedProvider)
 	if providerErr != nil {
 		return cfg, nil, providerErr
@@ -957,7 +961,7 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 // though the two calls can in principle disagree if gate state changes in
 // between.
 func (m *Manager) ResolveProvider(cfg RunConfig) (string, error) {
-	resolved, _, err := m.resolveProviderDecision(cfg)
+	resolved, _, _, err := m.resolveProviderDecision(cfg)
 	return resolved, err
 }
 
@@ -981,7 +985,7 @@ type providerGateEvent struct {
 // peer, the peer is returned. Otherwise returns a typed UnhealthyError so
 // callers can detect via errors.Is(err, provider.ErrProviderUnhealthy).
 func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
-	resolved, gateEvents, err := m.resolveProviderDecision(cfg)
+	resolved, _, gateEvents, err := m.resolveProviderDecision(cfg)
 	m.emitProviderGateEvents(gateEvents)
 	return resolved, err
 }
@@ -1019,13 +1023,21 @@ func (m *Manager) emitProviderGateEvents(gateEvents []providerGateEvent) {
 // would dispatch to, applying health-gate / limit-gate failover logic. It is
 // side-effect free: metrics/log emissions are returned as providerGateEvent
 // values for the caller to apply (gateProvider) or discard (ResolveProvider).
-func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGateEvent, error) {
+func (m *Manager) resolveProviderDecision(cfg RunConfig) (resolvedProvider, routingReason string, gateEvents []providerGateEvent, err error) {
 	resolved, err := m.providerForRun(cfg.Provider)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
+	}
+	routingReason = cfg.RoutingReason
+	if routingReason == "" {
+		if strings.TrimSpace(cfg.Provider) == "" {
+			routingReason = "default"
+		} else {
+			routingReason = "explicit"
+		}
 	}
 	if cfg.IgnoreHealthGate {
-		return resolved, nil, nil
+		return resolved, routingReason, nil, nil
 	}
 	m.mu.RLock()
 	g := m.gate
@@ -1040,13 +1052,12 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 	healthy := func(p string) bool {
 		return (g == nil || g.IsHealthy(p)) && underCap(p)
 	}
-	var gateEvents []providerGateEvent
 	candidateProviders := providerid.All()
 	if g != nil && !g.IsHealthy(resolved) {
 		if cfg.DisableProviderFailover {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, newProviderUnhealthy(resolved, reason)
+			return "", routingReason, gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 		alt := g.Failover(resolved)
 		if alt != "" && !underCap(alt) {
@@ -1061,21 +1072,22 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		if alt != "" {
 			altProv, err := lookupProvider(alt)
 			if err != nil {
-				return "", gateEvents, err
+				return "", routingReason, gateEvents, err
 			}
 			gateEvents = append(gateEvents, providerGateEvent{
 				kind: "failover", from: resolved, to: altProv.Name(),
 				reason: g.Reason(resolved), logKey: "agent.run.failover", logLevel: "warn", taskID: cfg.TaskID,
 			})
 			resolved = altProv.Name()
+			routingReason = "failover"
 		} else {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, newProviderUnhealthy(resolved, reason)
+			return "", routingReason, gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 	}
 	if lg == nil {
-		return resolved, gateEvents, nil
+		return resolved, routingReason, gateEvents, nil
 	}
 	if ok, reason := lg.ProviderAvailable(resolved, lp); ok {
 		if !cfg.DisableProviderFailover {
@@ -1092,24 +1104,24 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 					gateEvents = append(gateEvents, providerGateEvent{
 						kind: "failover", from: resolved, to: alt, logKey: "agent.run.cap_redirect", logLevel: "info", taskID: cfg.TaskID,
 					})
-					return alt, gateEvents, nil
+					return alt, "limit", gateEvents, nil
 				}
 			} else if lp.PreferUnderused {
 				if alt, altReason := lg.ChooseProvider(resolved, candidateProviders, healthy, lp); alt != "" {
 					gateEvents = append(gateEvents, providerGateEvent{
 						kind: "failover", from: resolved, to: alt, reason: altReason, logKey: "agent.run.limit_select", logLevel: "info", taskID: cfg.TaskID,
 					})
-					return alt, gateEvents, nil
+					return alt, "limit", gateEvents, nil
 				}
 			}
 		}
-		return resolved, gateEvents, nil
+		return resolved, routingReason, gateEvents, nil
 	} else if !cfg.DisableProviderFailover {
 		if alt, altReason := lg.ChooseProvider(resolved, candidateProviders, healthy, lp); alt != "" {
 			gateEvents = append(gateEvents, providerGateEvent{
 				kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.limit_failover", logLevel: "warn", taskID: cfg.TaskID,
 			})
-			return alt, gateEvents, nil
+			return alt, "limit", gateEvents, nil
 		}
 		// No fully available peer exists. Before failing closed, check
 		// whether a peer is only soft-threshold limited (e.g. near its
@@ -1124,24 +1136,24 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 				gateEvents = append(gateEvents, providerGateEvent{
 					kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.soft_limit_peer_failover", logLevel: "warn", taskID: cfg.TaskID,
 				})
-				return alt, gateEvents, nil
+				return alt, "limit", gateEvents, nil
 			}
 		}
-		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
+		return m.softLimitLastResort(resolved, routingReason, reason, gateEvents, cfg.TaskID)
 	} else {
-		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
+		return m.softLimitLastResort(resolved, routingReason, reason, gateEvents, cfg.TaskID)
 	}
 }
 
-func (m *Manager) softLimitLastResort(resolved, reason string, gateEvents []providerGateEvent, taskID string) (string, []providerGateEvent, error) {
+func (m *Manager) softLimitLastResort(resolved, routingReason, reason string, gateEvents []providerGateEvent, taskID string) (selectedProvider, selectedRoutingReason string, updatedGateEvents []providerGateEvent, err error) {
 	if limits.IsSoftThresholdReason(reason) {
 		gateEvents = append(gateEvents, providerGateEvent{
 			kind: "soft_limit", provider: resolved, reason: reason, logKey: "agent.run.soft_limit_last_resort", taskID: taskID,
 		})
-		return resolved, gateEvents, nil
+		return resolved, routingReason, gateEvents, nil
 	}
 	gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-	return "", gateEvents, newProviderUnhealthy(resolved, reason)
+	return "", routingReason, gateEvents, newProviderUnhealthy(resolved, reason)
 }
 
 func newProviderUnhealthy(prov, reason string) *provider.UnhealthyError {

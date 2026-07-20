@@ -36,7 +36,24 @@
     }
   }
 
+  function ensureProviderRoutingDefaults() {
+    const routing = (settings as any).providerRouting ??= {}
+    routing.abTestingEnabled ??= false
+    routing.abTestingMinSamplesPerVariant ??= 20
+    routing.summary ??= {}
+    routing.summary.providerPreference ??= settings.agent?.provider ?? 'claude'
+    routing.summary.abTestingEnabled ??= Boolean(routing.abTestingEnabled)
+    routing.summary.abTestingExplicit ??= routing.abTestingEnabled !== null && routing.abTestingEnabled !== undefined
+    routing.summary.adaptiveRoutingEnabled ??= false
+    routing.summary.autoFailoverEnabled ??= settings.providers?.autoFailover ?? false
+    routing.summary.providerLimitsEnabled ??= settings.providers?.limits?.enabled ?? true
+    routing.summary.precedence ??= ['agent.provider']
+    routing.summary.eligibleVariants ??= []
+    routing.summary.warnings ??= []
+  }
+
   ensureProviderLimitDefaults()
+  ensureProviderRoutingDefaults()
 
   type ProviderHealthEntry = {
     provider: string
@@ -92,6 +109,8 @@
     return next
   })
   const hermesRuntime = $derived.by(() => runtimeMap.hermes)
+  const routingWarnings = $derived.by(() => settings.providerRouting.summary.warnings ?? [])
+  const eligibleVariants = $derived.by(() => settings.providerRouting.summary.eligibleVariants ?? [])
 
   async function onProviderEnabledChange(name: ProviderName, e: Event) {
     const value = (e.target as HTMLInputElement).checked
@@ -138,6 +157,16 @@
     const value = Number((e.target as HTMLInputElement).value)
     if (!Number.isFinite(value) || value < 0) return
     settings.providers[name].monthlySubscriptionUsd = value
+    await persistProviderSettings()
+  }
+
+  async function onABTestingEnabledChange(e: Event) {
+    const checked = (e.target as HTMLInputElement).checked
+    settings.providerRouting.abTestingEnabled = checked
+    settings.providerRouting.summary.abTestingEnabled = checked
+    settings.providerRouting.summary.abTestingExplicit = true
+    const precedence = settings.providerRouting.summary.precedence.filter((value) => value !== 'ab_testing')
+    settings.providerRouting.summary.precedence = checked ? ['ab_testing', ...precedence] : precedence
     await persistProviderSettings()
   }
 
@@ -247,6 +276,62 @@
       <span class="text-xs text-surface-500 dark:text-surface-400">
         Health check interval: {settings.providers.healthCheck.intervalSeconds}s. Edit config.yaml to change.
       </span>
+      <div class="mt-2 rounded border border-surface-200 bg-white px-3 py-3 dark:border-surface-700 dark:bg-surface-900">
+        <div class="flex flex-col gap-2">
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex flex-col">
+              <span class="text-sm font-medium">A/B provider routing opt-in</span>
+              <span class="text-xs text-surface-500 dark:text-surface-400">Built-in experiments stay in code and only activate when this toggle is enabled.</span>
+            </div>
+            <input
+              type="checkbox"
+              class="h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500"
+              checked={settings.providerRouting.abTestingEnabled ?? false}
+              onchange={onABTestingEnabledChange}
+            />
+          </div>
+          <div class="grid gap-2 text-xs text-surface-600 dark:text-surface-300 sm:grid-cols-2">
+            <div>Provider preference: <span class="font-medium">{settings.providerRouting.summary.providerPreference || 'claude'}</span></div>
+            <div>Adaptive routing: <span class="font-medium">{settings.providerRouting.summary.adaptiveRoutingEnabled ? 'enabled' : 'disabled'}</span></div>
+            <div>A/B enabled: <span class="font-medium">{settings.providerRouting.summary.abTestingEnabled ? 'yes' : 'no'}</span></div>
+            <div>Min samples per variant: <span class="font-medium">{settings.providerRouting.abTestingMinSamplesPerVariant}</span></div>
+          </div>
+          <div class="text-xs text-surface-500 dark:text-surface-400">
+            Precedence: {settings.providerRouting.summary.precedence.join(' → ')}
+          </div>
+          {#if routingWarnings.length > 0}
+            <div class="flex flex-col gap-1 rounded border border-warning-300/70 bg-warning-500/10 px-3 py-2 text-xs text-warning-800 dark:border-warning-800/60 dark:text-warning-300">
+              {#each routingWarnings as warning (warning)}
+                <span>{warning}</span>
+              {/each}
+            </div>
+          {/if}
+          {#if eligibleVariants.length > 0}
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-left text-xs">
+                <thead class="text-surface-500 dark:text-surface-400">
+                  <tr>
+                    <th class="py-1 pr-3 font-medium">Experiment</th>
+                    <th class="py-1 pr-3 font-medium">Variant</th>
+                    <th class="py-1 pr-3 font-medium">Provider</th>
+                    <th class="py-1 pr-3 font-medium">State</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each eligibleVariants as variant (`${variant.experimentId}:${variant.variantId}`)}
+                    <tr class="border-t border-surface-200 dark:border-surface-800">
+                      <td class="py-1 pr-3">{variant.experimentId}</td>
+                      <td class="py-1 pr-3">{variant.variantId}</td>
+                      <td class="py-1 pr-3">{variant.provider}</td>
+                      <td class="py-1 pr-3">{variant.reason}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </div>
+      </div>
       <div class="mt-2 border-t border-surface-200 pt-3 dark:border-surface-700">
         <div class="mb-3 flex flex-col gap-2">
           <label class="flex cursor-pointer items-center gap-3">

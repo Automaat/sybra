@@ -51,6 +51,7 @@ export {
     LoggingSettings,
     LoopAgentRun,
     MonitorReportBinding,
+    ProviderRoutingSettings,
     RuntimeInfo,
     TamperFindingDTO,
     TamperReportDTO,

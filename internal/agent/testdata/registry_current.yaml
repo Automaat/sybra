@@ -6,6 +6,7 @@ provider: codex
 model: gpt-5.3-codex
 experiment_id: exp-1
 variant_id: variant-a
+routing_reason: ab
 assignment_unit: task
 assignment_key: task-map
 decision_version: 3

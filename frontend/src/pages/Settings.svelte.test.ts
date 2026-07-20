@@ -71,8 +71,31 @@ function baseSettings() {
       claude: { enabled: true },
       codex: { enabled: false },
       copilot: { enabled: true },
+      opencode: { enabled: false },
+      limits: {
+        enabled: true,
+        sessionThresholdPercent: 85,
+        weeklyThresholdPercent: 90,
+        preferUnderused: true,
+        backfillDays: 14,
+      },
       autoFailover: false,
       healthCheck: { intervalSeconds: 30 },
+    },
+    providerRouting: {
+      abTestingEnabled: false,
+      abTestingMinSamplesPerVariant: 20,
+      summary: {
+        providerPreference: 'claude',
+        abTestingEnabled: false,
+        abTestingExplicit: false,
+        adaptiveRoutingEnabled: false,
+        autoFailoverEnabled: false,
+        providerLimitsEnabled: true,
+        precedence: ['agent.provider', 'providers.limits'],
+        eligibleVariants: [],
+        warnings: [],
+      },
     },
     github: { enabled: false, app: {} },
     monitor: { enabled: false },
@@ -331,6 +354,9 @@ describe('Settings', () => {
     await vi.waitFor(() => screen.getByRole('button', { name: 'Providers' }))
     await goTo('Providers')
     await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Providers' })).toBeDefined())
+    expect(screen.getByText('A/B provider routing opt-in')).toBeDefined()
+    expect(screen.getByText(/Provider preference:/)).toBeDefined()
+    expect(screen.getByText(/Precedence:/)).toBeDefined()
   })
 
   it('hides the Providers rail entry when provider health is disabled', async () => {
