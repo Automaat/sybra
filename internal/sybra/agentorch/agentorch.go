@@ -439,7 +439,7 @@ func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
 // Otherwise it auto-assigns a project if needed, optionally resets the
 // worktree for a clean retry, and prepares the task's worktree, returning
 // the (possibly project-assigned) task and its worktree directory.
-func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim) (task.Task, string, error) {
+func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim, reservation *agent.CapacityReservation) (task.Task, string, error) {
 	if skipWT {
 		return t, dir, nil
 	}
@@ -472,12 +472,13 @@ func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, task
 		// o.conflictRecovery (wired to review.Handler.RecoverStaleBranchConflict)
 		// synchronously starts the branch-conflict-fix workflow, whose "fix"
 		// step dispatches a new agent for this SAME taskID through this same
-		// StartAgentWithAssignment choke point. Release the outer claim first
-		// — we are bailing out of this dispatch regardless of the recovery
-		// result — or that nested dispatch always observes the claim as still
-		// held and bails with ErrDispatchInFlight without ever starting an
-		// agent (the branch-conflict-fix workflow never actually dispatches).
+		// StartAgentWithAssignment choke point. Release the outer claim and the
+		// held pool slot first — we are bailing out of this dispatch regardless
+		// of the recovery result — or that nested dispatch can observe either
+		// the claim as still held (ErrDispatchInFlight) or the pool as still
+		// saturated (ErrAgentPoolBusy) without ever starting the fix agent.
 		claim.Release()
+		reservation.Release()
 		if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
 			return t, "", workflow.ErrDispatchInFlight
 		}
@@ -573,7 +574,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		defer reservation.Release()
 	}
 
-	t, dir, dirErr := o.resolveDispatchDir(ctx, t, taskID, cleanRetryRef, skipWT, dir, claim)
+	t, dir, dirErr := o.resolveDispatchDir(ctx, t, taskID, cleanRetryRef, skipWT, dir, claim, reservation)
 	if dirErr != nil {
 		return nil, "", dirErr
 	}
