@@ -36,7 +36,7 @@ func (*recordingAgentLauncher) ProviderRateLimited(string) bool  { return false 
 func (*recordingAgentLauncher) ProviderCanFailover(string) bool  { return false }
 func (*recordingAgentLauncher) ProviderHealthy(string) bool      { return true }
 func (*recordingAgentLauncher) IsDispatching(string) bool        { return false }
-func (*recordingAgentLauncher) AdmitDispatch(string, string, string) (bool, string) {
+func (*recordingAgentLauncher) AdmitDispatch(string, string, string) (admit bool, reason string) {
 	return true, ""
 }
 
