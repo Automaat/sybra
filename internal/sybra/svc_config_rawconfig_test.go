@@ -3,6 +3,7 @@ package sybra
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -275,6 +276,89 @@ func TestUpdateSettings_ResetToDefaultRemovesDurationAlias(t *testing.T) {
 	if _, err := config.Load(); err != nil {
 		t.Fatalf("patched config no longer loads: %v", err)
 	}
+}
+
+func TestSparseConfigSequence_RawSaveThenSettingsEditThenResetStaysSparse(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"schema_version: 2",
+		"# top comment",
+		"agent:",
+		"  # keep me",
+		"  provider: codex",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.AuthToken == "" {
+		t.Fatal("expected generated server auth token in memory")
+	}
+	tokenPath := filepath.Join(filepath.Dir(cfgPath), "server_auth_token")
+	if _, err := os.Stat(tokenPath); err != nil {
+		t.Fatalf("expected generated server_auth_token file: %v", err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	editedRaw := strings.Join([]string{
+		"schema_version: 2",
+		"# top comment",
+		"agent:",
+		"  # keep me",
+		"  provider: claude",
+		"",
+	}, "\n")
+	if err := svc.SaveRawConfig(editedRaw); err != nil {
+		t.Fatalf("SaveRawConfig: %v", err)
+	}
+
+	assertSparse := func(stage, want string) {
+		t.Helper()
+		saved, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(saved)
+		if got != want {
+			t.Fatalf("%s saved config mismatch:\nwant:\n%s\ngot:\n%s", stage, want, got)
+		}
+		if strings.Contains(got, "auth_token") {
+			t.Fatalf("%s materialized generated auth token into config.yaml:\n%s", stage, got)
+		}
+		if strings.Contains(got, "allowed_origins:") || strings.Contains(got, "logging:") {
+			t.Fatalf("%s materialized unrelated defaults:\n%s", stage, got)
+		}
+	}
+
+	assertSparse("after raw save", editedRaw)
+
+	settings := svc.GetSettings()
+	settings.Agent.MaxConcurrent = 7
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+	assertSparse("after settings edit", strings.Join([]string{
+		"schema_version: 2",
+		"# top comment",
+		"agent:",
+		"  # keep me",
+		"  provider: claude",
+		"  max_concurrent: 7",
+		"",
+	}, "\n"))
+
+	settings = svc.GetSettings()
+	settings.Agent.MaxConcurrent = svc.GetDefaultSettings().Agent.MaxConcurrent
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings reset: %v", err)
+	}
+	assertSparse("after reset", editedRaw)
 }
 
 func TestGetRawConfig_ReturnsFileContents(t *testing.T) {
