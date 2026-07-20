@@ -1286,14 +1286,14 @@ func TestLoadLegacyConfigWithoutGitHubEnabledKeepsGitHubOn(t *testing.T) {
 
 func TestLoadGitHubSubToggleOverrides(t *testing.T) {
 	tests := []struct {
-		name              string
-		yaml              string
-		wantIssues        bool
-		wantSybraPRs      bool
-		wantAssignedPRs   bool
-		wantRunsIssues    bool
-		wantRunsSybraPRs  bool
-		wantRunsAssigned  bool
+		name             string
+		yaml             string
+		wantIssues       bool
+		wantSybraPRs     bool
+		wantAssignedPRs  bool
+		wantRunsIssues   bool
+		wantRunsSybraPRs bool
+		wantRunsAssigned bool
 	}{
 		{
 			name:             "no overrides keep default-true sub-toggles",
@@ -1396,12 +1396,12 @@ func TestGitHubRunsHelpers(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name             string
-		cfg              GitHubConfig
-		wantIssues       bool
-		wantSybraPRs     bool
-		wantAssignedPRs  bool
-		wantReviewer     bool
+		name            string
+		cfg             GitHubConfig
+		wantIssues      bool
+		wantSybraPRs    bool
+		wantAssignedPRs bool
+		wantReviewer    bool
 	}{
 		{
 			name: "all enabled",

@@ -82,11 +82,11 @@ func TestPollHubReviewerRegistration_GitHubReviewToggles(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		enabled        bool
-		sybraPRsEnabled  bool
-		assignedEnabled  bool
-		wantRegistered bool
+		name            string
+		enabled         bool
+		sybraPRsEnabled bool
+		assignedEnabled bool
+		wantRegistered  bool
 	}{
 		{"github enabled, sybra pr stream enabled registers reviewer", true, true, true, true},
 		{"github enabled, assigned stream enabled registers reviewer", true, false, true, true},
@@ -164,71 +164,71 @@ func TestRunsGitHubRateBudgetLoop(t *testing.T) {
 		want            bool
 	}{
 		{
-			name:           "top-level disabled skips budget loop",
-			enabled:        false,
-			issuesEnabled:  true,
+			name:            "top-level disabled skips budget loop",
+			enabled:         false,
+			issuesEnabled:   true,
 			sybraPRsEnabled: true,
 			assignedEnabled: true,
-			want:           false,
+			want:            false,
 		},
 		{
-			name:           "both sub-toggles disabled skips budget loop",
-			enabled:        true,
-			issuesEnabled:  false,
+			name:            "both sub-toggles disabled skips budget loop",
+			enabled:         true,
+			issuesEnabled:   false,
 			sybraPRsEnabled: false,
 			assignedEnabled: false,
-			want:           false,
+			want:            false,
 		},
 		{
-			name:           "issues fetcher enabled runs budget loop",
-			enabled:        true,
-			issuesEnabled:  true,
+			name:            "issues fetcher enabled runs budget loop",
+			enabled:         true,
+			issuesEnabled:   true,
 			sybraPRsEnabled: false,
 			assignedEnabled: false,
-			want:           true,
+			want:            true,
 		},
 		{
-			name:           "sybra pr stream enabled runs budget loop",
-			enabled:        true,
-			issuesEnabled:  false,
+			name:            "sybra pr stream enabled runs budget loop",
+			enabled:         true,
+			issuesEnabled:   false,
 			sybraPRsEnabled: true,
 			assignedEnabled: false,
-			want:           true,
+			want:            true,
 		},
 		{
-			name:           "secondary sybra pr monitoring still runs budget loop",
-			enabled:        true,
-			issuesEnabled:  false,
+			name:            "secondary sybra pr monitoring still runs budget loop",
+			enabled:         true,
+			issuesEnabled:   false,
 			sybraPRsEnabled: true,
 			assignedEnabled: false,
-			pollerRole:     "secondary",
-			want:           true,
+			pollerRole:      "secondary",
+			want:            true,
 		},
 		{
-			name:           "assigned pr discovery on primary runs budget loop",
-			enabled:        true,
-			issuesEnabled:  false,
+			name:            "assigned pr discovery on primary runs budget loop",
+			enabled:         true,
+			issuesEnabled:   false,
 			sybraPRsEnabled: false,
 			assignedEnabled: true,
-			want:           true,
+			want:            true,
 		},
 		{
-			name:           "assigned pr discovery on secondary skips budget loop",
-			enabled:        true,
-			issuesEnabled:  false,
+			name:            "assigned pr discovery on secondary skips budget loop",
+			enabled:         true,
+			issuesEnabled:   false,
 			sybraPRsEnabled: false,
 			assignedEnabled: true,
-			pollerRole:     "secondary",
-			want:           false,
+			pollerRole:      "secondary",
+			want:            false,
 		},
 		{
-			name:           "secondary issues-only skips budget loop",
-			enabled:        true,
-			issuesEnabled:  true,
+			name:            "secondary issues-only skips budget loop",
+			enabled:         true,
+			issuesEnabled:   true,
 			sybraPRsEnabled: false,
 			assignedEnabled: false,
-			pollerRole:     "secondary",
-			want:           false,
+			pollerRole:      "secondary",
+			want:            false,
 		},
 		{
 			name:            "renovate enabled on primary runs budget loop",
