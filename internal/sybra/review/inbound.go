@@ -174,14 +174,25 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 
 	prompt := StaffCodeReviewPrompt(current.ProjectID, current.PRNumber)
 
-	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.cfg.ABTesting, current.ID, string(agent.RoleReview))
+	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.abTestingConfig(), current.ID, string(agent.RoleReview))
 	ag, err := r.agents.Run(cfg)
 	if err != nil {
 		return err
 	}
 	if err := r.tasks.AddRun(current.ID, task.AgentRun{
-		AgentID: ag.ID, Role: string(agent.RoleReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
-		Prompt: cfg.Prompt,
+		AgentID:         ag.ID,
+		Role:            string(agent.RoleReview),
+		Mode:            "headless",
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		ExperimentID:    ag.ExperimentID,
+		VariantID:       ag.VariantID,
+		AssignmentUnit:  ag.AssignmentUnit,
+		AssignmentKey:   ag.AssignmentKey,
+		DecisionVersion: ag.DecisionVersion,
+		State:           string(agent.StateRunning),
+		StartedAt:       ag.StartedAt,
+		Prompt:          cfg.Prompt,
 	}); err != nil {
 		r.logger.Error("task.add-run", "task_id", current.ID, "err", err)
 		if stopErr := r.agents.StopAgent(ag.ID); stopErr != nil {

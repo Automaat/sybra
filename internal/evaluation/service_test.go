@@ -90,6 +90,64 @@ func TestServiceScanHandlesRecordsWithoutExperimentMetadata(t *testing.T) {
 	}
 }
 
+func findExperimentKind(groups []ExperimentKindBreakdown, kind string) *ExperimentKindBreakdown {
+	for i := range groups {
+		if groups[i].Kind == kind {
+			return &groups[i]
+		}
+	}
+	return nil
+}
+
+// TestService_SetABTesting_UpdatesNextScan verifies the routing.WeightApplier
+// push path: a config swapped in after construction — not just the Deps.
+// ABTesting passed to NewService — must be what the next Scan groups by, so
+// a routing overlay tick reaches the Evaluation report without a restart.
+func TestService_SetABTesting_UpdatesNextScan(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	in := now.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", ExperimentID: "exp", VariantID: "a", Outcome: "completed", Timestamp: in},
+	}
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+	}
+	svc := NewService(Deps{
+		Cfg:       config.EvaluationConfig{WindowDays: 7},
+		ABTesting: abtest.Config{}, // no experiments configured at construction time
+		Stats:     testStatsReader{records: records},
+		Audit:     auditFunc(func(q audit.Query) ([]audit.Event, error) { return events, nil }),
+		Now:       func() time.Time { return now },
+	})
+
+	before, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	// Run records still carry the exp/a attribution, but with no matching
+	// abtest.Config experiment it classifies as "unknown", not "model".
+	if kind := findExperimentKind(before.ByExperimentKind, "model"); kind != nil {
+		t.Fatalf("ByExperimentKind[model] before SetABTesting = %+v, want none (no experiment configured)", kind)
+	}
+	if kind := findExperimentKind(before.ByExperimentKind, "unknown"); kind == nil {
+		t.Fatalf("ByExperimentKind before SetABTesting = %+v, want an unknown-kind group", before.ByExperimentKind)
+	}
+
+	svc.SetABTesting(abtest.Config{Experiments: []abtest.Experiment{
+		{ID: "exp", Variants: []abtest.Variant{{ID: "a"}}},
+	}})
+
+	after, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	modelKind := mustExperimentKind(t, after.ByExperimentKind, "model")
+	group := mustExperimentGroup(t, modelKind.Groups, "exp")
+	if len(group.Rows) != 1 || group.Rows[0].VariantID != "a" {
+		t.Fatalf("group.Rows after SetABTesting = %+v, want one exp/a row", group.Rows)
+	}
+}
+
 func TestServiceScanGroupsSkillExecutionMode(t *testing.T) {
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	in := now.Add(-1 * time.Hour)

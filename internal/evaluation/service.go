@@ -151,13 +151,14 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 	if s.stats != nil {
 		recs = s.stats.All()
 	}
+	abTesting := s.abTestingSnapshot()
 	byVariant := compareVariantsByAttribution(recs, evts, since, now, CompareOptions{
-		MinSamples:  s.abTesting.MinSamplesPerVariant,
-		Experiments: s.abTesting.Experiments,
+		MinSamples:  abTesting.MinSamplesPerVariant,
+		Experiments: abTesting.Experiments,
 	}, ComparisonAttributionLatestAuthor)
 	byVariantContribution := compareVariantsByAttribution(recs, evts, since, now, CompareOptions{
-		MinSamples:  s.abTesting.MinSamplesPerVariant,
-		Experiments: s.abTesting.Experiments,
+		MinSamples:  abTesting.MinSamplesPerVariant,
+		Experiments: abTesting.Experiments,
 	}, ComparisonAttributionAnyContribution)
 	rep := Report{
 		GeneratedAt: now,
@@ -171,7 +172,7 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		}),
 		ByAgentModel:             CompareByLatestAuthor(recs, evts, since, now, 20, agentModelCohortKey),
 		ByAgentModelContribution: CompareByContribution(recs, evts, since, now, 20, agentModelCohortKey),
-		ByExperimentKind:         GroupByKind(byVariant, byVariantContribution, s.abTesting.Experiments),
+		ByExperimentKind:         GroupByKind(byVariant, byVariantContribution, abTesting.Experiments),
 		Notes:                    reportNotes(recs, since, now),
 	}
 	rep.Weaknesses = Weaknesses(rep)
@@ -211,6 +212,27 @@ func (s *Service) PhaseReport(_ context.Context) (PhaseReport, error) {
 		return PhaseReport{}, err
 	}
 	return ComputePhaseDurations(evts, since, now, 10), nil
+}
+
+// SetABTesting swaps the A/B config used by CompareVariants/GroupByKind on
+// the next Scan — wired from internal/routing's WeightApplier so a routing
+// overlay tick updates the evaluation report's variant readiness/min-sample
+// view without waiting for a process restart. Config.yaml edits made through
+// the settings UI do not call this today (see the ab_testing hot-reload gap
+// noted in internal/sybra/config_registry.go); it exists for the routing
+// push path specifically.
+func (s *Service) SetABTesting(cfg abtest.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.abTesting = cfg
+}
+
+// abTestingSnapshot reads the current A/B config under s.mu so a concurrent
+// SetABTesting cannot race Scan's read of the Experiments slice.
+func (s *Service) abTestingSnapshot() abtest.Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.abTesting
 }
 
 // LastReport returns the cached report and whether one exists.

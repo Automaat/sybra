@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
@@ -21,6 +22,7 @@ import (
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/routing"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdog"
@@ -99,7 +101,6 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 
 	lm.startMonitorService(ctx, emit)
 	lm.startSelfMonitorService(ctx, emit)
-	lm.startEvaluationService(ctx, emit)
 	lm.startLearningDigestService(ctx, emit)
 	lm.startPromptLabService(ctx, emit)
 	lm.startAutoUpdate(ctx)
@@ -628,7 +629,7 @@ func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit fun
 	a := lm.app
 	deps := evaluation.Deps{
 		Cfg:        a.cfg.Evaluation,
-		ABTesting:  a.cfg.ABTesting,
+		ABTesting:  a.abTestingConfig(),
 		Audit:      evaluation.AuditDirReader(a.cfg.AuditDir()),
 		Emit:       emit,
 		Logger:     a.logger,
@@ -650,7 +651,7 @@ func (lm *LifecycleManager) startLearningDigestService(ctx context.Context, emit
 	a := lm.app
 	deps := learning.Deps{
 		Cfg:       a.cfg.LearningDigest,
-		ABTesting: a.cfg.ABTesting,
+		ABTesting: a.abTestingConfig(),
 		Audit:     learning.AuditDirReader(a.cfg.AuditDir()),
 		AuditLog:  a.audit,
 		Store:     a.learning,
@@ -680,6 +681,48 @@ func (lm *LifecycleManager) startPromptLabService(ctx context.Context, _ func(st
 		return
 	}
 	a.wg.Go(func() { a.promptLab.run(ctx) })
+}
+
+// startRoutingService constructs the adaptive provider-routing service and
+// launches its ticker. Built and run even when disabled (Deps below apply
+// nothing in that case — see routing.Service): this keeps the shadow-mode
+// audit trail live for every install, matching startEvaluationService's
+// "build always, gate behavior on Cfg.Enabled" pattern. Startup calls this
+// synchronously before returning so routing version 1 exists before the first
+// workflow dispatch on a fresh enabled home.
+func (lm *LifecycleManager) startRoutingService(ctx context.Context, emit func(string, any)) {
+	a := lm.app
+	store, err := routing.NewStore(config.RoutingDir())
+	if err != nil {
+		a.logger.Warn("routing.store.init_failed", "err", err)
+		return
+	}
+	deps := routing.Deps{
+		Cfg:  a.cfg.Routing,
+		Base: a.baseABTestingConfig,
+		Report: func() (evaluation.Report, bool) {
+			if a.evaluationSvc == nil {
+				return evaluation.Report{}, false
+			}
+			return a.evaluationSvc.LastReport()
+		},
+		Store: store,
+		Apply: a.applyRoutingWeights,
+		AuditLog: func(e audit.Event) error {
+			if a.audit == nil {
+				return nil
+			}
+			return a.audit.Log(e)
+		},
+		Emit:   emit,
+		Logger: a.logger,
+	}
+	svc := routing.NewService(deps)
+	a.routingSvc = svc
+	// Prime before Startup returns so persisted overlays are live immediately
+	// and a fresh enabled home bootstraps version 1 before the first dispatch.
+	svc.Prime()
+	a.wg.Go(func() { svc.Run(ctx) })
 }
 
 // pollRegistrar is the subset of *poll.Hub used by registerPollHandlers,

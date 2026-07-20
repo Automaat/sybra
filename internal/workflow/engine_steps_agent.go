@@ -340,7 +340,11 @@ func (e *Engine) parkRunAgentStartError(taskID, stepID string, wfExec *Execution
 }
 
 func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, bool, error) {
-	eligibility := e.providerEligibilitySnapshot(ctx)
+	// Snapshot the A/B config once so a concurrent SetABTestingConfig swap by
+	// the routing ticker cannot race this selection or split it across two
+	// generations mid-flight.
+	cfg := e.abTestingConfig()
+	eligibility := e.providerEligibilitySnapshot(cfg)
 	providerAllowed := func(provider string) bool {
 		status, ok := eligibility[provider]
 		if !ok {
@@ -360,14 +364,14 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 			return allow
 		}
 	}
-	a, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, providerAllowed, evalPassed)
+	a, ok, err := abtest.SelectEligibleForContext(cfg, ctx, providerAllowed, evalPassed)
 	if err != nil || !ok {
 		if err == nil && !ok {
-			e.reportProviderShutout(ctx, eligibility, evalPassed)
+			e.reportProviderShutout(cfg, ctx, eligibility, evalPassed)
 		}
 		return AgentAssignment{}, ok, err
 	}
-	e.reportProviderDemotion(ctx, a, eligibility, evalPassed)
+	e.reportProviderDemotion(cfg, ctx, a, eligibility, evalPassed)
 	return AgentAssignment{
 		ExperimentID:    a.ExperimentID,
 		Kind:            a.Kind,
@@ -379,6 +383,7 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 		ReasoningEffort: a.ReasoningEffort,
 		PromptTransform: workflowPromptTransform(a.PromptTransform),
 		SkillAliases:    cloneWorkflowSkillAliases(a.SkillAliases),
+		DecisionVersion: a.DecisionVersion,
 	}, true, nil
 }
 
@@ -400,10 +405,10 @@ func (e *Engine) providerEligibility(provider string) providerEligibilityStatus 
 	}
 }
 
-func (e *Engine) providerEligibilitySnapshot(_ abtest.SelectionContext) map[string]providerEligibilityStatus {
+func (e *Engine) providerEligibilitySnapshot(cfg abtest.Config) map[string]providerEligibilityStatus {
 	statuses := map[string]providerEligibilityStatus{}
-	for i := range e.abTesting.Experiments {
-		exp := e.abTesting.Experiments[i]
+	for i := range cfg.Experiments {
+		exp := cfg.Experiments[i]
 		if !exp.EnabledValue() {
 			continue
 		}
@@ -425,8 +430,8 @@ func (e *Engine) providerEligibilitySnapshot(_ abtest.SelectionContext) map[stri
 // assignment, then logs the captured selection-time reason. Throttling is
 // fleet-wide per routing context + demotion tuple so a sustained outage does
 // not emit one ERROR per task.
-func (e *Engine) reportProviderDemotion(ctx abtest.SelectionContext, actual abtest.Assignment, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
-	wanted, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, nil, evalPassed)
+func (e *Engine) reportProviderDemotion(cfg abtest.Config, ctx abtest.SelectionContext, actual abtest.Assignment, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
+	wanted, ok, err := abtest.SelectEligibleForContext(cfg, ctx, nil, evalPassed)
 	if err != nil || !ok || wanted.Provider == actual.Provider {
 		return
 	}
@@ -454,8 +459,8 @@ func (e *Engine) reportProviderDemotion(ctx abtest.SelectionContext, actual abte
 // this signal the total shutout is indistinguishable from A/B being disabled or
 // no experiment matching the role. Throttled per routing context + experiment +
 // provider + reason so a sustained outage does not emit one ERROR per task.
-func (e *Engine) reportProviderShutout(ctx abtest.SelectionContext, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
-	wanted, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, nil, evalPassed)
+func (e *Engine) reportProviderShutout(cfg abtest.Config, ctx abtest.SelectionContext, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
+	wanted, ok, err := abtest.SelectEligibleForContext(cfg, ctx, nil, evalPassed)
 	if err != nil || !ok {
 		return
 	}
