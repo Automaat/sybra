@@ -90,6 +90,41 @@ func writeConfigYAML(t *testing.T, path string, cfg *config.Config) {
 	}
 }
 
+func TestCloneConfigPreservesABTestingWeightVersion(t *testing.T) {
+	builtinVersion := 6
+	weightsVersion := 42
+	src := &config.Config{
+		ABTesting: abtest.Config{
+			BuiltinVersion: &builtinVersion,
+			WeightsVersion: &weightsVersion,
+			Experiments: []abtest.Experiment{{
+				ID: "exp",
+				Variants: []abtest.Variant{{
+					ID:     "v1",
+					Weight: 1,
+				}},
+			}},
+		},
+	}
+
+	got := cloneConfig(src)
+	if got.ABTesting.WeightsVersion == nil || *got.ABTesting.WeightsVersion != weightsVersion {
+		t.Fatalf("WeightsVersion = %v, want %d", got.ABTesting.WeightsVersion, weightsVersion)
+	}
+	if got.ABTesting.BuiltinVersion == nil || *got.ABTesting.BuiltinVersion != builtinVersion {
+		t.Fatalf("BuiltinVersion = %v, want %d", got.ABTesting.BuiltinVersion, builtinVersion)
+	}
+
+	weightsVersion = 99
+	builtinVersion = 99
+	if *got.ABTesting.WeightsVersion != 42 {
+		t.Fatalf("WeightsVersion shares source pointer, got %d", *got.ABTesting.WeightsVersion)
+	}
+	if *got.ABTesting.BuiltinVersion != 6 {
+		t.Fatalf("BuiltinVersion shares source pointer, got %d", *got.ABTesting.BuiltinVersion)
+	}
+}
+
 func TestReloadFromDisk_MaxConcurrent(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 

@@ -160,6 +160,10 @@ func cloneConfig(src *config.Config) *config.Config {
 		v := *src.ABTesting.BuiltinVersion
 		cp.ABTesting.BuiltinVersion = &v
 	}
+	if src.ABTesting.WeightsVersion != nil {
+		v := *src.ABTesting.WeightsVersion
+		cp.ABTesting.WeightsVersion = &v
+	}
 	return &cp
 }
 
