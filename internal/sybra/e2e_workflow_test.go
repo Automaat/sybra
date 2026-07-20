@@ -1203,12 +1203,41 @@ func TestE2E_HumanReview_StructuredFallbackUnblocksTask(t *testing.T) {
 		"human_review_invalid_structured",
 		"human_review_unblocked_ready_pr",
 	})
+	recoveryWorkflow := `id: human-review-recovery
+name: Human Review Recovery
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: in-progress
+steps:
+  - id: resume_verification
+    name: Resume Verification
+    type: set_status
+    config:
+      status: ready-review
+    next:
+      - goto: ""
+`
+	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "human-review-recovery.yaml"), []byte(recoveryWorkflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &config.Config{}
 	cfg.HumanReview.Enabled = true
 	cfg.HumanReview.SybraRepoDir = env.agentDir
 	cfg.HumanReview.MaxPerHour = 3
 	h := newHumanReviewHandler(cfg, env.tasks, env.agents, nil, e2eLogger(t), config.HomeDir(), "", nil)
+	taskSvc := &TaskService{
+		tasks:          env.tasks,
+		agents:         env.agents,
+		workflowEngine: env.engine,
+		logger:         e2eLogger(t),
+	}
+	h.dispatchFromHumanRequired = func(id, target, reason, completingAgentID string) (task.Task, error) {
+		return taskSvc.dispatchFromHumanRequiredAllowingAgent(id, target, reason, completingAgentID)
+	}
 	env.onAgentComplete = h.onComplete
 
 	created, err := env.tasks.Create("human review structured fallback", "", "headless")
@@ -1216,8 +1245,9 @@ func TestE2E_HumanReview_StructuredFallbackUnblocksTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := env.tasks.Update(created.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("owner/repo"),
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		ProjectID:    task.Ptr("owner/repo"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1228,7 +1258,9 @@ func TestE2E_HumanReview_StructuredFallbackUnblocksTask(t *testing.T) {
 	waitFor(t, 20*time.Second, "human-review fallback unblocks task", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
 		return gErr == nil &&
-			tk.Status == task.StatusReadyPR &&
+			tk.Status == task.StatusReadyReview &&
+			tk.Workflow != nil &&
+			tk.Workflow.WorkflowID == "human-review-recovery" &&
 			len(tk.AgentRuns) == 2 &&
 			tk.AgentRuns[0].VerdictRendered &&
 			tk.AgentRuns[1].VerdictRendered
@@ -1238,8 +1270,8 @@ func TestE2E_HumanReview_StructuredFallbackUnblocksTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tk.Status != task.StatusReadyPR {
-		t.Fatalf("status = %q, want %q", tk.Status, task.StatusReadyPR)
+	if tk.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", tk.Status, task.StatusReadyReview)
 	}
 	if len(tk.AgentRuns) != 2 {
 		t.Fatalf("AgentRuns len = %d, want 2", len(tk.AgentRuns))
@@ -1250,8 +1282,14 @@ func TestE2E_HumanReview_StructuredFallbackUnblocksTask(t *testing.T) {
 	if tk.AgentRuns[1].Model != "gpt-5.4-mini" {
 		t.Fatalf("fallback model = %q, want gpt-5.4-mini", tk.AgentRuns[1].Model)
 	}
-	if !strings.Contains(tk.StatusReason, "auto-review recovery") {
-		t.Fatalf("status_reason = %q, want auto-review recovery marker", tk.StatusReason)
+	if !strings.Contains(tk.Body, "Auto-review: unblocked") {
+		t.Fatalf("body missing unblocked note:\n%s", tk.Body)
+	}
+	if !slices.Contains(tk.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("tags = %v, want %q", tk.Tags, workflow.TamperBlessedTag)
+	}
+	if tk.Workflow == nil || tk.Workflow.WorkflowID != "human-review-recovery" {
+		t.Fatalf("workflow = %+v, want human-review-recovery", tk.Workflow)
 	}
 }
 

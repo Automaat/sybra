@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // humanReviewPromptHeadTail bounds how many lines of the host log file are
@@ -69,6 +70,11 @@ type humanReviewHandler struct {
 	// filed. See CLAUDE.md — Work-Data Confidentiality. Nil during tests
 	// disables the work-project path.
 	workCtx func(projectID string) *WorkScrubContext
+	// dispatchFromHumanRequired routes an acknowledged human-required task back
+	// through the same guarded status->workflow re-entry path the UI uses.
+	// Nil-safe for focused tests: applyUnblockedRecovery falls back to the
+	// legacy direct status write when dispatch wiring is unavailable.
+	dispatchFromHumanRequired func(id, target, reason, completingAgentID string) (task.Task, error)
 
 	mu       sync.Mutex
 	inflight map[string]string      // taskID -> agent ID
@@ -386,8 +392,24 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 	note := h.scrubForTask(current.ProjectID, v.Summary)
 	status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
 	if ok && current.Status == task.StatusHumanRequired && h.verifyUnblocked(current) {
-		newBody := appendSection(current.Body, "Auto-review: unblocked", note)
 		statusReason := "auto-review recovery: " + strings.TrimSpace(v.Summary)
+		if h.dispatchFromHumanRequired != nil {
+			target, err := h.prepareRecoveryDispatch(current, status)
+			if err != nil {
+				h.logger.Error("human-review.unblocked.prepare-dispatch",
+					"task_id", current.ID, "agent_id", agentID, "status", status, "err", err)
+				return
+			}
+			if _, err := h.dispatchFromHumanRequired(current.ID, string(target), statusReason, agentID); err != nil {
+				h.logger.Error("human-review.unblocked.dispatch",
+					"task_id", current.ID, "agent_id", agentID, "target", target, "err", err)
+				return
+			}
+			h.appendNote(current.ID, "Auto-review: unblocked", note)
+			h.markVerdictRendered(current.ID, agentID)
+			return
+		}
+		newBody := appendSection(current.Body, "Auto-review: unblocked", note)
 		updated, err := h.tasks.Update(current.ID, task.Update{
 			Body:         &newBody,
 			Status:       task.Ptr(status),
@@ -413,6 +435,36 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 	if h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
 		h.markVerdictRendered(current.ID, agentID)
 	}
+}
+
+func (h *humanReviewHandler) prepareRecoveryDispatch(current task.Task, status task.Status) (task.Status, error) {
+	target := status
+	if target == task.StatusReadyPR && current.PRNumber == 0 {
+		target = task.StatusInProgress
+	}
+	if target == task.StatusInProgress && workflow.IsTamperFlaggedReason(current.StatusReason) {
+		if err := h.ensureTaskTag(current.ID, workflow.TamperBlessedTag); err != nil {
+			return "", err
+		}
+	}
+	return target, nil
+}
+
+func (h *humanReviewHandler) ensureTaskTag(taskID, tag string) error {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return nil
+	}
+	cur, err := h.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(cur.Tags, tag) {
+		return nil
+	}
+	tags := append(append([]string{}, cur.Tags...), tag)
+	_, err = h.tasks.Update(taskID, task.Update{Tags: task.Ptr(tags)})
+	return err
 }
 
 // verifyUnblocked re-validates an "unblocked" verdict against the task's real

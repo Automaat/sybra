@@ -981,6 +981,10 @@ func readyPRNoWorkflowAllowed(role, target string) bool {
 // HandleHumanActionRecovering), so a double-click or a second operator cannot
 // race the same stuck task between the guard reads and the status write.
 func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task.Task, error) {
+	return s.dispatchFromHumanRequiredAllowingAgent(id, target, reason, "")
+}
+
+func (s *TaskService) dispatchFromHumanRequiredAllowingAgent(id, target, reason, exceptAgentID string) (task.Task, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return task.Task{}, conflictError("a decision reason is required")
@@ -991,7 +995,7 @@ func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task
 
 	var result task.Task
 	run := func() error {
-		out, err := s.dispatchFromHumanRequiredLocked(id, target, reason)
+		out, err := s.dispatchFromHumanRequiredLockedAllowingAgent(id, target, reason, exceptAgentID)
 		result = out
 		return err
 	}
@@ -1012,6 +1016,10 @@ func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task
 }
 
 func (s *TaskService) dispatchFromHumanRequiredLocked(id, target, reason string) (task.Task, error) {
+	return s.dispatchFromHumanRequiredLockedAllowingAgent(id, target, reason, "")
+}
+
+func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, reason, exceptAgentID string) (task.Task, error) {
 	cur, err := s.tasks.Get(id)
 	if err != nil {
 		return task.Task{}, err
@@ -1023,7 +1031,13 @@ func (s *TaskService) dispatchFromHumanRequiredLocked(id, target, reason string)
 	if spec.requiresPR && cur.PRNumber == 0 {
 		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch to %q: task has no linked PR", target))
 	}
-	if s.agents.HasRunningAgentForTask(id) {
+	hasRunning := false
+	if exceptAgentID != "" {
+		hasRunning = s.agents.HasOtherRunningAgentForTask(id, exceptAgentID)
+	} else {
+		hasRunning = s.agents.HasRunningAgentForTask(id)
+	}
+	if hasRunning {
 		return task.Task{}, conflictError("cannot dispatch: an agent is already running for this task")
 	}
 	if cur.Workflow != nil && cur.Workflow.State != workflow.ExecCompleted && cur.Workflow.State != workflow.ExecFailed {

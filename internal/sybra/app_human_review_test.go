@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // setupUnblockedRecoveryWorktree creates a clone checked out on branch, with
@@ -510,6 +511,15 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add run: %v", err)
 	}
+	var dispatchedTarget, dispatchedReason string
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		dispatchedReason = reason
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: task.Ptr(reason),
+		})
+	}
 
 	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
 	ag.AppendOutput(agent.StreamEvent{
@@ -523,10 +533,13 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
 	}
-	if got.Status != task.StatusReadyPR {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyPR)
+	if dispatchedTarget != string(task.StatusInProgress) {
+		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusInProgress)
 	}
-	if !strings.Contains(got.StatusReason, "auto-review recovery") {
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if !strings.Contains(dispatchedReason, "auto-review recovery") || !strings.Contains(got.StatusReason, "auto-review recovery") {
 		t.Fatalf("status_reason = %q, want auto-review recovery note", got.StatusReason)
 	}
 	if !strings.Contains(got.Body, "Auto-review: unblocked") {
@@ -534,6 +547,68 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	}
 	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
 		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_TamperRerouteAddsBlessTag(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-tamper"
+	tk, err := tasks.Create("Recover tamper task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		cur, gErr := tasks.Get(id)
+		if gErr != nil {
+			return task.Task{}, gErr
+		}
+		if !slices.Contains(cur.Tags, workflow.TamperBlessedTag) {
+			t.Fatalf("expected %q tag before dispatch, tags=%v", workflow.TamperBlessedTag, cur.Tags)
+		}
+		if target != string(task.StatusInProgress) {
+			t.Fatalf("dispatch target = %q, want %q", target, task.StatusInProgress)
+		}
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"resume verification after the false-positive tamper gate","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if !slices.Contains(got.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("tags = %v, want %q", got.Tags, workflow.TamperBlessedTag)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
 	}
 }
 

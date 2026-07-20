@@ -3,6 +3,7 @@ package sybra
 import (
 	"context"
 
+	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
 
@@ -38,5 +39,10 @@ func (a *App) wireTaskService() {
 			opts = append(opts, umbrella.WithExpandGrounder(buildGroundLister(a.projects), a.cfg.Umbrella.GroundMinSubIssues))
 		}
 		return umbrella.Expand(a.ctx, a.tasks, umbrella.FallbackPlannerRunner(a.cfg.Umbrella.Model, a.providerHealth), issueURL, opts...)
+	}
+	if a.humanReview != nil {
+		a.humanReview.dispatchFromHumanRequired = func(id, target, reason, completingAgentID string) (task.Task, error) {
+			return a.taskSvc.dispatchFromHumanRequiredAllowingAgent(id, target, reason, completingAgentID)
+		}
 	}
 }
