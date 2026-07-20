@@ -439,7 +439,7 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 
 func (h *humanReviewHandler) prepareRecoveryDispatch(current task.Task, status task.Status) (task.Status, error) {
 	target := status
-	if target == task.StatusReadyPR && current.PRNumber == 0 {
+	if target == task.StatusReadyPR && current.PRNumber == 0 && workflow.IsTamperFlaggedReason(current.StatusReason) {
 		target = task.StatusInProgress
 	}
 	if target == task.StatusReadyReview && current.PRNumber != 0 {
