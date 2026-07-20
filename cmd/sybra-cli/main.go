@@ -43,6 +43,12 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
+type homeResolution struct {
+	effectiveHome   string
+	fromControlHome bool
+	fromSybraHome   bool
+}
+
 func run(args []string) int {
 	if len(args) == 0 {
 		usage()
@@ -99,39 +105,15 @@ func run(args []string) int {
 	// task CRUD reaches the real board even though the agent's own SYBRA_HOME
 	// points at its sandbox; `--home` lets an agent explicitly inspect the
 	// sandbox/app-under-test store instead (see docs/manual-testing.md).
-	effectiveHome := homeOverride
-	fromControlHome := false
-	fromSybraHome := false
-	if effectiveHome == "" {
-		if controlHome := os.Getenv("SYBRA_CONTROL_HOME"); controlHome != "" {
-			effectiveHome = controlHome
-			fromControlHome = true
-		}
-	}
-	if effectiveHome == "" {
-		if sybraHome := os.Getenv("SYBRA_HOME"); sybraHome != "" {
-			effectiveHome = sybraHome
-			fromSybraHome = true
-		}
-	}
+	home := resolveHome(homeOverride)
 
-	restoreHome := func() {}
-	if effectiveHome != "" {
-		prevHome, hadHome := os.LookupEnv("SYBRA_HOME")
-		if err := os.Setenv("SYBRA_HOME", effectiveHome); err != nil {
-			if isHook {
-				fmt.Fprintf(os.Stderr, "hook: apply --home: %v (continuing fail-open)\n", err)
-				return 0
-			}
-			return fatal(jsonOut, "apply --home: %v", err)
+	restoreHome, err := applyCLIHome(home.effectiveHome)
+	if err != nil {
+		if isHook {
+			fmt.Fprintf(os.Stderr, "hook: apply --home: %v (continuing fail-open)\n", err)
+			return 0
 		}
-		restoreHome = func() {
-			if hadHome {
-				_ = os.Setenv("SYBRA_HOME", prevHome)
-			} else {
-				_ = os.Unsetenv("SYBRA_HOME")
-			}
-		}
+		return fatal(jsonOut, "apply --home: %v", err)
 	}
 	defer restoreHome()
 
@@ -168,12 +150,48 @@ func run(args []string) int {
 	// home override — --home, SYBRA_CONTROL_HOME, or SYBRA_HOME — means the
 	// caller explicitly targeted an on-disk store, so reaching some unrelated
 	// reachable server would violate that contract.
-	allowHTTP := homeOverride == "" && !fromControlHome && !fromSybraHome
+	allowHTTP := homeOverride == "" && !home.fromControlHome && !home.fromSybraHome
 	return dispatch(cmd, rest, cfg, store, projStore, allowHTTP, jsonOut)
 }
 
 func isReadOnlyConfigCommand(cmd string) bool {
 	return cmd == "config"
+}
+
+func resolveHome(homeOverride string) homeResolution {
+	if homeOverride != "" {
+		return homeResolution{effectiveHome: homeOverride}
+	}
+	if controlHome := os.Getenv("SYBRA_CONTROL_HOME"); controlHome != "" {
+		return homeResolution{
+			effectiveHome:   controlHome,
+			fromControlHome: true,
+		}
+	}
+	if sybraHome := os.Getenv("SYBRA_HOME"); sybraHome != "" {
+		return homeResolution{
+			effectiveHome: sybraHome,
+			fromSybraHome: true,
+		}
+	}
+	return homeResolution{}
+}
+
+func applyCLIHome(home string) (func(), error) {
+	if home == "" {
+		return func() {}, nil
+	}
+	prevHome, hadHome := os.LookupEnv("SYBRA_HOME")
+	if err := os.Setenv("SYBRA_HOME", home); err != nil {
+		return nil, err
+	}
+	return func() {
+		if hadHome {
+			_ = os.Setenv("SYBRA_HOME", prevHome)
+			return
+		}
+		_ = os.Unsetenv("SYBRA_HOME")
+	}, nil
 }
 
 // dispatch routes a parsed subcommand (with its own args and the global
