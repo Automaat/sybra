@@ -57,6 +57,7 @@ func (m *Manager) ApplyABVariant(cfg RunConfig, ab abtest.Config, taskID, role s
 	cfg.VariantID = a.VariantID
 	cfg.AssignmentUnit = a.AssignmentUnit
 	cfg.AssignmentKey = a.AssignmentKey
+	cfg.DecisionVersion = a.DecisionVersion
 	cfg.Prompt = applyPromptTransform(cfg.Prompt, a.PromptTransform)
 	return cfg
 }

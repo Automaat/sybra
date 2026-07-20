@@ -46,6 +46,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/recovery"
+	"github.com/Automaat/sybra/internal/routing"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/spotlight"
@@ -100,6 +101,7 @@ type App struct {
 	selfMonitorSvc    *selfmonitor.Service
 	evaluationSvc     *evaluation.Service
 	learningDigestSvc *learning.Service
+	routingSvc        *routing.Service
 	agentOrch         *agentorch.Orchestrator
 	reviewer          *review.Handler
 	assigner          *clusterlead.Assigner
@@ -115,6 +117,8 @@ type App struct {
 	triage            *triageCoordinator
 	humanReview       *humanReviewHandler
 	cfg               *config.Config
+	baseABTesting     atomic.Value
+	liveABTesting     atomic.Value
 	logLevel          *slog.LevelVar
 	emit              func(string, any)
 	emitFactory       func(context.Context) func(string, any)
@@ -258,6 +262,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	for _, o := range opts {
 		o(a)
 	}
+	a.initializeABTesting(cfg.ABTesting)
 	return a
 }
 
@@ -310,6 +315,13 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
 
 	lm := newLifecycleManager(a)
+	// Routing reads the evaluation service's cached report on its own
+	// goroutine, so the service pointer must be published before routing
+	// primes or starts ticking.
+	lm.startEvaluationService(ctx, emit)
+	// Routing must prime before Startup returns; otherwise the first workflow
+	// dispatch after a fresh enabled boot can beat version 1 publication.
+	lm.startRoutingService(ctx, emit)
 	lm.StartWatchers(ctx)
 
 	a.wg.Go(func() {
@@ -389,35 +401,7 @@ func (a *App) Startup(ctx context.Context) error {
 	} else {
 		a.emit = func(string, any) {}
 	}
-	// This closure's DispatchEvent -> execShell eventually derives its
-	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
-	// not an explicit parameter threaded through the closure. contextcheck
-	// no longer flags this call site (verified with a clean build+lint
-	// cache), so no suppression directive is needed here.
-	emit := func(event string, data any) {
-		switch event {
-		case events.TaskCreated, events.TaskUpdated, events.TaskDeleted:
-			if path, ok := data.(string); ok {
-				// Prefer Manager.OnExternalUpdate so cross-process file
-				// writes (sybra-cli inside an agent worktree) flow
-				// through the same status-change hook as in-process
-				// updates. Falls back to a bare cache invalidate if the
-				// Manager has not been wired yet (degraded-init path).
-				if a.tasks != nil {
-					a.tasks.OnExternalUpdate(path)
-				} else {
-					store.InvalidatePath(path)
-				}
-				// A task file appearing outside GUI CreateTask (e.g. via
-				// sybra-cli) must still get its task.created workflow, or it
-				// sits inert in todo with nothing to dispatch it.
-				if event == events.TaskCreated {
-					a.maybeStartWorkflowForExternalTask(path)
-				}
-			}
-		}
-		a.emit(event, data)
-	}
+	emit := a.taskEventEmitter(store)
 	a.initBgops(emit)
 
 	a.emitDegradedWarnings(emit)
@@ -452,6 +436,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.agentOrch.SetContext(ctx)
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
+	a.reviewer.SetABTestingSource(a.abTestingConfig)
 
 	a.initWorkflowEngine()
 
@@ -465,6 +450,33 @@ func (a *App) Startup(ctx context.Context) error {
 	a.logger.Info("app.started")
 	started = true
 	return nil
+}
+
+func (a *App) taskEventEmitter(store *task.Store) func(string, any) {
+	return func(event string, data any) {
+		switch event {
+		case events.TaskCreated, events.TaskUpdated, events.TaskDeleted:
+			if path, ok := data.(string); ok {
+				// Prefer Manager.OnExternalUpdate so cross-process file
+				// writes (sybra-cli inside an agent worktree) flow
+				// through the same status-change hook as in-process
+				// updates. Falls back to a bare cache invalidate if the
+				// Manager has not been wired yet (degraded-init path).
+				if a.tasks != nil {
+					a.tasks.OnExternalUpdate(path)
+				} else {
+					store.InvalidatePath(path)
+				}
+				// A task file appearing outside GUI CreateTask (e.g. via
+				// sybra-cli) must still get its task.created workflow, or it
+				// sits inert in todo with nothing to dispatch it.
+				if event == events.TaskCreated {
+					a.maybeStartWorkflowForExternalTask(path)
+				}
+			}
+		}
+		a.emit(event, data)
+	}
 }
 
 func configureProjectGitDefaults() {

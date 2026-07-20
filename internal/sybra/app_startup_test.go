@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -69,6 +71,63 @@ func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
 		if event == events.StartupDegraded {
 			t.Fatalf("isolated startup emitted degraded event: %v", emittedEvents)
 		}
+	}
+}
+
+func TestAppStartup_PrimesRoutingBeforeReturning(t *testing.T) {
+	preventFetchTTLLeak(t)
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+
+	cfg := startupTestConfig(home)
+	cfg.Routing.Enabled = true
+	cfg.ABTesting = abtest.Config{
+		Experiments: []abtest.Experiment{{
+			ID:    "exp",
+			Roles: []string{"fix-review"},
+			Variants: []abtest.Variant{
+				{ID: "claude-opus", Provider: "claude", Model: "opus", Weight: 1},
+			},
+		}},
+	}
+
+	app := NewApp(slog.New(slog.DiscardHandler), &slog.LevelVar{}, cfg)
+	if err := app.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	t.Cleanup(func() {
+		if app.agentSvc != nil && app.agentSvc.approval != nil {
+			_ = app.agentSvc.approval.Shutdown(context.Background())
+		}
+		app.Shutdown(context.Background())
+	})
+
+	if app.routingSvc == nil {
+		t.Fatal("routingSvc = nil, want initialized during Startup")
+	}
+	got := app.abTestingConfig()
+	if got.WeightsVersion == nil || *got.WeightsVersion != 1 {
+		t.Fatalf("live ABTesting.WeightsVersion = %+v, want 1 before Startup returns", got.WeightsVersion)
+	}
+	overlay, ok := app.routingSvc.LastOverlay()
+	if !ok {
+		t.Fatal("routing overlay missing after Startup, want bootstrapped version 1")
+	}
+	if overlay.Version != 1 {
+		t.Fatalf("routing overlay version = %d, want 1", overlay.Version)
+	}
+
+	auditEvents, err := audit.Read(cfg.AuditDir(), audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+		Type:  audit.EventRoutingReweighted,
+	})
+	if err != nil {
+		t.Fatalf("audit.Read: %v", err)
+	}
+	if len(auditEvents) != 1 {
+		t.Fatalf("routing audit events = %d, want 1 bootstrap event", len(auditEvents))
 	}
 }
 
@@ -301,6 +360,9 @@ func assertStartupCoreWiring(t *testing.T, app *App, logger *slog.Logger, cfg *c
 	}
 	if app.agentCompletion == nil || app.recovery == nil {
 		t.Fatal("completion/recovery handlers were not initialized")
+	}
+	if app.evaluationSvc == nil || app.routingSvc == nil {
+		t.Fatal("evaluation/routing services were not initialized before Startup returned")
 	}
 	if app.watcher == nil || app.configWatcher == nil {
 		t.Fatal("file/config watchers were not started")

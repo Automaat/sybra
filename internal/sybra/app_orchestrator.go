@@ -142,7 +142,7 @@ func (a *App) maintenancePass(ctx context.Context) {
 	// raw-URL title) forever and never dispatch a workflow. The eventual
 	// agent.Manager dispatch chain uses its own m.ctx field, same pattern.
 	if a.taskSvc != nil {
-		a.taskSvc.ReconcilePendingEnrichment() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see comment above
+		a.taskSvc.ReconcilePendingEnrichment()
 	}
 	a.worktrees.CleanupOrphaned(ctx)
 	if a.sandboxes != nil && a.tasks != nil {

@@ -171,6 +171,7 @@ var durationAliasSpecs = []durationAliasSpec{
 	{aliasPath: []string{"prompt_lab", "lookback"}, legacyPath: []string{"prompt_lab", "lookback_hours"}, fieldPath: []string{"PromptLab", "LookbackHours"}, unit: unitHours, kind: kindFloat},
 	{aliasPath: []string{"prompt_lab", "refile_cooldown"}, legacyPath: []string{"prompt_lab", "refile_cooldown_days"}, fieldPath: []string{"PromptLab", "RefileCooldownDays"}, unit: unitDays, kind: kindFloat},
 	{aliasPath: []string{"harness_evolution", "interval"}, legacyPath: []string{"harness_evolution", "interval_hours"}, fieldPath: []string{"HarnessEvolve", "IntervalHours"}, unit: unitHours, kind: kindFloat},
+	{aliasPath: []string{"routing", "interval"}, legacyPath: []string{"routing", "interval_hours"}, fieldPath: []string{"Routing", "IntervalHours"}, unit: unitHours, kind: kindFloat},
 	{aliasPath: []string{"harness_evolution", "lookback"}, legacyPath: []string{"harness_evolution", "lookback_hours"}, fieldPath: []string{"HarnessEvolve", "LookbackHours"}, unit: unitHours, kind: kindFloat},
 	{aliasPath: []string{"auto_update", "poll"}, legacyPath: []string{"auto_update", "poll_seconds"}, fieldPath: []string{"AutoUpdate", "PollSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"auto_update", "restart_delay"}, legacyPath: []string{"auto_update", "restart_delay_seconds"}, fieldPath: []string{"AutoUpdate", "RestartDelaySeconds"}, unit: unitSeconds, kind: kindInt},
@@ -209,6 +210,64 @@ func newAliasIndex(specs []durationAliasSpec) aliasIndex {
 }
 
 var schemaV2Aliases = newAliasIndex(durationAliasSpecs)
+
+// DurationAliasPathForLegacy reports the schema-v2 duration alias key path for a
+// legacy numeric config path (dotted, e.g. "agent.bash_timeout_seconds" ->
+// "agent.bash_timeout"). It returns false when the path has no alias. A sparse
+// config patcher uses this to keep alias-form files valid instead of writing a
+// legacy key that would conflict with the alias on the next reload.
+func DurationAliasPathForLegacy(legacyPath string) (string, bool) {
+	for _, spec := range durationAliasSpecs {
+		if joinPath(spec.legacyPath) == legacyPath {
+			return joinPath(spec.aliasPath), true
+		}
+	}
+	return "", false
+}
+
+// FormatDurationAliasValue renders a legacy numeric value (int or float) into a
+// duration string in the alias's unit for legacyPath, such that reloading
+// round-trips back to value. It returns false when legacyPath has no alias or
+// value is not a supported numeric type.
+func FormatDurationAliasValue(legacyPath string, value any) (string, bool) {
+	for _, spec := range durationAliasSpecs {
+		if joinPath(spec.legacyPath) != legacyPath {
+			continue
+		}
+		return formatDurationAliasValue(value, spec.unit)
+	}
+	return "", false
+}
+
+func formatDurationAliasValue(value any, unit durationUnit) (string, bool) {
+	var num string
+	switch v := value.(type) {
+	case int:
+		num = strconv.Itoa(v)
+	case int64:
+		num = strconv.FormatInt(v, 10)
+	case float64:
+		num = strconv.FormatFloat(v, 'f', -1, 64)
+	default:
+		return "", false
+	}
+	return num + unitSuffix(unit), true
+}
+
+func unitSuffix(unit durationUnit) string {
+	switch unit {
+	case unitSeconds:
+		return "s"
+	case unitMinutes:
+		return "m"
+	case unitHours:
+		return "h"
+	case unitDays:
+		return "d"
+	default:
+		return ""
+	}
+}
 
 func validateKnownConfigKeys(root *yaml.Node, schemaVersion int) error {
 	aliases := aliasIndex{}

@@ -33,6 +33,7 @@ func (a *Agent) setAssignment(cfg RunConfig) {
 	a.VariantID = cfg.VariantID
 	a.AssignmentUnit = cfg.AssignmentUnit
 	a.AssignmentKey = cfg.AssignmentKey
+	a.DecisionVersion = cfg.DecisionVersion
 }
 
 func (m *Manager) Run(cfg RunConfig) (*Agent, error) {

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
@@ -24,8 +25,6 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/stats"
-	"github.com/Automaat/sybra/internal/sybra/agentorch"
-	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -45,6 +44,7 @@ type TaskService struct {
 	logger         *slog.Logger
 	audit          *audit.Logger
 	cfg            *config.Config
+	abTesting      func() abtest.Config
 	// ctx is the app's root context (wireTaskService sets it from a.ctx), used
 	// only where a Wails-bound method has no request-scoped context of its own
 	// to thread through — see RecoverLostAgent. nil in tests that construct
@@ -1124,8 +1124,11 @@ func (s *TaskService) DeleteTask(id string) error {
 }
 
 // enrichFromPR fetches a GitHub PR and updates the task.
-// If the PR was authored by the current viewer, moves to in-review for PR monitoring.
-// Otherwise, starts a headless review agent with /staff-code-review.
+// If the PR was authored by the current viewer, moves to in-review for PR
+// monitoring. Otherwise, it tags the task as an inbound review and hands it to
+// the pr-review workflow. Keeping PR review dispatch behind the workflow engine
+// gives it the same assignment, rate, and prompt-contract gates as review
+// request polling.
 func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	pr, err := s.fetchPRFunc()(repo, number)
 	if err != nil {
@@ -1170,7 +1173,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 		return
 	}
 
-	// Not my PR: add review tag and start review agent.
+	// Not my PR: add review tag and let the pr-review workflow own dispatch.
 	labels = append(labels, "review")
 	u.Tags = &labels
 	if _, err := s.tasks.Update(taskID, u); err != nil {
@@ -1182,54 +1185,8 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 		s.logger.Error("enrich-pr.get", "task_id", taskID, "err", err)
 		return
 	}
-	if err := s.startPRReviewAgent(t); err != nil {
-		s.logger.Error("enrich-pr.review-agent", "task_id", taskID, "err", err)
-		return
-	}
+	s.startCreatedWorkflow(t)
 	s.enrichRetryCooldown.Delete(taskID)
-}
-
-// startPRReviewAgent starts a headless agent that runs /staff-code-review on the PR.
-func (s *TaskService) startPRReviewAgent(t task.Task) error {
-	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, s.cfg)
-	if postureErr != nil {
-		return postureErr
-	}
-
-	dir := config.HomeDir()
-	if t.ProjectID != "" {
-		// context.Background(): reached from CreateTask's async enrich-from-PR
-		// goroutine (and the enrich-reconcile maintenance retry), both fired
-		// from a Wails-bound entry point with no ctx to thread through.
-		d, err := s.worktrees.PrepareForReview(context.Background(), t)
-		if err != nil {
-			s.logger.Warn("enrich-pr.worktree", "task_id", t.ID, "err", err)
-		} else {
-			dir = d
-		}
-	}
-
-	prompt := review.StaffCodeReviewPrompt(t.ProjectID, t.PRNumber)
-	cfg := s.agents.ApplyABVariant(review.StaffCodeReviewRunConfig(t, prompt, dir, posture), s.cfg.ABTesting, t.ID, string(agent.RoleReview))
-	ag, err := s.agents.Run(cfg)
-	if err != nil {
-		return err
-	}
-	if err := s.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID:   ag.ID,
-		Role:      string(agent.RoleReview),
-		Mode:      "headless",
-		State:     string(agent.StateRunning),
-		StartedAt: ag.StartedAt,
-		Prompt:    cfg.Prompt,
-	}); err != nil {
-		s.logger.Error("task.add-run", "task_id", t.ID, "err", err)
-	}
-	if _, err := s.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
-		s.logger.Error("enrich-pr.status", "task_id", t.ID, "err", err)
-	}
-	s.logger.Info("enrich-pr.review-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
-	return nil
 }
 
 // enrichFromIssue fetches a GitHub issue and updates the task with real title/body.

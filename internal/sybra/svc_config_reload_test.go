@@ -11,10 +11,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/routing"
 	"gopkg.in/yaml.v3"
 )
 
@@ -85,6 +87,41 @@ func writeConfigYAML(t *testing.T, path string, cfg *config.Config) {
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCloneConfigPreservesABTestingWeightVersion(t *testing.T) {
+	builtinVersion := 6
+	weightsVersion := 42
+	src := &config.Config{
+		ABTesting: abtest.Config{
+			BuiltinVersion: &builtinVersion,
+			WeightsVersion: &weightsVersion,
+			Experiments: []abtest.Experiment{{
+				ID: "exp",
+				Variants: []abtest.Variant{{
+					ID:     "v1",
+					Weight: 1,
+				}},
+			}},
+		},
+	}
+
+	got := cloneConfig(src)
+	if got.ABTesting.WeightsVersion == nil || *got.ABTesting.WeightsVersion != weightsVersion {
+		t.Fatalf("WeightsVersion = %v, want %d", got.ABTesting.WeightsVersion, weightsVersion)
+	}
+	if got.ABTesting.BuiltinVersion == nil || *got.ABTesting.BuiltinVersion != builtinVersion {
+		t.Fatalf("BuiltinVersion = %v, want %d", got.ABTesting.BuiltinVersion, builtinVersion)
+	}
+
+	weightsVersion = 99
+	builtinVersion = 99
+	if *got.ABTesting.WeightsVersion != 42 {
+		t.Fatalf("WeightsVersion shares source pointer, got %d", *got.ABTesting.WeightsVersion)
+	}
+	if *got.ABTesting.BuiltinVersion != 6 {
+		t.Fatalf("BuiltinVersion shares source pointer, got %d", *got.ABTesting.BuiltinVersion)
 	}
 }
 
@@ -583,6 +620,92 @@ func TestSaveRawConfig_RestoresLastKnownGoodOnHotApplyFailure(t *testing.T) {
 	}
 	if svc.cfg.Agent.Provider != "claude" {
 		t.Fatalf("active cfg mutated after failed hot apply: provider=%s", svc.cfg.Agent.Provider)
+	}
+}
+
+// TestReloadFromDisk_ABTestingPreservesRoutingOverlay is the regression for a
+// base ab_testing hot-edit silently dropping the live routing overlay: the
+// reload replaces cfg.ABTesting with the plain operator-saved base, so without
+// an immediate overlay re-merge every selection site would dispatch on
+// unweighted base until the next routing tick (hours). The fix re-invokes the
+// routing service right after the base swap.
+func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+
+	base := abtest.Config{
+		MinSamplesPerVariant: 20,
+		Experiments: []abtest.Experiment{{
+			ID: "exp",
+			Variants: []abtest.Variant{
+				{ID: "v1", Provider: "claude", Weight: 1},
+				{ID: "v2", Provider: "codex", Weight: 1},
+			},
+		}},
+	}
+	svc.cfg.ABTesting = base
+	svc.persisted.ABTesting = base
+
+	store, err := routing.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("routing.NewStore: %v", err)
+	}
+	if err := store.Save(routing.Overlay{
+		Version: 3,
+		Experiments: []routing.OverlayExperiment{{
+			ExperimentID: "exp",
+			Variants: []routing.OverlayVariant{
+				{VariantID: "v1", Weight: 8},
+				{VariantID: "v2", Weight: 2},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+	routingSvc := routing.NewService(routing.Deps{
+		Cfg:   config.RoutingConfig{Enabled: true},
+		Base:  func() abtest.Config { return svc.cfg.ABTesting },
+		Store: store,
+		Apply: func(c abtest.Config) error { svc.cfg.ABTesting = c; return nil },
+	})
+	svc.reapplyRouting = routingSvc.ApplyPersistedOverlay
+
+	// Operator edits the base A/B suite (min samples) on disk.
+	next := *svc.cfg
+	next.ABTesting.MinSamplesPerVariant = 30
+	writeConfigYAML(t, cfgPath, &next)
+
+	result, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if !slices.Contains(result.Applied, "ab_testing") {
+		t.Fatalf("expected ab_testing in applied, got %+v", result.Applied)
+	}
+
+	got := svc.cfg.ABTesting
+	if got.MinSamplesPerVariant != 30 {
+		t.Errorf("MinSamplesPerVariant = %d, want 30 (new base)", got.MinSamplesPerVariant)
+	}
+	if got.WeightsVersion == nil || *got.WeightsVersion != 3 {
+		t.Fatalf("WeightsVersion = %v, want 3 (overlay re-merged)", got.WeightsVersion)
+	}
+	// Locate the operator's experiment by ID — config.Load reconciles builtin
+	// experiments into ab_testing, so it is not the only entry.
+	var exp *abtest.Experiment
+	for i := range got.Experiments {
+		if got.Experiments[i].ID == "exp" {
+			exp = &got.Experiments[i]
+			break
+		}
+	}
+	if exp == nil || len(exp.Variants) != 2 {
+		t.Fatalf("exp experiment missing/malformed after reload: %+v", got.Experiments)
+	}
+	if w := exp.Variants[0].Weight; w != 8 {
+		t.Errorf("v1 weight = %d, want 8 (overlay preserved, not base 1)", w)
+	}
+	if w := exp.Variants[1].Weight; w != 2 {
+		t.Errorf("v2 weight = %d, want 2 (overlay preserved, not base 1)", w)
 	}
 }
 

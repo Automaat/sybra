@@ -70,6 +70,7 @@ type agentRunRecord struct {
 	VariantID               string    `yaml:"variant_id,omitempty"`
 	AssignmentUnit          string    `yaml:"assignment_unit,omitempty"`
 	AssignmentKey           string    `yaml:"assignment_key,omitempty"`
+	DecisionVersion         int       `yaml:"decision_version,omitempty"`
 	ReasoningEffort         string    `yaml:"reasoning_effort,omitempty"`
 	RequestedSkill          string    `yaml:"requested_skill,omitempty"`
 	SkillExecutionMode      string    `yaml:"skill_execution_mode,omitempty"`

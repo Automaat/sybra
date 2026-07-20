@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
@@ -30,6 +31,14 @@ type ConfigService struct {
 	logger         *slog.Logger
 	policy         func() limits.Policy
 	applyRuntime   func(config.Config) error
+	// reapplyRouting re-merges the persisted routing overlay on top of the
+	// freshly hot-reloaded base A/B config and fans it back out to every
+	// selection site. Called after an ab_testing hot change so a base edit
+	// does not silently drop the live overlay until the next routing tick.
+	reapplyRouting func()
+	// applyABTestingBase publishes an operator-authored ab_testing hot reload
+	// to direct dispatch sites before any persisted routing overlay is remerged.
+	applyABTestingBase func(abtest.Config)
 }
 
 // GetSettings returns the current app settings for the config UI.
@@ -95,8 +104,11 @@ func (s *ConfigService) SaveRawConfig(raw string) error {
 	if s.persisted != nil {
 		base = s.persisted
 	}
-	preserveServerToken := serverAuthTokenForRawSave(base)
 	s.mu.RUnlock()
+	preserveServerToken, err := serverAuthTokenForRawSave(base)
+	if err != nil {
+		return validationError(fmt.Sprintf("invalid config: %s", err))
+	}
 	if preserveServerToken != "" {
 		saveRaw, err = ensureServerAuthTokenInRawConfig(saveRaw, preserveServerToken)
 		if err != nil {
@@ -119,11 +131,28 @@ func (s *ConfigService) SaveRawConfig(raw string) error {
 	return err
 }
 
-func serverAuthTokenForRawSave(cfg *config.Config) string {
+// serverAuthTokenForRawSave returns the server auth token a raw save must
+// preserve, but only when the operator's own config.yaml already declares
+// server.auth_token explicitly. cfg.Server.AuthToken is also resolved from
+// the SYBRA_AUTH_TOKEN env var or the generated server_auth_token file (see
+// ensureServerAuthToken) — neither of those sources belongs in config.yaml,
+// so an edit that omits the key must never materialize it there.
+func serverAuthTokenForRawSave(cfg *config.Config) (string, error) {
 	if cfg == nil || strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN")) != "" {
-		return ""
+		return "", nil
 	}
-	return strings.TrimSpace(cfg.Server.AuthToken)
+	existing, err := config.ReadRawConfig()
+	if err != nil {
+		return "", err
+	}
+	existingFileCfg, err := config.ParseFileConfig([]byte(existing))
+	if err != nil {
+		return "", err
+	}
+	if !existingFileCfg.Has("server", "auth_token") {
+		return "", nil
+	}
+	return strings.TrimSpace(cfg.Server.AuthToken), nil
 }
 
 func ensureServerAuthTokenInRawConfig(raw []byte, token string) ([]byte, error) {
@@ -245,7 +274,17 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) (ConfigMutationResu
 		base = s.persisted
 	}
 	next := settingsToConfig(base, settings)
-	return s.mutateLocked(&next, next.Save)
+	raw, err := config.ReadRawConfig()
+	if err != nil {
+		return ConfigMutationResult{}, err
+	}
+	patched, err := patchSettingsRawConfig([]byte(raw), base, &next)
+	if err != nil {
+		return ConfigMutationResult{}, err
+	}
+	return s.mutateLocked(&next, func() error {
+		return config.WriteRawConfig(patched)
+	})
 }
 
 // validateSettings checks all editable fields for validity.
@@ -297,6 +336,16 @@ func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() er
 	}
 	*s.cfg = *nextActive
 	s.persisted = cloneConfig(candidate)
+	if slices.Contains(result.Applied, "ab_testing") && s.applyABTestingBase != nil {
+		s.applyABTestingBase(nextActive.ABTesting)
+	}
+	// A base ab_testing hot change replaces live routing weights with the plain
+	// operator-saved base. Re-merge the persisted overlay on top of that new
+	// base now so every selection site stays weight-consistent instead of
+	// drifting on unweighted base until the next routing tick.
+	if s.reapplyRouting != nil && slices.Contains(result.Applied, "ab_testing") {
+		s.reapplyRouting()
+	}
 	if s.logger != nil {
 		for _, path := range result.RestartRequired {
 			s.logger.Warn("config.reload.restart_required", "field", path)

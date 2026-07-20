@@ -1261,7 +1261,7 @@ func (a *App) initWorkflowEngine() {
 func (a *App) configureWorkflowPolicies() {
 	a.configureTestingEscalation()
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
-	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
+	a.workflowEngine.SetABTestingConfig(a.abTestingConfig())
 	a.configurePlanAutoApproval()
 }
 

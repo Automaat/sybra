@@ -35,6 +35,27 @@ func TestSelectDeterministic(t *testing.T) {
 	}
 }
 
+func TestSelectStampsDecisionVersionFromConfigWeightsVersion(t *testing.T) {
+	cfg := DefaultConfig()
+	a, ok, err := Select(cfg, "task-1", "implementation", "implement")
+	if err != nil || !ok {
+		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.DecisionVersion != 0 {
+		t.Fatalf("DecisionVersion = %d, want 0 for a config with no WeightsVersion", a.DecisionVersion)
+	}
+
+	version := 42
+	cfg.WeightsVersion = &version
+	a, ok, err = Select(cfg, "task-1", "implementation", "implement")
+	if err != nil || !ok {
+		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.DecisionVersion != 42 {
+		t.Fatalf("DecisionVersion = %d, want 42", a.DecisionVersion)
+	}
+}
+
 func TestSelectStageUnitIncludesStep(t *testing.T) {
 	enabled := true
 	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
