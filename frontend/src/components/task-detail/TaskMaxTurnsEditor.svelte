@@ -28,7 +28,7 @@
     const raw = String(draft ?? '').trim()
     const n = raw === '' ? 0 : parseInt(raw, 10)
     if (raw !== '' && (isNaN(n) || n < 0)) {
-      onerror?.('Max turns must be a non-negative integer.')
+      onerror?.('Max assistant events must be a non-negative integer.')
       return
     }
     const current = task.maxTurns ?? 0
@@ -67,7 +67,7 @@
     type="button"
     class="w-fit rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-200 hover:text-surface-700 dark:hover:bg-surface-700 dark:hover:text-surface-300"
     onclick={start}
-    title="Click to set per-task max turns (0 = use global default)"
+    title="Click to set per-task max assistant events (0 = use global default)"
   >
     {#if task.maxTurns}
       {task.maxTurns}

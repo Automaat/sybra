@@ -69,6 +69,9 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	if cfg.Agent.LogRetentionMaxSizeMB < -1 {
 		add("agent.log_retention_max_size_mb: logRetentionMaxSizeMb must be -1 or greater")
 	}
+	if cfg.Agent.MaxReviewRounds < 0 {
+		add("agent.max_review_rounds: maxReviewRounds must be 0 or greater")
+	}
 	if _, err := NormalizeHeadlessPermissionMode(cfg.Agent.HeadlessPermissionMode); err != nil {
 		add("agent.headless_permission_mode: %v", err)
 	}

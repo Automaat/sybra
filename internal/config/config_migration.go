@@ -104,12 +104,19 @@ type MigrationResult struct {
 }
 
 func CanonicalFilePathForLegacy(path string) (string, bool) {
+	if alias, ok := fieldAliasPathForLegacy(path); ok {
+		path = alias
+	}
 	for _, rule := range topLevelNamespaceRules {
 		if path == rule.legacyKey {
 			return joinPath(rule.canonical), true
 		}
 		if suffix, ok := strings.CutPrefix(path, rule.legacyKey+"."); ok {
-			return joinPath(append(slices.Clone(rule.canonical), strings.Split(suffix, ".")...)), true
+			mapped := joinPath(append(slices.Clone(rule.canonical), strings.Split(suffix, ".")...))
+			if alias, ok := fieldAliasPathForLegacy(mapped); ok {
+				return alias, true
+			}
+			return mapped, true
 		}
 	}
 	return "", false
@@ -223,13 +230,14 @@ func MigrateRawConfig(raw []byte, toVersion int) (*MigrationResult, error) {
 	}
 	canonical := newCanonicalConfigBuilder()
 	canonical.setScalarTopLevel("schema_version", strconv.Itoa(CurrentSchemaVersion))
+	preserveLegacyReviewLoop := fileCfg.SchemaVersion() < CurrentSchemaVersion
 	for i := 0; i+1 < len(flatRoot.Content); i += 2 {
 		key := flatRoot.Content[i].Value
 		if key == "schema_version" {
 			continue
 		}
 		value := flatRoot.Content[i+1]
-		if err := migrateLegacyTopLevelIntoCanonical(canonical, key, value, nil); err != nil {
+		if err := migrateLegacyTopLevelIntoCanonical(canonical, key, value, nil, preserveLegacyReviewLoop); err != nil {
 			return nil, err
 		}
 	}
@@ -633,12 +641,12 @@ func normalizeStoragePathsNamespace(builder *flatConfigBuilder, node *yaml.Node)
 	}, "storage.paths")
 }
 
-func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key string, value *yaml.Node, parent []string) error {
+func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key string, value *yaml.Node, parent []string, preserveLegacyReviewLoop bool) error {
 	for _, rule := range topLevelNamespaceRules {
 		if key != rule.legacyKey {
 			continue
 		}
-		transformed, err := migrateNodeToCanonical([]string{key}, value)
+		transformed, err := migrateNodeToCanonical([]string{key}, value, preserveLegacyReviewLoop)
 		if err != nil {
 			return err
 		}
@@ -647,9 +655,13 @@ func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key str
 	return builder.setPath(append(slices.Clone(parent), key), value)
 }
 
-func migrateNodeToCanonical(path []string, node *yaml.Node) (*yaml.Node, error) {
+func migrateNodeToCanonical(path []string, node *yaml.Node, preserveLegacyReviewLoop bool) (*yaml.Node, error) {
 	if node == nil {
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}, nil
+	}
+	if aliasPath, ok := fieldAliasPathForLegacy(joinPath(path)); ok && node.Kind == yaml.ScalarNode {
+		_ = aliasPath
+		return cloneYAMLNode(node), nil
 	}
 	if aliasPath, ok := DurationAliasPathForLegacy(joinPath(path)); ok && node.Kind == yaml.ScalarNode {
 		rendered, ok := FormatDurationAliasValue(joinPath(path), yamlScalarNumber(node))
@@ -665,6 +677,10 @@ func migrateNodeToCanonical(path []string, node *yaml.Node) (*yaml.Node, error) 
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			childKey := node.Content[i].Value
 			childPath := append(slices.Clone(path), childKey)
+			if aliasPath, ok := fieldAliasPathForLegacy(joinPath(childPath)); ok {
+				childKey = lastPathPart(aliasPath)
+				childPath = append(slices.Clone(path), childKey)
+			}
 			if aliasPath, ok := DurationAliasPathForLegacy(joinPath(childPath)); ok {
 				rendered, ok := FormatDurationAliasValue(joinPath(childPath), yamlScalarNumber(node.Content[i+1]))
 				if !ok {
@@ -676,13 +692,23 @@ func migrateNodeToCanonical(path []string, node *yaml.Node) (*yaml.Node, error) 
 				)
 				continue
 			}
-			child, err := migrateNodeToCanonical(childPath, node.Content[i+1])
+			child, err := migrateNodeToCanonical(childPath, node.Content[i+1], preserveLegacyReviewLoop)
 			if err != nil {
 				return nil, err
 			}
 			out.Content = append(out.Content,
 				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: childKey},
 				child,
+			)
+		}
+		if preserveLegacyReviewLoop &&
+			joinPath(path) == "agent" &&
+			!yamlMappingHasKey(out, "allow_unbounded_review_rounds") &&
+			!yamlMappingHasKey(out, "max_review_rounds") &&
+			yamlMappingBool(out, "review_until_clean") {
+			out.Content = append(out.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "allow_unbounded_review_rounds"},
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
 			)
 		}
 		return out, nil
@@ -706,6 +732,20 @@ func yamlMappingValue(mapping *yaml.Node, key string) (*yaml.Node, bool) {
 		}
 	}
 	return nil, false
+}
+
+func yamlMappingHasKey(mapping *yaml.Node, key string) bool {
+	_, ok := yamlMappingValue(mapping, key)
+	return ok
+}
+
+func yamlMappingBool(mapping *yaml.Node, key string) bool {
+	node, ok := yamlMappingValue(mapping, key)
+	if !ok {
+		return false
+	}
+	var v bool
+	return node.Decode(&v) == nil && v
 }
 
 func cloneYAMLNode(node *yaml.Node) *yaml.Node {

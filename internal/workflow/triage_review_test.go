@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func manyGoFiles(n int) []string {
@@ -973,6 +974,51 @@ func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
 	}
 }
 
+func TestBuiltinSimpleTask_ReviewLoopParksAtRoundLimit(t *testing.T) {
+	t.Parallel()
+
+	if !KnownTriggerFields["task.review_round_limit_reached"] {
+		t.Fatal("task.review_round_limit_reached missing from KnownTriggerFields")
+	}
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-review" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-review not found")
+	}
+	var tamper *Step
+	for i := range simple.Steps {
+		if simple.Steps[i].ID == "detect_tampering" {
+			tamper = &simple.Steps[i]
+			break
+		}
+	}
+	if tamper == nil {
+		t.Fatal("detect_tampering step not found")
+	}
+
+	got, err := ResolveTransition(tamper.Next, map[string]string{
+		"task.status":                     "testing",
+		"config.review_until_clean":       "true",
+		"task.review_round_limit_reached": "true",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "review_round_limit_hit" {
+		t.Fatalf("limit-reached goto = %q, want review_round_limit_hit", got)
+	}
+}
+
 // TestEngineReviewUntilCleanReachesTransition covers the wiring the YAML-level
 // toggle test cannot: SetReviewUntilClean -> reviewLoopDisabled -> the
 // config.review_until_clean field resolveNext actually supplies. Without this,
@@ -1059,5 +1105,51 @@ func TestEngineReviewUntilCleanDefaultsToLooping(t *testing.T) {
 	}
 	if next == nil || next.ID != "loop" {
 		t.Fatalf("zero-value engine routed to %v, want loop", next)
+	}
+}
+
+func TestEngineReviewRoundLimitReachesTransition(t *testing.T) {
+	t.Parallel()
+
+	started := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	def := &Definition{
+		ID: "test-review-limit",
+		Steps: []Step{
+			{
+				ID:   "gate",
+				Type: StepCondition,
+				Next: []Transition{
+					{When: &Condition{Field: "task.review_round_limit_reached", Operator: "equals", Value: "true"}, GoTo: "park"},
+					{GoTo: "loop"},
+				},
+			},
+			{ID: "park", Type: StepSetStatus},
+			{ID: "loop", Type: StepSetStatus},
+		},
+	}
+
+	mt := newMemTasks()
+	mt.tasks["t1"] = &TaskInfo{ID: "t1", Status: "testing"}
+	e := &Engine{logger: slog.New(slog.DiscardHandler), tasks: mt}
+	e.SetReviewUntilClean(true)
+	e.SetMaxReviewRounds(2)
+
+	task := TaskInfo{
+		ID:     "t1",
+		Status: "testing",
+		Workflow: &Execution{
+			StartedAt: started,
+		},
+		AgentRuns: []AgentRunInfo{
+			{Role: "review", StartedAt: started.Add(time.Minute)},
+			{Role: "review", StartedAt: started.Add(2 * time.Minute)},
+		},
+	}
+	next, _, err := e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("resolveNext: %v", err)
+	}
+	if next == nil || next.ID != "park" {
+		t.Fatalf("resolveNext routed to %v, want park", next)
 	}
 }

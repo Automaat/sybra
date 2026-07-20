@@ -72,6 +72,10 @@ func Resolve(file *FileConfig, env Environment, opts ResolveOptions) (*ResolveRe
 		if err := applyDurationAliases(file, cfg); err != nil {
 			return nil, err
 		}
+		if err := applyFieldAliases(file, cfg); err != nil {
+			return nil, err
+		}
+		applyLegacyReviewLoopCompat(file, cfg)
 		if !file.HasSchemaVersion() {
 			applyLegacyGitHubDefault(file.data, cfg)
 		}
@@ -85,6 +89,27 @@ func Resolve(file *FileConfig, env Environment, opts ResolveOptions) (*ResolveRe
 		return nil, err
 	}
 	return &ResolveResult{Config: cfg}, nil
+}
+
+func applyLegacyReviewLoopCompat(file *FileConfig, cfg *ResolvedConfig) {
+	if file == nil || cfg == nil {
+		return
+	}
+	if file.SchemaVersion() >= CurrentSchemaVersion {
+		return
+	}
+	if file.Has("agent", "allow_unbounded_review_rounds") || file.Has("agent", "max_review_rounds") {
+		return
+	}
+	node, ok := file.nodeAt("agent", "review_until_clean")
+	if !ok {
+		return
+	}
+	var enabled bool
+	if err := node.Decode(&enabled); err != nil || !enabled {
+		return
+	}
+	cfg.Agent.AllowUnboundedReviewRounds = &enabled
 }
 
 func applyEnvironmentOverrides(cfg *ResolvedConfig, env Environment) {

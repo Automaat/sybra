@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/routing"
+	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
 
@@ -180,6 +182,59 @@ func TestReloadFromDisk_Guardrails(t *testing.T) {
 	if g.CheckpointOnTurnCeiling {
 		t.Error("Guardrails.CheckpointOnTurnCeiling = true, want false")
 	}
+}
+
+func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.workflowEngine = workflow.NewEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
+	svc.applyWorkflowGuardrails(*svc.cfg)
+
+	next := *svc.cfg
+	disabled := false
+	next.Agent.ReviewUntilClean = &disabled
+	next.Agent.MaxReviewRounds = 1
+	unbounded := true
+	next.Agent.AllowUnboundedReviewRounds = &unbounded
+	next.Agent.MaxCheckpoints = 9
+	writeConfigYAML(t, cfgPath, &next)
+
+	result, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if !slices.Contains(result.Applied, "agent") {
+		t.Errorf("expected agent in applied, got %+v", result)
+	}
+	if !workflowBoolField(t, svc.workflowEngine, "reviewLoopDisabled") {
+		t.Error("workflow reviewLoopDisabled = false, want true")
+	}
+	if got := workflowIntField(t, svc.workflowEngine, "maxReviewRounds"); got != 1 {
+		t.Errorf("workflow maxReviewRounds = %d, want 1", got)
+	}
+	if !workflowBoolField(t, svc.workflowEngine, "allowUnboundedReviewRounds") {
+		t.Error("workflow allowUnboundedReviewRounds = false, want true")
+	}
+	if got := workflowIntField(t, svc.workflowEngine, "maxCheckpoints"); got != 9 {
+		t.Errorf("workflow maxCheckpoints = %d, want 9", got)
+	}
+}
+
+func workflowBoolField(t *testing.T, e *workflow.Engine, name string) bool {
+	t.Helper()
+	v := reflect.ValueOf(e).Elem().FieldByName(name)
+	if !v.IsValid() {
+		t.Fatalf("workflow.Engine field %q not found", name)
+	}
+	return v.Bool()
+}
+
+func workflowIntField(t *testing.T, e *workflow.Engine, name string) int {
+	t.Helper()
+	v := reflect.ValueOf(e).Elem().FieldByName(name)
+	if !v.IsValid() {
+		t.Fatalf("workflow.Engine field %q not found", name)
+	}
+	return int(v.Int())
 }
 
 func TestReloadFromDisk_Provider(t *testing.T) {
