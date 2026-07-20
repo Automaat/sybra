@@ -872,6 +872,12 @@ func PushRemote(ctx context.Context, repoPath string) string {
 	return "origin"
 }
 
+// RemoteConfigured reports whether repoPath has a configured URL for remote.
+func RemoteConfigured(ctx context.Context, repoPath, remote string) bool {
+	_, err := executil.Output(ctx, repoPath, "git", "config", "--get", "remote."+remote+".url")
+	return err == nil
+}
+
 // forkOnlyDisabledPushURL is the sentinel pushURL written to origin when a
 // fork remote exists. Agents using `git push origin <branch>` (with or
 // without --no-verify) hit a transport-level failure naming this sentinel,
@@ -1183,6 +1189,30 @@ func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string
 	return nil
 }
 
+func reconcileWithTargetSHA(ctx context.Context, worktreePath, label, targetSHA string) error {
+	localSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return err
+	}
+	if localSHA == targetSHA {
+		return nil
+	}
+	if isAncestor(ctx, worktreePath, targetSHA, localSHA) {
+		return nil
+	}
+	if isAncestor(ctx, worktreePath, localSHA, targetSHA) {
+		dirty, err := worktreeDirty(ctx, worktreePath)
+		if err != nil {
+			return fmt.Errorf("check worktree dirty: %w", err)
+		}
+		if dirty {
+			return ErrDirtyWorktree
+		}
+		return executil.Run(ctx, worktreePath, "git", "merge", "--ff-only", targetSHA)
+	}
+	return fmt.Errorf("%w: local %s vs %s %s", ErrBranchDiverged, localSHA[:min(7, len(localSHA))], label, targetSHA[:min(7, len(targetSHA))])
+}
+
 // ReconcileWithRemote fast-forwards the worktree's checked-out branch to the
 // remote branch head before a rebase, so remote-only commits (e.g. a review fix
 // pushed from another clone or machine) are carried forward instead of dropped
@@ -1201,7 +1231,14 @@ func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string
 //   - remote ahead (local is ancestor of remote): fast-forward local to remote
 //   - diverged (neither is an ancestor): ErrBranchDiverged, caller must not force
 func ReconcileWithRemote(ctx context.Context, worktreePath, branch string) error {
-	remote := PushRemote(ctx, worktreePath)
+	return ReconcileWithNamedRemote(ctx, worktreePath, PushRemote(ctx, worktreePath), branch)
+}
+
+// ReconcileWithNamedRemote is ReconcileWithRemote against an explicit remote.
+// Use it when the checkout source is known and must not follow push routing
+// policy, such as PR-fix worktrees created from origin refs while a fork remote
+// is also configured.
+func ReconcileWithNamedRemote(ctx context.Context, worktreePath, remote, branch string) error {
 	// Refresh the tracking ref from the live remote; fork remotes are not
 	// covered by the earlier FetchOrigin. A first-push branch has no remote
 	// head yet, so "couldn't find remote ref" is expected and not fatal — any
@@ -1222,28 +1259,16 @@ func ReconcileWithRemote(ctx context.Context, worktreePath, branch string) error
 		return nil
 	}
 
-	localSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "HEAD")
+	return reconcileWithTargetSHA(ctx, worktreePath, remote+"/"+branch, remoteSHA)
+}
+
+// ReconcileWithRef is ReconcileWithRemote for an already-fetched local ref.
+func ReconcileWithRef(ctx context.Context, worktreePath, ref string) error {
+	targetSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", ref)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve %s: %w", ref, err)
 	}
-	if localSHA == remoteSHA {
-		return nil
-	}
-	if isAncestor(ctx, worktreePath, remoteSHA, localSHA) {
-		return nil // local already contains the remote head
-	}
-	if isAncestor(ctx, worktreePath, localSHA, remoteSHA) {
-		dirty, err := worktreeDirty(ctx, worktreePath)
-		if err != nil {
-			return fmt.Errorf("check worktree dirty: %w", err)
-		}
-		if dirty {
-			return ErrDirtyWorktree
-		}
-		// Remote strictly ahead — adopt its commits before rebasing.
-		return executil.Run(ctx, worktreePath, "git", "merge", "--ff-only", remoteSHA)
-	}
-	return fmt.Errorf("%w: local %s vs remote %s/%s %s", ErrBranchDiverged, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
+	return reconcileWithTargetSHA(ctx, worktreePath, ref, targetSHA)
 }
 
 // MergeDivergedRemote repairs the ErrBranchDiverged case ReconcileWithRemote
@@ -1262,8 +1287,21 @@ func ReconcileWithRemote(ctx context.Context, worktreePath, branch string) error
 // semantic blocker between two copies of the same branch, which the caller
 // must not paper over by recreating.
 func MergeDivergedRemote(ctx context.Context, worktreePath, branch string) (bool, error) {
-	remote := PushRemote(ctx, worktreePath)
+	return MergeDivergedNamedRemote(ctx, worktreePath, PushRemote(ctx, worktreePath), branch)
+}
+
+// MergeDivergedNamedRemote is MergeDivergedRemote against an explicit remote.
+func MergeDivergedNamedRemote(ctx context.Context, worktreePath, remote, branch string) (bool, error) {
 	result, err := TryCleanMerge(ctx, worktreePath, "refs/remotes/"+remote+"/"+branch)
+	if err != nil {
+		return false, err
+	}
+	return result != CleanMergeConflict, nil
+}
+
+// MergeDivergedRef is MergeDivergedRemote for an already-fetched local ref.
+func MergeDivergedRef(ctx context.Context, worktreePath, ref string) (bool, error) {
+	result, err := TryCleanMerge(ctx, worktreePath, ref)
 	if err != nil {
 		return false, err
 	}

@@ -19,6 +19,14 @@ type Config struct {
 	// up to CurrentBuiltinVersion, leaving any other (user-authored) experiment
 	// untouched.
 	BuiltinVersion *int `yaml:"builtin_version,omitempty" json:"builtinVersion,omitempty"`
+	// WeightsVersion stamps the routing-service generation that produced this
+	// config's variant weights — nil for a plain operator-authored config
+	// (weights come straight from config.yaml, no overlay applied). Copied
+	// onto every Assignment as DecisionVersion so a run record can be joined
+	// back to the routing.reweighted audit event that set its weights. Never
+	// persisted to config.yaml — internal/routing sets it only on the
+	// in-memory merged config it pushes to selection sites.
+	WeightsVersion *int `yaml:"-" json:"weightsVersion,omitempty"`
 }
 
 // CurrentBuiltinVersion is the version stamp for the built-in experiment set
@@ -127,6 +135,11 @@ type Assignment struct {
 	AssignmentKey   string
 	PromptTransform *PromptTransform
 	SkillAliases    map[string]string
+	// DecisionVersion mirrors the Config's WeightsVersion at selection time
+	// (0 when the config carries no routing overlay), so downstream run
+	// records can be attributed to the routing generation that set this
+	// variant's weight.
+	DecisionVersion int
 }
 
 // DefaultConfig returns the default A/B suite split by price bracket: code

@@ -74,6 +74,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 			VariantID:               "variant",
 			AssignmentUnit:          "task",
 			AssignmentKey:           "task1234",
+			DecisionVersion:         7,
 			ReasoningEffort:         "high",
 			RequestedSkill:          "sybra-test",
 			SkillExecutionMode:      "native",

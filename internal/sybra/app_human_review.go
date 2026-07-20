@@ -61,15 +61,16 @@ type humanReviewAgentRunner interface {
 // into a side-effect: genuine -> append a note; sybra_bug -> file a
 // deduplicated GitHub issue and flip the task to status=blocked.
 type humanReviewHandler struct {
-	cfg     *config.Config
-	tasks   *task.Manager
-	agents  humanReviewAgentRunner
-	audit   *audit.Logger
-	logger  *slog.Logger
-	sink    humanReviewIssueFiler
-	homeDir string
-	logFile string
-	now     func() time.Time
+	cfg       *config.Config
+	abTesting func() abtest.Config
+	tasks     *task.Manager
+	agents    humanReviewAgentRunner
+	audit     *audit.Logger
+	logger    *slog.Logger
+	sink      humanReviewIssueFiler
+	homeDir   string
+	logFile   string
+	now       func() time.Time
 
 	// workCtx returns a non-nil WorkScrubContext when the task's project is
 	// work-typed. When set, the handler still spawns the review agent but
@@ -96,6 +97,16 @@ type humanReviewSpawnOptions struct {
 	IgnoreRenderedVerdict bool
 	SkipABVariant         bool
 	RetryReason           string
+}
+
+func (h *humanReviewHandler) abTestingConfig() abtest.Config {
+	if h.abTesting != nil {
+		return h.abTesting()
+	}
+	if h.cfg == nil {
+		return abtest.Config{}
+	}
+	return cloneABTestingConfig(h.cfg.ABTesting)
 }
 
 func newHumanReviewHandler(
@@ -157,6 +168,7 @@ func (a *App) initHumanReview() {
 	}
 	logFile := filepath.Join(a.logDir, "sybra.log")
 	a.humanReview = newHumanReviewHandler(a.cfg, a.tasks, a.agents, a.audit, a.logger, sink, config.HomeDir(), logFile, a.workScrubContextForTask)
+	a.humanReview.abTesting = a.abTestingConfig
 	a.logger.Info("human-review.enabled", "dir", dir, "repo", a.cfg.HumanReviewRepo(), "model", a.cfg.HumanReviewModel())
 }
 
@@ -283,7 +295,7 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		IgnoreConcurrencyLimit: true,
 	}
 	if !opts.SkipABVariant {
-		cfg = h.agents.ApplyABVariant(cfg, h.cfg.ABTesting, taskID, string(agent.RoleHumanReview))
+		cfg = h.agents.ApplyABVariant(cfg, h.abTestingConfig(), taskID, string(agent.RoleHumanReview))
 	}
 	if !h.preRunEligible(taskID, now, opts.IgnoreRenderedVerdict) {
 		return false
@@ -303,14 +315,19 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 	h.mu.Unlock()
 
 	if err := h.tasks.AddRun(taskID, task.AgentRun{
-		AgentID:   ag.ID,
-		Role:      string(agent.RoleHumanReview),
-		Mode:      "headless",
-		Provider:  ag.Provider,
-		Model:     ag.Model,
-		State:     string(agent.StateRunning),
-		StartedAt: ag.StartedAt,
-		Prompt:    cfg.Prompt,
+		AgentID:         ag.ID,
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		ExperimentID:    ag.ExperimentID,
+		VariantID:       ag.VariantID,
+		AssignmentUnit:  ag.AssignmentUnit,
+		AssignmentKey:   ag.AssignmentKey,
+		DecisionVersion: ag.DecisionVersion,
+		State:           string(agent.StateRunning),
+		StartedAt:       ag.StartedAt,
+		Prompt:          cfg.Prompt,
 	}); err != nil {
 		h.logger.Error("human-review.add-run", "task_id", taskID, "agent_id", ag.ID, "err", err)
 	}
@@ -420,7 +437,7 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 		h.markVerdictRendered(current.ID, agentID)
 		return
 	}
-	if h.appendNote(current.ID, "Auto-review: unblocked", note) {
+	if h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
 		h.markVerdictRendered(current.ID, agentID)
 	}
 }

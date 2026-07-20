@@ -193,7 +193,7 @@ func NormalizeV2Document(root *yaml.Node) (*yaml.Node, []string, error) {
 			}, "observability"); err != nil {
 				return nil, nil, err
 			}
-		case "server", "cluster", "auto_update", "webhook":
+		case "routing", "server", "cluster", "auto_update", "webhook":
 			if err := builder.setTopLevel(key, valueNode, key); err != nil {
 				return nil, nil, err
 			}

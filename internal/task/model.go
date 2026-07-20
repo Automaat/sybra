@@ -216,6 +216,7 @@ type AgentRun struct {
 	VariantID       string `json:"variantId,omitempty"`
 	AssignmentUnit  string `json:"assignmentUnit,omitempty"`
 	AssignmentKey   string `json:"assignmentKey,omitempty"`
+	DecisionVersion int    `json:"decisionVersion,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	RequestedSkill  string `json:"requestedSkill,omitempty"`
 	// SkillExecutionMode records how a mandatory workflow skill actually ran:

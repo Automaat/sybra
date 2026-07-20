@@ -155,6 +155,7 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	applyLearningDigestDefaults(cfg)
 	applyHarnessEvolveDefaults(cfg)
 	applyPromptLabDefaults(cfg)
+	applyRoutingDefaults(cfg)
 	applyExperienceDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)

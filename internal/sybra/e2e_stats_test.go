@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/stats"
@@ -200,6 +201,110 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 				t.Fatalf("audit summary cost = %g, want %g", summary.TotalCostUSD, tc.wantCost)
 			}
 		})
+	}
+}
+
+func TestE2E_RoutingDecisionVersion_RecordedOnTaskAndStats(t *testing.T) {
+	env := setupE2EProvider(t, "claude", "success")
+
+	statsPath := filepath.Join(env.taskDir, "stats.json")
+	statsStore, err := stats.NewStore(statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditDir := filepath.Join(env.taskDir, "audit")
+	auditLogger, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = auditLogger.Close() })
+
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: env.worktreesDir,
+		Tasks:        env.tasks,
+		Logger:       e2eLogger(t),
+		AgentChecker: env.agents.HasRunningAgentForTask,
+	})
+	handler := completion.New(completion.Config{
+		Logger:         e2eLogger(t),
+		Tasks:          env.tasks,
+		Worktrees:      wm,
+		WorkflowEngine: env.engine,
+		Stats:          statsStore,
+		Audit:          auditLogger,
+	})
+	env.onAgentComplete = func(ag *agent.Agent) {
+		handler.OnComplete(ag)
+	}
+
+	enabled := true
+	version := 11
+	env.engine.SetABTestingConfig(abtest.Config{
+		Enabled:        &enabled,
+		WeightsVersion: &version,
+		Experiments: []abtest.Experiment{{
+			ID:    "impl-exp",
+			Roles: []string{"implementation"},
+			Variants: []abtest.Variant{{
+				ID:       "claude-sonnet",
+				Provider: "claude",
+				Model:    "sonnet",
+				Weight:   1,
+			}},
+		}},
+	})
+
+	created, err := env.tasks.Create("routing decision version e2e", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow and stats complete", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.State == workflow.ExecCompleted && statsStore.Query().AllTime.TotalRuns >= 2
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotImpl *task.AgentRun
+	for i := range tk.AgentRuns {
+		if tk.AgentRuns[i].Role == "implementation" {
+			gotImpl = &tk.AgentRuns[i]
+			break
+		}
+	}
+	if gotImpl == nil {
+		t.Fatalf("implementation run missing from task: %+v", tk.AgentRuns)
+	}
+	if gotImpl.DecisionVersion != version {
+		t.Fatalf("task implementation DecisionVersion = %d, want %d", gotImpl.DecisionVersion, version)
+	}
+	if gotImpl.ExperimentID != "impl-exp" || gotImpl.VariantID != "claude-sonnet" {
+		t.Fatalf("task implementation A/B metadata = (%q, %q), want (impl-exp, claude-sonnet)", gotImpl.ExperimentID, gotImpl.VariantID)
+	}
+
+	var matched bool
+	for _, rec := range statsStore.All() {
+		if rec.TaskID == created.ID && rec.Role == "implementation" {
+			matched = true
+			if rec.RoutingDecisionVersion != version {
+				t.Fatalf("stats RoutingDecisionVersion = %d, want %d", rec.RoutingDecisionVersion, version)
+			}
+			if rec.ExperimentID != "impl-exp" || rec.VariantID != "claude-sonnet" {
+				t.Fatalf("stats A/B metadata = (%q, %q), want (impl-exp, claude-sonnet)", rec.ExperimentID, rec.VariantID)
+			}
+		}
+	}
+	if !matched {
+		t.Fatalf("implementation stats record missing for task %s", created.ID)
 	}
 }
 

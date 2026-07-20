@@ -18,27 +18,28 @@ import (
 // (~/.sybra/agents/<id>.yaml). Written when the PID is known and whenever
 // the session ID is first captured; deleted when the agent terminates.
 type Record struct {
-	ID             string    `yaml:"id"`
-	TaskID         string    `yaml:"task_id,omitempty"`
-	Name           string    `yaml:"name,omitempty"`
-	Mode           string    `yaml:"mode"`
-	Provider       string    `yaml:"provider"`
-	Model          string    `yaml:"model,omitempty"`
-	ExperimentID   string    `yaml:"experiment_id,omitempty"`
-	VariantID      string    `yaml:"variant_id,omitempty"`
-	AssignmentUnit string    `yaml:"assignment_unit,omitempty"`
-	AssignmentKey  string    `yaml:"assignment_key,omitempty"`
-	PID            int       `yaml:"pid"`
-	SessionID      string    `yaml:"session_id,omitempty"`
-	LogPath        string    `yaml:"log_path,omitempty"`
-	CWD            string    `yaml:"cwd,omitempty"`
-	SandboxHomeDir string    `yaml:"sandbox_home_dir,omitempty"`
-	StartedAt      time.Time `yaml:"started_at"`
-	ProcStartedAt  string    `yaml:"proc_started_at,omitempty"` // ps lstart, guards PID reuse
-	StdinPath      string    `yaml:"stdin_path,omitempty"`      // FIFO for interactive survival
-	PendingPrompts []string  `yaml:"pending_prompts,omitempty"` // queued follow-up turns
-	OneShot        bool      `yaml:"one_shot,omitempty"`
-	MaxTurns       int       `yaml:"max_turns,omitempty"`
+	ID              string    `yaml:"id"`
+	TaskID          string    `yaml:"task_id,omitempty"`
+	Name            string    `yaml:"name,omitempty"`
+	Mode            string    `yaml:"mode"`
+	Provider        string    `yaml:"provider"`
+	Model           string    `yaml:"model,omitempty"`
+	ExperimentID    string    `yaml:"experiment_id,omitempty"`
+	VariantID       string    `yaml:"variant_id,omitempty"`
+	AssignmentUnit  string    `yaml:"assignment_unit,omitempty"`
+	AssignmentKey   string    `yaml:"assignment_key,omitempty"`
+	DecisionVersion int       `yaml:"decision_version,omitempty"`
+	PID             int       `yaml:"pid"`
+	SessionID       string    `yaml:"session_id,omitempty"`
+	LogPath         string    `yaml:"log_path,omitempty"`
+	CWD             string    `yaml:"cwd,omitempty"`
+	SandboxHomeDir  string    `yaml:"sandbox_home_dir,omitempty"`
+	StartedAt       time.Time `yaml:"started_at"`
+	ProcStartedAt   string    `yaml:"proc_started_at,omitempty"` // ps lstart, guards PID reuse
+	StdinPath       string    `yaml:"stdin_path,omitempty"`      // FIFO for interactive survival
+	PendingPrompts  []string  `yaml:"pending_prompts,omitempty"` // queued follow-up turns
+	OneShot         bool      `yaml:"one_shot,omitempty"`
+	MaxTurns        int       `yaml:"max_turns,omitempty"`
 	// RequirePermissions preserves a codex chat's sandbox/approval choice
 	// across a restart (codex respawns per turn and would otherwise default
 	// to permissive).

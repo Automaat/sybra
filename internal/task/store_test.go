@@ -878,12 +878,13 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 	}
 
 	run := AgentRun{
-		AgentID:  "agent-payload",
-		Role:     "implementation",
-		Mode:     "headless",
-		State:    "running",
-		Provider: "claude",
-		Model:    "old-model",
+		AgentID:         "agent-payload",
+		Role:            "implementation",
+		Mode:            "headless",
+		State:           "running",
+		Provider:        "claude",
+		Model:           "old-model",
+		DecisionVersion: 7,
 	}
 	if err := store.AddRun(created.ID, run); err != nil {
 		t.Fatal(err)
@@ -945,6 +946,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		VariantID:               "variant-b",
 		AssignmentUnit:          "task",
 		AssignmentKey:           "task-abc123",
+		DecisionVersion:         7,
 		ReasoningEffort:         "high",
 		RequestedSkill:          "sybra-test",
 		SkillExecutionMode:      "injected",

@@ -53,27 +53,30 @@ type Agent struct {
 	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
 	// PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
 	// raw count alongside the estimated USD equivalent persisted on task runs.
-	PremiumRequests         float64   `json:"premiumRequests,omitempty"`
-	StartedAt               time.Time `json:"startedAt"`
-	LastEventAt             time.Time `json:"lastEventAt"`
-	LogPath                 string    `json:"logPath,omitempty"`
-	External                bool      `json:"external"`
-	PID                     int       `json:"pid,omitempty"`
-	Command                 string    `json:"command,omitempty"`
-	Name                    string    `json:"name,omitempty"`
-	Project                 string    `json:"project,omitempty"`
-	Provider                string    `json:"provider,omitempty"`
-	Node                    string    `json:"node,omitempty"`
-	Model                   string    `json:"model,omitempty"`
-	ExperimentID            string    `json:"experimentId,omitempty"`
-	VariantID               string    `json:"variantId,omitempty"`
-	AssignmentUnit          string    `json:"assignmentUnit,omitempty"`
-	AssignmentKey           string    `json:"assignmentKey,omitempty"`
-	ReasoningEffort         string    `json:"reasoningEffort,omitempty"`
-	RequestedSkill          string    `json:"requestedSkill,omitempty"`
-	SkillExecutionMode      string    `json:"skillExecutionMode,omitempty"`
-	ResolvedSkillSourceHash string    `json:"resolvedSkillSourceHash,omitempty"`
-	SkillConformance        string    `json:"skillConformance,omitempty"`
+	PremiumRequests float64   `json:"premiumRequests,omitempty"`
+	StartedAt       time.Time `json:"startedAt"`
+	LastEventAt     time.Time `json:"lastEventAt"`
+	LogPath         string    `json:"logPath,omitempty"`
+	External        bool      `json:"external"`
+	PID             int       `json:"pid,omitempty"`
+	Command         string    `json:"command,omitempty"`
+	Name            string    `json:"name,omitempty"`
+	Project         string    `json:"project,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	Node            string    `json:"node,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	ExperimentID    string    `json:"experimentId,omitempty"`
+	VariantID       string    `json:"variantId,omitempty"`
+	AssignmentUnit  string    `json:"assignmentUnit,omitempty"`
+	AssignmentKey   string    `json:"assignmentKey,omitempty"`
+	// DecisionVersion is the routing-overlay generation (internal/routing)
+	// that set this run's variant weight, 0 when none applied.
+	DecisionVersion         int    `json:"decisionVersion,omitempty"`
+	ReasoningEffort         string `json:"reasoningEffort,omitempty"`
+	RequestedSkill          string `json:"requestedSkill,omitempty"`
+	SkillExecutionMode      string `json:"skillExecutionMode,omitempty"`
+	ResolvedSkillSourceHash string `json:"resolvedSkillSourceHash,omitempty"`
+	SkillConformance        string `json:"skillConformance,omitempty"`
 	// OutputSchema mirrors RunConfig.OutputSchema. Non-empty means completion
 	// must not require a skill-receipt marker: a schema-constrained final
 	// response has no room for one.
@@ -324,6 +327,7 @@ type View struct {
 	VariantID                string    `json:"variantId,omitempty"`
 	AssignmentUnit           string    `json:"assignmentUnit,omitempty"`
 	AssignmentKey            string    `json:"assignmentKey,omitempty"`
+	DecisionVersion          int       `json:"decisionVersion,omitempty"`
 	ReasoningEffort          string    `json:"reasoningEffort,omitempty"`
 	SkillExecutionMode       string    `json:"skillExecutionMode,omitempty"`
 	RequestedSkill           string    `json:"requestedSkill,omitempty"`
@@ -382,6 +386,7 @@ func (a *Agent) viewLocked(hasStdinPipe bool) View {
 		VariantID:                a.VariantID,
 		AssignmentUnit:           a.AssignmentUnit,
 		AssignmentKey:            a.AssignmentKey,
+		DecisionVersion:          a.DecisionVersion,
 		ReasoningEffort:          a.ReasoningEffort,
 		SkillExecutionMode:       a.SkillExecutionMode,
 		RequestedSkill:           a.RequestedSkill,
@@ -456,6 +461,7 @@ func (a *Agent) toRecord() Record {
 		VariantID:               a.VariantID,
 		AssignmentUnit:          a.AssignmentUnit,
 		AssignmentKey:           a.AssignmentKey,
+		DecisionVersion:         a.DecisionVersion,
 		PID:                     a.PID,
 		SessionID:               a.SessionID,
 		LogPath:                 a.LogPath,
@@ -500,6 +506,7 @@ func fromRecord(r Record) *Agent {
 		VariantID:               r.VariantID,
 		AssignmentUnit:          r.AssignmentUnit,
 		AssignmentKey:           r.AssignmentKey,
+		DecisionVersion:         r.DecisionVersion,
 		PID:                     r.PID,
 		SessionID:               r.SessionID,
 		LogPath:                 r.LogPath,
@@ -1723,6 +1730,7 @@ type RunConfig struct {
 	VariantID          string
 	AssignmentUnit     string
 	AssignmentKey      string
+	DecisionVersion    int
 	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
 	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)
 	// OneShot closes stdin after the first `result` event in conversational

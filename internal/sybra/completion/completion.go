@@ -822,6 +822,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		VariantID:                ag.VariantID,
 		AssignmentUnit:           ag.AssignmentUnit,
 		AssignmentKey:            ag.AssignmentKey,
+		RoutingDecisionVersion:   ag.DecisionVersion,
 		RequestedSkill:           ag.RequestedSkill,
 		SkillExecutionMode:       ag.SkillExecutionMode,
 		ResolvedSkillSourceHash:  ag.ResolvedSkillSourceHash,

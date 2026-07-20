@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
 	"gopkg.in/yaml.v3"
 )
@@ -75,6 +76,12 @@ var configRegistry = []configRegistryEntry{
 	{Path: "prompt_lab", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "experience", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "ab_testing", Policy: configPolicyHot, Visibility: configVisibilityRaw},
+	// routing.Service reads its interval/budget/floor/step/coefficients once
+	// at Run() startup, same as evaluation/prompt_lab/harness_evolution's
+	// tickers — restart, not hot, is the correct policy here for the same
+	// reason: there is no live re-arm point for an already-running
+	// time.Ticker's interval or the per-tick config it closes over.
+	{Path: "routing", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "providers.health_check", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "providers.claude", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyAgentRuntime},
 	{Path: "providers.codex", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyAgentRuntime},
@@ -149,11 +156,7 @@ func cloneConfig(src *config.Config) *config.Config {
 	cp.Agent.K8sJobs.Env = slices.Clone(src.Agent.K8sJobs.Env)
 	cp.Agent.K8sJobs.SecretEnv = slices.Clone(src.Agent.K8sJobs.SecretEnv)
 	cp.Agent.K8sJobs.Volumes = slices.Clone(src.Agent.K8sJobs.Volumes)
-	cp.ABTesting.Experiments = slices.Clone(src.ABTesting.Experiments)
-	if src.ABTesting.BuiltinVersion != nil {
-		v := *src.ABTesting.BuiltinVersion
-		cp.ABTesting.BuiltinVersion = &v
-	}
+	cp.ABTesting = abtest.CloneConfig(src.ABTesting)
 	return &cp
 }
 

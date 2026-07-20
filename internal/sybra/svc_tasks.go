@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
@@ -43,6 +44,7 @@ type TaskService struct {
 	logger         *slog.Logger
 	audit          *audit.Logger
 	cfg            *config.Config
+	abTesting      func() abtest.Config
 	// ctx is the app's root context (wireTaskService sets it from a.ctx), used
 	// only where a Wails-bound method has no request-scoped context of its own
 	// to thread through — see RecoverLostAgent. nil in tests that construct
