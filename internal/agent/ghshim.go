@@ -10,43 +10,30 @@ import (
 )
 
 // GhShimReason is what the gh shim prints to stderr, and the agent reads, when
-// it refuses to submit a PR approval.
-const GhShimReason = "Blocked by Sybra: agents have no PR-approval authority. " +
-	"Submit a comment review (gh pr review --comment) or request changes " +
-	"(gh pr review --request-changes) instead; approval is a human decision."
+// it refuses to submit a PR review event.
+const GhShimReason = "Blocked by Sybra: agents may only create pending PR review drafts. " +
+	"Use gh api to create a pull-request review without an event; review submission is a human decision."
 
 const ghShimScript = `#!/bin/sh
 if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
-	skip=0
-	for arg in "$@"; do
-		if [ "$skip" = "1" ]; then
-			skip=0
-			continue
-		fi
-		case "$arg" in
-		-b|--body|-F|--body-file)
-			skip=1
-			;;
-		--approve|-a|--approve=*)
-			printf '%%s\n' '%[1]s' >&2
-			exit 1
-			;;
-		esac
-	done
+	printf '%%s\n' '%[1]s' >&2
+	exit 1
 fi
 if [ "$1" = "api" ]; then
 	sawinput=0
 	sawreviews=0
 	for arg in "$@"; do
 		case "$arg" in
-		*[Ee][Vv][Ee][Nn][Tt]*[Aa][Pp][Pp][Rr][Oo][Vv][Ee]*)
+		[Ee][Vv][Ee][Nn][Tt]=[Cc][Oo][Mm][Mm][Ee][Nn][Tt] | [Ee][Vv][Ee][Nn][Tt]=[Rr][Ee][Qq][Uu][Ee][Ss][Tt]_[Cc][Hh][Aa][Nn][Gg][Ee][Ss] | [Ee][Vv][Ee][Nn][Tt]=[Aa][Pp][Pp][Rr][Oo][Vv][Ee])
 			printf '%%s\n' '%[1]s' >&2
 			exit 1
 			;;
+		esac
+		case "$arg" in
 		# The review mutation can carry its event in a GraphQL variable, so argv
-		# never sees APPROVE beside EVENT. Nothing legitimate needs the mutation:
-		# gh pr review --comment/--request-changes covers every sanctioned review.
-		*[Aa][Dd][Dd][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]*)
+		# never sees the submitted event beside EVENT. Agents have a sanctioned
+		# REST path for pending drafts, so block GraphQL review mutations.
+		*[Aa][Dd][Dd][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]* | *[Ss][Uu][Bb][Mm][Ii][Tt][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]*)
 			printf '%%s\n' '%[1]s' >&2
 			exit 1
 			;;
@@ -78,8 +65,9 @@ exec '%[2]s' "$@"
 // agent's PATH.
 //
 // This is the deterministic floor under the review-agent prompts: the prompts
-// tell agents never to approve (semantic ceiling), and this refuses the call
-// even if that instruction drifts or is dropped — a prompt is not a permission
+// tell agents to create pending drafts without submitting review events
+// (semantic ceiling), and this refuses direct submitted-review calls even if
+// that instruction drifts or is dropped — a prompt is not a permission
 // boundary.
 //
 // It matches on real argv, after the shell has already resolved quoting,
