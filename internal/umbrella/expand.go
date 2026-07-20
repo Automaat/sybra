@@ -526,6 +526,29 @@ func upsertExpandCheckpointBody(body string, cp trackerExpandCheckpoint) string 
 	return body + sep + block
 }
 
+func removeExpandCheckpointBody(body string) string {
+	start := strings.Index(body, expandCheckpointStart)
+	if start < 0 {
+		return body
+	}
+	searchFrom := start + len(expandCheckpointStart)
+	relEnd := strings.Index(body[searchFrom:], expandCheckpointEnd)
+	if relEnd < 0 {
+		return body
+	}
+	end := searchFrom + relEnd + len(expandCheckpointEnd)
+	before := strings.TrimRight(body[:start], "\n")
+	after := strings.TrimLeft(body[end:], "\n")
+	switch {
+	case before == "":
+		return after
+	case after == "":
+		return before
+	default:
+		return before + "\n\n" + after
+	}
+}
+
 type fetchedCheckpointState struct {
 	umbrella github.Issue
 	subs     []github.Issue
@@ -817,19 +840,23 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 	return nil
 }
 
-// clearExpandFailure strips the failure-count tag and any active expansion
-// phase from a tracker once expansion succeeds again, so a transient blip
-// doesn't keep counting toward ExpandFailThreshold and a completed umbrella
-// does not stay pinned in an in-flight phase forever.
+// clearExpandFailure strips the failure-count tag, active expansion phase, and
+// resume checkpoint from a tracker once expansion succeeds again. Checkpoints
+// are only crash-resume state; keeping them after success would make later
+// expansions trust a stale sub-issue snapshot.
 func clearExpandFailure(tasks *task.Manager, trackerID string) error {
 	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
-		if ParseExpandFailCount(cur.Tags) == 0 && !HasActiveExpandPhase(cur.Tags) {
+		nextBody := removeExpandCheckpointBody(cur.Body)
+		if ParseExpandFailCount(cur.Tags) == 0 && !HasActiveExpandPhase(cur.Tags) && nextBody == cur.Body {
 			return task.Update{}, errSkipUpdate
 		}
 		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
 			return strings.HasPrefix(t, ExpandFailTagPrefix) || strings.HasPrefix(t, ExpandPhaseTagPrefix)
 		})
 		upd := task.Update{Tags: task.Ptr(newTags)}
+		if nextBody != cur.Body {
+			upd.Body = task.Ptr(nextBody)
+		}
 		if strings.HasPrefix(cur.StatusReason, "umbrella expansion failed (attempt ") {
 			upd.StatusReason = task.Ptr("")
 		}
