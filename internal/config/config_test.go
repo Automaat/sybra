@@ -1036,6 +1036,29 @@ func TestLoadMissingConfigCreatesGitHubOptOut(t *testing.T) {
 	}
 }
 
+func TestLoadNoPersistMissingConfigDoesNotCreateConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GitHub.Enabled {
+		t.Fatal("GitHub.Enabled = true, want false for read-only default resolution")
+	}
+	if cfg.Server.AuthToken != "" {
+		t.Fatalf("Server.AuthToken = %q, want empty for read-only load", cfg.Server.AuthToken)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("LoadNoPersist should not create config.yaml, stat err = %v", err)
+	}
+	if _, err := os.Stat(AuthTokenPath()); !os.IsNotExist(err) {
+		t.Fatalf("LoadNoPersist should not create AuthTokenPath(), stat err = %v", err)
+	}
+}
+
 func TestLoadLegacyConfigWithoutGitHubEnabledKeepsGitHubOn(t *testing.T) {
 	tests := []struct {
 		name        string

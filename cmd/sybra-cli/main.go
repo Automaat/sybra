@@ -90,6 +90,7 @@ func run(args []string) int {
 		usage()
 		return 1
 	}
+	cmd, rest := filtered[0], filtered[1:]
 
 	// Home precedence: --home > SYBRA_CONTROL_HOME (the real operator store,
 	// injected into task-scoped agent subprocesses) > SYBRA_HOME (ambient,
@@ -134,6 +135,14 @@ func run(args []string) int {
 	}
 	defer restoreHome()
 
+	if isReadOnlyConfigCommand(cmd) {
+		cfg, err := config.LoadNoPersist()
+		if err != nil {
+			return fatal(jsonOut, "load config: %v", err)
+		}
+		return cmdConfig(cfg, rest, jsonOut)
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		if isHook {
@@ -155,13 +164,16 @@ func run(args []string) int {
 		return fatal(jsonOut, "%v", err)
 	}
 
-	cmd, rest := filtered[0], filtered[1:]
 	// HTTP auto-detect is only safe on the untouched default path. Any resolved
 	// home override — --home, SYBRA_CONTROL_HOME, or SYBRA_HOME — means the
 	// caller explicitly targeted an on-disk store, so reaching some unrelated
 	// reachable server would violate that contract.
 	allowHTTP := homeOverride == "" && !fromControlHome && !fromSybraHome
 	return dispatch(cmd, rest, cfg, store, projStore, allowHTTP, jsonOut)
+}
+
+func isReadOnlyConfigCommand(cmd string) bool {
+	return cmd == "config"
 }
 
 // dispatch routes a parsed subcommand (with its own args and the global
