@@ -302,6 +302,23 @@ func (m *memTasks) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint
 	return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
 }
 
+func (m *memTasks) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[taskID]
+	if !ok {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].AgentID == agentID {
+			t.AgentRuns[i].HeadSHA = headSHA
+			t.AgentRuns[i].FinalCommitSource = source
+			return nil
+		}
+	}
+	return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
+}
+
 func (m *memTasks) AppendTaskBody(id, content string) error {
 	content = strings.TrimSpace(content)
 	if content == "" {
