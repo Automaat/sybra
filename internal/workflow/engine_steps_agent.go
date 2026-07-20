@@ -376,6 +376,7 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 		ExperimentID:    a.ExperimentID,
 		Kind:            a.Kind,
 		VariantID:       a.VariantID,
+		RoutingReason:   a.RoutingReason,
 		Provider:        a.Provider,
 		Model:           a.Model,
 		AssignmentUnit:  a.AssignmentUnit,
@@ -543,6 +544,9 @@ func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, 
 	if provider != "" && !providerAvailable(provider) {
 		e.logger.Warn(fallbackLog, "wanted", provider, "reason", "CLI not found")
 		return "", defaultModel, AgentAssignment{}, nil
+	}
+	if assignment.RoutingReason == "" && step.Config.Provider == "cross" {
+		assignment.RoutingReason = "cross"
 	}
 	return provider, resolvedModel, assignment, nil
 }

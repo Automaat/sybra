@@ -214,6 +214,7 @@ type AgentRun struct {
 	// before the run started.
 	ExperimentID    string `json:"experimentId,omitempty"`
 	VariantID       string `json:"variantId,omitempty"`
+	RoutingReason   string `json:"routingReason,omitempty"`
 	AssignmentUnit  string `json:"assignmentUnit,omitempty"`
 	AssignmentKey   string `json:"assignmentKey,omitempty"`
 	DecisionVersion int    `json:"decisionVersion,omitempty"`

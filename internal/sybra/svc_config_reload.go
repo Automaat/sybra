@@ -33,6 +33,11 @@ func configToSettings(c *config.Config) AppSettings {
 		Audit:        c.Audit,
 		Renovate:     c.Renovate,
 		Providers:    c.Providers,
+		ProviderRouting: ProviderRoutingSettings{
+			ABTestingEnabled:              c.ABTesting.Enabled,
+			ABTestingMinSamplesPerVariant: c.ABTesting.MinSamplesPerVariant,
+			Summary:                       config.BuildRoutingSummary(c),
+		},
 		GitHub:       c.GitHub,
 		Monitor:      c.Monitor,
 		SelfMonitor:  c.SelfMonitor,

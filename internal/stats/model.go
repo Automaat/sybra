@@ -50,6 +50,7 @@ type RunRecord struct {
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	ExperimentID    string `json:"experimentId,omitempty"`
 	VariantID       string `json:"variantId,omitempty"`
+	RoutingReason   string `json:"routingReason,omitempty"`
 	AssignmentUnit  string `json:"assignmentUnit,omitempty"`
 	AssignmentKey   string `json:"assignmentKey,omitempty"`
 	// RoutingDecisionVersion is the internal/routing overlay generation (if

@@ -1092,15 +1092,14 @@ func applyABTestingDefaults(cfg *Config) {
 		return
 	}
 	def := abtest.DefaultConfig()
-	if cfg.ABTesting.Enabled == nil {
-		cfg.ABTesting.Enabled = def.Enabled
-	}
 	if cfg.ABTesting.MinSamplesPerVariant <= 0 {
 		cfg.ABTesting.MinSamplesPerVariant = def.MinSamplesPerVariant
 	}
 	if len(cfg.ABTesting.Experiments) == 0 {
 		cfg.ABTesting.Experiments = def.Experiments
-		cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
+		if cfg.ABTesting.BuiltinVersion == nil {
+			cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
+		}
 		return
 	}
 	reconcileBuiltinExperiments(cfg, def)
