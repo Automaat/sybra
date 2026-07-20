@@ -82,6 +82,7 @@ vi.mock('../stores/connection.svelte.js', () => ({
 
 vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
+  GetSettings: vi.fn().mockResolvedValue({ browser: { inApp: false } }),
   BrowserOpenURL: vi.fn(),
   StartFixReview: vi.fn(),
   StartReview: vi.fn(),
