@@ -119,7 +119,7 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 	// simple-task-pr pushes the current HEAD before linking.
 	if remoteSHA == localSHA {
 		if existing, found := e.findExistingPRForBranch(t.ProjectID, headArg); found {
-			if err := e.tasks.UpdateTaskPR(taskID, existing); err != nil {
+			if err := e.linkTaskPR(taskID, t, existing); err != nil {
 				return nil, false, err
 			}
 			status = "in-review"

@@ -66,7 +66,7 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 	// so a fork-hosted branch, which GitHub only matches as "owner:branch",
 	// is found too.
 	if existing, ok := e.findExistingPRForBranch(t.ProjectID, headArg); ok {
-		if err := e.tasks.UpdateTaskPR(taskID, existing); err != nil {
+		if err := e.linkTaskPR(taskID, t, existing); err != nil {
 			return StepOutput{}, fmt.Errorf("create_pr: link existing pr: %w", err)
 		}
 		return stepDone(step, fmt.Sprintf("pr #%d already exists for branch", existing))
@@ -98,7 +98,7 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 		return e.classifyPRGitError(taskID, step, wfExec, t, createErr, "create_pr")
 	}
 
-	if err := e.tasks.UpdateTaskPR(taskID, number); err != nil {
+	if err := e.linkTaskPR(taskID, t, number); err != nil {
 		return StepOutput{}, fmt.Errorf("create_pr: link pr: %w", err)
 	}
 	if localSHA, lErr := project.CurrentCommit(ctx, wtPath); lErr == nil && headSHA != "" && localSHA != headSHA {
@@ -116,12 +116,36 @@ func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createE
 	if !ok {
 		return 0, false
 	}
-	if err := e.tasks.UpdateTaskPR(taskID, existing); err != nil {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		e.logger.Warn("workflow.create-pr.adopt-existing.get-task", "task_id", taskID, "pr", existing, "err", err)
+		return 0, false
+	}
+	if err := e.linkTaskPR(taskID, t, existing); err != nil {
 		e.logger.Warn("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing, "err", err)
 		return 0, false
 	}
 	e.logger.Info("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing)
 	return existing, true
+}
+
+func (e *Engine) linkTaskPR(taskID string, t TaskInfo, newPR int) error {
+	oldPR := t.PRNumber
+	if err := e.tasks.UpdateTaskPR(taskID, newPR); err != nil {
+		return err
+	}
+	if oldPR == 0 || oldPR == newPR || t.ProjectID == "" || e.prCloser == nil {
+		return nil
+	}
+	comment := fmt.Sprintf("Superseded by #%d for Sybra task %s.", newPR, taskID)
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	if err := e.prCloser.ClosePR(ctx, t.ProjectID, oldPR, comment); err != nil {
+		e.logger.Warn("workflow.pr.superseded-close", "task_id", taskID, "old_pr", oldPR, "new_pr", newPR, "err", err)
+		return nil
+	}
+	e.logger.Info("workflow.pr.superseded-close", "task_id", taskID, "old_pr", oldPR, "new_pr", newPR)
+	return nil
 }
 
 // prWorktreeAndBranch resolves the on-disk worktree and branch used by

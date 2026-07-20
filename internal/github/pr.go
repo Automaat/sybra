@@ -743,6 +743,26 @@ func MergePR(repo string, number int) error {
 	return mergePRWith(defaultExecer, repo, number)
 }
 
+// ClosePR closes an open pull request with a short explanatory comment.
+func ClosePR(ctx context.Context, repo string, number int, comment string) error {
+	return closePRWith(ctx, defaultExecer, repo, number, comment)
+}
+
+func closePRWith(ctx context.Context, e execer, repo string, number int, comment string) error {
+	args := []string{"pr", "close", strconv.Itoa(number), "--repo", repo}
+	if strings.TrimSpace(comment) != "" {
+		args = append(args, "--comment", comment)
+	}
+	out, err := runE(ctx, e, args...)
+	if err != nil {
+		return fmt.Errorf("gh pr close %d: %s: %w", number, sanitizeGHOutput(out), err)
+	}
+	if runtimeCacheEnabled(e) {
+		invalidatePRCaches(repo, number)
+	}
+	return nil
+}
+
 func mergePRWith(e execer, repo string, number int) error {
 	var lastOut []byte
 	var lastErr error
