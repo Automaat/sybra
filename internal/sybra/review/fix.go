@@ -276,6 +276,23 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	}
 	r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
 	if mergeErr != nil {
+		if !issue.PR.SourcedViaREST && requiresNativeAutoMerge(mergeErr) {
+			enableFn := r.enableAutoMergeFn
+			if enableFn == nil {
+				enableFn = github.EnableAutoMerge
+			}
+			if aerr := enableFn(issue.PR.Repository, issue.PR.Number); aerr != nil {
+				r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", aerr)
+			} else {
+				r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
+				r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", map[string]any{
+					"pr": issue.PR.Number, "repo": issue.PR.Repository,
+					"fallback": "direct_merge_rejected",
+				})
+				r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", issue.PR.Number, "fallback", "direct_merge_rejected")
+				return
+			}
+		}
 		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", mergeErr)
 		return
 	}
@@ -294,6 +311,15 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	if r.onAutoMergeApplied != nil {
 		r.onAutoMergeApplied()
 	}
+}
+
+func requiresNativeAutoMerge(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "base branch policy prohibits the merge") &&
+		strings.Contains(msg, "--auto")
 }
 
 // escalateExhaustedFix parks a task whose pr-fix retry budget is spent. Trying
