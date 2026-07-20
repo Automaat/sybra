@@ -3,13 +3,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 const { mockOpenInApp, mockSystem, mockGetSettings } = vi.hoisted(() => ({
   mockOpenInApp: vi.fn(),
   mockSystem: vi.fn(),
-  mockGetSettings: vi.fn(async () => ({ browser: { inApp: null } })),
+  mockGetSettings: vi.fn<() => Promise<{ browser: { inApp: boolean | null } }>>(
+    async () => ({ browser: { inApp: null } }),
+  ),
 }))
 
 vi.mock('./api.js', () => ({
-  GetSettings: (...args: unknown[]) => mockGetSettings(...args),
-  OpenInAppBrowser: (...args: unknown[]) => mockOpenInApp(...args),
-  BrowserOpenURL: (...args: unknown[]) => mockSystem(...args),
+  GetSettings: mockGetSettings,
+  OpenInAppBrowser: mockOpenInApp,
+  BrowserOpenURL: mockSystem,
 }))
 
 import { openLink, inAppBrowserStore } from './browser.svelte.js'

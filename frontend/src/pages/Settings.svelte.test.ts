@@ -51,7 +51,7 @@ function uninstallNotification() {
   delete (window as unknown as { Notification?: unknown }).Notification
 }
 
-function baseSettings() {
+function baseSettings(): any {
   return {
     agent: {
       provider: 'claude',
