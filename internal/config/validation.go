@@ -113,7 +113,7 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	switch action := strings.ToLower(strings.TrimSpace(cfg.HumanReview.SybraBugAction)); action {
 	case "", HumanReviewSybraBugActionFileIssue, HumanReviewSybraBugActionLocalTask, HumanReviewSybraBugActionBlockOnly, HumanReviewSybraBugActionNoteOnly:
 	default:
-		add("human_review.sybra_bug_action must be one of file_issue, local_task, block_only, note_only, got %q", cfg.HumanReview.SybraBugAction)
+		add("human_review.sybra_bug_action must be one of note_only, local_task, block_only, or legacy file_issue, got %q", cfg.HumanReview.SybraBugAction)
 	}
 	if cfg.ReviewHold.Enabled && !validReviewHoldMode(cfg.ReviewHold.Mode) {
 		add("review_hold.mode must be push, push_nits, or hold, got %q", cfg.ReviewHold.Mode)

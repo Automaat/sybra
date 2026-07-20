@@ -1032,7 +1032,8 @@ func TestHumanReviewSybraBugAction(t *testing.T) {
 		want    string
 		wantErr string
 	}{
-		{name: "empty defaults to file_issue", yaml: "human_review:\n  enabled: true\n", want: HumanReviewSybraBugActionFileIssue},
+		{name: "empty defaults to note_only", yaml: "human_review:\n  enabled: true\n", want: HumanReviewSybraBugActionNoteOnly},
+		{name: "legacy file_issue maps to note_only", yaml: "human_review:\n  sybra_bug_action: file_issue\n", want: HumanReviewSybraBugActionNoteOnly},
 		{name: "note only", yaml: "human_review:\n  sybra_bug_action: note_only\n", want: HumanReviewSybraBugActionNoteOnly},
 		{name: "block only", yaml: "human_review:\n  sybra_bug_action: block_only\n", want: HumanReviewSybraBugActionBlockOnly},
 		{name: "local task", yaml: "human_review:\n  sybra_bug_action: local_task\n", want: HumanReviewSybraBugActionLocalTask},
