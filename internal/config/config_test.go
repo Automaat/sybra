@@ -244,6 +244,19 @@ func TestMigrateRawConfigToNamespacedV2IsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateNodeToCanonicalPreservesNilAsYAMLNull(t *testing.T) {
+	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("got nil node, want YAML null scalar")
+	}
+	if got.Kind != yamlv3.ScalarNode || got.Tag != "!!null" || got.Value != "null" {
+		t.Fatalf("got node = %#v, want YAML null scalar", got)
+	}
+}
+
 func cmpConfigSubset(got, want *Config) string {
 	var diffs []string
 	if got.SchemaVersion != want.SchemaVersion {

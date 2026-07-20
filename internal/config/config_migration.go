@@ -108,8 +108,7 @@ func CanonicalFilePathForLegacy(path string) (string, bool) {
 		if path == rule.legacyKey {
 			return joinPath(rule.canonical), true
 		}
-		if strings.HasPrefix(path, rule.legacyKey+".") {
-			suffix := strings.TrimPrefix(path, rule.legacyKey+".")
+		if suffix, ok := strings.CutPrefix(path, rule.legacyKey+"."); ok {
 			return joinPath(append(slices.Clone(rule.canonical), strings.Split(suffix, ".")...)), true
 		}
 	}
@@ -352,9 +351,9 @@ func canonicalMovePathForLegacy(legacyPath string) (string, bool) {
 	return CanonicalFilePathForLegacy(legacyPath)
 }
 
-func renderMoveValues(legacyPath string, node *yaml.Node) (string, string) {
-	before := redactedScalarForPath(legacyPath, node)
-	after := before
+func renderMoveValues(legacyPath string, node *yaml.Node) (before, after string) {
+	before = redactedScalarForPath(legacyPath, node)
+	after = before
 	if aliasPath, ok := DurationAliasPathForLegacy(legacyPath); ok {
 		if formatted, ok := FormatDurationAliasValue(legacyPath, yamlScalarNumber(node)); ok {
 			after = formatted
@@ -502,12 +501,15 @@ func yamlDocumentMapping(root *yaml.Node) (*yaml.Node, bool) {
 	return node, true
 }
 
-func normalizeLegacyTopLevel(builder *flatConfigBuilder, key string, value *yaml.Node) (bool, string, error) {
+func normalizeLegacyTopLevel(builder *flatConfigBuilder, key string, value *yaml.Node) (handled bool, warning string, err error) {
 	for _, rule := range topLevelNamespaceRules {
 		if key != rule.legacyKey {
 			continue
 		}
-		return true, fmt.Sprintf("config key %q is deprecated in schema_version %d; migrate to %q", key, CurrentSchemaVersion, rule.deprecated), builder.setTopLevel(rule.legacyKey, value, key)
+		handled = true
+		warning = fmt.Sprintf("config key %q is deprecated in schema_version %d; migrate to %q", key, CurrentSchemaVersion, rule.deprecated)
+		err = builder.setTopLevel(rule.legacyKey, value, key)
+		return handled, warning, err
 	}
 	return false, "", nil
 }
@@ -643,7 +645,7 @@ func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key str
 
 func migrateNodeToCanonical(path []string, node *yaml.Node) (*yaml.Node, error) {
 	if node == nil {
-		return nil, nil
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}, nil
 	}
 	if aliasPath, ok := DurationAliasPathForLegacy(joinPath(path)); ok && node.Kind == yaml.ScalarNode {
 		rendered, ok := FormatDurationAliasValue(joinPath(path), yamlScalarNumber(node))
