@@ -972,7 +972,23 @@ func pushLocked(ctx context.Context, worktreePath string, args ...string) error 
 		return err
 	}
 	return withBareRepoPushLock(gitDir, func() error {
-		return executil.RunEnv(ctx, worktreePath, pushEnv(), "git", args...)
+		attempts := credentialAttempts(pushEnv())
+		var injectedErr error
+		for idx, attempt := range attempts {
+			err := executil.RunEnv(ctx, worktreePath, attempt.env, "git", args...)
+			if err == nil {
+				return nil
+			}
+			if idx == 0 && len(attempts) > 1 && github.IsAuthError(err) {
+				injectedErr = err
+				continue
+			}
+			if injectedErr != nil {
+				return fmt.Errorf("%w (after injected GH_TOKEN auth failed: %v)", err, injectedErr)
+			}
+			return err
+		}
+		return injectedErr
 	})
 }
 
@@ -1401,6 +1417,9 @@ var (
 	// token-refresh call without depending on internal/github's package-global
 	// App-auth state.
 	forceRefreshAppToken = github.ForceRefreshAppToken
+	// ghAuthEnv is indirected so tests can force the preflight down the
+	// injected-token path without mutating internal/github's package state.
+	ghAuthEnv = github.GHEnv
 	// pushAuthFailureHook is called with the final error every time
 	// PreflightPushCredentials exhausts its retries and still can't
 	// authenticate. It's the single choke point both real callers
@@ -1411,6 +1430,11 @@ var (
 	// record an audit event (see internal/health's checkGHPushAuthFailure).
 	pushAuthFailureHook = func(err error) {}
 )
+
+type credentialAttempt struct {
+	label string
+	env   []string
+}
 
 // SetPushAuthFailureHook overrides the push-preflight failure hook. Pass nil
 // to restore the no-op default.
@@ -1454,18 +1478,40 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 }
 
 func checkGHAuthStatus(ctx context.Context, worktreePath string) error {
+	failures := make([]string, 0, 2)
+	for _, attempt := range credentialAttempts(ghAuthEnv()) {
+		msg, err := ghAuthStatusMessage(ctx, worktreePath, attempt.env)
+		if err == nil {
+			return nil
+		}
+		failures = append(failures, attempt.label+": "+msg)
+	}
+	return fmt.Errorf("%w: gh auth status: %s", ErrPushAuthPreflight, strings.Join(failures, "; "))
+}
+
+func credentialAttempts(injectedEnv []string) []credentialAttempt {
+	if injectedEnv == nil {
+		return []credentialAttempt{{label: "ambient env"}}
+	}
+	return []credentialAttempt{
+		{label: "injected GH_TOKEN", env: injectedEnv},
+		{label: "ambient env"},
+	}
+}
+
+func ghAuthStatusMessage(ctx context.Context, worktreePath string, env []string) (string, error) {
 	cmd := exec.CommandContext(ctx, "gh", "auth", "status", "--hostname", "github.com")
 	cmd.Dir = worktreePath
-	cmd.Env = github.GHEnv()
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		return nil
+		return "", nil
 	}
 	msg := strings.TrimSpace(string(out))
 	if msg == "" {
 		msg = err.Error()
 	}
-	return fmt.Errorf("%w: gh auth status: %s", ErrPushAuthPreflight, scrubCredentialPreflightMessage(msg))
+	return scrubCredentialPreflightMessage(msg), err
 }
 
 func isGitHubHTTPSRemote(remoteURL string) bool {
