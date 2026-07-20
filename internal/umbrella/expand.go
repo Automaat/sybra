@@ -333,19 +333,21 @@ func findTracker(tasks *task.Manager, umbrellaURL string) (existingTracker, erro
 // tracker created by an earlier, successful run.
 func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef map[string]github.Issue, trackerExists bool, trackerID string, maxParallel int, degraded bool) (int, error) {
 	if !trackerExists {
-		tags := []string{"umbrella", MaxParallelTag(maxParallel)}
+		tags := []string{"umbrella", MaxParallelTag(maxParallel), ExpandingTag}
 		if degraded {
 			tags = append(tags, FallbackTag)
 		}
-		if _, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+		tracker, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
 			Issue:     task.Ptr(umb.URL),
 			TaskType:  task.Ptr(task.TaskTypeUmbrella),
 			ProjectID: task.Ptr(umb.Repository),
 			Status:    task.Ptr(task.StatusInProgress),
 			Tags:      task.Ptr(tags),
-		}); err != nil {
+		})
+		if err != nil {
 			return 0, fmt.Errorf("create tracker: %w", err)
 		}
+		trackerID = tracker.ID
 	} else {
 		// A tracker can already exist without a MaxParallelTag: recordExpandFailure
 		// creates a placeholder tracker on a planner failure that never reaches
@@ -355,6 +357,9 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		if err := ensureMaxParallelTag(tasks, trackerID, maxParallel); err != nil {
 			return 0, err
 		}
+		if err := markTrackerExpanding(tasks, trackerID); err != nil {
+			return 0, err
+		}
 		if degraded {
 			if err := tagTrackerDegraded(tasks, trackerID); err != nil {
 				return 0, err
@@ -362,7 +367,14 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		}
 	}
 
-	return createChildren(tasks, umb, specs, byRef)
+	created, err := createChildren(tasks, umb, specs, byRef)
+	if err != nil {
+		return created, err
+	}
+	if err := clearTrackerExpanding(tasks, trackerID); err != nil {
+		return created, err
+	}
+	return created, nil
 }
 
 // createChildren creates one gated todo child task per spec, deriving each
@@ -405,6 +417,41 @@ func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
 			return nil
 		}
 		return fmt.Errorf("tag tracker degraded: %w", err)
+	}
+	return nil
+}
+
+func markTrackerExpanding(tasks *task.Manager, trackerID string) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if slices.Contains(cur.Tags, ExpandingTag) {
+			return task.Update{}, errSkipUpdate
+		}
+		return task.Update{Tags: task.Ptr(append(slices.Clone(cur.Tags), ExpandingTag))}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			return nil
+		}
+		return fmt.Errorf("mark tracker expanding: %w", err)
+	}
+	return nil
+}
+
+func clearTrackerExpanding(tasks *task.Manager, trackerID string) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if !slices.Contains(cur.Tags, ExpandingTag) {
+			return task.Update{}, errSkipUpdate
+		}
+		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
+			return t == ExpandingTag
+		})
+		return task.Update{Tags: task.Ptr(newTags)}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			return nil
+		}
+		return fmt.Errorf("clear tracker expanding: %w", err)
 	}
 	return nil
 }
@@ -485,16 +532,17 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 	return nil
 }
 
-// clearExpandFailure strips the failure-count tag from a tracker once
+// clearExpandFailure strips transient expansion-state tags from a tracker once
 // expansion succeeds again, so a transient blip doesn't keep counting toward
-// ExpandFailThreshold on the next genuine failure.
+// ExpandFailThreshold on the next genuine failure and the app gate can resume
+// after the full DAG is visible.
 func clearExpandFailure(tasks *task.Manager, trackerID string) error {
 	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
-		if ParseExpandFailCount(cur.Tags) == 0 {
+		if ParseExpandFailCount(cur.Tags) == 0 && !slices.Contains(cur.Tags, ExpandingTag) {
 			return task.Update{}, errSkipUpdate
 		}
 		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
-			return strings.HasPrefix(t, ExpandFailTagPrefix)
+			return strings.HasPrefix(t, ExpandFailTagPrefix) || t == ExpandingTag
 		})
 		upd := task.Update{Tags: task.Ptr(newTags)}
 		if strings.HasPrefix(cur.StatusReason, "umbrella expansion failed (attempt ") {

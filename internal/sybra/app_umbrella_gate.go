@@ -35,7 +35,8 @@ type umbrellaState struct {
 	anyHR        bool
 	anyCancelled bool
 	anyBlocked   bool // non-gated child stuck in `blocked` (e.g. human-review flip)
-	released     int  // children released so far this tick (counts toward the cap)
+	expanding    bool
+	released     int // children released so far this tick (counts toward the cap)
 	children     []umbrellaProgressChild
 }
 
@@ -88,6 +89,7 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 			st := stateFor(t.Issue)
 			st.tracker = t
 			st.cap = umbrella.ParseMaxParallel(t.Tags)
+			st.expanding = slices.Contains(t.Tags, umbrella.ExpandingTag)
 		}
 		if t.UmbrellaIssue != "" {
 			hasUmbrella = true
@@ -122,17 +124,25 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 		cyclic[umbrella.NormalizeIssueRef(umb)] = true
 	}
 
+	for ref, st := range states {
+		if st.expanding {
+			delete(states, ref)
+		}
+	}
+	for ref := range inFlight {
+		delete(states, ref)
+	}
+
 	// A blocked tracker pauses only tracker rollup/issue close; dependency-ready
 	// children still release so independent work under the umbrella can proceed.
+	// Expanding/recovering trackers are removed from states above, so release
+	// and rollup both hold until the complete DAG is visible.
 	a.releaseCapped(ctx, g.ReadyToRelease(), byID, states)
 
 	// An in-flight recovery run owns this umbrella's tracker/children this
 	// tick; skip its rollup entirely rather than computing status from a
 	// snapshot RecoverDegraded may be mutating underneath. Unrelated
 	// umbrellas continue rolling up normally.
-	for ref := range inFlight {
-		delete(states, ref)
-	}
 	a.rollupTrackers(states, cyclic)
 }
 

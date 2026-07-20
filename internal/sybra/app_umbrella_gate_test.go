@@ -604,6 +604,30 @@ func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
 	}
 }
 
+func TestReleaseUnblockedChildren_HoldsWhileUmbrellaExpanding(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+
+	tracker := mkTracker(t, m, umb, 5)
+	if _, err := m.Update(tracker.ID, task.Update{
+		Tags: task.Ptr(append(slices.Clone(tracker.Tags), umbrella.ExpandingTag)),
+	}); err != nil {
+		t.Fatalf("mark tracker expanding: %v", err)
+	}
+	root := mkChild(t, m, "root", "Automaat/sybra#1", umb, nil, task.StatusTodo)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	held := mustTask(t, m, root.ID)
+	if held.Status != task.StatusTodo || !slices.Contains(held.Tags, umbrellaGatedTag) {
+		t.Fatalf("root released while umbrella is expanding: status=%q tags=%v", held.Status, held.Tags)
+	}
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusInProgress {
+		t.Fatalf("tracker status = %q, want unchanged while expanding", got)
+	}
+}
+
 // TestReleaseUnblockedChildren_PushesReleaseToRemoteHomeNode reproduces the
 // 2026-07-19 incident: a child already stamped AssignedNode by a prior
 // Assigner.Tick (i.e. routed once, same as every real gated child) gets
