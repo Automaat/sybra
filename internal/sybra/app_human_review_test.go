@@ -608,6 +608,81 @@ func TestOnComplete_UnblockedVerdict_ReadyReviewWithPRResumesInReview(t *testing
 	}
 }
 
+func TestOnComplete_UnblockedVerdict_DispatchNoteFailureKeepsVerdictUnrendered(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-note-failure"
+	tk, err := tasks.Create("Recover task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	taskDir := filepath.Dir(tk.FilePath)
+	info, err := os.Stat(taskDir)
+	if err != nil {
+		t.Fatalf("stat task dir: %v", err)
+	}
+	restoreMode := info.Mode().Perm()
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		updated, uErr := tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(reason),
+		})
+		if uErr != nil {
+			return task.Task{}, uErr
+		}
+		if err := os.Chmod(taskDir, 0o555); err != nil {
+			t.Fatalf("chmod task dir read-only: %v", err)
+		}
+		return updated, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"fixed the issue and the host should resume review","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	if err := os.Chmod(taskDir, restoreMode); err != nil {
+		t.Fatalf("restore task dir mode: %v", err)
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+	if strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("unexpected unblocked note after append failure; got:\n%s", got.Body)
+	}
+	if len(got.AgentRuns) != 1 {
+		t.Fatalf("agent runs = %+v, want single run", got.AgentRuns)
+	}
+	if got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("expected verdict to remain unrendered after note write failure; agent runs = %+v", got.AgentRuns)
+	}
+}
+
 func TestOnComplete_UnblockedVerdict_ReadyPRWithoutPRStaysReadyPR(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)

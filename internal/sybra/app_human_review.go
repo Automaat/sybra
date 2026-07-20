@@ -405,8 +405,9 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 					"task_id", current.ID, "agent_id", agentID, "target", target, "err", err)
 				return
 			}
-			h.appendNote(current.ID, "Auto-review: unblocked", note)
-			h.markVerdictRendered(current.ID, agentID)
+			if h.appendNote(current.ID, "Auto-review: unblocked", note) {
+				h.markVerdictRendered(current.ID, agentID)
+			}
 			return
 		}
 		newBody := appendSection(current.Body, "Auto-review: unblocked", note)
