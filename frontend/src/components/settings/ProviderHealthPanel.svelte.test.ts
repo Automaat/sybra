@@ -68,8 +68,8 @@ describe('ProviderHealthPanel', () => {
     })
     await waitFor(() => {
       expect(screen.getByText('Providers')).toBeDefined()
-      expect(screen.getByText('claude')).toBeDefined()
-      expect(screen.getByText('codex')).toBeDefined()
+      expect(screen.getAllByText('claude').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('codex').length).toBeGreaterThan(0)
     })
   })
 
