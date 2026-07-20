@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -866,6 +867,99 @@ func TestConfigDoctorJSONAcceptsStricterConfigPermissions(t *testing.T) {
 	}) {
 		t.Fatalf("did not expect config permission warnings for stricter modes: %+v", report.Findings)
 	}
+}
+
+func TestConfigDumpRedactsTaggedSecrets(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Server.AuthToken = "server-secret"
+	cfg.Webhook.Secret = "webhook-secret"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDump(cfg, false)
+	})
+	if code != 0 {
+		t.Fatalf("config dump exit %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "server-secret") || strings.Contains(out, "webhook-secret") {
+		t.Fatalf("config dump leaked secret:\n%s", out)
+	}
+	if strings.Count(out, config.RedactedPlaceholder) != 2 {
+		t.Fatalf("config dump redaction count = %d, want 2:\n%s", strings.Count(out, config.RedactedPlaceholder), out)
+	}
+}
+
+func TestRunConfigDumpDoesNotMutateSparseConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	before := []byte("schema_version: 2\n# top comment\nagent:\n  # keep me\n  provider: codex\n")
+	if err := os.WriteFile(cfgPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.AuthTokenPath(), []byte("persisted-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--home", dir, "config", "dump")
+	if code != 0 {
+		t.Fatalf("config dump exit %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "persisted-token") {
+		t.Fatalf("config dump leaked persisted token:\n%s", out)
+	}
+	if !strings.Contains(out, config.RedactedPlaceholder) {
+		t.Fatalf("config dump missing redaction placeholder:\n%s", out)
+	}
+
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config dump rewrote sparse config.yaml:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tasks")); !os.IsNotExist(err) {
+		t.Fatalf("config dump should not create tasks dir, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "projects")); !os.IsNotExist(err) {
+		t.Fatalf("config dump should not create projects dir, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "clones")); !os.IsNotExist(err) {
+		t.Fatalf("config dump should not create clones dir, stat err = %v", err)
+	}
+}
+
+func TestBinaryWorktreeDriftWarning(t *testing.T) {
+	t.Run("same revision", func(t *testing.T) {
+		if got := binaryWorktreeDriftWarning("abc123", "abc123"); got != "" {
+			t.Fatalf("warning = %q, want empty", got)
+		}
+	})
+
+	t.Run("missing revision", func(t *testing.T) {
+		if got := binaryWorktreeDriftWarning("", "abc123"); got != "" {
+			t.Fatalf("warning = %q, want empty", got)
+		}
+	})
+
+	t.Run("different revisions", func(t *testing.T) {
+		got := binaryWorktreeDriftWarning(
+			"1111111111111111111111111111111111111111",
+			"2222222222222222222222222222222222222222",
+		)
+		if !strings.Contains(got, "111111111111") || !strings.Contains(got, "222222222222") {
+			t.Fatalf("warning %q missing short revisions", got)
+		}
+		if !strings.Contains(got, "go run ./cmd/sybra-cli") || !strings.Contains(got, "go install ./cmd/sybra-cli") {
+			t.Fatalf("warning %q missing remediation", got)
+		}
+	})
 }
 
 func TestListFilterStatus(t *testing.T) {

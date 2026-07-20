@@ -3,6 +3,7 @@ package sybra
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -88,6 +89,278 @@ func TestUpdateSettings_RoundTripsExpandedSections(t *testing.T) {
 	}
 }
 
+func TestUpdateSettings_PatchesOnlyChangedLeafAndPreservesComments(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"# operator header",
+		"agent:",
+		"  # keep this agent comment",
+		"  provider: claude",
+		"  max_concurrent: 3 # keep this inline comment",
+		"webhook:",
+		"  # keep this webhook comment",
+		"  secret: keep-me",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	settings := svc.GetSettings()
+	settings.Agent.MaxConcurrent = 9
+
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(saved)
+	for _, want := range []string{
+		"# operator header",
+		"# keep this agent comment",
+		"# keep this inline comment",
+		"# keep this webhook comment",
+		"provider: claude",
+		"max_concurrent: 9 # keep this inline comment",
+		"secret: keep-me",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("saved config missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "max_turns:") || strings.Contains(text, "allowed_origins:") {
+		t.Fatalf("UpdateSettings materialized unrelated defaults:\n%s", text)
+	}
+}
+
+func TestUpdateSettings_ResetToDefaultRemovesExplicitKey(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"browser:",
+		"  in_app: true",
+		"agent:",
+		"  provider: claude",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	settings := svc.GetSettings()
+	settings.Browser = svc.GetDefaultSettings().Browser
+
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(saved)
+	if strings.Contains(text, "in_app:") || strings.Contains(text, "browser:") {
+		t.Fatalf("default reset left explicit browser config behind:\n%s", text)
+	}
+	if !strings.Contains(text, "provider: claude") {
+		t.Fatalf("reset removed unrelated config:\n%s", text)
+	}
+}
+
+func TestUpdateSettings_UpdatesDurationAliasInPlace(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"schema_version: 2",
+		"agent:",
+		"  provider: claude",
+		"  bash_timeout: 2m # keep this inline comment",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	if cfg.Agent.BashTimeoutSeconds != 120 {
+		t.Fatalf("alias not resolved: bash_timeout_seconds = %d, want 120", cfg.Agent.BashTimeoutSeconds)
+	}
+
+	settings := svc.GetSettings()
+	settings.Agent.BashTimeoutSeconds = 300
+
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(saved)
+	if strings.Contains(text, "bash_timeout_seconds") {
+		t.Fatalf("patch wrote a conflicting legacy key beside the alias:\n%s", text)
+	}
+	if !strings.Contains(text, "bash_timeout: 300s") {
+		t.Fatalf("alias entry not updated in place:\n%s", text)
+	}
+	if !strings.Contains(text, "# keep this inline comment") {
+		t.Fatalf("alias inline comment dropped:\n%s", text)
+	}
+
+	// A mixed alias+legacy file would be rejected on reload; the patch must stay loadable.
+	reloaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("patched config no longer loads: %v", err)
+	}
+	if reloaded.Agent.BashTimeoutSeconds != 300 {
+		t.Fatalf("reloaded bash_timeout_seconds = %d, want 300", reloaded.Agent.BashTimeoutSeconds)
+	}
+}
+
+func TestUpdateSettings_ResetToDefaultRemovesDurationAlias(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"schema_version: 2",
+		"agent:",
+		"  provider: claude",
+		"  bash_timeout: 2m",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	settings := svc.GetSettings()
+	settings.Agent.BashTimeoutSeconds = svc.GetDefaultSettings().Agent.BashTimeoutSeconds
+
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(saved)
+	if strings.Contains(text, "bash_timeout") {
+		t.Fatalf("reset to default left a duration entry behind:\n%s", text)
+	}
+	if !strings.Contains(text, "provider: claude") {
+		t.Fatalf("reset removed unrelated config:\n%s", text)
+	}
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("patched config no longer loads: %v", err)
+	}
+}
+
+func TestSparseConfigSequence_RawSaveThenSettingsEditThenResetStaysSparse(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	raw := strings.Join([]string{
+		"schema_version: 2",
+		"# top comment",
+		"agent:",
+		"  # keep me",
+		"  provider: codex",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.AuthToken == "" {
+		t.Fatal("expected generated server auth token in memory")
+	}
+	tokenPath := filepath.Join(filepath.Dir(cfgPath), "server_auth_token")
+	if _, err := os.Stat(tokenPath); err != nil {
+		t.Fatalf("expected generated server_auth_token file: %v", err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	editedRaw := strings.Join([]string{
+		"schema_version: 2",
+		"# top comment",
+		"agent:",
+		"  # keep me",
+		"  provider: claude",
+		"",
+	}, "\n")
+	if err := svc.SaveRawConfig(editedRaw); err != nil {
+		t.Fatalf("SaveRawConfig: %v", err)
+	}
+
+	assertSparse := func(stage, want string) {
+		t.Helper()
+		saved, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(saved)
+		if got != want {
+			t.Fatalf("%s saved config mismatch:\nwant:\n%s\ngot:\n%s", stage, want, got)
+		}
+		if strings.Contains(got, "auth_token") {
+			t.Fatalf("%s materialized generated auth token into config.yaml:\n%s", stage, got)
+		}
+		if strings.Contains(got, "allowed_origins:") || strings.Contains(got, "logging:") {
+			t.Fatalf("%s materialized unrelated defaults:\n%s", stage, got)
+		}
+	}
+
+	assertSparse("after raw save", editedRaw)
+
+	settings := svc.GetSettings()
+	settings.Agent.MaxConcurrent = 7
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+	assertSparse("after settings edit", strings.Join([]string{
+		"schema_version: 2",
+		"# top comment",
+		"agent:",
+		"  # keep me",
+		"  provider: claude",
+		"  max_concurrent: 7",
+		"",
+	}, "\n"))
+
+	settings = svc.GetSettings()
+	settings.Agent.MaxConcurrent = svc.GetDefaultSettings().Agent.MaxConcurrent
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings reset: %v", err)
+	}
+	assertSparse("after reset", editedRaw)
+}
+
 func TestGetRawConfig_ReturnsFileContents(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	writeConfigYAML(t, cfgPath, svc.cfg)
@@ -151,6 +424,35 @@ func TestSaveRawConfig_PreservesServerAuthTokenWhenOmitted(t *testing.T) {
 	savedText := string(saved)
 	if !strings.Contains(savedText, "auth_token: persist-me") {
 		t.Fatalf("saved config missing preserved auth token:\n%s", savedText)
+	}
+}
+
+// TestSaveRawConfig_DoesNotMaterializeGeneratedTokenWhenAbsentFromFile
+// reproduces a generated bearer token (resolved in-memory from the separate
+// server_auth_token file, never written to config.yaml) surviving a raw save
+// that never mentions server.auth_token. It must stay absent from disk.
+func TestSaveRawConfig_DoesNotMaterializeGeneratedTokenWhenAbsentFromFile(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	if err := os.WriteFile(cfgPath, []byte("schema_version: 2\nagent:\n  provider: codex\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Simulates ensureServerAuthToken resolving a generated token from
+	// server_auth_token at load time: present in memory, absent from the file.
+	svc.cfg.Server.AuthToken = "generated-token"
+	svc.persisted.Server.AuthToken = "generated-token"
+
+	raw := "schema_version: 2\nagent:\n  provider: claude\n"
+	if err := svc.SaveRawConfig(raw); err != nil {
+		t.Fatalf("SaveRawConfig: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedText := string(saved)
+	if strings.Contains(savedText, "auth_token") {
+		t.Fatalf("raw save materialized the generated token into config.yaml:\n%s", savedText)
 	}
 }
 

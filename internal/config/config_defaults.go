@@ -816,8 +816,10 @@ func load(opts loadOptions) (*ResolvedConfig, error) {
 			return nil, err
 		}
 	case os.IsNotExist(err):
-		if writeErr := writeDefaultConfig(path); writeErr != nil {
-			return nil, writeErr
+		if opts.persistLoadReconciles {
+			if writeErr := writeDefaultConfig(path); writeErr != nil {
+				return nil, writeErr
+			}
 		}
 	default:
 		return nil, err
