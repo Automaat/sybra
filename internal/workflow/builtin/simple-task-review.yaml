@@ -288,19 +288,10 @@ steps:
   # and detect_tampering only inspects test/CI tampering, not whether the fix
   # is right or introduced a fresh bug. Re-review until CLEAN shuts that gap.
   #
-  # No round cap here, deliberately. A cap would censor the very distribution
-  # the review-rounds stat exists to measure (ReviewRoundsByModel in
-  # internal/stats), and every round is gated by a fresh reviewer that must
-  # reach CLEAN to exit.
-  #
-  # There is NO bound under stock config. agent.max_task_cost_usd is the only
-  # thing that can stop a non-converging cycle, and it is disabled at its
-  # default of 0 (enforceTaskCostBudget returns early on <= 0), so a reviewer
-  # and fixer that disagree can ride this indefinitely.
-  # App.warnUnboundedReviewLoop warns at startup when that pairing is live.
-  # A real ceiling requires agent.max_task_cost_usd; agent.review_until_clean:
-  # false gives the single-pass posture instead, routing straight to testing
-  # after the first fix.
+  # Fresh installs now default to a bounded review-round cap
+  # (agent.max_review_rounds, default 3). review_until_clean: false still opts
+  # into the single-pass posture, while allow_unbounded_review_rounds: true
+  # restores the legacy uncapped loop.
   #
   # A backward goto to a sync step is safe because the run_agent steps in the
   # cycle are async: each agent completion re-enters executeSteps with a fresh
@@ -320,7 +311,21 @@ steps:
           operator: equals
           value: "false"
         goto: done_review
+      - when:
+          field: task.review_round_limit_reached
+          operator: equals
+          value: "true"
+        goto: review_round_limit_hit
       - goto: clear_review_sidecar
+
+  - id: review_round_limit_hit
+    name: Review Round Limit Hit
+    type: set_status
+    config:
+      status: human-required
+      status_reason: automated review hit max_review_rounds without a CLEAN verdict — inspect the latest review or opt into allow_unbounded_review_rounds
+    next:
+      - goto: ""
 
   # Hand the reviewed (and fixed) branch to the testing phase. The PR is NOT
   # created here — testing-task validates the feature first, then simple-task-pr

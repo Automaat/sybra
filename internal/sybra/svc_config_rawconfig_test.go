@@ -158,7 +158,7 @@ func TestUpdateSettings_PatchesOnlyChangedLeafAndPreservesComments(t *testing.T)
 			t.Fatalf("saved config missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "max_turns:") || strings.Contains(text, "allowed_origins:") {
+	if strings.Contains(text, "max_assistant_events:") || strings.Contains(text, "allowed_origins:") {
 		t.Fatalf("UpdateSettings materialized unrelated defaults:\n%s", text)
 	}
 }

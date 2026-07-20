@@ -1320,26 +1320,26 @@ func (a *App) getDiskReclaimer() *diskreclaim.Reclaimer {
 func (a *App) configureTestingEscalation() {
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	a.workflowEngine.SetReviewUntilClean(a.cfg.ReviewUntilClean())
+	a.workflowEngine.SetMaxReviewRounds(a.cfg.MaxReviewRounds())
+	a.workflowEngine.SetAllowUnboundedReviewRounds(a.cfg.AllowUnboundedReviewRounds())
 	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
 	a.warnUnboundedReviewLoop()
 }
 
 // warnUnboundedReviewLoop surfaces the one posture where the review→fix cycle
-// has no stopping condition at all. The cycle has no round cap by design, so
-// agent.max_task_cost_usd is its only bound — and that guardrail is disabled at
-// its default of 0 (enforceTaskCostBudget returns early on <= 0). Stock config
-// therefore pairs an uncapped loop with no ceiling, which a reviewer and fixer
-// that disagree can ride indefinitely. Operators should not have to read the
-// workflow YAML to discover that.
+// has no stopping condition at all: the legacy uncapped review→fix→review loop
+// plus no cumulative task-cost ceiling. Fresh installs now default to a review
+// round cap; this warning remains for explicit opt-ins.
 func (a *App) warnUnboundedReviewLoop() {
-	if !a.cfg.ReviewUntilClean() || a.cfg.Agent.MaxTaskCostUSD > 0 {
+	if !a.cfg.ReviewUntilClean() || !a.cfg.AllowUnboundedReviewRounds() || a.cfg.Agent.MaxTaskCostUSD > 0 {
 		return
 	}
 	a.logger.Warn("review.loop.unbounded",
 		"review_until_clean", true,
+		"allow_unbounded_review_rounds", true,
 		"max_task_cost_usd", 0,
-		"detail", "review→fix cycles until CLEAN with no round cap and no cost ceiling; "+
-			"set agent.max_task_cost_usd to bound it, or agent.review_until_clean: false for a single review pass",
+		"detail", "review→fix cycles until CLEAN with no review-round cap and no task-cost ceiling; "+
+			"set agent.max_task_cost_usd to bound it, disable allow_unbounded_review_rounds, or set agent.review_until_clean: false for a single review pass",
 	)
 }
 

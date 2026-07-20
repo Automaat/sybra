@@ -1032,6 +1032,7 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	}
 	// Must follow AddCacheStats: cached input dominates a codex run and prices at a tenth of standard. EXC:FILE011:load-bearing-invariant
 	costNow := a.BankEstimatedCost()
+	costSource := a.CostSource()
 	// Codex NDJSON never reports session_id/cost on the result event, so
 	// those alone read as an empty/crashed run (this misled diagnosis of
 	// the 2026-07-05 stalled-workflow incident, #1559). Omit the
@@ -1055,7 +1056,7 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	maxCost := m.guardrails.MaxCostUSD
 	m.mu.RUnlock()
 	if maxCost > 0 && costNow > maxCost {
-		if keepGoing := m.checkCostGuardrail(a, costNow, maxCost); !keepGoing {
+		if keepGoing := m.checkCostGuardrail(a, costNow, maxCost, costSource); !keepGoing {
 			return false
 		}
 	}
@@ -1202,8 +1203,8 @@ func (m *Manager) warnIfResultHasLiveBackgroundTasks(a *Agent) {
 // any sidecar it already wrote) gets discarded as a hard failure purely
 // because the kill happened to land after the cost ceiling (see task
 // 6ee7ee8d).
-func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64) bool {
-	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
+func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64, costSource string) bool {
+	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost, "source", costSource)
 	a.MarkStopped()
 	// Stamping "cost" over a checkpoint discards a handoff whose work is already committed. EXC:FILE011:load-bearing-invariant
 	if !IsCheckpointEscalation(a.GetEscalationReason()) {
@@ -1211,9 +1212,13 @@ func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64) bool {
 	}
 	a.setCompletedByResult(true)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
-		Reason:  "cost",
-		CostUSD: costNow,
-		Limit:   maxCost,
+		Reason:        "cost",
+		Guardrail:     "execution.agent.post_result_cost_usd",
+		Measurement:   "post_result_usd",
+		CostSource:    costSource,
+		CostUSD:       costNow,
+		MeasuredValue: costNow,
+		Limit:         maxCost,
 	})
 	m.emit(events.AgentState(a.ID), a)
 	return false
@@ -1254,9 +1259,12 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 	}
 	a.SetEscalationReason(EscalationReasonTurns)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
-		Reason:    "turns",
-		TurnCount: turns,
-		Limit:     float64(maxTurns),
+		Reason:        "turns",
+		Guardrail:     "execution.agent.max_assistant_events",
+		Measurement:   "assistant_events",
+		TurnCount:     turns,
+		MeasuredValue: float64(turns),
+		Limit:         float64(maxTurns),
 	})
 	m.emit(events.AgentState(a.ID), a)
 	select {

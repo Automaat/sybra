@@ -266,6 +266,7 @@ func buildPathDescriptor(runtimePath string) PathDescriptor {
 	if runtimePath != publicPath {
 		legacyPaths = append(legacyPaths, runtimePath)
 	}
+	legacyPaths = append(legacyPaths, legacyFieldAliasPathsForRuntime(runtimePath)...)
 	if alias, ok := durationAliasPathForRuntime(runtimePath); ok && alias != publicPath && alias != runtimePath {
 		legacyPaths = append(legacyPaths, alias)
 	}

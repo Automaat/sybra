@@ -16,8 +16,12 @@
 
   interface EscalationEvent {
     reason: string
+    guardrail?: string
+    measurement?: string
+    costSource?: string
     turnCount?: number
     costUsd?: number
+    measuredValue?: number
     limit: number
   }
 
@@ -262,14 +266,22 @@
         </span>
         {#if escalation.reason === 'turns'}
           <span class="text-sm font-medium text-surface-800 dark:text-surface-200">
-            Turn limit reached — {escalation.turnCount} turns (limit: {escalation.limit})
+            Assistant-event ceiling reached — {escalation.turnCount} events (limit: {escalation.limit})
           </span>
         {:else}
           <span class="text-sm font-medium text-surface-800 dark:text-surface-200">
-            Cost limit exceeded — ${escalation.costUsd?.toFixed(2)} (limit: ${escalation.limit.toFixed(2)})
+            Post-result cost ceiling exceeded — ${escalation.costUsd?.toFixed(2)} (limit: ${escalation.limit.toFixed(2)}, source: {escalation.costSource ?? 'estimated'})
           </span>
         {/if}
       </div>
+      {#if escalation.guardrail}
+        <p class="mb-3 text-xs text-surface-600 dark:text-surface-300">
+          {escalation.guardrail}
+          {#if escalation.measuredValue !== undefined && escalation.measurement}
+            {' '}breached at {escalation.measuredValue}{escalation.measurement === 'post_result_usd' ? ' USD' : ` ${escalation.measurement}`}
+          {/if}
+        </p>
+      {/if}
       <div class="flex items-center gap-2">
         {#if escalation.reason === 'turns'}
           <button

@@ -177,8 +177,9 @@ type Agent struct {
 	// replace the running total rather than add to it; costBaseUSD banks the
 	// last cumulative snapshot of any prior session once a new session id
 	// appears (e.g. across a --resume segment boundary).
-	costSessionID string
-	costBaseUSD   float64
+	costSessionID    string
+	costBaseUSD      float64
+	reportedCostSeen bool
 
 	// escalationCh receives the human's decision when a guardrail is hit.
 	// true = continue, false = kill.
@@ -773,6 +774,9 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasonin
 		a.costBaseUSD = a.CostUSD
 		a.costSessionID = sessionID
 	}
+	if cost > 0 {
+		a.reportedCostSeen = true
+	}
 	a.CostUSD = a.costBaseUSD + cost
 	a.InputTokens += in
 	a.OutputTokens += out
@@ -780,6 +784,17 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasonin
 	result := a.CostUSD
 	a.mu.Unlock()
 	return result
+}
+
+// CostSource reports whether the current CostUSD came from provider-reported
+// USD or Sybra's token/premium-request estimator.
+func (a *Agent) CostSource() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.reportedCostSeen {
+		return "reported"
+	}
+	return "estimated"
 }
 
 // AddCacheStats merges cache token counts into the running totals.

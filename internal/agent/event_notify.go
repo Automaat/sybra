@@ -15,8 +15,12 @@ type PluginErrorsEvent struct {
 // EscalationEvent is emitted on agent:escalation:{id} when a guardrail fires.
 type EscalationEvent struct {
 	// Reason is "turns" or "cost".
-	Reason    string  `json:"reason"`
-	TurnCount int     `json:"turnCount,omitempty"`
-	CostUSD   float64 `json:"costUsd,omitempty"`
-	Limit     float64 `json:"limit"`
+	Reason        string  `json:"reason"`
+	Guardrail     string  `json:"guardrail,omitempty"`
+	Measurement   string  `json:"measurement,omitempty"`
+	CostSource    string  `json:"costSource,omitempty"`
+	TurnCount     int     `json:"turnCount,omitempty"`
+	CostUSD       float64 `json:"costUsd,omitempty"`
+	MeasuredValue float64 `json:"measuredValue,omitempty"`
+	Limit         float64 `json:"limit"`
 }

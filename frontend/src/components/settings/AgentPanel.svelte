@@ -162,11 +162,13 @@
         <span class="text-xs text-surface-500 dark:text-surface-400">Keep agents running across an app restart (default true)</span>
       </div>
 
-      <NumberField id="agent-maxcost" label="Max cost per run (USD)" keyPath="execution.agent.max_cost_usd" min={0} step={0.5}
+      <NumberField id="agent-maxcost" label="Post-result cost ceiling (USD)" keyPath="execution.agent.post_result_cost_usd" min={0} step={0.5}
+        description="Reactive: checked only when a run reports its terminal result"
         bind:value={settings.agent.maxCostUsd}
         modified={a.maxCostUsd !== d.maxCostUsd}
         onreset={() => (settings.agent.maxCostUsd = d.maxCostUsd)} />
-      <NumberField id="agent-maxturns" label="Max turns" keyPath="execution.agent.max_turns" min={0}
+      <NumberField id="agent-maxturns" label="Max assistant events" keyPath="execution.agent.max_assistant_events" min={0}
+        description="Counts top-level assistant stream events, not provider CLI turns"
         bind:value={settings.agent.maxTurns}
         modified={a.maxTurns !== d.maxTurns}
         onreset={() => (settings.agent.maxTurns = d.maxTurns)} />
