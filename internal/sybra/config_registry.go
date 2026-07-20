@@ -46,6 +46,14 @@ type configRegistryEntry struct {
 	ApplyGroup configApplyGroup
 }
 
+type ConfigRegistryMeta struct {
+	Path        string             `json:"path"`
+	RuntimePath string             `json:"runtimePath"`
+	Policy      configReloadPolicy `json:"policy"`
+	Visibility  configVisibility   `json:"visibility"`
+	ApplyGroup  configApplyGroup   `json:"applyGroup,omitempty"`
+}
+
 var configRegistry = []configRegistryEntry{
 	{Path: "schema_version", Policy: configPolicyImmutable, Visibility: configVisibilityRaw},
 	{Path: "logging.level", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyLogLevel},
@@ -170,7 +178,52 @@ func cloneStringMap(src map[string]string) map[string]string {
 }
 
 func configRegistryCoveragePaths() []string {
-	return append([]string(nil), configLeafPaths...)
+	return config.YAMLLeafPaths()
+}
+
+func ConfigRegistryMetadata() []ConfigRegistryMeta {
+	out := make([]ConfigRegistryMeta, 0, len(configRegistry))
+	for _, entry := range configRegistry {
+		path := entry.Path
+		if desc, ok := config.LookupPathDescriptor(entry.Path); ok {
+			path = desc.Path
+		}
+		out = append(out, ConfigRegistryMeta{
+			Path:        path,
+			RuntimePath: entry.Path,
+			Policy:      entry.Policy,
+			Visibility:  entry.Visibility,
+			ApplyGroup:  entry.ApplyGroup,
+		})
+	}
+	return out
+}
+
+func ConfigRegistryMetadataByRuntimePath(path string) (ConfigRegistryMeta, bool) {
+	var best *configRegistryEntry
+	for i := range configRegistry {
+		entry := &configRegistry[i]
+		if path != entry.Path && !strings.HasPrefix(path, entry.Path+".") {
+			continue
+		}
+		if best == nil || len(entry.Path) > len(best.Path) {
+			best = entry
+		}
+	}
+	if best != nil {
+		publicPath := best.Path
+		if desc, ok := config.LookupPathDescriptor(best.Path); ok {
+			publicPath = desc.Path
+		}
+		return ConfigRegistryMeta{
+			Path:        publicPath,
+			RuntimePath: best.Path,
+			Policy:      best.Policy,
+			Visibility:  best.Visibility,
+			ApplyGroup:  best.ApplyGroup,
+		}, true
+	}
+	return ConfigRegistryMeta{}, false
 }
 
 func diffConfig(old, next config.Config) ConfigMutationResult {
@@ -264,46 +317,7 @@ func yamlFieldName(sf reflect.StructField) string {
 	return name
 }
 
-var configLeafPaths = collectConfigLeafPaths()
-
-func collectConfigLeafPaths() []string {
-	var out []string
-	walkConfigType(reflect.TypeFor[config.Config](), nil, &out)
-	slices.Sort(out)
-	return out
-}
-
-func walkConfigType(typ reflect.Type, path []string, out *[]string) {
-	for typ.Kind() == reflect.Pointer {
-		typ = typ.Elem()
-	}
-	if typ.Kind() != reflect.Struct {
-		*out = append(*out, strings.Join(path, "."))
-		return
-	}
-	for sf := range typ.Fields() {
-		name := yamlFieldName(sf)
-		if name == "" || name == "-" {
-			continue
-		}
-		fieldType := sf.Type
-		for fieldType.Kind() == reflect.Pointer {
-			fieldType = fieldType.Elem()
-		}
-		switch fieldType.Kind() {
-		case reflect.Struct:
-			if fieldType.PkgPath() == "" && fieldType.Name() == "" {
-				*out = append(*out, strings.Join(append(path, name), "."))
-				continue
-			}
-			walkConfigType(fieldType, append(path, name), out)
-		case reflect.Map, reflect.Slice, reflect.Array:
-			*out = append(*out, strings.Join(append(path, name), "."))
-		default:
-			*out = append(*out, strings.Join(append(path, name), "."))
-		}
-	}
-}
+var configLeafPaths = config.YAMLLeafPaths()
 
 func coveredByRegistry(path string) bool {
 	for _, entry := range configRegistry {

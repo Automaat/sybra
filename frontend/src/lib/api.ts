@@ -69,6 +69,7 @@ export const StartK8sPocAgent = pick(AppSvc.StartK8sPocAgent, http.StartK8sPocAg
 
 // ConfigService
 export const GetSettings = pick(ConfigSvc.GetSettings, http.GetSettings)
+export const GetPathExplanations = pick(ConfigSvc.GetPathExplanations, http.GetPathExplanations)
 export const GetDefaultSettings = pick(ConfigSvc.GetDefaultSettings, http.GetDefaultSettings)
 export const UpdateSettings = pick(ConfigSvc.UpdateSettings, http.UpdateSettings)
 export const GetRawConfig = pick(ConfigSvc.GetRawConfig, http.GetRawConfig)

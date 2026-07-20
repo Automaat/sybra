@@ -890,6 +890,33 @@ func TestConfigDumpRedactsTaggedSecrets(t *testing.T) {
 	}
 }
 
+func TestConfigExplainRedactsTaggedSecrets(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("server:\n  auth_token: file-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--json", "--home", dir, "config", "explain", "server.auth_token")
+	if code != 0 {
+		t.Fatalf("config explain exit %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "file-secret") {
+		t.Fatalf("config explain leaked secret:\n%s", out)
+	}
+	if !strings.Contains(out, config.RedactedPlaceholder) {
+		t.Fatalf("config explain missing redaction placeholder:\n%s", out)
+	}
+	if !strings.Contains(out, `"reloadPolicy": "restart"`) {
+		t.Fatalf("config explain missing reload metadata:\n%s", out)
+	}
+}
+
 func TestRunConfigDumpDoesNotMutateSparseConfig(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)

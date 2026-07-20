@@ -29,6 +29,27 @@ func TestGetSettings_ExposesExpandedSections(t *testing.T) {
 	if len(got.ProjectTypes) != 1 || got.ProjectTypes[0] != "pet" {
 		t.Errorf("projectTypes = %v, want [pet]", got.ProjectTypes)
 	}
+
+	explanations, err := svc.GetPathExplanations()
+	if err != nil {
+		t.Fatalf("GetPathExplanations: %v", err)
+	}
+	var githubEnabled *ConfigPathExplanation
+	for i := range explanations {
+		if explanations[i].Descriptor.RuntimePath == "github.enabled" {
+			githubEnabled = &explanations[i]
+			break
+		}
+	}
+	if githubEnabled == nil {
+		t.Fatal("github.enabled explanation missing")
+	}
+	if githubEnabled.ReloadPolicy != configPolicyRestart {
+		t.Fatalf("github.enabled reload = %q, want %q", githubEnabled.ReloadPolicy, configPolicyRestart)
+	}
+	if !githubEnabled.Intent.Declared {
+		t.Fatalf("github.enabled intent = %+v, want declared", githubEnabled.Intent)
+	}
 }
 
 func TestGetDefaultSettings_MatchesDefaultConfig(t *testing.T) {

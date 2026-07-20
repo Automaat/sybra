@@ -6,7 +6,7 @@ import type { ReviewComment, Task } from '../../bindings/github.com/Automaat/syb
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, ClusterNodeDTO, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, ClusterNodeDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
@@ -105,6 +105,7 @@ export function StartK8sPocAgent(arg1: string): Promise<Agent> { return call('Ap
 
 // ConfigService
 export function GetSettings(): Promise<AppSettings> { return call('ConfigService', 'GetSettings') }
+export function GetPathExplanations(): Promise<Array<ConfigPathExplanation>> { return call('ConfigService', 'GetPathExplanations') }
 export function GetDefaultSettings(): Promise<AppSettings> { return call('ConfigService', 'GetDefaultSettings') }
 export function UpdateSettings(arg1: AppSettings): Promise<void> { return call('ConfigService', 'UpdateSettings', arg1) }
 export function GetRawConfig(): Promise<string> { return call('ConfigService', 'GetRawConfig') }

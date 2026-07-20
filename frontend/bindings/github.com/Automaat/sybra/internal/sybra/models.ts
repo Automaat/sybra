@@ -403,6 +403,72 @@ export class ConfigMutationResult {
     }
 }
 
+export class ConfigPathExplanation {
+    "descriptor": config$0.PathDescriptor;
+    "default": config$0.PathValue;
+    "intent": config$0.PathValue;
+    "effective": config$0.PathValue;
+    "override"?: config$0.PathValue | null;
+    "reloadPolicy": configReloadPolicy;
+    "visibility": configVisibility;
+    "pendingRestart": boolean;
+
+    /** Creates a new ConfigPathExplanation instance. */
+    constructor($$source: Partial<ConfigPathExplanation> = {}) {
+        if (!("descriptor" in $$source)) {
+            this["descriptor"] = (new config$0.PathDescriptor());
+        }
+        if (!("default" in $$source)) {
+            this["default"] = (new config$0.PathValue());
+        }
+        if (!("intent" in $$source)) {
+            this["intent"] = (new config$0.PathValue());
+        }
+        if (!("effective" in $$source)) {
+            this["effective"] = (new config$0.PathValue());
+        }
+        if (!("reloadPolicy" in $$source)) {
+            this["reloadPolicy"] = configReloadPolicy.$zero;
+        }
+        if (!("visibility" in $$source)) {
+            this["visibility"] = configVisibility.$zero;
+        }
+        if (!("pendingRestart" in $$source)) {
+            this["pendingRestart"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConfigPathExplanation instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ConfigPathExplanation {
+        const $$createField0_0 = $$createType23;
+        const $$createField1_0 = $$createType24;
+        const $$createField2_0 = $$createType24;
+        const $$createField3_0 = $$createType24;
+        const $$createField4_0 = $$createType25;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("descriptor" in $$parsedSource) {
+            $$parsedSource["descriptor"] = $$createField0_0($$parsedSource["descriptor"]);
+        }
+        if ("default" in $$parsedSource) {
+            $$parsedSource["default"] = $$createField1_0($$parsedSource["default"]);
+        }
+        if ("intent" in $$parsedSource) {
+            $$parsedSource["intent"] = $$createField2_0($$parsedSource["intent"]);
+        }
+        if ("effective" in $$parsedSource) {
+            $$parsedSource["effective"] = $$createField3_0($$parsedSource["effective"]);
+        }
+        if ("override" in $$parsedSource) {
+            $$parsedSource["override"] = $$createField4_0($$parsedSource["override"]);
+        }
+        return new ConfigPathExplanation($$parsedSource as Partial<ConfigPathExplanation>);
+    }
+}
+
 export class ConfigRecovery {
     "restoredLastKnownGood": boolean;
     "message": string;
@@ -564,7 +630,7 @@ export class MonitorReportBinding {
      * Creates a new MonitorReportBinding instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorReportBinding {
-        const $$createField2_0 = $$createType23;
+        const $$createField2_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("report" in $$parsedSource) {
             $$parsedSource["report"] = $$createField2_0($$parsedSource["report"]);
@@ -684,7 +750,7 @@ export class TamperReportDTO {
      */
     static createFrom($$source: any = {}): TamperReportDTO {
         const $$createField4_0 = $$createType19;
-        const $$createField5_0 = $$createType25;
+        const $$createField5_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField4_0($$parsedSource["files"]);
@@ -774,7 +840,7 @@ export class TaskAuditEventDTO {
      * Creates a new TaskAuditEventDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskAuditEventDTO {
-        const $$createField4_0 = $$createType26;
+        const $$createField4_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("data" in $$parsedSource) {
             $$parsedSource["data"] = $$createField4_0($$parsedSource["data"]);
@@ -835,6 +901,28 @@ export class VersionInfo {
     }
 }
 
+export enum configReloadPolicy {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    configPolicyHot = "hot",
+    configPolicyRestart = "restart",
+    configPolicyImmutable = "immutable",
+};
+
+export enum configVisibility {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    configVisibilityUI = "ui",
+    configVisibilityRaw = "raw",
+    configVisibilitySecret = "secret",
+};
+
 // Private type creation functions
 const $$createType0 = AgentQueueSnapshotItem.createFrom;
 const $$createType1 = $Create.Array($$createType0);
@@ -859,7 +947,10 @@ const $$createType19 = $Create.Array($Create.Any);
 const $$createType20 = $Create.Map($Create.Any, $Create.Any);
 const $$createType21 = ConfigRecovery.createFrom;
 const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = monitor$0.Report.createFrom;
-const $$createType24 = TamperFindingDTO.createFrom;
-const $$createType25 = $Create.Array($$createType24);
-const $$createType26 = $Create.Map($Create.Any, $Create.Any);
+const $$createType23 = config$0.PathDescriptor.createFrom;
+const $$createType24 = config$0.PathValue.createFrom;
+const $$createType25 = $Create.Nullable($$createType24);
+const $$createType26 = monitor$0.Report.createFrom;
+const $$createType27 = TamperFindingDTO.createFrom;
+const $$createType28 = $Create.Array($$createType27);
+const $$createType29 = $Create.Map($Create.Any, $Create.Any);

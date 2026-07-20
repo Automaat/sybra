@@ -26,6 +26,12 @@ export function GetDefaultSettings(): $CancellablePromise<$models.AppSettings> {
     });
 }
 
+export function GetPathExplanations(): $CancellablePromise<$models.ConfigPathExplanation[]> {
+    return $Call.ByID(2065145936).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
 /**
  * GetRawConfig returns the raw config.yaml text for the Advanced (YAML) editor.
  * Unlike GetSettings this is NOT redacted — it is the user's own local file,
@@ -51,7 +57,7 @@ export function GetSettings(): $CancellablePromise<$models.AppSettings> {
  */
 export function ReloadFromDisk(): $CancellablePromise<$models.ConfigMutationResult> {
     return $Call.ByID(742653545).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType3($result);
     });
 }
 
@@ -69,10 +75,12 @@ export function SaveRawConfig(raw: string): $CancellablePromise<void> {
  */
 export function UpdateSettings(settings: $models.AppSettings): $CancellablePromise<$models.ConfigMutationResult> {
     return $Call.ByID(659336121, settings).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType3($result);
     });
 }
 
 // Private type creation functions
 const $$createType0 = $models.AppSettings.createFrom;
-const $$createType1 = $models.ConfigMutationResult.createFrom;
+const $$createType1 = $models.ConfigPathExplanation.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = $models.ConfigMutationResult.createFrom;

@@ -109,6 +109,23 @@ func TestResolveAppliesV2DurationAliases(t *testing.T) {
 	if got := resolved.Config.Monitor.StuckHumanHours; got != 1.5 {
 		t.Fatalf("Monitor.StuckHumanHours = %v, want 1.5", got)
 	}
+
+	explanation, err := ExplainPath("execution.agent.bash_timeout", fileCfg, Environment{}, resolved.Config)
+	if err != nil {
+		t.Fatalf("ExplainPath: %v", err)
+	}
+	if explanation.Descriptor.RuntimePath != "agent.bash_timeout_seconds" {
+		t.Fatalf("runtime path = %q, want agent.bash_timeout_seconds", explanation.Descriptor.RuntimePath)
+	}
+	if explanation.Intent.Path != "agent.bash_timeout" {
+		t.Fatalf("intent path = %q, want agent.bash_timeout", explanation.Intent.Path)
+	}
+	if explanation.Intent.Value != "2m" {
+		t.Fatalf("intent value = %#v, want 2m", explanation.Intent.Value)
+	}
+	if explanation.Effective.Value != 120 {
+		t.Fatalf("effective value = %#v, want 120", explanation.Effective.Value)
+	}
 }
 
 func TestResolveRejectsNonIntegralDurationAliasForIntField(t *testing.T) {

@@ -37,6 +37,10 @@ func environmentFromOS() Environment {
 	return env
 }
 
+func CurrentEnvironment() Environment {
+	return environmentFromOS()
+}
+
 func ResolveFromCurrentEnvironment(file *FileConfig, opts ResolveOptions) (*ResolveResult, error) {
 	return Resolve(file, environmentFromOS(), opts)
 }

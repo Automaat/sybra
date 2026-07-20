@@ -76,6 +76,12 @@ func (s *ConfigService) GetSettings() AppSettings {
 	}
 }
 
+func (s *ConfigService) GetPathExplanations() ([]ConfigPathExplanation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return LoadConfigPathExplanations(s.cfg, s.persisted)
+}
+
 // GetDefaultSettings returns the settings an empty config file resolves to. The
 // UI diffs live values against these to flag "modified from default" fields and
 // to power per-field reset-to-default, without hardcoding defaults in
