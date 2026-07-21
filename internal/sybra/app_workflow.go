@@ -755,16 +755,14 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	a.withExperiencePrompt(&cfg, r, t)
 
 	cleanRetryReset := false
-	if cfg.Dir == "" && needsWorktree {
-		var dir string
-		t, dir, cleanRetryReset, err = a.resolveWorktreeDir(t, taskID, role, cleanRetryRef, claim)
+	if needsWorktree {
+		t, cfg.Dir, cleanRetryReset, err = a.ensureWorktreeDir(t, taskID, r, cfg.Dir, cleanRetryRef, claim)
 		if err != nil {
 			return "", "", "", err
 		}
-		cfg.Dir = dir
 	}
 	if cfg.Dir != "" && cleanRetryRef != "" && !cleanRetryReset {
-		if resetErr := a.resetWorktreeForRetry(t, cfg.Dir, cleanRetryRef); resetErr != nil {
+		if _, resetErr := a.resetWorktreeForRetry(t, cfg.Dir, cleanRetryRef); resetErr != nil {
 			return "", "", "", resetErr
 		}
 	}
@@ -788,6 +786,76 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
 
 	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+// ensureWorktreeDir resolves the cwd a direct-dispatch agent should run in.
+// A provided dir is usually already prepared, but if a workflow retry carries
+// a stale `_dir` pointing at a deleted Sybra-managed worktree, rebuild the
+// role's expected worktree instead of spawning into a dead path and feeding
+// the workflow's start-failure circuit breaker.
+func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.Role, dir, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, resolvedDir string, cleanRetryReset bool, err error) {
+	if dir == "" {
+		return a.resolveWorktreeDir(t, taskID, string(role), cleanRetryRef, claim)
+	}
+	if _, statErr := os.Stat(dir); statErr == nil {
+		return t, dir, false, nil
+	} else if !os.IsNotExist(statErr) {
+		return t, "", false, fmt.Errorf("stat provided worktree dir %s: %w", dir, statErr)
+	}
+	t, err = a.agentOrch.AutoAssignProject(t)
+	if err != nil {
+		return t, "", false, err
+	}
+	if t.ProjectID == "" {
+		return t, "", false, fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
+	}
+	proj, err := a.projects.Get(t.ProjectID)
+	if err != nil {
+		return t, "", false, err
+	}
+	if rErr := project.RemoveWorktreeReconcile(context.Background(), proj.ClonePath, dir); rErr != nil {
+		return t, "", false, fmt.Errorf("reconcile missing worktree dir %s: %w", dir, rErr)
+	}
+	resolvedDir, cleanRetryReset, err = a.reprepareMissingWorktreeDir(t, taskID, role, dir, claim)
+	return t, resolvedDir, cleanRetryReset, err
+}
+
+func (a *agentAdapter) reprepareMissingWorktreeDir(t task.Task, taskID string, role agent.Role, missingDir string, claim *agent.DispatchClaim) (dir string, cleanRetryReset bool, err error) {
+	if t.WorktreeDir != "" {
+		return "", false, fmt.Errorf("provided adopted worktree dir %s missing: %w", missingDir, os.ErrNotExist)
+	}
+	a.agentOrch.Logger().Warn("workflow.worktree.dir-missing",
+		"task_id", taskID, "role", role, "path", missingDir)
+
+	switch role {
+	case agent.RolePRFix, agent.RoleTestFix:
+		if t.PRNumber == 0 {
+			return "", false, fmt.Errorf("prepare fix worktree: task has no pr_number")
+		}
+		d, wtErr := a.agentOrch.Worktrees().PrepareForFix(context.Background(), t, t.PRNumber)
+		if wtErr != nil {
+			claim.Release()
+			return "", false, fmt.Errorf("prepare fix worktree: %w", wtErr)
+		}
+		return d, false, nil
+	case agent.RoleReview:
+		if t.PRNumber != 0 {
+			d, wtErr := a.agentOrch.Worktrees().PrepareForReview(context.Background(), t)
+			if wtErr != nil {
+				claim.Release()
+				return "", false, fmt.Errorf("prepare review worktree: %w", wtErr)
+			}
+			return d, false, nil
+		}
+		fallthrough
+	default:
+		d, wtErr := a.agentOrch.Worktrees().PrepareForTask(context.Background(), t, nil)
+		if wtErr != nil {
+			claim.Release()
+			return "", false, a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
+		}
+		return d, false, nil
+	}
 }
 
 func workflowRequestedSkill(prompt string) string {
@@ -828,10 +896,11 @@ func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryR
 		return t, "", false, fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
 	}
 	if cleanRetryRef != "" {
-		if resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef); resetErr != nil {
+		reset, resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef)
+		if resetErr != nil {
 			return t, "", false, resetErr
 		}
-		cleanRetryReset = true
+		cleanRetryReset = reset
 	}
 	// context.Background(): StartAgent implements workflow.AgentDispatcher,
 	// a fixed interface signature with no ctx parameter (invoked from many
@@ -884,7 +953,7 @@ func (a *agentAdapter) classifyDirectDispatchWorktreeErr(taskID string, wtErr er
 	return wtErr
 }
 
-func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error {
+func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) (bool, error) {
 	target := dir
 	if target == "" {
 		if t.WorktreeDir != "" {
@@ -894,23 +963,23 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error
 		}
 	}
 	if target == "" {
-		return nil
+		return false, nil
 	}
 	if _, err := os.Stat(target); err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("stat clean retry worktree: %w", err)
+		return false, fmt.Errorf("stat clean retry worktree: %w", err)
 	}
 	// context.Background(): StartAgent implements workflow.AgentDispatcher,
 	// a fixed interface signature with no ctx parameter (see the earlier
 	// comment on the PrepareForTask call in this file).
 	if err := project.ResetWorktreeForRetry(context.Background(), target, ref); err != nil {
 		a.agentOrch.Logger().Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
-		return err
+		return false, err
 	}
 	a.agentOrch.Logger().Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
-	return nil
+	return true, nil
 }
 
 func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg agent.RunConfig, ag *agent.Agent) {
