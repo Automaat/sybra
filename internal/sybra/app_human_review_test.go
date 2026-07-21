@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -794,6 +795,12 @@ func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 		})
 		return err
 	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
+	}
 
 	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
 	ag.AppendOutput(agent.StreamEvent{
@@ -821,6 +828,74 @@ func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 	}
 	if strings.Contains(got.Body, "claim not verified") {
 		t.Fatalf("unexpected verification failure note in body:\n%s", got.Body)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_DoneActionRejectsUnmergedPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done-closed-pr"
+	tk, err := tasks.Create("Closed PR task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("waiting on review"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		PRNumber:     task.Ptr(2417),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.landClosedPR = func(context.Context, string, int, string) error {
+		t.Fatal("unexpected merged landing for closed PR")
+		return nil
+	}
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for closed PR")
+		return task.Task{}, nil
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "CLOSED"}, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.Outcome != "" {
+		t.Fatalf("outcome = %q, want empty", got.Outcome)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked claim not verified") {
+		t.Fatalf("expected verification failure note in body; got:\n%s", got.Body)
 	}
 	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
 		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
@@ -860,6 +935,12 @@ func TestOnComplete_UnblockedVerdict_DoneActionFallbackBackfillsPR(t *testing.T)
 			Status:       task.Ptr(task.Status(target)),
 			StatusReason: task.Ptr(reason),
 		})
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
 	}
 
 	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
