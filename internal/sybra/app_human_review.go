@@ -476,6 +476,11 @@ func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note 
 				"task_id", current.ID, "agent_id", agentID, "pr", prNumber, "err", err)
 			return
 		}
+		if err := h.finalizeDoneRecovery(current.ID, prNumber, mergedPR); err != nil {
+			h.logger.Error("human-review.unblocked.finalize-done",
+				"task_id", current.ID, "agent_id", agentID, "pr", prNumber, "err", err)
+			return
+		}
 		if h.appendNote(current.ID, "Auto-review: unblocked", note) {
 			h.markVerdictRendered(current.ID, agentID)
 		}

@@ -760,7 +760,6 @@ func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr("github push preflight failed: auth"),
 		ProjectID:    task.Ptr("Automaat/sybra"),
-		PRNumber:     task.Ptr(2417),
 		WorktreeDir:  task.Ptr(dir),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -819,6 +818,9 @@ func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 	}
 	if got.Outcome != "merged" {
 		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if got.PRNumber != 2417 {
+		t.Fatalf("prNumber = %d, want 2417", got.PRNumber)
 	}
 	if got.StatusReason != "" {
 		t.Fatalf("status_reason = %q, want cleared merged landing", got.StatusReason)
