@@ -15,7 +15,15 @@ import (
 // must survive a wholesale tag-replacement in Apply because dropping them
 // would silently break routing the task depends on: escape-hatch opt-outs
 // (see escapeHatchTags) and the umbrella dependency gate marker.
-var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.GatedTag)
+var preservedTags = append(append([]string{}, escapeHatchTags...),
+	umbrella.GatedTag,
+	"sybra-bug",
+	"scrubbed",
+	"local",
+	"issue-filing-failed",
+)
+
+const sybraProjectID = "Automaat/sybra"
 
 const umbrellaNormalTypeStatusReason = "☂️-titled task has task_type=normal, not umbrella — " +
 	"guard blocked dispatch to avoid a wasted implement run; " +
@@ -61,6 +69,9 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	stale := projectID != "" && !resolved
 	if !resolved {
 		projectID = MatchProjectFromIssue(t.Issue, projects)
+		if projectID == "" && isSybraBugTask(t, v) {
+			projectID = registeredProjectID(sybraProjectID, projects)
+		}
 		if projectID == "" {
 			guess := strings.TrimSpace(v.ProjectID)
 			if _, ok := projectTypeFor(guess, projects); ok {
@@ -149,6 +160,19 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 
 func isPRFixTask(t task.Task) bool {
 	return t.RunRole == "pr-fix" || t.PRNumber > 0
+}
+
+func isSybraBugTask(t task.Task, v Verdict) bool {
+	return slices.Contains(t.Tags, "sybra-bug") || slices.Contains(v.Tags, "sybra-bug")
+}
+
+func registeredProjectID(id string, projects []project.Project) string {
+	for i := range projects {
+		if projects[i].ID == id {
+			return projects[i].ID
+		}
+	}
+	return ""
 }
 
 // projectTypeFor returns the registered project type for id and whether id

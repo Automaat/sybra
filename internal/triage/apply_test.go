@@ -85,6 +85,32 @@ func TestApplyPreservesEscapeHatchTags(t *testing.T) {
 	}
 }
 
+func TestApplyPreservesSybraBugRoutingTags(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("fix(workflow): local tracker", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.Tags = []string{"sybra-bug", "scrubbed"}
+
+	v := Verdict{
+		Title: "fix(workflow): local tracker",
+		Tags:  []string{"backend", "medium", "bug"},
+		Size:  "medium",
+		Type:  "bug",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	for _, want := range []string{"sybra-bug", "scrubbed"} {
+		if !slices.Contains(updated.Tags, want) {
+			t.Fatalf("tags = %v, want preserved %q", updated.Tags, want)
+		}
+	}
+}
+
 func TestApplyPreservesHumanSetTrivialTag(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("trivial typo fix", "", task.AgentModeHeadless)
@@ -624,6 +650,40 @@ func TestApplyRejectsUnregisteredClassifierGuess(t *testing.T) {
 	}
 	if updated.ProjectID != "" {
 		t.Errorf("project_id: got %q, want empty (unregistered classifier guess must not be persisted)", updated.ProjectID)
+	}
+}
+
+func TestApplySybraBugTaskDefaultsToSybraProjectBeforeBodyMatch(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create(
+		"fix(workflow): assign project before dispatching Sybra bug tasks",
+		"Local tracker for a Sybra bug seen while handling https://github.com/Automaat/synapse/issues/7.",
+		task.AgentModeHeadless,
+	)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.Tags = []string{"sybra-bug", "scrubbed"}
+	projects := []project.Project{
+		{ID: "Automaat/sybra", Owner: "Automaat", Repo: "sybra", Type: project.ProjectTypePet},
+		{ID: "Automaat/synapse", Owner: "Automaat", Repo: "synapse", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "fix(workflow): assign project before dispatching Sybra bug tasks",
+		Size:  "medium",
+		Type:  "bug",
+		Mode:  "headless",
+		Tags:  []string{"backend", "medium", "bug"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "Automaat/sybra" {
+		t.Fatalf("project_id = %q, want Automaat/sybra", updated.ProjectID)
+	}
+	if !slices.Contains(updated.Tags, "sybra-bug") || !slices.Contains(updated.Tags, "scrubbed") {
+		t.Fatalf("tags = %v, want sybra-bug and scrubbed preserved", updated.Tags)
 	}
 }
 

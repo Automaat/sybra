@@ -740,6 +740,67 @@ func TestOnComplete_UnblockedVerdict_ReadyPRWithoutPRStaysReadyPR(t *testing.T) 
 	}
 }
 
+func TestOnComplete_UnblockedVerdict_DoneActionClosesTask(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done"
+	tk, err := tasks.Create("Already merged task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+		PRNumber:  task.Ptr(2417),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	var dispatchedTarget string
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.Status(target)),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if dispatchedTarget != string(task.StatusDone) {
+		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusDone)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("expected unblocked note in body; got:\n%s", got.Body)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
 func TestOnComplete_UnblockedVerdict_TamperRerouteAddsBlessTag(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
