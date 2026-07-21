@@ -13,6 +13,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     isDraft: false,
     labels: [],
     headRefName: 'feature/test',
+    headRepoOwner: 'org',
     headSha: 'abc1234',
     baseRefName: 'main',
     autoMergeEnabled: false,

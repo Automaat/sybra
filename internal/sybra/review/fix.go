@@ -24,8 +24,9 @@ import (
 )
 
 // branchConflictFixWorkflowID is the builtin workflow started directly (by
-// ID, via StartWorkflowWithVars) to recover a no-PR branch conflict. It is
-// never reached via DispatchEvent/trigger matching — see
+// ID, via StartWorkflowWithVars) to recover a task-branch conflict without
+// going through the ordinary PR-fix dispatch path. It is never reached via
+// DispatchEvent/trigger matching — see
 // internal/workflow/builtin/branch-conflict-fix.yaml.
 const branchConflictFixWorkflowID = "branch-conflict-fix"
 
@@ -37,6 +38,7 @@ const branchConflictFixWorkflowID = "branch-conflict-fix"
 const prFixWorkflowID = "pr-fix"
 
 const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
+const sameBranchConflictRetryKind = github.PRIssueTaskBranchConflict
 const branchRecreateKind = github.PRIssueBranchRecreate
 const ciInfraRerunKind = github.PRIssueKind("ci_infra_rerun")
 
@@ -59,6 +61,14 @@ type branchConflictResumeState struct {
 	workflowStep string
 	workflowVars string
 	prior        *workflow.Execution
+}
+
+type taskBranchConflictRecoverySpec struct {
+	retryKind      github.PRIssueKind
+	branchOverride string
+	remoteOverride string
+	allowRecreate  bool
+	prompt         func(context.Context, task.Task, string) string
 }
 
 type dispatchFixOptions struct {
@@ -553,6 +563,10 @@ const prFixTamperingRules = "Never weaken, skip, delete, or hardcode tests, " +
 // force-with-lease are safe because no external PR depends on the branch shape
 // yet.
 func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) string {
+	return prFixPushPromptWithRemote(branch, intro, fenced, allowHistoryRewrite, "")
+}
+
+func prFixPushPromptWithRemote(branch, intro string, fenced, allowHistoryRewrite bool, remote string) string {
 	var b strings.Builder
 	if fenced && intro != "" {
 		b.WriteString(intro)
@@ -561,8 +575,12 @@ func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) str
 	if fenced {
 		b.WriteString("```sh\n")
 	}
-	b.WriteString("PUSH_REMOTE=origin\n")
-	b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
+	if remote == "" {
+		b.WriteString("PUSH_REMOTE=origin\n")
+		b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
+	} else {
+		fmt.Fprintf(&b, "PUSH_REMOTE=%s\n", remote)
+	}
 	b.WriteString("PREFLIGHT_REF=HEAD:refs/heads/sybra-preflight/$(git rev-parse --verify HEAD)\n")
 	b.WriteString("git push --dry-run \"$PUSH_REMOTE\" \"$PREFLIGHT_REF\"\n")
 	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
@@ -1208,15 +1226,65 @@ func (r *Handler) prFixParkedOnConflict(taskID string) bool {
 // synchronously start to finish) makes the re-entrant call bail out
 // immediately.
 func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
+	return r.recoverTaskBranchConflict(context.Background(), t, taskBranchConflictRecoverySpec{
+		retryKind:     branchConflictRetryKind,
+		allowRecreate: true,
+		prompt:        branchConflictPrompt,
+	})
+}
+
+func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, branch, remote string) bool {
+	if remote == "" {
+		remote = "origin"
+	}
+	return r.recoverTaskBranchConflict(ctx, t, taskBranchConflictRecoverySpec{
+		retryKind:      sameBranchConflictRetryKind,
+		branchOverride: branch,
+		remoteOverride: remote,
+		prompt: func(ctx context.Context, t task.Task, _ string) string {
+			return sameBranchConflictPrompt(ctx, t, remote)
+		},
+	})
+}
+
+func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task, pr github.PullRequest) string {
+	baseOwner := ""
+	if pr.Repository != "" {
+		baseOwner, _, _ = strings.Cut(pr.Repository, "/")
+	}
+	if baseOwner == "" && t.ProjectID != "" {
+		baseOwner, _, _ = strings.Cut(t.ProjectID, "/")
+	}
+	if pr.HeadRepoOwner == "" || strings.EqualFold(pr.HeadRepoOwner, baseOwner) {
+		return "origin"
+	}
+	if r.projects == nil || t.ProjectID == "" {
+		return "origin"
+	}
+	proj, err := r.projects.Get(t.ProjectID)
+	if err != nil || proj.ClonePath == "" {
+		return "origin"
+	}
+	return project.PushRemote(ctx, proj.ClonePath)
+}
+
+func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, spec taskBranchConflictRecoverySpec) bool {
 	taskID := t.ID
 	if r.worktreeSkip(taskID) {
 		return false
 	}
-	if r.prTracker.AtCap(taskID, branchConflictRetryKind) {
-		if r.recreateExhaustedNoPRBranch(t) {
+	if spec.branchOverride != "" && t.Branch != spec.branchOverride {
+		if _, err := r.tasks.Update(taskID, task.Update{Branch: task.Ptr(spec.branchOverride)}); err != nil {
+			r.logger.Warn("pr-monitor.branch-conflict.branch-override", "task_id", taskID, "branch", spec.branchOverride, "err", err)
+			return false
+		}
+		t.Branch = spec.branchOverride
+	}
+	if r.prTracker.AtCap(taskID, spec.retryKind) {
+		if spec.allowRecreate && r.recreateExhaustedNoPRBranch(ctx, t) {
 			return true
 		}
-		r.markConflictRecoveryExhausted(taskID, branchConflictRetryKind)
+		r.markConflictRecoveryExhausted(taskID, spec.retryKind)
 		return false
 	}
 
@@ -1241,7 +1309,6 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		r.logger.Warn("pr-monitor.branch-conflict.project", "task_id", taskID, "err", err)
 		return false
 	}
-	ctx := context.Background()
 	base, err := project.DefaultBranch(ctx, proj.ClonePath)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.base", "task_id", taskID, "err", err)
@@ -1253,7 +1320,7 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		return false
 	}
 
-	dir, err := r.worktrees.PrepareForBranchFix(ctx, t)
+	dir, err := r.worktrees.PrepareForBranchConflictFromRemote(ctx, t, spec.remoteOverride)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.prepare", "task_id", taskID, "err", err)
 		return r.parkOrEscalateBranchFixFailure(taskID, err)
@@ -1277,10 +1344,10 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	if shaErr != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
-	return r.dispatchBranchConflictRecovery(ctx, taskID, dir, base, t, headSHA, resume, hadActiveWorkflow)
+	return r.dispatchBranchConflictRecovery(ctx, taskID, dir, spec.prompt(ctx, t, base), t, headSHA, resume, hadActiveWorkflow, spec.retryKind)
 }
 
-func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
+func (r *Handler) recreateExhaustedNoPRBranch(ctx context.Context, t task.Task) bool {
 	taskID := t.ID
 	if r.worktrees == nil || r.WorkflowEngine == nil {
 		return false
@@ -1288,7 +1355,7 @@ func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
 	if r.prTracker.AtCap(taskID, branchRecreateKind) {
 		return false
 	}
-	if err := r.worktrees.RecreateFromBase(context.Background(), t); err != nil {
+	if err := r.worktrees.RecreateFromBase(ctx, t); err != nil {
 		r.logger.Warn("pr-monitor.branch-recreate.failed", "task_id", taskID, "err", err)
 		return false
 	}
@@ -1380,9 +1447,9 @@ func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) b
 // rather than a separate CancelWorkflow + StartWorkflowWithVars pair — is
 // what avoids a guaranteed reentrant "start in progress" failure there (see
 // workflow.Engine.ReplaceWorkflow's doc).
-func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool) bool {
+func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, dir, prompt string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool, retryKind github.PRIssueKind) bool {
 	vars := map[string]string{
-		"prompt":                branchConflictPrompt(ctx, t, base) + PRFixResultContract,
+		"prompt":                prompt + PRFixResultContract,
 		workflow.WorkflowVarDir: dir,
 		"resume_status":         resume.status,
 		"resume_status_reason":  resume.statusReason,
@@ -1444,7 +1511,7 @@ func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, di
 	}
 
 	r.clearDispatchFailure(taskID)
-	r.prTracker.MarkHandled(taskID, branchConflictRetryKind, headSHA)
+	r.prTracker.MarkHandled(taskID, retryKind, headSHA)
 	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{})
 	r.logger.Info("pr-monitor.branch-conflict.recovered", "task_id", taskID)
 	return true
@@ -1679,6 +1746,38 @@ func branchConflictPrompt(ctx context.Context, t task.Task, base string) string 
 	)
 }
 
+func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) string {
+	branch := t.Branch
+	if branch == "" {
+		branch = "the task's current branch"
+	}
+	if remote == "" {
+		remote = "origin"
+	}
+	prCtx := ""
+	if t.PRNumber > 0 {
+		prCtx = fmt.Sprintf(" backing PR #%d", t.PRNumber)
+	}
+	return fmt.Sprintf(
+		"Resolve the content conflict between the LOCAL copy of branch `%s` and the already-pushed REMOTE copy of that SAME branch%s.\n"+
+			"This is not a base-branch rebase conflict; preserve both lines of work with an additive merge.\n\n"+
+			"Steps:\n"+
+			"```bash\n"+
+			"git fetch %s +refs/heads/%s:refs/remotes/%s/%s\n"+
+			"git merge refs/remotes/%s/%s\n"+
+			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
+			"# both the local follow-up commits and the already-pushed remote commits,\n"+
+			"# then git add and git commit %s to finish the merge.\n"+
+			"# If the merge already completed on its own (clean/no-op), do not run git\n"+
+			"# commit again.\n"+
+			"# Do NOT rebase, amend, or force-push: this branch already backs a live PR.\n"+
+			"%s\n"+
+			"```\n\n"+
+			"After pushing, summarize what conflicted and how you resolved it.",
+		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx), prFixPushPromptWithRemote(branch, "", false, false, remote),
+	)
+}
+
 // prepareWorktree sets up the fix worktree for the given task and PR issue.
 // Returns ("", false) on error, with circuit-breaker escalation after wtFailureLimit
 // consecutive failures. Returns ("", true) when no worktree is needed.
@@ -1708,6 +1807,12 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		if errors.Is(wtErr, worktree.ErrAgentRunning) {
 			r.logger.Warn("pr-monitor.worktree.agent-running", "task_id", t.ID, "err", wtErr)
 			return "", false
+		}
+		if errors.Is(wtErr, project.ErrBranchDiverged) {
+			remote := r.sameBranchConflictRemote(ctx, t, issue.PR)
+			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName, remote) {
+				return "", false
+			}
 		}
 		// A conflict fix already operates on the non-rebasing PrepareForFix path,
 		// so a rebase failure here can only come from the CI-fix PrepareForTask

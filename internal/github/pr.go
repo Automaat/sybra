@@ -122,17 +122,20 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 	}
 
 	out, err := e.run("pr", "view", strconv.Itoa(number),
-		"--repo", repo, "--json", "number,title,body,url,headRefName,author,labels")
+		"--repo", repo, "--json", "number,title,body,url,headRefName,headRepositoryOwner,author,labels")
 	if err != nil {
 		return PullRequest{}, fmt.Errorf("gh pr view %d: %s: %w", number, strings.TrimSpace(string(out)), err)
 	}
 	var raw struct {
-		Number      int    `json:"number"`
-		Title       string `json:"title"`
-		Body        string `json:"body"`
-		URL         string `json:"url"`
-		HeadRefName string `json:"headRefName"`
-		Author      struct {
+		Number              int    `json:"number"`
+		Title               string `json:"title"`
+		Body                string `json:"body"`
+		URL                 string `json:"url"`
+		HeadRefName         string `json:"headRefName"`
+		HeadRepositoryOwner struct {
+			Login string `json:"login"`
+		} `json:"headRepositoryOwner"`
+		Author struct {
 			Login string `json:"login"`
 		} `json:"author"`
 		Labels []struct {
@@ -152,14 +155,15 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 		repoName = parts[1]
 	}
 	pr := PullRequest{
-		Number:      raw.Number,
-		Title:       raw.Title,
-		URL:         raw.URL,
-		HeadRefName: raw.HeadRefName,
-		Repository:  repo,
-		RepoName:    repoName,
-		Author:      raw.Author.Login,
-		Labels:      labels,
+		Number:        raw.Number,
+		Title:         raw.Title,
+		URL:           raw.URL,
+		HeadRefName:   raw.HeadRefName,
+		HeadRepoOwner: raw.HeadRepositoryOwner.Login,
+		Repository:    repo,
+		RepoName:      repoName,
+		Author:        raw.Author.Login,
+		Labels:        labels,
 	}
 	if runtimeCacheEnabled(e) {
 		prCache.Set(key, pr, 2*time.Minute)
