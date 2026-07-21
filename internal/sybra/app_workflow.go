@@ -255,6 +255,16 @@ type taskClassifierAdapter struct {
 	sybraBugProjectID string
 }
 
+func (a *App) newTaskClassifierAdapter() *taskClassifierAdapter {
+	return &taskClassifierAdapter{
+		tasks:             a.tasks,
+		projects:          a.projects,
+		classifier:        &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
+		audit:             a.audit,
+		sybraBugProjectID: a.cfg.HumanReviewRepo(),
+	}
+}
+
 func (a *taskClassifierAdapter) ClassifyTask(ctx context.Context, taskID string) error {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
