@@ -122,6 +122,16 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 			return out, err
 		}
 	}
+	if !reviewHoldForced && prFixShouldResumeNoPRRecovery(t, reason) {
+		msg := "retryable no-PR remote outage; resuming original workflow: " + reason
+		workflowID := ""
+		if wfExec != nil {
+			workflowID = wfExec.WorkflowID
+		}
+		e.logger.Warn("workflow.pr-fix.no-pr-retryable-remote",
+			"task_id", taskID, "workflow", workflowID, "reason", reason)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
+	}
 	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)
 	}
@@ -142,6 +152,25 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		}
 	}
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
+}
+
+func prFixShouldResumeNoPRRecovery(t TaskInfo, reason string) bool {
+	if t.PRNumber > 0 {
+		return false
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return false
+	}
+	lower := strings.ToLower(reason)
+	if strings.Contains(lower, "missing credential") || strings.Contains(lower, "authentication") || strings.Contains(lower, "permission denied") {
+		return false
+	}
+	if project.IsTransientNetworkError(errors.New(reason)) {
+		return true
+	}
+	return strings.Contains(lower, "remote unreachable") ||
+		(strings.Contains(lower, "transport") && strings.Contains(lower, "github"))
 }
 
 func prFixAllowsResolvedMergeRecovery(reason string) bool {
