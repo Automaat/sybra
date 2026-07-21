@@ -1077,6 +1077,39 @@ func TestAgentAdapterStartAgentRepreparesProvidedDirOnFixReviewBranchMismatch(t 
 	}
 }
 
+func TestAgentAdapterStartAgentPlanKeepsExistingScratchDir(t *testing.T) {
+	h := setupProvidedDirRecoveryHarness(t, agent.RoleImplementation)
+	scratchDir := t.TempDir()
+
+	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
+		h.task.ID,
+		string(agent.RolePlan),
+		"headless",
+		"sonnet",
+		"claude",
+		"prompt",
+		scratchDir,
+		nil,
+		true,
+		false,
+		"",
+		"",
+		workflow.AgentAssignment{},
+	)
+	if err != nil {
+		t.Fatalf("StartAgent plan with scratch dir: %v", err)
+	}
+	if agentID == "" {
+		t.Fatal("StartAgent returned empty agentID")
+	}
+	if startedDir != scratchDir {
+		t.Fatalf("startedDir = %q, want existing scratch dir %q", startedDir, scratchDir)
+	}
+	if baselineRef != "" {
+		t.Fatalf("baselineRef = %q, want empty for non-git scratch dir", baselineRef)
+	}
+}
+
 func TestRecordSystemAgentStartIgnoresMissingTask(t *testing.T) {
 	t.Parallel()
 

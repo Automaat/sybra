@@ -858,14 +858,6 @@ func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.
 }
 
 func (a *agentAdapter) providedWorktreeNeedsRepair(t task.Task, taskID string, role agent.Role, dir string) (bool, error) {
-	if t.WorktreeDir == "" {
-		wantDir := a.agentOrch.Worktrees().PathFor(t)
-		if wantDir != "" && filepath.Clean(dir) != filepath.Clean(wantDir) {
-			a.agentOrch.Logger().Warn("workflow.worktree.dir-stale",
-				"task_id", taskID, "role", role, "path", dir, "want_path", wantDir)
-			return true, nil
-		}
-	}
 	if !role.AuthorsCode() || strings.TrimSpace(t.Branch) == "" {
 		return false, nil
 	}
