@@ -1,10 +1,13 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -70,6 +73,9 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 			return StepOutput{}, fmt.Errorf("create_pr: link existing pr: %w", err)
 		}
 		return stepDone(step, fmt.Sprintf("pr #%d already exists for branch", existing))
+	}
+	if out, done := e.handleExistingAnyStatePRForBranch(taskID, step, wtPath, t, headArg); done {
+		return out, nil
 	}
 
 	if out, err, ok := e.pushTaskBranch(taskID, step, wfExec, t, wtPath, branch); !ok {
@@ -426,6 +432,109 @@ func (e *Engine) findExistingPRForBranch(repo, branch string) (number int, ok bo
 		return 0, false
 	}
 	return num, found
+}
+
+func (e *Engine) handleExistingAnyStatePRForBranch(taskID string, step *Step, wtPath string, t TaskInfo, headArg string) (StepOutput, bool) {
+	if e.prAnyStateFinder == nil {
+		return StepOutput{}, false
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	num, state, found, err := e.prAnyStateFinder.FindPRForBranchAnyState(ctx, t.ProjectID, headArg)
+	if err != nil {
+		e.logger.Warn("workflow.create-pr.find-any-state", "task_id", taskID, "repo", t.ProjectID, "head", headArg, "err", err)
+		return StepOutput{}, false
+	}
+	if !found {
+		return StepOutput{}, false
+	}
+	switch state {
+	case "OPEN":
+		if err := e.linkTaskPR(taskID, t, num); err != nil {
+			e.logger.Warn("workflow.create-pr.link-any-state-open", "task_id", taskID, "pr", num, "err", err)
+			return StepOutput{}, false
+		}
+		out, _ := stepDone(step, fmt.Sprintf("pr #%d already exists for branch", num))
+		return out, true
+	case "MERGED":
+		clean, cleanErr := branchPatchAlreadyAppliedToBase(ctx, wtPath)
+		if cleanErr != nil {
+			e.logger.Warn("workflow.create-pr.merged-branch-diff", "task_id", taskID, "pr", num, "err", cleanErr)
+			return StepOutput{}, false
+		}
+		if !clean {
+			e.logger.Info("workflow.create-pr.merged-branch-has-diff", "task_id", taskID, "pr", num)
+			return StepOutput{}, false
+		}
+		reason := fmt.Sprintf("branch already landed via merged PR #%d and has no remaining diff against base", num)
+		e.logger.Info("workflow.create-pr.merged-branch-done", "task_id", taskID, "pr", num)
+		out := StepOutput{StepID: step.ID, Status: "completed", Output: reason, TerminalStatus: "done", TerminalReason: reason}
+		return out, true
+	default:
+		return StepOutput{}, false
+	}
+}
+
+func branchPatchAlreadyAppliedToBase(ctx context.Context, wtPath string) (bool, error) {
+	baseRef := resolveOriginBase(ctx, wtPath)
+	mergeBaseCmd := exec.CommandContext(ctx, "git", "merge-base", baseRef, "HEAD")
+	mergeBaseCmd.Dir = wtPath
+	mergeBaseOut, err := mergeBaseCmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git merge-base %s HEAD: %w", baseRef, err)
+	}
+	mergeBase := strings.TrimSpace(string(mergeBaseOut))
+	if mergeBase == "" {
+		return false, fmt.Errorf("git merge-base %s HEAD: empty output", baseRef)
+	}
+
+	diffCmd := exec.CommandContext(ctx, "git", "diff", "--binary", mergeBase+"..HEAD", "--")
+	diffCmd.Dir = wtPath
+	patch, err := diffCmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git diff %s..HEAD: %w", mergeBase, err)
+	}
+	if len(bytes.TrimSpace(patch)) == 0 {
+		return true, nil
+	}
+
+	tmpDir, err := os.MkdirTemp("", "sybra-branch-base-*")
+	if err != nil {
+		return false, fmt.Errorf("create temp base tree: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	baseTreeDir := filepath.Join(tmpDir, "base")
+
+	addCmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", baseTreeDir, baseRef)
+	addCmd.Dir = wtPath
+	addOut, err := addCmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("git worktree add %s: %w: %s", baseRef, err, strings.TrimSpace(string(addOut)))
+	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), shellTimeout)
+		defer cleanupCancel()
+		rmCmd := exec.CommandContext(cleanupCtx, "git", "worktree", "remove", "--force", baseTreeDir)
+		rmCmd.Dir = wtPath
+		_ = rmCmd.Run()
+	}()
+
+	cmd := exec.CommandContext(ctx, "git", "apply", "--check", "--reverse", "--whitespace=nowarn", "-")
+	cmd.Dir = baseTreeDir
+	cmd.Stdin = bytes.NewReader(patch)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	detail := strings.TrimSpace(string(out))
+	if detail == "" {
+		return false, fmt.Errorf("git apply --reverse --check: %w", err)
+	}
+	return false, fmt.Errorf("git apply --reverse --check: %w: %s", err, detail)
 }
 
 // verifyPushedHead best-effort verifies the PR head now matches local HEAD

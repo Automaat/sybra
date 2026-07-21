@@ -403,6 +403,10 @@ func (prFinderAdapter) FindPRForBranch(ctx context.Context, repo, head string) (
 	return github.FindPRForBranch(ctx, repo, head)
 }
 
+func (prFinderAdapter) FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error) {
+	return github.FindPRForBranchAnyState(ctx, repo, head)
+}
+
 // prContentGeneratorAdapter wires the workflow engine's PRContentGenerator
 // interface to internal/prcontent's LLM-backed drafter.
 type prContentGeneratorAdapter struct {

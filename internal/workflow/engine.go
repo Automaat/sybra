@@ -248,6 +248,14 @@ type PRFinder interface {
 	FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error)
 }
 
+// PRAnyStateFinder resolves a PR for a head branch across open and merged
+// states. Used as a stronger duplicate guard before create_pr opens a new PR:
+// a previously squash-merged PR can leave the branch tip non-ancestor of base
+// while the tree diff is already present on base.
+type PRAnyStateFinder interface {
+	FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error)
+}
+
 // PRCreateRequest describes a new pull request to open for an
 // already-pushed branch.
 type PRCreateRequest struct {
@@ -324,6 +332,7 @@ type Engine struct {
 	prCreator        PRCreator
 	prCloser         PRCloser
 	prFinder         PRFinder
+	prAnyStateFinder PRAnyStateFinder
 	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
 	attemptNotes     AttemptNoteAppender
@@ -527,6 +536,10 @@ func (e *Engine) SetPRCloser(c PRCloser) { e.prCloser = c }
 // SetPRFinder wires the open-PR-by-branch lookup used by create_pr's
 // idempotency guard. Leaving it unset skips the guard.
 func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
+
+// SetPRAnyStateFinder wires the all-state branch lookup used by create_pr's
+// squash-merge duplicate guard. Leaving it unset skips the guard.
+func (e *Engine) SetPRAnyStateFinder(f PRAnyStateFinder) { e.prAnyStateFinder = f }
 
 // SetPRContentGenerator wires the LLM-backed title/body drafter used by the
 // `create_pr` step. Leaving it unset falls back to a templated title/body.
