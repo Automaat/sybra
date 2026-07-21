@@ -1022,63 +1022,84 @@ func (r *Handler) advanceClosedTaskPRs(ctx context.Context, monitoredPRs []githu
 func (r *Handler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher, fetchFn func(repo string, number int) (github.PRState, error)) {
 	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, fetchFn)
 	for _, c := range closedPRs {
-		if r.agents.HasRunningAgentForTask(c.TaskID) {
-			r.logger.Info("pr-monitor.closed-stop-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
-			r.agents.KillAgentsForTask(c.TaskID, 10*time.Second)
-		}
-		// Flip to done immediately with the base outcome — the status transition
-		// must never wait on GitHub enrichment.
-		base := classifyLandingOutcome(c.State)
-		landedStatus := task.StatusDone
-		if c.State == "CLOSED" {
-			landedStatus = task.StatusCancelled
-		}
-		if _, err := r.tasks.Update(c.TaskID, task.Update{
-			Status:  task.Ptr(landedStatus),
-			Outcome: task.Ptr(base),
-		}); err != nil {
+		if err := r.advanceClosedTaskPR(ctx, c); err != nil {
 			r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
-			continue
 		}
-		// The task just landed; any still-Running/Waiting workflow (e.g.
-		// paused at code_review_staff) is now stale. Cancel it so
-		// Engine.ResumeStalled doesn't pick the done task back up and rebase
-		// its already-merged branch against origin/main, which self-conflicts
-		// and flips the task back to human-required.
-		if r.WorkflowEngine != nil {
-			if _, cancelErr := r.WorkflowEngine.CancelWorkflow(c.TaskID, "pr-monitor: task landed ("+base+")"); cancelErr != nil {
-				r.logger.Error("pr-monitor.closed-cancel-workflow", "task_id", c.TaskID, "err", cancelErr)
-			}
-		}
-		eventType := audit.EventPRMerged
-		if c.State == "CLOSED" {
-			eventType = audit.EventPRClosed
-		}
-		r.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State})
-		// Enrich (bounded GitHub I/O); refine the outcome if a human edited the PR
-		// and persist the merge commit for later revert detection.
-		outcome, landData := r.computeLanding(ctx, c.TaskID, c.PRNumber, c.State, base)
-		upd := task.Update{}
-		refine := false
-		if outcome != base {
-			upd.Outcome = task.Ptr(outcome)
-			refine = true
-		}
-		if mc, ok := landData["merge_commit"].(string); ok && mc != "" {
-			upd.MergeCommit = task.Ptr(mc)
-			refine = true
-		}
-		if refine {
-			if _, err := r.tasks.Update(c.TaskID, upd); err != nil {
-				r.logger.Warn("pr-monitor.outcome-refine", "task_id", c.TaskID, "err", err)
-			}
-		}
-		if t, err := r.tasks.Get(c.TaskID); err == nil {
-			r.recordExperienceOnLanding(t)
-		}
-		r.logAudit(audit.EventTaskLanded, c.TaskID, "", landData)
-		r.logger.Info("pr-monitor.auto-done", "task_id", c.TaskID, "pr", c.PRNumber, "state", c.State, "outcome", outcome)
 	}
+}
+
+// AdvanceClosedTaskPR runs the same landing pipeline used by the PR monitor
+// for a task whose linked PR has already reached a terminal GitHub state.
+func (r *Handler) AdvanceClosedTaskPR(ctx context.Context, taskID string, prNumber int, state string) error {
+	if taskID == "" {
+		return fmt.Errorf("task id is required")
+	}
+	if prNumber == 0 {
+		return fmt.Errorf("pr number is required")
+	}
+	if state != "MERGED" && state != "CLOSED" {
+		return fmt.Errorf("unsupported closed PR state %q", state)
+	}
+	return r.advanceClosedTaskPR(ctx, github.ClosedPR{TaskID: taskID, PRNumber: prNumber, State: state})
+}
+
+func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR) error {
+	if r.agents.HasRunningAgentForTask(c.TaskID) {
+		r.logger.Info("pr-monitor.closed-stop-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
+		r.agents.KillAgentsForTask(c.TaskID, 10*time.Second)
+	}
+	// Flip to done immediately with the base outcome — the status transition
+	// must never wait on GitHub enrichment.
+	base := classifyLandingOutcome(c.State)
+	landedStatus := task.StatusDone
+	if c.State == "CLOSED" {
+		landedStatus = task.StatusCancelled
+	}
+	if _, err := r.tasks.Update(c.TaskID, task.Update{
+		Status:  task.Ptr(landedStatus),
+		Outcome: task.Ptr(base),
+	}); err != nil {
+		return err
+	}
+	// The task just landed; any still-Running/Waiting workflow (e.g.
+	// paused at code_review_staff) is now stale. Cancel it so
+	// Engine.ResumeStalled doesn't pick the done task back up and rebase
+	// its already-merged branch against origin/main, which self-conflicts
+	// and flips the task back to human-required.
+	if r.WorkflowEngine != nil {
+		if _, cancelErr := r.WorkflowEngine.CancelWorkflow(c.TaskID, "pr-monitor: task landed ("+base+")"); cancelErr != nil {
+			r.logger.Error("pr-monitor.closed-cancel-workflow", "task_id", c.TaskID, "err", cancelErr)
+		}
+	}
+	eventType := audit.EventPRMerged
+	if c.State == "CLOSED" {
+		eventType = audit.EventPRClosed
+	}
+	r.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State})
+	// Enrich (bounded GitHub I/O); refine the outcome if a human edited the PR
+	// and persist the merge commit for later revert detection.
+	outcome, landData := r.computeLanding(ctx, c.TaskID, c.PRNumber, c.State, base)
+	upd := task.Update{}
+	refine := false
+	if outcome != base {
+		upd.Outcome = task.Ptr(outcome)
+		refine = true
+	}
+	if mc, ok := landData["merge_commit"].(string); ok && mc != "" {
+		upd.MergeCommit = task.Ptr(mc)
+		refine = true
+	}
+	if refine {
+		if _, err := r.tasks.Update(c.TaskID, upd); err != nil {
+			r.logger.Warn("pr-monitor.outcome-refine", "task_id", c.TaskID, "err", err)
+		}
+	}
+	if t, err := r.tasks.Get(c.TaskID); err == nil {
+		r.recordExperienceOnLanding(t)
+	}
+	r.logAudit(audit.EventTaskLanded, c.TaskID, "", landData)
+	r.logger.Info("pr-monitor.auto-done", "task_id", c.TaskID, "pr", c.PRNumber, "state", c.State, "outcome", outcome)
+	return nil
 }
 
 // classifyLandingOutcome maps a terminal PR state to a task outcome label.

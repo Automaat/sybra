@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 type fakeTasks struct {
@@ -66,6 +67,9 @@ func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 		}
 		if u.Outcome != nil {
 			f.tasks[i].Outcome = *u.Outcome
+		}
+		if u.Workflow != nil {
+			f.tasks[i].Workflow = *u.Workflow
 		}
 		return f.tasks[i], nil
 	}
@@ -688,6 +692,91 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM_RemediatesDirectly(t *test
 
 	if len(report.Remediated) != 1 {
 		t.Fatalf("want 1 remediated, got %d", len(report.Remediated))
+	}
+}
+
+func TestServiceTick_HumanRequiredStuck_DowngradedLLM_MergedPRUsesLandingPipeline(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	tasks := &fakeTasks{tasks: []task.Task{
+		mkTask("hr-merged", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.ProjectID = "o/r"
+			t.PRNumber = 42
+			t.Workflow = &workflow.Execution{
+				WorkflowID:  "simple-task-review",
+				CurrentStep: "wait_human",
+				State:       workflow.ExecWaiting,
+				Variables:   map[string]string{},
+			}
+		}),
+	}}
+	disp := &fakeDispatcher{}
+	sink := &fakeSink{createNext: true}
+	var landed []struct {
+		taskID   string
+		prNumber int
+		state    string
+	}
+	svc := NewService(Deps{
+		Cfg:                 cfg,
+		Tasks:               tasks,
+		Audit:               fakeAudit{},
+		Agents:              nilAgentLister{},
+		DowngradeLLMForTask: func(taskID string) bool { return taskID == "hr-merged" },
+		FetchPRState: func(repo string, number int) (github.PRState, error) {
+			if repo != "o/r" || number != 42 {
+				t.Fatalf("FetchPRState(%q, %d)", repo, number)
+			}
+			return github.PRState{State: "MERGED"}, nil
+		},
+		LandClosedPR: func(_ context.Context, taskID string, prNumber int, state string) error {
+			landed = append(landed, struct {
+				taskID   string
+				prNumber int
+				state    string
+			}{taskID: taskID, prNumber: prNumber, state: state})
+			tasks.mu.Lock()
+			defer tasks.mu.Unlock()
+			for i := range tasks.tasks {
+				if tasks.tasks[i].ID != taskID {
+					continue
+				}
+				tasks.tasks[i].Status = task.StatusDone
+				tasks.tasks[i].Outcome = "merged"
+				tasks.tasks[i].Workflow = nil
+				break
+			}
+			return nil
+		},
+		Dispatcher: disp,
+		Sink:       sink,
+		Logger:     slog.Default(),
+		Now:        func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(tasks.updates) != 0 {
+		t.Fatalf("monitor must not update task directly, got %d updates", len(tasks.updates))
+	}
+	if len(landed) != 1 {
+		t.Fatalf("want 1 landing callback, got %d", len(landed))
+	}
+	if landed[0].taskID != "hr-merged" || landed[0].prNumber != 42 || landed[0].state != "MERGED" {
+		t.Fatalf("landing callback = %+v, want hr-merged #42 MERGED", landed[0])
+	}
+	if len(disp.calls) != 0 {
+		t.Fatalf("dispatcher must not be called, got %d calls", len(disp.calls))
+	}
+	if len(sink.submissions) != 0 {
+		t.Fatalf("sink must not see merged-pr anomaly, got %d submissions", len(sink.submissions))
+	}
+	if len(report.Remediated) != 1 || report.Remediated[0] != "linked_pr_merged:hr-merged" {
+		t.Fatalf("remediated = %v, want pre-sweep merged close label", report.Remediated)
 	}
 }
 

@@ -68,6 +68,9 @@ type Deps struct {
 	// so human-required tasks whose PR landed outside the normal review poll
 	// loop do not wait for an LLM stuck-task investigation.
 	FetchPRState func(repo string, number int) (github.PRState, error)
+	// LandClosedPR advances the same landing pipeline the review handler uses
+	// when a linked PR is observed closed or merged outside its normal poll.
+	LandClosedPR func(context.Context, string, int, string) error
 }
 
 // Service runs the monitor loop. It is constructed once at app startup and
@@ -86,6 +89,7 @@ type Service struct {
 	allowsProject       func(string) bool
 	downgradeLLMForTask func(taskID string) bool
 	fetchPRState        func(repo string, number int) (github.PRState, error)
+	landClosedPR        func(context.Context, string, int, string) error
 	state               *runState
 	rem                 *remediator
 }
@@ -129,8 +133,9 @@ func NewService(d Deps) *Service {
 		allowsProject:       d.AllowsProject,
 		downgradeLLMForTask: d.DowngradeLLMForTask,
 		fetchPRState:        d.FetchPRState,
+		landClosedPR:        d.LandClosedPR,
 		state:               newRunState(),
-		rem:                 newRemediator(d.Tasks, d.RecoverLostAgent),
+		rem:                 newRemediator(d.Tasks, d.RecoverLostAgent, d.FetchPRState, d.LandClosedPR),
 	}
 }
 
@@ -263,13 +268,20 @@ func (s *Service) closeMergedHumanRequiredPRs(ctx context.Context, tasks []task.
 		if state.State != "MERGED" {
 			continue
 		}
-		if _, err := s.tasks.Update(t.ID, task.Update{
-			Status:       task.Ptr(task.StatusDone),
-			StatusReason: task.Ptr("monitor: linked PR already merged"),
-			Outcome:      task.Ptr("merged"),
-		}); err != nil {
-			s.logger.Warn("monitor.human-required-pr-merged.update_failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
-			continue
+		if s.landClosedPR != nil {
+			if err := s.landClosedPR(ctx, t.ID, t.PRNumber, state.State); err != nil {
+				s.logger.Warn("monitor.human-required-pr-merged.land_failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+				continue
+			}
+		} else {
+			if _, err := s.tasks.Update(t.ID, task.Update{
+				Status:       task.Ptr(task.StatusDone),
+				StatusReason: task.Ptr("monitor: linked PR already merged"),
+				Outcome:      task.Ptr("merged"),
+			}); err != nil {
+				s.logger.Warn("monitor.human-required-pr-merged.update_failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+				continue
+			}
 		}
 		label := "linked_pr_merged:" + t.ID
 		labels = append(labels, label)
