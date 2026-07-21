@@ -141,7 +141,7 @@ func (r *remediator) landMergedPR(ctx context.Context, t task.Task) (bool, error
 	}
 	state, err := r.fetchPRState(t.ProjectID, t.PRNumber)
 	if err != nil {
-		return false, nil
+		return false, err
 	}
 	if state.State != "MERGED" {
 		return false, nil

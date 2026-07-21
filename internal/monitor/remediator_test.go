@@ -206,7 +206,7 @@ func TestRemediator_StuckHumanBlocked_MergedPRUsesLandingPipeline(t *testing.T) 
 	}
 }
 
-func TestRemediator_StuckHumanBlocked_PRStateErrorFallsBackToRefresh(t *testing.T) {
+func TestRemediator_StuckHumanBlocked_PRStateErrorReturnsError(t *testing.T) {
 	t.Parallel()
 	existing := mkTask("hr-pr-error", task.StatusHumanRequired, func(tk *task.Task) {
 		tk.StatusReason = "waiting for human approval"
@@ -234,24 +234,14 @@ func TestRemediator_StuckHumanBlocked_PRStateErrorFallsBackToRefresh(t *testing.
 	}
 
 	label, err := rem.Apply(context.Background(), a)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
+	if err == nil || err.Error() != "gh auth unavailable" {
+		t.Fatalf("Apply error = %v, want gh auth unavailable", err)
 	}
-	if label != "stuck_human_blocked:hr-pr-error" {
-		t.Fatalf("label = %q, want refresh label", label)
+	if label != "" {
+		t.Fatalf("label = %q, want empty", label)
 	}
-	if len(ft.updates) != 1 {
-		t.Fatalf("want 1 refresh update, got %d", len(ft.updates))
-	}
-	u := ft.updates[0]
-	if u.id != "hr-pr-error" {
-		t.Fatalf("updated wrong task: %q", u.id)
-	}
-	if u.u.Status != nil {
-		t.Fatalf("status must not change, got %v", u.u.Status)
-	}
-	if u.u.StatusReason != nil {
-		t.Fatalf("status_reason must not change, got %q", *u.u.StatusReason)
+	if len(ft.updates) != 0 {
+		t.Fatalf("want 0 refresh updates, got %d", len(ft.updates))
 	}
 }
 
