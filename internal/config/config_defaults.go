@@ -61,7 +61,7 @@ const DefaultMaxCheckpoints = 3
 
 // DefaultMaxReviewRounds bounds how many automated review rounds one
 // simple-task-review execution may spend before Sybra parks the task
-// human-required.
+// blocked.
 const DefaultMaxReviewRounds = 3
 
 // MaxCheckpoints returns the configured checkpoint-handoff cap or
