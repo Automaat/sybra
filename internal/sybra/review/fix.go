@@ -1217,22 +1217,22 @@ func (r *Handler) prFixParkedOnConflict(taskID string) bool {
 // synchronously start to finish) makes the re-entrant call bail out
 // immediately.
 func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
-	return r.recoverTaskBranchConflict(t, taskBranchConflictRecoverySpec{
+	return r.recoverTaskBranchConflict(context.Background(), t, taskBranchConflictRecoverySpec{
 		retryKind:     branchConflictRetryKind,
 		allowRecreate: true,
 		prompt:        branchConflictPrompt,
 	})
 }
 
-func (r *Handler) recoverSameBranchConflict(t task.Task, branch string) bool {
-	return r.recoverTaskBranchConflict(t, taskBranchConflictRecoverySpec{
+func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, branch string) bool {
+	return r.recoverTaskBranchConflict(ctx, t, taskBranchConflictRecoverySpec{
 		retryKind:      sameBranchConflictRetryKind,
 		branchOverride: branch,
 		prompt:         sameBranchConflictPrompt,
 	})
 }
 
-func (r *Handler) recoverTaskBranchConflict(t task.Task, spec taskBranchConflictRecoverySpec) bool {
+func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, spec taskBranchConflictRecoverySpec) bool {
 	taskID := t.ID
 	if r.worktreeSkip(taskID) {
 		return false
@@ -1245,7 +1245,7 @@ func (r *Handler) recoverTaskBranchConflict(t task.Task, spec taskBranchConflict
 		t.Branch = spec.branchOverride
 	}
 	if r.prTracker.AtCap(taskID, spec.retryKind) {
-		if spec.allowRecreate && r.recreateExhaustedNoPRBranch(t) {
+		if spec.allowRecreate && r.recreateExhaustedNoPRBranch(ctx, t) {
 			return true
 		}
 		r.markConflictRecoveryExhausted(taskID, spec.retryKind)
@@ -1273,7 +1273,6 @@ func (r *Handler) recoverTaskBranchConflict(t task.Task, spec taskBranchConflict
 		r.logger.Warn("pr-monitor.branch-conflict.project", "task_id", taskID, "err", err)
 		return false
 	}
-	ctx := context.Background()
 	base, err := project.DefaultBranch(ctx, proj.ClonePath)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.base", "task_id", taskID, "err", err)
@@ -1312,7 +1311,7 @@ func (r *Handler) recoverTaskBranchConflict(t task.Task, spec taskBranchConflict
 	return r.dispatchBranchConflictRecovery(ctx, taskID, dir, spec.prompt(ctx, t, base), t, headSHA, resume, hadActiveWorkflow, spec.retryKind)
 }
 
-func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
+func (r *Handler) recreateExhaustedNoPRBranch(ctx context.Context, t task.Task) bool {
 	taskID := t.ID
 	if r.worktrees == nil || r.WorkflowEngine == nil {
 		return false
@@ -1320,7 +1319,7 @@ func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
 	if r.prTracker.AtCap(taskID, branchRecreateKind) {
 		return false
 	}
-	if err := r.worktrees.RecreateFromBase(context.Background(), t); err != nil {
+	if err := r.worktrees.RecreateFromBase(ctx, t); err != nil {
 		r.logger.Warn("pr-monitor.branch-recreate.failed", "task_id", taskID, "err", err)
 		return false
 	}
@@ -1771,7 +1770,7 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 			return "", false
 		}
 		if errors.Is(wtErr, project.ErrBranchDiverged) {
-			if r.recoverSameBranchConflict(t, issue.PR.HeadRefName) {
+			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName) {
 				return "", false
 			}
 		}
