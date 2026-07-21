@@ -820,7 +820,7 @@ func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.
 	return t, resolvedDir, cleanRetryReset, err
 }
 
-func (a *agentAdapter) reprepareMissingWorktreeDir(t task.Task, taskID string, role agent.Role, missingDir string, claim *agent.DispatchClaim) (string, bool, error) {
+func (a *agentAdapter) reprepareMissingWorktreeDir(t task.Task, taskID string, role agent.Role, missingDir string, claim *agent.DispatchClaim) (dir string, cleanRetryReset bool, err error) {
 	if t.WorktreeDir != "" {
 		return "", false, fmt.Errorf("provided adopted worktree dir %s missing: %w", missingDir, os.ErrNotExist)
 	}
