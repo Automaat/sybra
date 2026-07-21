@@ -65,6 +65,7 @@ type Deps struct {
 	// in-progress task back to workflow/agent recovery on the assigned node.
 	RecoverLostAgent func(context.Context, string)
 	FetchPRState     func(repo string, number int) (github.PRState, error)
+	LandClosedPR     func(context.Context, string, int, string) error
 }
 
 // Service runs the monitor loop. It is constructed once at app startup and
@@ -122,7 +123,7 @@ func NewService(d Deps) *Service {
 		allowsProject:       d.AllowsProject,
 		downgradeLLMForTask: d.DowngradeLLMForTask,
 		state:               newRunState(),
-		rem:                 newRemediator(d.Tasks, d.RecoverLostAgent, d.FetchPRState, d.Now),
+		rem:                 newRemediator(d.Tasks, d.RecoverLostAgent, d.FetchPRState, d.LandClosedPR),
 	}
 }
 

@@ -264,8 +264,11 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview_W
 	if !strings.Contains(body, "CHANGES_REQUESTED") {
 		t.Error("hint should mention CHANGES_REQUESTED action")
 	}
-	if !strings.Contains(body, "sybra-cli update pqr678 --status done") {
-		t.Error("hint should include done command once PR merges")
+	if !strings.Contains(body, "wait for the PR monitor landing pass") {
+		t.Error("hint should defer merged PR closure to PR monitor")
+	}
+	if strings.Contains(body, "sybra-cli update pqr678 --status done") {
+		t.Error("hint must not include manual done command")
 	}
 }
 
@@ -291,8 +294,11 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview_W
 	if !strings.Contains(body, "MERGED") {
 		t.Error("hint should mention MERGED case for already-merged PRs")
 	}
-	if !strings.Contains(body, "sybra-cli update pqr678 --status done") {
-		t.Error("hint should include done command for merged PR case")
+	if !strings.Contains(body, "wait for the PR monitor landing pass") {
+		t.Error("hint should defer merged PR closure to PR monitor")
+	}
+	if strings.Contains(body, "sybra-cli update pqr678 --status done") {
+		t.Error("hint must not include manual done command for merged PR case")
 	}
 }
 
@@ -489,14 +495,17 @@ func TestDispatchPrompt_StuckHumanBlocked_ExtraEvidence(t *testing.T) {
 		}
 	})
 
-	t.Run("fix-review hint includes task done command", func(t *testing.T) {
+	t.Run("fix-review hint defers task done to PR monitor", func(t *testing.T) {
 		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
 			"last_agent_role":  "fix-review",
 			"last_agent_state": "stopped",
 		})}
 		prompt := DispatchPrompt(a, "owner/repo", "")
-		if !strings.Contains(prompt, "sybra-cli update abc --status done") {
-			t.Error("prompt should include done command for task id")
+		if !strings.Contains(prompt, "PR monitor landing pass") {
+			t.Error("prompt should defer closure to PR monitor")
+		}
+		if strings.Contains(prompt, "sybra-cli update abc --status done") {
+			t.Error("prompt must not include manual done command")
 		}
 	})
 

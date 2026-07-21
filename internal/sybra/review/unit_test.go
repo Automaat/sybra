@@ -2565,6 +2565,63 @@ func TestAdvanceClosedTaskPRs_ClosedUnmergedCancelsNotDone(t *testing.T) {
 	}
 }
 
+func TestAdvanceClosedTaskPR_EmitsTaskLanded(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.Create("Task whose PR was merged", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("waiting for review"),
+		PRNumber:     task.Ptr(1446),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	auditDir := filepath.Join(tmp, "audit")
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+	logger := slog.New(slog.DiscardHandler)
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	r := &Handler{
+		logger: logger, emit: func(string, any) {},
+		audit:  auditLog,
+		tasks:  tasks,
+		agents: agentMgr,
+	}
+
+	if err := r.AdvanceClosedTaskPR(context.Background(), created.ID, 1446, "MERGED"); err != nil {
+		t.Fatalf("AdvanceClosedTaskPR: %v", err)
+	}
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusDone || got.Outcome != "merged" || got.StatusReason != "" {
+		t.Fatalf("task = status %q outcome %q reason %q, want done/merged/empty", got.Status, got.Outcome, got.StatusReason)
+	}
+	events := readExperienceAuditEvents(t, auditDir)
+	var landed bool
+	for _, e := range events {
+		if e.Type == audit.EventTaskLanded && e.TaskID == created.ID {
+			landed = true
+			break
+		}
+	}
+	if !landed {
+		t.Fatalf("audit events = %+v, want task.landed", events)
+	}
+}
+
 func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {

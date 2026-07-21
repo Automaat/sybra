@@ -570,6 +570,12 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 				a.recoverLostAgentTask(ctx, taskID)
 			})
 		},
+		LandClosedPR: func(ctx context.Context, taskID string, prNumber int, state string) error {
+			if a.reviewer == nil {
+				return errors.New("review handler unavailable")
+			}
+			return a.reviewer.AdvanceClosedTaskPR(ctx, taskID, prNumber, state)
+		},
 	})
 	a.monitorSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })

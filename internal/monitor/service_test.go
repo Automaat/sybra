@@ -646,7 +646,7 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM_RemediatesDirectly(t *test
 	}
 }
 
-func TestServiceTick_HumanRequiredStuck_DowngradedLLM_MergedPRClosesTask(t *testing.T) {
+func TestServiceTick_HumanRequiredStuck_DowngradedLLM_MergedPRUsesLandingPipeline(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
 	tasks := &fakeTasks{tasks: []task.Task{
@@ -664,6 +664,11 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM_MergedPRClosesTask(t *test
 	}}
 	disp := &fakeDispatcher{}
 	sink := &fakeSink{createNext: true}
+	var landed []struct {
+		taskID   string
+		prNumber int
+		state    string
+	}
 	svc := NewService(Deps{
 		Cfg:                 cfg,
 		Tasks:               tasks,
@@ -676,6 +681,14 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM_MergedPRClosesTask(t *test
 			}
 			return github.PRState{State: "MERGED"}, nil
 		},
+		LandClosedPR: func(_ context.Context, taskID string, prNumber int, state string) error {
+			landed = append(landed, struct {
+				taskID   string
+				prNumber int
+				state    string
+			}{taskID: taskID, prNumber: prNumber, state: state})
+			return nil
+		},
 		Dispatcher: disp,
 		Sink:       sink,
 		Logger:     slog.Default(),
@@ -687,24 +700,14 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM_MergedPRClosesTask(t *test
 		t.Fatalf("tick: %v", err)
 	}
 
-	if len(tasks.updates) != 1 {
-		t.Fatalf("want 1 task update, got %d", len(tasks.updates))
+	if len(tasks.updates) != 0 {
+		t.Fatalf("monitor must not update task directly, got %d updates", len(tasks.updates))
 	}
-	u := tasks.updates[0]
-	if u.id != "hr-merged" {
-		t.Fatalf("updated wrong task: %q", u.id)
+	if len(landed) != 1 {
+		t.Fatalf("want 1 landing callback, got %d", len(landed))
 	}
-	if u.u.Status == nil || *u.u.Status != task.StatusDone {
-		t.Fatalf("status = %v, want done", u.u.Status)
-	}
-	if u.u.Outcome == nil || *u.u.Outcome != "merged" {
-		t.Fatalf("outcome = %v, want merged", u.u.Outcome)
-	}
-	if u.u.Workflow == nil || *u.u.Workflow == nil {
-		t.Fatal("workflow must be completed")
-	}
-	if got := (*u.u.Workflow).State; got != workflow.ExecCompleted {
-		t.Fatalf("workflow state = %q, want completed", got)
+	if landed[0].taskID != "hr-merged" || landed[0].prNumber != 42 || landed[0].state != "MERGED" {
+		t.Fatalf("landing callback = %+v, want hr-merged #42 MERGED", landed[0])
 	}
 	if len(disp.calls) != 0 {
 		t.Fatalf("dispatcher must not be called, got %d calls", len(disp.calls))

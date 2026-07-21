@@ -5,7 +5,6 @@ import (
 	"errors"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -144,9 +143,8 @@ func TestRemediator_StuckHumanBlocked_HumanRequired_PreservesStatusReason(t *tes
 	}
 }
 
-func TestRemediator_StuckHumanBlocked_MergedPRCompletesTaskAndWorkflow(t *testing.T) {
+func TestRemediator_StuckHumanBlocked_MergedPRUsesLandingPipeline(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
 	existing := mkTask("hr-merged", task.StatusHumanRequired, func(tk *task.Task) {
 		tk.StatusReason = "waiting for human approval"
 		tk.ProjectID = "o/r"
@@ -159,6 +157,11 @@ func TestRemediator_StuckHumanBlocked_MergedPRCompletesTaskAndWorkflow(t *testin
 		}
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}
+	var landed []struct {
+		taskID   string
+		prNumber int
+		state    string
+	}
 	rem := newRemediator(
 		ft,
 		nil,
@@ -168,7 +171,14 @@ func TestRemediator_StuckHumanBlocked_MergedPRCompletesTaskAndWorkflow(t *testin
 			}
 			return github.PRState{State: "MERGED"}, nil
 		},
-		func() time.Time { return now },
+		func(_ context.Context, taskID string, prNumber int, state string) error {
+			landed = append(landed, struct {
+				taskID   string
+				prNumber int
+				state    string
+			}{taskID: taskID, prNumber: prNumber, state: state})
+			return nil
+		},
 	)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
@@ -185,30 +195,14 @@ func TestRemediator_StuckHumanBlocked_MergedPRCompletesTaskAndWorkflow(t *testin
 	if label != "stuck_human_blocked:merged:hr-merged" {
 		t.Fatalf("label = %q, want merged label", label)
 	}
-	if len(ft.updates) != 1 {
-		t.Fatalf("want 1 update, got %d", len(ft.updates))
+	if len(ft.updates) != 0 {
+		t.Fatalf("remediator must not update task directly, got %d updates", len(ft.updates))
 	}
-	u := ft.updates[0]
-	if u.u.Status == nil || *u.u.Status != task.StatusDone {
-		t.Fatalf("status = %v, want done", u.u.Status)
+	if len(landed) != 1 {
+		t.Fatalf("want 1 landing callback, got %d", len(landed))
 	}
-	if u.u.Outcome == nil || *u.u.Outcome != "merged" {
-		t.Fatalf("outcome = %v, want merged", u.u.Outcome)
-	}
-	if u.u.StatusReason == nil || *u.u.StatusReason != "" {
-		t.Fatalf("status_reason = %v, want cleared", u.u.StatusReason)
-	}
-	if u.u.Workflow == nil || *u.u.Workflow == nil {
-		t.Fatal("workflow must be completed in the same update")
-	}
-	if got := (*u.u.Workflow).State; got != workflow.ExecCompleted {
-		t.Fatalf("workflow state = %q, want completed", got)
-	}
-	if got := (*u.u.Workflow).CurrentStep; got != "" {
-		t.Fatalf("workflow CurrentStep = %q, want empty", got)
-	}
-	if got := (*u.u.Workflow).Variables["cancel_reason"]; got != "monitor: linked PR merged" {
-		t.Fatalf("cancel_reason = %q, want merged marker", got)
+	if landed[0].taskID != "hr-merged" || landed[0].prNumber != 42 || landed[0].state != "MERGED" {
+		t.Fatalf("landing callback = %+v, want hr-merged #42 MERGED", landed[0])
 	}
 }
 

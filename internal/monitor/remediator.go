@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -27,26 +26,23 @@ type remediator struct {
 	tasks            taskAPI
 	recoverLostAgent func(context.Context, string)
 	fetchPRState     func(repo string, number int) (github.PRState, error)
-	now              func() time.Time
+	landClosedPR     func(context.Context, string, int, string) error
 }
 
 func newRemediator(
 	t taskAPI,
 	recoverLostAgent func(context.Context, string),
 	fetchPRState func(repo string, number int) (github.PRState, error),
-	now func() time.Time,
+	landClosedPR func(context.Context, string, int, string) error,
 ) *remediator {
 	if fetchPRState == nil {
 		fetchPRState = github.FetchPRState
-	}
-	if now == nil {
-		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &remediator{
 		tasks:            t,
 		recoverLostAgent: recoverLostAgent,
 		fetchPRState:     fetchPRState,
-		now:              now,
+		landClosedPR:     landClosedPR,
 	}
 }
 
@@ -61,7 +57,7 @@ func (r *remediator) Apply(ctx context.Context, a Anomaly) (string, error) {
 		return r.tagUntriaged(a)
 	case KindStuckHumanBlocked:
 		if isHumanRequiredStuck(a) {
-			return r.remediateHumanRequiredStuck(a)
+			return r.remediateHumanRequiredStuck(ctx, a)
 		}
 		return "", fmt.Errorf("remediator: stuck_human_blocked remediation requires human-required status")
 	default:
@@ -117,7 +113,7 @@ func (r *remediator) tagUntriaged(a Anomaly) (string, error) {
 // lost_agent investigation (detectStuckHumanBlocked's
 // known_lost_agent_investigation evidence), this instead auto-retries the
 // task once — see retryKnownLostAgentStuck.
-func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
+func (r *remediator) remediateHumanRequiredStuck(ctx context.Context, a Anomaly) (string, error) {
 	if a.TaskID == "" {
 		return "", fmt.Errorf("stuck_human_blocked without task id")
 	}
@@ -125,7 +121,7 @@ func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("inspect stuck_human_blocked task %s: %w", a.TaskID, err)
 	}
-	if merged, err := r.closeMergedPR(t); err != nil {
+	if merged, err := r.landMergedPR(ctx, t); err != nil {
 		return "", err
 	} else if merged {
 		return string(a.Kind) + ":merged:" + a.TaskID, nil
@@ -139,7 +135,7 @@ func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
 	return r.refreshHumanRequiredStuck(a)
 }
 
-func (r *remediator) closeMergedPR(t task.Task) (bool, error) {
+func (r *remediator) landMergedPR(ctx context.Context, t task.Task) (bool, error) {
 	if t.ProjectID == "" || t.PRNumber == 0 {
 		return false, nil
 	}
@@ -150,24 +146,11 @@ func (r *remediator) closeMergedPR(t task.Task) (bool, error) {
 	if state.State != "MERGED" {
 		return false, nil
 	}
-
-	upd := task.Update{
-		Status:       task.Ptr(task.StatusDone),
-		StatusReason: task.Ptr(""),
-		Outcome:      task.Ptr("merged"),
+	if r.landClosedPR == nil {
+		return false, nil
 	}
-	if t.Workflow != nil && t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed {
-		now := r.now()
-		wf := *t.Workflow
-		wf.State = workflow.ExecCompleted
-		wf.CurrentStep = ""
-		wf.CompletedAt = &now
-		wf.SetVar("cancel_reason", "monitor: linked PR merged")
-		wfPtr := &wf
-		upd.Workflow = &wfPtr
-	}
-	if _, err := r.tasks.Update(t.ID, upd); err != nil {
-		return false, fmt.Errorf("mark merged PR task %s done: %w", t.ID, err)
+	if err := r.landClosedPR(ctx, t.ID, t.PRNumber, state.State); err != nil {
+		return false, fmt.Errorf("land merged PR task %s: %w", t.ID, err)
 	}
 	return true, nil
 }
