@@ -1017,6 +1017,17 @@ func TestBuiltinSimpleTask_ReviewLoopParksAtRoundLimit(t *testing.T) {
 	if got != "review_round_limit_hit" {
 		t.Fatalf("limit-reached goto = %q, want review_round_limit_hit", got)
 	}
+
+	limit := simple.StepByID("review_round_limit_hit")
+	if limit == nil {
+		t.Fatal("review_round_limit_hit step not found")
+	}
+	if limit.Type != StepSetStatus || limit.Config.Status != "ready-pr" {
+		t.Fatalf("review_round_limit_hit = type %q status %q, want set_status ready-pr", limit.Type, limit.Config.Status)
+	}
+	if !strings.Contains(limit.Config.StatusReason, "routing to PR flow") {
+		t.Fatalf("review_round_limit_hit status_reason = %q, want PR-flow handoff guidance", limit.Config.StatusReason)
+	}
 }
 
 // TestEngineReviewUntilCleanReachesTransition covers the wiring the YAML-level
