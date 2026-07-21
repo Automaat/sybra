@@ -380,6 +380,20 @@ func prependImmediateFakeClaude(t *testing.T) {
 	t.Setenv("PATH", fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+func gitOutput(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitRun(t *testing.T, args ...string) {
+	t.Helper()
+	_ = gitOutput(t, args...)
+}
+
 func setupProvidedDirRecoveryHarness(t *testing.T, role agent.Role) providedDirRecoveryHarness {
 	t.Helper()
 	prependImmediateFakeClaude(t)
@@ -725,7 +739,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForReview(t *testing.
 		true,
 		false,
 		"",
-		"refs/heads/does-not-exist",
+		"",
 		workflow.AgentAssignment{},
 	)
 	if err != nil {
@@ -763,7 +777,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForPRFix(t *testing.T
 		true,
 		false,
 		"",
-		"refs/heads/does-not-exist",
+		"",
 		workflow.AgentAssignment{},
 	)
 	if err != nil {
@@ -780,6 +794,51 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForPRFix(t *testing.T
 	}
 	if info, err := os.Stat(startedDir); err != nil || !info.IsDir() {
 		t.Fatalf("recreated pr-fix worktree missing: %v", err)
+	}
+}
+
+func TestAgentAdapterStartAgentCleanRetryResetsRecreatedProvidedDir(t *testing.T) {
+	h := setupProvidedDirRecoveryHarness(t, agent.RoleImplementation)
+	baseline := gitOutput(t, "-C", h.dir, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(h.dir, "stale.txt"), []byte("stale attempt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, "-C", h.dir, "add", "stale.txt")
+	gitRun(t, "-C", h.dir, "-c", "user.name=Test", "-c", "user.email=test@test.com", "-c", "commit.gpgsign=false", "commit", "-m", "stale attempt")
+	if err := os.RemoveAll(h.dir); err != nil {
+		t.Fatal(err)
+	}
+
+	_, startedDir, baselineRef, err := h.aa.StartAgent(
+		h.task.ID,
+		string(agent.RoleImplementation),
+		"headless",
+		"sonnet",
+		"claude",
+		"prompt",
+		h.dir,
+		nil,
+		true,
+		false,
+		"",
+		baseline,
+		workflow.AgentAssignment{},
+	)
+	if err != nil {
+		t.Fatalf("StartAgent clean retry with missing provided dir: %v", err)
+	}
+	if startedDir != h.dir {
+		t.Fatalf("startedDir = %q, want recreated original path %q", startedDir, h.dir)
+	}
+	if baselineRef != baseline {
+		t.Fatalf("baselineRef = %q, want clean retry baseline %q", baselineRef, baseline)
+	}
+	if _, err := os.Stat(filepath.Join(startedDir, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("stale retry file survived reset: %v", err)
+	}
+	head := gitOutput(t, "-C", startedDir, "rev-parse", "HEAD")
+	if head != baseline {
+		t.Fatalf("recreated worktree HEAD = %s, want clean retry baseline %s", head, baseline)
 	}
 }
 

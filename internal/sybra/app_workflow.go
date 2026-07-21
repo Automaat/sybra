@@ -762,7 +762,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		}
 	}
 	if cfg.Dir != "" && cleanRetryRef != "" && !cleanRetryReset {
-		if resetErr := a.resetWorktreeForRetry(t, cfg.Dir, cleanRetryRef); resetErr != nil {
+		if _, resetErr := a.resetWorktreeForRetry(t, cfg.Dir, cleanRetryRef); resetErr != nil {
 			return "", "", "", resetErr
 		}
 	}
@@ -837,7 +837,7 @@ func (a *agentAdapter) reprepareMissingWorktreeDir(t task.Task, taskID string, r
 			claim.Release()
 			return "", false, fmt.Errorf("prepare fix worktree: %w", wtErr)
 		}
-		return d, true, nil
+		return d, false, nil
 	case agent.RoleReview:
 		if t.PRNumber != 0 {
 			d, wtErr := a.agentOrch.Worktrees().PrepareForReview(context.Background(), t)
@@ -845,7 +845,7 @@ func (a *agentAdapter) reprepareMissingWorktreeDir(t task.Task, taskID string, r
 				claim.Release()
 				return "", false, fmt.Errorf("prepare review worktree: %w", wtErr)
 			}
-			return d, true, nil
+			return d, false, nil
 		}
 		fallthrough
 	default:
@@ -854,7 +854,7 @@ func (a *agentAdapter) reprepareMissingWorktreeDir(t task.Task, taskID string, r
 			claim.Release()
 			return "", false, a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
 		}
-		return d, true, nil
+		return d, false, nil
 	}
 }
 
@@ -896,10 +896,11 @@ func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryR
 		return t, "", false, fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
 	}
 	if cleanRetryRef != "" {
-		if resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef); resetErr != nil {
+		reset, resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef)
+		if resetErr != nil {
 			return t, "", false, resetErr
 		}
-		cleanRetryReset = true
+		cleanRetryReset = reset
 	}
 	// context.Background(): StartAgent implements workflow.AgentDispatcher,
 	// a fixed interface signature with no ctx parameter (invoked from many
@@ -952,7 +953,7 @@ func (a *agentAdapter) classifyDirectDispatchWorktreeErr(taskID string, wtErr er
 	return wtErr
 }
 
-func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error {
+func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) (bool, error) {
 	target := dir
 	if target == "" {
 		if t.WorktreeDir != "" {
@@ -962,23 +963,23 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error
 		}
 	}
 	if target == "" {
-		return nil
+		return false, nil
 	}
 	if _, err := os.Stat(target); err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("stat clean retry worktree: %w", err)
+		return false, fmt.Errorf("stat clean retry worktree: %w", err)
 	}
 	// context.Background(): StartAgent implements workflow.AgentDispatcher,
 	// a fixed interface signature with no ctx parameter (see the earlier
 	// comment on the PrepareForTask call in this file).
 	if err := project.ResetWorktreeForRetry(context.Background(), target, ref); err != nil {
 		a.agentOrch.Logger().Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
-		return err
+		return false, err
 	}
 	a.agentOrch.Logger().Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
-	return nil
+	return true, nil
 }
 
 func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg agent.RunConfig, ag *agent.Agent) {
