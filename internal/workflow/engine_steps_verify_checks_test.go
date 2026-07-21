@@ -836,6 +836,41 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	}
 }
 
+func TestVerifyCommandEnv_InjectsEnvtestAssetsForGoListCommands(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+import "sigs.k8s.io/controller-runtime/pkg/envtest"
+`)
+
+	assetsDir := filepath.Join(t.TempDir(), "kubebuilder", "bin")
+	argsLog := fakeSetupEnvtest(t, assetsDir)
+	env, err := verifyCommandEnv(context.Background(), "t1", wt, "go list -deps ./internal/controller")
+	if err != nil {
+		t.Fatalf("verifyCommandEnv: %v", err)
+	}
+	if got := envValue(env, "KUBEBUILDER_ASSETS"); got != assetsDir {
+		t.Fatalf("KUBEBUILDER_ASSETS = %q, want %q", got, assetsDir)
+	}
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	if got := strings.TrimSpace(string(args)); got != "use -p path 1.32.x!" {
+		t.Fatalf("setup-envtest args = %q, want %q", got, "use -p path 1.32.x!")
+	}
+}
+
 func TestVerifyCommandEnv_SkipsEnvtestForNonGoCommands(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	wt := t.TempDir()
