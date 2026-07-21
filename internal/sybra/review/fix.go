@@ -1051,6 +1051,11 @@ func (r *Handler) dispatchPRIssueWithOptions(ctx context.Context, t task.Task, p
 				"task_id", t.ID, "kind", string(primary.Kind))
 			return false
 		}
+		if r.recoverRetryablePRFixDispatch(t.ID, err) {
+			r.logger.Info("pr-monitor.workflow-dispatch-parked-retry",
+				"task_id", t.ID, "kind", string(primary.Kind), "err", err)
+			return true
+		}
 		r.logger.Error("pr-monitor.workflow-dispatch", "task_id", t.ID, "err", err)
 		return false
 	}
@@ -1327,6 +1332,41 @@ func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictRe
 		r.logger.Warn("pr-monitor.branch-conflict.resume-vars-encode", "task_id", t.ID, "err", err)
 	}
 	return state
+}
+
+func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) bool {
+	reason, permanent := workflow.ClassifyAgentStartError(startErr)
+	if permanent {
+		return false
+	}
+	fresh, err := r.tasks.Get(taskID)
+	if err != nil {
+		r.logger.Warn("pr-monitor.workflow-dispatch-retry.get", "task_id", taskID, "err", err)
+		return false
+	}
+	if fresh.Status != task.StatusHumanRequired || fresh.Workflow == nil {
+		return false
+	}
+	if fresh.Workflow.WorkflowID != prFixWorkflowID || fresh.Workflow.CurrentStep != "fix" {
+		return false
+	}
+	switch fresh.Workflow.State {
+	case workflow.ExecCompleted, workflow.ExecFailed:
+		return false
+	case workflow.ExecRunning, workflow.ExecWaiting:
+	}
+
+	update := task.Update{Status: task.Ptr(task.StatusInReview)}
+	if reason != "" {
+		update.StatusReason = task.Ptr(reason)
+	} else {
+		update.StatusReason = task.Ptr("")
+	}
+	if _, err := r.tasks.Update(taskID, update); err != nil {
+		r.logger.Error("pr-monitor.workflow-dispatch-retry.status", "task_id", taskID, "err", err)
+		return false
+	}
+	return true
 }
 
 // dispatchBranchConflictRecovery starts the branch-conflict-fix workflow,
