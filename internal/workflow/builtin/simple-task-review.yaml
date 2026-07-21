@@ -331,8 +331,8 @@ steps:
     name: Review Round Limit Hit
     type: set_status
     config:
-      status: testing
-      status_reason: automated review hit max_review_rounds without a CLEAN verdict - routing to manual testing before PR flow; inspect the latest review or opt into allow_unbounded_review_rounds
+      status: blocked
+      status_reason: automated review hit max_review_rounds without a CLEAN verdict - latest NEEDS_FIXES review is not eligible for testing or PR creation; inspect the latest review or opt into allow_unbounded_review_rounds
     next:
       - goto: ""
 

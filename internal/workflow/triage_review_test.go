@@ -974,7 +974,7 @@ func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
 	}
 }
 
-func TestBuiltinSimpleTask_ReviewLoopRoutesRoundLimitToTesting(t *testing.T) {
+func TestBuiltinSimpleTask_ReviewLoopBlocksRoundLimitBeforeTesting(t *testing.T) {
 	t.Parallel()
 
 	if !KnownTriggerFields["task.review_round_limit_reached"] {
@@ -1022,11 +1022,37 @@ func TestBuiltinSimpleTask_ReviewLoopRoutesRoundLimitToTesting(t *testing.T) {
 	if limit == nil {
 		t.Fatal("review_round_limit_hit step not found")
 	}
-	if limit.Type != StepSetStatus || limit.Config.Status != "testing" {
-		t.Fatalf("review_round_limit_hit = type %q status %q, want set_status testing", limit.Type, limit.Config.Status)
+	if limit.Type != StepSetStatus || limit.Config.Status != "blocked" {
+		t.Fatalf("review_round_limit_hit = type %q status %q, want set_status blocked", limit.Type, limit.Config.Status)
 	}
-	if !strings.Contains(limit.Config.StatusReason, "routing to manual testing before PR flow") {
-		t.Fatalf("review_round_limit_hit status_reason = %q, want testing-before-PR guidance", limit.Config.StatusReason)
+	if !strings.Contains(limit.Config.StatusReason, "not eligible for testing or PR creation") {
+		t.Fatalf("review_round_limit_hit status_reason = %q, want no-testing-or-PR guidance", limit.Config.StatusReason)
+	}
+
+	var testingTask, prTask *Definition
+	for i := range defs {
+		switch defs[i].ID {
+		case "testing-task":
+			testingTask = &defs[i]
+		case "simple-task-pr":
+			prTask = &defs[i]
+		}
+	}
+	if testingTask == nil {
+		t.Fatal("testing-task not found")
+	}
+	if prTask == nil {
+		t.Fatal("simple-task-pr not found")
+	}
+	blockedFields := map[string]string{
+		"task.status": "blocked",
+		"task.role":   "",
+	}
+	if EvalConditions(testingTask.Trigger.Conditions, blockedFields) {
+		t.Fatal("blocked review-cap task matched testing-task; it could still reach ready-pr through test PASS")
+	}
+	if EvalConditions(prTask.Trigger.Conditions, blockedFields) {
+		t.Fatal("blocked review-cap task matched simple-task-pr; unresolved review could still open a PR")
 	}
 }
 

@@ -379,7 +379,7 @@ type Engine struct {
 	reviewLoopDisabled bool
 	// maxReviewRounds bounds how many automated review rounds one
 	// simple-task-review execution may spend before it is parked
-	// human-required. 0 → config.DefaultMaxReviewRounds.
+	// blocked. 0 → config.DefaultMaxReviewRounds.
 	maxReviewRounds int
 	// allowUnboundedReviewRounds restores the legacy uncapped
 	// review→fix→review loop. Defaults to false.
@@ -611,7 +611,7 @@ func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
 
 // SetMaxReviewRounds sets how many automated review rounds one
 // simple-task-review execution may spend before the task is parked
-// human-required. Values <= 0 fall back to config.DefaultMaxReviewRounds.
+// blocked. Values <= 0 fall back to config.DefaultMaxReviewRounds.
 func (e *Engine) SetMaxReviewRounds(n int) { e.maxReviewRounds = n }
 
 // SetAllowUnboundedReviewRounds restores the legacy uncapped
