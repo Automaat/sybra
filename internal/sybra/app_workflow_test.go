@@ -919,6 +919,44 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForReview(t *testing.
 	}
 }
 
+func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForFixReview(t *testing.T) {
+	h := setupProvidedDirRecoveryHarness(t, agent.RoleFixReview)
+	if err := os.RemoveAll(h.dir); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
+		h.task.ID,
+		string(agent.RoleFixReview),
+		"headless",
+		"sonnet",
+		"claude",
+		"prompt",
+		h.dir,
+		nil,
+		true,
+		false,
+		"",
+		"",
+		workflow.AgentAssignment{},
+	)
+	if err != nil {
+		t.Fatalf("StartAgent fix-review with missing provided dir: %v", err)
+	}
+	if agentID == "" {
+		t.Fatal("StartAgent returned empty agentID")
+	}
+	if startedDir != h.dir {
+		t.Fatalf("startedDir = %q, want recreated original path %q", startedDir, h.dir)
+	}
+	if baselineRef == "" {
+		t.Fatal("baselineRef empty after recreated fix-review worktree")
+	}
+	if info, err := os.Stat(startedDir); err != nil || !info.IsDir() {
+		t.Fatalf("recreated fix-review worktree missing: %v", err)
+	}
+}
+
 func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForPRFix(t *testing.T) {
 	h := setupProvidedDirRecoveryHarness(t, agent.RolePRFix)
 	if err := os.RemoveAll(h.dir); err != nil {
@@ -999,6 +1037,43 @@ func TestAgentAdapterStartAgentCleanRetryResetsRecreatedProvidedDir(t *testing.T
 	head := gitOutput(t, "-C", startedDir, "rev-parse", "HEAD")
 	if head != baseline {
 		t.Fatalf("recreated worktree HEAD = %s, want clean retry baseline %s", head, baseline)
+	}
+}
+
+func TestAgentAdapterStartAgentRepreparesProvidedDirOnFixReviewBranchMismatch(t *testing.T) {
+	h := setupProvidedDirRecoveryHarness(t, agent.RoleFixReview)
+	gitRun(t, "-C", h.dir, "checkout", "--detach", "HEAD")
+
+	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
+		h.task.ID,
+		string(agent.RoleFixReview),
+		"headless",
+		"sonnet",
+		"claude",
+		"prompt",
+		h.dir,
+		nil,
+		true,
+		false,
+		"",
+		"",
+		workflow.AgentAssignment{},
+	)
+	if err != nil {
+		t.Fatalf("StartAgent fix-review with detached provided dir: %v", err)
+	}
+	if agentID == "" {
+		t.Fatal("StartAgent returned empty agentID")
+	}
+	if startedDir != h.dir {
+		t.Fatalf("startedDir = %q, want canonical task worktree %q", startedDir, h.dir)
+	}
+	if baselineRef == "" {
+		t.Fatal("baselineRef empty after repaired fix-review worktree")
+	}
+	branch := gitOutput(t, "-C", startedDir, "branch", "--show-current")
+	if branch != h.task.Branch {
+		t.Fatalf("branch = %q, want repaired task branch %q", branch, h.task.Branch)
 	}
 }
 
