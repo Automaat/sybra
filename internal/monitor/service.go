@@ -220,7 +220,9 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 
 	if !s.observerOnly {
 		rem := s.applyRemediations(ctx, report.Anomalies)
-		report.Remediated = append(preRemediated, rem.labels...)
+		report.Remediated = make([]string, 0, len(preRemediated)+len(rem.labels))
+		report.Remediated = append(report.Remediated, preRemediated...)
+		report.Remediated = append(report.Remediated, rem.labels...)
 		report.Dispatched = s.dispatchLLMAnomalies(ctx, now, report.Anomalies)
 		opened, updated := s.fileIssues(ctx, now, report.Anomalies, rem.skipIssueForFP)
 		report.IssuesOpened = opened
