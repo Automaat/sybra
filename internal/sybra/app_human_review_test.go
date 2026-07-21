@@ -777,7 +777,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 		t.Fatal("unexpected terminal dispatch for merged landing")
 		return task.Task{}, nil
 	}
-	h.landClosedPR = func(_ context.Context, id string, prNumber int, state string) error {
+	h.landClosedPR = func(_ context.Context, id string, prNumber int, state, completingAgentID string) error {
 		if id != tk.ID {
 			t.Fatalf("taskID = %q, want %q", id, tk.ID)
 		}
@@ -786,6 +786,9 @@ func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 		}
 		if state != "MERGED" {
 			t.Fatalf("state = %q, want MERGED", state)
+		}
+		if completingAgentID != agentID {
+			t.Fatalf("completingAgentID = %q, want %q", completingAgentID, agentID)
 		}
 		_, err := tasks.Update(id, task.Update{
 			Status:       task.Ptr(task.StatusDone),
@@ -863,7 +866,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionRejectsUnmergedPR(t *testing.T) {
 		t.Fatalf("add run: %v", err)
 	}
 
-	h.landClosedPR = func(context.Context, string, int, string) error {
+	h.landClosedPR = func(context.Context, string, int, string, string) error {
 		t.Fatal("unexpected merged landing for closed PR")
 		return nil
 	}

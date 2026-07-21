@@ -79,9 +79,8 @@ type humanReviewHandler struct {
 	// legacy direct status write when dispatch wiring is unavailable.
 	dispatchFromHumanRequired func(id, target, reason, completingAgentID string) (task.Task, error)
 	// landClosedPR runs the same merged/closed PR landing pipeline the review
-	// monitor uses. Human-review uses it for recoverable_action=done so
-	// already-merged tasks do not depend on a still-pushed branch.
-	landClosedPR func(ctx context.Context, taskID string, prNumber int, state string) error
+	// monitor uses. completingAgentID is excluded from the stop/wait phase.
+	landClosedPR func(ctx context.Context, taskID string, prNumber int, state, completingAgentID string) error
 	fetchPRState func(repo string, number int) (github.PRState, error)
 
 	mu       sync.Mutex
@@ -471,7 +470,7 @@ func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note 
 	if mergedPR && h.landClosedPR != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := h.landClosedPR(ctx, current.ID, prNumber, "MERGED"); err != nil {
+		if err := h.landClosedPR(ctx, current.ID, prNumber, "MERGED", agentID); err != nil {
 			h.logger.Error("human-review.unblocked.land-merged",
 				"task_id", current.ID, "agent_id", agentID, "pr", prNumber, "err", err)
 			return

@@ -864,6 +864,39 @@ func TestHasOtherRunningAgentForTask(t *testing.T) {
 	}
 }
 
+func TestKillOtherAgentsForTaskExcludesCompletingAgent(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	selfDone := make(chan struct{})
+	otherDone := make(chan struct{})
+	var closeOther sync.Once
+	self := &Agent{ID: "self", TaskID: "t1", State: StateRunning, done: selfDone, cancel: func() {
+		t.Fatal("excluded completing agent was cancelled")
+	}}
+	other := &Agent{ID: "other", TaskID: "t1", State: StateRunning, done: otherDone, cancel: func() {
+		closeOther.Do(func() { close(otherDone) })
+	}}
+	m.mu.Lock()
+	m.agents[self.ID] = self
+	m.agents[other.ID] = other
+	m.mu.Unlock()
+
+	if !m.KillOtherAgentsForTask("t1", "self", time.Second) {
+		t.Fatal("expected non-excluded agent to exit")
+	}
+	if self.GetState() != StateRunning {
+		t.Fatalf("self state = %q, want running", self.GetState())
+	}
+	select {
+	case <-selfDone:
+		t.Fatal("excluded completing agent done channel was closed")
+	default:
+	}
+	if other.GetState() != StateStopped {
+		t.Fatalf("other state = %q, want stopped", other.GetState())
+	}
+}
+
 func TestBuildCommand(t *testing.T) {
 	// Reset server-side env override so tests see the default sandbox logic.
 	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "")
