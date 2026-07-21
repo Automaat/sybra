@@ -144,7 +144,10 @@ func (r *remediator) closeMergedPR(t task.Task) (bool, error) {
 		return false, nil
 	}
 	state, err := r.fetchPRState(t.ProjectID, t.PRNumber)
-	if err != nil || state.State != "MERGED" {
+	if err != nil {
+		return false, fmt.Errorf("fetch PR state for task %s: %w", t.ID, err)
+	}
+	if state.State != "MERGED" {
 		return false, nil
 	}
 
