@@ -636,11 +636,12 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 	}
 }
 
-// TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting locks the trivial
-// escape hatch in simple-task-review's maybe_review transition table: a
-// trivial tag routes straight to done_review (skipping the code-review
-// agents), same as an already-reviewed task, while noreview and the normal
-// path are unaffected.
+// TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting locks the review
+// entry gate in simple-task-review: a trivial tag routes straight to
+// done_review (skipping the code-review agents), same as a CLEAN-reviewed
+// task, while noreview and the normal path are unaffected. A persisted
+// NEEDS_FIXES sidecar must override task.reviewed so the review-cap →
+// testing → reimplementation loop cannot skip the next code review.
 func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
 	t.Parallel()
 
@@ -674,6 +675,15 @@ func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
 			name:   "already_reviewed_wins_over_normal_path",
 			fields: map[string]string{"task.reviewed": "true", "task.tags": "backend,feature"},
 			want:   "done_review",
+		},
+		{
+			name: "needs_fixes_review_overrides_reviewed_flag",
+			fields: map[string]string{
+				"task.reviewed":    "true",
+				"task.tags":        "backend,feature",
+				"task.code_review": "Review Verdict: NEEDS_FIXES\n\nfoo.go:12: nil deref risk.\n",
+			},
+			want: "triage_review",
 		},
 	}
 
