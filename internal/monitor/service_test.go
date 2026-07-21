@@ -9,7 +9,9 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 type fakeTasks struct {
@@ -62,6 +64,12 @@ func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 		}
 		if u.StatusReason != nil {
 			f.tasks[i].StatusReason = *u.StatusReason
+		}
+		if u.Outcome != nil {
+			f.tasks[i].Outcome = *u.Outcome
+		}
+		if u.Workflow != nil {
+			f.tasks[i].Workflow = *u.Workflow
 		}
 		return f.tasks[i], nil
 	}
@@ -635,6 +643,77 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM_RemediatesDirectly(t *test
 
 	if len(report.Remediated) != 1 {
 		t.Fatalf("want 1 remediated, got %d", len(report.Remediated))
+	}
+}
+
+func TestServiceTick_HumanRequiredStuck_DowngradedLLM_MergedPRClosesTask(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	tasks := &fakeTasks{tasks: []task.Task{
+		mkTask("hr-merged", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.ProjectID = "o/r"
+			t.PRNumber = 42
+			t.Workflow = &workflow.Execution{
+				WorkflowID:  "simple-task-review",
+				CurrentStep: "wait_human",
+				State:       workflow.ExecWaiting,
+				Variables:   map[string]string{},
+			}
+		}),
+	}}
+	disp := &fakeDispatcher{}
+	sink := &fakeSink{createNext: true}
+	svc := NewService(Deps{
+		Cfg:                 cfg,
+		Tasks:               tasks,
+		Audit:               fakeAudit{},
+		Agents:              nilAgentLister{},
+		DowngradeLLMForTask: func(taskID string) bool { return taskID == "hr-merged" },
+		FetchPRState: func(repo string, number int) (github.PRState, error) {
+			if repo != "o/r" || number != 42 {
+				t.Fatalf("FetchPRState(%q, %d)", repo, number)
+			}
+			return github.PRState{State: "MERGED"}, nil
+		},
+		Dispatcher: disp,
+		Sink:       sink,
+		Logger:     slog.Default(),
+		Now:        func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(tasks.updates) != 1 {
+		t.Fatalf("want 1 task update, got %d", len(tasks.updates))
+	}
+	u := tasks.updates[0]
+	if u.id != "hr-merged" {
+		t.Fatalf("updated wrong task: %q", u.id)
+	}
+	if u.u.Status == nil || *u.u.Status != task.StatusDone {
+		t.Fatalf("status = %v, want done", u.u.Status)
+	}
+	if u.u.Outcome == nil || *u.u.Outcome != "merged" {
+		t.Fatalf("outcome = %v, want merged", u.u.Outcome)
+	}
+	if u.u.Workflow == nil || *u.u.Workflow == nil {
+		t.Fatal("workflow must be completed")
+	}
+	if got := (*u.u.Workflow).State; got != workflow.ExecCompleted {
+		t.Fatalf("workflow state = %q, want completed", got)
+	}
+	if len(disp.calls) != 0 {
+		t.Fatalf("dispatcher must not be called, got %d calls", len(disp.calls))
+	}
+	if len(sink.submissions) != 0 {
+		t.Fatalf("sink must not see merged-pr anomaly, got %d submissions", len(sink.submissions))
+	}
+	if len(report.Remediated) != 1 || report.Remediated[0] != "stuck_human_blocked:merged:hr-merged" {
+		t.Fatalf("remediated = %v, want merged close label", report.Remediated)
 	}
 }
 

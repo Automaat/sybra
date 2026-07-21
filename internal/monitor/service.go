@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -63,6 +64,7 @@ type Deps struct {
 	// recovery path so the monitor detection immediately hands the
 	// in-progress task back to workflow/agent recovery on the assigned node.
 	RecoverLostAgent func(context.Context, string)
+	FetchPRState     func(repo string, number int) (github.PRState, error)
 }
 
 // Service runs the monitor loop. It is constructed once at app startup and
@@ -120,7 +122,7 @@ func NewService(d Deps) *Service {
 		allowsProject:       d.AllowsProject,
 		downgradeLLMForTask: d.DowngradeLLMForTask,
 		state:               newRunState(),
-		rem:                 newRemediator(d.Tasks, d.RecoverLostAgent),
+		rem:                 newRemediator(d.Tasks, d.RecoverLostAgent, d.FetchPRState, d.Now),
 	}
 }
 
