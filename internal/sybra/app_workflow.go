@@ -613,7 +613,7 @@ func (a *checkConfigGetterAdapter) SetupCommands(ctx context.Context, taskID str
 	return project.MergeSetup(repoSetup, p.SetupCommands)
 }
 
-func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktree.Manager, taskID string) (string, bool, error) {
+func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktree.Manager, taskID string) (path string, ok bool, err error) {
 	if tasks == nil || mgr == nil {
 		return "", false, nil
 	}
@@ -621,7 +621,7 @@ func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktr
 	if err != nil {
 		return "", false, err
 	}
-	path := mgr.PathFor(t)
+	path = mgr.PathFor(t)
 	if _, err := os.Stat(path); err == nil {
 		return path, true, nil
 	}
