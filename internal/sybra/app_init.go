@@ -1170,10 +1170,11 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRAnyStateFinder(prFinderAdapter{})
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
 	a.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
-		tasks:      a.tasks,
-		projects:   a.projects,
-		classifier: &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
-		audit:      a.audit,
+		tasks:             a.tasks,
+		projects:          a.projects,
+		classifier:        &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
+		audit:             a.audit,
+		sybraBugProjectID: a.cfg.HumanReviewRepo(),
 	})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})

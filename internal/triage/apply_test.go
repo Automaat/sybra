@@ -687,6 +687,38 @@ func TestApplySybraBugTaskDefaultsToSybraProjectBeforeBodyMatch(t *testing.T) {
 	}
 }
 
+func TestApplySybraBugTaskUsesConfiguredProjectBeforeBodyMatch(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create(
+		"fix(workflow): assign project before dispatching Sybra bug tasks",
+		"Local tracker for a Sybra bug seen while handling https://github.com/Automaat/synapse/issues/7.",
+		task.AgentModeHeadless,
+	)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.Tags = []string{"sybra-bug", "scrubbed"}
+	projects := []project.Project{
+		{ID: "fork/sybra", Owner: "fork", Repo: "sybra", Type: project.ProjectTypePet},
+		{ID: "Automaat/sybra", Owner: "Automaat", Repo: "sybra", Type: project.ProjectTypePet},
+		{ID: "Automaat/synapse", Owner: "Automaat", Repo: "synapse", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "fix(workflow): assign project before dispatching Sybra bug tasks",
+		Size:  "medium",
+		Type:  "bug",
+		Mode:  "headless",
+		Tags:  []string{"backend", "medium", "bug"},
+	}
+	updated, err := ApplyWithOptions(mgr, created, v, projects, ApplyOptions{SybraBugProjectID: "fork/sybra"})
+	if err != nil {
+		t.Fatalf("ApplyWithOptions: %v", err)
+	}
+	if updated.ProjectID != "fork/sybra" {
+		t.Fatalf("project_id = %q, want fork/sybra", updated.ProjectID)
+	}
+}
+
 func TestApplyClearsStaleProjectIDWhenReResolutionFails(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("refactor ingestion", "", task.AgentModeHeadless)
