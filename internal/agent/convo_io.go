@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 )
 
 // convoIO owns the conversational agent transport plus the existing
@@ -11,6 +12,7 @@ import (
 type convoIO struct {
 	stdinPipe io.WriteCloser
 	stdinMu   sync.Mutex
+	hasPipe   atomic.Bool
 
 	// stdinPath is the FIFO backing a detached conversational agent's stdin,
 	// reopened on reattach so follow-up messages survive a restart. Empty for
@@ -36,6 +38,7 @@ func (c *convoIO) installStdinPipe(pipe io.WriteCloser) error {
 		return fmt.Errorf("stdin pipe already installed")
 	}
 	c.stdinPipe = pipe
+	c.hasPipe.Store(pipe != nil)
 	return nil
 }
 
@@ -45,6 +48,7 @@ func (c *convoIO) replaceStdinPipe(pipe io.WriteCloser) {
 		_ = c.stdinPipe.Close()
 	}
 	c.stdinPipe = pipe
+	c.hasPipe.Store(pipe != nil)
 	c.stdinMu.Unlock()
 }
 
@@ -68,12 +72,11 @@ func (c *convoIO) closeStdinPipe() {
 	if c.stdinPipe != nil {
 		_ = c.stdinPipe.Close()
 		c.stdinPipe = nil
+		c.hasPipe.Store(false)
 	}
 	c.stdinMu.Unlock()
 }
 
 func (c *convoIO) hasStdinPipe() bool {
-	c.stdinMu.Lock()
-	defer c.stdinMu.Unlock()
-	return c.stdinPipe != nil
+	return c.hasPipe.Load()
 }
