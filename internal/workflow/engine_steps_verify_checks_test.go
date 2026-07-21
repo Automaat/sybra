@@ -801,6 +801,46 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	}
 }
 
+func TestDiscoverEnvtestPlan_IgnoresToolingMentionsWithoutEnvtestImport(t *testing.T) {
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, ".github", "workflows", "ci.yml"), `name: ci
+jobs:
+  test:
+    steps:
+      - run: echo KUBEBUILDER_ASSETS setup-envtest
+`)
+	writeTestFile(t, filepath.Join(wt, "hack", "envtest.sh"), `#!/bin/sh
+echo "setup-envtest use 1.31"
+`)
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+func TestUnit(t *testing.T) {}
+`)
+
+	plan, err := discoverEnvtestPlan(wt)
+	if err != nil {
+		t.Fatalf("discoverEnvtestPlan: %v", err)
+	}
+	if plan.Needed {
+		t.Fatal("Needed = true, want false")
+	}
+	if got, want := plan.VersionSpec, "1.31"; got != want {
+		t.Fatalf("VersionSpec = %q, want %q", got, want)
+	}
+	if got, want := plan.SetupEnvtestRef, "release-0.20"; got != want {
+		t.Fatalf("SetupEnvtestRef = %q, want %q", got, want)
+	}
+}
+
 func TestVerifyCommandEnv_InjectsEnvtestAssetsForGoCommands(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	wt := t.TempDir()

@@ -1,13 +1,15 @@
 package workflow
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/buildcache"
@@ -91,9 +93,7 @@ func discoverEnvtestPlan(wtPath string) (envtestPlan, error) {
 		if explicit := inferEnvtestVersionFromText(data); explicit != "" {
 			plan.VersionSpec = explicit
 		}
-		if bytes.Contains(data, []byte("sigs.k8s.io/controller-runtime/pkg/envtest")) ||
-			bytes.Contains(data, []byte("KUBEBUILDER_ASSETS")) ||
-			bytes.Contains(data, []byte("setup-envtest")) {
+		if fileImportsEnvtest(path, data) {
 			plan.Needed = true
 		}
 		return nil
@@ -112,6 +112,26 @@ func shouldInspectEnvtestFile(path, name string) bool {
 	switch filepath.Ext(path) {
 	case ".go", ".mk", ".sh", ".bash", ".envrc", ".yaml", ".yml":
 		return true
+	}
+	return false
+}
+
+func fileImportsEnvtest(path string, data []byte) bool {
+	if filepath.Ext(path) != ".go" {
+		return false
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), path, data, parser.ImportsOnly)
+	if err != nil {
+		return false
+	}
+	for _, imp := range file.Imports {
+		importPath, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		if importPath == "sigs.k8s.io/controller-runtime/pkg/envtest" {
+			return true
+		}
 	}
 	return false
 }
