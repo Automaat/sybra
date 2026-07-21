@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -63,6 +64,10 @@ type Deps struct {
 	// recovery path so the monitor detection immediately hands the
 	// in-progress task back to workflow/agent recovery on the assigned node.
 	RecoverLostAgent func(context.Context, string)
+	// FetchPRState checks linked PR terminal state. Production uses GitHub REST
+	// so human-required tasks whose PR landed outside the normal review poll
+	// loop do not wait for an LLM stuck-task investigation.
+	FetchPRState func(repo string, number int) (github.PRState, error)
 }
 
 // Service runs the monitor loop. It is constructed once at app startup and
@@ -80,6 +85,7 @@ type Service struct {
 	now                 func() time.Time
 	allowsProject       func(string) bool
 	downgradeLLMForTask func(taskID string) bool
+	fetchPRState        func(repo string, number int) (github.PRState, error)
 	state               *runState
 	rem                 *remediator
 }
@@ -106,6 +112,9 @@ func NewService(d Deps) *Service {
 	if d.Emit == nil {
 		d.Emit = func(string, any) {}
 	}
+	if d.FetchPRState == nil {
+		d.FetchPRState = github.FetchPRStateViaREST
+	}
 	return &Service{
 		cfg:                 d.Cfg,
 		tasks:               d.Tasks,
@@ -119,6 +128,7 @@ func NewService(d Deps) *Service {
 		now:                 d.Now,
 		allowsProject:       d.AllowsProject,
 		downgradeLLMForTask: d.DowngradeLLMForTask,
+		fetchPRState:        d.FetchPRState,
 		state:               newRunState(),
 		rem:                 newRemediator(d.Tasks, d.RecoverLostAgent),
 	}
@@ -178,6 +188,16 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	preRemediated := []string(nil)
+	if !s.observerOnly {
+		preRemediated = s.closeMergedHumanRequiredPRs(ctx, tasks)
+		if len(preRemediated) > 0 {
+			tasks, err = s.tasks.List()
+			if err != nil {
+				return Report{}, err
+			}
+		}
+	}
 	since15 := now.Add(-15 * time.Minute)
 	events15, _ := s.audit.Read(audit.Query{Since: since15, Until: now})
 	since1h := now.Add(-1 * time.Hour)
@@ -200,7 +220,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 
 	if !s.observerOnly {
 		rem := s.applyRemediations(ctx, report.Anomalies)
-		report.Remediated = rem.labels
+		report.Remediated = append(preRemediated, rem.labels...)
 		report.Dispatched = s.dispatchLLMAnomalies(ctx, now, report.Anomalies)
 		opened, updated := s.fileIssues(ctx, now, report.Anomalies, rem.skipIssueForFP)
 		report.IssuesOpened = opened
@@ -214,6 +234,46 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		metrics.MonitorAnomaly(ctx, string(report.Anomalies[i].Kind))
 	}
 	return report, nil
+}
+
+func (s *Service) closeMergedHumanRequiredPRs(ctx context.Context, tasks []task.Task) []string {
+	_ = ctx
+	if s.fetchPRState == nil {
+		return nil
+	}
+	var labels []string
+	for i := range tasks {
+		t := &tasks[i]
+		if t.Status != task.StatusHumanRequired || t.ProjectID == "" || t.PRNumber == 0 {
+			continue
+		}
+		if t.TaskType == task.TaskTypeChat {
+			continue
+		}
+		if !projectAllowed(s.allowsProject, t.ProjectID) {
+			continue
+		}
+		state, err := s.fetchPRState(t.ProjectID, t.PRNumber)
+		if err != nil {
+			s.logger.Debug("monitor.human-required-pr-state.failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+			continue
+		}
+		if state.State != "MERGED" {
+			continue
+		}
+		if _, err := s.tasks.Update(t.ID, task.Update{
+			Status:       task.Ptr(task.StatusDone),
+			StatusReason: task.Ptr("monitor: linked PR already merged"),
+			Outcome:      task.Ptr("merged"),
+		}); err != nil {
+			s.logger.Warn("monitor.human-required-pr-merged.update_failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+			continue
+		}
+		label := "linked_pr_merged:" + t.ID
+		labels = append(labels, label)
+		s.logger.Info("monitor.human-required-pr-merged", "task_id", t.ID, "pr", t.PRNumber)
+	}
+	return labels
 }
 
 func (s *Service) logPRGapGraceSuppressions(tasks []task.Task, now time.Time) {
