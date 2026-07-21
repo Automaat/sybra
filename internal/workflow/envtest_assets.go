@@ -64,21 +64,27 @@ func discoverEnvtestPlan(wtPath string) (envtestPlan, error) {
 	if plan.SetupEnvtestRef == "" {
 		plan.SetupEnvtestRef = "latest"
 	}
-	err = filepath.WalkDir(wtPath, func(path string, d fs.DirEntry, walkErr error) error {
+	root, err := os.OpenRoot(wtPath)
+	if err != nil {
+		return envtestPlan{}, err
+	}
+	defer func() { _ = root.Close() }()
+	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
+		name := d.Name()
 		if d.IsDir() {
-			switch d.Name() {
+			switch name {
 			case ".git", "node_modules", "vendor":
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !shouldInspectEnvtestFile(path, d.Name()) {
+		if !shouldInspectEnvtestFile(path, name) {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := fs.ReadFile(root.FS(), path)
 		if err != nil {
 			return err
 		}
@@ -239,8 +245,8 @@ func provisionEnvtestAssets(ctx context.Context, wtPath string, plan envtestPlan
 func envValue(env []string, key string) string {
 	prefix := key + "="
 	for _, kv := range env {
-		if strings.HasPrefix(kv, prefix) {
-			return strings.TrimPrefix(kv, prefix)
+		if value, ok := strings.CutPrefix(kv, prefix); ok {
+			return value
 		}
 	}
 	return ""
