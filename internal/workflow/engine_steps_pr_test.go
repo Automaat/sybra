@@ -114,6 +114,19 @@ func (f *fakePRFinder) FindPRForBranch(context.Context, string, string) (number 
 	return f.number, f.found, f.err
 }
 
+type fakePRAnyStateFinder struct {
+	number int
+	state  string
+	found  bool
+	err    error
+	calls  int
+}
+
+func (f *fakePRAnyStateFinder) FindPRForBranchAnyState(context.Context, string, string) (number int, state string, found bool, err error) {
+	f.calls++
+	return f.number, f.state, f.found, f.err
+}
+
 type fakePRCloser struct {
 	err      error
 	calls    int
@@ -663,6 +676,89 @@ func TestExecCreatePR_ExistingPRShortCircuitsWithoutCreating(t *testing.T) {
 	}
 	if ti.Status == "human-required" {
 		t.Errorf("task should not be human-required: %s", tasks.Reason("t1"))
+	}
+}
+
+func TestExecCreatePR_MergedSameBranchWithAppliedPatchMarksDoneWithoutCreating(t *testing.T) {
+	bare, wtPath := newPRWorktree(t, "feat/my-branch")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+
+	upstream := filepath.Join(t.TempDir(), "upstream")
+	runGit(t, t.TempDir(), "clone", bare, upstream)
+	runGit(t, upstream, "config", "user.email", "test@test.com")
+	runGit(t, upstream, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(upstream, "change.txt"), []byte("feat: task work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(upstream, "unrelated.txt"), []byte("newer main work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, upstream, "add", "change.txt", "unrelated.txt")
+	runGit(t, upstream, "commit", "-m", "squash equivalent plus unrelated")
+	runGit(t, upstream, "push", "origin", "main")
+	runGit(t, wtPath, "fetch", bare, "main:refs/remotes/origin/main")
+
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
+	tasks.Put(task)
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	anyState := &fakePRAnyStateFinder{number: 77, state: "MERGED", found: true}
+	engine.SetPRAnyStateFinder(anyState)
+	creator := &fakePRCreator{number: 999, headSHA: headSHA(t, wtPath)}
+	engine.SetPRCreator(creator)
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
+	}
+	if anyState.calls != 1 {
+		t.Fatalf("any-state finder calls = %d, want 1", anyState.calls)
+	}
+	if creator.gotReq.Repo != "" {
+		t.Fatal("CreatePR must not be called when the branch patch already landed via a merged PR")
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "done" {
+		t.Fatalf("status = %q, want done", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "merged PR #77") {
+		t.Fatalf("status reason = %q, want merged PR reference", ti.StatusReason)
+	}
+}
+
+func TestExecCreatePR_MergedSameBranchWithRemainingPatchStillCreates(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/my-branch")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
+	tasks.Put(task)
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRAnyStateFinder(&fakePRAnyStateFinder{number: 77, state: "MERGED", found: true})
+	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
+	engine.SetPRCreator(creator)
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
+	}
+	if creator.gotReq.Repo == "" {
+		t.Fatal("CreatePR must be called when the branch still contributes a patch")
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status == "done" {
+		t.Fatal("task must not be marked done while the branch still has unapplied work")
+	}
+	if ti.PRNumber != 42 {
+		t.Fatalf("PRNumber = %d, want 42", ti.PRNumber)
 	}
 }
 
