@@ -613,16 +613,41 @@ func (a *checkConfigGetterAdapter) SetupCommands(ctx context.Context, taskID str
 	return project.MergeSetup(repoSetup, p.SetupCommands)
 }
 
+func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktree.Manager, taskID string) (string, bool, error) {
+	if tasks == nil || mgr == nil {
+		return "", false, nil
+	}
+	t, err := tasks.Get(taskID)
+	if err != nil {
+		return "", false, err
+	}
+	path := mgr.PathFor(t)
+	if _, err := os.Stat(path); err == nil {
+		return path, true, nil
+	}
+	if t.Status != task.StatusReadyPR || strings.TrimSpace(t.ProjectID) == "" {
+		return "", false, nil
+	}
+
+	var prepared string
+	switch {
+	case strings.TrimSpace(t.Branch) == "" && t.PRNumber > 0:
+		prepared, err = mgr.PrepareForFix(ctx, t, t.PRNumber)
+	default:
+		prepared, err = mgr.PrepareForBranchFix(ctx, t)
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return prepared, true, nil
+}
+
 func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
-	t, err := a.tasks.Get(taskID)
+	path, ok, err := ensureReadyPRWorktree(context.Background(), a.tasks, a.mgr, taskID)
 	if err != nil {
 		return "", false
 	}
-	path := a.mgr.PathFor(t)
-	if _, err := os.Stat(path); err != nil {
-		return "", false
-	}
-	return path, true
+	return path, ok
 }
 
 func (*attemptNoteAppenderAdapter) AppendReimplementNote(ctx context.Context, _, wtPath, marker, note string) error {
@@ -636,6 +661,11 @@ type branchSyncerAdapter struct {
 }
 
 func (a *branchSyncerAdapter) SyncTaskBranch(ctx context.Context, taskID string) (string, error) {
+	if _, ok, err := ensureReadyPRWorktree(ctx, a.tasks, a.mgr, taskID); err != nil {
+		return worktree.SyncFailed.String(), fmt.Errorf("sync branch: ensure worktree: %w", err)
+	} else if !ok {
+		return worktree.SyncSkipped.String(), nil
+	}
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
 		return worktree.SyncFailed.String(), fmt.Errorf("sync branch: get task: %w", err)
