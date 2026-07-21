@@ -202,6 +202,36 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		}
 	})
 
+	t.Run("head-state probe error preserves backoff", func(t *testing.T) {
+		t.Parallel()
+
+		tk := newTask("rate-limited", 7, base)
+		r := &Handler{
+			prPollState: map[string]prPollEntry{
+				"owner/repo#7": {
+					lastHeadSHA:   "sha-1",
+					lastUpdatedAt: "2026-07-13T12:00:00Z",
+					stableStreak:  3,
+					skipTicks:     4,
+				},
+			},
+			fetchHeadStateFn: func(string, int) (string, bool, string, error) {
+				return "", false, "", fmt.Errorf("rate limited")
+			},
+		}
+
+		sel := r.selectKnownPRPoll([]task.Task{tk})
+		if got := taskIDs(sel.tasks); len(got) != 0 {
+			t.Fatalf("selected ids = %v, want none while probe error preserves backoff", got)
+		}
+		if sel.deferredPRs != 1 {
+			t.Fatalf("deferredPRs = %d, want 1", sel.deferredPRs)
+		}
+		if got := r.prPollState["owner/repo#7"].skipTicks; got != 3 {
+			t.Fatalf("skipTicks = %d, want decremented to 3", got)
+		}
+	})
+
 	t.Run("prunes unlinked PRs", func(t *testing.T) {
 		t.Parallel()
 

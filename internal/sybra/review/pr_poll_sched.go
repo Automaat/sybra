@@ -114,7 +114,12 @@ func (r *Handler) knownPRStillStableDuringBackoff(t *task.Task, key string, entr
 		return true
 	}
 	sha, open, updatedAt, err := headStateFn(t.ProjectID, t.PRNumber)
-	if err != nil || !open || sha == "" || sha != entry.lastHeadSHA || updatedAt != entry.lastUpdatedAt {
+	if err != nil {
+		entry.skipTicks--
+		r.prPollState[key] = entry
+		return true
+	}
+	if !open || sha == "" || sha != entry.lastHeadSHA || updatedAt != entry.lastUpdatedAt {
 		entry.skipTicks = 0
 		entry.stableStreak = 0
 		r.prPollState[key] = entry
