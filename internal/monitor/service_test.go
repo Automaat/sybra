@@ -254,6 +254,55 @@ func TestServiceTickEndToEnd(t *testing.T) {
 	}
 }
 
+func TestServiceTickClosesHumanRequiredTaskWithMergedPR(t *testing.T) {
+	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	tasks := &fakeTasks{tasks: []task.Task{
+		mkTask("merged", task.StatusHumanRequired, func(t *task.Task) {
+			t.ProjectID = "owner/repo"
+			t.PRNumber = 42
+			t.UpdatedAt = now.Add(-time.Minute)
+		}),
+	}}
+	var fetched int
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		Now:    func() time.Time { return now },
+		Logger: slog.New(slog.DiscardHandler),
+		FetchPRState: func(repo string, number int) (github.PRState, error) {
+			fetched++
+			if repo != "owner/repo" || number != 42 {
+				t.Fatalf("FetchPRState(%q, %d), want owner/repo#42", repo, number)
+			}
+			return github.PRState{State: "MERGED"}, nil
+		},
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched != 1 {
+		t.Fatalf("FetchPRState calls = %d, want 1", fetched)
+	}
+	got, err := tasks.Get("merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want done", got.Status)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if len(report.Remediated) != 1 || report.Remediated[0] != "linked_pr_merged:merged" {
+		t.Fatalf("remediated = %v, want [linked_pr_merged:merged]", report.Remediated)
+	}
+}
+
 func TestServiceTick_LostAgentRecoverySuppressesIssue(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	tasks := &fakeTasks{tasks: []task.Task{mkTask("lost", task.StatusInProgress)}}
@@ -687,6 +736,17 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM_MergedPRUsesLandingPipelin
 				prNumber int
 				state    string
 			}{taskID: taskID, prNumber: prNumber, state: state})
+			tasks.mu.Lock()
+			defer tasks.mu.Unlock()
+			for i := range tasks.tasks {
+				if tasks.tasks[i].ID != taskID {
+					continue
+				}
+				tasks.tasks[i].Status = task.StatusDone
+				tasks.tasks[i].Outcome = "merged"
+				tasks.tasks[i].Workflow = nil
+				break
+			}
 			return nil
 		},
 		Dispatcher: disp,
@@ -715,8 +775,8 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM_MergedPRUsesLandingPipelin
 	if len(sink.submissions) != 0 {
 		t.Fatalf("sink must not see merged-pr anomaly, got %d submissions", len(sink.submissions))
 	}
-	if len(report.Remediated) != 1 || report.Remediated[0] != "stuck_human_blocked:merged:hr-merged" {
-		t.Fatalf("remediated = %v, want merged close label", report.Remediated)
+	if len(report.Remediated) != 1 || report.Remediated[0] != "linked_pr_merged:hr-merged" {
+		t.Fatalf("remediated = %v, want pre-sweep merged close label", report.Remediated)
 	}
 }
 

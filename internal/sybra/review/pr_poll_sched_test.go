@@ -169,6 +169,69 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		}
 	})
 
+	t.Run("updatedAt change breaks stable backoff", func(t *testing.T) {
+		t.Parallel()
+
+		tk := newTask("reviewed", 7, base)
+		r := &Handler{
+			prPollState: map[string]prPollEntry{
+				"owner/repo#7": {
+					lastHeadSHA:   "sha-1",
+					lastUpdatedAt: "2026-07-13T12:00:00Z",
+					stableStreak:  3,
+					skipTicks:     4,
+				},
+			},
+			fetchHeadStateFn: func(repo string, number int) (string, bool, string, error) {
+				if repo != "owner/repo" || number != 7 {
+					t.Fatalf("fetchHeadStateFn(%q, %d), want owner/repo#7", repo, number)
+				}
+				return "sha-1", true, "2026-07-13T12:05:00Z", nil
+			},
+		}
+
+		sel := r.selectKnownPRPoll([]task.Task{tk})
+		if got := taskIDs(sel.tasks); len(got) != 1 || got[0] != "reviewed" {
+			t.Fatalf("selected ids = %v, want [reviewed] when updatedAt changes", got)
+		}
+		if sel.deferredPRs != 0 {
+			t.Fatalf("deferredPRs = %d, want 0", sel.deferredPRs)
+		}
+		if got := r.prPollState["owner/repo#7"].skipTicks; got != 0 {
+			t.Fatalf("skipTicks = %d, want reset to 0", got)
+		}
+	})
+
+	t.Run("head-state probe error preserves backoff", func(t *testing.T) {
+		t.Parallel()
+
+		tk := newTask("rate-limited", 7, base)
+		r := &Handler{
+			prPollState: map[string]prPollEntry{
+				"owner/repo#7": {
+					lastHeadSHA:   "sha-1",
+					lastUpdatedAt: "2026-07-13T12:00:00Z",
+					stableStreak:  3,
+					skipTicks:     4,
+				},
+			},
+			fetchHeadStateFn: func(string, int) (string, bool, string, error) {
+				return "", false, "", fmt.Errorf("rate limited")
+			},
+		}
+
+		sel := r.selectKnownPRPoll([]task.Task{tk})
+		if got := taskIDs(sel.tasks); len(got) != 0 {
+			t.Fatalf("selected ids = %v, want none while probe error preserves backoff", got)
+		}
+		if sel.deferredPRs != 1 {
+			t.Fatalf("deferredPRs = %d, want 1", sel.deferredPRs)
+		}
+		if got := r.prPollState["owner/repo#7"].skipTicks; got != 3 {
+			t.Fatalf("skipTicks = %d, want decremented to 3", got)
+		}
+	})
+
 	t.Run("prunes unlinked PRs", func(t *testing.T) {
 		t.Parallel()
 
