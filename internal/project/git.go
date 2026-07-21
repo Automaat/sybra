@@ -441,6 +441,20 @@ func FetchOrigin(ctx context.Context, barePath string) error {
 	})
 }
 
+// FetchRemoteBranch fetches one branch from remote into refs/remotes/<remote>/*.
+// It exists for fork-backed PR heads, which are not covered by FetchOrigin.
+func FetchRemoteBranch(ctx context.Context, barePath, remote, branch string) error {
+	if remote == "origin" {
+		return FetchOrigin(ctx, barePath)
+	}
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "fetch", remote, refspec)
+		})
+	})
+}
+
 // FetchPRHead fetches a pull request's head commit into a stable local ref and
 // returns that ref. GitHub exposes every PR's head at refs/pull/<N>/head on the
 // upstream remote — including PRs opened from forks, whose head branch never

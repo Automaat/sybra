@@ -830,6 +830,12 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 // conflict, so repeating it here would just fail before the fixer agent gets a
 // chance to resolve the branch manually.
 func (m *Manager) PrepareForBranchConflict(ctx context.Context, t task.Task) (string, error) {
+	return m.PrepareForBranchConflictFromRemote(ctx, t, "origin")
+}
+
+// PrepareForBranchConflictFromRemote prepares a branch-conflict recovery
+// worktree whose remote side lives on remote, e.g. fork-backed PR heads.
+func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task.Task, remote string) (string, error) {
 	if t.WorktreeDir != "" {
 		return m.adoptWorktree(ctx, t, nil)
 	}
@@ -838,12 +844,27 @@ func (m *Manager) PrepareForBranchConflict(ctx context.Context, t task.Task) (st
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
 	}
+	if remote == "" {
+		remote = "origin"
+	}
 	var fetchErr error
 	if fetchErr = project.FetchOrigin(ctx, proj.ClonePath); fetchErr != nil {
 		m.logger.Warn("branch-conflict.worktree.fetch", "project", proj.ID, "err", fetchErr)
 	}
 
 	branch := branchNameForTask(t)
+	targetFetchErr := fetchErr
+	if remote != "origin" {
+		targetFetchErr = nil
+		if !project.RemoteConfigured(ctx, proj.ClonePath, remote) {
+			targetFetchErr = fmt.Errorf("remote %s is not configured", remote)
+		} else if err := project.FetchRemoteBranch(ctx, proj.ClonePath, remote, branch); err != nil {
+			targetFetchErr = err
+		}
+		if targetFetchErr != nil {
+			m.logger.Warn("branch-conflict.worktree.fetch-remote", "project", proj.ID, "remote", remote, "branch", branch, "err", targetFetchErr)
+		}
+	}
 	wtPath := m.PathFor(t)
 
 	reused, err := m.reuseBranchConflictWorktree(ctx, t.ID, proj.ClonePath, wtPath, branch)
@@ -864,19 +885,19 @@ func (m *Manager) PrepareForBranchConflict(ctx context.Context, t task.Task) (st
 		return wtPath, nil
 	}
 
-	originRef := "refs/remotes/origin/" + branch
+	remoteRef := "refs/remotes/" + remote + "/" + branch
 	switch {
 	case project.BranchExists(ctx, proj.ClonePath, branch):
 		if err := project.CreateWorktreeExisting(ctx, proj.ClonePath, wtPath, branch); err != nil {
 			return "", fmt.Errorf("checkout task branch %s: %w", branch, err)
 		}
-	case project.RefExists(ctx, proj.ClonePath, originRef):
-		if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, branch, originRef); err != nil {
+	case project.RefExists(ctx, proj.ClonePath, remoteRef):
+		if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, branch, remoteRef); err != nil {
 			return "", fmt.Errorf("create branch-conflict worktree: %w", err)
 		}
 	default:
-		if fetchErr != nil {
-			return "", fmt.Errorf("fetch origin for task branch %s: %w", branch, fetchErr)
+		if targetFetchErr != nil {
+			return "", fmt.Errorf("fetch %s for task branch %s: %w", remote, branch, targetFetchErr)
 		}
 		return "", fmt.Errorf("%w: %s", ErrTaskBranchMissing, branch)
 	}

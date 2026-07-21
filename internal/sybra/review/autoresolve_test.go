@@ -484,6 +484,81 @@ func TestPrepareWorktree_SameBranchConflictDispatchesBranchRecovery(t *testing.T
 	}
 }
 
+func TestPrepareWorktree_SameBranchConflictUsesForkRemote(t *testing.T) {
+	h := newAutoResolveHarness(t, false)
+
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "clone", "--bare", h.src, forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("clone fork bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+
+	tk, pr := h.newConflictTask(t)
+	issue := github.PRIssue{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr}
+
+	dir, ok := h.r.prepareWorktree(context.Background(), tk, issue)
+	if !ok {
+		t.Fatal("initial prepareWorktree rejected the PR-fix worktree")
+	}
+
+	configureGitIdentity(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("local-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add local shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "local edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit local edit: %v: %s", err, out)
+	}
+
+	forkSrc := filepath.Join(t.TempDir(), "fork-src")
+	if out, err := exec.Command("git", "clone", forkBare, forkSrc).CombinedOutput(); err != nil {
+		t.Fatalf("clone fork source: %v: %s", err, out)
+	}
+	configureGitIdentity(t, forkSrc)
+	if err := os.WriteFile(filepath.Join(forkSrc, "shared.txt"), []byte("fork-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add fork shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "commit", "-m", "fork edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit fork edit: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "push", "origin", h.branch).CombinedOutput(); err != nil {
+		t.Fatalf("git push fork edit: %v: %s", err, out)
+	}
+
+	tk, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.r.prepareWorktree(context.Background(), tk, issue); ok {
+		t.Fatal("prepareWorktree returned a ready worktree; want branch-conflict recovery to take over")
+	}
+
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixWorkflowID {
+		t.Fatalf("workflow = %+v, want %s", got.Workflow, branchConflictFixWorkflowID)
+	}
+	prompt := got.Workflow.Variables["prompt"]
+	if !strings.Contains(prompt, "git fetch fork +refs/heads/"+h.branch+":refs/remotes/fork/"+h.branch) {
+		t.Fatalf("prompt does not fetch the fork branch:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "git merge refs/remotes/fork/"+h.branch) {
+		t.Fatalf("prompt does not merge the fork branch:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "git merge refs/remotes/origin/"+h.branch) {
+		t.Fatalf("prompt merges origin instead of fork:\n%s", prompt)
+	}
+}
+
 // TestAutoResolveConflict_ConflictFallsThroughToAgent covers a merge that
 // genuinely reports conflicting hunks: the fast-path must not mark anything
 // handled and the normal pr-fix workflow must still be dispatched.

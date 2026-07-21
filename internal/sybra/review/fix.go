@@ -66,6 +66,7 @@ type branchConflictResumeState struct {
 type taskBranchConflictRecoverySpec struct {
 	retryKind      github.PRIssueKind
 	branchOverride string
+	remoteOverride string
 	allowRecreate  bool
 	prompt         func(context.Context, task.Task, string) string
 }
@@ -1224,12 +1225,29 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	})
 }
 
-func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, branch string) bool {
+func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, branch, remote string) bool {
+	if remote == "" {
+		remote = "origin"
+	}
 	return r.recoverTaskBranchConflict(ctx, t, taskBranchConflictRecoverySpec{
 		retryKind:      sameBranchConflictRetryKind,
 		branchOverride: branch,
-		prompt:         sameBranchConflictPrompt,
+		remoteOverride: remote,
+		prompt: func(ctx context.Context, t task.Task, _ string) string {
+			return sameBranchConflictPrompt(ctx, t, remote)
+		},
 	})
+}
+
+func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task) string {
+	if r.projects == nil || t.ProjectID == "" {
+		return "origin"
+	}
+	proj, err := r.projects.Get(t.ProjectID)
+	if err != nil || proj.ClonePath == "" {
+		return "origin"
+	}
+	return project.PushRemote(ctx, proj.ClonePath)
 }
 
 func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, spec taskBranchConflictRecoverySpec) bool {
@@ -1284,7 +1302,7 @@ func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, sp
 		return false
 	}
 
-	dir, err := r.worktrees.PrepareForBranchConflict(ctx, t)
+	dir, err := r.worktrees.PrepareForBranchConflictFromRemote(ctx, t, spec.remoteOverride)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.prepare", "task_id", taskID, "err", err)
 		return r.parkOrEscalateBranchFixFailure(taskID, err)
@@ -1710,10 +1728,13 @@ func branchConflictPrompt(ctx context.Context, t task.Task, base string) string 
 	)
 }
 
-func sameBranchConflictPrompt(ctx context.Context, t task.Task, _ string) string {
+func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) string {
 	branch := t.Branch
 	if branch == "" {
 		branch = "the task's current branch"
+	}
+	if remote == "" {
+		remote = "origin"
 	}
 	prCtx := ""
 	if t.PRNumber > 0 {
@@ -1724,8 +1745,8 @@ func sameBranchConflictPrompt(ctx context.Context, t task.Task, _ string) string
 			"This is not a base-branch rebase conflict; preserve both lines of work with an additive merge.\n\n"+
 			"Steps:\n"+
 			"```bash\n"+
-			"git fetch origin\n"+
-			"git merge refs/remotes/origin/%s\n"+
+			"git fetch %s +refs/heads/%s:refs/remotes/%s/%s\n"+
+			"git merge refs/remotes/%s/%s\n"+
 			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
 			"# both the local follow-up commits and the already-pushed remote commits,\n"+
 			"# then git add and git commit %s to finish the merge.\n"+
@@ -1735,7 +1756,7 @@ func sameBranchConflictPrompt(ctx context.Context, t task.Task, _ string) string
 			"%s\n"+
 			"```\n\n"+
 			"After pushing, summarize what conflicted and how you resolved it.",
-		branch, prCtx, branch, project.CommitSignFlags(ctx), prFixPushPrompt(branch, "", false, false),
+		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx), prFixPushPrompt(branch, "", false, false),
 	)
 }
 
@@ -1770,7 +1791,8 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 			return "", false
 		}
 		if errors.Is(wtErr, project.ErrBranchDiverged) {
-			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName) {
+			remote := r.sameBranchConflictRemote(ctx, t)
+			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName, remote) {
 				return "", false
 			}
 		}
