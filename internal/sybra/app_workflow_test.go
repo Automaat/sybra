@@ -360,6 +360,155 @@ type conflictRecoveryHarness struct {
 	taskID    string
 }
 
+type providedDirRecoveryHarness struct {
+	aa     *agentAdapter
+	agents *agent.Manager
+	task   task.Task
+	dir    string
+}
+
+func prependImmediateFakeClaude(t *testing.T) {
+	t.Helper()
+	fakebin := t.TempDir()
+	fakeClaude := filepath.Join(fakebin, "claude")
+	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\n"+
+		"printf '{\"type\":\"system\",\"session_id\":\"fake-session\"}\\n'\n"+
+		"printf '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"fake-session\",\"result\":\"done\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\\n'\n"),
+		0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func setupProvidedDirRecoveryHarness(t *testing.T, role agent.Role) providedDirRecoveryHarness {
+	t.Helper()
+	prependImmediateFakeClaude(t)
+
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	for _, args := range [][]string{
+		{"init", "-b", "main", src},
+		{"-C", src, "config", "user.email", "test@test.com"},
+		{"-C", src, "config", "user.name", "Test"},
+		{"-C", src, "config", "commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", src, "add", "."},
+		{"-C", src, "commit", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	const prNumber = 42
+	const prBranch = "feature/pr-42"
+	if role == agent.RolePRFix || role == agent.RoleTestFix {
+		for _, args := range [][]string{
+			{"-C", src, "checkout", "-b", prBranch},
+		} {
+			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v: %s", args, err, out)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(src, "pr.txt"), []byte("pull request branch\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{
+			{"-C", src, "add", "."},
+			{"-C", src, "commit", "-m", "pr branch"},
+			{"-C", src, "checkout", "main"},
+		} {
+			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v: %s", args, err, out)
+			}
+		}
+	}
+
+	bare := filepath.Join(tmp, "origin.git")
+	if out, err := exec.Command("git", "clone", "--bare", src, bare).CombinedOutput(); err != nil {
+		t.Fatalf("git clone --bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
+		t.Fatalf("git fetch: %v: %s", err, out)
+	}
+
+	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projYAML := "id: owner/repo\nname: repo\nowner: owner\nrepo: repo\nurl: " + bare +
+		"\nclone_path: " + bare + "\ntype: pet\n"
+	if err := os.WriteFile(filepath.Join(tmp, "projects", "owner--repo.yaml"), []byte(projYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	taskStore, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(taskStore, nil)
+	tk, err := taskMgr.Create("missing provided dir recovery", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := "owner/repo"
+	update := task.Update{ProjectID: &projectID}
+	if role == agent.RolePRFix || role == agent.RoleTestFix {
+		update.PRNumber = task.Ptr(prNumber)
+	}
+	tk, err = taskMgr.Update(tk.ID, update)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, filepath.Join(tmp, "logs"))
+	t.Cleanup(func() { agents.ShutdownWithGrace(2 * time.Second) })
+	wm := worktree.New(worktree.Config{
+		WorktreesDir:     filepath.Join(tmp, "worktrees"),
+		Projects:         projects,
+		Tasks:            taskMgr,
+		Logger:           logger,
+		AgentChecker:     agents.HasRunningAgentForTask,
+		LiveAgentChecker: agents.HasLiveRegisteredAgentForTask,
+		PRBranchResolver: func(_ string, number int) (string, error) {
+			if number != prNumber {
+				return "", errors.New("unexpected pr number")
+			}
+			return prBranch, nil
+		},
+	})
+	agentOrch := agentorch.New(taskMgr, projects, agents, nil, logger, wm, nil)
+	aa := &agentAdapter{agents: agents, agentOrch: agentOrch, tasks: taskMgr, projects: projects}
+
+	var dir string
+	switch role {
+	case agent.RolePRFix, agent.RoleTestFix:
+		dir, err = wm.PrepareForFix(context.Background(), tk, prNumber)
+	default:
+		dir, err = wm.PrepareForTask(context.Background(), tk, nil)
+	}
+	if err != nil {
+		t.Fatalf("prepare initial worktree: %v", err)
+	}
+	tk, err = taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return providedDirRecoveryHarness{aa: aa, agents: agents, task: tk, dir: dir}
+}
+
 // setupConflictRecoveryHarness builds a git repo + bare remote + worktree whose
 // next PrepareForTask hits ErrRebaseFailed, wiring an agentAdapter over it. The
 // caller installs its own SetConflictRecovery callback before invoking
@@ -555,6 +704,82 @@ func TestAgentAdapterStartAgentDoesNotClobberForeignClaimAfterRecovery(t *testin
 	// StartAgent's stale defer clobbered it, ClaimTaskDispatch would succeed.
 	if h.agents.ClaimTaskDispatch(h.taskID) {
 		t.Fatal("foreign dispatch claim was clobbered by StartAgent's stale deferred release — double-release hazard")
+	}
+}
+
+func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForReview(t *testing.T) {
+	h := setupProvidedDirRecoveryHarness(t, agent.RoleReview)
+	if err := os.RemoveAll(h.dir); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
+		h.task.ID,
+		string(agent.RoleReview),
+		"headless",
+		"sonnet",
+		"claude",
+		"prompt",
+		h.dir,
+		nil,
+		true,
+		false,
+		"",
+		"refs/heads/does-not-exist",
+		workflow.AgentAssignment{},
+	)
+	if err != nil {
+		t.Fatalf("StartAgent review with missing provided dir: %v", err)
+	}
+	if agentID == "" {
+		t.Fatal("StartAgent returned empty agentID")
+	}
+	if startedDir != h.dir {
+		t.Fatalf("startedDir = %q, want recreated original path %q", startedDir, h.dir)
+	}
+	if baselineRef == "" {
+		t.Fatal("baselineRef empty after recreated review worktree")
+	}
+	if info, err := os.Stat(startedDir); err != nil || !info.IsDir() {
+		t.Fatalf("recreated review worktree missing: %v", err)
+	}
+}
+
+func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForPRFix(t *testing.T) {
+	h := setupProvidedDirRecoveryHarness(t, agent.RolePRFix)
+	if err := os.RemoveAll(h.dir); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
+		h.task.ID,
+		string(agent.RolePRFix),
+		"headless",
+		"sonnet",
+		"claude",
+		"prompt",
+		h.dir,
+		nil,
+		true,
+		false,
+		"",
+		"refs/heads/does-not-exist",
+		workflow.AgentAssignment{},
+	)
+	if err != nil {
+		t.Fatalf("StartAgent pr-fix with missing provided dir: %v", err)
+	}
+	if agentID == "" {
+		t.Fatal("StartAgent returned empty agentID")
+	}
+	if startedDir != h.dir {
+		t.Fatalf("startedDir = %q, want recreated original path %q", startedDir, h.dir)
+	}
+	if baselineRef == "" {
+		t.Fatal("baselineRef empty after recreated pr-fix worktree")
+	}
+	if info, err := os.Stat(startedDir); err != nil || !info.IsDir() {
+		t.Fatalf("recreated pr-fix worktree missing: %v", err)
 	}
 }
 
