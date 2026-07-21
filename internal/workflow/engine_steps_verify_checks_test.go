@@ -642,6 +642,22 @@ func TestClassifyVerifyFailure_UntouchedLintFileIsNotCodeFixable(t *testing.T) {
 	}
 }
 
+func TestClassifyVerifyFailure_MixedTouchedAndUntouchedLintFilesNotCodeFixable(t *testing.T) {
+	t.Parallel()
+	wt := makeLintVerifyRepo(t)
+	engine, _ := newVerifyChecksEngine(t, wt, nil)
+
+	classification := engine.classifyVerifyFailure(
+		"t1",
+		wt,
+		"golangci-lint run ./internal/...",
+		lintVerifyOutput("internal/foo/foo.go", "internal/bar/bar.go"),
+	)
+	if classification != nil && classification.Kind == "code_fixable_lint" {
+		t.Fatalf("classification = %+v, must not auto-fix mixed touched/untouched lint files", classification)
+	}
+}
+
 func TestExecVerifyChecks_DependentGoPackageFailureStillAutoFixes(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{
