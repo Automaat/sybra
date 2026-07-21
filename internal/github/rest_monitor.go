@@ -31,8 +31,13 @@ type restPR struct {
 	Draft          bool   `json:"draft"`
 	MergeableState string `json:"mergeable_state"` // clean|dirty|blocked|unstable|behind|unknown
 	Head           struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo struct {
+			Owner struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -110,6 +115,7 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		Author:             pr.User.Login,
 		IsDraft:            pr.Draft,
 		HeadRefName:        pr.Head.Ref,
+		HeadRepoOwner:      pr.Head.Repo.Owner.Login,
 		HeadSHA:            pr.Head.SHA,
 		BaseRefName:        pr.Base.Ref,
 		Mergeable:          restMergeable(pr.MergeableState),

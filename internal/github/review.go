@@ -22,6 +22,7 @@ const reviewSummaryQuery = `query($q: String!) {
         title
         url
         headRefName
+        headRepositoryOwner { login }
         baseRefName
         isDraft
         mergeable
@@ -82,6 +83,7 @@ const monitorPRFields = `
       url
       state
       headRefName
+      headRepositoryOwner { login }
       baseRefName
       isDraft
       mergeable

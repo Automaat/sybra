@@ -563,6 +563,10 @@ const prFixTamperingRules = "Never weaken, skip, delete, or hardcode tests, " +
 // force-with-lease are safe because no external PR depends on the branch shape
 // yet.
 func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) string {
+	return prFixPushPromptWithRemote(branch, intro, fenced, allowHistoryRewrite, "")
+}
+
+func prFixPushPromptWithRemote(branch, intro string, fenced, allowHistoryRewrite bool, remote string) string {
 	var b strings.Builder
 	if fenced && intro != "" {
 		b.WriteString(intro)
@@ -571,8 +575,12 @@ func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) str
 	if fenced {
 		b.WriteString("```sh\n")
 	}
-	b.WriteString("PUSH_REMOTE=origin\n")
-	b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
+	if remote == "" {
+		b.WriteString("PUSH_REMOTE=origin\n")
+		b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
+	} else {
+		fmt.Fprintf(&b, "PUSH_REMOTE=%s\n", remote)
+	}
 	b.WriteString("PREFLIGHT_REF=HEAD:refs/heads/sybra-preflight/$(git rev-parse --verify HEAD)\n")
 	b.WriteString("git push --dry-run \"$PUSH_REMOTE\" \"$PREFLIGHT_REF\"\n")
 	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
@@ -1239,7 +1247,17 @@ func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, br
 	})
 }
 
-func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task) string {
+func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task, pr github.PullRequest) string {
+	baseOwner := ""
+	if pr.Repository != "" {
+		baseOwner, _, _ = strings.Cut(pr.Repository, "/")
+	}
+	if baseOwner == "" && t.ProjectID != "" {
+		baseOwner, _, _ = strings.Cut(t.ProjectID, "/")
+	}
+	if pr.HeadRepoOwner == "" || strings.EqualFold(pr.HeadRepoOwner, baseOwner) {
+		return "origin"
+	}
 	if r.projects == nil || t.ProjectID == "" {
 		return "origin"
 	}
@@ -1756,7 +1774,7 @@ func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) s
 			"%s\n"+
 			"```\n\n"+
 			"After pushing, summarize what conflicted and how you resolved it.",
-		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx), prFixPushPrompt(branch, "", false, false),
+		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx), prFixPushPromptWithRemote(branch, "", false, false, remote),
 	)
 }
 
@@ -1791,7 +1809,7 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 			return "", false
 		}
 		if errors.Is(wtErr, project.ErrBranchDiverged) {
-			remote := r.sameBranchConflictRemote(ctx, t)
+			remote := r.sameBranchConflictRemote(ctx, t, issue.PR)
 			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName, remote) {
 				return "", false
 			}
