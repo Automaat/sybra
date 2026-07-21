@@ -9,6 +9,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -62,6 +63,9 @@ func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 		}
 		if u.StatusReason != nil {
 			f.tasks[i].StatusReason = *u.StatusReason
+		}
+		if u.Outcome != nil {
+			f.tasks[i].Outcome = *u.Outcome
 		}
 		return f.tasks[i], nil
 	}
@@ -243,6 +247,55 @@ func TestServiceTickEndToEnd(t *testing.T) {
 	}
 	if report.IssuesOpened != 1 || report.IssuesUpdated != 0 {
 		t.Errorf("want issuesOpened=1 issuesUpdated=0, got %d/%d", report.IssuesOpened, report.IssuesUpdated)
+	}
+}
+
+func TestServiceTickClosesHumanRequiredTaskWithMergedPR(t *testing.T) {
+	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	tasks := &fakeTasks{tasks: []task.Task{
+		mkTask("merged", task.StatusHumanRequired, func(t *task.Task) {
+			t.ProjectID = "owner/repo"
+			t.PRNumber = 42
+			t.UpdatedAt = now.Add(-time.Minute)
+		}),
+	}}
+	var fetched int
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		Now:    func() time.Time { return now },
+		Logger: slog.New(slog.DiscardHandler),
+		FetchPRState: func(repo string, number int) (github.PRState, error) {
+			fetched++
+			if repo != "owner/repo" || number != 42 {
+				t.Fatalf("FetchPRState(%q, %d), want owner/repo#42", repo, number)
+			}
+			return github.PRState{State: "MERGED"}, nil
+		},
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched != 1 {
+		t.Fatalf("FetchPRState calls = %d, want 1", fetched)
+	}
+	got, err := tasks.Get("merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want done", got.Status)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if len(report.Remediated) != 1 || report.Remediated[0] != "linked_pr_merged:merged" {
+		t.Fatalf("remediated = %v, want [linked_pr_merged:merged]", report.Remediated)
 	}
 }
 
