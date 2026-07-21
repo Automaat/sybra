@@ -86,6 +86,36 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"), []byte(mechanicalPRFixYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := wfStore.Save(workflow.Definition{
+		ID:   branchConflictFixWorkflowID,
+		Name: "Branch conflict fix (test stand-in)",
+		Trigger: workflow.Trigger{On: "task.status_changed", Conditions: []workflow.Condition{{
+			Field: "task.tags", Operator: "contains", Value: "__never_dispatch_branch_conflict_fix_test__",
+		}}},
+		Steps: []workflow.Step{
+			{
+				ID:   "set_recovering",
+				Name: "Mark Recovering",
+				Type: workflow.StepSetStatus,
+				Config: workflow.StepConfig{
+					Status:       "in-progress",
+					StatusReason: "recovering from a branch conflict",
+				},
+				Next: []workflow.Transition{{GoTo: "await_fix"}},
+			},
+			{
+				ID:   "await_fix",
+				Name: "Await Fix",
+				Type: workflow.StepWaitHuman,
+				Config: workflow.StepConfig{
+					HumanActions: []string{"done"},
+				},
+				Next: []workflow.Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, filepath.Join(tmp, "logs"))
 	engine := workflow.NewEngine(
 		wfStore,
@@ -149,6 +179,7 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 			AutoResolveCleanMerges: autoResolveEnabled,
 		}},
 		pushPreflightFn: stubPushPreflight(nil),
+		wtFailures:      make(map[string]int),
 	}
 	return &autoResolveHarness{
 		r:        r,
@@ -386,6 +417,70 @@ func TestPrepareWorktree_ApprovedCIFailureUsesPRHeadCheckout(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(out)); got != pr.HeadRefName {
 		t.Fatalf("checked-out branch = %q, want PR head %q", got, pr.HeadRefName)
+	}
+}
+
+func TestPrepareWorktree_SameBranchConflictDispatchesBranchRecovery(t *testing.T) {
+	h := newAutoResolveHarness(t, false)
+	tk, pr := h.newConflictTask(t)
+	issue := github.PRIssue{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr}
+
+	dir, ok := h.r.prepareWorktree(context.Background(), tk, issue)
+	if !ok {
+		t.Fatal("initial prepareWorktree rejected the PR-fix worktree")
+	}
+
+	configureGitIdentity(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("local-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add local shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "local edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit local edit: %v: %s", err, out)
+	}
+
+	configureGitIdentity(t, h.src)
+	if err := os.WriteFile(filepath.Join(h.src, "shared.txt"), []byte("remote-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", h.src, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add remote shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", h.src, "commit", "-m", "remote edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit remote edit: %v: %s", err, out)
+	}
+
+	tk, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.r.prepareWorktree(context.Background(), tk, issue); ok {
+		t.Fatal("prepareWorktree returned a ready worktree; want branch-conflict recovery to take over")
+	}
+
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("status = %q, want branch-conflict recovery instead of human-required", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixWorkflowID {
+		t.Fatalf("workflow = %+v, want %s", got.Workflow, branchConflictFixWorkflowID)
+	}
+	if got.Workflow.CurrentStep != "await_fix" {
+		t.Fatalf("current step = %q, want await_fix", got.Workflow.CurrentStep)
+	}
+	if !strings.Contains(got.Workflow.Variables["prompt"], "Do NOT rebase, amend, or force-push") {
+		t.Fatalf("prompt missing same-branch safety guard:\n%s", got.Workflow.Variables["prompt"])
+	}
+	if n := h.r.wtFailures[tk.ID]; n != 0 {
+		t.Fatalf("wtFailures[%s] = %d, want 0 (same-branch conflicts must not burn the worktree circuit)", tk.ID, n)
+	}
+	if n := h.r.prTracker.Retries(tk.ID, sameBranchConflictRetryKind); n != 1 {
+		t.Fatalf("same-branch retry budget = %d, want 1", n)
 	}
 }
 
