@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -208,6 +209,55 @@ func TestRemediator_StuckHumanBlocked_MergedPRCompletesTaskAndWorkflow(t *testin
 	}
 	if got := (*u.u.Workflow).Variables["cancel_reason"]; got != "monitor: linked PR merged" {
 		t.Fatalf("cancel_reason = %q, want merged marker", got)
+	}
+}
+
+func TestRemediator_StuckHumanBlocked_PRStateErrorFallsBackToRefresh(t *testing.T) {
+	t.Parallel()
+	existing := mkTask("hr-pr-error", task.StatusHumanRequired, func(tk *task.Task) {
+		tk.StatusReason = "waiting for human approval"
+		tk.ProjectID = "o/r"
+		tk.PRNumber = 42
+	})
+	ft := &fakeTasks{tasks: []task.Task{existing}}
+	rem := newRemediator(
+		ft,
+		nil,
+		func(repo string, number int) (github.PRState, error) {
+			if repo != "o/r" || number != 42 {
+				t.Fatalf("fetchPRState(%q, %d)", repo, number)
+			}
+			return github.PRState{}, errors.New("gh auth unavailable")
+		},
+		nil,
+	)
+	a := Anomaly{
+		Kind:   KindStuckHumanBlocked,
+		TaskID: "hr-pr-error",
+		Evidence: map[string]any{
+			"status": "human-required",
+		},
+	}
+
+	label, err := rem.Apply(context.Background(), a)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if label != "stuck_human_blocked:hr-pr-error" {
+		t.Fatalf("label = %q, want refresh label", label)
+	}
+	if len(ft.updates) != 1 {
+		t.Fatalf("want 1 refresh update, got %d", len(ft.updates))
+	}
+	u := ft.updates[0]
+	if u.id != "hr-pr-error" {
+		t.Fatalf("updated wrong task: %q", u.id)
+	}
+	if u.u.Status != nil {
+		t.Fatalf("status must not change, got %v", u.u.Status)
+	}
+	if u.u.StatusReason != nil {
+		t.Fatalf("status_reason must not change, got %q", *u.u.StatusReason)
 	}
 }
 
