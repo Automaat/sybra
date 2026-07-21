@@ -47,6 +47,7 @@ func (c *triageCoordinator) init() {
 	}
 	c.handler = poll.NewTriageHandler(c.tasks, c.projects, c.auditLog, c.logger, &c.cfg.Triage)
 	c.handler.SetProviderGate(c.providerHealth)
+	c.handler.SetSybraBugProjectID(c.cfg.HumanReviewRepo())
 	c.logger.Info("triage.enabled", "poll_seconds", c.cfg.Triage.PollSeconds, "model", c.cfg.Triage.Model)
 }
 

@@ -936,8 +936,8 @@ func (s *TaskService) redispatchStatusChanged(id, status string) (string, error)
 	)
 }
 
-// dispatchTargetSpec describes one status an operator can dispatch a
-// human-required task to.
+// dispatchTargetSpec describes one status an operator or human-review recovery
+// can move a human-required task to.
 type dispatchTargetSpec struct {
 	// requiresPR gates the target on the task already having a linked PR
 	// (only in-review needs this — dispatching in-review without a PR would
@@ -946,7 +946,13 @@ type dispatchTargetSpec struct {
 	// dispatches selects whether redispatchStatusChanged runs after the
 	// status write. in-review has no task.status_changed trigger — it is a
 	// plain PR-guarded status flip into the existing PR-monitoring state.
+	// done is also non-dispatching: it is a terminal close-out for an already
+	// completed/merged task that human-review proved should not be retried.
 	dispatches bool
+	// clearWorkflow removes a stale terminal workflow when the target status
+	// itself is the complete recovery. Without this, a task can be closed while
+	// still displaying the failed workflow that caused the human-required park.
+	clearWorkflow bool
 }
 
 var dispatchTargets = map[string]dispatchTargetSpec{
@@ -955,6 +961,7 @@ var dispatchTargets = map[string]dispatchTargetSpec{
 	string(task.StatusTesting):     {dispatches: true},
 	string(task.StatusReadyPR):     {dispatches: true},
 	string(task.StatusInReview):    {requiresPR: true, dispatches: false},
+	string(task.StatusDone):        {dispatches: false, clearWorkflow: true},
 }
 
 func readyPRNoWorkflowAllowed(role, target string) bool {
@@ -1040,10 +1047,14 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			cur.Workflow.WorkflowID, cur.Workflow.State))
 	}
 
-	if _, err := s.tasks.UpdateMap(id, map[string]any{
+	updates := map[string]any{
 		"status":        target,
 		"status_reason": reason,
-	}); err != nil {
+	}
+	if spec.clearWorkflow {
+		updates["workflow"] = (*workflow.Execution)(nil)
+	}
+	if _, err := s.tasks.UpdateMap(id, updates); err != nil {
 		return task.Task{}, err
 	}
 

@@ -248,10 +248,21 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 // poll-based auto-triage handler (internal/poll.TriageHandler), so the
 // workflow step no longer needs a full agent session to reach it.
 type taskClassifierAdapter struct {
-	tasks      *task.Manager
-	projects   *project.Store
-	classifier triage.Classifier
-	audit      *audit.Logger
+	tasks             *task.Manager
+	projects          *project.Store
+	classifier        triage.Classifier
+	audit             *audit.Logger
+	sybraBugProjectID string
+}
+
+func (a *App) newTaskClassifierAdapter() *taskClassifierAdapter {
+	return &taskClassifierAdapter{
+		tasks:             a.tasks,
+		projects:          a.projects,
+		classifier:        &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
+		audit:             a.audit,
+		sybraBugProjectID: a.cfg.HumanReviewRepo(),
+	}
 }
 
 func (a *taskClassifierAdapter) ClassifyTask(ctx context.Context, taskID string) error {
@@ -266,7 +277,9 @@ func (a *taskClassifierAdapter) ClassifyTask(ctx context.Context, taskID string)
 			return err
 		}
 	}
-	_, _, err = triage.ClassifyAndApply(ctx, a.classifier, a.tasks, a.audit, t, projects)
+	_, _, err = triage.ClassifyAndApplyWithOptions(ctx, a.classifier, a.tasks, a.audit, t, projects, triage.ApplyOptions{
+		SybraBugProjectID: a.sybraBugProjectID,
+	})
 	return err
 }
 
