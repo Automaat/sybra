@@ -1,12 +1,10 @@
 package workflow
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -469,12 +467,8 @@ func (e *Engine) handleExistingAnyStatePRForBranch(taskID string, step *Step, wt
 			return StepOutput{}, false
 		}
 		reason := fmt.Sprintf("branch already landed via merged PR #%d and has no remaining diff against base", num)
-		if err := e.tasks.UpdateTaskStatus(taskID, "done", reason); err != nil {
-			e.logger.Warn("workflow.create-pr.merged-branch-status", "task_id", taskID, "pr", num, "err", err)
-			return StepOutput{}, false
-		}
 		e.logger.Info("workflow.create-pr.merged-branch-done", "task_id", taskID, "pr", num)
-		out, _ := stepDone(step, reason)
+		out := StepOutput{StepID: step.ID, Status: "completed", Output: reason, TerminalStatus: "done", TerminalReason: reason}
 		return out, true
 	default:
 		return StepOutput{}, false
@@ -509,23 +503,25 @@ func branchPatchAlreadyAppliedToBase(ctx context.Context, wtPath string) (bool, 
 		return false, fmt.Errorf("create temp base tree: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
+	baseTreeDir := filepath.Join(tmpDir, "base")
 
-	archiveCmd := exec.CommandContext(ctx, "git", "archive", "--format=tar", baseRef)
-	archiveCmd.Dir = wtPath
-	archiveOut, err := archiveCmd.Output()
+	addCmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", baseTreeDir, baseRef)
+	addCmd.Dir = wtPath
+	addOut, err := addCmd.CombinedOutput()
 	if err != nil {
-		return false, fmt.Errorf("git archive %s: %w", baseRef, err)
+		return false, fmt.Errorf("git worktree add %s: %w: %s", baseRef, err, strings.TrimSpace(string(addOut)))
 	}
-	if err := extractTar(archiveOut, tmpDir); err != nil {
-		return false, err
-	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), shellTimeout)
+		defer cleanupCancel()
+		rmCmd := exec.CommandContext(cleanupCtx, "git", "worktree", "remove", "--force", baseTreeDir)
+		rmCmd.Dir = wtPath
+		_ = rmCmd.Run()
+	}()
 
-	patchPath := filepath.Join(tmpDir, ".sybra-branch.patch")
-	if err := os.WriteFile(patchPath, patch, 0o600); err != nil {
-		return false, fmt.Errorf("write branch patch: %w", err)
-	}
-	cmd := exec.CommandContext(ctx, "git", "apply", "--check", "--reverse", "--whitespace=nowarn", patchPath)
-	cmd.Dir = tmpDir
+	cmd := exec.CommandContext(ctx, "git", "apply", "--check", "--reverse", "--whitespace=nowarn", "-")
+	cmd.Dir = baseTreeDir
+	cmd.Stdin = bytes.NewReader(patch)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return true, nil
@@ -539,54 +535,6 @@ func branchPatchAlreadyAppliedToBase(ctx context.Context, wtPath string) (bool, 
 		return false, fmt.Errorf("git apply --reverse --check: %w", err)
 	}
 	return false, fmt.Errorf("git apply --reverse --check: %w: %s", err, detail)
-}
-
-func extractTar(data []byte, dest string) error {
-	tr := tar.NewReader(bytes.NewReader(data))
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("read base archive: %w", err)
-		}
-		target := filepath.Join(dest, hdr.Name)
-		cleanDest := filepath.Clean(dest) + string(os.PathSeparator)
-		cleanTarget := filepath.Clean(target)
-		if cleanTarget != filepath.Clean(dest) && !strings.HasPrefix(cleanTarget, cleanDest) {
-			return fmt.Errorf("archive path escapes destination: %s", hdr.Name)
-		}
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)); err != nil {
-				return fmt.Errorf("create archive dir %s: %w", hdr.Name, err)
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return fmt.Errorf("create archive parent %s: %w", hdr.Name, err)
-			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
-			if err != nil {
-				return fmt.Errorf("create archive file %s: %w", hdr.Name, err)
-			}
-			_, copyErr := io.Copy(f, tr)
-			closeErr := f.Close()
-			if copyErr != nil {
-				return fmt.Errorf("write archive file %s: %w", hdr.Name, copyErr)
-			}
-			if closeErr != nil {
-				return fmt.Errorf("close archive file %s: %w", hdr.Name, closeErr)
-			}
-		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return fmt.Errorf("create archive parent %s: %w", hdr.Name, err)
-			}
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return fmt.Errorf("create archive symlink %s: %w", hdr.Name, err)
-			}
-		}
-	}
 }
 
 // verifyPushedHead best-effort verifies the PR head now matches local HEAD

@@ -721,12 +721,15 @@ func TestExecCreatePR_MergedSameBranchWithAppliedPatchMarksDoneWithoutCreating(t
 	if creator.gotReq.Repo != "" {
 		t.Fatal("CreatePR must not be called when the branch patch already landed via a merged PR")
 	}
-	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "done" {
-		t.Fatalf("status = %q, want done", ti.Status)
+	if out.TerminalStatus != "done" {
+		t.Fatalf("TerminalStatus = %q, want done", out.TerminalStatus)
 	}
-	if !strings.Contains(ti.StatusReason, "merged PR #77") {
-		t.Fatalf("status reason = %q, want merged PR reference", ti.StatusReason)
+	if !strings.Contains(out.TerminalReason, "merged PR #77") {
+		t.Fatalf("TerminalReason = %q, want merged PR reference", out.TerminalReason)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "ready-pr" {
+		t.Fatalf("status = %q, want unchanged ready-pr before AdvanceStep handles terminal output", ti.Status)
 	}
 }
 
