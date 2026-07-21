@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -740,20 +741,106 @@ func TestOnComplete_UnblockedVerdict_ReadyPRWithoutPRStaysReadyPR(t *testing.T) 
 	}
 }
 
-func TestOnComplete_UnblockedVerdict_DoneActionClosesTask(t *testing.T) {
+func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const agentID = "agent-unblocked-done"
+	dir := setupUnblockedRecoveryWorktree(t, "feat/merged")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty local change"), 0o644); err != nil {
+		t.Fatalf("dirty file: %v", err)
+	}
 	tk, err := tasks.Create("Already merged task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("Automaat/sybra"),
-		PRNumber:  task.Ptr(2417),
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("github push preflight failed: auth"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		PRNumber:     task.Ptr(2417),
+		WorktreeDir:  task.Ptr(dir),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for merged landing")
+		return task.Task{}, nil
+	}
+	h.landClosedPR = func(_ context.Context, id string, prNumber int, state string) error {
+		if id != tk.ID {
+			t.Fatalf("taskID = %q, want %q", id, tk.ID)
+		}
+		if prNumber != 2417 {
+			t.Fatalf("prNumber = %d, want 2417", prNumber)
+		}
+		if state != "MERGED" {
+			t.Fatalf("state = %q, want MERGED", state)
+		}
+		_, err := tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusDone),
+			Outcome:      task.Ptr("merged"),
+			StatusReason: task.Ptr(""),
+		})
+		return err
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared merged landing", got.StatusReason)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("expected unblocked note in body; got:\n%s", got.Body)
+	}
+	if strings.Contains(got.Body, "claim not verified") {
+		t.Fatalf("unexpected verification failure note in body:\n%s", got.Body)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_DoneActionFallbackBackfillsPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done-fallback"
+	tk, err := tasks.Create("Merged task missing PR link", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("github push preflight failed: auth"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -792,6 +879,15 @@ func TestOnComplete_UnblockedVerdict_DoneActionClosesTask(t *testing.T) {
 	}
 	if got.Status != task.StatusDone {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.PRNumber != 2417 {
+		t.Fatalf("prNumber = %d, want 2417", got.PRNumber)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared after terminal recovery", got.StatusReason)
 	}
 	if !strings.Contains(got.Body, "Auto-review: unblocked") {
 		t.Fatalf("expected unblocked note in body; got:\n%s", got.Body)

@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"errors"
 
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
@@ -43,6 +44,12 @@ func (a *App) wireTaskService() {
 	if a.humanReview != nil {
 		a.humanReview.dispatchFromHumanRequired = func(id, target, reason, completingAgentID string) (task.Task, error) {
 			return a.taskSvc.dispatchFromHumanRequiredAllowingAgent(id, target, reason, completingAgentID)
+		}
+		a.humanReview.landClosedPR = func(ctx context.Context, taskID string, prNumber int, state string) error {
+			if a.reviewer == nil {
+				return errors.New("review handler unavailable")
+			}
+			return a.reviewer.AdvanceClosedTaskPR(ctx, taskID, prNumber, state)
 		}
 	}
 }
