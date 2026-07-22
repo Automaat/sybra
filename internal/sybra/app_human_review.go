@@ -132,7 +132,7 @@ func newHumanReviewHandler(
 		logFile:      logFile,
 		now:          time.Now,
 		workCtx:      workCtx,
-		fetchPRState: github.FetchPRState,
+		fetchPRState: github.FetchPRStateViaREST,
 		inflight:     make(map[string]string),
 		perTask:      make(map[string][]time.Time),
 	}
@@ -418,12 +418,17 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 	note := h.scrubForTask(current.ProjectID, v.Summary)
 	status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
 	if ok && current.Status == task.StatusHumanRequired && h.verifyUnblocked(current) {
-		var prepared bool
-		current, prepared = h.prepareDoneRecovery(current, status, v)
-		if !prepared || !h.verifyDoneRecovery(current, status) {
+		originalPRNumber := current.PRNumber
+		current = h.prepareDoneRecovery(current, status, v)
+		if !h.verifyDoneRecovery(current, status) {
 			if h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
 				h.markVerdictRendered(current.ID, agentID)
 			}
+			return
+		}
+		var prepared bool
+		current, prepared = h.persistDoneRecoveryPR(current, originalPRNumber, status)
+		if !prepared {
 			return
 		}
 		statusReason := "auto-review recovery: " + strings.TrimSpace(v.Summary)
@@ -525,9 +530,14 @@ func (h *humanReviewHandler) recoverRenderedUnblockedTasks() {
 			continue
 		}
 		if status == task.StatusDone {
+			originalPRNumber := t.PRNumber
+			t = h.prepareDoneRecovery(t, status, v)
+			if !h.verifyDoneRecovery(t, status) {
+				continue
+			}
 			var prepared bool
-			t, prepared = h.prepareDoneRecovery(t, status, v)
-			if !prepared || !h.verifyDoneRecovery(t, status) {
+			t, prepared = h.persistDoneRecoveryPR(t, originalPRNumber, status)
+			if !prepared {
 				continue
 			}
 			if err := h.advanceDoneRecovery(t, agentID); err != nil {
@@ -690,18 +700,26 @@ func (h *humanReviewHandler) verifyDoneRecovery(t task.Task, status task.Status)
 	return true
 }
 
-func (h *humanReviewHandler) prepareDoneRecovery(t task.Task, status task.Status, v verdictDecision) (task.Task, bool) {
+func (h *humanReviewHandler) prepareDoneRecovery(t task.Task, status task.Status, v verdictDecision) task.Task {
 	if status != task.StatusDone {
-		return t, true
+		return t
 	}
 	number, ok := humanReviewRecoverPRNumber(v)
 	if !ok || number == t.PRNumber {
+		return t
+	}
+	t.PRNumber = number
+	return t
+}
+
+func (h *humanReviewHandler) persistDoneRecoveryPR(t task.Task, originalPRNumber int, status task.Status) (task.Task, bool) {
+	if status != task.StatusDone || t.PRNumber == originalPRNumber {
 		return t, true
 	}
-	updated, err := h.tasks.Update(t.ID, task.Update{PRNumber: task.Ptr(number)})
+	updated, err := h.tasks.Update(t.ID, task.Update{PRNumber: task.Ptr(t.PRNumber)})
 	if err != nil {
 		h.logger.Warn("human-review.unblocked.done-pr-backfill",
-			"task_id", t.ID, "project_id", t.ProjectID, "pr_number", number, "err", err)
+			"task_id", t.ID, "project_id", t.ProjectID, "pr_number", t.PRNumber, "err", err)
 		return t, false
 	}
 	return updated, true
