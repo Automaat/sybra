@@ -24,7 +24,7 @@ describe('BottomTabBar', () => {
 
   it('exposes the primary tabs incl. Reviews (its only mobile home)', () => {
     render(BottomTabBar, { props: { onmore: vi.fn() } })
-    for (const label of ['Chats', 'Agents', 'Reviews']) {
+    for (const label of ['Board', 'Agents', 'Reviews']) {
       expect(screen.getByLabelText(label)).toBeDefined()
     }
   })
