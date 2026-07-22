@@ -245,6 +245,7 @@ func TestResolveRunRole(t *testing.T) {
 		{name: "explicit role wins", role: RoleMonitor, agent: "monitor:lost_agent", want: RoleMonitor},
 		{name: "plain name defaults to implementation", agent: "Task title", want: RoleImplementation},
 		{name: "known prefix is accepted", agent: "monitor:lost_agent", want: RoleMonitor},
+		{name: "human title with colon defaults to implementation", agent: "refactor(agent): classify monitor runs", want: RoleImplementation},
 		{name: "unknown prefixed name fails", agent: "future:thing", wantErr: true},
 		{name: "unknown explicit role fails", role: Role("future"), agent: "Task title", wantErr: true},
 	}

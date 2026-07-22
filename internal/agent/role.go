@@ -75,7 +75,8 @@ func (r Role) IsVerifier() bool {
 }
 
 // IsSystem returns true for roles whose agents should not trigger
-// user-facing notifications (triage, eval, plan-critic, human-review).
+// user-facing notifications (triage, eval, plan-critic, human-review,
+// monitor, loop, orchestrator).
 func (r Role) IsSystem() bool {
 	switch r {
 	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview, RoleMonitor, RoleLoop, RoleOrchestrator:
@@ -143,7 +144,23 @@ func ResolveRunRole(role Role, name string) (Role, error) {
 	if resolved, ok := ParseRoleFromName(name); ok {
 		return resolved, nil
 	}
+	prefix, _, _ := strings.Cut(name, ":")
+	if !looksLikeRoleToken(prefix) {
+		return RoleImplementation, nil
+	}
 	return "", errUnknownRolePrefix(name)
+}
+
+func looksLikeRoleToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func errUnknownRole(role Role) error {
