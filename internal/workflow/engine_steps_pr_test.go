@@ -533,6 +533,8 @@ func TestExecCreatePR_Success(t *testing.T) {
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
+	reviewer := &fakePRReviewRequester{}
+	engine.SetPRReviewRequester(reviewer)
 	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
@@ -560,6 +562,37 @@ func TestExecCreatePR_Success(t *testing.T) {
 	}
 	if creator.gotReq.Title != "feat(x): y" {
 		t.Errorf("CreatePR title = %q", creator.gotReq.Title)
+	}
+	if reviewer.copilotCalls != 1 || reviewer.copilotRepo != "acme/widgets" || reviewer.copilotPRNumber != 42 {
+		t.Fatalf("Copilot request = calls:%d repo:%q pr:%d", reviewer.copilotCalls, reviewer.copilotRepo, reviewer.copilotPRNumber)
+	}
+}
+
+func TestExecCreatePR_CopilotReviewFailureDoesNotBlockPR(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/my-branch")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
+	tasks.Put(task)
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRCreator(&fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)})
+	engine.SetPRReviewRequester(&fakePRReviewRequester{copilotErr: errors.New("copilot unavailable")})
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.PRNumber != 42 {
+		t.Errorf("PRNumber = %d, want 42", ti.PRNumber)
+	}
+	if ti.Status == "human-required" {
+		t.Errorf("task should not be human-required: %s", tasks.Reason("t1"))
 	}
 }
 

@@ -471,6 +471,10 @@ func (prReviewRequesterAdapter) RerequestReview(repo string, prNumber int) ([]st
 	return reviewers, nil
 }
 
+func (prReviewRequesterAdapter) RequestCopilotReview(ctx context.Context, repo string, prNumber int) error {
+	return github.RequestCopilotReviewCtx(ctx, repo, prNumber)
+}
+
 func eligibleRerequestReviewer(login, viewer, prAuthor string) bool {
 	if login == "" {
 		return false

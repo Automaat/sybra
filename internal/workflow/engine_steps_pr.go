@@ -72,6 +72,7 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 		if err := e.linkTaskPR(taskID, t, existing); err != nil {
 			return StepOutput{}, fmt.Errorf("create_pr: link existing pr: %w", err)
 		}
+		e.requestCopilotReview(taskID, t.ProjectID, existing)
 		return stepDone(step, fmt.Sprintf("pr #%d already exists for branch", existing))
 	}
 	if out, done := e.handleExistingAnyStatePRForBranch(taskID, step, wtPath, t, headArg); done {
@@ -107,11 +108,25 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 	if err := e.linkTaskPR(taskID, t, number); err != nil {
 		return StepOutput{}, fmt.Errorf("create_pr: link pr: %w", err)
 	}
+	e.requestCopilotReview(taskID, t.ProjectID, number)
 	if localSHA, lErr := project.CurrentCommit(ctx, wtPath); lErr == nil && headSHA != "" && localSHA != headSHA {
 		e.logger.Warn("workflow.create-pr.head-mismatch", "task_id", taskID, "pr", number, "local", localSHA, "remote", headSHA)
 	}
 	e.logger.Info("workflow.create-pr.created", "task_id", taskID, "pr", number)
 	return stepDone(step, fmt.Sprintf("created pr #%d", number))
+}
+
+func (e *Engine) requestCopilotReview(taskID, repo string, prNumber int) {
+	if repo == "" || prNumber <= 0 || e.prReviewers == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	if err := e.prReviewers.RequestCopilotReview(ctx, repo, prNumber); err != nil {
+		e.logger.Warn("workflow.create-pr.copilot-review.failed", "task_id", taskID, "repo", repo, "pr", prNumber, "err", err)
+		return
+	}
+	e.logger.Info("workflow.create-pr.copilot-review.requested", "task_id", taskID, "repo", repo, "pr", prNumber)
 }
 
 func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createErr error) (int, bool) {
@@ -132,6 +147,7 @@ func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createE
 		return 0, false
 	}
 	e.logger.Info("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing)
+	e.requestCopilotReview(taskID, repo, existing)
 	return existing, true
 }
 
