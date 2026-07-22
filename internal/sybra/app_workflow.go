@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
@@ -170,6 +171,19 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 	return err
 }
 
+func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	u := task.Update{Status: &st, Blocker: &state}
+	if reason != "" {
+		u.StatusReason = &reason
+	}
+	_, err = a.tasks.Update(id, u)
+	return err
+}
+
 func (a *taskAdapter) UpdateTaskPR(id string, prNumber int) error {
 	_, err := a.tasks.Update(id, task.Update{PRNumber: &prNumber})
 	return err
@@ -300,6 +314,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Title:                 t.Title,
 		Status:                string(t.Status),
 		StatusReason:          t.StatusReason,
+		Blocker:               t.Blocker,
 		Role:                  t.RunRole,
 		Tags:                  t.Tags,
 		AgentMode:             t.AgentMode,

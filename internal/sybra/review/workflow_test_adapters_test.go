@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
@@ -59,6 +60,19 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 		return err
 	}
 	u := task.Update{Status: &st}
+	if reason != "" {
+		u.StatusReason = &reason
+	}
+	_, err = a.tasks.Update(id, u)
+	return err
+}
+
+func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	u := task.Update{Status: &st, Blocker: &state}
 	if reason != "" {
 		u.StatusReason = &reason
 	}

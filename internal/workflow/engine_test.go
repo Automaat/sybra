@@ -18,6 +18,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/attribution"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/prompteval"
@@ -236,6 +237,20 @@ func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
 	}
 	t.Status = status
 	t.StatusReason = reason
+	m.reasons[id] = reason
+	return nil
+}
+
+func (m *memTasks) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Status = status
+	t.StatusReason = reason
+	t.Blocker = state
 	m.reasons[id] = reason
 	return nil
 }
@@ -1215,6 +1230,85 @@ func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing
 				if got.Workflow.Variables[watchdogHangCleanRetryKey("implement")] != "" {
 					t.Fatalf("clean retry marker = %q, want cleared after dispatch", got.Workflow.Variables[watchdogHangCleanRetryKey("implement")])
 				}
+			}
+		})
+	}
+}
+
+func TestResumeStalled_WorktreeRepairRetriesThenExhausts(t *testing.T) {
+	tests := []struct {
+		name       string
+		attempts   string
+		wantStarts int
+		wantStatus string
+		wantRetry  string
+		wantExh    bool
+	}{
+		{
+			name:       "first attempt retries in place",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantRetry:  "1",
+		},
+		{
+			name:       "budget exhausted stays blocked and marks exhausted",
+			attempts:   "2",
+			wantStarts: 0,
+			wantStatus: "blocked",
+			wantRetry:  "2",
+			wantExh:    true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+			vars := map[string]string{}
+			if tc.attempts != "" {
+				vars[worktreeRepairRetryKey("implement")] = tc.attempts
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "blocked",
+				StatusReason: worktreeerr.RebaseBlockedReason,
+				AgentMode:    "headless",
+				Blocker: blocker.State{
+					Kind:       blocker.KindWorktreeRepair,
+					Actor:      blocker.ActorWorkflow,
+					Code:       "rebase_failed",
+					NextAction: "repair_worktree",
+				},
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   vars,
+					StartedAt:   time.Now().UTC(),
+				},
+			})
+
+			engine.ResumeStalled()
+
+			if got := agents.CallCount(); got != tc.wantStarts {
+				t.Fatalf("StartAgent calls = %d, want %d", got, tc.wantStarts)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.Workflow.Variables[worktreeRepairRetryKey("implement")] != tc.wantRetry {
+				t.Fatalf("retry var = %q, want %q", got.Workflow.Variables[worktreeRepairRetryKey("implement")], tc.wantRetry)
+			}
+			if got.Blocker.Exhausted != tc.wantExh {
+				t.Fatalf("blocker.Exhausted = %v, want %v", got.Blocker.Exhausted, tc.wantExh)
+			}
+			if !tc.wantExh && !got.Blocker.IsZero() {
+				t.Fatalf("blocker state should be cleared on successful retry, got %+v", got.Blocker)
 			}
 		})
 	}

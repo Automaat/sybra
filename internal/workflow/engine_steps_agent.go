@@ -194,8 +194,8 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		err := fmt.Errorf("%w: %s", ErrResourcePressure, reason)
-		classifiedReason, _ := ClassifyAgentStartError(err)
-		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, classifiedReason); err != nil {
+		failure := ClassifyAgentStartFailure(err)
+		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, failure.Reason); err != nil {
 			return err
 		}
 		wfExec.State = ExecWaiting

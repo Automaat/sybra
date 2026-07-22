@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/attachment"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -326,8 +327,9 @@ type Task struct {
 	// append "Closes <url>" to the task's PR body, by findActiveDuplicate for
 	// dedup, and by the umbrella gate/DAG for state tracking. Never overwrite
 	// this after creation to attach an unrelated reference — use RefIssue.
-	Issue        string `json:"issue"`
-	StatusReason string `json:"statusReason"`
+	Issue        string        `json:"issue"`
+	StatusReason string        `json:"statusReason"`
+	Blocker      blocker.State `json:"blocker,omitzero"`
 	// HandoffSourceProvider records which local agent provider produced the
 	// work before a handoff skipped directly into review/testing/PR. Workflow
 	// steps with provider=cross use it when there is no Sybra-authored run

@@ -10,6 +10,9 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as attachment$0 from "../attachment/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as blocker$0 from "../blocker/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as workflow$0 from "../workflow/models.js";
 
 /**
@@ -324,6 +327,7 @@ export class Task {
      */
     "issue": string;
     "statusReason": string;
+    "blocker"?: blocker$0.State;
 
     /**
      * HandoffSourceProvider records which local agent provider produced the
@@ -610,11 +614,12 @@ export class Task {
     static createFrom($$source: any = {}): Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
-        const $$createField18_0 = $$createType0;
-        const $$createField38_0 = $$createType2;
-        const $$createField39_0 = $$createType4;
-        const $$createField40_0 = $$createType6;
-        const $$createField56_0 = $$createType7;
+        const $$createField14_0 = $$createType1;
+        const $$createField19_0 = $$createType0;
+        const $$createField39_0 = $$createType3;
+        const $$createField40_0 = $$createType5;
+        const $$createField41_0 = $$createType7;
+        const $$createField57_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -622,20 +627,23 @@ export class Task {
         if ("tags" in $$parsedSource) {
             $$parsedSource["tags"] = $$createField7_0($$parsedSource["tags"]);
         }
+        if ("blocker" in $$parsedSource) {
+            $$parsedSource["blocker"] = $$createField14_0($$parsedSource["blocker"]);
+        }
         if ("dependsOn" in $$parsedSource) {
-            $$parsedSource["dependsOn"] = $$createField18_0($$parsedSource["dependsOn"]);
+            $$parsedSource["dependsOn"] = $$createField19_0($$parsedSource["dependsOn"]);
         }
         if ("attachments" in $$parsedSource) {
-            $$parsedSource["attachments"] = $$createField38_0($$parsedSource["attachments"]);
+            $$parsedSource["attachments"] = $$createField39_0($$parsedSource["attachments"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField39_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField40_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField40_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField41_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField56_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField57_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -668,6 +676,7 @@ export class Update {
     "Slug": string | null;
     "Status": Status | null;
     "StatusReason": string | null;
+    "Blocker": blocker$0.State | null;
     "BlockedByIssue": string | null;
     "UmbrellaIssue": string | null;
     "DependsOn": string[] | null;
@@ -721,6 +730,9 @@ export class Update {
         }
         if (!("StatusReason" in $$source)) {
             this["StatusReason"] = null;
+        }
+        if (!("Blocker" in $$source)) {
+            this["Blocker"] = null;
         }
         if (!("BlockedByIssue" in $$source)) {
             this["BlockedByIssue"] = null;
@@ -847,22 +859,26 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField6_0 = $$createType8;
-        const $$createField10_0 = $$createType8;
-        const $$createField27_0 = $$createType9;
-        const $$createField42_0 = $$createType10;
+        const $$createField4_0 = $$createType9;
+        const $$createField7_0 = $$createType10;
+        const $$createField11_0 = $$createType10;
+        const $$createField28_0 = $$createType11;
+        const $$createField43_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("Blocker" in $$parsedSource) {
+            $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
+        }
         if ("DependsOn" in $$parsedSource) {
-            $$parsedSource["DependsOn"] = $$createField6_0($$parsedSource["DependsOn"]);
+            $$parsedSource["DependsOn"] = $$createField7_0($$parsedSource["DependsOn"]);
         }
         if ("Tags" in $$parsedSource) {
-            $$parsedSource["Tags"] = $$createField10_0($$parsedSource["Tags"]);
+            $$parsedSource["Tags"] = $$createField11_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField27_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField28_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField42_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField43_0($$parsedSource["Attachments"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
@@ -870,13 +886,15 @@ export class Update {
 
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = attachment$0.Attachment.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = AgentRun.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = workflow$0.Execution.createFrom;
-const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = $Create.Map($Create.Any, $Create.Any);
-const $$createType8 = $Create.Nullable($$createType0);
-const $$createType9 = $Create.Nullable($$createType6);
-const $$createType10 = $Create.Nullable($$createType2);
+const $$createType1 = blocker$0.State.createFrom;
+const $$createType2 = attachment$0.Attachment.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = AgentRun.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = workflow$0.Execution.createFrom;
+const $$createType7 = $Create.Nullable($$createType6);
+const $$createType8 = $Create.Map($Create.Any, $Create.Any);
+const $$createType9 = $Create.Nullable($$createType1);
+const $$createType10 = $Create.Nullable($$createType0);
+const $$createType11 = $Create.Nullable($$createType7);
+const $$createType12 = $Create.Nullable($$createType3);
