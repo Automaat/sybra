@@ -159,15 +159,6 @@
     }
   }
 
-  async function updateTaskType(value: string) {
-    if ((task.taskType ?? 'normal') === value) return
-    try {
-      await taskStore.update(task.id, { task_type: value })
-    } catch (e) {
-      error = String(e)
-    }
-  }
-
   async function copyId() {
     try {
       await navigator.clipboard.writeText(task.id)
@@ -364,22 +355,6 @@
       {#if menuOpen}
         <button type="button" tabindex="-1" class="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onclick={closeMenu}></button>
         <div role="menu" class="absolute right-0 z-50 mt-1 w-48 rounded-lg py-1 elevation-popover">
-          <div class="flex flex-col gap-1 px-3 py-1.5">
-            <span id="task-type-label" class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Task type</span>
-            <select
-              data-testid="task-type-select"
-              aria-labelledby="task-type-label"
-              class="rounded border border-surface-300 bg-surface-100 px-2 py-1 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
-              value={task.taskType || 'normal'}
-              onchange={(e) => updateTaskType((e.target as HTMLSelectElement).value)}
-              title="Task type — controls execution mode and worktree behavior"
-            >
-              <option value="normal">normal</option>
-              <option value="debug">debug</option>
-              <option value="research">research</option>
-            </select>
-          </div>
-          <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
           <button
             type="button"
             role="menuitem"

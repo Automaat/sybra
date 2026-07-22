@@ -33,16 +33,11 @@ import (
 )
 
 // ResolveExecution derives the effective mode, directory, permission mode, and
-// whether project worktree setup should be skipped based on the task's type.
-// hintMode is used when the task type does not force a specific mode.
-// Permission priority: task-level override > TaskType hardcoded > config default > true.
+// whether project worktree setup should be skipped. Task mode is explicit; task
+// type does not affect execution.
 func ResolveExecution(t task.Task, hintMode, researchMachineDir string, cfg *config.Config) (mode, dir string, requirePerm, skipWorktree bool) {
-	switch t.TaskType {
-	case task.TaskTypeDebug:
-		return "interactive", "", true, false
-	case task.TaskTypeResearch:
-		return "headless", researchMachineDir, ResolvePermission(t, cfg), true
-	case task.TaskTypeChat:
+	switch {
+	case task.IsChatTask(t):
 		return "interactive", "", ResolvePermission(t, cfg), false
 	default:
 		return hintMode, "", ResolvePermission(t, cfg), false
@@ -434,14 +429,16 @@ func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
 }
 
 // resolveDispatchDir prepares (or reuses) the working directory for a
-// project-backed task dispatch. When skipWT is true, dir is returned as
-// given (research-machine or chat tasks that don't isolate into a worktree).
+// project-backed task dispatch. When skipWT is true, dir is returned as given.
 // Otherwise it auto-assigns a project if needed, optionally resets the
 // worktree for a clean retry, and prepares the task's worktree, returning
 // the (possibly project-assigned) task and its worktree directory.
 func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim, reservation *agent.CapacityReservation) (task.Task, string, error) {
 	if skipWT {
 		return t, dir, nil
+	}
+	if o.worktrees == nil {
+		return t, fallbackDispatchDir(dir), nil
 	}
 	var assignErr error
 	t, assignErr = o.AutoAssignProject(t)
@@ -797,6 +794,9 @@ func (o *Orchestrator) enqueueManualStart(t task.Task, taskID, mode, prompt stri
 
 func (o *Orchestrator) ensureQueueableManualTask(t task.Task, taskID string, skipWT bool) (task.Task, error) {
 	if skipWT {
+		return t, nil
+	}
+	if o.worktrees == nil {
 		return t, nil
 	}
 	assigned, err := o.AutoAssignProject(t)
@@ -1163,7 +1163,7 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 
 	o.LogAudit(audit.EventAgentStarted, t.ID, ag.ID, map[string]any{
 		"mode": "interactive", "title": t.Title, "role": "chat",
-		"task_type": string(t.TaskType), "provider": ag.Provider,
+		"provider":            ag.Provider,
 		"require_permissions": requirePerm,
 	})
 	if err := o.tasks.AddRun(t.ID, task.AgentRun{
@@ -1260,6 +1260,9 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, t.AgentMode, researchDir, o.cfg)
 	if !skipWT {
+		if o.worktrees == nil {
+			return fmt.Errorf("task %s: refusing to start pr-fix agent without isolated worktree manager: %w", taskID, workflow.ErrNoProjectAssigned)
+		}
 		t, err = o.AutoAssignProject(t)
 		if err != nil {
 			return err
@@ -1327,6 +1330,13 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return nil
+}
+
+func fallbackDispatchDir(dir string) string {
+	if dir != "" {
+		return dir
+	}
+	return os.TempDir()
 }
 
 // BuildPRFixPrompt constructs the prompt for a PR fix agent.

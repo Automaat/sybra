@@ -471,7 +471,6 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
-		TaskType:        TaskTypeNormal,
 		AgentMode:       mode,
 		Attachments:     []Attachment{},
 		CreatedAt:       now,
@@ -514,7 +513,6 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
-		TaskType:        TaskTypeNormal,
 		AgentMode:       mode,
 		Attachments:     []Attachment{},
 		CreatedAt:       now,
@@ -659,9 +657,7 @@ func (s *Store) Put(t Task) (Task, error) {
 	if t.StatusChangedAt.IsZero() {
 		t.StatusChangedAt = t.UpdatedAt
 	}
-	if t.TaskType == "" {
-		t.TaskType = TaskTypeNormal
-	}
+	t.TaskType = normalizeTaskType(t.TaskType)
 	data, err := marshalTask(t, false)
 	if err != nil {
 		return Task{}, err
@@ -689,8 +685,8 @@ func (s *Store) CreateChat(projectID string) (Task, error) {
 		Slug:            "chat-" + id,
 		Title:           title,
 		Status:          StatusInProgress,
-		TaskType:        TaskTypeChat,
 		AgentMode:       AgentModeInteractive,
+		Tags:            []string{ChatTag},
 		ProjectID:       projectID,
 		Attachments:     []Attachment{},
 		CreatedAt:       now,

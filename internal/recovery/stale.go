@@ -48,7 +48,7 @@ func (r *Recovery) RestartTaskIfStale(ctx context.Context, taskID string) error 
 }
 
 func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
-	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+	if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
 		return
 	}
 	if r.DispatchGate != nil && !r.DispatchGate(t) {

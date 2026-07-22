@@ -292,7 +292,7 @@ func (r *Handler) reactivateLinkedOwnPR(t *task.Task, livePR bool) *task.Task {
 }
 
 func linkedOwnPRHumanRequiredDrift(t *task.Task, livePR bool) bool {
-	if t == nil || t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if t == nil || task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
 		return false
 	}
 	if !livePR || t.Status != task.StatusHumanRequired || t.PRNumber == 0 || strings.TrimSpace(t.StatusReason) != "" {
@@ -339,7 +339,7 @@ func settledOwnPR(pr github.PullRequest) bool {
 // ownPRColumnTask reports whether a task is one of the user's own PRs shown in
 // the In Review column — the set reconcilePRPhases assigns a PR phase to.
 func ownPRColumnTask(t *task.Task) bool {
-	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
 		return false
 	}
 	if t.Status != task.StatusInReview && t.Status != task.StatusReadyReview {
@@ -416,7 +416,7 @@ func exhaustedFixReasonKind(reason string) (github.PRIssueKind, bool) {
 // human-authored reasons, and tasks already reconciled once (latch tag present,
 // to prevent flip-flopping).
 func humanRequiredBlockerReconcilable(t *task.Task) (kind github.PRIssueKind, ok bool) {
-	if t == nil || t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if t == nil || task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
 		return "", false
 	}
 	if t.Status != task.StatusHumanRequired || t.PRNumber == 0 {

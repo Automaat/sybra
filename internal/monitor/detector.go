@@ -101,7 +101,7 @@ func detectPerTask(in DetectInput) []Anomaly {
 	tracked := openLostAgentInvestigations(in.Tasks)
 	for i := range in.Tasks {
 		t := &in.Tasks[i]
-		if t.TaskType == task.TaskTypeChat {
+		if task.IsChatTask(t) {
 			continue
 		}
 		if !projectAllowed(in.AllowsProject, t.ProjectID) {
@@ -356,7 +356,7 @@ func detectLostAgents(in DetectInput) []Anomaly {
 		// children (app_umbrella_gate.go). Flagging either as a lost agent would
 		// produce noisy recovery handoff reports every cycle. Mirrors recovery's
 		// RestartStaleInProgress.
-		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+		if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
 			continue
 		}
 		if !projectAllowed(in.AllowsProject, t.ProjectID) {

@@ -2,6 +2,7 @@ package task
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/attachment"
@@ -92,18 +93,10 @@ func ValidatePriority(s string) (Priority, error) {
 	return p, nil
 }
 
-// TaskType distinguishes a task's role for agents beyond its lifecycle
-// Status — e.g. TaskTypeChat and TaskTypeUmbrella are synthetic types that
-// run no agent of their own and are excluded from normal dispatch.
+// TaskType is an internal marker for umbrella tracker tasks.
 type TaskType string
 
 const (
-	TaskTypeNormal   TaskType = "normal"
-	TaskTypeDebug    TaskType = "debug"
-	TaskTypeResearch TaskType = "research"
-	// TaskTypeChat is a synthetic task created for interactive chat sessions.
-	// Hidden from the task list UI and skipped by restart-stale/watchdog.
-	TaskTypeChat TaskType = "chat"
 	// TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.
 	// It runs no agent: it rolls up the status of its child tasks and is the
 	// task the dependency gate flips to human-required on a dependency cycle.
@@ -111,13 +104,26 @@ const (
 )
 
 var validTaskTypes = map[TaskType]bool{
-	TaskTypeNormal: true, TaskTypeDebug: true, TaskTypeResearch: true,
-	TaskTypeChat: true, TaskTypeUmbrella: true,
+	"": true, TaskTypeUmbrella: true,
 }
 
-// AllTaskTypes returns every valid task type in display order.
+// AllTaskTypes returns explicit task_type values in display order. The empty
+// string is also accepted as the implicit default but is not returned here.
 func AllTaskTypes() []TaskType {
-	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch, TaskTypeChat, TaskTypeUmbrella}
+	return []TaskType{TaskTypeUmbrella}
+}
+
+const ChatTag = "chat"
+
+func IsChatTask(t any) bool {
+	switch tt := t.(type) {
+	case Task:
+		return slices.Contains(tt.Tags, ChatTag)
+	case *Task:
+		return tt != nil && slices.Contains(tt.Tags, ChatTag)
+	default:
+		return false
+	}
 }
 
 // ValidateTaskType parses s into a TaskType, returning an error naming every
@@ -125,7 +131,7 @@ func AllTaskTypes() []TaskType {
 func ValidateTaskType(s string) (TaskType, error) {
 	tt := TaskType(s)
 	if !validTaskTypes[tt] {
-		return "", fmt.Errorf("invalid task_type %q (valid: %v)", s, AllTaskTypes())
+		return "", fmt.Errorf("invalid task_type %q (valid: empty or %v)", s, AllTaskTypes())
 	}
 	return tt, nil
 }

@@ -642,25 +642,13 @@ export class Task {
 }
 
 /**
- * TaskType distinguishes a task's role for agents beyond its lifecycle
- * Status — e.g. TaskTypeChat and TaskTypeUmbrella are synthetic types that
- * run no agent of their own and are excluded from normal dispatch.
+ * TaskType is an internal marker for umbrella tracker tasks.
  */
 export enum TaskType {
     /**
      * The Go zero value for the underlying type of the enum.
      */
     $zero = "",
-
-    TaskTypeNormal = "normal",
-    TaskTypeDebug = "debug",
-    TaskTypeResearch = "research",
-
-    /**
-     * TaskTypeChat is a synthetic task created for interactive chat sessions.
-     * Hidden from the task list UI and skipped by restart-stale/watchdog.
-     */
-    TaskTypeChat = "chat",
 
     /**
      * TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.

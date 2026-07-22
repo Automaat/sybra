@@ -1674,7 +1674,7 @@ func (r *Handler) includeKnownTaskPRs(ctx context.Context, tasks []task.Task, mo
 // Branch-only matching stays gated on in-review to avoid false positives
 // from tasks that pushed a WIP branch without opening a PR yet.
 func prMonitorEligible(t *task.Task) bool {
-	if t.TaskType == task.TaskTypeChat {
+	if task.IsChatTask(t) {
 		// Chat tasks are ephemeral and never have PRs — exclude from PR monitoring.
 		return false
 	}
@@ -1712,7 +1712,7 @@ func prClosedEligible(t *task.Task) bool {
 	if prMonitorEligible(t) {
 		return true
 	}
-	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
 		return false
 	}
 	return t.Status == task.StatusHumanRequired && t.PRNumber != 0
@@ -1749,7 +1749,7 @@ func hasOrphanStrandReason(reason string) bool {
 // an orphan regardless of how it got there. Chat tasks and inbound review tasks
 // are never own-PR tasks.
 func orphanPRAdoptionEligible(t *task.Task) bool {
-	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
 		return false
 	}
 	if t.PRNumber != 0 || t.Branch == "" || t.ProjectID == "" {

@@ -25,7 +25,7 @@ func (w *Watchdog) checkRunRate(now time.Time) {
 	}
 	for i := range tasks {
 		t := &tasks[i]
-		if t.TaskType == task.TaskTypeChat {
+		if task.IsChatTask(t) {
 			continue
 		}
 		// in-review is watched alongside in-progress: pr-fix — one of the

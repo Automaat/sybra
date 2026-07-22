@@ -705,8 +705,8 @@ func (a *App) StopChat(agentID string) error {
 	if err != nil {
 		return fmt.Errorf("lookup chat task: %w", err)
 	}
-	if t.TaskType != task.TaskTypeChat {
-		return fmt.Errorf("agent %s is not a chat (task_type=%s)", agentID, t.TaskType)
+	if !task.IsChatTask(t) {
+		return fmt.Errorf("agent %s is not a chat", agentID)
 	}
 	return a.taskSvc.DeleteTask(t.ID)
 }

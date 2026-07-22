@@ -119,7 +119,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		done := newTask("done", 1, base)
 		done.Status = task.StatusDone
 		chat := newTask("chat", 2, base.Add(-time.Second))
-		chat.TaskType = task.TaskTypeChat
+		chat.Tags = []string{task.ChatTag}
 		reviewTask := newTask("review-task", 3, base.Add(-2*time.Second))
 		reviewTask.Tags = []string{"review"}
 
