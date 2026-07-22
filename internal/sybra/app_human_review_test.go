@@ -1109,6 +1109,90 @@ func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 	}
 }
 
+func TestOnComplete_UnblockedVerdict_DoneActionPrefersVerdictPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done-replacement-pr"
+	tk, err := tasks.Create("Merged replacement PR task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("waiting on review"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		PRNumber:     task.Ptr(100),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for merged landing")
+		return task.Task{}, nil
+	}
+	h.landClosedPR = func(_ context.Context, id string, prNumber int, state, completingAgentID string) error {
+		if id != tk.ID {
+			t.Fatalf("taskID = %q, want %q", id, tk.ID)
+		}
+		if prNumber != 101 {
+			t.Fatalf("prNumber = %d, want replacement PR 101", prNumber)
+		}
+		if state != "MERGED" {
+			t.Fatalf("state = %q, want MERGED", state)
+		}
+		if completingAgentID != agentID {
+			t.Fatalf("completingAgentID = %q, want %q", completingAgentID, agentID)
+		}
+		_, err := tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusDone),
+			Outcome:      task.Ptr("merged"),
+			StatusReason: task.Ptr(""),
+		})
+		return err
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 101 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#101", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #101","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.PRNumber != 101 {
+		t.Fatalf("prNumber = %d, want replacement PR 101", got.PRNumber)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if strings.Contains(got.Body, "claim not verified") {
+		t.Fatalf("unexpected verification failure note in body:\n%s", got.Body)
+	}
+}
+
 func TestOnComplete_UnblockedVerdict_DoneActionPreservesLandingOutcome(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)

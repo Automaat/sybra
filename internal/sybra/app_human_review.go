@@ -515,7 +515,7 @@ func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note 
 		Status:       task.Ptr(task.StatusDone),
 		StatusReason: task.Ptr(""),
 	}
-	if mergedPR && current.PRNumber == 0 {
+	if mergedPR && current.PRNumber != prNumber {
 		update.PRNumber = task.Ptr(prNumber)
 	}
 	if mergedPR {
@@ -575,7 +575,7 @@ func (h *humanReviewHandler) finalizeDoneRecovery(taskID string, prNumber int, m
 		if current.Outcome == "" {
 			update.Outcome = task.Ptr("merged")
 		}
-		if current.PRNumber == 0 {
+		if current.PRNumber != prNumber {
 			update.PRNumber = task.Ptr(prNumber)
 		}
 	}
@@ -584,9 +584,13 @@ func (h *humanReviewHandler) finalizeDoneRecovery(taskID string, prNumber int, m
 }
 
 func humanReviewRecoveryPRNumber(current task.Task, v verdictDecision) int {
-	if current.PRNumber > 0 {
-		return current.PRNumber
+	if n := humanReviewVerdictPRNumber(v); n > 0 {
+		return n
 	}
+	return current.PRNumber
+}
+
+func humanReviewVerdictPRNumber(v verdictDecision) int {
 	m := humanReviewPRNumberRE.FindStringSubmatch(v.Summary)
 	if len(m) != 2 {
 		return 0
