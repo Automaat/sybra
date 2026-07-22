@@ -78,6 +78,7 @@ type humanReviewHandler struct {
 	// legacy direct status write when dispatch wiring is unavailable.
 	dispatchFromHumanRequired func(id, target, reason, completingAgentID string) (task.Task, error)
 	fetchPRState              func(repo string, number int) (github.PRState, error)
+	advanceClosedTaskPR       func(ctx context.Context, taskID string, prNumber int, state string) error
 
 	mu       sync.Mutex
 	inflight map[string]string      // taskID -> agent ID
@@ -414,6 +415,17 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 	status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
 	if ok && current.Status == task.StatusHumanRequired && h.verifyUnblocked(current) && h.verifyDoneRecovery(current, status) {
 		statusReason := "auto-review recovery: " + strings.TrimSpace(v.Summary)
+		if status == task.StatusDone {
+			if err := h.advanceDoneRecovery(current); err != nil {
+				h.logger.Error("human-review.unblocked.land-closed-pr",
+					"task_id", current.ID, "agent_id", agentID, "pr_number", current.PRNumber, "err", err)
+				return
+			}
+			if h.appendNote(current.ID, "Auto-review: unblocked", note) {
+				h.markVerdictRendered(current.ID, agentID)
+			}
+			return
+		}
 		if h.dispatchFromHumanRequired != nil {
 			target, err := h.prepareRecoveryDispatch(current, status)
 			if err != nil {
@@ -501,6 +513,16 @@ func (h *humanReviewHandler) recoverRenderedUnblockedTasks() {
 			continue
 		}
 		if !h.verifyDoneRecovery(t, status) {
+			continue
+		}
+		if status == task.StatusDone {
+			if err := h.advanceDoneRecovery(t); err != nil {
+				h.logger.Warn("human-review.recover-rendered.land-closed-pr",
+					"task_id", t.ID, "agent_id", agentID, "pr_number", t.PRNumber, "err", err)
+				continue
+			}
+			h.logger.Info("human-review.recover-rendered.landed",
+				"task_id", t.ID, "agent_id", agentID, "pr_number", t.PRNumber)
 			continue
 		}
 		target, prepErr := h.prepareRecoveryDispatch(t, status)
@@ -652,6 +674,13 @@ func (h *humanReviewHandler) verifyDoneRecovery(t task.Task, status task.Status)
 		return false
 	}
 	return true
+}
+
+func (h *humanReviewHandler) advanceDoneRecovery(t task.Task) error {
+	if h.advanceClosedTaskPR == nil {
+		return fmt.Errorf("closed PR landing handler unavailable")
+	}
+	return h.advanceClosedTaskPR(context.Background(), t.ID, t.PRNumber, "MERGED")
 }
 
 func safeHumanReviewRecoveryStatus(action string) (task.Status, bool) {

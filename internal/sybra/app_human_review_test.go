@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -892,19 +893,30 @@ func TestOnComplete_UnblockedVerdict_DoneActionClosesTask(t *testing.T) {
 		t.Fatalf("add run: %v", err)
 	}
 
-	var dispatchedTarget string
 	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
-		dispatchedTarget = target
-		return tasks.Update(id, task.Update{
-			Status:       task.Ptr(task.Status(target)),
-			StatusReason: task.Ptr(reason),
-		})
+		t.Fatalf("dispatchFromHumanRequired called unexpectedly with id=%q target=%q reason=%q", id, target, reason)
+		return task.Task{}, nil
 	}
 	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
 		if repo != "Automaat/sybra" || number != 2417 {
 			t.Fatalf("FetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
 		}
 		return github.PRState{State: "MERGED"}, nil
+	}
+	var landed bool
+	h.advanceClosedTaskPR = func(ctx context.Context, id string, number int, state string) error {
+		if ctx == nil {
+			t.Fatal("advanceClosedTaskPR context is nil")
+		}
+		if id != tk.ID || number != 2417 || state != "MERGED" {
+			t.Fatalf("advanceClosedTaskPR(%q, %d, %q), want %q, 2417, MERGED", id, number, state, tk.ID)
+		}
+		landed = true
+		_, err := tasks.Update(id, task.Update{
+			Status:  task.Ptr(task.StatusDone),
+			Outcome: task.Ptr("merged"),
+		})
+		return err
 	}
 
 	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
@@ -919,11 +931,14 @@ func TestOnComplete_UnblockedVerdict_DoneActionClosesTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
 	}
-	if dispatchedTarget != string(task.StatusDone) {
-		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusDone)
+	if !landed {
+		t.Fatal("advanceClosedTaskPR was not called")
 	}
 	if got.Status != task.StatusDone {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
 	}
 	if !strings.Contains(got.Body, "Auto-review: unblocked") {
 		t.Fatalf("expected unblocked note in body; got:\n%s", got.Body)

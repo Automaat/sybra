@@ -48,7 +48,8 @@ var tierAliases = map[Tier]string{
 var claudeVersionedModelRe = regexp.MustCompile(`^claude-(haiku|sonnet|opus)-[0-9]+(?:[.-][0-9]+)*(?:-[0-9]{8})?$`)
 
 var concreteModelTiers = map[string]Tier{
-	"gemini-3.1-pro": Expensive,
+	"gemini-3.1-pro":         Expensive,
+	"gemini-3.1-pro-preview": Expensive,
 }
 
 // Models returns a defensive copy of the provider model map for tier.

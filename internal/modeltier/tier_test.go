@@ -41,6 +41,7 @@ func TestInferTier(t *testing.T) {
 		{model: "claude-haiku-4-5-20251001", want: SuperCheap, ok: true},
 		{model: "claude-opus-4-8", want: Expensive, ok: true},
 		{model: "gemini-3.1-pro", want: Expensive, ok: true},
+		{model: "gemini-3.1-pro-preview", want: Expensive, ok: true},
 		{model: "custom-model", ok: false},
 		{model: "my-sonnet-experiment", ok: false},
 		{model: "foo-opus-bar", ok: false},
