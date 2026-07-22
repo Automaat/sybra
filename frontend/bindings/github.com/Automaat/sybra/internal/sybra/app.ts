@@ -19,6 +19,9 @@ import * as bgop$0 from "../bgop/models.js";
 import * as evaluation$0 from "../evaluation/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as httpapi$0 from "../httpapi/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as learning$0 from "../learning/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -38,6 +41,10 @@ export function AgentQueueSnapshot(): $CancellablePromise<$models.AgentQueueSnap
     return $Call.ByID(659722111).then(($result: any) => {
         return $$createType0($result);
     });
+}
+
+export function BeginDrain(): $CancellablePromise<boolean> {
+    return $Call.ByID(1387905190);
 }
 
 /**
@@ -89,6 +96,13 @@ export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBin
     return $Call.ByID(936556103).then(($result: any) => {
         return $$createType4($result);
     });
+}
+
+/**
+ * HTTPAdmission decides whether one HTTP API method may run.
+ */
+export function HTTPAdmission(service: string, method: string, meta: httpapi$0.MethodMeta): $CancellablePromise<void> {
+    return $Call.ByID(569549168, service, method, meta);
 }
 
 /**
