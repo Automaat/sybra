@@ -10,7 +10,6 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/metrics"
-	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -158,16 +157,12 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 		return
 	}
 	mode := t.AgentMode
-	prFlag := " --draft"
-	if proj, pErr := r.Projects.Get(t.ProjectID); pErr == nil && proj.Type == project.ProjectTypePet {
-		prFlag = ""
-	}
 	// A pending supervisor steer (set by the watchdog's headless nudge) is
 	// consumed and prepended to the prompt inside agentorch.Orchestrator.StartAgent,
 	// the single dispatch choke point this path and the workflow resume path
 	// both funnel through — so it is delivered exactly once regardless of
 	// which loop re-dispatches the task.
-	prompt := "Continue implementing this task. When done, create a PR with `gh pr create" + prFlag + "`."
+	prompt := "Continue implementing this task."
 	currentStatus := t.Status
 	r.WG.Go(func() {
 		_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false, oneShot)
