@@ -550,6 +550,131 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	}
 }
 
+func TestPrepareRecoveryDispatch_InReviewWithoutPRFallsBackToReadyReview(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Recover pre-PR review", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	got, err := h.prepareRecoveryDispatch(tk, task.StatusInReview)
+	if err != nil {
+		t.Fatalf("prepareRecoveryDispatch: %v", err)
+	}
+	if got != task.StatusReadyReview {
+		t.Fatalf("target = %q, want %q", got, task.StatusReadyReview)
+	}
+}
+
+func TestRecoverRenderedUnblockedTasks_DispatchesMissingWorktreeCircuitBreaker(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Recover old missing worktree park", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory (tripped after 3 dispatch failures for step "fix_review" within 15m0s)`
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         "hr-rendered",
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "success",
+		VerdictRendered: true,
+		Result:          `{"decision":"unblocked","reason":"worktree has been recreated; resume review","recoverable_action":"in-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	var dispatchedTarget string
+	h.dispatchFromHumanRequired = func(id, target, dispatchReason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(dispatchReason),
+		})
+	}
+
+	h.recoverRenderedUnblockedTasks()
+
+	if dispatchedTarget != string(task.StatusReadyReview) {
+		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusReadyReview)
+	}
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+}
+
+func TestRecoverRenderedUnblockedTasks_IgnoresUnrenderedVerdict(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Recover old missing worktree park", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         "hr-unrendered",
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "success",
+		VerdictRendered: false,
+		Result:          `{"decision":"unblocked","reason":"worktree has been recreated; resume review","recoverable_action":"in-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(id, target, dispatchReason, agentID string) (task.Task, error) {
+		t.Fatalf("dispatchFromHumanRequired called unexpectedly with id=%q target=%q reason=%q agent=%q", id, target, dispatchReason, agentID)
+		return task.Task{}, nil
+	}
+
+	h.recoverRenderedUnblockedTasks()
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+}
+
 func TestOnComplete_UnblockedVerdict_ReadyReviewWithPRResumesInReview(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
