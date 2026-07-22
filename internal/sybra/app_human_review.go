@@ -691,11 +691,11 @@ func (h *humanReviewHandler) verifyDoneRecovery(t task.Task, status task.Status)
 }
 
 func (h *humanReviewHandler) prepareDoneRecovery(t task.Task, status task.Status, v verdictDecision) (task.Task, bool) {
-	if status != task.StatusDone || t.PRNumber > 0 {
+	if status != task.StatusDone {
 		return t, true
 	}
 	number, ok := humanReviewRecoverPRNumber(v)
-	if !ok {
+	if !ok || number == t.PRNumber {
 		return t, true
 	}
 	updated, err := h.tasks.Update(t.ID, task.Update{PRNumber: task.Ptr(number)})

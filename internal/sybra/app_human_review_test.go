@@ -1027,6 +1027,83 @@ func TestOnComplete_UnblockedVerdict_DoneActionBackfillsPR(t *testing.T) {
 	}
 }
 
+func TestOnComplete_UnblockedVerdict_DoneActionReplacesStalePR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done-replacement-pr"
+	tk, err := tasks.Create("Already merged replacement task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+		PRNumber:  task.Ptr(100),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 101 {
+			t.Fatalf("FetchPRState(%q, %d), want Automaat/sybra#101", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
+	}
+	var landed bool
+	h.advanceClosedTaskPR = func(ctx context.Context, id string, number int, state, completingAgentID string) error {
+		if ctx == nil {
+			t.Fatal("advanceClosedTaskPR context is nil")
+		}
+		if id != tk.ID || number != 101 || state != "MERGED" {
+			t.Fatalf("advanceClosedTaskPR(%q, %d, %q), want %q, 101, MERGED", id, number, state, tk.ID)
+		}
+		if completingAgentID != agentID {
+			t.Fatalf("completingAgentID = %q, want %q", completingAgentID, agentID)
+		}
+		landed = true
+		_, err := tasks.Update(id, task.Update{
+			Status:  task.Ptr(task.StatusDone),
+			Outcome: task.Ptr("merged"),
+		})
+		return err
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #101","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if !landed {
+		t.Fatal("advanceClosedTaskPR was not called")
+	}
+	if got.PRNumber != 101 {
+		t.Fatalf("pr_number = %d, want 101", got.PRNumber)
+	}
+	if got.Status != task.StatusDone || got.Outcome != "merged" {
+		t.Fatalf("status/outcome = %q/%q, want done/merged", got.Status, got.Outcome)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
 func TestOnComplete_UnblockedVerdict_DoneActionRequiresMergedPR(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
