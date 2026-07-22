@@ -73,13 +73,24 @@ func (s *Store) Backfill(auditDir string) error {
 		if v, ok := run.TerminalEvent.Data["duration_s"].(float64); ok {
 			r.DurationS = v
 		}
-		if run.Failed {
-			r.Outcome = OutcomeFailed
-		} else {
-			r.Outcome = OutcomeCompleted
-		}
+		r.Outcome = run.Outcome
 		if v, ok := run.TerminalEvent.Data["provider"].(string); ok {
 			r.Provider = v
+		}
+		if v, ok := run.TerminalEvent.Data["role"].(string); ok {
+			r.Role = v
+		}
+		if v, ok := run.TerminalEvent.Data["model"].(string); ok {
+			r.Model = v
+		}
+		if v, ok := run.TerminalEvent.Data["reasoning_effort"].(string); ok {
+			r.ReasoningEffort = v
+		}
+		if v, ok := run.TerminalEvent.Data["experiment_id"].(string); ok {
+			r.ExperimentID = v
+		}
+		if v, ok := run.TerminalEvent.Data["variant_id"].(string); ok {
+			r.VariantID = v
 		}
 		if v, ok := run.TerminalEvent.Data["reasoning_tokens"].(float64); ok {
 			r.ReasoningTokens = int(v)
@@ -98,6 +109,12 @@ func (s *Store) Backfill(auditDir string) error {
 		}
 		if v, ok := run.TerminalEvent.Data["premium_requests"].(float64); ok {
 			r.PremiumRequests = v
+		}
+		if v, ok := run.TerminalEvent.Data["turn_count"].(float64); ok {
+			r.TurnCount = int(v)
+		}
+		if v, ok := run.TerminalEvent.Data["tool_calls"].(float64); ok {
+			r.ToolCalls = int(v)
 		}
 		if v, ok := run.TerminalEvent.Data["requested_skill"].(string); ok {
 			r.RequestedSkill = v
