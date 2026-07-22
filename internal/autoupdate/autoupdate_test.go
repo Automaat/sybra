@@ -70,6 +70,46 @@ func TestRunRequestsRestartAfterAutoApply(t *testing.T) {
 	}
 }
 
+func TestRunRequestsRestartWhenPostApplyStateSaveFails(t *testing.T) {
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	stateFile := filepath.Join(work, ".git", "autoupdate-state.json")
+	hook := filepath.Join(work, ".git", "hooks", "post-merge")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nchmod 000 .git/autoupdate-state.json\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(stateFile, 0o644)
+	})
+
+	restarted := false
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		StateFile:      stateFile,
+		GateCommit:     greenGate,
+		RequestRestart: func() {
+			restarted = true
+		},
+	}, nil)
+
+	r.check(t.Context())
+	if !restarted {
+		t.Fatal("restart was not requested after post-apply state save failure")
+	}
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); err != nil {
+		t.Fatalf("feature.txt missing after auto mode: %v", err)
+	}
+}
+
 func TestRunTriggerCheckAppliesImmediately(t *testing.T) {
 	upstream, work := seedRepos(t)
 
@@ -339,6 +379,49 @@ func TestCheckAndApplyOverrideBypassesGateOnce(t *testing.T) {
 	}
 	if _, err := os.Stat(override); !os.IsNotExist(err) {
 		t.Fatalf("override file still exists: %v", err)
+	}
+}
+
+func TestCheckAndApplyDoesNotMergeWhenOverrideCannotBeConsumed(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	overrideDir := t.TempDir()
+	override := filepath.Join(overrideDir, "autoupdate-override")
+	if err := os.WriteFile(override, []byte("override\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(overrideDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(overrideDir, 0o755)
+	})
+
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		OverrideFile:   override,
+		GateCommit:     failedGate,
+	}, nil)
+
+	if _, err := r.CheckAndApply(t.Context()); err == nil {
+		t.Fatal("CheckAndApply() err = nil, want override clear failure")
+	}
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
+		t.Fatalf("feature.txt exists after failed override consumption: %v", err)
+	}
+	if _, err := os.Stat(override); err != nil {
+		t.Fatalf("override file missing after failed consumption: %v", err)
 	}
 }
 

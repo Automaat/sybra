@@ -141,9 +141,7 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 	if head == remoteSHA {
-		if err := clearPendingState(cfg.StateFile, head); err != nil {
-			return Result{}, err
-		}
+		r.clearPendingState(cfg.StateFile, head)
 		return Result{Status: "current", OldSHA: head, NewSHA: remoteSHA}, nil
 	}
 	if result, blocked, err := validateCandidateSHA(ctx, cfg, head, remoteSHA); err != nil || blocked {
@@ -189,6 +187,11 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 	if _, err := fetchObject(ctx, cfg.RepoDir, cfg.Remote, remoteSHA); err != nil {
 		return Result{}, err
 	}
+	if overrideActive {
+		if err := clearOverride(cfg.OverrideFile); err != nil {
+			return Result{}, err
+		}
+	}
 	if _, err := git(ctx, cfg.RepoDir, "merge", "--ff-only", remoteSHA); err != nil {
 		return Result{}, fmt.Errorf("fast-forward %s: %w", remoteSHA, err)
 	}
@@ -198,16 +201,13 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 	state.LastAppliedAt = now
 	state.LastRestartAt = now
 	state.setCandidateOutcome("applied", "")
-	if err := saveState(cfg.StateFile, state); err != nil {
-		return Result{}, err
-	}
-	if overrideActive {
-		if err := clearOverride(cfg.OverrideFile); err != nil {
-			return Result{}, err
-		}
-	}
 	r.recordTransition("applied", remoteSHA, head, remoteSHA, "")
-	return Result{Status: "applied", Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
+	reason := ""
+	if err := saveState(cfg.StateFile, state); err != nil {
+		reason = "post-apply state update failed: " + err.Error()
+		r.logger.Warn("autoupdate.post_apply_state.failed", "err", err, "sha", shortSHA(remoteSHA))
+	}
+	return Result{Status: "applied", Reason: reason, Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
 }
 
 func (r *Runner) noteCandidateSeen(state *persistedState, head, remoteSHA string, now time.Time) {
@@ -270,6 +270,12 @@ func clearPendingState(path, head string) error {
 	state.PendingSHA = ""
 	state.PendingAt = time.Time{}
 	return saveState(path, state)
+}
+
+func (r *Runner) clearPendingState(path, head string) {
+	if err := clearPendingState(path, head); err != nil {
+		r.logger.Warn("autoupdate.pending_state_clear.failed", "err", err, "sha", shortSHA(head))
+	}
 }
 
 func validateCandidateSHA(ctx context.Context, cfg Config, head, remoteSHA string) (Result, bool, error) {
