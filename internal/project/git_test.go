@@ -3815,6 +3815,50 @@ func TestPreflightPushCredentials_DoesNotFalsePassOnReadOnlyProbe(t *testing.T) 
 	}
 }
 
+// TestPreflightPushCredentials_SkipsPrePushHook proves the credential probe
+// passes --no-verify, so a project's pre-push hook (go test, lint) never runs on
+// this synthetic dry-run. Without it the probe re-ran the whole test suite per
+// attempt and its output buried the real (often transient-network) push error.
+func TestPreflightPushCredentials_SkipsPrePushHook(t *testing.T) {
+	_, wtPath := initWorktree(t)
+	setGitHubOriginPushURL(t, wtPath)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath(git): %v", err)
+	}
+	dir := t.TempDir()
+	argsLog := filepath.Join(dir, "git-push-args-log")
+	if err := os.WriteFile(argsLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "push" ]; then
+  printf '%%s\n' "$*" >> %s
+  exit 0
+fi
+exec %q "$@"
+`, argsLog, realGit)
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubPushPreflightRetry(t)
+
+	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
+		t.Fatalf("PreflightPushCredentials error = %v, want nil", err)
+	}
+	lines := readLogLines(t, argsLog)
+	if len(lines) == 0 {
+		t.Fatalf("git push args log = %v, want at least one probe", lines)
+	}
+	for _, line := range lines {
+		if !strings.Contains(line, "--no-verify") {
+			t.Fatalf("git push args = %q, want --no-verify to skip the pre-push hook", line)
+		}
+	}
+}
+
 // pushAuthFailureHookCalls records invocations of a stubbed pushAuthFailureHook.
 type pushAuthFailureHookCalls struct {
 	count   int

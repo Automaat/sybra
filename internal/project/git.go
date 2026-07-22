@@ -1465,7 +1465,8 @@ func SetPushAuthFailureHook(f func(err error)) {
 // anonymous `git ls-remote` succeed while rejecting the real `git push`. Use a
 // dry-run push to a synthetic ref instead — it exercises the same credential
 // helper path without mutating remote state or depending on the live task branch
-// being fast-forwardable.
+// being fast-forwardable. The dry-run runs --no-verify so the project's pre-push
+// hook (tests, lint) never fires on this credential-only probe.
 func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 	remote := PushRemote(ctx, worktreePath)
 	pushURL, err := executil.Output(ctx, worktreePath, "git", "remote", "get-url", "--push", remote)
@@ -1534,7 +1535,12 @@ func pushPreflightRefspec(ctx context.Context, worktreePath string) (string, err
 }
 
 func gitPushDryRunAuthMessage(ctx context.Context, worktreePath, remote, refspec string, env []string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "push", "--dry-run", remote, refspec)
+	// --no-verify skips the project's pre-push hook. The hook (e.g. `go test
+	// ./...` + frontend check) has nothing to do with the credential path this
+	// probe validates; without this it runs the whole test suite per attempt —
+	// up to len(pushPreflightRetryBackoffs)+1 times — defeating the "cheap
+	// credential check" contract and burying the real error under hook output.
+	cmd := exec.CommandContext(ctx, "git", "push", "--dry-run", "--no-verify", remote, refspec)
 	cmd.Dir = worktreePath
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
