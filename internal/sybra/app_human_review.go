@@ -436,6 +436,7 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 			if err := h.advanceDoneRecovery(current, agentID); err != nil {
 				h.logger.Error("human-review.unblocked.land-closed-pr",
 					"task_id", current.ID, "agent_id", agentID, "pr_number", current.PRNumber, "err", err)
+				h.persistVerifiedDoneRecovery(current, agentID, note)
 				return
 			}
 			if h.appendNote(current.ID, "Auto-review: unblocked", note) {
@@ -543,6 +544,7 @@ func (h *humanReviewHandler) recoverRenderedUnblockedTasks() {
 			if err := h.advanceDoneRecovery(t, agentID); err != nil {
 				h.logger.Warn("human-review.recover-rendered.land-closed-pr",
 					"task_id", t.ID, "agent_id", agentID, "pr_number", t.PRNumber, "err", err)
+				h.persistVerifiedDoneRecovery(t, "", "")
 				continue
 			}
 			h.logger.Info("human-review.recover-rendered.landed",
@@ -744,6 +746,33 @@ func (h *humanReviewHandler) advanceDoneRecovery(t task.Task, completingAgentID 
 		return fmt.Errorf("closed PR landing handler unavailable")
 	}
 	return h.advanceClosedTaskPR(context.Background(), t.ID, t.PRNumber, "MERGED", completingAgentID)
+}
+
+func (h *humanReviewHandler) persistVerifiedDoneRecovery(t task.Task, agentID, note string) {
+	updated, err := h.tasks.Update(t.ID, task.Update{
+		Status:  task.Ptr(task.StatusDone),
+		Outcome: task.Ptr("merged"),
+	})
+	if err != nil {
+		h.logger.Error("human-review.unblocked.done-fallback-update",
+			"task_id", t.ID, "agent_id", agentID, "pr_number", t.PRNumber, "err", err)
+		return
+	}
+	if updated.Status != task.StatusDone || updated.Outcome != "merged" {
+		h.logger.Error("human-review.unblocked.done-fallback-mismatch",
+			"task_id", t.ID, "agent_id", agentID, "pr_number", t.PRNumber,
+			"got_status", updated.Status, "got_outcome", updated.Outcome)
+		return
+	}
+	if strings.TrimSpace(note) == "" {
+		if agentID != "" {
+			h.markVerdictRendered(t.ID, agentID)
+		}
+		return
+	}
+	if h.appendNote(t.ID, "Auto-review: unblocked", note) {
+		h.markVerdictRendered(t.ID, agentID)
+	}
 }
 
 func safeHumanReviewRecoveryStatus(action string) (task.Status, bool) {
