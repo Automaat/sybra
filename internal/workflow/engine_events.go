@@ -50,12 +50,12 @@ const (
 	// freed space, or the branch may have moved) so ResumeStalled gets a
 	// bounded number of automatic re-attempts before the task is marked
 	// Exhausted and left for an operator, mirroring the watchdog-stop budget.
-	worktreeRepairRetryVarPrefix = "worktree_repair.retry."
-	maxWorktreeRepairRetries     = 2
-	circuitBreakerFailureVarPrefix  = "circuit_breaker.failures."
-	circuitBreakerFirstVarPrefix    = "circuit_breaker.first_failure."
-	maxCircuitBreakerFailures       = 3
-	circuitBreakerWindow            = 15 * time.Minute
+	worktreeRepairRetryVarPrefix   = "worktree_repair.retry."
+	maxWorktreeRepairRetries       = 2
+	circuitBreakerFailureVarPrefix = "circuit_breaker.failures."
+	circuitBreakerFirstVarPrefix   = "circuit_breaker.first_failure."
+	maxCircuitBreakerFailures      = 3
+	circuitBreakerWindow           = 15 * time.Minute
 )
 
 // HandleHumanAction processes approve/reject/input from the UI.
