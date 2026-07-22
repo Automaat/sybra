@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/limits"
+	"github.com/Automaat/sybra/internal/runoutcome"
 )
 
 // Outcome values recorded on RunRecord.Outcome.
@@ -16,9 +17,12 @@ import (
 // more reliable than one that stalls rarely. Use IsTerminalOutcome to gate a
 // record into an outcome-derived rate.
 const (
-	OutcomeCompleted = "completed"
-	OutcomeFailed    = "failed"
-	OutcomeStalled   = "stalled"
+	OutcomeCompleted         = runoutcome.Completed
+	OutcomeFailed            = runoutcome.Failed
+	OutcomeStalled           = runoutcome.Stalled
+	OutcomeCancelledShutdown = runoutcome.CancelledShutdown
+	OutcomeSuperseded        = runoutcome.Superseded
+	OutcomeUnknown           = runoutcome.Unknown
 )
 
 // IsTerminalOutcome reports whether an outcome represents a definitive result
@@ -30,7 +34,7 @@ const (
 // non-nil exit error meant failure. Anything not known to be definitive is not
 // definitive.
 func IsTerminalOutcome(outcome string) bool {
-	return outcome == OutcomeCompleted || outcome == OutcomeFailed
+	return runoutcome.IsTerminal(outcome)
 }
 
 // RunRecord captures a single agent execution for analytics.
