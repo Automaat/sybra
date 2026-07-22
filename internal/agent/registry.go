@@ -24,6 +24,7 @@ type Record struct {
 	Mode            string    `yaml:"mode"`
 	Provider        string    `yaml:"provider"`
 	Model           string    `yaml:"model,omitempty"`
+	RequestedModel  string    `yaml:"requested_model,omitempty"`
 	ExperimentID    string    `yaml:"experiment_id,omitempty"`
 	VariantID       string    `yaml:"variant_id,omitempty"`
 	RoutingReason   string    `yaml:"routing_reason,omitempty"`

@@ -139,6 +139,53 @@ func TestPrepareRunConfig_ExplicitModelOverridesRuntimeDefault(t *testing.T) {
 	}
 }
 
+func TestPrepareRunConfig_FailoverRemapsKnownConcreteModel(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{"codex": false, "copilot": true},
+		failover: map[string]string{"codex": "copilot"},
+		reasons:  map[string]string{"codex": "rate_limited"},
+	})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider: "codex",
+		Model:    "gpt-5.5",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != "copilot" {
+		t.Fatalf("provider = %q, want copilot", prov.Name())
+	}
+	if cfg.Model != "opus" {
+		t.Fatalf("requested model = %q, want neutral alias opus", cfg.Model)
+	}
+	if cfg.resolvedModel != "gemini-3.1-pro-preview" {
+		t.Fatalf("resolved model = %q, want copilot expensive tier", cfg.resolvedModel)
+	}
+}
+
+func TestPrepareRunConfig_FailoverRejectsUnknownConcreteModel(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{"claude": false, "codex": true},
+		failover: map[string]string{"claude": "codex"},
+		reasons:  map[string]string{"claude": "rate_limited"},
+	})
+
+	_, _, err := m.prepareRunConfig(RunConfig{
+		Provider: "claude",
+		Model:    "claude-fable-5",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+	})
+	if !errors.Is(err, ErrProviderModelIncompatible) {
+		t.Fatalf("prepareRunConfig error = %v, want ErrProviderModelIncompatible", err)
+	}
+}
+
 // TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor
 // locks in that prepareRunConfig — the single chokepoint every headless and
 // interactive run passes through — wires the background-task guardrail into

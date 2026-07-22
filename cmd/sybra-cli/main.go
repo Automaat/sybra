@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
@@ -2931,6 +2932,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		}
 	}
 	addGitHubPollingFindings(cfg, add)
+	addProviderModelCompatibilityFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
 	for _, warning := range routing.Warnings {
@@ -3023,6 +3025,26 @@ func addK8sFailedTTLFindings(cfg *config.Config, add func(severity, format strin
 	if ttl > 0 && ttl < 30 && failedTTL != ttl {
 		add("warning", "agent.k8s_jobs.ttl_seconds_after_finished is %ds — Kubernetes does not guarantee honoring the failed_ttl_seconds_after_finished extension once such a short window has already elapsed", ttl)
 	}
+}
+
+func addProviderModelCompatibilityFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil || !cfg.Providers.AutoFailover {
+		return
+	}
+	check := func(path, provider, model string) {
+		trimmed := strings.TrimSpace(model)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := modeltier.InferTier(trimmed); ok {
+			return
+		}
+		add("warning", "%s=%q targets provider %q, but failover cannot remap that concrete model on provider switch", path, trimmed, provider)
+	}
+	check("agent.model", cfg.Agent.Provider, cfg.Agent.Model)
+	check("monitor.model", cfg.Agent.Provider, cfg.Monitor.Model)
+	check("watchdog.model", cfg.Agent.Provider, cfg.Watchdog.Model)
+	check("human_review.model", cfg.Agent.Provider, cfg.HumanReviewModel())
 }
 
 func addConfigPermFindings(add func(severity, format string, a ...any)) {

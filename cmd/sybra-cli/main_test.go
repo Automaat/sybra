@@ -1075,6 +1075,36 @@ func TestConfigDoctorJSONReportsRoutingSummaryAndWarnings(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Providers.AutoFailover = true
+	cfg.Agent.Provider = "claude"
+	cfg.Agent.Model = "claude-fable-5"
+	cfg.Monitor.Model = "claude-fable-5"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, want := range []string{
+		`agent.model="claude-fable-5" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
+		`monitor.model="claude-fable-5" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "warning" && f.Message == want
+		}) {
+			t.Fatalf("expected warning %q in %+v", want, report.Findings)
+		}
+	}
+}
+
 func TestConfigDumpRedactsTaggedSecrets(t *testing.T) {
 	setupStore(t)
 

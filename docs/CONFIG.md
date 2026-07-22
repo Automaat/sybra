@@ -445,7 +445,7 @@ focused headless agent for anomalies that need LLM judgment.
 |---|---|---|---|---|---|---|---|---|---|
 | `supervision.monitor.enabled` | `bool` | `true` |  |  | `monitor.enabled` | `false` | `restart` |  |  |
 | `supervision.monitor.interval` | `int` | `300` | `seconds` |  | `monitor.interval_seconds`, `monitor.interval` | `false` | `restart` |  |  |
-| `supervision.monitor.model` | `string` | `"claude-haiku-4-5-20251001"` |  |  | `monitor.model` | `false` | `restart` |  |  |
+| `supervision.monitor.model` | `string` | `"haiku"` |  |  | `monitor.model` | `false` | `restart` |  |  |
 | `supervision.monitor.issue_cooldown` | `int` | `30` | `minutes` |  | `monitor.issue_cooldown_minutes`, `monitor.issue_cooldown` | `false` | `restart` |  |  |
 | `supervision.monitor.dispatch_limit` | `int` | `25` |  |  | `monitor.dispatch_limit` | `false` | `restart` |  |  |
 | `supervision.monitor.stuck_human` | `float64` | `8` | `hours` |  | `monitor.stuck_human_hours`, `monitor.stuck_human` | `false` | `restart` |  |  |
@@ -473,7 +473,7 @@ that the dwell budget (hours) would only catch much later.
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `supervision.watchdog.enabled` | `bool` | `true` |  |  | `watchdog.enabled` | `false` | `restart` |  |  |
-| `supervision.watchdog.model` | `string` | `"claude-haiku-4-5-20251001"` |  |  | `watchdog.model` | `false` | `restart` |  |  |
+| `supervision.watchdog.model` | `string` | `"haiku"` |  |  | `watchdog.model` | `false` | `restart` |  |  |
 | `supervision.watchdog.loop_threshold` | `int` | `6` |  |  | `watchdog.loop_threshold` | `false` | `restart` |  |  |
 | `supervision.watchdog.max_runs_per_window` | `int` | `30` |  |  | `watchdog.max_runs_per_window` | `false` | `restart` |  |  |
 | `supervision.watchdog.run_window` | `int` | `30` | `minutes` |  | `watchdog.run_window_minutes`, `watchdog.run_window` | `false` | `restart` |  |  |

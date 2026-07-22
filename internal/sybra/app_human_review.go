@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -230,30 +231,69 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		wctx = h.workCtx(t.ProjectID)
 	}
 
-	h.mu.Lock()
-	if _, busy := h.inflight[taskID]; busy {
-		h.mu.Unlock()
-		h.skip(taskID, "in_flight")
+	now, skipReason := h.reserveSpawn(taskID)
+	if skipReason != "" {
+		h.skip(taskID, skipReason)
 		return false
 	}
-	if !h.allowSpawnLocked() {
-		h.mu.Unlock()
-		h.skip(taskID, "rate_limited")
-		return false
-	}
-	if !h.allowSpawnForTaskLocked(taskID) {
-		h.mu.Unlock()
-		h.skip(taskID, "task_rate_limited")
-		return false
-	}
-	h.inflight[taskID] = ""
-	now := h.now()
-	h.recent = append(h.recent, now)
-	h.perTask[taskID] = append(h.perTask[taskID], now)
-	h.mu.Unlock()
 
 	dir, readOnlyDir := humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
 	prompt := h.buildPrompt(t, dir, wctx)
+	cfg := h.spawnReviewConfig(t, taskID, prompt, dir, readOnlyDir, opts)
+	if !h.preRunEligible(taskID, now, opts.IgnoreRenderedVerdict) {
+		return false
+	}
+	ag, err := h.agents.Run(cfg)
+	if err != nil {
+		h.clearInflight(taskID)
+		h.logger.Error("human-review.spawn", "task_id", taskID, "provider", cfg.Provider, "model", cfg.Model, "err", err)
+		if errors.Is(err, agent.ErrProviderModelIncompatible) {
+			h.logAudit(audit.EventProviderModelIncompatible, taskID, "", map[string]any{
+				"provider": cfg.Provider, "model": cfg.Model, "retry_reason": opts.RetryReason, "err": err.Error(),
+			})
+		}
+		h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{
+			"reason": "spawn_failed", "err": err.Error(),
+			"provider": cfg.Provider, "model": cfg.Model, "retry_reason": opts.RetryReason,
+		})
+		return false
+	}
+	h.mu.Lock()
+	h.inflight[taskID] = ag.ID
+	h.mu.Unlock()
+
+	h.recordSpawnedRun(taskID, ag, cfg.Prompt)
+	h.logAudit(audit.EventHumanReviewSpawned, taskID, ag.ID, map[string]any{
+		"prev_status":  prevStatus,
+		"provider":     ag.Provider,
+		"model":        ag.Model,
+		"prompt_hash":  ag.GetPromptHash(),
+		"fallback":     opts.RetryReason != "",
+		"retry_reason": opts.RetryReason,
+	})
+	return true
+}
+
+func (h *humanReviewHandler) reserveSpawn(taskID string) (reservedAt time.Time, skipReason string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, busy := h.inflight[taskID]; busy {
+		return time.Time{}, "in_flight"
+	}
+	if !h.allowSpawnLocked() {
+		return time.Time{}, "rate_limited"
+	}
+	if !h.allowSpawnForTaskLocked(taskID) {
+		return time.Time{}, "task_rate_limited"
+	}
+	now := h.now()
+	h.inflight[taskID] = ""
+	h.recent = append(h.recent, now)
+	h.perTask[taskID] = append(h.perTask[taskID], now)
+	return now, ""
+}
+
+func (h *humanReviewHandler) spawnReviewConfig(t task.Task, taskID, prompt, dir string, readOnlyDir bool, opts humanReviewSpawnOptions) agent.RunConfig {
 	model := h.cfg.HumanReviewModel()
 	if strings.TrimSpace(opts.Model) != "" {
 		model = opts.Model
@@ -272,26 +312,13 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		OutputSchema:           verdict.Schema,
 		IgnoreConcurrencyLimit: true,
 	}
-	if !opts.SkipABVariant {
-		cfg = h.agents.ApplyABVariant(cfg, h.abTestingConfig(), taskID, string(agent.RoleHumanReview))
+	if opts.SkipABVariant {
+		return cfg
 	}
-	if !h.preRunEligible(taskID, now, opts.IgnoreRenderedVerdict) {
-		return false
-	}
-	ag, err := h.agents.Run(cfg)
-	if err != nil {
-		h.clearInflight(taskID)
-		h.logger.Error("human-review.spawn", "task_id", taskID, "provider", cfg.Provider, "model", cfg.Model, "err", err)
-		h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{
-			"reason": "spawn_failed", "err": err.Error(),
-			"provider": cfg.Provider, "model": cfg.Model, "retry_reason": opts.RetryReason,
-		})
-		return false
-	}
-	h.mu.Lock()
-	h.inflight[taskID] = ag.ID
-	h.mu.Unlock()
+	return h.agents.ApplyABVariant(cfg, h.abTestingConfig(), taskID, string(agent.RoleHumanReview))
+}
 
+func (h *humanReviewHandler) recordSpawnedRun(taskID string, ag *agent.Agent, prompt string) {
 	if err := h.tasks.AddRun(taskID, task.AgentRun{
 		AgentID:         ag.ID,
 		Role:            string(agent.RoleHumanReview),
@@ -306,19 +333,10 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		DecisionVersion: ag.DecisionVersion,
 		State:           string(agent.StateRunning),
 		StartedAt:       ag.StartedAt,
-		Prompt:          cfg.Prompt,
+		Prompt:          prompt,
 	}); err != nil {
 		h.logger.Error("human-review.add-run", "task_id", taskID, "agent_id", ag.ID, "err", err)
 	}
-	h.logAudit(audit.EventHumanReviewSpawned, taskID, ag.ID, map[string]any{
-		"prev_status":  prevStatus,
-		"provider":     ag.Provider,
-		"model":        ag.Model,
-		"prompt_hash":  ag.GetPromptHash(),
-		"fallback":     opts.RetryReason != "",
-		"retry_reason": opts.RetryReason,
-	})
-	return true
 }
 
 func (h *humanReviewHandler) handleStructuredVerdictFailure(current task.Task, ag *agent.Agent, final string, parseErr error) bool {

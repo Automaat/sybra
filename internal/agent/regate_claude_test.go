@@ -68,6 +68,15 @@ func TestRegateBeforeClaudeTurn_FailoverToHealthyPeer(t *testing.T) {
 	if got.Provider != "copilot" || a.Provider != "copilot" {
 		t.Errorf("expected switch to copilot, cfg=%q agent=%q", got.Provider, a.Provider)
 	}
+	if got.Model != "sonnet" {
+		t.Errorf("cfg.Model = %q, want sonnet", got.Model)
+	}
+	if a.Model != "claude-sonnet-4.6" {
+		t.Errorf("agent model = %q, want claude-sonnet-4.6", a.Model)
+	}
+	if a.GetRequestedModel() != "sonnet" {
+		t.Errorf("requested model = %q, want sonnet", a.GetRequestedModel())
+	}
 	if a.GetSessionID() != "" || a.GetSessionFilePath() != "" {
 		t.Errorf("session state must be cleared on switch, id=%q path=%q", a.GetSessionID(), a.GetSessionFilePath())
 	}
@@ -78,6 +87,34 @@ func TestRegateBeforeClaudeTurn_FailoverToHealthyPeer(t *testing.T) {
 	}
 	if m.liveByProvider["copilot"] != 1 {
 		t.Errorf("copilot bucket should carry the moved count, got %+v", m.liveByProvider)
+	}
+}
+
+func TestRegateBeforeClaudeTurn_IncompatibleModelIsNotRateLimited(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy: map[string]bool{"claude": false, "codex": true},
+		reasons: map[string]string{"claude": "rate_limited"},
+	})
+
+	a := &Agent{ID: "cn2badmodel", Provider: "claude", Model: "claude-fable-5"}
+	cfg := RunConfig{Provider: "claude", Model: "claude-fable-5", TaskID: "tcn2badmodel"}
+
+	got, switched, err := m.regateBeforeClaudeTurn(t.Context(), a, cfg)
+	if err == nil {
+		t.Fatal("expected incompatible model error")
+	}
+	if switched {
+		t.Fatal("switched must be false when the selected peer cannot run the requested model")
+	}
+	if got.Provider != "claude" || a.Provider != "claude" {
+		t.Errorf("provider must be unmodified on incompatibility, cfg=%q agent=%q", got.Provider, a.Provider)
+	}
+	if a.GetErrorKind() != providerModelIncompatibleErrorKind {
+		t.Fatalf("error kind = %q, want %q", a.GetErrorKind(), providerModelIncompatibleErrorKind)
+	}
+	if a.GetErrorKind() == "rate_limit" {
+		t.Fatal("incompatible model must not be retry-classified as rate_limit")
 	}
 }
 

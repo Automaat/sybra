@@ -141,6 +141,11 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := validateRunDir(cfg.Dir); err != nil {
 		return cfg, nil, err
 	}
+	m.mu.RLock()
+	if cfg.Model == "" {
+		cfg.Model = m.defaultModel
+	}
+	m.mu.RUnlock()
 	if cfg.SeedWorkingMemory {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
@@ -156,6 +161,23 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if providerErr != nil {
 		return cfg, nil, providerErr
 	}
+	requestedProvider, requestedErr := m.providerForRun(cfg.Provider)
+	if requestedErr != nil {
+		return cfg, nil, requestedErr
+	}
+	resolvedModel, nextRequestedModel, modelErr := resolveRunModel(requestedProvider, prov.Name(), cfg.Model)
+	if modelErr != nil {
+		m.logger.Warn("agent.run.provider_model_incompatible",
+			"task_id", cfg.TaskID,
+			"requested_provider", requestedProvider,
+			"selected_provider", prov.Name(),
+			"model", cfg.Model,
+			"err", modelErr,
+		)
+		return cfg, nil, modelErr
+	}
+	cfg.Model = nextRequestedModel
+	cfg.resolvedModel = resolvedModel
 	if err := m.resolveWorkflowSkillPrompt(&cfg, prov); err != nil {
 		return cfg, nil, err
 	}
@@ -213,9 +235,6 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	m.preparePlaywrightMCP(&cfg)
 
 	m.mu.RLock()
-	if cfg.Model == "" {
-		cfg.Model = m.defaultModel
-	}
 	if cfg.BashTimeoutMs == 0 {
 		cfg.BashTimeoutMs = m.bashTimeoutMs
 	}
@@ -776,7 +795,8 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		Name:                    cfg.Name,
 		Mode:                    cfg.Mode,
 		Provider:                prov.Name(),
-		Model:                   prov.NormalizeModel(cfg.Model),
+		Model:                   cfg.resolvedModel,
+		RequestedModel:          cfg.Model,
 		ReasoningEffort:         cfg.ReasoningEffort,
 		RequestedSkill:          cfg.RequestedSkill,
 		SkillExecutionMode:      cfg.SkillExecutionMode,
@@ -949,7 +969,10 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	model := prov.NormalizeModel(cfg.Model)
+	model, err := resolvedModelForRun(cfg, prov)
+	if err != nil {
+		return "", err
+	}
 	if model != "" && !safeArgRe.MatchString(model) {
 		return "", fmt.Errorf("invalid model %q: must match %s", cfg.Model, safeArgRe)
 	}

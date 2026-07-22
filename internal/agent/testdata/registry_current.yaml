@@ -4,6 +4,7 @@ name: mapper
 mode: interactive
 provider: codex
 model: gpt-5.3-codex
+requested_model: opus
 experiment_id: exp-1
 variant_id: variant-a
 routing_reason: ab
