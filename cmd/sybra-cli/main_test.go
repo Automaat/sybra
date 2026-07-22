@@ -348,6 +348,124 @@ func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
 	}
 }
 
+func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
+	dir := setupStore(t)
+	t.Setenv("SYBRA_TASKS_DIR", "")
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	seeded, err := manager.Create("seed task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	toDelete, err := manager.Create("delete me", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed delete task: %v", err)
+	}
+
+	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	assertFallback := func(t *testing.T, stderr string) {
+		t.Helper()
+		if !strings.Contains(stderr, "falling back to direct task store") {
+			t.Fatalf("stderr missing fallback warning:\n%s", stderr)
+		}
+	}
+
+	code, stdout, stderr := runCLIWithStderr(t, "--json", "list")
+	if code != 0 {
+		t.Fatalf("list exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var listed []task.Task
+	mustUnmarshal(t, stdout, &listed)
+	if len(listed) != 2 {
+		t.Fatalf("list returned %d tasks, want 2", len(listed))
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "create", "--title", "fallback created")
+	if code != 0 {
+		t.Fatalf("create exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var created task.Task
+	mustUnmarshal(t, stdout, &created)
+	if created.Title != "fallback created" {
+		t.Fatalf("created title = %q, want %q", created.Title, "fallback created")
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "link-pr", seeded.ID, "42")
+	if code != 0 {
+		t.Fatalf("link-pr exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var linked task.Task
+	mustUnmarshal(t, stdout, &linked)
+	if linked.PRNumber != 42 {
+		t.Fatalf("pr number = %d, want 42", linked.PRNumber)
+	}
+	if linked.Status != task.StatusInReview {
+		t.Fatalf("status after link-pr = %q, want %q", linked.Status, task.StatusInReview)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "reopen", seeded.ID)
+	if code != 0 {
+		t.Fatalf("reopen exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	reopened, err := store.Get(seeded.ID)
+	if err != nil {
+		t.Fatalf("get after reopen: %v", err)
+	}
+	if reopened.Status != task.StatusTodo {
+		t.Fatalf("status after reopen = %q, want %q", reopened.Status, task.StatusTodo)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "board")
+	if code != 0 {
+		t.Fatalf("board exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var board struct {
+		Counts map[string]int `json:"counts"`
+	}
+	mustUnmarshal(t, stdout, &board)
+	if board.Counts[string(task.StatusTodo)] < 1 {
+		t.Fatalf("board counts missing todo task: %+v", board.Counts)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "delete", toDelete.ID)
+	if code != 0 {
+		t.Fatalf("delete exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	if _, err := store.Get(toDelete.ID); err == nil {
+		t.Fatalf("task %s still present after delete", toDelete.ID)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "trash", "list")
+	if code != 0 {
+		t.Fatalf("trash list exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var trashed []task.TrashEntry
+	mustUnmarshal(t, stdout, &trashed)
+	found := false
+	for _, entry := range trashed {
+		if entry.ID == toDelete.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("trash list missing deleted task %s: %+v", toDelete.ID, trashed)
+	}
+}
+
 func TestDelete(t *testing.T) {
 	setupStore(t)
 
