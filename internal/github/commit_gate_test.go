@@ -122,6 +122,61 @@ func TestFetchCommitGateWith_NeutralAndSkippedChecksPass(t *testing.T) {
 	}
 }
 
+func TestFetchCommitGateWith_StatusFetchFailureAllowedWhenCheckRunsResolveAll(t *testing.T) {
+	t.Parallel()
+
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/abc/check-runs": `{"check_runs":[
+			{"name":"test","status":"completed","conclusion":"success"},
+			{"name":"lint","status":"completed","conclusion":"success"}]}`,
+	}}
+
+	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test", "lint"})
+	if err != nil {
+		t.Fatalf("fetchCommitGateWith() err = %v", err)
+	}
+	if !got.Approved() {
+		t.Fatalf("Approved() = false, want true: %+v", got)
+	}
+	if len(got.Succeeded) != 2 || len(got.Missing) != 0 || len(got.Pending) != 0 || len(got.Failed) != 0 {
+		t.Fatalf("unexpected gate = %+v", got)
+	}
+}
+
+func TestFetchCommitGateWith_StatusFetchFailureFailsWhenRequiredUnresolved(t *testing.T) {
+	t.Parallel()
+
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/abc/check-runs": `{"check_runs":[
+			{"name":"test","status":"completed","conclusion":"success"}]}`,
+	}}
+
+	if _, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test", "lint"}); err == nil {
+		t.Fatal("fetchCommitGateWith() err = nil, want error")
+	}
+}
+
+func TestFetchCommitGateWith_CheckRunFetchFailureAllowedWhenStatusesResolveAll(t *testing.T) {
+	t.Parallel()
+
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/abc/status": `{"statuses":[
+			{"context":"test","state":"success"},
+			{"context":"lint","state":"success"}]}`,
+	}}
+
+	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test", "lint"})
+	if err != nil {
+		t.Fatalf("fetchCommitGateWith() err = %v", err)
+	}
+	if !got.Approved() {
+		t.Fatalf("Approved() = false, want true: %+v", got)
+	}
+	if len(got.Succeeded) != 2 || len(got.Missing) != 0 || len(got.Pending) != 0 || len(got.Failed) != 0 {
+		t.Fatalf("unexpected gate = %+v", got)
+	}
+}
+
 func TestFetchCommitGateWith_FailsClosedOnCheckRunFetchFailure(t *testing.T) {
 	t.Parallel()
 

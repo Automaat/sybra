@@ -26,7 +26,8 @@ func (g CommitGate) Approved() bool {
 }
 
 // FetchCommitGate resolves the exact state of the required checks for a commit.
-// Both the check-runs and legacy commit-status legs must fetch successfully.
+// A CI source may be unavailable under narrow GitHub App permissions; the gate
+// only accepts that when another source has resolved every required check.
 func FetchCommitGate(ctx context.Context, repo, sha string, requiredChecks []string) (CommitGate, error) {
 	return fetchCommitGateWith(ctx, defaultExecer, repo, sha, requiredChecks)
 }
@@ -46,49 +47,63 @@ func fetchCommitGateWith(ctx context.Context, e execer, repo, sha string, requir
 		statuses[name] = ""
 	}
 
-	runs, fetched := fetchCheckRunsCtxWith(ctx, e, owner, name, sha, "")
-	if !fetched {
-		return CommitGate{}, fmt.Errorf("fetch check-runs %s@%s: request failed", repo, sha)
-	}
-	for _, run := range runs.CheckRuns {
-		checkName := strings.TrimSpace(run.Name)
-		if _, want := statuses[checkName]; !want {
-			continue
-		}
-		state := strictCommitGateState(gqlCheckContext{
-			Typename:   "CheckRun",
-			Status:     strings.ToUpper(run.Status),
-			Conclusion: strings.ToUpper(run.Conclusion),
-		})
-		if state != "" {
-			statuses[checkName] = state
+	checkRunsErr := error(nil)
+	if runs, fetched := fetchCheckRunsCtxWith(ctx, e, owner, name, sha, ""); !fetched {
+		checkRunsErr = fmt.Errorf("fetch check-runs %s@%s: request failed", repo, sha)
+	} else {
+		for _, run := range runs.CheckRuns {
+			checkName := strings.TrimSpace(run.Name)
+			if _, want := statuses[checkName]; !want {
+				continue
+			}
+			state := strictCommitGateState(gqlCheckContext{
+				Typename:   "CheckRun",
+				Status:     strings.ToUpper(run.Status),
+				Conclusion: strings.ToUpper(run.Conclusion),
+			})
+			if state != "" {
+				statuses[checkName] = state
+			}
 		}
 	}
 
 	resp, err := runGHAPICtxWith(ctx, e, "30s", fmt.Sprintf("repos/%s/%s/commits/%s/status", owner, name, sha))
 	if err != nil {
-		return CommitGate{}, fmt.Errorf("fetch commit statuses %s@%s: %s: %w", repo, sha, sanitizeGHOutput(resp.body), err)
-	}
-	var raw restCommitStatuses
-	if err := json.Unmarshal(resp.body, &raw); err != nil {
-		return CommitGate{}, fmt.Errorf("parse commit statuses %s@%s: %w", repo, sha, err)
-	}
-	seenStatus := make(map[string]bool, len(raw.Statuses))
-	for _, status := range raw.Statuses {
-		checkName := strings.TrimSpace(status.Context)
-		if seenStatus[checkName] {
-			continue
+		err = fmt.Errorf("fetch commit statuses %s@%s: %s: %w", repo, sha, sanitizeGHOutput(resp.body), err)
+	} else {
+		var raw restCommitStatuses
+		if err = json.Unmarshal(resp.body, &raw); err != nil {
+			err = fmt.Errorf("parse commit statuses %s@%s: %w", repo, sha, err)
+		} else {
+			seenStatus := make(map[string]bool, len(raw.Statuses))
+			for _, status := range raw.Statuses {
+				checkName := strings.TrimSpace(status.Context)
+				if seenStatus[checkName] {
+					continue
+				}
+				seenStatus[checkName] = true
+				if _, want := statuses[checkName]; !want {
+					continue
+				}
+				state := strictCommitGateState(gqlCheckContext{
+					Typename: "StatusContext",
+					State:    strings.ToUpper(status.State),
+				})
+				if state != "" && statePriority(state) > statePriority(statuses[checkName]) {
+					statuses[checkName] = state
+				}
+			}
 		}
-		seenStatus[checkName] = true
-		if _, want := statuses[checkName]; !want {
-			continue
-		}
-		state := strictCommitGateState(gqlCheckContext{
-			Typename: "StatusContext",
-			State:    strings.ToUpper(status.State),
-		})
-		if state != "" && statePriority(state) > statePriority(statuses[checkName]) {
-			statuses[checkName] = state
+	}
+	if checkRunsErr != nil && err != nil {
+		return CommitGate{}, fmt.Errorf("%w; %w", checkRunsErr, err)
+	}
+	if !allRequiredChecksResolved(required, statuses) {
+		switch {
+		case checkRunsErr != nil:
+			return CommitGate{}, checkRunsErr
+		case err != nil:
+			return CommitGate{}, err
 		}
 	}
 
@@ -126,6 +141,15 @@ func NormalizeRequiredChecks(in []string) []string {
 		out = append(out, item)
 	}
 	return out
+}
+
+func allRequiredChecksResolved(required []string, statuses map[string]string) bool {
+	for _, checkName := range required {
+		if statuses[checkName] == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func statePriority(state string) int {
