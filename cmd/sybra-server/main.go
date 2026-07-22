@@ -168,10 +168,12 @@ func run() (int, error) {
 }
 
 const (
-	shutdownHardDeadline  = 40 * time.Second
 	drainAdmissionWindow  = 1 * time.Second
 	httpShutdownDeadline  = 20 * time.Second
 	webhookShutdownBudget = 5 * time.Second
+	appShutdownWaitBudget = 15 * time.Second
+	shutdownForceSlack    = 4 * time.Second
+	shutdownHardDeadline  = drainAdmissionWindow + httpShutdownDeadline + webhookShutdownBudget + appShutdownWaitBudget + shutdownForceSlack
 )
 
 func newRestartRequest(shutdownCh chan<- struct{}, restart *atomic.Bool) func() {

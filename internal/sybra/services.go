@@ -75,6 +75,7 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"ListBackgroundOps",
 			"ListNotifications",
 		),
+		// OpenWorktree opens a local GUI app and stays off HTTP.
 		"AgentService": httpapi.NewService(a.agentSvc,
 			"StopAgent",
 			"ListAgents",
@@ -87,10 +88,8 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"GetAgentRunConvoLog",
 			"RespondEscalation",
 			"GetAgentDiff",
-			// OpenWorktree opens a local GUI app.
 		).WithReadOnly(
 			"ListAgents",
-			"DiscoverAgents",
 			"GetAgentOutput",
 			"GetConvoOutput",
 			"GetAgentRunLog",

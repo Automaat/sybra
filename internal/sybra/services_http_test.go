@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -124,6 +125,36 @@ func TestAppHTTPAllowlist(t *testing.T) {
 	}
 	if got.Items[0].EffectivePriority != string(task.PriorityHigh) {
 		t.Fatalf("AgentQueueSnapshot effective priority = %q, want %q", got.Items[0].EffectivePriority, task.PriorityHigh)
+	}
+}
+
+func TestAgentServiceHTTPAdmissionRejectsDiscoverAgentsDuringDrain(t *testing.T) {
+	agentSvc, a := setupAgentService(t)
+	a.agentSvc = agentSvc
+	a.initLifecycle(context.Background())
+	a.BeginDrain()
+
+	mux := http.NewServeMux()
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), a.HTTPAdmission)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/api/AgentService/DiscoverAgents", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST DiscoverAgents: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("DiscoverAgents status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	readResp, err := http.Post(srv.URL+"/api/AgentService/ListAgents", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST ListAgents: %v", err)
+	}
+	defer readResp.Body.Close()
+	if readResp.StatusCode != http.StatusOK {
+		t.Fatalf("ListAgents status = %d, want %d", readResp.StatusCode, http.StatusOK)
 	}
 }
 

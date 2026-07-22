@@ -269,6 +269,13 @@ func TestNewRestartRequestCoalescesWakeups(t *testing.T) {
 	}
 }
 
+func TestShutdownHardDeadlineCoversSequentialGracefulBudgets(t *testing.T) {
+	sequentialBudget := drainAdmissionWindow + httpShutdownDeadline + webhookShutdownBudget + appShutdownWaitBudget
+	if shutdownHardDeadline <= sequentialBudget {
+		t.Fatalf("shutdownHardDeadline = %s, want > sequential graceful budget %s", shutdownHardDeadline, sequentialBudget)
+	}
+}
+
 func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
