@@ -186,6 +186,25 @@ func TestPrepareRunConfig_FailoverRejectsUnknownConcreteModel(t *testing.T) {
 	}
 }
 
+func TestPrepareRunConfig_FailoverRejectsUnknownTierLikeConcreteModel(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{"claude": false, "codex": true},
+		failover: map[string]string{"claude": "codex"},
+		reasons:  map[string]string{"claude": "rate_limited"},
+	})
+
+	_, _, err := m.prepareRunConfig(RunConfig{
+		Provider: "claude",
+		Model:    "my-sonnet-experiment",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+	})
+	if !errors.Is(err, ErrProviderModelIncompatible) {
+		t.Fatalf("prepareRunConfig error = %v, want ErrProviderModelIncompatible", err)
+	}
+}
+
 // TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor
 // locks in that prepareRunConfig — the single chokepoint every headless and
 // interactive run passes through — wires the background-task guardrail into

@@ -1083,6 +1083,7 @@ func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
 	cfg.Agent.Provider = "claude"
 	cfg.Agent.Model = "claude-fable-5"
 	cfg.Monitor.Model = "claude-fable-5"
+	cfg.HumanReview.Model = "foo-opus-bar"
 
 	code, out := captureStdout(t, func() int {
 		return cmdConfigDoctor(cfg, true)
@@ -1096,6 +1097,7 @@ func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
 	for _, want := range []string{
 		`agent.model="claude-fable-5" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
 		`monitor.model="claude-fable-5" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
+		`human_review.model="foo-opus-bar" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
 	} {
 		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
 			return f.Severity == "warning" && f.Message == want

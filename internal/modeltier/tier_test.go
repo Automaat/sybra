@@ -36,8 +36,16 @@ func TestInferTier(t *testing.T) {
 		{model: "opus", want: Expensive, ok: true},
 		{model: "gpt-5.5", want: Expensive, ok: true},
 		{model: "claude-sonnet-4.6", want: Cheap, ok: true},
+		{model: "claude-sonnet-4-6", want: Cheap, ok: true},
 		{model: "claude-haiku-4.5", want: SuperCheap, ok: true},
+		{model: "claude-haiku-4-5-20251001", want: SuperCheap, ok: true},
+		{model: "claude-opus-4-8", want: Expensive, ok: true},
+		{model: "gemini-3.1-pro", want: Expensive, ok: true},
 		{model: "custom-model", ok: false},
+		{model: "my-sonnet-experiment", ok: false},
+		{model: "foo-opus-bar", ok: false},
+		{model: "experimental-gpt-5.4-turbo", ok: false},
+		{model: "claude-sonnet-custom", ok: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {

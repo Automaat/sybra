@@ -2,6 +2,7 @@ package modeltier
 
 import (
 	"maps"
+	"regexp"
 	"strings"
 )
 
@@ -42,6 +43,12 @@ var tierAliases = map[Tier]string{
 	SuperCheap: "haiku",
 	Cheap:      "sonnet",
 	Expensive:  "opus",
+}
+
+var claudeVersionedModelRe = regexp.MustCompile(`^claude-(haiku|sonnet|opus)-[0-9]+(?:[.-][0-9]+)*(?:-[0-9]{8})?$`)
+
+var concreteModelTiers = map[string]Tier{
+	"gemini-3.1-pro": Expensive,
 }
 
 // Models returns a defensive copy of the provider model map for tier.
@@ -85,23 +92,20 @@ func InferTier(model string) (Tier, bool) {
 			}
 		}
 	}
-	switch {
-	case strings.Contains(trimmed, "haiku"),
-		strings.Contains(trimmed, "gpt-5.4-mini"),
-		strings.Contains(trimmed, "qwen3-32b"):
-		return SuperCheap, true
-	case strings.Contains(trimmed, "opus"),
-		strings.Contains(trimmed, "gpt-5.5"),
-		strings.Contains(trimmed, "gemini-3.1-pro"),
-		strings.Contains(trimmed, "glm-5.2"):
-		return Expensive, true
-	case strings.Contains(trimmed, "sonnet"),
-		strings.Contains(trimmed, "gpt-5.4"),
-		strings.Contains(trimmed, "deepseek-v4-flash"):
-		return Cheap, true
-	default:
-		return "", false
+	if tier, ok := concreteModelTiers[trimmed]; ok {
+		return tier, true
 	}
+	if match := claudeVersionedModelRe.FindStringSubmatch(trimmed); len(match) == 2 {
+		switch match[1] {
+		case "haiku":
+			return SuperCheap, true
+		case "sonnet":
+			return Cheap, true
+		case "opus":
+			return Expensive, true
+		}
+	}
+	return "", false
 }
 
 // NormalizeAlias maps Sybra's provider-neutral model aliases to a concrete
