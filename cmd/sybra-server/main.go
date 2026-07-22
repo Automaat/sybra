@@ -169,11 +169,9 @@ func run() (int, error) {
 
 const (
 	drainAdmissionWindow  = 1 * time.Second
-	httpShutdownDeadline  = 20 * time.Second
-	webhookShutdownBudget = 5 * time.Second
-	appShutdownWaitBudget = 15 * time.Second
-	shutdownForceSlack    = 4 * time.Second
-	shutdownHardDeadline  = drainAdmissionWindow + httpShutdownDeadline + webhookShutdownBudget + appShutdownWaitBudget + shutdownForceSlack
+	httpShutdownDeadline  = 15 * time.Second
+	webhookShutdownBudget = 4 * time.Second
+	shutdownHardDeadline  = 40 * time.Second
 )
 
 func newRestartRequest(shutdownCh chan<- struct{}, restart *atomic.Bool) func() {
@@ -191,20 +189,22 @@ func notifyShutdown(ch chan<- struct{}) {
 }
 
 func runGracefulShutdown(logger *slog.Logger, app *sybra.App, srv, webhookSrv *http.Server, restart *atomic.Bool) {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownHardDeadline)
+	defer cancel()
 	app.BeginDrain()
 	logger.Info("server.shutdown", "restart", restart.Load(), "deadline", shutdownHardDeadline.String(), "drain_window", drainAdmissionWindow.String())
 	go forceExitAfter(logger, shutdownHardDeadline, restart)
 	time.Sleep(drainAdmissionWindow)
-	shutdownServer(logger, "server", srv, httpShutdownDeadline)
-	shutdownServer(logger, "webhook", webhookSrv, webhookShutdownBudget)
-	app.Shutdown(context.Background())
+	shutdownServer(shutdownCtx, logger, "server", srv, httpShutdownDeadline)
+	shutdownServer(shutdownCtx, logger, "webhook", webhookSrv, webhookShutdownBudget)
+	app.Shutdown(shutdownCtx)
 }
 
-func shutdownServer(logger *slog.Logger, name string, srv *http.Server, grace time.Duration) {
+func shutdownServer(ctx context.Context, logger *slog.Logger, name string, srv *http.Server, grace time.Duration) {
 	if srv == nil {
 		return
 	}
-	shutCtx, cancel := context.WithTimeout(context.Background(), grace)
+	shutCtx, cancel := context.WithTimeout(ctx, grace)
 	defer cancel()
 	if err := shutdownHTTPServer(shutCtx, srv); err != nil {
 		logger.Error(name+".shutdown.err", "err", err)

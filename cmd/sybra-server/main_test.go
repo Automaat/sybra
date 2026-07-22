@@ -270,9 +270,12 @@ func TestNewRestartRequestCoalescesWakeups(t *testing.T) {
 }
 
 func TestShutdownHardDeadlineCoversSequentialGracefulBudgets(t *testing.T) {
-	sequentialBudget := drainAdmissionWindow + httpShutdownDeadline + webhookShutdownBudget + appShutdownWaitBudget
+	sequentialBudget := drainAdmissionWindow + httpShutdownDeadline + webhookShutdownBudget
 	if shutdownHardDeadline <= sequentialBudget {
-		t.Fatalf("shutdownHardDeadline = %s, want > sequential graceful budget %s", shutdownHardDeadline, sequentialBudget)
+		t.Fatalf("shutdownHardDeadline = %s, want > server/webhook graceful budget %s", shutdownHardDeadline, sequentialBudget)
+	}
+	if shutdownHardDeadline >= 45*time.Second {
+		t.Fatalf("shutdownHardDeadline = %s, want < systemd TimeoutStopSec 45s", shutdownHardDeadline)
 	}
 }
 

@@ -588,13 +588,15 @@ func (a *App) fleetWorkBlocklist() ([]string, error) {
 	return bl, nil
 }
 
-func (a *App) Shutdown(_ context.Context) {
+func (a *App) Shutdown(ctx context.Context) {
 	a.BeginDrain()
 	if a.loopSched != nil {
 		a.loopSched.Stop()
 	}
-	if !waitGroupTimeout(&a.wg, appShutdownWaitGrace) {
-		a.logger.Warn("app.shutdown.wait_timeout", "grace", appShutdownWaitGrace, "stacks", a.dumpGoroutineStacks())
+	waitCtx, cancel := shutdownWaitContext(ctx)
+	defer cancel()
+	if !waitGroupContext(waitCtx, &a.wg) {
+		a.logger.Warn("app.shutdown.wait_timeout", "grace", shutdownWaitBudget(waitCtx), "stacks", a.dumpGoroutineStacks())
 	}
 	a.logger.Info("app.stopping")
 	a.beginShutdown()
@@ -618,7 +620,24 @@ func (a *App) Shutdown(_ context.Context) {
 const appShutdownWaitGrace = 15 * time.Second
 const fileWatcherShutdownGrace = 2 * time.Second
 
-func waitGroupTimeout(wg *sync.WaitGroup, grace time.Duration) bool {
+func shutdownWaitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, appShutdownWaitGrace)
+}
+
+func shutdownWaitBudget(ctx context.Context) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		return time.Until(deadline)
+	}
+	return appShutdownWaitGrace
+}
+
+func waitGroupContext(ctx context.Context, wg *sync.WaitGroup) bool {
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -627,7 +646,7 @@ func waitGroupTimeout(wg *sync.WaitGroup, grace time.Duration) bool {
 	select {
 	case <-done:
 		return true
-	case <-time.After(grace):
+	case <-ctx.Done():
 		return false
 	}
 }

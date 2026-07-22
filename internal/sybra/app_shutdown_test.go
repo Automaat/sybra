@@ -13,7 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/httpapi"
 )
 
-func TestWaitGroupTimeout(t *testing.T) {
+func TestWaitGroupContext(t *testing.T) {
 	tests := []struct {
 		name  string
 		block bool
@@ -30,14 +30,52 @@ func TestWaitGroupTimeout(t *testing.T) {
 			if !tt.block {
 				go wg.Done()
 			}
-			if got := waitGroupTimeout(&wg, tt.grace); got != tt.want {
-				t.Fatalf("waitGroupTimeout = %v, want %v", got, tt.want)
+			ctx, cancel := context.WithTimeout(context.Background(), tt.grace)
+			defer cancel()
+			if got := waitGroupContext(ctx, &wg); got != tt.want {
+				t.Fatalf("waitGroupContext = %v, want %v", got, tt.want)
 			}
 			if tt.block {
 				wg.Done()
 			}
 		})
 	}
+}
+
+func TestShutdownWaitContext(t *testing.T) {
+	t.Run("adds fallback deadline when caller has none", func(t *testing.T) {
+		ctx, cancel := shutdownWaitContext(context.Background())
+		defer cancel()
+
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("Deadline() = false, want fallback deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > appShutdownWaitGrace {
+			t.Fatalf("remaining = %s, want within (0,%s]", remaining, appShutdownWaitGrace)
+		}
+	})
+
+	t.Run("preserves caller deadline", func(t *testing.T) {
+		parent, cancelParent := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancelParent()
+
+		ctx, cancel := shutdownWaitContext(parent)
+		defer cancel()
+
+		parentDeadline, ok := parent.Deadline()
+		if !ok {
+			t.Fatal("parent Deadline() = false, want true")
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("Deadline() = false, want caller deadline")
+		}
+		if !deadline.Equal(parentDeadline) {
+			t.Fatalf("deadline = %v, want %v", deadline, parentDeadline)
+		}
+	})
 }
 
 func TestBeginDrainCancelsSchedulerOnly(t *testing.T) {
