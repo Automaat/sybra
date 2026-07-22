@@ -23,7 +23,7 @@ export class AgentRun {
     "agentId": string;
 
     /**
-     * triage, plan, eval, pr-fix, or "" for implementation
+     * explicit run role; legacy empty still means implementation
      */
     "role": string;
     "mode": string;
