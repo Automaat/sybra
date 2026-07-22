@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 // TestResolveSandboxMode pins the escape-hatch/default precedence: a task
@@ -244,10 +245,41 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 		t.Fatalf("agent.NewManager: %v", err)
 	}
 
+	bare, _ := initConflictingRepo(t)
+	projDir := filepath.Join(t.TempDir(), "projects")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projStore, err := project.NewStore(projDir, filepath.Join(t.TempDir(), "clones"))
+	if err != nil {
+		t.Fatalf("project.NewStore: %v", err)
+	}
+	proj := project.Project{
+		ID:        "test/proj",
+		Name:      "proj",
+		Owner:     "test",
+		Repo:      "proj",
+		URL:       bare,
+		ClonePath: bare,
+		Type:      project.ProjectTypePet,
+		Status:    project.ProjectStatusReady,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	writeTestProject(t, projDir, proj)
+	wtMgr := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Projects:     projStore,
+		Tasks:        tm,
+		Logger:       discardSlogLogger(),
+		LogsDir:      t.TempDir(),
+		SetupTimeout: 30 * time.Second,
+	})
+
 	// Disabling require_permissions avoids the "needs a running approval
 	// server" error a gated headless run would hit first.
 	noPermissions := false
-	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+	o := New(tm, projStore, am, nil, discardSlogLogger(), wtMgr, &config.Config{
 		Agent: config.AgentDefaults{
 			ResearchMachineDir: t.TempDir(),
 			RequirePermissions: &noPermissions,
@@ -258,6 +290,9 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task Create (first): %v", err)
 	}
+	if _, err := tm.Update(first.ID, task.Update{ProjectID: task.Ptr(proj.ID)}); err != nil {
+		t.Fatalf("task Update (first project): %v", err)
+	}
 	if err := o.StartPRFixAgent(first.ID); err != nil {
 		t.Fatalf("StartPRFixAgent(first) unexpected err: %v", err)
 	}
@@ -266,6 +301,9 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	second, err := tm.Create("hits the concurrency cap", "", "headless")
 	if err != nil {
 		t.Fatalf("task Create (second): %v", err)
+	}
+	if _, err := tm.Update(second.ID, task.Update{ProjectID: task.Ptr(proj.ID)}); err != nil {
+		t.Fatalf("task Update (second project): %v", err)
 	}
 	err = o.StartPRFixAgent(second.ID)
 	if err == nil {

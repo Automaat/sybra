@@ -1,6 +1,7 @@
 package task
 
 import (
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/workflow"
@@ -173,12 +174,7 @@ func normalizeTaskType(tt TaskType) TaskType {
 }
 
 func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func frontmatterFromTask(t Task) taskFrontmatter {

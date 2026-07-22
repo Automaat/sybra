@@ -31,9 +31,6 @@ func branchPrefixForTask(t task.Task) string {
 	if typ, ok := conventionalType(t.Title); ok {
 		return typ
 	}
-	if task.IsChatTask(t) {
-		return "chore"
-	}
 	return "chore"
 }
 

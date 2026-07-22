@@ -107,7 +107,8 @@ var validTaskTypes = map[TaskType]bool{
 	"": true, TaskTypeUmbrella: true,
 }
 
-// AllTaskTypes returns every valid task_type value in display order.
+// AllTaskTypes returns explicit task_type values in display order. The empty
+// string is also accepted as the implicit default but is not returned here.
 func AllTaskTypes() []TaskType {
 	return []TaskType{TaskTypeUmbrella}
 }
@@ -130,7 +131,7 @@ func IsChatTask(t any) bool {
 func ValidateTaskType(s string) (TaskType, error) {
 	tt := TaskType(s)
 	if !validTaskTypes[tt] {
-		return "", fmt.Errorf("invalid task_type %q (valid: %v)", s, AllTaskTypes())
+		return "", fmt.Errorf("invalid task_type %q (valid: empty or %v)", s, AllTaskTypes())
 	}
 	return tt, nil
 }

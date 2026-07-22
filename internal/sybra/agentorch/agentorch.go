@@ -34,7 +34,7 @@ import (
 
 // ResolveExecution derives the effective mode, directory, permission mode, and
 // whether project worktree setup should be skipped. Task mode is explicit; task
-// type is only an internal marker for synthetic chat/umbrella tasks.
+// type does not affect execution.
 func ResolveExecution(t task.Task, hintMode, researchMachineDir string, cfg *config.Config) (mode, dir string, requirePerm, skipWorktree bool) {
 	switch {
 	case task.IsChatTask(t):
@@ -1259,24 +1259,23 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, t.AgentMode, researchDir, o.cfg)
 	if !skipWT {
 		if o.worktrees == nil {
-			dir = fallbackDispatchDir(dir)
-		} else {
-			t, err = o.AutoAssignProject(t)
-			if err != nil {
-				return err
-			}
-			if t.ProjectID == "" {
-				return fmt.Errorf("task %s has no project_id: refusing to start pr-fix agent without isolated worktree: %w", taskID, workflow.ErrNoProjectAssigned)
-			}
-			opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
-			d, wtErr := o.worktrees.PrepareForTask(o.baseCtx(), t, onPhase)
-			if wtErr != nil {
-				o.failWorktreeOp(opID, wtErr)
-				return fmt.Errorf("worktree required: %w", wtErr)
-			}
-			o.completeWorktreeOp(opID)
-			dir = d
+			return fmt.Errorf("task %s: refusing to start pr-fix agent without isolated worktree manager: %w", taskID, workflow.ErrNoProjectAssigned)
 		}
+		t, err = o.AutoAssignProject(t)
+		if err != nil {
+			return err
+		}
+		if t.ProjectID == "" {
+			return fmt.Errorf("task %s has no project_id: refusing to start pr-fix agent without isolated worktree: %w", taskID, workflow.ErrNoProjectAssigned)
+		}
+		opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
+		d, wtErr := o.worktrees.PrepareForTask(o.baseCtx(), t, onPhase)
+		if wtErr != nil {
+			o.failWorktreeOp(opID, wtErr)
+			return fmt.Errorf("worktree required: %w", wtErr)
+		}
+		o.completeWorktreeOp(opID)
+		dir = d
 	}
 	if dir == "" {
 		return fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
