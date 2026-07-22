@@ -416,17 +416,39 @@ func (e *Engine) classifyPRGitError(taskID string, step *Step, wfExec *Execution
 		attempts := parseWorkflowInt(wfExec.Variables[prCreateAuthAttemptsVar])
 		if attempts < maxPRCreateAuthRetries {
 			wfExec.SetVar(prCreateAuthAttemptsVar, strconv.Itoa(attempts+1))
-			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateAuthRetryReason, "workflow.pr-tail.auth-retry", "attempt", attempts+1, "max", maxPRCreateAuthRetries)
+			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prRetryReason(prCreateAuthRetryReason, msg), "workflow.pr-tail.auth-retry", "attempt", attempts+1, "max", maxPRCreateAuthRetries, "phase", phase)
 		}
 		return e.humanRequiredPR(taskID, step, fmt.Sprintf("%s failing due to invalid or expired GitHub credentials after %d retries: %s", phase, attempts, msg))
 	default:
 		attempts := parseWorkflowInt(wfExec.Variables[prPushAttemptsVar])
 		if attempts < maxPRPushRetries {
 			wfExec.SetVar(prPushAttemptsVar, strconv.Itoa(attempts+1))
-			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prPushRetryStatusReason, "workflow.pr-tail.push-retry", "phase", phase, "attempt", attempts+1, "max", maxPRPushRetries)
+			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prRetryReason(prPushRetryStatusReason, msg), "workflow.pr-tail.push-retry", "phase", phase, "attempt", attempts+1, "max", maxPRPushRetries)
 		}
 		return e.humanRequiredPR(taskID, step, fmt.Sprintf("%s failed after %d retries: %s", phase, attempts, msg))
 	}
+}
+
+func prRetryReason(base, detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return base
+	}
+	return base + ": " + truncateMiddle(detail, 240)
+}
+
+func truncateMiddle(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	marker := "\n... (truncated) ...\n"
+	if limit <= len(marker)+2 {
+		return truncate(s, limit)
+	}
+	keep := limit - len(marker)
+	head := keep / 2
+	tail := keep - head
+	return s[:head] + marker + s[len(s)-tail:]
 }
 
 // findExistingPRForBranch checks for a PR already open on branch, mirroring

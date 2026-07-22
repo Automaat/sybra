@@ -219,8 +219,8 @@ func TestExecPushBranch_PreflightAuthFailureParksBeforePush(t *testing.T) {
 	if ti.Status != "ready-pr" {
 		t.Fatalf("status = %q, want ready-pr", ti.Status)
 	}
-	if ti.StatusReason != prCreateAuthRetryReason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, prCreateAuthRetryReason)
+	if !strings.HasPrefix(ti.StatusReason, prCreateAuthRetryReason+": ") || !strings.Contains(ti.StatusReason, "Bad credentials") {
+		t.Fatalf("status reason = %q, want auth retry reason with diagnostic detail", ti.StatusReason)
 	}
 	if wfExec.Variables[prCreateAuthAttemptsVar] != "1" {
 		t.Fatalf("%s = %q, want 1", prCreateAuthAttemptsVar, wfExec.Variables[prCreateAuthAttemptsVar])
@@ -956,6 +956,49 @@ func TestClassifyPRGitError_AuthFailureEscalatesAfterMaxRetries(t *testing.T) {
 	}
 }
 
+func TestClassifyPRGitError_GitHTTPSUsernamePromptIsAuthFailure(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	step := newCreatePRStep()
+	task := TaskInfo{ID: "t1", Status: "ready-pr"}
+	wfExec := &Execution{Variables: map[string]string{}}
+	authErr := errors.New("github push credential preflight failed: git push --dry-run origin HEAD:refs/heads/sybra-preflight/abc: ambient env: fatal: could not read Username for 'https://github.com': No such device or address")
+
+	_, err := engine.classifyPRGitError("t1", step, wfExec, task, authErr, "push credential preflight")
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if !strings.HasPrefix(ti.StatusReason, prCreateAuthRetryReason+": ") {
+		t.Fatalf("status reason = %q, want auth retry reason with diagnostic detail", ti.StatusReason)
+	}
+	if !strings.Contains(ti.StatusReason, "could not read Username") {
+		t.Fatalf("status reason = %q, want git auth diagnostic", ti.StatusReason)
+	}
+	if wfExec.Variables[prCreateAuthAttemptsVar] != "1" {
+		t.Fatalf("%s = %q, want 1", prCreateAuthAttemptsVar, wfExec.Variables[prCreateAuthAttemptsVar])
+	}
+	if wfExec.Variables[prPushAttemptsVar] != "" {
+		t.Fatalf("%s = %q, want empty because auth retry counter should be used", prPushAttemptsVar, wfExec.Variables[prPushAttemptsVar])
+	}
+}
+
+func TestPRRetryReasonPreservesTailForLongHookOutput(t *testing.T) {
+	detail := strings.Repeat("ok github.com/Automaat/sybra/internal/pkg\n", 20) + "FAIL github.com/Automaat/sybra/internal/workflow\n"
+	got := prRetryReason(prPushRetryStatusReason, detail)
+
+	if !strings.HasPrefix(got, prPushRetryStatusReason+": ") {
+		t.Fatalf("reason = %q, want base prefix", got)
+	}
+	if !strings.Contains(got, "... (truncated) ...") {
+		t.Fatalf("reason = %q, want truncation marker", got)
+	}
+	if !strings.Contains(got, "FAIL github.com/Automaat/sybra/internal/workflow") {
+		t.Fatalf("reason = %q, want failing tail preserved", got)
+	}
+}
+
 // TestClassifyPRGitError_UnclassifiedFailureParksOnceThenEscalates covers a
 // push rejected by a project's own pre-push hook (e.g. `go test ./...`
 // failing under concurrent-agent CPU contention) — output that matches none
@@ -979,6 +1022,9 @@ func TestClassifyPRGitError_UnclassifiedFailureParksOnceThenEscalates(t *testing
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status == "human-required" {
 		t.Fatalf("status = %q after %d retries, want unchanged (still parked)", ti.Status, maxPRPushRetries)
+	}
+	if !strings.HasPrefix(ti.StatusReason, prPushRetryStatusReason+": ") || !strings.Contains(ti.StatusReason, "FAIL internal/sybra") {
+		t.Fatalf("status reason = %q, want push retry reason with hook detail", ti.StatusReason)
 	}
 	if _, err := engine.classifyPRGitError("t1", step, wfExec, task, hookErr, "git push"); err != nil {
 		t.Fatalf("final attempt: unexpected error %v", err)

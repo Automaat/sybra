@@ -8798,6 +8798,7 @@ func TestLooksLikeAuthFailure(t *testing.T) {
 		{"auth failed", "authentication failed for repository", true},
 		{"github app token invalid", "X Failed to log in to github.com using token (GH_TOKEN)\n- The token in GH_TOKEN is invalid.", true},
 		{"expired token", "fatal: token has expired", true},
+		{"git https username prompt", "fatal: could not read Username for 'https://github.com': No such device or address", true},
 		{"gh auth hint", "run gh auth login to authenticate", true},
 		{"401", "401 Unauthorized", true},
 		{"unrelated failure", "PR title does not follow conventional commit format", false},
