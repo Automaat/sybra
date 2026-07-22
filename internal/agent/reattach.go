@@ -601,7 +601,7 @@ func (m *Manager) reattachStaleReason(r Record, now time.Time) string {
 
 func staleForLiveAgent(status string) bool {
 	switch status {
-	case "todo", "new", "human-required", "done", "cancelled":
+	case "todo", "new", "human-required", "blocked", "done", "cancelled":
 		return true
 	default:
 		return false

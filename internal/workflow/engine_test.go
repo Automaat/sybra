@@ -22,6 +22,7 @@ import (
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
@@ -3133,6 +3134,78 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
+	tests := []struct {
+		name       string
+		retries    string
+		wantStarts int
+		wantStatus string
+		wantReason string
+		wantRetry  string
+	}{
+		{
+			name:       "resume consumes persisted retry and reruns",
+			retries:    "1",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantReason: watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+			wantRetry:  "2",
+		},
+		{
+			name:       "third identical zero-output attempt blocks",
+			retries:    strconv.Itoa(maxWatchdogRateLimitRetries),
+			wantStarts: 0,
+			wantStatus: "blocked",
+			wantReason: "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
+			wantRetry:  strconv.Itoa(maxWatchdogRateLimitRetries),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+
+			vars := map[string]string{}
+			if tc.retries != "" {
+				vars[watchdogRateLimitRetryKey("implement")] = tc.retries
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "in-progress",
+				StatusReason: watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+				AgentMode:    "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   vars,
+				},
+			})
+
+			engine.ResumeStalled()
+
+			if got := agents.CallCount(); got != tc.wantStarts {
+				t.Fatalf("replacement agent starts = %d, want %d", got, tc.wantStarts)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.StatusReason != tc.wantReason {
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
+			}
+			if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != tc.wantRetry {
+				t.Fatalf("rate-limit retry var = %q, want %q", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")], tc.wantRetry)
+			}
+		})
+	}
+}
+
 // TestRescheduleRateLimitedAgent_ParksWhileProviderRateLimitedNoFailover is the
 // regression guard for sybra#1585: a reschedule that fires while the step's
 // provider is still inside its rate-limit cooldown (and no healthy peer exists
@@ -3303,6 +3376,51 @@ func TestRescheduleRateLimitedAgent_SkippedSharedClaimDoesNotConsumeWatchdogRetr
 	}
 	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != "1" {
 		t.Fatalf("rate-limit retry var = %q, want 1", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")])
+	}
+}
+
+func TestRescheduleRateLimitedAgent_SkipsBlockedStatus(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "blocked",
+		StatusReason: "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecFailed,
+			Variables: map[string]string{
+				watchdogRateLimitRetryKey("implement"): strconv.Itoa(maxWatchdogRateLimitRetries),
+			},
+		},
+	})
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+
+	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("unexpected replacement agent starts = %d, want 0", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", got.Status)
+	}
+	if got.StatusReason != "watchdog: zero-output startup retry budget exhausted after 3 identical attempts" {
+		t.Fatalf("status_reason = %q", got.StatusReason)
+	}
+	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != strconv.Itoa(maxWatchdogRateLimitRetries) {
+		t.Fatalf("rate-limit retry var = %q, want %d", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")], maxWatchdogRateLimitRetries)
+	}
+	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+		t.Fatal("rate-limited agent step mapping was not cleared")
 	}
 }
 
@@ -3928,6 +4046,34 @@ func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	// Must NOT dispatch an agent: human-required overrides the workflow.
 	if agents.CallCount() != 0 {
 		t.Fatalf("expected 0 agent starts for human-required task, got %d", agents.CallCount())
+	}
+}
+
+func TestResumeStalled_SkipsBlockedStatus(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "blocked",
+		StatusReason: "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecFailed,
+			Variables: map[string]string{
+				watchdogRateLimitRetryKey("implement"): strconv.Itoa(maxWatchdogRateLimitRetries),
+			},
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if agents.CallCount() != 0 {
+		t.Fatalf("expected 0 agent starts for blocked task, got %d", agents.CallCount())
 	}
 }
 
