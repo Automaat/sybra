@@ -58,6 +58,7 @@ func TestResumeStalled_ResumesParkedCreatePR(t *testing.T) {
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
+	engine.SetPRInitialReviewRequester(&fakePRInitialReviewRequester{})
 	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
 
 	engine.ResumeStalled()

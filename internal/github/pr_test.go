@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -427,7 +428,7 @@ func TestEditPRBodyWith_execError(t *testing.T) {
 func TestRequestReviewersWith_passesArgs(t *testing.T) {
 	t.Parallel()
 	fe := &recordingExecer{output: []byte("HTTP/2.0 201 Created\n\n{}")}
-	if err := requestReviewersWith(fe, "owner/repo", 42, []string{"alice", "bob"}); err != nil {
+	if err := requestReviewersWith(context.Background(), fe, "owner/repo", 42, []string{"alice", "bob"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := []string{
@@ -449,7 +450,7 @@ func TestRequestReviewersWith_passesArgs(t *testing.T) {
 func TestRequestReviewersWith_emptySkips(t *testing.T) {
 	t.Parallel()
 	fe := &recordingExecer{}
-	if err := requestReviewersWith(fe, "owner/repo", 42, nil); err != nil {
+	if err := requestReviewersWith(context.Background(), fe, "owner/repo", 42, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if fe.calls != 0 {
@@ -460,7 +461,7 @@ func TestRequestReviewersWith_emptySkips(t *testing.T) {
 func TestRequestReviewersWith_execError(t *testing.T) {
 	t.Parallel()
 	fe := &fakeExecer{output: []byte("HTTP/2.0 422 Unprocessable Entity\n\nreviewer is not a collaborator"), err: fmt.Errorf("exit 1")}
-	if err := requestReviewersWith(fe, "owner/repo", 42, []string{"alice"}); err == nil {
+	if err := requestReviewersWith(context.Background(), fe, "owner/repo", 42, []string{"alice"}); err == nil {
 		t.Fatal("expected error")
 	}
 }

@@ -198,6 +198,12 @@ type PRReviewRequester interface {
 	RerequestReview(repo string, prNumber int) (reviewers []string, err error)
 }
 
+// PRInitialReviewRequester requests the required first external review after
+// Sybra opens or adopts a pet-project PR.
+type PRInitialReviewRequester interface {
+	RequestInitialReview(ctx context.Context, repo string, prNumber int) error
+}
+
 // PRStateFetcher fetches the live state of a GitHub pull request. Used by
 // `route_pr_fix_result` to re-probe the remote PR before parking a task
 // human-required — a pr-fix agent that declined to push because its local
@@ -326,6 +332,7 @@ type Engine struct {
 	agents           AgentLauncher
 	prLinker         PRLinker
 	prReviewers      PRReviewRequester
+	prInitialReview  PRInitialReviewRequester
 	prStates         PRStateFetcher
 	prHeads          PRHeadFetcher
 	pushPreflight    PushCredentialPreflighter
@@ -507,6 +514,12 @@ func (e *Engine) SetPRLinker(l PRLinker) { e.prLinker = l }
 
 // SetPRReviewRequester wires an implementation used by rerequest_review.
 func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
+
+// SetPRInitialReviewRequester wires the requester used by create_pr after a
+// pet-project PR is opened or adopted.
+func (e *Engine) SetPRInitialReviewRequester(r PRInitialReviewRequester) {
+	e.prInitialReview = r
+}
 
 // SetPRStateFetcher wires an implementation used by `route_pr_fix_result` to
 // re-probe the live PR before parking human-required. Leaving it unset skips

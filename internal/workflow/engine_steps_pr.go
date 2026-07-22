@@ -72,6 +72,9 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 		if err := e.linkTaskPR(taskID, t, existing); err != nil {
 			return StepOutput{}, fmt.Errorf("create_pr: link existing pr: %w", err)
 		}
+		if out, err, done := e.requestInitialPRReview(taskID, step, t, existing); done {
+			return out, err
+		}
 		return stepDone(step, fmt.Sprintf("pr #%d already exists for branch", existing))
 	}
 	if out, done := e.handleExistingAnyStatePRForBranch(taskID, step, wtPath, t, headArg); done {
@@ -99,6 +102,9 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 	})
 	if createErr != nil {
 		if num, ok := e.adoptExistingPROnConflict(taskID, t.ProjectID, headArg, createErr); ok {
+			if out, err, done := e.requestInitialPRReview(taskID, step, t, num); done {
+				return out, err
+			}
 			return stepDone(step, fmt.Sprintf("pr #%d already existed, adopted", num))
 		}
 		return e.classifyPRGitError(taskID, step, wfExec, t, createErr, "create_pr")
@@ -106,6 +112,9 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 
 	if err := e.linkTaskPR(taskID, t, number); err != nil {
 		return StepOutput{}, fmt.Errorf("create_pr: link pr: %w", err)
+	}
+	if out, err, done := e.requestInitialPRReview(taskID, step, t, number); done {
+		return out, err
 	}
 	if localSHA, lErr := project.CurrentCommit(ctx, wtPath); lErr == nil && headSHA != "" && localSHA != headSHA {
 		e.logger.Warn("workflow.create-pr.head-mismatch", "task_id", taskID, "pr", number, "local", localSHA, "remote", headSHA)
@@ -133,6 +142,24 @@ func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createE
 	}
 	e.logger.Info("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing)
 	return existing, true
+}
+
+func (e *Engine) requestInitialPRReview(taskID string, step *Step, t TaskInfo, prNumber int) (StepOutput, error, bool) {
+	if t.ProjectType != "pet" || t.ProjectID == "" || prNumber <= 0 {
+		return StepOutput{}, nil, false
+	}
+	if e.prInitialReview == nil {
+		out, err := e.humanRequiredPR(taskID, step, "no initial PR review requester configured")
+		return out, err, true
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	if err := e.prInitialReview.RequestInitialReview(ctx, t.ProjectID, prNumber); err != nil {
+		out, hrErr := e.humanRequiredPR(taskID, step, fmt.Sprintf("could not request initial PR review for #%d: %v", prNumber, err))
+		return out, hrErr, true
+	}
+	e.logger.Info("workflow.create-pr.initial-review-requested", "task_id", taskID, "pr", prNumber)
+	return StepOutput{}, nil, false
 }
 
 func (e *Engine) linkTaskPR(taskID string, t TaskInfo, newPR int) error {

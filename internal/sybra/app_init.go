@@ -1170,6 +1170,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
 	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
+	a.workflowEngine.SetPRInitialReviewRequester(prInitialReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})

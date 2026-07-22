@@ -32,25 +32,26 @@ import (
 
 // Compile-time interface checks.
 var (
-	_ workflow.TaskProvider           = (*taskAdapter)(nil)
-	_ workflow.TaskClassifier         = (*taskClassifierAdapter)(nil)
-	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
-	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
-	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
-	_ workflow.PRHeadFetcher          = (*prHeadFetcherAdapter)(nil)
-	_ workflow.PRCreator              = (*prCreatorAdapter)(nil)
-	_ workflow.PRCloser               = (*prCloserAdapter)(nil)
-	_ workflow.PRFinder               = (*prFinderAdapter)(nil)
-	_ workflow.PRContentGenerator     = (*prContentGeneratorAdapter)(nil)
-	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
-	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
-	_ workflow.AttemptNoteAppender    = (*attemptNoteAppenderAdapter)(nil)
-	_ workflow.BranchSyncer           = (*branchSyncerAdapter)(nil)
-	_ workflow.CheckConfigGetter      = (*checkConfigGetterAdapter)(nil)
-	_ workflow.ManualTestConfigGetter = (*manualTestConfigGetterAdapter)(nil)
-	_ workflow.ArtifactRecorder       = (*artifactRecorderAdapter)(nil)
-	_ workflow.CostBudgetChecker      = (*agentAdapter)(nil)
-	_ workflow.AttemptWorktreeManager = (*attemptWorktreeAdapter)(nil)
+	_ workflow.TaskProvider             = (*taskAdapter)(nil)
+	_ workflow.TaskClassifier           = (*taskClassifierAdapter)(nil)
+	_ workflow.AgentLauncher            = (*agentAdapter)(nil)
+	_ workflow.PRLinker                 = (*prLinkerAdapter)(nil)
+	_ workflow.PRStateFetcher           = (*prStateFetcherAdapter)(nil)
+	_ workflow.PRHeadFetcher            = (*prHeadFetcherAdapter)(nil)
+	_ workflow.PRCreator                = (*prCreatorAdapter)(nil)
+	_ workflow.PRCloser                 = (*prCloserAdapter)(nil)
+	_ workflow.PRFinder                 = (*prFinderAdapter)(nil)
+	_ workflow.PRContentGenerator       = (*prContentGeneratorAdapter)(nil)
+	_ workflow.PRReviewRequester        = (*prReviewRequesterAdapter)(nil)
+	_ workflow.PRInitialReviewRequester = (*prInitialReviewRequesterAdapter)(nil)
+	_ workflow.WorktreeGetter           = (*worktreeGetterAdapter)(nil)
+	_ workflow.AttemptNoteAppender      = (*attemptNoteAppenderAdapter)(nil)
+	_ workflow.BranchSyncer             = (*branchSyncerAdapter)(nil)
+	_ workflow.CheckConfigGetter        = (*checkConfigGetterAdapter)(nil)
+	_ workflow.ManualTestConfigGetter   = (*manualTestConfigGetterAdapter)(nil)
+	_ workflow.ArtifactRecorder         = (*artifactRecorderAdapter)(nil)
+	_ workflow.CostBudgetChecker        = (*agentAdapter)(nil)
+	_ workflow.AttemptWorktreeManager   = (*attemptWorktreeAdapter)(nil)
 )
 
 // attemptWorktreeAdapter bridges worktree.Manager → workflow.AttemptWorktreeManager.
@@ -479,6 +480,12 @@ func eligibleRerequestReviewer(login, viewer, prAuthor string) bool {
 		return false
 	}
 	return !strings.HasSuffix(strings.ToLower(login), "[bot]")
+}
+
+type prInitialReviewRequesterAdapter struct{}
+
+func (prInitialReviewRequesterAdapter) RequestInitialReview(ctx context.Context, repo string, prNumber int) error {
+	return github.RequestReviewersContext(ctx, repo, prNumber, []string{"copilot-pull-request-reviewer"})
 }
 
 // worktreeGetterAdapter bridges worktree.Manager + task.Manager → workflow.WorktreeGetter.

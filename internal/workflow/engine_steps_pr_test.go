@@ -143,6 +143,20 @@ func (f *fakePRCloser) ClosePR(_ context.Context, repo string, number int, comme
 	return f.err
 }
 
+type fakePRInitialReviewRequester struct {
+	err    error
+	calls  int
+	repo   string
+	number int
+}
+
+func (f *fakePRInitialReviewRequester) RequestInitialReview(_ context.Context, repo string, number int) error {
+	f.calls++
+	f.repo = repo
+	f.number = number
+	return f.err
+}
+
 type fakePRContentGenerator struct {
 	title, body string
 	err         error
@@ -533,6 +547,8 @@ func TestExecCreatePR_Success(t *testing.T) {
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
+	initialReview := &fakePRInitialReviewRequester{}
+	engine.SetPRInitialReviewRequester(initialReview)
 	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
@@ -561,6 +577,9 @@ func TestExecCreatePR_Success(t *testing.T) {
 	if creator.gotReq.Title != "feat(x): y" {
 		t.Errorf("CreatePR title = %q", creator.gotReq.Title)
 	}
+	if initialReview.calls != 1 || initialReview.repo != "acme/widgets" || initialReview.number != 42 {
+		t.Fatalf("initial review request = %d %s#%d, want acme/widgets#42 once", initialReview.calls, initialReview.repo, initialReview.number)
+	}
 }
 
 func TestExecCreatePR_ClosesSupersededLinkedPR(t *testing.T) {
@@ -582,6 +601,7 @@ func TestExecCreatePR_ClosesSupersededLinkedPR(t *testing.T) {
 	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	engine.SetPRCreator(&fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)})
+	engine.SetPRInitialReviewRequester(&fakePRInitialReviewRequester{})
 	closer := &fakePRCloser{}
 	engine.SetPRCloser(closer)
 
@@ -626,6 +646,7 @@ func TestExecCreatePR_SupersededCloseFailureDoesNotBlockRelink(t *testing.T) {
 	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	engine.SetPRCreator(&fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)})
+	engine.SetPRInitialReviewRequester(&fakePRInitialReviewRequester{})
 	engine.SetPRCloser(&fakePRCloser{err: errors.New("github unavailable")})
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
@@ -652,6 +673,8 @@ func TestExecCreatePR_ExistingPRShortCircuitsWithoutCreating(t *testing.T) {
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	finder := &fakePRFinder{number: 77, found: true}
 	engine.SetPRFinder(finder)
+	initialReview := &fakePRInitialReviewRequester{}
+	engine.SetPRInitialReviewRequester(initialReview)
 	// A creator IS wired so the test proves the guard short-circuits BEFORE
 	// reaching it, not that creation was merely unconfigured.
 	creator := &fakePRCreator{number: 999, headSHA: headSHA(t, wtPath)}
@@ -673,6 +696,9 @@ func TestExecCreatePR_ExistingPRShortCircuitsWithoutCreating(t *testing.T) {
 	ti, _ := tasks.GetTask("t1")
 	if ti.PRNumber != 77 {
 		t.Errorf("PRNumber = %d, want 77 (linked from existing PR)", ti.PRNumber)
+	}
+	if initialReview.calls != 1 || initialReview.repo != "acme/widgets" || initialReview.number != 77 {
+		t.Fatalf("initial review request = %d %s#%d, want acme/widgets#77 once", initialReview.calls, initialReview.repo, initialReview.number)
 	}
 	if ti.Status == "human-required" {
 		t.Errorf("task should not be human-required: %s", tasks.Reason("t1"))
@@ -745,6 +771,7 @@ func TestExecCreatePR_MergedSameBranchWithRemainingPatchStillCreates(t *testing.
 	engine.SetPRAnyStateFinder(&fakePRAnyStateFinder{number: 77, state: "MERGED", found: true})
 	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
+	engine.SetPRInitialReviewRequester(&fakePRInitialReviewRequester{})
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
@@ -779,6 +806,7 @@ func TestExecCreatePR_FinderErrorFallsThroughToCreate(t *testing.T) {
 	engine.SetPRFinder(&fakePRFinder{err: errors.New("gh unreachable")})
 	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
+	engine.SetPRInitialReviewRequester(&fakePRInitialReviewRequester{})
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
@@ -828,6 +856,7 @@ func TestExecCreatePR_ContentFallbackWhenGeneratorUnset(t *testing.T) {
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	creator := &fakePRCreator{number: 9, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
+	engine.SetPRInitialReviewRequester(&fakePRInitialReviewRequester{})
 	// No SetPRContentGenerator call — engine must fall back.
 
 	if _, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task); err != nil {
@@ -858,6 +887,34 @@ func TestExecCreatePR_NoCreatorFlipsHumanRequired(t *testing.T) {
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "human-required" {
 		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestExecCreatePR_InitialReviewFailureFlipsHumanRequired(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/my-branch")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
+	tasks.Put(task)
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRCreator(&fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)})
+	engine.SetPRInitialReviewRequester(&fakePRInitialReviewRequester{err: errors.New("review unavailable")})
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("task status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(tasks.Reason("t1"), "could not request initial PR review") {
+		t.Fatalf("human-required reason = %q", tasks.Reason("t1"))
 	}
 }
 
@@ -977,6 +1034,8 @@ func TestExecCreatePR_AdoptsExistingPROnAlreadyExistsConflict(t *testing.T) {
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	engine.SetPRFinder(&raceThenFoundFinder{})
 	engine.SetPRCreator(&fakePRCreator{err: errors.New(`a pull request for branch "acme:feat/my-branch" into branch "main" already exists: https://github.com/acme/widgets/pull/55`)})
+	initialReview := &fakePRInitialReviewRequester{}
+	engine.SetPRInitialReviewRequester(initialReview)
 	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
@@ -989,6 +1048,9 @@ func TestExecCreatePR_AdoptsExistingPROnAlreadyExistsConflict(t *testing.T) {
 	ti, _ := tasks.GetTask("t1")
 	if ti.PRNumber != 55 {
 		t.Errorf("PRNumber = %d, want 55 (adopted existing PR)", ti.PRNumber)
+	}
+	if initialReview.calls != 1 || initialReview.repo != "acme/widgets" || initialReview.number != 55 {
+		t.Fatalf("initial review request = %d %s#%d, want acme/widgets#55 once", initialReview.calls, initialReview.repo, initialReview.number)
 	}
 	if ti.Status == "human-required" {
 		t.Errorf("must not escalate to human-required when the PR already exists: %s", tasks.Reason("t1"))
