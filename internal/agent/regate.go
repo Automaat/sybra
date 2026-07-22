@@ -169,6 +169,10 @@ func (m *Manager) regate(ctx context.Context, a *Agent, cfg RunConfig, logWriter
 		return cfg, false, fmt.Errorf("agent regate: %s capped, no per-turn-capable peer available: %s", current, reason)
 	}
 
+	return m.completeRegateProviderSwitch(ctx, a, cfg, logWriter, current, alt, deferPersist)
+}
+
+func (m *Manager) completeRegateProviderSwitch(ctx context.Context, a *Agent, cfg RunConfig, logWriter io.Writer, current, alt string, deferPersist bool) (RunConfig, bool, error) {
 	altProv, err := lookupProvider(alt)
 	if err != nil {
 		return cfg, false, err
