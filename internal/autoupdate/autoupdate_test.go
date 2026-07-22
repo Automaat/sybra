@@ -263,6 +263,21 @@ func TestCheckAndApplyWaitsForPendingChecks(t *testing.T) {
 	}
 }
 
+func TestEnsureGithubTokenAllowsAmbientAuthWhenAppDisabled(t *testing.T) {
+	github.DisableAppAuth()
+	t.Cleanup(github.DisableAppAuth)
+
+	r := New(Config{Mode: ModeAuto}, nil)
+	state := persistedState{}
+
+	if got := r.ensureGithubToken(t.Context(), Config{}, &state, "o/r", "abc", "def", []string{"README.md"}); got != nil {
+		t.Fatalf("ensureGithubToken() = %+v, want nil", got)
+	}
+	if state.CandidateState != "" {
+		t.Fatalf("CandidateState = %q, want empty", state.CandidateState)
+	}
+}
+
 func TestCheckAndApplyRejectsFailedChecks(t *testing.T) {
 	t.Parallel()
 

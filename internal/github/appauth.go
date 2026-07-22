@@ -128,6 +128,11 @@ func CurrentAppToken() string {
 	return cachedAppToken()
 }
 
+// AppAuthEnabled reports whether GitHub App credentials are configured.
+func AppAuthEnabled() bool {
+	return currentAppSource() != nil
+}
+
 func cachedAppToken() string {
 	src := currentAppSource()
 	if src == nil {

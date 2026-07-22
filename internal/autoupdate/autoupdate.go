@@ -359,7 +359,7 @@ func (r *Runner) ensureGithubToken(ctx context.Context, cfg Config, state *persi
 	if err := github.RefreshAppToken(ctx); err != nil {
 		return r.rejectCandidate(state, repo, remoteSHA, head, changed, "github app token refresh failed: "+err.Error())
 	}
-	if github.CurrentAppToken() == "" {
+	if github.AppAuthEnabled() && github.CurrentAppToken() == "" {
 		return r.rejectCandidate(state, repo, remoteSHA, head, changed, "github app token unavailable")
 	}
 	return nil
