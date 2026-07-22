@@ -23,17 +23,17 @@ const (
 )
 
 type Config struct {
-	Enabled        bool
-	RepoDir        string
-	Remote         string
-	Branch         string
-	Mode           string
-	Repository     string
-	RequiredChecks []string
-	PollInterval   time.Duration
-	StateFile      string
-	OverrideFile   string
-	RequestRestart func()
+	Enabled         bool
+	RepoDir         string
+	Remote          string
+	Branch          string
+	Mode            string
+	Repository      string
+	RequiredChecks  []string
+	PollInterval    time.Duration
+	StateFile       string
+	OverrideFile    string
+	RequestRestart  func()
 	AuditTransition func(map[string]any)
 	Now             func() time.Time
 	GateCommit      func(context.Context, string, string, []string) (github.CommitGate, error)
@@ -275,10 +275,10 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 		state.setCandidateOutcome("approved", "manual override")
 		r.recordTransition("approved", remoteSHA, head, remoteSHA, "manual override")
 	}
+	if err := saveState(cfg.StateFile, state); err != nil {
+		return Result{}, err
+	}
 	if cfg.Mode != ModeAuto {
-		if err := saveState(cfg.StateFile, state); err != nil {
-			return Result{}, err
-		}
 		return Result{Status: "approved", Reason: state.CandidateReason, Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
 	}
 	latestSHA, err := lsRemoteBranchSHA(ctx, cfg.RepoDir, cfg.Remote, cfg.Branch)

@@ -298,6 +298,52 @@ func TestCheckAndApplyOverrideBypassesGateOnce(t *testing.T) {
 	}
 }
 
+func TestCheckAndApplyPersistsApprovedStateBeforeAutoApply(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	stateFile := filepath.Join(t.TempDir(), "autoupdate-state.json")
+	remoteMoved := false
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		StateFile:      stateFile,
+		GateCommit: func(ctx context.Context, repo, sha string, required []string) (github.CommitGate, error) {
+			remoteMoved = true
+			if err := os.Rename(upstream, upstream+"-moved"); err != nil {
+				t.Fatalf("rename upstream: %v", err)
+			}
+			return greenGate(ctx, repo, sha, required)
+		},
+	}, nil)
+
+	if _, err := r.CheckAndApply(t.Context()); err == nil {
+		t.Fatal("CheckAndApply() err = nil, want re-resolve failure")
+	}
+	if !remoteMoved {
+		t.Fatal("gate hook did not run")
+	}
+	state, err := loadState(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CandidateState != "approved" {
+		t.Fatalf("CandidateState = %q, want approved", state.CandidateState)
+	}
+	if state.PendingSHA == "" {
+		t.Fatal("PendingSHA = empty, want candidate sha")
+	}
+}
+
 func writeFile(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
