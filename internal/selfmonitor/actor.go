@@ -2,6 +2,7 @@ package selfmonitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -14,8 +15,10 @@ import (
 // Defined as a local interface so tests can inject a fake without pulling in
 // the full filesystem-backed store.
 type taskUpdater interface {
-	Update(id string, u task.Update) (task.Task, error)
+	UpdateFn(id string, fn func(cur task.Task) (task.Update, error)) (task.Task, error)
 }
+
+var errTriageMismatchStatusChanged = errors.New("triage_mismatch task status changed")
 
 // Actor applies autonomous remediations to confirmed health findings.
 // DryRun=true (the config default) logs the intended action without modifying
@@ -41,10 +44,10 @@ func (a *Actor) Act(_ context.Context, inv InvestigatedFinding) ActionRecord {
 	}
 }
 
-// flipAgentMode re-dispatches a task headless when a triage_mismatch finding
-// is confirmed. The task already escalated to human-required at least once,
-// so this re-dispatch is a retry, not a mode change — interactive is going
-// away as a remediation target (see the interactive-removal umbrella).
+// flipAgentMode requeues a confirmed triage_mismatch task onto the headless
+// execution path. The task already escalated to human-required at least
+// once, so this re-dispatch is a retry, not a mode change — interactive is
+// going away as a remediation target (see the interactive-removal umbrella).
 func (a *Actor) flipAgentMode(inv InvestigatedFinding) ActionRecord {
 	rec := ActionRecord{
 		Category:    string(inv.Finding.Category),
@@ -66,15 +69,39 @@ func (a *Actor) flipAgentMode(inv InvestigatedFinding) ActionRecord {
 	}
 
 	mode := task.AgentModeHeadless
-	if _, err := a.Tasks.Update(inv.Finding.TaskID, task.Update{AgentMode: &mode}); err != nil {
+	status := task.StatusTodo
+	currentStatus := task.Status("")
+	if _, err := a.Tasks.UpdateFn(inv.Finding.TaskID, func(cur task.Task) (task.Update, error) {
+		currentStatus = cur.Status
+		if cur.Status != task.StatusHumanRequired {
+			return task.Update{}, errTriageMismatchStatusChanged
+		}
+		return task.Update{
+			AgentMode: &mode,
+			Status:    &status,
+		}, nil
+	}); err != nil {
+		if errors.Is(err, errTriageMismatchStatusChanged) {
+			if a.Logger != nil {
+				a.Logger.Info("actor.flip_agent_mode.skipped",
+					"task", inv.Finding.TaskID,
+					"fingerprint", inv.Fingerprint,
+					"status", currentStatus)
+			}
+			return ActionRecord{}
+		}
 		rec.Error = fmt.Sprintf("update task: %s", err)
-		a.Logger.Warn("actor.flip_agent_mode.failed",
-			"task", inv.Finding.TaskID, "err", err)
+		if a.Logger != nil {
+			a.Logger.Warn("actor.flip_agent_mode.failed",
+				"task", inv.Finding.TaskID, "err", err)
+		}
 		return rec
 	}
 
-	a.Logger.Info("actor.flip_agent_mode",
-		"task", inv.Finding.TaskID, "fingerprint", inv.Fingerprint)
+	if a.Logger != nil {
+		a.Logger.Info("actor.flip_agent_mode",
+			"task", inv.Finding.TaskID, "fingerprint", inv.Fingerprint)
+	}
 	return rec
 }
 
