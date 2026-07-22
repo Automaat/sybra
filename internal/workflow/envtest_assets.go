@@ -21,6 +21,8 @@ type envtestPlan struct {
 	SetupEnvtestRef string
 }
 
+const maxEnvtestInspectFileSize = 1 * 1024 * 1024 // 1 MiB
+
 func verifyCommandEnv(ctx context.Context, taskID, wtPath string, rawCmds ...string) ([]string, error) {
 	env, err := buildcache.PrepareGoEnv(taskID, os.Environ())
 	if err != nil {
@@ -84,6 +86,13 @@ func discoverEnvtestPlan(wtPath string) (envtestPlan, error) {
 			return nil
 		}
 		if !shouldInspectEnvtestFile(path, name) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() > maxEnvtestInspectFileSize {
 			return nil
 		}
 		data, err := fs.ReadFile(root.FS(), path)

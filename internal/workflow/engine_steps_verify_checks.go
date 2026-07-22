@@ -805,7 +805,7 @@ func goPackageAffectedByChanges(
 	}
 	cmd := exec.CommandContext(ctx, "go", "list", "-deps", target)
 	cmd.Dir = wtPath
-	env, err := verifyCommandEnv(parentCtx, taskID, wtPath, "go list -deps "+target)
+	env, err := verifyCommandEnv(ctx, taskID, wtPath)
 	if err != nil {
 		return false, err
 	}

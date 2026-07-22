@@ -841,6 +841,37 @@ func TestUnit(t *testing.T) {}
 	}
 }
 
+func TestDiscoverEnvtestPlan_SkipsOversizeFiles(t *testing.T) {
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+import "sigs.k8s.io/controller-runtime/pkg/envtest"
+`)
+	writeTestFile(t, filepath.Join(wt, "hack", "envtest.sh"), "ENVTEST_K8S_VERSION=1.31\n")
+	oversize := strings.Repeat("# filler\n", maxEnvtestInspectFileSize/8+1)
+	writeTestFile(t, filepath.Join(wt, ".github", "workflows", "generated.yml"), oversize+"ENVTEST_K8S_VERSION=1.99\n")
+
+	plan, err := discoverEnvtestPlan(wt)
+	if err != nil {
+		t.Fatalf("discoverEnvtestPlan: %v", err)
+	}
+	if !plan.Needed {
+		t.Fatal("Needed = false, want true")
+	}
+	if got, want := plan.VersionSpec, "1.31"; got != want {
+		t.Fatalf("VersionSpec = %q, want %q", got, want)
+	}
+}
+
 func TestVerifyCommandEnv_InjectsEnvtestAssetsForGoCommands(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	wt := t.TempDir()
@@ -873,6 +904,38 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	}
 	if got := strings.TrimSpace(string(args)); got != "use -p path 1.32.x!" {
 		t.Fatalf("setup-envtest args = %q, want %q", got, "use -p path 1.32.x!")
+	}
+}
+
+func TestGoPackageAffectedByChanges_SkipsEnvtestProvisionForGoList(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+import "sigs.k8s.io/controller-runtime/pkg/envtest"
+`)
+	argsLog := fakeSetupEnvtest(t, filepath.Join(t.TempDir(), "kubebuilder", "bin"))
+
+	affected, err := goPackageAffectedByChanges(context.Background(), "t1", wt, "internal/controller", map[string]bool{
+		"internal/other": true,
+	}, "example.com/operator")
+	if err != nil {
+		t.Fatalf("goPackageAffectedByChanges: %v", err)
+	}
+	if affected {
+		t.Fatal("affected = true, want false")
+	}
+	if _, err := os.Stat(argsLog); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("setup-envtest should not run, stat err = %v", err)
 	}
 }
 
