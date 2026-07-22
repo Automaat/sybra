@@ -68,6 +68,15 @@ func TestRegateBeforeClaudeTurn_FailoverToHealthyPeer(t *testing.T) {
 	if got.Provider != "copilot" || a.Provider != "copilot" {
 		t.Errorf("expected switch to copilot, cfg=%q agent=%q", got.Provider, a.Provider)
 	}
+	if got.Model != "sonnet" {
+		t.Errorf("cfg.Model = %q, want sonnet", got.Model)
+	}
+	if a.Model != "claude-sonnet-4.6" {
+		t.Errorf("agent model = %q, want claude-sonnet-4.6", a.Model)
+	}
+	if a.GetRequestedModel() != "sonnet" {
+		t.Errorf("requested model = %q, want sonnet", a.GetRequestedModel())
+	}
 	if a.GetSessionID() != "" || a.GetSessionFilePath() != "" {
 		t.Errorf("session state must be cleared on switch, id=%q path=%q", a.GetSessionID(), a.GetSessionFilePath())
 	}

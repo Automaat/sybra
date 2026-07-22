@@ -78,8 +78,17 @@ func TestRegateForTurn_FailoverToHealthyPeer(t *testing.T) {
 	if got.Provider != "copilot" {
 		t.Errorf("cfg.Provider = %q, want copilot", got.Provider)
 	}
+	if got.Model != "opus" {
+		t.Errorf("cfg.Model = %q, want opus", got.Model)
+	}
 	if a.Provider != "copilot" {
 		t.Errorf("agent provider = %q, want copilot", a.Provider)
+	}
+	if a.Model != "gemini-3.1-pro-preview" {
+		t.Errorf("agent model = %q, want gemini-3.1-pro-preview", a.Model)
+	}
+	if a.GetRequestedModel() != "opus" {
+		t.Errorf("requested model = %q, want opus", a.GetRequestedModel())
 	}
 	if a.GetSessionID() != "" {
 		t.Errorf("session id must be cleared on switch, got %q", a.GetSessionID())

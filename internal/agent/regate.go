@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/providerid"
@@ -172,7 +173,20 @@ func (m *Manager) regate(ctx context.Context, a *Agent, cfg RunConfig, logWriter
 	if err != nil {
 		return cfg, false, err
 	}
-	newModel := altProv.NormalizeModel(cfg.Model)
+	requestedModel := cfg.Model
+	if strings.TrimSpace(requestedModel) == "" {
+		requestedModel = a.GetRequestedModel()
+	}
+	if strings.TrimSpace(requestedModel) == "" {
+		requestedModel = a.Model
+	}
+	newModel, nextRequestedModel, err := resolveRunModel(current, altProv.Name(), requestedModel)
+	if err != nil {
+		m.logger.Warn("agent.convo.provider_model_incompatible",
+			"id", a.ID, "task", cfg.TaskID, "from", current, "to", altProv.Name(), "model", requestedModel, "err", err)
+		a.SetError("rate_limit", err.Error())
+		return cfg, false, fmt.Errorf("agent regate: %w", err)
+	}
 
 	m.logger.Warn("agent.convo.failover", "id", a.ID, "task", cfg.TaskID, "from", current, "to", alt)
 
@@ -180,12 +194,15 @@ func (m *Manager) regate(ctx context.Context, a *Agent, cfg RunConfig, logWriter
 	// continue the old provider's session, so start it fresh rather than
 	// attempting a cross-provider resume.
 	a.SetProviderAndModel(alt, newModel)
+	a.SetRequestedModel(nextRequestedModel)
 	a.SetSessionID("")
 	a.SetSessionFilePath("")
 	m.moveLiveProviderCount(current, alt)
 
 	cfg.Provider = alt
+	cfg.Model = nextRequestedModel
 	cfg.provider = altProv
+	cfg.resolvedModel = newModel
 
 	if !deferPersist {
 		// Marker must land before the registry write below: on a crash between

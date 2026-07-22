@@ -881,16 +881,24 @@ func (o *Orchestrator) enforceTaskCostBudget(t task.Task) error {
 		workflow.ErrTaskCostExceeded, spent, len(t.AgentRuns), o.cfg.Agent.MaxTaskCostUSD)
 }
 func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
-	if !errors.Is(err, provider.ErrProviderUnhealthy) {
+	switch {
+	case errors.Is(err, provider.ErrProviderUnhealthy):
+		// Gate block leaves no running agent. Flip the task back to todo so
+		// watchdog / restart-stale loops don't chase a ghost in-progress row.
+		if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
+			o.logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
+		}
+		o.LogAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
+		o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
+	case errors.Is(err, agent.ErrProviderModelIncompatible):
+		if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
+			o.logger.Error("task.revert-on-model", "task_id", taskID, "err", rerr)
+		}
+		o.LogAudit(audit.EventProviderModelIncompatible, taskID, "", map[string]any{"err": err.Error()})
+		o.logger.Warn("agent.start.model_incompatible", "task_id", taskID, "err", err)
+	default:
 		return
 	}
-	// Gate block leaves no running agent. Flip the task back to todo so
-	// watchdog / restart-stale loops don't chase a ghost in-progress row.
-	if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
-		o.logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
-	}
-	o.LogAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
-	o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
 }
 
 func (o *Orchestrator) resetWorktreeForCleanRetry(ctx context.Context, t task.Task, ref string) error {

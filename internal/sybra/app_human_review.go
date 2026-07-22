@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -282,6 +283,11 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 	if err != nil {
 		h.clearInflight(taskID)
 		h.logger.Error("human-review.spawn", "task_id", taskID, "provider", cfg.Provider, "model", cfg.Model, "err", err)
+		if errors.Is(err, agent.ErrProviderModelIncompatible) {
+			h.logAudit(audit.EventProviderModelIncompatible, taskID, "", map[string]any{
+				"provider": cfg.Provider, "model": cfg.Model, "retry_reason": opts.RetryReason, "err": err.Error(),
+			})
+		}
 		h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{
 			"reason": "spawn_failed", "err": err.Error(),
 			"provider": cfg.Provider, "model": cfg.Model, "retry_reason": opts.RetryReason,

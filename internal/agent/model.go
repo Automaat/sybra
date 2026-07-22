@@ -65,6 +65,7 @@ type Agent struct {
 	Provider        string    `json:"provider,omitempty"`
 	Node            string    `json:"node,omitempty"`
 	Model           string    `json:"model,omitempty"`
+	RequestedModel  string    `json:"-"`
 	ExperimentID    string    `json:"experimentId,omitempty"`
 	VariantID       string    `json:"variantId,omitempty"`
 	RoutingReason   string    `json:"routingReason,omitempty"`
@@ -459,6 +460,7 @@ func (a *Agent) toRecord() Record {
 		Mode:                    a.Mode,
 		Provider:                a.Provider,
 		Model:                   a.Model,
+		RequestedModel:          a.RequestedModel,
 		ExperimentID:            a.ExperimentID,
 		VariantID:               a.VariantID,
 		RoutingReason:           a.RoutingReason,
@@ -498,6 +500,10 @@ func (a *Agent) toRecord() Record {
 // fromRecord builds a detached reattach skeleton, not a general Agent factory.
 // Reattach callers own runtime wiring such as cancel, done, cmd, and promptCh.
 func fromRecord(r Record) *Agent {
+	requestedModel := r.RequestedModel
+	if requestedModel == "" {
+		requestedModel = r.Model
+	}
 	return &Agent{
 		ID:                      r.ID,
 		TaskID:                  r.TaskID,
@@ -505,6 +511,7 @@ func fromRecord(r Record) *Agent {
 		Mode:                    r.Mode,
 		Provider:                r.Provider,
 		Model:                   r.Model,
+		RequestedModel:          requestedModel,
 		ExperimentID:            r.ExperimentID,
 		VariantID:               r.VariantID,
 		RoutingReason:           r.RoutingReason,
@@ -732,6 +739,18 @@ func (a *Agent) SetProviderAndModel(prov, model string) {
 	a.Provider = prov
 	a.Model = model
 	a.mu.Unlock()
+}
+
+func (a *Agent) SetRequestedModel(model string) {
+	a.mu.Lock()
+	a.RequestedModel = model
+	a.mu.Unlock()
+}
+
+func (a *Agent) GetRequestedModel() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.RequestedModel
 }
 
 // GetProvider returns the agent's current provider name. Safe to call
@@ -1744,7 +1763,7 @@ type RunConfig struct {
 	// outside sandbox enforce mode.
 	ReadOnlyDir        bool
 	Provider           string // "claude", "codex", or "copilot"
-	Model              string // "opus", "sonnet", or full model ID
+	Model              string // requested model: tier alias or full provider model ID
 	ExperimentID       string
 	VariantID          string
 	RoutingReason      string
@@ -1882,6 +1901,9 @@ type RunConfig struct {
 	// gates and failover. Replay paths that do not have RunConfig resolve from
 	// the persisted provider string instead.
 	provider Provider
+	// resolvedModel is the provider-specific model slug selected after the
+	// provider gate chose the final provider.
+	resolvedModel string
 	// resolvedSandboxHome is the per-task sandbox home directory resolved by
 	// injectSandboxHome, reused by injectProcessSandbox as one of the
 	// sandbox's allowed write roots. Never set by callers.
