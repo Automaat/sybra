@@ -428,7 +428,7 @@ func TestEditPRBodyWith_execError(t *testing.T) {
 func TestRequestReviewersWith_passesArgs(t *testing.T) {
 	t.Parallel()
 	fe := &recordingExecer{output: []byte("HTTP/2.0 201 Created\n\n{}")}
-	if err := requestReviewersWith(context.Background(), fe, "owner/repo", 42, []string{"alice", "bob"}); err != nil {
+	if err := requestReviewersCtxWith(context.Background(), fe, "owner/repo", 42, []string{"alice", "bob"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := []string{
@@ -447,10 +447,34 @@ func TestRequestReviewersWith_passesArgs(t *testing.T) {
 	}
 }
 
+func TestRequestCopilotReview_RequestsCopilotBot(t *testing.T) {
+	orig := defaultExecer
+	fe := &recordingExecer{output: []byte("HTTP/2.0 201 Created\n\n{}")}
+	defaultExecer = fe
+	t.Cleanup(func() { defaultExecer = orig })
+
+	if err := RequestCopilotReview("owner/repo", 42); err != nil {
+		t.Fatalf("RequestCopilotReview: %v", err)
+	}
+	want := []string{
+		"api", "--include", "--method", "POST",
+		"repos/owner/repo/pulls/42/requested_reviewers",
+		"-f", "reviewers[]=copilot-pull-request-reviewer[bot]",
+	}
+	if len(fe.lastArgs) != len(want) {
+		t.Fatalf("args = %v, want %v", fe.lastArgs, want)
+	}
+	for i, a := range fe.lastArgs {
+		if a != want[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, a, want[i])
+		}
+	}
+}
+
 func TestRequestReviewersWith_emptySkips(t *testing.T) {
 	t.Parallel()
 	fe := &recordingExecer{}
-	if err := requestReviewersWith(context.Background(), fe, "owner/repo", 42, nil); err != nil {
+	if err := requestReviewersCtxWith(context.Background(), fe, "owner/repo", 42, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if fe.calls != 0 {
@@ -461,7 +485,7 @@ func TestRequestReviewersWith_emptySkips(t *testing.T) {
 func TestRequestReviewersWith_execError(t *testing.T) {
 	t.Parallel()
 	fe := &fakeExecer{output: []byte("HTTP/2.0 422 Unprocessable Entity\n\nreviewer is not a collaborator"), err: fmt.Errorf("exit 1")}
-	if err := requestReviewersWith(context.Background(), fe, "owner/repo", 42, []string{"alice"}); err == nil {
+	if err := requestReviewersCtxWith(context.Background(), fe, "owner/repo", 42, []string{"alice"}); err == nil {
 		t.Fatal("expected error")
 	}
 }

@@ -319,15 +319,8 @@ const staleDispatchClaimAge = 15 * time.Minute
 func (m *Manager) ClaimTaskDispatch(taskID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if claimedAt, held := m.dispatchClaims[taskID]; held {
-		if time.Since(claimedAt) >= staleDispatchClaimAge {
-			if m.logger != nil {
-				m.logger.Warn("agent.dispatch-claim.stale-release", "task_id", taskID, "age", time.Since(claimedAt))
-			}
-			delete(m.dispatchClaims, taskID)
-		} else {
-			return false
-		}
+	if m.dispatchClaimHeldLocked(taskID, time.Now()) {
+		return false
 	}
 	if m.dispatchClaims == nil {
 		m.dispatchClaims = make(map[string]time.Time)
@@ -372,17 +365,52 @@ func (m *Manager) ReleaseTaskDispatch(taskID string) {
 // instead of each maintaining its own separate view of dispatch-in-flight
 // state.
 func (m *Manager) IsDispatching(taskID string) bool {
+	return m.dispatchClaimHeld(taskID, time.Now())
+}
+
+// dispatchClaimHeld reports whether taskID has a non-stale dispatch claim.
+// The common fresh/no-claim path only takes a read lock; stale claims upgrade
+// to a write lock and re-check before deleting.
+func (m *Manager) dispatchClaimHeld(taskID string, now time.Time) bool {
+	m.mu.RLock()
+	held, stale := m.dispatchClaimHeldReadLocked(taskID, now)
+	m.mu.RUnlock()
+	if !stale {
+		return held
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.dispatchClaimHeldLocked(taskID, now)
+}
+
+func (m *Manager) dispatchClaimHeldReadLocked(taskID string, now time.Time) (held, stale bool) {
 	claimedAt, held := m.dispatchClaims[taskID]
-	if held && time.Since(claimedAt) >= staleDispatchClaimAge {
-		if m.logger != nil {
-			m.logger.Warn("agent.dispatch-claim.stale-release", "task_id", taskID, "age", time.Since(claimedAt))
-		}
-		delete(m.dispatchClaims, taskID)
-		return false
+	if !held {
+		return false, false
 	}
-	return held
+	if now.Sub(claimedAt) >= staleDispatchClaimAge {
+		return false, true
+	}
+	return true, false
+}
+
+// dispatchClaimHeldLocked reports whether taskID has a non-stale dispatch
+// claim. Stale claims are deleted as a side effect so every caller that treats
+// dispatchClaims as liveness uses the same self-healing semantics.
+// Callers must hold m.mu for writing.
+func (m *Manager) dispatchClaimHeldLocked(taskID string, now time.Time) bool {
+	held, stale := m.dispatchClaimHeldReadLocked(taskID, now)
+	if !stale {
+		return held
+	}
+	claimedAt := m.dispatchClaims[taskID]
+	age := now.Sub(claimedAt)
+	if m.logger != nil {
+		m.logger.Warn("agent.dispatch-claim.stale-release", "task_id", taskID, "age", age)
+	}
+	delete(m.dispatchClaims, taskID)
+	return false
 }
 
 // DispatchClaim is a held per-task dispatch claim returned by

@@ -98,6 +98,7 @@ type AgentRunInfo struct {
 	TestOutcome            string
 	TestFailureFingerprint string
 	HeadSHA                string
+	FinalCommitSource      string
 }
 
 // TaskProvider reads and updates tasks.
@@ -109,6 +110,7 @@ type TaskProvider interface {
 	MarkTaskReviewed(id string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
 	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
+	RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error
 	AppendTaskBody(id, content string) error
 	// ReplaceTaskBody overwrites the task's full body. Used by the test-route
 	// step to archive/strip a stale "## Test Failures" section before
@@ -196,6 +198,7 @@ type PRLinker interface {
 // workflow fixes review comments and pushes updated commits.
 type PRReviewRequester interface {
 	RerequestReview(repo string, prNumber int) (reviewers []string, err error)
+	RequestCopilotReview(ctx context.Context, repo string, prNumber int) error
 }
 
 // PRInitialReviewRequester requests the required first external review after

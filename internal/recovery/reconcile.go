@@ -72,7 +72,9 @@ func (r *Recovery) reconcileBackfillPR(t *task.Task, prNumber int) {
 }
 
 func reconcileLostPREligible(t *task.Task) bool {
-	if t.Status != task.StatusReadyReview && t.Status != task.StatusInReview && t.Status != task.StatusReadyPR {
+	switch t.Status {
+	case task.StatusInReview, task.StatusReadyReview, task.StatusReadyPR:
+	default:
 		return false
 	}
 	if t.PRNumber != 0 || t.Branch == "" || t.ProjectID == "" {

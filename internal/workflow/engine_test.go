@@ -302,6 +302,23 @@ func (m *memTasks) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint
 	return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
 }
 
+func (m *memTasks) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[taskID]
+	if !ok {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].AgentID == agentID {
+			t.AgentRuns[i].HeadSHA = headSHA
+			t.AgentRuns[i].FinalCommitSource = source
+			return nil
+		}
+	}
+	return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
+}
+
 func (m *memTasks) AppendTaskBody(id, content string) error {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -6240,11 +6257,15 @@ func newEnsurePRStep() *Step {
 }
 
 type fakePRReviewRequester struct {
-	reviewers []string
-	err       error
-	calls     int
-	repo      string
-	prNumber  int
+	reviewers       []string
+	err             error
+	copilotErr      error
+	calls           int
+	copilotCalls    int
+	repo            string
+	prNumber        int
+	copilotRepo     string
+	copilotPRNumber int
 }
 
 func (f *fakePRReviewRequester) RerequestReview(repo string, prNumber int) ([]string, error) {
@@ -6252,6 +6273,13 @@ func (f *fakePRReviewRequester) RerequestReview(repo string, prNumber int) ([]st
 	f.repo = repo
 	f.prNumber = prNumber
 	return f.reviewers, f.err
+}
+
+func (f *fakePRReviewRequester) RequestCopilotReview(_ context.Context, repo string, prNumber int) error {
+	f.copilotCalls++
+	f.copilotRepo = repo
+	f.copilotPRNumber = prNumber
+	return f.copilotErr
 }
 
 func newRerequestReviewStep() *Step {
@@ -8218,6 +8246,177 @@ func TestExecVerifyCommits_AutoCommitsUncommittedWork(t *testing.T) {
 	}
 	if strings.TrimSpace(string(statusOut)) != "" {
 		t.Errorf("worktree still dirty after auto-commit: %q", statusOut)
+	}
+}
+
+func TestExecVerifyCommits_AutoCommitRemoteReconcileGitErrorEscalates(t *testing.T) {
+	countFile := filepath.Join(t.TempDir(), "read-tree-count")
+	withFakeGit(t, `#!/bin/sh
+if [ "$1" = "read-tree" ] && [ "$2" = "HEAD" ]; then
+  count=0
+  if [ -f "`+countFile+`" ]; then
+    count=$(cat "`+countFile+`")
+  fi
+  count=$((count + 1))
+  printf "%s" "$count" > "`+countFile+`"
+  if [ "$count" = "2" ]; then
+    echo "fatal: synthetic read-tree failure" >&2
+    exit 128
+  fi
+fi
+exec "{{REAL_GIT}}" "$@"
+`)
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit */)
+	if err := os.WriteFile(filepath.Join(wtDir, "uncommitted.txt"), []byte("finished work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "git error") {
+		t.Fatalf("Output = %q, want git error after remote reconcile failure", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Fatalf("task status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "after auto-commit remote reconcile") {
+		t.Fatalf("status reason = %q, want auto-commit remote reconcile context", reason)
+	}
+	if got := strings.TrimSpace(readFile(t, countFile)); got != "2" {
+		t.Fatalf("read-tree calls = %q, want 2 (pre- and post-auto-commit probes)", got)
+	}
+}
+
+func TestExecVerifyCommits_AutoCommitAdoptsEquivalentRemoteCommitAfterRetry(t *testing.T) {
+	prevSleep := verifyCommitsRetrySleep
+	prevBackoffs := verifyCommitsRetryBackoffs
+	t.Cleanup(func() {
+		verifyCommitsRetrySleep = prevSleep
+		verifyCommitsRetryBackoffs = prevBackoffs
+	})
+
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+
+	wtDir := t.TempDir()
+	runGitAt(t, wtDir, "init", "-b", "main")
+	runGitAt(t, wtDir, "config", "user.email", "test@test.com")
+	runGitAt(t, wtDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtDir, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtDir, "add", "README.md")
+	runGitAt(t, wtDir, "commit", "-m", "init")
+	runGitAt(t, wtDir, "remote", "add", "origin", remote)
+	runGitAt(t, wtDir, "push", "-u", "origin", "main")
+
+	const branch = "feat/verify-commits-race"
+	runGitAt(t, wtDir, "checkout", "-b", branch)
+	runGitAt(t, wtDir, "push", "-u", "origin", branch)
+
+	const (
+		fileName = "verify-commits-race.txt"
+		content  = "verify_commits race\n"
+	)
+	if err := os.WriteFile(filepath.Join(wtDir, fileName), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stageDir := t.TempDir()
+	var pushed sync.Once
+	verifyCommitsRetryBackoffs = []time.Duration{time.Nanosecond}
+	verifyCommitsRetrySleep = func(time.Duration) {
+		pushed.Do(func() {
+			repoDir := filepath.Join(stageDir, "repo")
+			runGitAt(t, "", "clone", remote, repoDir)
+			runGitAt(t, repoDir, "checkout", "-B", branch, "origin/"+branch)
+			if err := os.WriteFile(filepath.Join(repoDir, fileName), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGitAt(t, repoDir, "add", fileName)
+			runGitAt(t, repoDir, "-c", "user.email=fake-claude@test.local", "-c", "user.name=Fake Claude", "commit", "-m", "feat: remote race")
+			runGitAt(t, repoDir, "push", "origin", "HEAD:refs/heads/"+branch)
+		})
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Fatalf("Output = %q, want commits verified", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Fatalf("task status = %q, want in-progress", ti.Status)
+	}
+
+	runGitAt(t, wtDir, "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
+	localHead := strings.TrimSpace(runGitAt(t, wtDir, "rev-parse", "HEAD"))
+	remoteHead := strings.TrimSpace(runGitAt(t, wtDir, "rev-parse", "refs/remotes/origin/"+branch))
+	if localHead != remoteHead {
+		t.Fatalf("local HEAD %q != remote HEAD %q; want verify_commits to adopt the equivalent remote commit", localHead, remoteHead)
+	}
+	if got := strings.TrimSpace(runGitAt(t, wtDir, "rev-list", "--count", "origin/main..HEAD")); got != "1" {
+		t.Fatalf("origin/main..HEAD commit count = %q, want 1 implementation lineage", got)
+	}
+	if status := strings.TrimSpace(runGitAt(t, wtDir, "status", "--porcelain")); status != "" {
+		t.Fatalf("worktree dirty after reconcile: %q", status)
+	}
+}
+
+func TestRecordFinalCommitState_ContextCancelDoesNotHang(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1"}},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, true /* withExtraCommit */)
+	withFakeGit(t, `#!/bin/sh
+if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "HEAD^{commit}" ]; then
+  sleep 30
+fi
+exec "{{REAL_GIT}}" "$@"
+`)
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	engine.SetContext(parentCtx)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	wfExec := &Execution{StepHistory: []StepRecord{{StepID: "implement", Status: "completed", AgentID: "a1"}}}
+
+	start := time.Now()
+	engine.recordFinalCommitState("t1", wfExec, wtDir, finalCommitSourceAgent)
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("recordFinalCommitState took %v after ctx cancel; want prompt return", elapsed)
+	}
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.AgentRuns[0].HeadSHA != "" {
+		t.Fatalf("head_sha = %q, want empty when rev-parse is canceled", ti.AgentRuns[0].HeadSHA)
 	}
 }
 

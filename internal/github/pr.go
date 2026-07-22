@@ -1002,10 +1002,24 @@ func RequestReviewers(repo string, number int, reviewers []string) error {
 
 // RequestReviewersContext requests a review from the given GitHub user logins.
 func RequestReviewersContext(ctx context.Context, repo string, number int, reviewers []string) error {
-	return requestReviewersWith(ctx, defaultExecer, repo, number, reviewers)
+	return requestReviewersCtxWith(ctx, defaultExecer, repo, number, reviewers)
 }
 
-func requestReviewersWith(ctx context.Context, e execer, repo string, number int, reviewers []string) error {
+// RequestCopilotReview requests GitHub Copilot code review for a pull request.
+func RequestCopilotReview(repo string, number int) error {
+	return RequestCopilotReviewCtx(context.Background(), repo, number)
+}
+
+// RequestCopilotReviewCtx requests GitHub Copilot code review under ctx.
+func RequestCopilotReviewCtx(ctx context.Context, repo string, number int) error {
+	return requestReviewersCtxWith(ctx, defaultExecer, repo, number, []string{"copilot-pull-request-reviewer[bot]"})
+}
+
+func requestReviewersWith(e execer, repo string, number int, reviewers []string) error {
+	return requestReviewersCtxWith(context.Background(), e, repo, number, reviewers)
+}
+
+func requestReviewersCtxWith(ctx context.Context, e execer, repo string, number int, reviewers []string) error {
 	if len(reviewers) == 0 {
 		return nil
 	}

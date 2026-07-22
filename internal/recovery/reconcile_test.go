@@ -25,7 +25,7 @@ func (f *fakePRResolver) ResolvePRForTask(context.Context, string, string, strin
 	return f.ref, f.err
 }
 
-func newInReviewOrphan(t *testing.T, tasks *task.Manager, mutate func(*task.Update)) string {
+func newLostPROrphan(t *testing.T, tasks *task.Manager, mutate func(*task.Update)) string {
 	t.Helper()
 	return newLostPROrphanWithStatus(t, tasks, task.StatusInReview, mutate)
 }
@@ -107,6 +107,14 @@ func TestReconcileLostPRNumber(t *testing.T) {
 			ref:           recovery.PRRef{Number: 43, State: "OPEN"},
 			wantStatus:    task.StatusReadyReview,
 			wantPR:        43,
+		},
+		{
+			name:            "ready-review merged PR advances to done and clears workflow",
+			initialStatus:   task.StatusReadyReview,
+			ref:             recovery.PRRef{Number: 2469, State: "MERGED"},
+			wantStatus:      task.StatusDone,
+			wantPR:          2469,
+			wantWorkflowNil: true,
 		},
 		{
 			name:          "ready-pr orphan backfills open PR",
@@ -201,7 +209,7 @@ func TestReconcileLostPRNumberSkipsIneligible(t *testing.T) {
 				t.Fatal(err)
 			}
 			tasks := task.NewManager(store, nil)
-			newInReviewOrphan(t, tasks, tc.mutate)
+			newLostPROrphan(t, tasks, tc.mutate)
 
 			resolver := &fakePRResolver{ref: recovery.PRRef{Number: 1, State: "MERGED"}}
 			r, wg := newReconcileRecovery(t, tasks, resolver)
@@ -221,7 +229,7 @@ func TestReconcileLostPRNumberNilResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	tasks := task.NewManager(store, nil)
-	id := newInReviewOrphan(t, tasks, nil)
+	id := newLostPROrphan(t, tasks, nil)
 
 	r, wg := newReconcileRecovery(t, tasks, nil)
 	r.ReconcileLostPRNumber(context.Background())

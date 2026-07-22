@@ -196,6 +196,17 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	return a.tasks.UpdateRun(taskID, agentID, patch)
 }
 
+func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
+	patch := task.RunPatch{}
+	if headSHA != "" {
+		patch.HeadSHA = task.Ptr(headSHA)
+	}
+	if source != "" {
+		patch.FinalCommitSource = task.Ptr(source)
+	}
+	return a.tasks.UpdateRun(taskID, agentID, patch)
+}
+
 func (a *taskAdapter) AppendTaskBody(id, content string) error {
 	_, err := a.tasks.AppendBody(id, content)
 	return err
@@ -356,6 +367,7 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			TestOutcome:            runs[i].TestOutcome,
 			TestFailureFingerprint: runs[i].TestFailureFingerprint,
 			HeadSHA:                runs[i].HeadSHA,
+			FinalCommitSource:      runs[i].FinalCommitSource,
 		}
 	}
 	return out
@@ -472,6 +484,10 @@ func (prReviewRequesterAdapter) RerequestReview(repo string, prNumber int) ([]st
 		return nil, err
 	}
 	return reviewers, nil
+}
+
+func (prReviewRequesterAdapter) RequestCopilotReview(ctx context.Context, repo string, prNumber int) error {
+	return github.RequestCopilotReviewCtx(ctx, repo, prNumber)
 }
 
 func eligibleRerequestReviewer(login, viewer, prAuthor string) bool {

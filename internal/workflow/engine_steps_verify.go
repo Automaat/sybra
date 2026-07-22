@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/github"
@@ -19,6 +22,11 @@ import (
 // would fire the status-change cascade. Used by verify_commits to wait out a
 // still-running sibling agent without launching over it.
 var errStepParked = errors.New("workflow step parked in ExecWaiting")
+
+const (
+	finalCommitSourceAgent    = "agent"
+	finalCommitSourceFallback = "fallback"
+)
 
 // execEnsurePRClosesIssue verifies the task's PR closes its linked
 // GitHub issue. When the closing reference is missing, it appends
@@ -264,70 +272,35 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 	// once the worktree is quiescent, and the dispatch claim guarantees no
 	// duplicate. Excludes the just-completed agent (its done channel closes only
 	// after onComplete) so this never fires on the triggering agent itself.
-	if e.agents != nil {
-		if exceptID := wfExec.LastAgentID(); e.agents.HasOtherRunningAgentForTask(taskID, exceptID) {
-			if rearm := wfExec.LastAgentStepID(); rearm != "" {
-				wfExec.CurrentStep = rearm
-				wfExec.State = ExecWaiting
-				if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-					return StepOutput{}, err
-				}
-				e.logger.Warn("workflow.verify-commits.parked",
-					"task_id", taskID, "rearm_step", rearm, "except_agent", exceptID)
-				return StepOutput{}, errStepParked
-			}
-		}
+	if err := e.parkVerifyCommitsForSiblingAgent(taskID, wfExec); err != nil {
+		return StepOutput{}, err
 	}
 
 	output, err := e.gitLogAheadOfBaseWithRetry(taskID, wtPath, t)
+	finalSource := ""
 	if err != nil {
-		// Context cancellation indicates engine shutdown, not a worktree
-		// problem — leave task status alone so it resumes on next boot.
-		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
-			e.logger.Warn("workflow.verify-commits.canceled", "task_id", taskID, "err", err)
-			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
+		if out, ok := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error: "); ok {
+			return StepOutput{StepID: step.ID, Status: "completed", Output: out}, nil
 		}
-		diagnosis := diagnoseWorktreeState(e.ctx, wtPath)
-		e.logger.Warn("workflow.verify-commits.git-error", "task_id", taskID, "worktree", wtPath, "err", err, "diagnosis", diagnosis)
-		reason := "worktree git error: " + err.Error()
-		if diagnosis != "" {
-			reason += " (" + diagnosis + ")"
-		}
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
-			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
-		}
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "git error: flipped to human-required"}, nil
 	}
 
 	if strings.TrimSpace(string(output)) == "" {
-		// An agent can finish its work but forget to commit (e.g. interrupted
-		// mid-turn, or simply skipped the final `git commit`). Escalating here
-		// on "no commits" would discard that work — recover it first: stage and
-		// commit anything sitting dirty in the worktree, then re-check for
-		// commits before falling through to the escalation paths below.
-		if project.AutoCommitUncommitted(e.ctx, wtPath, "wip: auto-commit uncommitted implementation work\n\nverify_commits recovered work an agent finished without committing.") {
-			e.logger.Warn("workflow.verify-commits.auto-committed", "task_id", taskID)
-			recovered, recErr := e.gitLogAheadOfBase(wtPath)
-			if recErr != nil {
-				// Treat a post-auto-commit re-check failure like any other git
-				// error above — falling through here would misclassify a
-				// transient git problem as "still no commits".
-				if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
-					e.logger.Warn("workflow.verify-commits.canceled", "task_id", taskID, "err", recErr)
-					return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
-				}
-				diagnosis := diagnoseWorktreeState(e.ctx, wtPath)
-				e.logger.Warn("workflow.verify-commits.git-error", "task_id", taskID, "worktree", wtPath, "err", recErr, "diagnosis", diagnosis)
-				reason := "worktree git error after auto-commit: " + recErr.Error()
-				if diagnosis != "" {
-					reason += " (" + diagnosis + ")"
-				}
-				if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
-					e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
-				}
-				return StepOutput{StepID: step.ID, Status: "completed", Output: "git error: flipped to human-required"}, nil
-			}
+		refreshed, source, out, ok := e.verifyCommitsAfterRemoteAdopt(taskID, wtPath, t)
+		if ok {
+			output = refreshed
+			finalSource = source
+		} else if out != "" {
+			return StepOutput{StepID: step.ID, Status: "completed", Output: out}, nil
+		}
+	}
+
+	if strings.TrimSpace(string(output)) == "" {
+		recovered, source, out, ok := e.verifyCommitsAfterAutoCommit(taskID, wtPath, t)
+		if ok {
 			output = recovered
+			finalSource = source
+		} else if out != "" {
+			return StepOutput{StepID: step.ID, Status: "completed", Output: out}, nil
 		}
 	}
 
@@ -338,49 +311,236 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 		}
 		if adoption.adopted {
 			output = adoption.output
+			finalSource = finalCommitSourceAgent
 		}
 	}
 
 	if strings.TrimSpace(string(output)) == "" {
-		// A crashed implementation agent (e.g. API error mid-run) leaves a fresh
-		// worktree branch sitting exactly on the base tip — git-indistinguishable
-		// from "work already merged via another branch". Marking such a task done
-		// silently discards the uncommitted work. Disambiguate with the upstream
-		// agent step's outcome: a failed implement step means the branch is empty
-		// because the agent died, not because the fix already shipped. Route to
-		// human-required so the run is surfaced, not closed.
-		if wfExec.LastAgentStepFailed() {
-			reason := "implementation agent failed before committing — no commits on branch"
-			if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
-				e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
-			}
-			e.logger.Warn("workflow.verify-commits.agent-failed", "task_id", taskID)
-			return StepOutput{StepID: step.ID, Status: "completed", Output: "agent failed before commit: flipped to human-required"}, nil
+		return e.verifyCommitsHandleEmptyOutput(taskID, step, wfExec, wtPath), nil
+	}
+
+	if finalSource == "" {
+		finalSource = finalCommitSourceAgent
+	}
+	e.recordFinalCommitState(taskID, wfExec, wtPath, finalSource)
+	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
+}
+
+func (e *Engine) parkVerifyCommitsForSiblingAgent(taskID string, wfExec *Execution) error {
+	if e.agents == nil {
+		return nil
+	}
+	exceptID := wfExec.LastAgentID()
+	if !e.agents.HasOtherRunningAgentForTask(taskID, exceptID) {
+		return nil
+	}
+	rearm := wfExec.LastAgentStepID()
+	if rearm == "" {
+		return nil
+	}
+	wfExec.CurrentStep = rearm
+	wfExec.State = ExecWaiting
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return err
+	}
+	e.logger.Warn("workflow.verify-commits.parked",
+		"task_id", taskID, "rearm_step", rearm, "except_agent", exceptID)
+	return errStepParked
+}
+
+func (e *Engine) verifyCommitsGitErrorOutput(taskID, wtPath string, err error, prefix string) (string, bool) {
+	if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
+		e.logger.Warn("workflow.verify-commits.canceled", "task_id", taskID, "err", err)
+		return "skipped: context canceled", true
+	}
+	diagnosis := diagnoseWorktreeState(e.ctx, wtPath)
+	e.logger.Warn("workflow.verify-commits.git-error", "task_id", taskID, "worktree", wtPath, "err", err, "diagnosis", diagnosis)
+	reason := prefix + err.Error()
+	if diagnosis != "" {
+		reason += " (" + diagnosis + ")"
+	}
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
+	}
+	return "git error: flipped to human-required", true
+}
+
+func (e *Engine) verifyCommitsAfterRemoteAdopt(taskID, wtPath string, t TaskInfo) (output []byte, source, stepOutput string, ok bool) {
+	_, adopted, err := e.adoptEquivalentRemoteCommit(taskID, wtPath, t)
+	if err != nil {
+		out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error before fallback reconcile: ")
+		return nil, "", out, false
+	}
+	if !adopted {
+		return nil, "", "", false
+	}
+	output, err = e.gitLogAheadOfBaseWithRetry(taskID, wtPath, t)
+	if err != nil {
+		out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error after remote reconcile: ")
+		return nil, "", out, false
+	}
+	if strings.TrimSpace(string(output)) == "" {
+		return output, "", "", false
+	}
+	return output, finalCommitSourceAgent, "", true
+}
+
+func (e *Engine) verifyCommitsAfterAutoCommit(taskID, wtPath string, t TaskInfo) (output []byte, source, stepOutput string, ok bool) {
+	if !project.AutoCommitUncommitted(e.ctx, wtPath, "wip: auto-commit uncommitted implementation work\n\nverify_commits recovered work an agent finished without committing.") {
+		return nil, "", "", false
+	}
+	e.logger.Warn("workflow.verify-commits.auto-committed", "task_id", taskID)
+	if recovered, source, out, ok := e.verifyCommitsRecoveredRemoteAdopt(taskID, wtPath, t); ok || out != "" {
+		if ok {
+			return recovered, source, "", true
 		}
-		// Disambiguate "no commits ahead" between two cases:
-		//   (a) HEAD == base ref tip → branch is identical to base. Implementation
-		//       was already on origin (e.g. merged via a different branch before
-		//       this task ran). Re-running implement would loop forever because
-		//       there is nothing left to do. Mark done so the auto-restart in
-		//       svc_tasks.UpdateTask doesn't bounce the task back to in-progress.
-		//   (b) HEAD != base → branch diverged but has zero fast-forward commits.
-		//       Genuine "agent did nothing"; flip to human-required as before.
-		if branchMergedIntoBase(e.ctx, wtPath) {
-			reason := "branch already merged into base — implementation already on origin"
-			if statusErr := e.tasks.UpdateTaskStatus(taskID, "done", reason); statusErr != nil {
-				e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
-			}
-			e.logger.Info("workflow.verify-commits.branch-merged", "task_id", taskID)
-			return StepOutput{StepID: step.ID, Status: "completed", Output: "branch merged into base: marked done"}, nil
+		return nil, "", out, false
+	}
+	recovered, err := e.gitLogAheadOfBase(wtPath)
+	if err != nil {
+		out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error after auto-commit: ")
+		return nil, "", out, false
+	}
+	if strings.TrimSpace(string(recovered)) == "" {
+		return recovered, "", "", false
+	}
+	return recovered, finalCommitSourceFallback, "", true
+}
+
+func (e *Engine) verifyCommitsRecoveredRemoteAdopt(taskID, wtPath string, t TaskInfo) (output []byte, source, stepOutput string, ok bool) {
+	// The agent may already be pushing an equivalent commit when we recover
+	// uncommitted work locally. Give that agent-owned lineage the same bounded
+	// retry window as the ref/object recovery path before we keep a duplicate
+	// fallback commit.
+	for attempt := 0; ; attempt++ {
+		_, adopted, err := e.adoptEquivalentRemoteCommit(taskID, wtPath, t)
+		if err != nil {
+			out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error after auto-commit remote reconcile: ")
+			return nil, "", out, false
 		}
-		reason := "no commits pushed to branch"
+		if adopted {
+			output, err = e.gitLogAheadOfBaseWithRetry(taskID, wtPath, t)
+			if err != nil {
+				out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error after auto-commit remote reconcile: ")
+				return nil, "", out, false
+			}
+			if strings.TrimSpace(string(output)) == "" {
+				return output, "", "", false
+			}
+			return output, finalCommitSourceAgent, "", true
+		}
+		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
+			return nil, "", "", false
+		}
+		if attempt >= len(verifyCommitsRetryBackoffs) {
+			return nil, "", "", false
+		}
+		e.logger.Warn("workflow.verify-commits.remote-adopt-retry",
+			"task_id", taskID,
+			"worktree", wtPath,
+			"attempt", attempt+1)
+		verifyCommitsRetrySleep(verifyCommitsRetryBackoffs[attempt])
+	}
+}
+
+func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExec *Execution, wtPath string) StepOutput {
+	if wfExec.LastAgentStepFailed() {
+		reason := "implementation agent failed before committing — no commits on branch"
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 		}
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "no commits: flipped to human-required"}, nil
+		e.logger.Warn("workflow.verify-commits.agent-failed", "task_id", taskID)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "agent failed before commit: flipped to human-required"}
+	}
+	if branchMergedIntoBase(e.ctx, wtPath) {
+		reason := "branch already merged into base — implementation already on origin"
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, "done", reason); statusErr != nil {
+			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
+		}
+		e.logger.Info("workflow.verify-commits.branch-merged", "task_id", taskID)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "branch merged into base: marked done"}
+	}
+	reason := "no commits pushed to branch"
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
+	}
+	return StepOutput{StepID: step.ID, Status: "completed", Output: "no commits: flipped to human-required"}
+}
+
+func (e *Engine) recordFinalCommitState(taskID string, wfExec *Execution, wtPath, source string) {
+	if source == "" || wfExec == nil {
+		return
+	}
+	agentID := wfExec.LastAgentID()
+	if agentID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	headSHA := revParseCommit(ctx, wtPath, "HEAD")
+	if headSHA == "" {
+		return
+	}
+	if err := e.tasks.RecordAgentRunFinalCommit(taskID, agentID, headSHA, source); err != nil {
+		e.logger.Warn("workflow.verify-commits.record-final-commit", "task_id", taskID, "agent_id", agentID, "err", err)
+	}
+}
+
+func (e *Engine) adoptEquivalentRemoteCommit(taskID, wtPath string, t TaskInfo) (source string, adopted bool, err error) {
+	if !e.recoverVerifyCommitsRefs(taskID, wtPath, t) {
+		return "", false, nil
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+
+	branch := resolveVerifyCommitsBranch(ctx, wtPath, t)
+	if !validVerifyCommitsBranch(branch) {
+		return "", false, nil
+	}
+	remoteRef := "refs/remotes/origin/" + branch
+	if revParseCommit(ctx, wtPath, remoteRef) == "" {
+		return "", false, nil
 	}
 
-	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
+	worktreeTree, err := currentWorktreeTree(ctx, wtPath)
+	if err != nil {
+		return "", false, err
+	}
+	headTree := revParseTree(ctx, wtPath, "HEAD")
+	remoteTree := revParseTree(ctx, wtPath, remoteRef)
+	if headTree == "" || remoteTree == "" {
+		return "", false, nil
+	}
+
+	if worktreeTree == remoteTree {
+		if err := resetHardToRef(ctx, wtPath, remoteRef); err != nil {
+			return "", false, err
+		}
+		e.logger.Info("workflow.verify-commits.remote-adopted", "task_id", taskID, "branch", branch, "reason", "equivalent_tree")
+		return finalCommitSourceAgent, true, nil
+	}
+	if worktreeTree != headTree {
+		return "", false, nil
+	}
+	if headTree == remoteTree {
+		if err := resetHardToRef(ctx, wtPath, remoteRef); err != nil {
+			return "", false, err
+		}
+		e.logger.Info("workflow.verify-commits.remote-adopted", "task_id", taskID, "branch", branch, "reason", "equivalent_commit")
+		return finalCommitSourceAgent, true, nil
+	}
+	ff, err := isAncestorCommit(ctx, wtPath, "HEAD", remoteRef)
+	if err != nil {
+		return "", false, err
+	}
+	if !ff {
+		return "", false, nil
+	}
+	if err := fastForwardToRef(ctx, wtPath, remoteRef); err != nil {
+		return "", false, err
+	}
+	e.logger.Info("workflow.verify-commits.remote-adopted", "task_id", taskID, "branch", branch, "reason", "fast_forward")
+	return finalCommitSourceAgent, true, nil
 }
 
 func (e *Engine) gitLogAheadOfBaseWithRetry(taskID, wtPath string, t TaskInfo) ([]byte, error) {
@@ -561,7 +721,7 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 
-	branch := strings.TrimSpace(t.Branch)
+	branch := resolveVerifyCommitsBranch(ctx, wtPath, t)
 	if !validVerifyCommitsBranch(branch) {
 		e.logger.Warn("workflow.verify-commits.ref-recovery.skip", "task_id", taskID, "branch", branch)
 		return false
@@ -607,6 +767,10 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 	return true
 }
 
+func resolveVerifyCommitsBranch(ctx context.Context, wtPath string, t TaskInfo) string {
+	return strings.TrimSpace(t.Branch)
+}
+
 func validVerifyCommitsBranch(branch string) bool {
 	return branch != "" && !strings.HasPrefix(branch, "-") && !strings.Contains(branch, "..") && !strings.Contains(branch, " ")
 }
@@ -624,7 +788,6 @@ func currentGitBranch(ctx context.Context, wtPath string) (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
-
 func verifyCommitsNegotiationTips(ctx context.Context, wtPath, baseRef string) []string {
 	if baseRef == "" {
 		return nil
@@ -673,11 +836,109 @@ func pruneBrokenVerifyCommitRefs(ctx context.Context, wtPath, barePath, taskBran
 func revParseCommit(ctx context.Context, wtPath, ref string) string {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref+"^{commit}")
 	cmd.Dir = wtPath
+	configureWorkflowGitCancel(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func configureWorkflowGitCancel(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
+	cmd.WaitDelay = time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
+}
+
+func revParseTree(ctx context.Context, wtPath, ref string) string {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref+"^{tree}")
+	cmd.Dir = wtPath
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func currentWorktreeTree(ctx context.Context, wtPath string) (string, error) {
+	tmpIndex, err := os.CreateTemp("", "sybra-verify-index-*")
+	if err != nil {
+		return "", fmt.Errorf("create temp index: %w", err)
+	}
+	path := tmpIndex.Name()
+	_ = tmpIndex.Close()
+	defer func() { _ = os.Remove(path) }()
+
+	env := append(os.Environ(), "GIT_INDEX_FILE="+path)
+	readTree := exec.CommandContext(ctx, "git", "read-tree", "HEAD")
+	readTree.Dir = wtPath
+	readTree.Env = env
+	if out, err := readTree.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git read-tree HEAD: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	add := exec.CommandContext(ctx, "git", "add", "-A")
+	add.Dir = wtPath
+	add.Env = env
+	if out, err := add.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	writeTree := exec.CommandContext(ctx, "git", "write-tree")
+	writeTree.Dir = wtPath
+	writeTree.Env = env
+	out, err := writeTree.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git write-tree: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func resetHardToRef(ctx context.Context, wtPath, ref string) error {
+	cmd := exec.CommandContext(ctx, "git", "reset", "--hard", ref)
+	cmd.Dir = wtPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git reset --hard %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func fastForwardToRef(ctx context.Context, wtPath, ref string) error {
+	cmd := exec.CommandContext(ctx, "git", "merge", "--ff-only", ref)
+	cmd.Dir = wtPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git merge --ff-only %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func isAncestorCommit(ctx context.Context, wtPath, ancestor, ref string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ancestor, ref)
+	cmd.Dir = wtPath
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 // diagnoseWorktreeState produces a short human-readable hint about why a

@@ -774,6 +774,7 @@ func TestRestartStaleInteractiveOneShotRestartsAsOneShot(t *testing.T) {
 	if !stub.lastOneShot {
 		t.Fatal("interactive one-shot stale restart must preserve oneShot=true")
 	}
+	assertStaleRecoveryPromptDefersPR(t, stub.lastPrompt)
 }
 
 func TestRestartStaleInteractiveNoRunRedispatchesWhenProjectAssigned(t *testing.T) {
@@ -830,6 +831,7 @@ func TestRestartStaleInteractiveNoRunRedispatchesWhenProjectAssigned(t *testing.
 	if stub.lastOneShot {
 		t.Fatal("zero-run stale restart must not force oneShot")
 	}
+	assertStaleRecoveryPromptDefersPR(t, stub.lastPrompt)
 }
 
 func TestRestartStaleInProgressDoesNotPromptDirectPRCreate(t *testing.T) {
@@ -888,8 +890,9 @@ func TestRestartStaleInProgressDoesNotPromptDirectPRCreate(t *testing.T) {
 	if stub.startCalls != 1 {
 		t.Fatalf("dispatch count = %d, want 1", stub.startCalls)
 	}
-	if stub.lastPrompt != "Continue implementing this task." {
-		t.Fatalf("prompt = %q; want implementation-only recovery prompt", stub.lastPrompt)
+	wantPrompt := "Continue implementing this task. When done, commit your work and push the branch to origin. Do NOT create a PR; Sybra's workflow will create, link, and stamp the PR after review and testing have passed."
+	if stub.lastPrompt != wantPrompt {
+		t.Fatalf("prompt = %q; want %q", stub.lastPrompt, wantPrompt)
 	}
 	if strings.Contains(stub.lastPrompt, "gh pr create") {
 		t.Fatalf("stale in-progress restart prompt creates PR before review/testing pipeline: %q", stub.lastPrompt)
@@ -958,6 +961,7 @@ func TestRestartStaleInteractiveNoWorkflowRedispatches(t *testing.T) {
 	if stub.lastOneShot {
 		t.Fatal("interactive stale redispatch without workflow must not force oneShot")
 	}
+	assertStaleRecoveryPromptDefersPR(t, stub.lastPrompt)
 }
 
 // TestRestartStaleInteractiveModeMismatchRedispatches covers the Copilot
@@ -1027,6 +1031,20 @@ func TestRestartStaleInteractiveModeMismatchRedispatches(t *testing.T) {
 	}
 	if stub.lastOneShot {
 		t.Fatal("mode-mismatch stale restart must not force oneShot")
+	}
+	assertStaleRecoveryPromptDefersPR(t, stub.lastPrompt)
+}
+
+func assertStaleRecoveryPromptDefersPR(t *testing.T, prompt string) {
+	t.Helper()
+	if !strings.Contains(prompt, "push the branch to origin") {
+		t.Fatalf("prompt = %q, want branch push instruction", prompt)
+	}
+	if !strings.Contains(prompt, "Do NOT create a PR") {
+		t.Fatalf("prompt = %q, want explicit PR creation ban", prompt)
+	}
+	if strings.Contains(prompt, "gh pr create") {
+		t.Fatalf("prompt = %q, must not tell stale recovery to create a PR", prompt)
 	}
 }
 

@@ -277,6 +277,10 @@ type AgentRun struct {
 	// agent left on the branch. Compared against the merged PR head to detect
 	// human edits after the agent (merged_with_edits) and measure edit distance.
 	HeadSHA string `json:"headSha,omitempty"`
+	// FinalCommitSource records who owned the branch head that verify_commits
+	// settled on: "agent" when the final head came from the agent-pushed remote
+	// commit, "fallback" when verify_commits had to auto-commit recovered work.
+	FinalCommitSource string `json:"finalCommitSource,omitempty"`
 	// SubagentCallCount is the number of distinct forked-Claude subagent calls
 	// observed in the run. Zero for non-Claude runs and runs recorded before
 	// fan-out counting existed.
