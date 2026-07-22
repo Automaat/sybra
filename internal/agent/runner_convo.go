@@ -548,7 +548,7 @@ func claudeRegateConfig(a *Agent) RunConfig {
 		TaskID:             a.TaskID,
 		Dir:                a.sessionCWD,
 		Provider:           a.Provider,
-		Model:              a.Model,
+		Model:              a.GetRequestedModel(),
 		RequirePermissions: a.requirePermissions,
 	}
 }

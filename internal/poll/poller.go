@@ -36,7 +36,7 @@ func (p *Poller) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			next := p.fetcher.Poll(ctx)
+			next := p.pollOnce(ctx)
 			if next <= 0 {
 				next = time.Minute
 			}
@@ -44,6 +44,16 @@ func (p *Poller) Run(ctx context.Context) {
 			timer.Reset(next)
 		}
 	}
+}
+
+func (p *Poller) pollOnce(ctx context.Context) (next time.Duration) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			p.logger.Error("poll.panic", "name", p.fetcher.Name(), "panic", rec)
+			next = time.Minute
+		}
+	}()
+	return p.fetcher.Poll(ctx)
 }
 
 // Hub owns a set of Fetchers and starts them together.

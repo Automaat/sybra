@@ -47,6 +47,14 @@ type testClientError struct {
 func (e *testClientError) Error() string   { return e.msg }
 func (e *testClientError) HTTPStatus() int { return e.status }
 
+type testAdmissionError struct {
+	status int
+	msg    string
+}
+
+func (e *testAdmissionError) Error() string   { return e.msg }
+func (e *testAdmissionError) HTTPStatus() int { return e.status }
+
 func setup(t *testing.T) (*http.ServeMux, *httptest.Server, *bytes.Buffer) {
 	t.Helper()
 	logBuf := &bytes.Buffer{}
@@ -58,7 +66,7 @@ func setup(t *testing.T) (*http.ServeMux, *httptest.Server, *bytes.Buffer) {
 			"ClientFail400", "ClientFail409",
 			// AdminOnly is intentionally absent from the allowlist.
 		),
-	}, logger)
+	}, logger, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return mux, srv, logBuf
@@ -236,6 +244,41 @@ func TestHandler_ClientErrorPassthrough(t *testing.T) {
 				t.Fatal("ClientError must not be logged as internal error")
 			}
 		})
+	}
+}
+
+func TestHandler_AdmissionHookHonorsReadOnlyMetadata(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(logBuf, nil))
+	mux := http.NewServeMux()
+	httpapi.Mount(mux, map[string]httpapi.Service{
+		"TestSvc": httpapi.NewService(&testSvc{}, "Echo", "Add").WithReadOnly("Echo"),
+	}, logger, func(_, _ string, meta httpapi.MethodMeta) error {
+		if meta.ReadOnly {
+			return nil
+		}
+		return &testAdmissionError{status: http.StatusServiceUnavailable, msg: "draining"}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	readResp := post(t, srv, "TestSvc", "Echo", "ok")
+	defer readResp.Body.Close()
+	if readResp.StatusCode != http.StatusOK {
+		t.Fatalf("Echo status = %d, want 200", readResp.StatusCode)
+	}
+
+	writeResp := post(t, srv, "TestSvc", "Add", 1, 2)
+	defer writeResp.Body.Close()
+	if writeResp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("Add status = %d, want 503", writeResp.StatusCode)
+	}
+	msg, code := decodeErr(t, writeResp)
+	if msg != "draining" {
+		t.Fatalf("Add error = %q, want draining", msg)
+	}
+	if code != string(httpapi.ErrCodeUnavailable) {
+		t.Fatalf("Add code = %q, want %q", code, httpapi.ErrCodeUnavailable)
 	}
 }
 

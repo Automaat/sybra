@@ -85,7 +85,7 @@ export class AgentDefaults {
     /**
      * MaxReviewRounds bounds how many automated review rounds a single
      * simple-task-review execution may spend before Sybra parks the task
-     * human-required. 0 means use DefaultMaxReviewRounds (3). Ignored when
+     * blocked. 0 means use DefaultMaxReviewRounds (3). Ignored when
      * ReviewUntilClean is false or AllowUnboundedReviewRounds is true.
      */
     "maxReviewRounds": number;

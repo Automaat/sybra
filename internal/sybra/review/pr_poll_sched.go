@@ -2,6 +2,7 @@ package review
 
 import (
 	"cmp"
+	"context"
 	"slices"
 
 	"github.com/Automaat/sybra/internal/config"
@@ -37,7 +38,7 @@ func expBackoff(streak, maxTicks int) int {
 	return skip
 }
 
-func (r *Handler) selectKnownPRPoll(tasks []task.Task) knownPRPollSelection {
+func (r *Handler) selectKnownPRPoll(ctx context.Context, tasks []task.Task) knownPRPollSelection {
 	if r.prPollState == nil {
 		r.prPollState = make(map[string]prPollEntry)
 	}
@@ -50,7 +51,7 @@ func (r *Handler) selectKnownPRPoll(tasks []task.Task) knownPRPollSelection {
 
 	for i := range tasks {
 		tk := tasks[i]
-		if r.agents != nil && r.agents.HasRunningAgentForTask(tk.ID) {
+		if r.hasBlockingAgentForTask(ctx, tk.ID) {
 			active = append(active, tk)
 			if knownPRPollEligible(&tk) {
 				activePRs++
@@ -65,10 +66,10 @@ func (r *Handler) selectKnownPRPoll(tasks []task.Task) knownPRPollSelection {
 		key := prRefCacheKey(tk.ProjectID, tk.PRNumber)
 		entry := r.prPollState[key]
 		if entry.skipTicks > 0 {
-			entry.skipTicks--
-			r.prPollState[key] = entry
-			deferred++
-			continue
+			if r.knownPRStillStableDuringBackoff(&tk, key, entry) {
+				deferred++
+				continue
+			}
 		}
 		candidates = append(candidates, tk)
 	}
@@ -104,6 +105,30 @@ func knownPRPollEligible(t *task.Task) bool {
 		return false
 	}
 	return prMonitorEligible(t) || prClosedEligible(t) || humanRequiredBlockerReconcileEligible(t)
+}
+
+func (r *Handler) knownPRStillStableDuringBackoff(t *task.Task, key string, entry prPollEntry) bool {
+	headStateFn := r.fetchHeadStateFn
+	if headStateFn == nil {
+		entry.skipTicks--
+		r.prPollState[key] = entry
+		return true
+	}
+	sha, open, updatedAt, err := headStateFn(t.ProjectID, t.PRNumber)
+	if err != nil {
+		entry.skipTicks--
+		r.prPollState[key] = entry
+		return true
+	}
+	if !open || sha == "" || sha != entry.lastHeadSHA || updatedAt != entry.lastUpdatedAt {
+		entry.skipTicks = 0
+		entry.stableStreak = 0
+		r.prPollState[key] = entry
+		return false
+	}
+	entry.skipTicks--
+	r.prPollState[key] = entry
+	return true
 }
 
 func (r *Handler) noteKnownPRResult(repo string, number int, pr github.PullRequest) {

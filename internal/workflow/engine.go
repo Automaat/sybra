@@ -98,6 +98,7 @@ type AgentRunInfo struct {
 	TestOutcome            string
 	TestFailureFingerprint string
 	HeadSHA                string
+	FinalCommitSource      string
 }
 
 // TaskProvider reads and updates tasks.
@@ -109,6 +110,7 @@ type TaskProvider interface {
 	MarkTaskReviewed(id string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
 	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
+	RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error
 	AppendTaskBody(id, content string) error
 	// ReplaceTaskBody overwrites the task's full body. Used by the test-route
 	// step to archive/strip a stale "## Test Failures" section before
@@ -196,6 +198,7 @@ type PRLinker interface {
 // workflow fixes review comments and pushes updated commits.
 type PRReviewRequester interface {
 	RerequestReview(repo string, prNumber int) (reviewers []string, err error)
+	RequestCopilotReview(ctx context.Context, repo string, prNumber int) error
 }
 
 // PRStateFetcher fetches the live state of a GitHub pull request. Used by
@@ -379,7 +382,7 @@ type Engine struct {
 	reviewLoopDisabled bool
 	// maxReviewRounds bounds how many automated review rounds one
 	// simple-task-review execution may spend before it is parked
-	// human-required. 0 → config.DefaultMaxReviewRounds.
+	// blocked. 0 → config.DefaultMaxReviewRounds.
 	maxReviewRounds int
 	// allowUnboundedReviewRounds restores the legacy uncapped
 	// review→fix→review loop. Defaults to false.
@@ -611,7 +614,7 @@ func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
 
 // SetMaxReviewRounds sets how many automated review rounds one
 // simple-task-review execution may spend before the task is parked
-// human-required. Values <= 0 fall back to config.DefaultMaxReviewRounds.
+// blocked. Values <= 0 fall back to config.DefaultMaxReviewRounds.
 func (e *Engine) SetMaxReviewRounds(n int) { e.maxReviewRounds = n }
 
 // SetAllowUnboundedReviewRounds restores the legacy uncapped

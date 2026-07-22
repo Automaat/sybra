@@ -990,9 +990,9 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 // resumeSkipReasonForStatus reports whether ResumeStalled must not resume a
 // task in the given status, and why.
 //
-// human-required: the task was halted by a competing path or parked for a
-// human. Resuming would override the triage verdict and re-dispatch an agent
-// the operator already suppressed.
+// human-required/blocked: the task was halted by a competing path or parked
+// for human/operator follow-up. Resuming would override that verdict and
+// re-dispatch an agent the operator or workflow already suppressed.
 //
 // done/cancelled: the task reached a terminal status (e.g. its PR merged)
 // while its Workflow record was still Running/Waiting from before that
@@ -1005,6 +1005,8 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 	switch status {
 	case "human-required":
 		return "human_required", true
+	case "blocked":
+		return "blocked", true
 	case "done", "cancelled":
 		return "terminal_status", true
 	default:
@@ -1281,6 +1283,10 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 		return
 	}
 	fresh = nextFresh
+	if e.handleWatchdogRateLimitRetry(&fresh, step) {
+		e.clearResumeDispatching(t.ID)
+		return
+	}
 
 	e.finishResumeStalledStep(t.ID, &def, step, t.Workflow, fresh)
 }
@@ -1630,15 +1636,15 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 	retryKey := watchdogRateLimitRetryKey(step.ID)
 	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
 	if attempts >= maxWatchdogRateLimitRetries {
-		reason := fmt.Sprintf("watchdog: rate limit retry budget exhausted after %d clean re-dispatches", attempts)
-		t.Workflow.State = ExecFailed
+		targetStatus, reason, terminalState := watchdogRateLimitExhaustionResolution(*t, step, attempts)
+		t.Workflow.State = terminalState
 		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 			e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
 		}
-		if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason); err != nil {
 			e.logger.Error("workflow.watchdog-rate-limit.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 		} else {
-			e.logger.Warn("workflow.watchdog-rate-limit.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+			e.logger.Warn("workflow.watchdog-rate-limit.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts, "status", targetStatus)
 		}
 		return true
 	}
@@ -1654,6 +1660,17 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 
 func isWatchdogRateLimitReason(reason string) bool {
 	return watchdogreason.IsRateLimit(reason)
+}
+
+func watchdogRateLimitExhaustionResolution(t TaskInfo, _ *Step, attempts int) (status, reason string, terminalState ExecState) {
+	if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) {
+		return "blocked",
+			fmt.Sprintf("watchdog: zero-output startup retry budget exhausted after %d identical attempts", attempts+1),
+			ExecFailed
+	}
+	return "human-required",
+		fmt.Sprintf("watchdog: rate limit retry budget exhausted after %d clean re-dispatches", attempts),
+		ExecFailed
 }
 
 func (e *Engine) canRetryWatchdogStop(t *TaskInfo, step *Step) bool {

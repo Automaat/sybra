@@ -31,3 +31,12 @@ func TestIsRetryableStop(t *testing.T) {
 		})
 	}
 }
+
+func TestIsZeroOutputRateLimit(t *testing.T) {
+	if !IsZeroOutputRateLimit(RateLimit(ZeroOutputBeforeStartup)) {
+		t.Fatalf("expected zero-output watchdog rate limit to match")
+	}
+	if IsZeroOutputRateLimit(RateLimit("org-level quota exhausted")) {
+		t.Fatalf("non-zero-output rate limit must not match")
+	}
+}

@@ -122,14 +122,10 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 		}
 		doneCmd := ""
 		if taskID != "" {
-			doneCmd = "\n- Once " + prRef + " merges, mark task done: `sybra-cli update " + taskID + " --status done`."
-		}
-		mergedCmd := ""
-		if taskID != "" {
-			mergedCmd = "`sybra-cli update " + taskID + " --status done`"
+			doneCmd = "\n- Once " + prRef + " merges, wait for the PR monitor landing pass; do not mark the task done manually."
 		}
 		investigationHint = "- A fix-review agent already ran — skip the agent log and check " + prRef + " state with `gh pr view --json state,reviewDecision,statusCheckRollup`.\n" +
-			"- If state=MERGED: the PR has already been merged. Run " + mergedCmd + ". Skip issue filing and output: {\"issueNumber\":null,\"action\":\"remediated\",\"blocker\":\"PR already merged\",\"nextStep\":\"none\"}.\n" +
+			"- If state=MERGED: the PR has already been merged. Do not mark the task done manually; let the PR monitor landing pass record telemetry. Skip issue filing and output: {\"issueNumber\":null,\"action\":\"remediated\",\"blocker\":\"PR already merged\",\"nextStep\":\"none\"}.\n" +
 			"- If CHANGES_REQUESTED: new review comments arrived — report that as the blocker with \"run another fix-review agent\" as the next step.\n" +
 			"- If REVIEW_REQUIRED: fixes were pushed but review was not re-requested — report \"awaiting re-review\" with \"re-request review\" as the next step.\n" +
 			"- If APPROVED and CI passes: report \"ready to merge\" with \"merge the PR\" as the next step." +
@@ -282,12 +278,12 @@ func suggestedInvestigation(a Anomaly) string {
 		} else if lastRole == "fix-review" && lastState == "stopped" {
 			hint += "- Fix-review agent finished — check the PR and agent log for the outcome.\n"
 			if prNum > 0 {
-				hint += fmt.Sprintf("- Check PR #%d state: if MERGED mark task done immediately (`sybra-cli update %s --status done`); if CHANGES_REQUESTED run another fix-review agent; if REVIEW_REQUIRED re-request review; if APPROVED and CI passes merge.\n", prNum, taskID)
+				hint += fmt.Sprintf("- Check PR #%d state: if MERGED wait for the PR monitor landing pass; if CHANGES_REQUESTED run another fix-review agent; if REVIEW_REQUIRED re-request review; if APPROVED and CI passes merge.\n", prNum)
 			} else {
-				hint += "- Check the PR state: if already merged mark task done; address remaining comments, re-request review, or merge if approved.\n"
+				hint += "- Check the PR state: if already merged wait for the PR monitor landing pass; address remaining comments, re-request review, or merge if approved.\n"
 			}
 			if taskID != "" {
-				hint += "- Once PR merges, mark task done: `sybra-cli update " + taskID + " --status done`.\n"
+				hint += "- Once PR merges, wait for the PR monitor landing pass; do not mark the task done manually.\n"
 			}
 		}
 		return hint

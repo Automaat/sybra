@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
@@ -460,9 +461,6 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	fmt.Printf("Title:  %s\n", t.Title)
 	fmt.Printf("Status: %s\n", t.Status)
 	fmt.Printf("Mode:   %s\n", t.AgentMode)
-	if t.TaskType != "" {
-		fmt.Printf("Type:   %s\n", t.TaskType)
-	}
 	if len(t.Tags) > 0 {
 		fmt.Printf("Tags:   %s\n", strings.Join(t.Tags, ", "))
 	}
@@ -539,7 +537,6 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	planDecisions := fs.String("plan-decisions", "", "plan decisions markdown")
 	planBrief := fs.String("plan-brief", "", "plan brief markdown")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
-	ttype := fs.String("type", "normal", "task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags")
 	proj := fs.String("project", "", "project id (owner/repo)")
 	branch := fs.String("branch", "", "Git branch name")
@@ -551,9 +548,6 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	}
 	if *title == "" {
 		return fatal(jsonOut, "title is required")
-	}
-	if _, err := task.ValidateTaskType(*ttype); err != nil {
-		return fatal(jsonOut, "%v", err)
 	}
 
 	if !*allowDup {
@@ -575,7 +569,7 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "%v", err)
 	}
 
-	updates := buildCreateUpdateMap(*ttype, *tags, *proj, *branch, *pr, *issue,
+	updates := buildCreateUpdateMap(*tags, *proj, *branch, *pr, *issue,
 		*plan, *planContract, *planCritique, *planResearch, *planDecisions, *planBrief)
 	if len(updates) > 0 {
 		t, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
@@ -591,12 +585,9 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	return 0
 }
 
-func buildCreateUpdateMap(ttype, tags, proj, branch string, pr int, issue,
+func buildCreateUpdateMap(tags, proj, branch string, pr int, issue,
 	plan, planContract, planCritique, planResearch, planDecisions, planBrief string) map[string]any {
 	updates := map[string]any{}
-	if ttype != "" && ttype != string(task.TaskTypeNormal) {
-		updates["task_type"] = ttype
-	}
 	if tags != "" {
 		tagList := strings.Split(tags, ",")
 		for i := range tagList {
@@ -1182,7 +1173,6 @@ type updateFlags struct {
 	codeReview        *string
 	codeReviewFile    *string
 	mode              *string
-	taskType          *string
 	tags              *string
 	project           *string
 	branch            *string
@@ -1214,7 +1204,6 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		codeReview:        fs.String("code-review", "", "code review markdown (empty string clears review)"),
 		codeReviewFile:    fs.String("code-review-file", "", "path to file with code review content"),
 		mode:              fs.String("mode", "", "new agent mode"),
-		taskType:          fs.String("type", "", "new task type: normal|debug|research"),
 		tags:              fs.String("tags", "", "comma-separated tags (replaces existing)"),
 		project:           fs.String("project", "", "project id (owner/repo)"),
 		branch:            fs.String("branch", "", "Git branch name"),
@@ -1290,12 +1279,6 @@ func applySidecarUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateF
 }
 
 func applyTypedUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
-	if *f.taskType != "" {
-		if _, err := task.ValidateTaskType(*f.taskType); err != nil {
-			return err
-		}
-		updates["task_type"] = *f.taskType
-	}
 	if flagWasProvided(fs, "source-provider") {
 		v, err := normalizeHandoffSourceProvider(*f.sourceProvider)
 		if err != nil {
@@ -2219,8 +2202,7 @@ Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
            STATUS: %s
   get      [--compact] <id>
-  create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
-           TYPE: normal|debug|research
+  create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
   handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--source-provider claude|codex|copilot|opencode] [--pr N] [--mode MODE] [--tags t1,t2]
            Hand a task to Sybra at a workflow entry point, reusing the given git worktree
            (default: cwd). Project is derived from the worktree's origin remote
@@ -2234,7 +2216,7 @@ Commands:
            Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker
            plus one blocked child per sub-issue, with dependency edges extracted by an
            LLM planner. Re-running only materializes sub-issues without an existing task.
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
            --issue sets ref_issue, an ad-hoc reference annotation — it never
            overwrites the task's canonical (auto-close) issue set at creation
   link-pr  <id> <pr-number>
@@ -2931,6 +2913,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		}
 	}
 	addGitHubPollingFindings(cfg, add)
+	addProviderModelCompatibilityFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
 	for _, warning := range routing.Warnings {
@@ -3023,6 +3006,26 @@ func addK8sFailedTTLFindings(cfg *config.Config, add func(severity, format strin
 	if ttl > 0 && ttl < 30 && failedTTL != ttl {
 		add("warning", "agent.k8s_jobs.ttl_seconds_after_finished is %ds — Kubernetes does not guarantee honoring the failed_ttl_seconds_after_finished extension once such a short window has already elapsed", ttl)
 	}
+}
+
+func addProviderModelCompatibilityFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil || !cfg.Providers.AutoFailover {
+		return
+	}
+	check := func(path, provider, model string) {
+		trimmed := strings.TrimSpace(model)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := modeltier.InferTier(trimmed); ok {
+			return
+		}
+		add("warning", "%s=%q targets provider %q, but failover cannot remap that concrete model on provider switch", path, trimmed, provider)
+	}
+	check("agent.model", cfg.Agent.Provider, cfg.Agent.Model)
+	check("monitor.model", cfg.Agent.Provider, cfg.Monitor.Model)
+	check("watchdog.model", cfg.Agent.Provider, cfg.Watchdog.Model)
+	check("human_review.model", cfg.Agent.Provider, cfg.HumanReviewModel())
 }
 
 func addConfigPermFindings(add func(severity, format string, a ...any)) {

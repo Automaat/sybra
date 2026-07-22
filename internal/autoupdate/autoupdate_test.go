@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/github"
 )
 
 func TestCheckAndApplyAutoModeFastForwards(t *testing.T) {
@@ -17,12 +20,15 @@ func TestCheckAndApplyAutoModeFastForwards(t *testing.T) {
 	gitTest(t, upstream, "commit", "-m", "add feature")
 
 	r := New(Config{
-		Enabled:      true,
-		RepoDir:      work,
-		Remote:       "origin",
-		Branch:       "main",
-		Mode:         ModeAuto,
-		PollInterval: time.Hour,
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		PollInterval:   time.Hour,
+		GateCommit:     greenGate,
 	}, nil)
 
 	res, err := r.CheckAndApply(ctx)
@@ -45,11 +51,14 @@ func TestRunRequestsRestartAfterAutoApply(t *testing.T) {
 
 	restarted := false
 	r := New(Config{
-		Enabled: true,
-		RepoDir: work,
-		Remote:  "origin",
-		Branch:  "main",
-		Mode:    ModeAuto,
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		GateCommit:     greenGate,
 		RequestRestart: func() {
 			restarted = true
 		},
@@ -61,17 +70,60 @@ func TestRunRequestsRestartAfterAutoApply(t *testing.T) {
 	}
 }
 
+func TestRunRequestsRestartWhenPostApplyStateSaveFails(t *testing.T) {
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	stateFile := filepath.Join(work, ".git", "autoupdate-state.json")
+	hook := filepath.Join(work, ".git", "hooks", "post-merge")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nchmod 000 .git/autoupdate-state.json\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(stateFile, 0o644)
+	})
+
+	restarted := false
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		StateFile:      stateFile,
+		GateCommit:     greenGate,
+		RequestRestart: func() {
+			restarted = true
+		},
+	}, nil)
+
+	r.check(t.Context())
+	if !restarted {
+		t.Fatal("restart was not requested after post-apply state save failure")
+	}
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); err != nil {
+		t.Fatalf("feature.txt missing after auto mode: %v", err)
+	}
+}
+
 func TestRunTriggerCheckAppliesImmediately(t *testing.T) {
 	upstream, work := seedRepos(t)
 
 	restarted := make(chan struct{}, 1)
 	r := New(Config{
-		Enabled:      true,
-		RepoDir:      work,
-		Remote:       "origin",
-		Branch:       "main",
-		Mode:         ModeAuto,
-		PollInterval: time.Hour,
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		PollInterval:   time.Hour,
+		GateCommit:     greenGate,
 		RequestRestart: func() {
 			select {
 			case restarted <- struct{}{}:
@@ -123,6 +175,37 @@ func TestWriteRestartMarkerCreatesMarker(t *testing.T) {
 	}
 }
 
+func TestSaveStateAtomicReplace(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "autoupdate-state.json")
+	initial := persistedState{CandidateSHA: "old", CandidateState: "pending"}
+	if err := saveState(path, initial); err != nil {
+		t.Fatalf("saveState(initial): %v", err)
+	}
+
+	next := persistedState{CandidateSHA: "new", CandidateState: "approved"}
+	if err := saveState(path, next); err != nil {
+		t.Fatalf("saveState(next): %v", err)
+	}
+
+	got, err := loadState(path)
+	if err != nil {
+		t.Fatalf("loadState(): %v", err)
+	}
+	if got.CandidateSHA != next.CandidateSHA || got.CandidateState != next.CandidateState {
+		t.Fatalf("state = %+v, want %+v", got, next)
+	}
+
+	tmpFiles, err := filepath.Glob(path + ".tmp-*")
+	if err != nil {
+		t.Fatalf("Glob(): %v", err)
+	}
+	if len(tmpFiles) != 0 {
+		t.Fatalf("temp files left behind: %v", tmpFiles)
+	}
+}
+
 func TestCheckAndApplyBlocksDirtyWorktree(t *testing.T) {
 	_, work := seedRepos(t)
 	writeFile(t, work, "dirty.txt", "dirty\n")
@@ -147,19 +230,22 @@ func TestCheckAndApplyNotifyDoesNotMerge(t *testing.T) {
 	gitTest(t, upstream, "commit", "-m", "add feature")
 
 	r := New(Config{
-		Enabled: true,
-		RepoDir: work,
-		Remote:  "origin",
-		Branch:  "main",
-		Mode:    ModeNotify,
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeNotify,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		GateCommit:     greenGate,
 	}, nil)
 
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != "available" {
-		t.Fatalf("status = %q, want available", res.Status)
+	if res.Status != "approved" {
+		t.Fatalf("status = %q, want approved", res.Status)
 	}
 	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
 		t.Fatalf("feature.txt exists after notify mode: %v", err)
@@ -173,21 +259,396 @@ func TestCheckAndApplyDefaultModeDoesNotMerge(t *testing.T) {
 	gitTest(t, upstream, "commit", "-m", "add feature")
 
 	r := New(Config{
-		Enabled: true,
-		RepoDir: work,
-		Remote:  "origin",
-		Branch:  "main",
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		GateCommit:     greenGate,
 	}, nil)
 
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != "available" {
-		t.Fatalf("status = %q, want available (reason=%q)", res.Status, res.Reason)
+	if res.Status != "approved" {
+		t.Fatalf("status = %q, want approved (reason=%q)", res.Status, res.Reason)
 	}
 	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
 		t.Fatalf("feature.txt exists after default mode: %v", err)
+	}
+}
+
+func TestCheckAndApplyRejectsAutoModeWithoutRequiredChecks(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	r := New(Config{
+		Enabled:    true,
+		RepoDir:    work,
+		Remote:     "origin",
+		Branch:     "main",
+		Mode:       ModeAuto,
+		Repository: "o/r",
+	}, nil)
+
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "rejected" || res.Reason != "required checks are empty" {
+		t.Fatalf("result = %+v, want rejected/required checks are empty", res)
+	}
+}
+
+func TestCheckAndApplyWaitsForPendingChecks(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeNotify,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		GateCommit:     pendingGate,
+	}, nil)
+
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "waiting" || res.Reason != "pending required checks: test" {
+		t.Fatalf("result = %+v, want waiting/pending required checks: test", res)
+	}
+}
+
+func TestEnsureGithubTokenAllowsAmbientAuthWhenAppDisabled(t *testing.T) {
+	github.DisableAppAuth()
+	t.Cleanup(github.DisableAppAuth)
+
+	r := New(Config{Mode: ModeAuto}, nil)
+	state := persistedState{}
+
+	if got := r.ensureGithubToken(t.Context(), Config{}, &state, "o/r", "abc", "def", []string{"README.md"}); got != nil {
+		t.Fatalf("ensureGithubToken() = %+v, want nil", got)
+	}
+	if state.CandidateState != "" {
+		t.Fatalf("CandidateState = %q, want empty", state.CandidateState)
+	}
+}
+
+func TestCheckAndApplyRejectsFailedChecks(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeNotify,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		GateCommit:     failedGate,
+	}, nil)
+
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "rejected" || res.Reason != "failed required checks: test" {
+		t.Fatalf("result = %+v, want rejected/failed required checks: test", res)
+	}
+}
+
+func TestCheckAndApplyOverrideBypassesGateOnce(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	override := filepath.Join(t.TempDir(), "autoupdate-override")
+	if err := os.WriteFile(override, []byte("override\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		OverrideFile:   override,
+		GateCommit:     failedGate,
+	}, nil)
+
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "applied" {
+		t.Fatalf("status = %q, want applied (reason=%q)", res.Status, res.Reason)
+	}
+	if _, err := os.Stat(override); !os.IsNotExist(err) {
+		t.Fatalf("override file still exists: %v", err)
+	}
+}
+
+func TestCheckAndApplyNotifyOverrideIsConsumed(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	override := filepath.Join(t.TempDir(), "autoupdate-override")
+	if err := os.WriteFile(override, []byte("override\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeNotify,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		OverrideFile:   override,
+		GateCommit:     failedGate,
+	}, nil)
+
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "approved" || res.Reason != "manual override" {
+		t.Fatalf("result = %+v, want approved/manual override", res)
+	}
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
+		t.Fatalf("feature.txt exists after notify mode: %v", err)
+	}
+	if _, err := os.Stat(override); !os.IsNotExist(err) {
+		t.Fatalf("override file still exists: %v", err)
+	}
+}
+
+func TestCheckAndApplyDoesNotMergeWhenOverrideCannotBeConsumed(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	overrideDir := t.TempDir()
+	override := filepath.Join(overrideDir, "autoupdate-override")
+	if err := os.WriteFile(override, []byte("override\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(overrideDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(overrideDir, 0o755)
+	})
+
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		OverrideFile:   override,
+		GateCommit:     failedGate,
+	}, nil)
+
+	if _, err := r.CheckAndApply(t.Context()); err == nil {
+		t.Fatal("CheckAndApply() err = nil, want override clear failure")
+	}
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
+		t.Fatalf("feature.txt exists after failed override consumption: %v", err)
+	}
+	if _, err := os.Stat(override); err != nil {
+		t.Fatalf("override file missing after failed consumption: %v", err)
+	}
+}
+
+func TestCheckAndApplyPersistsApprovedStateBeforeAutoApply(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	stateFile := filepath.Join(t.TempDir(), "autoupdate-state.json")
+	remoteMoved := false
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		StateFile:      stateFile,
+		GateCommit: func(ctx context.Context, repo, sha string, required []string) (github.CommitGate, error) {
+			remoteMoved = true
+			if err := os.Rename(upstream, upstream+"-moved"); err != nil {
+				t.Fatalf("rename upstream: %v", err)
+			}
+			return greenGate(ctx, repo, sha, required)
+		},
+	}, nil)
+
+	if _, err := r.CheckAndApply(t.Context()); err == nil {
+		t.Fatal("CheckAndApply() err = nil, want re-resolve failure")
+	}
+	if !remoteMoved {
+		t.Fatal("gate hook did not run")
+	}
+	state, err := loadState(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CandidateState != "approved" {
+		t.Fatalf("CandidateState = %q, want approved", state.CandidateState)
+	}
+	if state.PendingSHA == "" {
+		t.Fatal("PendingSHA = empty, want candidate sha")
+	}
+}
+
+func TestCheckAndApplyWaitsWhenCandidateIsSuperseded(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "one\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	var transitions []string
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeAuto,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		GateCommit: func(ctx context.Context, repo, sha string, required []string) (github.CommitGate, error) {
+			writeFile(t, upstream, "feature-2.txt", "two\n")
+			gitTest(t, upstream, "add", "feature-2.txt")
+			gitTest(t, upstream, "commit", "-m", "add second feature")
+			return greenGate(ctx, repo, sha, required)
+		},
+		AuditTransition: func(data map[string]any) {
+			transitions = append(transitions, data["transition"].(string))
+		},
+	}, nil)
+
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "waiting" || res.Reason != "candidate changed before apply" {
+		t.Fatalf("result = %+v, want waiting/candidate changed before apply", res)
+	}
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
+		t.Fatalf("feature.txt exists after superseded candidate: %v", err)
+	}
+	if !slices.Equal(transitions, []string{"seen", "approved", "superseded"}) {
+		t.Fatalf("transitions = %v, want [seen approved superseded]", transitions)
+	}
+}
+
+func TestCheckAndApplyAuditsTransitions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		mode     string
+		gate     func(context.Context, string, string, []string) (github.CommitGate, error)
+		want     []string
+		wantLast string
+	}{
+		{
+			name:     "approved and applied",
+			mode:     ModeAuto,
+			gate:     greenGate,
+			want:     []string{"seen", "approved", "applied"},
+			wantLast: "applied",
+		},
+		{
+			name:     "pending",
+			mode:     ModeNotify,
+			gate:     pendingGate,
+			want:     []string{"seen", "waiting"},
+			wantLast: "waiting",
+		},
+		{
+			name:     "rejected",
+			mode:     ModeNotify,
+			gate:     failedGate,
+			want:     []string{"seen", "rejected"},
+			wantLast: "rejected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			upstream, work := seedRepos(t)
+			writeFile(t, upstream, "feature.txt", "new\n")
+			gitTest(t, upstream, "add", "feature.txt")
+			gitTest(t, upstream, "commit", "-m", "add feature")
+
+			var transitions []string
+			r := New(Config{
+				Enabled:        true,
+				RepoDir:        work,
+				Remote:         "origin",
+				Branch:         "main",
+				Mode:           tt.mode,
+				Repository:     "o/r",
+				RequiredChecks: []string{"test"},
+				GateCommit:     tt.gate,
+				AuditTransition: func(data map[string]any) {
+					transitions = append(transitions, data["transition"].(string))
+				},
+			}, nil)
+
+			res, err := r.CheckAndApply(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(transitions, tt.want) {
+				t.Fatalf("transitions = %v, want %v (result=%+v)", transitions, tt.want, res)
+			}
+		})
 	}
 }
 
@@ -228,4 +689,37 @@ func seedRepos(t *testing.T) (upstream, work string) {
 	gitTest(t, upstream, "commit", "-m", "initial")
 	gitTest(t, root, "clone", upstream, work)
 	return upstream, work
+}
+
+func greenGate(_ context.Context, repo, sha string, required []string) (github.CommitGate, error) {
+	return gateWithState(repo, sha, required, "SUCCESS")
+}
+
+func pendingGate(_ context.Context, repo, sha string, required []string) (github.CommitGate, error) {
+	return gateWithState(repo, sha, required, "PENDING")
+}
+
+func failedGate(_ context.Context, repo, sha string, required []string) (github.CommitGate, error) {
+	return gateWithState(repo, sha, required, "FAILURE")
+}
+
+func gateWithState(repo, sha string, required []string, state string) (github.CommitGate, error) {
+	checks := make(map[string]string, len(required))
+	gate := github.CommitGate{
+		Repo:   repo,
+		SHA:    sha,
+		Checks: checks,
+	}
+	for _, check := range required {
+		checks[check] = state
+		switch state {
+		case "SUCCESS":
+			gate.Succeeded = append(gate.Succeeded, check)
+		case "PENDING":
+			gate.Pending = append(gate.Pending, check)
+		case "FAILURE":
+			gate.Failed = append(gate.Failed, check)
+		}
+	}
+	return gate, nil
 }

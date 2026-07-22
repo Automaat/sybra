@@ -65,7 +65,7 @@ How Sybra launches and routes agent work across providers and local backends.
 | `execution.agent.assistant_event_multiplier` | `float64` | `0` |  |  | `agent.assistant_event_multiplier`, `agent.turn_multiplier` | `false` | `hot` |  | TurnMultiplier scales the assistant-event ceiling on each auto-continuation. Default 2 when unset. |
 | `execution.agent.require_permissions` | `*bool` | _(nil)_ |  |  | `agent.require_permissions` | `false` | `hot` |  | RequirePermissions sets the default permission requirement for agents. nil means not configured (falls back to true — safe default). Set to false in config to opt all tasks into skip-permissions mode. |
 | `execution.agent.review_until_clean` | `*bool` | _(nil)_ |  |  | `agent.review_until_clean` | `false` | `hot` |  | ReviewUntilClean keeps simple-task-review cycling review→fix→review until the reviewer returns a CLEAN verdict, so the fix agent's diff is never the last word. nil means not configured (falls back to true). false falls back to a single review pass per task: cheaper and more predictable when no per-task budget is configured. |
-| `execution.agent.max_review_rounds` | `int` | `3` |  |  | `agent.max_review_rounds` | `false` | `hot` |  | MaxReviewRounds bounds how many automated review rounds a single simple-task-review execution may spend before Sybra parks the task human-required. 0 means use DefaultMaxReviewRounds (3). Ignored when ReviewUntilClean is false or AllowUnboundedReviewRounds is true. |
+| `execution.agent.max_review_rounds` | `int` | `3` |  |  | `agent.max_review_rounds` | `false` | `hot` |  | MaxReviewRounds bounds how many automated review rounds a single simple-task-review execution may spend before Sybra parks the task blocked. 0 means use DefaultMaxReviewRounds (3). Ignored when ReviewUntilClean is false or AllowUnboundedReviewRounds is true. |
 | `execution.agent.allow_unbounded_review_rounds` | `*bool` | _(nil)_ |  |  | `agent.allow_unbounded_review_rounds` | `false` | `hot` |  | AllowUnboundedReviewRounds restores the legacy "loop until CLEAN with no review-round cap" posture. nil means not configured (defaults to false). Use only with a deliberate MaxTaskCostUSD backstop. |
 | `execution.agent.bash_timeout` | `int` | `0` | `seconds` |  | `agent.bash_timeout_seconds`, `agent.bash_timeout` | `false` | `hot` |  | BashTimeoutSeconds sets the per-bash-tool-call timeout passed to claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env vars (claude has no equivalent CLI flag). 0 means use DefaultBashTimeoutSeconds (300). |
 | `execution.agent.retry_watchdog` | `int` | `0` |  |  | `agent.retry_watchdog` | `false` | `hot` |  | RetryWatchdog sets CLAUDE_CODE_RETRY_WATCHDOG on the claude subprocess for headless (unattended) runs. Replaces CLAUDE_CODE_MAX_RETRIES (now capped at 15) for server/unattended sessions. 0 means use DefaultRetryWatchdog (30). Negative (e.g. -1) disables the watchdog entirely (env var omitted), matching the zero-omit semantics at the RunConfig level. |
@@ -445,7 +445,7 @@ focused headless agent for anomalies that need LLM judgment.
 |---|---|---|---|---|---|---|---|---|---|
 | `supervision.monitor.enabled` | `bool` | `true` |  |  | `monitor.enabled` | `false` | `restart` |  |  |
 | `supervision.monitor.interval` | `int` | `300` | `seconds` |  | `monitor.interval_seconds`, `monitor.interval` | `false` | `restart` |  |  |
-| `supervision.monitor.model` | `string` | `"claude-haiku-4-5-20251001"` |  |  | `monitor.model` | `false` | `restart` |  |  |
+| `supervision.monitor.model` | `string` | `"haiku"` |  |  | `monitor.model` | `false` | `restart` |  |  |
 | `supervision.monitor.issue_cooldown` | `int` | `30` | `minutes` |  | `monitor.issue_cooldown_minutes`, `monitor.issue_cooldown` | `false` | `restart` |  |  |
 | `supervision.monitor.dispatch_limit` | `int` | `25` |  |  | `monitor.dispatch_limit` | `false` | `restart` |  |  |
 | `supervision.monitor.stuck_human` | `float64` | `8` | `hours` |  | `monitor.stuck_human_hours`, `monitor.stuck_human` | `false` | `restart` |  |  |
@@ -473,7 +473,7 @@ that the dwell budget (hours) would only catch much later.
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `supervision.watchdog.enabled` | `bool` | `true` |  |  | `watchdog.enabled` | `false` | `restart` |  |  |
-| `supervision.watchdog.model` | `string` | `"claude-haiku-4-5-20251001"` |  |  | `watchdog.model` | `false` | `restart` |  |  |
+| `supervision.watchdog.model` | `string` | `"haiku"` |  |  | `watchdog.model` | `false` | `restart` |  |  |
 | `supervision.watchdog.loop_threshold` | `int` | `6` |  |  | `watchdog.loop_threshold` | `false` | `restart` |  |  |
 | `supervision.watchdog.max_runs_per_window` | `int` | `30` |  |  | `watchdog.max_runs_per_window` | `false` | `restart` |  |  |
 | `supervision.watchdog.run_window` | `int` | `30` | `minutes` |  | `watchdog.run_window_minutes`, `watchdog.run_window` | `false` | `restart` |  |  |
@@ -862,6 +862,7 @@ fast-forward update is applied and Sybra requests a supervisor restart.
 | `auto_update.remote` | `string` | `"origin"` |  |  |  | `false` | `restart` |  |  |
 | `auto_update.branch` | `string` | `"main"` |  |  |  | `false` | `restart` |  |  |
 | `auto_update.mode` | `string` | `"notify"` |  |  |  | `false` | `restart` |  |  |
+| `auto_update.required_checks` | `[]string` |  |  |  |  | `false` | `restart` |  | RequiredChecks is the exact set of status/check names that must report SUCCESS on the candidate commit before auto mode may apply it. Empty is allowed in notify mode; auto mode fails closed when this list is empty. |
 | `auto_update.poll` | `int` | `300` | `seconds` |  | `auto_update.poll_seconds` | `false` | `restart` |  |  |
 | `auto_update.restart_delay` | `int` | `2` | `seconds` |  | `auto_update.restart_delay_seconds` | `false` | `restart` |  | Deprecated: ignored. Kept so existing config files continue to load. |
 

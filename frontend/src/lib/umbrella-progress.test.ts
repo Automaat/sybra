@@ -55,7 +55,7 @@ describe('umbrella progress', () => {
       task({ taskType: TaskType.TaskTypeUmbrella, issue: 'https://github.com/Automaat/sybra/issues/1213' }),
       byUmbrella,
     )).toEqual({ done: 1, total: 2 })
-    expect(progressForUmbrellaTracker(task({ taskType: TaskType.TaskTypeNormal }), byUmbrella)).toBeNull()
+    expect(progressForUmbrellaTracker(task({ taskType: TaskType.$zero }), byUmbrella)).toBeNull()
   })
 
   describe('isChildComplete', () => {
@@ -165,7 +165,7 @@ describe('umbrella progress', () => {
       const localChild = task({
         id: 'manual-child',
         title: 'Manual child by dependsOn only',
-        taskType: TaskType.TaskTypeNormal,
+        taskType: TaskType.$zero,
         issue: 'https://github.com/Automaat/sybra/issues/101',
         umbrellaIssue: '',
         outcome: 'merged',
@@ -201,7 +201,7 @@ describe('umbrella progress', () => {
     it('renders a normal task with dependsOn as a Children panel of its own prerequisites', () => {
       const childTask = task({
         id: 'child',
-        taskType: TaskType.TaskTypeNormal,
+        taskType: TaskType.$zero,
         issue: 'Automaat/sybra#10',
         dependsOn: ['Automaat/sybra#1', 'Automaat/sybra#2'],
       })

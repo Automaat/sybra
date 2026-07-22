@@ -368,6 +368,40 @@ func TestDispatchFromHumanRequired_ReadyPRAllowsNoMatchForReviewOnlyRoles(t *tes
 	}
 }
 
+func TestDispatchFromHumanRequired_DoneClosesWithoutWorkflow(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.initStatusHook()
+	tk := newHumanRequiredTask(t, a, 2417)
+	stale := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       workflow.ExecFailed,
+		Variables:   map[string]string{},
+	}
+	if _, err := a.tasks.Update(tk.ID, task.Update{Workflow: &stale}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.DispatchFromHumanRequired(tk.ID, "done", "already merged")
+	if err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.StatusReason != "already merged" {
+		t.Fatalf("status_reason = %q, want operator reason preserved", got.StatusReason)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("workflow = %+v, want nil for terminal close-out", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 for terminal close-out", launcher.startCalls)
+	}
+}
+
 // TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker reproduces the
 // production bug (task 33aa3f62 / issue #2004): app_umbrella_gate.go's
 // rollupTrackers rolls an umbrella tracker back to in-progress (e.g. after a
@@ -718,7 +752,7 @@ func TestDispatchFromHumanRequired_RejectsUnknownTarget(t *testing.T) {
 	svc, a := setupDispatchTestService(t, launcher)
 	tk := newHumanRequiredTask(t, a, 0)
 
-	if _, err := svc.DispatchFromHumanRequired(tk.ID, "done", "reason"); err == nil {
+	if _, err := svc.DispatchFromHumanRequired(tk.ID, "cancelled", "reason"); err == nil {
 		t.Fatal("expected error dispatching to an unsupported target")
 	}
 }

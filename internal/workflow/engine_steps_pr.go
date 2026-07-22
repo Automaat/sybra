@@ -72,6 +72,7 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 		if err := e.linkTaskPR(taskID, t, existing); err != nil {
 			return StepOutput{}, fmt.Errorf("create_pr: link existing pr: %w", err)
 		}
+		e.requestCopilotReview(taskID, t.ProjectID, existing)
 		return stepDone(step, fmt.Sprintf("pr #%d already exists for branch", existing))
 	}
 	if out, done := e.handleExistingAnyStatePRForBranch(taskID, step, wtPath, t, headArg); done {
@@ -107,11 +108,25 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 	if err := e.linkTaskPR(taskID, t, number); err != nil {
 		return StepOutput{}, fmt.Errorf("create_pr: link pr: %w", err)
 	}
+	e.requestCopilotReview(taskID, t.ProjectID, number)
 	if localSHA, lErr := project.CurrentCommit(ctx, wtPath); lErr == nil && headSHA != "" && localSHA != headSHA {
 		e.logger.Warn("workflow.create-pr.head-mismatch", "task_id", taskID, "pr", number, "local", localSHA, "remote", headSHA)
 	}
 	e.logger.Info("workflow.create-pr.created", "task_id", taskID, "pr", number)
 	return stepDone(step, fmt.Sprintf("created pr #%d", number))
+}
+
+func (e *Engine) requestCopilotReview(taskID, repo string, prNumber int) {
+	if repo == "" || prNumber <= 0 || e.prReviewers == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	if err := e.prReviewers.RequestCopilotReview(ctx, repo, prNumber); err != nil {
+		e.logger.Warn("workflow.create-pr.copilot-review.failed", "task_id", taskID, "repo", repo, "pr", prNumber, "err", err)
+		return
+	}
+	e.logger.Info("workflow.create-pr.copilot-review.requested", "task_id", taskID, "repo", repo, "pr", prNumber)
 }
 
 func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createErr error) (int, bool) {
@@ -132,6 +147,7 @@ func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createE
 		return 0, false
 	}
 	e.logger.Info("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing)
+	e.requestCopilotReview(taskID, repo, existing)
 	return existing, true
 }
 
@@ -400,17 +416,42 @@ func (e *Engine) classifyPRGitError(taskID string, step *Step, wfExec *Execution
 		attempts := parseWorkflowInt(wfExec.Variables[prCreateAuthAttemptsVar])
 		if attempts < maxPRCreateAuthRetries {
 			wfExec.SetVar(prCreateAuthAttemptsVar, strconv.Itoa(attempts+1))
-			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateAuthRetryReason, "workflow.pr-tail.auth-retry", "attempt", attempts+1, "max", maxPRCreateAuthRetries)
+			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prRetryReason(prCreateAuthRetryReason, msg), "workflow.pr-tail.auth-retry", "attempt", attempts+1, "max", maxPRCreateAuthRetries, "phase", phase)
 		}
 		return e.humanRequiredPR(taskID, step, fmt.Sprintf("%s failing due to invalid or expired GitHub credentials after %d retries: %s", phase, attempts, msg))
 	default:
 		attempts := parseWorkflowInt(wfExec.Variables[prPushAttemptsVar])
 		if attempts < maxPRPushRetries {
 			wfExec.SetVar(prPushAttemptsVar, strconv.Itoa(attempts+1))
-			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prPushRetryStatusReason, "workflow.pr-tail.push-retry", "phase", phase, "attempt", attempts+1, "max", maxPRPushRetries)
+			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prRetryReason(prPushRetryStatusReason, msg), "workflow.pr-tail.push-retry", "phase", phase, "attempt", attempts+1, "max", maxPRPushRetries)
 		}
 		return e.humanRequiredPR(taskID, step, fmt.Sprintf("%s failed after %d retries: %s", phase, attempts, msg))
 	}
+}
+
+func prRetryReason(base, detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return base
+	}
+	return base + ": " + truncateMiddle(detail, 240)
+}
+
+func truncateMiddle(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	marker := "\n... (truncated) ...\n"
+	if limit <= len(marker)+2 {
+		return s[:limit]
+	}
+	keep := limit - len(marker)
+	head := keep / 2
+	tail := keep - head
+	return s[:head] + marker + s[len(s)-tail:]
 }
 
 // findExistingPRForBranch checks for a PR already open on branch, mirroring

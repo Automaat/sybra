@@ -38,6 +38,12 @@ var models = map[Tier]map[string]string{
 	},
 }
 
+var tierAliases = map[Tier]string{
+	SuperCheap: "haiku",
+	Cheap:      "sonnet",
+	Expensive:  "opus",
+}
+
 // Models returns a defensive copy of the provider model map for tier.
 func Models(tier Tier) map[string]string {
 	row, ok := models[tier]
@@ -53,6 +59,49 @@ func Models(tier Tier) map[string]string {
 // the provider has no mapping.
 func Model(tier Tier, provider string) string {
 	return models[tier][provider]
+}
+
+// Alias returns the provider-neutral alias for tier.
+func Alias(tier Tier) string {
+	return tierAliases[tier]
+}
+
+// InferTier maps a provider-neutral alias or one of Sybra's known concrete
+// provider model IDs back to its neutral capability tier.
+func InferTier(model string) (Tier, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	switch trimmed {
+	case "", "sonnet":
+		return Cheap, true
+	case "haiku":
+		return SuperCheap, true
+	case "opus":
+		return Expensive, true
+	}
+	for tier, row := range models {
+		for _, candidate := range row {
+			if strings.EqualFold(trimmed, candidate) {
+				return tier, true
+			}
+		}
+	}
+	switch {
+	case strings.Contains(trimmed, "haiku"),
+		strings.Contains(trimmed, "gpt-5.4-mini"),
+		strings.Contains(trimmed, "qwen3-32b"):
+		return SuperCheap, true
+	case strings.Contains(trimmed, "opus"),
+		strings.Contains(trimmed, "gpt-5.5"),
+		strings.Contains(trimmed, "gemini-3.1-pro"),
+		strings.Contains(trimmed, "glm-5.2"):
+		return Expensive, true
+	case strings.Contains(trimmed, "sonnet"),
+		strings.Contains(trimmed, "gpt-5.4"),
+		strings.Contains(trimmed, "deepseek-v4-flash"):
+		return Cheap, true
+	default:
+		return "", false
+	}
 }
 
 // NormalizeAlias maps Sybra's provider-neutral model aliases to a concrete

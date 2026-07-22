@@ -1,6 +1,7 @@
 package task
 
 import (
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/workflow"
@@ -94,6 +95,7 @@ type agentRunRecord struct {
 	TestOutcome             string    `yaml:"test_outcome,omitempty"`
 	TestFailureFingerprint  string    `yaml:"test_failure_fingerprint,omitempty"`
 	HeadSHA                 string    `yaml:"head_sha,omitempty"`
+	FinalCommitSource       string    `yaml:"final_commit_source,omitempty"`
 	SubagentCallCount       int       `yaml:"subagent_call_count,omitempty"`
 }
 
@@ -105,7 +107,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		Slug:                   fm.Slug,
 		Title:                  fm.Title,
 		Status:                 fm.Status,
-		TaskType:               fm.TaskType,
+		TaskType:               normalizeTaskType(fm.TaskType),
 		AgentMode:              fm.AgentMode,
 		AllowedTools:           fm.AllowedTools,
 		Tags:                   fm.Tags,
@@ -150,8 +152,8 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		MirrorUpdatedAt:        fm.MirrorUpdatedAt,
 		Body:                   body,
 	}
-	if t.TaskType == "" {
-		t.TaskType = TaskTypeNormal
+	if fm.TaskType == TaskType("chat") && !containsString(t.Tags, ChatTag) {
+		t.Tags = append(t.Tags, ChatTag)
 	}
 	t.AgentRuns = agentRunsFromRecords(fm.AgentRuns)
 	if t.AgentRuns == nil {
@@ -162,6 +164,17 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 	}
 	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
 	return t
+}
+
+func normalizeTaskType(tt TaskType) TaskType {
+	if tt == TaskTypeUmbrella {
+		return TaskTypeUmbrella
+	}
+	return ""
+}
+
+func containsString(values []string, want string) bool {
+	return slices.Contains(values, want)
 }
 
 func frontmatterFromTask(t Task) taskFrontmatter {

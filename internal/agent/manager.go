@@ -164,7 +164,7 @@ type Manager struct {
 	// it intentionally does NOT inspect running agents, so a step transition
 	// dispatching its next agent inside the prior agent's onComplete (whose
 	// `done` channel is not yet closed) is never blocked.
-	dispatchClaims map[string]struct{}
+	dispatchClaims map[string]time.Time
 
 	// queueNudge is a buffer-1 coalescing signal mirroring App.dispatchNudge:
 	// at most one pending nudge is retained, so a burst of completions that
@@ -259,7 +259,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 	}
 	m := &Manager{
 		agents:                 make(map[string]*Agent),
-		dispatchClaims:         make(map[string]struct{}),
+		dispatchClaims:         make(map[string]time.Time),
 		queueNudge:             make(chan struct{}, 1),
 		liveByProvider:         make(map[string]int),
 		ctx:                    ctx,
@@ -314,16 +314,37 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 // once dispatch finishes (success or failure) on a true return. This closes the
 // window between dispatch start and agent registration where a concurrent
 // dispatcher would otherwise see no running agent and start a duplicate.
+const staleDispatchClaimAge = 15 * time.Minute
+
 func (m *Manager) ClaimTaskDispatch(taskID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, held := m.dispatchClaims[taskID]; held {
+	if m.dispatchClaimHeldLocked(taskID, time.Now()) {
 		return false
 	}
 	if m.dispatchClaims == nil {
-		m.dispatchClaims = make(map[string]struct{})
+		m.dispatchClaims = make(map[string]time.Time)
 	}
-	m.dispatchClaims[taskID] = struct{}{}
+	m.dispatchClaims[taskID] = time.Now()
+	return true
+}
+
+// ReleaseStaleTaskDispatch releases an in-flight dispatch claim only when it
+// has exceeded age. It returns true when a claim was removed.
+func (m *Manager) ReleaseStaleTaskDispatch(taskID string, age time.Duration) bool {
+	if age <= 0 {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	claimedAt, held := m.dispatchClaims[taskID]
+	if !held || time.Since(claimedAt) < age {
+		return false
+	}
+	if m.logger != nil {
+		m.logger.Warn("agent.dispatch-claim.stale-release", "task_id", taskID, "age", time.Since(claimedAt))
+	}
+	delete(m.dispatchClaims, taskID)
 	return true
 }
 
@@ -344,10 +365,52 @@ func (m *Manager) ReleaseTaskDispatch(taskID string) {
 // instead of each maintaining its own separate view of dispatch-in-flight
 // state.
 func (m *Manager) IsDispatching(taskID string) bool {
+	return m.dispatchClaimHeld(taskID, time.Now())
+}
+
+// dispatchClaimHeld reports whether taskID has a non-stale dispatch claim.
+// The common fresh/no-claim path only takes a read lock; stale claims upgrade
+// to a write lock and re-check before deleting.
+func (m *Manager) dispatchClaimHeld(taskID string, now time.Time) bool {
+	m.mu.RLock()
+	held, stale := m.dispatchClaimHeldReadLocked(taskID, now)
+	m.mu.RUnlock()
+	if !stale {
+		return held
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, held := m.dispatchClaims[taskID]
-	return held
+	return m.dispatchClaimHeldLocked(taskID, now)
+}
+
+func (m *Manager) dispatchClaimHeldReadLocked(taskID string, now time.Time) (held, stale bool) {
+	claimedAt, held := m.dispatchClaims[taskID]
+	if !held {
+		return false, false
+	}
+	if now.Sub(claimedAt) >= staleDispatchClaimAge {
+		return false, true
+	}
+	return true, false
+}
+
+// dispatchClaimHeldLocked reports whether taskID has a non-stale dispatch
+// claim. Stale claims are deleted as a side effect so every caller that treats
+// dispatchClaims as liveness uses the same self-healing semantics.
+// Callers must hold m.mu for writing.
+func (m *Manager) dispatchClaimHeldLocked(taskID string, now time.Time) bool {
+	held, stale := m.dispatchClaimHeldReadLocked(taskID, now)
+	if !stale {
+		return held
+	}
+	claimedAt := m.dispatchClaims[taskID]
+	age := now.Sub(claimedAt)
+	if m.logger != nil {
+		m.logger.Warn("agent.dispatch-claim.stale-release", "task_id", taskID, "age", age)
+	}
+	delete(m.dispatchClaims, taskID)
+	return false
 }
 
 // DispatchClaim is a held per-task dispatch claim returned by
@@ -760,7 +823,7 @@ func (m *Manager) Guardrails() Guardrails {
 // it at a stale $0 for the whole run, and a verifier stuck in a loop should
 // escalate rather than silently get 2x/4x/8x the turn budget.
 func (m *Manager) canAutoContinueTurns(a *Agent) bool {
-	if RoleFromName(a.Name).IsVerifier() {
+	if a.EffectiveRole().IsVerifier() {
 		return false
 	}
 	m.mu.RLock()
@@ -777,7 +840,7 @@ func (m *Manager) canAutoContinueTurns(a *Agent) bool {
 }
 
 func (m *Manager) canCheckpointOnTurnCeiling(a *Agent) bool {
-	if !RoleFromName(a.Name).AuthorsCode() {
+	if !a.EffectiveRole().AuthorsCode() {
 		return false
 	}
 	m.mu.RLock()

@@ -36,6 +36,7 @@ import (
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/logging"
@@ -64,9 +65,14 @@ import (
 )
 
 type App struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx             context.Context
+	cancel          context.CancelFunc
+	schedulerCtx    context.Context
+	schedulerCancel context.CancelFunc
+	watcherCtx      context.Context
+	watcherCancel   context.CancelFunc
+	lifecycle       atomic.Uint32
+	wg              sync.WaitGroup
 	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
 	fetchPRHeadSHA    func(ctx context.Context, repo string, number int) (string, error)
 	tasks             *task.Manager
@@ -292,13 +298,16 @@ func (a *App) acquireHomeLock() error {
 	return nil
 }
 
-func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
+func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func(string, any)) {
 	a.applyInstanceRole()
-	a.initLoopScheduler(ctx, emit)
-	a.initFileWatcher(ctx, emit)
+	a.initLoopScheduler(schedulerCtx, emit)
+	a.initFileWatcher(watcherCtx, emit)
 
 	issuesFetcher := a.initAutomations(emit)
 	a.wireServices(emit)
+	if a.humanReview != nil {
+		a.wg.Go(a.humanReview.recoverRenderedUnblockedTasks)
+	}
 
 	// syncSkillsBundle's deep diagnostic logging uses context.Background()
 	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
@@ -309,7 +318,7 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 	// into an uninitialized git dir and fail silently. StartManagers'
 	// startTaskSnapshotLoop calls EnsureRepo again (idempotent).
 	if a.cfg.TaskSnapshotEnabled() {
-		a.snapshotter.EnsureRepo(ctx)
+		a.snapshotter.EnsureRepo(schedulerCtx)
 	}
 	a.recovery = a.newRecovery()
 	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
@@ -318,16 +327,16 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 	// Routing reads the evaluation service's cached report on its own
 	// goroutine, so the service pointer must be published before routing
 	// primes or starts ticking.
-	lm.startEvaluationService(ctx, emit)
+	lm.startEvaluationService(schedulerCtx, emit)
 	// Routing must prime before Startup returns; otherwise the first workflow
 	// dispatch after a fresh enabled boot can beat version 1 publication.
-	lm.startRoutingService(ctx, emit)
-	lm.StartWatchers(ctx)
+	lm.startRoutingService(schedulerCtx, emit)
+	lm.StartWatchers(schedulerCtx)
 
 	a.wg.Go(func() {
-		a.recovery.RunStartupCleanup(ctx)
-		lm.StartManagers(ctx, emit)
-		lm.StartPollers(ctx, emit, issuesFetcher)
+		a.recovery.RunStartupCleanup(schedulerCtx)
+		lm.StartManagers(schedulerCtx, emit)
+		lm.StartPollers(schedulerCtx, emit, issuesFetcher)
 	})
 }
 
@@ -335,6 +344,7 @@ func (a *App) cleanupFailedStartup() {
 	if a.cancel != nil {
 		a.cancel()
 	}
+	a.stopFileWatcher()
 	if a.homeUnlock != nil {
 		if err := a.homeUnlock(); err != nil {
 			a.logger.Warn("app.home_unlock.failed", "err", err)
@@ -370,8 +380,7 @@ func (a *App) Startup(ctx context.Context) error {
 		a.cleanupFailedStartup()
 	}()
 
-	ctx, a.cancel = context.WithCancel(ctx)
-	a.ctx = ctx
+	appCtx, schedulerCtx, watcherCtx := a.initLifecycle(ctx)
 	a.logger.Info("app.starting")
 
 	a.initAudit()
@@ -397,7 +406,7 @@ func (a *App) Startup(ctx context.Context) error {
 		return fmt.Errorf("loop agents: %w", err)
 	}
 	if a.emitFactory != nil {
-		a.emit = a.emitFactory(ctx)
+		a.emit = a.emitFactory(appCtx)
 	} else {
 		a.emit = func(string, any) {}
 	}
@@ -414,10 +423,10 @@ func (a *App) Startup(ctx context.Context) error {
 	// initSandboxes has no agent-manager dependency and must run before
 	// initAgentManager so ManagerConfig.SandboxHome can be wired at construction.
 	a.initSandboxes()
-	if err := a.initAgentManager(ctx, emit); err != nil {
+	if err := a.initAgentManager(appCtx, emit); err != nil {
 		return err
 	}
-	a.initProviderHealth(ctx, emit)
+	a.initProviderHealth(schedulerCtx, emit)
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 
@@ -434,7 +443,7 @@ func (a *App) Startup(ctx context.Context) error {
 		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
 	})
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
-	a.agentOrch.SetContext(ctx)
+	a.agentOrch.SetContext(appCtx)
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 	a.reviewer.SetABTestingSource(a.abTestingConfig)
 
@@ -444,7 +453,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.initAgentConfig()
 
-	a.startLifecycle(ctx, emit)
+	a.startLifecycle(schedulerCtx, watcherCtx, emit)
 
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")
@@ -579,20 +588,22 @@ func (a *App) fleetWorkBlocklist() ([]string, error) {
 	return bl, nil
 }
 
-func (a *App) Shutdown(_ context.Context) {
-	a.logger.Info("app.stopping")
+func (a *App) Shutdown(ctx context.Context) {
+	a.BeginDrain()
 	if a.loopSched != nil {
 		a.loopSched.Stop()
 	}
-	if a.cancel != nil {
-		a.cancel()
+	waitCtx, cancel := shutdownWaitContext(ctx)
+	defer cancel()
+	if !waitGroupContext(waitCtx, &a.wg) {
+		a.logger.Warn("app.shutdown.wait_timeout", "grace", shutdownWaitBudget(waitCtx), "stacks", a.dumpGoroutineStacks())
 	}
-	if !waitGroupTimeout(&a.wg, appShutdownWaitGrace) {
-		a.logger.Warn("app.shutdown.wait_timeout", "grace", appShutdownWaitGrace, "stacks", a.dumpGoroutineStacks())
-	}
+	a.logger.Info("app.stopping")
+	a.beginShutdown()
 	if a.agents != nil {
 		a.agents.Shutdown()
 	}
+	a.stopFileWatcher()
 	if a.audit != nil {
 		_ = a.audit.Close()
 	}
@@ -602,12 +613,31 @@ func (a *App) Shutdown(_ context.Context) {
 		}
 		a.homeUnlock = nil
 	}
+	a.finishShutdown()
 	a.logger.Info("app.stopped")
 }
 
 const appShutdownWaitGrace = 15 * time.Second
+const fileWatcherShutdownGrace = 2 * time.Second
 
-func waitGroupTimeout(wg *sync.WaitGroup, grace time.Duration) bool {
+func shutdownWaitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, appShutdownWaitGrace)
+}
+
+func shutdownWaitBudget(ctx context.Context) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		return time.Until(deadline)
+	}
+	return appShutdownWaitGrace
+}
+
+func waitGroupContext(ctx context.Context, wg *sync.WaitGroup) bool {
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -616,8 +646,25 @@ func waitGroupTimeout(wg *sync.WaitGroup, grace time.Duration) bool {
 	select {
 	case <-done:
 		return true
-	case <-time.After(grace):
+	case <-ctx.Done():
 		return false
+	}
+}
+
+func (a *App) stopFileWatcher() {
+	cancel := a.watcherCancel
+	a.watcherCancel = nil
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if a.watcher == nil {
+		return
+	}
+	select {
+	case <-a.watcher.Done():
+	case <-time.After(fileWatcherShutdownGrace):
+		a.logger.Warn("watcher.shutdown.timeout", "grace", fileWatcherShutdownGrace)
 	}
 }
 
@@ -659,6 +706,7 @@ func (a *App) StartK8sPocAgent(prompt string) (*agent.Agent, error) {
 	ag, err := a.agents.Run(agent.RunConfig{
 		TaskID:   "k8s-poc-" + uuid.NewString()[:8],
 		Name:     string(agent.RoleImplementation),
+		Role:     agent.RoleImplementation,
 		Mode:     "headless",
 		Prompt:   prompt,
 		Dir:      home,
@@ -701,8 +749,8 @@ func (a *App) StopChat(agentID string) error {
 	if err != nil {
 		return fmt.Errorf("lookup chat task: %w", err)
 	}
-	if t.TaskType != task.TaskTypeChat {
-		return fmt.Errorf("agent %s is not a chat (task_type=%s)", agentID, t.TaskType)
+	if !task.IsChatTask(t) {
+		return fmt.Errorf("agent %s is not a chat", agentID)
 	}
 	return a.taskSvc.DeleteTask(t.ID)
 }
@@ -760,3 +808,8 @@ func (a *App) RegisterSpotlightHotkey() {
 
 // Context returns the app's running context.
 func (a *App) Context() context.Context { return a.ctx }
+
+// HTTPAdmission decides whether one HTTP API method may run.
+func (a *App) HTTPAdmission(service, method string, meta httpapi.MethodMeta) error {
+	return a.httpAdmission(service, method, meta)
+}

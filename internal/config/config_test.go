@@ -875,6 +875,9 @@ func TestLoadAutoUpdateDefaults(t *testing.T) {
 	if cfg.AutoUpdate.Mode != "notify" {
 		t.Fatalf("auto_update.mode = %q, want notify", cfg.AutoUpdate.Mode)
 	}
+	if len(cfg.AutoUpdate.RequiredChecks) != 0 {
+		t.Fatalf("auto_update.required_checks = %v, want empty", cfg.AutoUpdate.RequiredChecks)
+	}
 	if cfg.AutoUpdate.PollSeconds != 300 {
 		t.Fatalf("auto_update.poll_seconds = %d, want 300", cfg.AutoUpdate.PollSeconds)
 	}
@@ -1114,7 +1117,7 @@ func TestHumanReviewModelDefault(t *testing.T) {
 		yaml string
 		want string
 	}{
-		{name: "empty defaults to haiku", yaml: "human_review:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "empty defaults to haiku", yaml: "human_review:\n  enabled: true\n", want: "haiku"},
 		{name: "explicit override preserved", yaml: "human_review:\n  model: opus\n", want: "opus"},
 	}
 	for _, tc := range cases {
@@ -1141,7 +1144,7 @@ func TestMonitorModelDefault(t *testing.T) {
 		yaml string
 		want string
 	}{
-		{name: "empty defaults to haiku", yaml: "monitor:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "empty defaults to haiku", yaml: "monitor:\n  enabled: true\n", want: "haiku"},
 		{name: "explicit override preserved", yaml: "monitor:\n  model: sonnet\n", want: "sonnet"},
 	}
 	for _, tc := range cases {
@@ -1248,14 +1251,14 @@ func TestLoadWatchdogDefaults(t *testing.T) {
 			yaml:          "agent:\n  max_concurrent: 10\n",
 			wantEnabled:   true,
 			wantThreshold: 6,
-			wantModel:     "claude-haiku-4-5-20251001",
+			wantModel:     "haiku",
 		},
 		{
 			name:          "explicit loop_threshold 0 disables loop detection",
 			yaml:          "watchdog:\n  enabled: true\n  loop_threshold: 0\n",
 			wantEnabled:   true,
 			wantThreshold: 0,
-			wantModel:     "claude-haiku-4-5-20251001",
+			wantModel:     "haiku",
 		},
 		{
 			name:          "explicit overrides preserved",

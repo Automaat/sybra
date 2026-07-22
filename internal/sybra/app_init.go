@@ -40,7 +40,6 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -182,10 +181,11 @@ func (a *App) initBgops(emit func(string, any)) {
 
 func (a *App) initFileWatcher(ctx context.Context, emit func(string, any)) {
 	w := watcher.New(a.tasksDir, emit, a.logger)
-	a.watcher = w
 	if err := w.Start(ctx); err != nil {
 		a.logger.Error("watcher.start", "err", err)
+		return
 	}
+	a.watcher = w
 }
 
 // MonitorReportBinding is the Wails-friendly envelope for the latest
@@ -644,7 +644,7 @@ func (a *App) initStatusHook() {
 		runsNoAgent := false
 		if t, err := a.tasks.Get(taskID); err == nil {
 			local = a.runsTaskLocally(t)
-			runsNoAgent = t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella
+			runsNoAgent = task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella
 		}
 
 		// Wake the dispatch pass immediately so a task that just became ready
@@ -772,7 +772,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 	}
 	filtered := make([]*agent.Agent, 0, len(targets))
 	for _, ag := range targets {
-		if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+		if ag.EffectiveRole() == agent.RoleHumanReview {
 			continue
 		}
 		filtered = append(filtered, ag)
@@ -899,7 +899,7 @@ func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
 		// a tracker is a guaranteed 3-attempt circuit-breaker trip that
 		// flips the tracker to human-required — and umbrella.rollup then
 		// flips it back to in-progress on the next tick, looping forever.
-		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+		if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
 			return
 		}
 	}
@@ -1169,12 +1169,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRFinder(prFinderAdapter{})
 	a.workflowEngine.SetPRAnyStateFinder(prFinderAdapter{})
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
-	a.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
-		tasks:      a.tasks,
-		projects:   a.projects,
-		classifier: &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
-		audit:      a.audit,
-	})
+	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})

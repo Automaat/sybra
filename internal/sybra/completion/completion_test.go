@@ -73,13 +73,13 @@ func TestRunOutcome(t *testing.T) {
 			want:          "failed",
 		},
 		{
-			// #2149: the ~96% codex stall case. The workflow engine retries
-			// this run, so recording it as "failed" is what drove the reported
-			// 92.3% implementation failure rate over runs that never resolved.
-			name:    "signal_killed_run_is_a_stall_not_a_failure",
+			// A process killed by an external shutdown signal is not a resolved
+			// run, but we now preserve that sharper cause instead of flattening
+			// it into the generic stalled bucket.
+			name:    "signal_killed_run_is_cancelled_shutdown_not_failure",
 			role:    agent.RoleImplementation,
 			exitErr: sigkillErr(t),
-			want:    "stalled",
+			want:    "cancelled_shutdown",
 		},
 		{
 			name: "stopped_before_result_is_a_stall",
@@ -135,7 +135,7 @@ func TestRunOutcome(t *testing.T) {
 			if tc.agent != nil {
 				ag = tc.agent()
 			}
-			if got := runOutcome(ag, tc.role, tc.exitErr, tc.resultContent); got != tc.want {
+			if got := (&Handler{}).runOutcome(ag, tc.role, tc.exitErr, tc.resultContent); got != tc.want {
 				t.Errorf("runOutcome(%v, %v, %q) = %q, want %q", tc.role, tc.exitErr, tc.resultContent, got, tc.want)
 			}
 		})

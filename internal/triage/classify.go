@@ -28,11 +28,25 @@ func ClassifyAndApply(
 	t task.Task,
 	projects []project.Project,
 ) (Verdict, task.Task, error) {
+	return ClassifyAndApplyWithOptions(ctx, classifier, mgr, al, t, projects, ApplyOptions{})
+}
+
+// ClassifyAndApplyWithOptions runs the classifier and applies the verdict with
+// explicit deterministic routing options.
+func ClassifyAndApplyWithOptions(
+	ctx context.Context,
+	classifier Classifier,
+	mgr *task.Manager,
+	al *audit.Logger,
+	t task.Task,
+	projects []project.Project,
+	opts ApplyOptions,
+) (Verdict, task.Task, error) {
 	v, err := classifier.Classify(ctx, t, projects)
 	if err != nil {
 		return Verdict{}, task.Task{}, err
 	}
-	updated, err := Apply(mgr, t, v, projects)
+	updated, err := ApplyWithOptions(mgr, t, v, projects, opts)
 	if err != nil {
 		return Verdict{}, task.Task{}, err
 	}

@@ -45,7 +45,7 @@ func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
 	}
 	infos := make([]workflow.TaskInfo, 0, len(tasks))
 	for i := range tasks {
-		if tasks[i].TaskType == task.TaskTypeChat {
+		if task.IsChatTask(tasks[i]) {
 			continue
 		}
 		infos = append(infos, taskToInfo(tasks[i]))
@@ -85,6 +85,17 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	patch := task.RunPatch{TestOutcome: task.Ptr(outcome)}
 	if fingerprint != "" {
 		patch.TestFailureFingerprint = task.Ptr(fingerprint)
+	}
+	return a.tasks.UpdateRun(taskID, agentID, patch)
+}
+
+func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
+	patch := task.RunPatch{}
+	if headSHA != "" {
+		patch.HeadSHA = task.Ptr(headSHA)
+	}
+	if source != "" {
+		patch.FinalCommitSource = task.Ptr(source)
 	}
 	return a.tasks.UpdateRun(taskID, agentID, patch)
 }

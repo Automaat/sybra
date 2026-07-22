@@ -585,7 +585,7 @@ func TestPrClosedEligible(t *testing.T) {
 		},
 		{
 			name: "human-required chat task — excluded",
-			tk:   task.Task{TaskType: task.TaskTypeChat, Status: task.StatusHumanRequired, PRNumber: 42},
+			tk:   task.Task{Tags: []string{task.ChatTag}, Status: task.StatusHumanRequired, PRNumber: 42},
 			want: false,
 		},
 		{
@@ -667,8 +667,7 @@ func TestReviewClosedPREligible(t *testing.T) {
 			name: "chat task skipped",
 			tk: task.Task{
 				Status:    task.StatusInReview,
-				TaskType:  task.TaskTypeChat,
-				Tags:      []string{"review"},
+				Tags:      []string{task.ChatTag, "review"},
 				ProjectID: "o/r",
 				PRNumber:  42,
 			},
@@ -992,14 +991,14 @@ func TestOrphanPRAdoptionEligible(t *testing.T) {
 		{"watchdog stop not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "watchdog: runaway loop"}, false},
 		{"unrelated reason not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "needs design input"}, false},
 		{"review task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, Tags: []string{"review"}}, false},
-		{"chat task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, TaskType: task.TaskTypeChat}, false},
+		{"chat task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, Tags: []string{task.ChatTag}}, false},
 		// in-review cases (no strand-reason gate: already in review with no PR is unambiguously an orphan)
 		{"in-review no PR — eligible", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r"}, true},
 		{"in-review with PR — not eligible (already linked)", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", PRNumber: 5}, false},
 		{"in-review no branch — not eligible", task.Task{Status: task.StatusInReview, ProjectID: "o/r"}, false},
 		{"in-review no project — not eligible", task.Task{Status: task.StatusInReview, Branch: "b"}, false},
 		{"in-review review tag excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", Tags: []string{"review"}}, false},
-		{"in-review chat task excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", TaskType: task.TaskTypeChat}, false},
+		{"in-review chat task excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", Tags: []string{task.ChatTag}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1514,7 +1513,7 @@ func TestIncludeKnownTaskPRsAddsLinkedPRsMissingFromSearch(t *testing.T) {
 		},
 	}
 
-	got := r.includeKnownTaskPRs([]task.Task{
+	got := r.includeKnownTaskPRs(context.Background(), []task.Task{
 		{
 			ID:        "already-search",
 			Status:    task.StatusInReview,
@@ -2562,6 +2561,63 @@ func TestAdvanceClosedTaskPRs_ClosedUnmergedCancelsNotDone(t *testing.T) {
 	}
 	if got.Outcome != "closed" {
 		t.Errorf("outcome = %q, want closed", got.Outcome)
+	}
+}
+
+func TestAdvanceClosedTaskPR_EmitsTaskLanded(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.Create("Task whose PR was merged", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("waiting for review"),
+		PRNumber:     task.Ptr(1446),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	auditDir := filepath.Join(tmp, "audit")
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+	logger := slog.New(slog.DiscardHandler)
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	r := &Handler{
+		logger: logger, emit: func(string, any) {},
+		audit:  auditLog,
+		tasks:  tasks,
+		agents: agentMgr,
+	}
+
+	if err := r.AdvanceClosedTaskPR(context.Background(), created.ID, 1446, "MERGED"); err != nil {
+		t.Fatalf("AdvanceClosedTaskPR: %v", err)
+	}
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusDone || got.Outcome != "merged" || got.StatusReason != "" {
+		t.Fatalf("task = status %q outcome %q reason %q, want done/merged/empty", got.Status, got.Outcome, got.StatusReason)
+	}
+	events := readExperienceAuditEvents(t, auditDir)
+	var landed bool
+	for _, e := range events {
+		if e.Type == audit.EventTaskLanded && e.TaskID == created.ID {
+			landed = true
+			break
+		}
+	}
+	if !landed {
+		t.Fatalf("audit events = %+v, want task.landed", events)
 	}
 }
 

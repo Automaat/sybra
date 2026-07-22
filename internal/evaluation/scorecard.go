@@ -15,6 +15,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 )
@@ -532,23 +533,14 @@ func countReverts(events []audit.Event, win func(time.Time) bool, landed map[str
 // neither, and calling it either would put a run with no known result into a
 // rate or mislabel it a stall.
 func scanReliability(records []stats.RunRecord, win func(time.Time) bool) (runs, failures, stalls, resolved int) {
+	acct := make([]runacct.Record, 0, len(records))
 	for i := range records {
-		r := records[i]
-		if !win(r.Timestamp) {
-			continue
-		}
-		runs++
-		if r.Outcome == stats.OutcomeStalled {
-			stalls++
-		}
-		if stats.IsTerminalOutcome(r.Outcome) {
-			resolved++
-		}
-		if r.Outcome == stats.OutcomeFailed {
-			failures++
-		}
+		acct = append(acct, statsRecord(records[i]))
 	}
-	return runs, failures, stalls, resolved
+	counts := runacct.Count(acct, func(r runacct.Record) bool { return win(r.Timestamp) }, runacct.CountConfig{
+		CountsTowardFailure: runacct.CountsTowardCodeAuthorFailureRate,
+	})
+	return counts.Runs, counts.Failures, counts.Stalled, counts.Resolved
 }
 
 func scanEfficiency(records []stats.RunRecord, win func(time.Time) bool) (cost float64, turns, tools int) {
@@ -615,6 +607,7 @@ func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(sta
 	groups := map[string]*acc{}
 	for i := range records {
 		r := records[i]
+		rec := statsRecord(r)
 		if r.Timestamp.Before(since) || r.Timestamp.After(until) {
 			continue
 		}
@@ -628,13 +621,13 @@ func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(sta
 			groups[k] = a
 		}
 		a.runs++
-		if r.Outcome == stats.OutcomeStalled {
+		if rec.Outcome == stats.OutcomeCancelledShutdown || rec.Outcome == stats.OutcomeSuperseded || r.Outcome == stats.OutcomeStalled {
 			a.stalls++
 		}
-		if stats.IsTerminalOutcome(r.Outcome) {
+		if runacct.CountsTowardCodeAuthorFailureRate(rec) && stats.IsTerminalOutcome(r.Outcome) {
 			a.resolved++
 		}
-		if r.Outcome == stats.OutcomeFailed {
+		if runacct.CountsTowardCodeAuthorFailureRate(rec) && r.Outcome == stats.OutcomeFailed {
 			a.fails++
 		}
 		a.cost += r.CostUSD
@@ -713,6 +706,7 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 	}
 	for i := range records {
 		r := records[i]
+		rec := statsRecord(r)
 		if r.Timestamp.Before(since) || r.Timestamp.After(until) {
 			continue
 		}
@@ -722,13 +716,13 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 		}
 		a := ensure(r, k)
 		a.row.Runs++
-		if r.Outcome == stats.OutcomeStalled {
+		if rec.Outcome == stats.OutcomeCancelledShutdown || rec.Outcome == stats.OutcomeSuperseded || r.Outcome == stats.OutcomeStalled {
 			a.row.Stalled++
 		}
-		if stats.IsTerminalOutcome(r.Outcome) {
+		if runacct.CountsTowardCodeAuthorFailureRate(rec) && stats.IsTerminalOutcome(r.Outcome) {
 			a.row.ResolvedRuns++
 		}
-		if r.Outcome == stats.OutcomeFailed {
+		if runacct.CountsTowardCodeAuthorFailureRate(rec) && r.Outcome == stats.OutcomeFailed {
 			a.row.Failures++
 		}
 		a.row.TotalCostUSD += r.CostUSD
@@ -1458,19 +1452,34 @@ func taskHasRework(s *taskSignals) bool {
 }
 
 func isAuthorRole(role string) bool {
-	switch normalizedRole(role) {
-	case "implementation", "fix-review", "pr-fix", "test-fix":
-		return true
-	default:
-		return false
-	}
+	return runacct.IsCodeAuthorRole(role)
 }
 
 func normalizedRole(role string) string {
-	if role == "" {
-		return "implementation"
+	return runacct.NormalizedRole(role)
+}
+
+func statsRecord(r stats.RunRecord) runacct.Record {
+	return runacct.Record{
+		ID:                 r.ID,
+		TaskID:             r.TaskID,
+		Role:               r.Role,
+		Mode:               r.Mode,
+		Provider:           r.Provider,
+		Model:              r.Model,
+		ReasoningEffort:    r.ReasoningEffort,
+		ExperimentID:       r.ExperimentID,
+		VariantID:          r.VariantID,
+		SkillExecutionMode: r.SkillExecutionMode,
+		SkillConformance:   r.SkillConformance,
+		CostUSD:            r.CostUSD,
+		DurationS:          r.DurationS,
+		PremiumRequests:    r.PremiumRequests,
+		TurnCount:          r.TurnCount,
+		ToolCalls:          r.ToolCalls,
+		Outcome:            r.Outcome,
+		Timestamp:          r.Timestamp,
 	}
-	return role
 }
 
 // percentile returns the p-th percentile (0–100) using nearest-rank. Empty → 0.

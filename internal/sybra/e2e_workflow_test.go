@@ -4361,6 +4361,17 @@ func runCmd(t *testing.T, dir, name string, args ...string) {
 	}
 }
 
+func readCommandOutput(t *testing.T, dir, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
+	}
+	return string(out)
+}
+
 func initRepoWithOriginMain(t *testing.T, dir string) {
 	t.Helper()
 	runCmd(t, dir, "git", "init")
@@ -5001,6 +5012,76 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	}
 }
 
+func TestE2E_VerifyCommits_AdoptsEquivalentRemoteCommit(t *testing.T) {
+	env := setupE2EProvider(t, "claude", "verify_commits_remote_race")
+	writeWorkflowFixture(t, env, "test-verify-commits-remote-race", testVerifyCommitsRemoteRaceWorkflowYAML)
+
+	created, err := env.tasks.Create("verify commits remote race", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const branch = "feat/verify-commits-race"
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"branch": branch}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktreePath := filepath.Join(env.worktreesDir, current.DirName())
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initRepoWithOriginMain(t, worktreePath)
+	runCmd(t, worktreePath, "git", "checkout", "-b", branch)
+	runCmd(t, worktreePath, "git", "push", "-u", "origin", branch)
+
+	if err := env.engine.StartWorkflowWithVars(created.ID, "test-verify-commits-remote-race", map[string]string{
+		workflow.WorkflowVarDir: worktreePath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "remote-race workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	runCmd(t, worktreePath, "git", "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
+	localHead := strings.TrimSpace(readCommandOutput(t, worktreePath, "git", "rev-parse", "HEAD"))
+	remoteHead := strings.TrimSpace(readCommandOutput(t, worktreePath, "git", "rev-parse", "refs/remotes/origin/"+branch))
+	if localHead != remoteHead {
+		t.Fatalf("local HEAD %q != remote HEAD %q; verify_commits should adopt the agent-pushed commit, not keep a duplicate fallback commit", localHead, remoteHead)
+	}
+	if got := strings.TrimSpace(readCommandOutput(t, worktreePath, "git", "rev-list", "--count", "origin/main..HEAD")); got != "1" {
+		t.Fatalf("origin/main..HEAD commit count = %q, want 1 implementation lineage", got)
+	}
+	if status := strings.TrimSpace(readCommandOutput(t, worktreePath, "git", "status", "--porcelain")); status != "" {
+		t.Fatalf("worktree dirty after verify_commits reconcile: %q", status)
+	}
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Status != task.StatusDone {
+		t.Fatalf("status = %q, want done", tk.Status)
+	}
+	if len(tk.AgentRuns) != 1 {
+		t.Fatalf("agent runs = %d, want 1", len(tk.AgentRuns))
+	}
+	if tk.AgentRuns[0].HeadSHA != localHead {
+		t.Fatalf("agent run head_sha = %q, want final head %q", tk.AgentRuns[0].HeadSHA, localHead)
+	}
+	if tk.AgentRuns[0].FinalCommitSource != "agent" {
+		t.Fatalf("final_commit_source = %q, want agent", tk.AgentRuns[0].FinalCommitSource)
+	}
+	stepIDs := stepIDsFromHistory(tk.Workflow)
+	if !slices.Contains(stepIDs, "verify_commits") {
+		t.Fatalf("verify_commits missing from history: %v", stepIDs)
+	}
+}
+
 func TestE2E_LinkPRAndReview_PrefersExistingTaskPRNumber(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"pr_created"})
 	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-eval-chain.yaml"), []byte(testEvalChainWorkflowYAML), 0o644); err != nil {
@@ -5100,6 +5181,32 @@ steps:
       mode: interactive
       wait_for_status: plan-review
       prompt: "Plan {{.Task.ID}}"
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testVerifyCommitsRemoteRaceWorkflowYAML = `id: test-verify-commits-remote-race
+name: Test Verify Commits Remote Race
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: verify_commits
+  - id: verify_commits
+    name: Verify Commits
+    type: verify_commits
     next:
       - goto: set_done
   - id: set_done
