@@ -890,7 +890,7 @@ func TestExecCreatePR_NoCreatorFlipsHumanRequired(t *testing.T) {
 	}
 }
 
-func TestExecCreatePR_InitialReviewFailureFlipsHumanRequired(t *testing.T) {
+func TestExecCreatePR_InitialReviewFailureDoesNotBlockPRFlow(t *testing.T) {
 	_, wtPath := newPRWorktree(t, "feat/my-branch")
 	commitFile(t, wtPath, "change.txt", "feat: task work")
 
@@ -910,11 +910,38 @@ func TestExecCreatePR_InitialReviewFailureFlipsHumanRequired(t *testing.T) {
 		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Fatalf("task status = %q, want human-required", ti.Status)
+	if ti.PRNumber != 42 {
+		t.Fatalf("PRNumber = %d, want 42", ti.PRNumber)
 	}
-	if !strings.Contains(tasks.Reason("t1"), "could not request initial PR review") {
-		t.Fatalf("human-required reason = %q", tasks.Reason("t1"))
+	if ti.Status == "human-required" {
+		t.Fatalf("task should not be human-required when initial review request fails: %s", tasks.Reason("t1"))
+	}
+}
+
+func TestExecCreatePR_MissingInitialReviewRequesterDoesNotBlockPRFlow(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/my-branch")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
+	tasks.Put(task)
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRCreator(&fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)})
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.PRNumber != 42 {
+		t.Fatalf("PRNumber = %d, want 42", ti.PRNumber)
+	}
+	if ti.Status == "human-required" {
+		t.Fatalf("task should not be human-required when initial review requester is missing: %s", tasks.Reason("t1"))
 	}
 }
 

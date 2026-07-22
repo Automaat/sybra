@@ -50,6 +50,32 @@ func TestEligibleRerequestReviewer(t *testing.T) {
 	}
 }
 
+func TestInitialReviewRequesterUsesCopilotBotLogin(t *testing.T) {
+	orig := requestReviewersContext
+	t.Cleanup(func() { requestReviewersContext = orig })
+
+	var gotRepo string
+	var gotNumber int
+	var gotReviewers []string
+	requestReviewersContext = func(_ context.Context, repo string, number int, reviewers []string) error {
+		gotRepo = repo
+		gotNumber = number
+		gotReviewers = append([]string(nil), reviewers...)
+		return nil
+	}
+
+	if err := (prInitialReviewRequesterAdapter{}).RequestInitialReview(context.Background(), "acme/widgets", 42); err != nil {
+		t.Fatalf("RequestInitialReview: %v", err)
+	}
+	if gotRepo != "acme/widgets" || gotNumber != 42 {
+		t.Fatalf("request target = %s#%d, want acme/widgets#42", gotRepo, gotNumber)
+	}
+	want := []string{"copilot-pull-request-reviewer[bot]"}
+	if !slices.Equal(gotReviewers, want) {
+		t.Fatalf("reviewers = %v, want %v", gotReviewers, want)
+	}
+}
+
 func TestAgentAdapterExperiencePromptPlanAndTriageOnly(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := experience.New(t.TempDir())

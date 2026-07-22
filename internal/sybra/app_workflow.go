@@ -54,6 +54,8 @@ var (
 	_ workflow.AttemptWorktreeManager   = (*attemptWorktreeAdapter)(nil)
 )
 
+var requestReviewersContext = github.RequestReviewersContext
+
 // attemptWorktreeAdapter bridges worktree.Manager → workflow.AttemptWorktreeManager.
 type attemptWorktreeAdapter struct {
 	tasks *task.Manager
@@ -485,7 +487,7 @@ func eligibleRerequestReviewer(login, viewer, prAuthor string) bool {
 type prInitialReviewRequesterAdapter struct{}
 
 func (prInitialReviewRequesterAdapter) RequestInitialReview(ctx context.Context, repo string, prNumber int) error {
-	return github.RequestReviewersContext(ctx, repo, prNumber, []string{"copilot-pull-request-reviewer"})
+	return requestReviewersContext(ctx, repo, prNumber, []string{"copilot-pull-request-reviewer[bot]"})
 }
 
 // worktreeGetterAdapter bridges worktree.Manager + task.Manager → workflow.WorktreeGetter.

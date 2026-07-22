@@ -149,14 +149,14 @@ func (e *Engine) requestInitialPRReview(taskID string, step *Step, t TaskInfo, p
 		return StepOutput{}, nil, false
 	}
 	if e.prInitialReview == nil {
-		out, err := e.humanRequiredPR(taskID, step, "no initial PR review requester configured")
-		return out, err, true
+		e.logger.Warn("workflow.create-pr.initial-review-unavailable", "task_id", taskID, "pr", prNumber)
+		return StepOutput{}, nil, false
 	}
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	if err := e.prInitialReview.RequestInitialReview(ctx, t.ProjectID, prNumber); err != nil {
-		out, hrErr := e.humanRequiredPR(taskID, step, fmt.Sprintf("could not request initial PR review for #%d: %v", prNumber, err))
-		return out, hrErr, true
+		e.logger.Warn("workflow.create-pr.initial-review-request-failed", "task_id", taskID, "pr", prNumber, "err", err)
+		return StepOutput{}, nil, false
 	}
 	e.logger.Info("workflow.create-pr.initial-review-requested", "task_id", taskID, "pr", prNumber)
 	return StepOutput{}, nil, false
