@@ -1790,6 +1790,11 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		return printJSON(summary)
 	}
 
+	printBoardText(counts, summary)
+	return 0
+}
+
+func printBoardText(counts map[string]int, summary boardSummary) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "STATUS\tCOUNT")
 	for _, st := range task.AllStatuses() {
@@ -1801,7 +1806,8 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		fmt.Println("\nIN PROGRESS:")
 		w2 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		_, _ = fmt.Fprintln(w2, "ID\tAGENT\tRUNNING_FOR\tTITLE")
-		for _, t := range summary.InProgress {
+		for i := range summary.InProgress {
+			t := &summary.InProgress[i]
 			_, _ = fmt.Fprintf(w2, "%s\t%s\t%ds\t%s\n", t.ID, t.AgentID, t.RunningForS, t.Title)
 		}
 		_ = w2.Flush()
@@ -1811,7 +1817,8 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		fmt.Println("\nHUMAN REQUIRED:")
 		w3 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		_, _ = fmt.Fprintln(w3, "ID\tTITLE\tREASON")
-		for _, t := range summary.HumanRequired {
+		for i := range summary.HumanRequired {
+			t := &summary.HumanRequired[i]
 			_, _ = fmt.Fprintf(w3, "%s\t%s\t%s\n", t.ID, t.Title, t.StatusReason)
 		}
 		_ = w3.Flush()
@@ -1821,7 +1828,8 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		fmt.Println("\nBLOCKED:")
 		w4 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		_, _ = fmt.Fprintln(w4, "ID\tTITLE\tKIND\tNEXT_ACTION\tRETRY_AFTER\tEXHAUSTED\tREASON")
-		for _, t := range summary.Blocked {
+		for i := range summary.Blocked {
+			t := &summary.Blocked[i]
 			retryAfter := ""
 			if t.Blocker.RetryAfter != nil {
 				retryAfter = t.Blocker.RetryAfter.Format(time.RFC3339)
@@ -1831,8 +1839,6 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		}
 		_ = w4.Flush()
 	}
-
-	return 0
 }
 
 func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {

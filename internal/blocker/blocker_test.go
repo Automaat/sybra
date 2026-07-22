@@ -16,7 +16,7 @@ func TestStateIsZero(t *testing.T) {
 		{name: "actor set", state: State{Actor: ActorWorkflow}, want: false},
 		{name: "code set", state: State{Code: "disk_space"}, want: false},
 		{name: "next action set", state: State{NextAction: "repair_worktree"}, want: false},
-		{name: "retry after set", state: State{RetryAfter: timePtr(time.Unix(0, 0))}, want: false},
+		{name: "retry after set", state: State{RetryAfter: new(time.Unix(0, 0))}, want: false},
 		{name: "exhausted set", state: State{Exhausted: true}, want: false},
 	}
 	for _, tc := range tests {
@@ -50,7 +50,6 @@ func TestAllowsHumanRequired_OnlyOperatorFacingKinds(t *testing.T) {
 		KindPolicyApproval:     true,
 	}
 	for _, kind := range allKinds {
-		kind := kind
 		t.Run(string(kind), func(t *testing.T) {
 			want := humanAllowed[kind]
 			if got := AllowsHumanRequired(kind); got != want {
@@ -165,7 +164,6 @@ func TestValidateStatus_IllegalTransitionProperty(t *testing.T) {
 	}
 	for _, kind := range allKinds {
 		for _, status := range statuses {
-			kind, status := kind, status
 			t.Run(string(kind)+"/"+status, func(t *testing.T) {
 				err := ValidateStatus(status, State{Kind: kind})
 				wantErr := status == "human-required" && !AllowsHumanRequired(kind)
@@ -175,8 +173,4 @@ func TestValidateStatus_IllegalTransitionProperty(t *testing.T) {
 			})
 		}
 	}
-}
-
-func timePtr(t time.Time) *time.Time {
-	return &t
 }

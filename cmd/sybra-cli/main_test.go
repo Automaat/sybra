@@ -1530,6 +1530,131 @@ func TestUpdateMultipleFields(t *testing.T) {
 	}
 }
 
+func TestUpdateBlockerFlags(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "create", "--title", "blocker flags test")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, out = runCLI(t, "--json", "update", created.ID,
+		"--status", "blocked",
+		"--blocker-kind", "worktree_repair",
+		"--blocker-code", "disk_space",
+		"--blocker-next-action", "repair_worktree",
+		"--blocker-retry-after", "2026-01-01T00:00:00Z",
+	)
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	var updated task.Task
+	mustUnmarshal(t, out, &updated)
+	if updated.Blocker.Kind != "worktree_repair" {
+		t.Errorf("Blocker.Kind = %q, want %q", updated.Blocker.Kind, "worktree_repair")
+	}
+	if updated.Blocker.Code != "disk_space" {
+		t.Errorf("Blocker.Code = %q, want %q", updated.Blocker.Code, "disk_space")
+	}
+	if updated.Blocker.NextAction != "repair_worktree" {
+		t.Errorf("Blocker.NextAction = %q, want %q", updated.Blocker.NextAction, "repair_worktree")
+	}
+	if updated.Blocker.RetryAfter == nil || updated.Blocker.RetryAfter.Format("2006-01-02") != "2026-01-01" {
+		t.Errorf("Blocker.RetryAfter = %v, want 2026-01-01", updated.Blocker.RetryAfter)
+	}
+	if updated.Blocker.Exhausted {
+		t.Error("Blocker.Exhausted = true, want false")
+	}
+
+	// Setting only --blocker-exhausted must preserve the previously recorded
+	// kind/code/next_action rather than blanking them out.
+	code, out = runCLI(t, "--json", "update", created.ID, "--blocker-exhausted")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	mustUnmarshal(t, out, &updated)
+	if !updated.Blocker.Exhausted {
+		t.Error("Blocker.Exhausted = false, want true")
+	}
+	if updated.Blocker.Kind != "worktree_repair" {
+		t.Errorf("Blocker.Kind after exhausted-only update = %q, want preserved %q", updated.Blocker.Kind, "worktree_repair")
+	}
+
+	code, out = runCLI(t, "--json", "update", created.ID, "--blocker-clear")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	// json.Unmarshal only overwrites fields present in the payload, so start
+	// from a zero value — omitzero means an absent "blocker" key would
+	// otherwise silently leave the previous iteration's Blocker in place.
+	updated = task.Task{}
+	mustUnmarshal(t, out, &updated)
+	if !updated.Blocker.IsZero() {
+		t.Errorf("Blocker after --blocker-clear = %+v, want zero value", updated.Blocker)
+	}
+}
+
+func TestUpdateBlockerKindRejectsMachineKindAtHumanRequired(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "create", "--title", "blocker validation test")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "update", created.ID,
+		"--status", "human-required",
+		"--blocker-kind", "worktree_repair",
+	)
+	if code == 0 {
+		t.Error("expected non-zero exit: worktree_repair must never reach human-required")
+	}
+}
+
+func TestCmdBoardExposesBlockedBucket(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "create", "--title", "board blocked test")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, out = runCLI(t, "--json", "update", created.ID,
+		"--status", "blocked",
+		"--blocker-kind", "worktree_repair",
+		"--blocker-next-action", "repair_worktree",
+	)
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+
+	code, out = runCLI(t, "--json", "board")
+	if code != 0 {
+		t.Fatalf("board exit %d: %s", code, out)
+	}
+	var summary boardSummary
+	mustUnmarshal(t, out, &summary)
+	if summary.Counts["blocked"] != 1 {
+		t.Errorf("Counts[blocked] = %d, want 1", summary.Counts["blocked"])
+	}
+	if len(summary.Blocked) != 1 {
+		t.Fatalf("Blocked len = %d, want 1", len(summary.Blocked))
+	}
+	bt := summary.Blocked[0]
+	if bt.ID != created.ID {
+		t.Errorf("Blocked[0].ID = %q, want %q", bt.ID, created.ID)
+	}
+	if bt.Blocker.Kind != "worktree_repair" {
+		t.Errorf("Blocked[0].Blocker.Kind = %q, want %q", bt.Blocker.Kind, "worktree_repair")
+	}
+	if bt.Blocker.NextAction != "repair_worktree" {
+		t.Errorf("Blocked[0].Blocker.NextAction = %q, want %q", bt.Blocker.NextAction, "repair_worktree")
+	}
+}
+
 func TestUpdateNotFound(t *testing.T) {
 	setupStore(t)
 	code, _ := runCLI(t, "--json", "update", "nonexistent", "--title", "x")
