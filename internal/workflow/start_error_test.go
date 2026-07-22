@@ -93,6 +93,12 @@ func TestClassifyAgentStartError(t *testing.T) {
 			wantContains:  "task cumulative cost exceeds agent.max_task_cost_usd",
 		},
 		{
+			name:          "provider model incompatible is permanent",
+			err:           errors.New(`provider/model incompatible after failover: provider="claude" selected="codex" model="my-sonnet-experiment"`),
+			wantPermanent: true,
+			wantContains:  "provider/model incompatible after failover",
+		},
+		{
 			name: "agent pool busy yields empty and transient",
 			err:  fmt.Errorf("start agent: %w", ErrAgentPoolBusy),
 		},

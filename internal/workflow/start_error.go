@@ -15,6 +15,7 @@ import (
 const startReasonMaxLen = 200
 
 const transientFetchStatusReason = "agent start delayed: transient network failure reconciling worktree with remote"
+const providerModelIncompatibleReasonPrefix = "provider/model incompatible after failover"
 
 // ErrDispatchInFlight is returned by an agent-start path when another dispatch
 // for the same task is already in flight (the per-task dispatch claim is held).
@@ -128,6 +129,9 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, ErrTaskCostExceeded):
 		permanent = true
 		reason = "agent start blocked: " + err.Error()
+	case isProviderModelIncompatibleError(err):
+		permanent = true
+		reason = "agent start blocked: " + err.Error()
 	case errors.Is(err, worktreeerr.ErrRebaseFailed):
 		permanent = true
 		reason = worktreeerr.RebaseBlockedReason
@@ -202,6 +206,10 @@ func resourcePressureDetail(err error) string {
 		return "local resource pressure"
 	}
 	return detail
+}
+
+func isProviderModelIncompatibleError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), providerModelIncompatibleReasonPrefix)
 }
 
 // truncateReason caps a status_reason to startReasonMaxLen bytes with an

@@ -344,6 +344,20 @@ func (e *Engine) parkRunAgentStartError(taskID, stepID string, wfExec *Execution
 		wfExec.State = ExecWaiting
 		e.logger.Info("workflow.run-agent.agent-pool-busy", "task_id", taskID, "step", stepID)
 		return true, e.tasks.SetWorkflow(taskID, wfExec)
+	case isProviderModelIncompatibleError(err):
+		reason, permanent := ClassifyAgentStartError(err)
+		if !permanent || strings.TrimSpace(reason) == "" {
+			return false, nil
+		}
+		wfExec.State = ExecFailed
+		if setErr := e.tasks.SetWorkflow(taskID, wfExec); setErr != nil {
+			return true, setErr
+		}
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+			return true, statusErr
+		}
+		e.logger.Warn("workflow.run-agent.provider-model-incompatible", "task_id", taskID, "step", stepID, "err", err)
+		return true, nil
 	default:
 		return false, nil
 	}

@@ -7546,6 +7546,43 @@ func TestStartWorkflow_InitialDispatchFailure_EscalatesPermanentError(t *testing
 	}
 }
 
+func TestStartWorkflow_InitialDispatchFailure_ParksProviderModelIncompatible(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	agents := newMockAgents()
+	agents.SetFailSpawn(errors.New(`provider/model incompatible after failover: provider="claude" selected="codex" model="my-sonnet-experiment"`))
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatalf("StartWorkflow err = %v, want nil after clean park", err)
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required on incompatible failover model", got.Status)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow = nil, want retained workflow state for parked task")
+	}
+	if got.Workflow.State != ExecFailed {
+		t.Fatalf("workflow state = %q, want %q", got.Workflow.State, ExecFailed)
+	}
+	if got.Workflow.CurrentStep != "triage" {
+		t.Fatalf("current step = %q, want triage", got.Workflow.CurrentStep)
+	}
+	if !strings.Contains(got.StatusReason, "provider/model incompatible") ||
+		!strings.Contains(got.StatusReason, "my-sonnet-experiment") {
+		t.Fatalf("status reason = %q, want incompatible-model details", got.StatusReason)
+	}
+	if got.AgentRuns != nil {
+		t.Fatalf("agent runs = %+v, want none recorded on pre-spawn park", got.AgentRuns)
+	}
+}
+
 // TestSurfaceInitialDispatchFailure_ReadFailureDoesNotWriteEmptyStatus covers
 // the joint-failure edge: a store hiccup makes the current-status read fail at
 // the same moment a dispatch fails. Without the read guard, a non-permanent
