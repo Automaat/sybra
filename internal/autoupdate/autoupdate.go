@@ -58,12 +58,12 @@ type persistedState struct {
 	CandidateSHA    string    `json:"candidate_sha,omitempty"`
 	CandidateState  string    `json:"candidate_state,omitempty"`
 	CandidateReason string    `json:"candidate_reason,omitempty"`
-	CandidateSeenAt time.Time `json:"candidate_seen_at,omitempty"`
+	CandidateSeenAt time.Time `json:"candidate_seen_at,omitzero"`
 	PendingSHA      string    `json:"pending_sha,omitempty"`
-	PendingAt       time.Time `json:"pending_at,omitempty"`
+	PendingAt       time.Time `json:"pending_at,omitzero"`
 	LastAppliedSHA  string    `json:"last_applied_sha,omitempty"`
-	LastAppliedAt   time.Time `json:"last_applied_at,omitempty"`
-	LastRestartAt   time.Time `json:"last_restart_at,omitempty"`
+	LastAppliedAt   time.Time `json:"last_applied_at,omitzero"`
+	LastRestartAt   time.Time `json:"last_restart_at,omitzero"`
 }
 
 func New(cfg Config, logger *slog.Logger) *Runner {
@@ -133,46 +133,25 @@ func (r *Runner) TriggerCheck() {
 
 func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 	cfg := r.cfg.withDefaults()
-	if !cfg.Enabled {
-		return Result{Status: "disabled"}, nil
+	if result, ok := preflightResult(ctx, cfg); ok {
+		return result, nil
 	}
-	if cfg.Mode != ModeAuto && cfg.Mode != ModeNotify {
-		return Result{Status: "blocked", Reason: "invalid mode: " + cfg.Mode}, nil
-	}
-	if reason := repoBlockReason(ctx, cfg); reason != "" {
-		return Result{Status: "blocked", Reason: reason}, nil
-	}
-	head, err := git(ctx, cfg.RepoDir, "rev-parse", "HEAD")
+	head, remoteSHA, err := resolveSHAs(ctx, cfg)
 	if err != nil {
-		return Result{}, fmt.Errorf("rev-parse HEAD: %w", err)
-	}
-	remoteSHA, err := lsRemoteBranchSHA(ctx, cfg.RepoDir, cfg.Remote, cfg.Branch)
-	if err != nil {
-		return Result{}, fmt.Errorf("resolve remote sha %s/%s: %w", cfg.Remote, cfg.Branch, err)
+		return Result{}, err
 	}
 	if head == remoteSHA {
-		if cfg.StateFile != "" {
-			state, err := loadState(cfg.StateFile)
-			if err != nil {
-				return Result{}, err
-			}
-			if state.PendingSHA == head {
-				state.PendingSHA = ""
-				state.PendingAt = time.Time{}
-				if err := saveState(cfg.StateFile, state); err != nil {
-					return Result{}, err
-				}
-			}
+		if err := clearPendingState(cfg.StateFile, head); err != nil {
+			return Result{}, err
 		}
 		return Result{Status: "current", OldSHA: head, NewSHA: remoteSHA}, nil
 	}
-	if _, err := fetchObject(ctx, cfg.RepoDir, cfg.Remote, remoteSHA); err != nil {
-		return Result{}, err
+	if result, blocked, err := validateCandidateSHA(ctx, cfg, head, remoteSHA); err != nil || blocked {
+		if err != nil {
+			return Result{}, err
+		}
+		return result, nil
 	}
-	if !isAncestor(ctx, cfg.RepoDir, head, remoteSHA) {
-		return Result{Status: "blocked", Reason: "local branch is ahead or diverged", OldSHA: head, NewSHA: remoteSHA}, nil
-	}
-
 	changed, err := changedFiles(ctx, cfg.RepoDir, head, remoteSHA)
 	if err != nil {
 		return Result{}, err
@@ -182,121 +161,30 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 	now := cfg.now()
-	repo := ""
-	if state.CandidateSHA != remoteSHA {
-		if state.CandidateSHA != "" && state.CandidateSHA != head {
-			r.recordTransition("superseded", state.CandidateSHA, head, remoteSHA, "candidate replaced by newer remote sha")
-		}
-		state.CandidateSHA = remoteSHA
-		state.CandidateState = "seen"
-		state.CandidateReason = ""
-		state.CandidateSeenAt = now
-		r.recordTransition("candidate_seen", remoteSHA, head, remoteSHA, "")
-	}
+	r.noteCandidateSeen(&state, head, remoteSHA, now)
 
 	overrideActive, err := overrideRequested(cfg.OverrideFile)
 	if err != nil {
 		return Result{}, err
 	}
-	if !overrideActive {
-		required := github.NormalizeRequiredChecks(cfg.RequiredChecks)
-		if len(required) == 0 {
-			reason := "required checks are empty"
-			if cfg.Mode != ModeAuto {
-				state.setCandidateOutcome("seen", reason)
-				if err := saveState(cfg.StateFile, state); err != nil {
-					return Result{}, err
-				}
-				return Result{Status: "available", Reason: reason, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
-			}
-			state.setCandidateOutcome("rejected", reason)
-			if err := saveState(cfg.StateFile, state); err != nil {
-				return Result{}, err
-			}
-			r.recordTransition("rejected", remoteSHA, head, remoteSHA, reason)
-			return Result{Status: "rejected", Reason: reason, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
-		}
-		repo, err = cfg.repository(ctx)
-		if err != nil {
-			return Result{}, err
-		}
-		if cfg.GateCommit == nil {
-			if err := github.RefreshAppToken(ctx); err != nil {
-				reason := "github app token refresh failed: " + err.Error()
-				state.setCandidateOutcome("rejected", reason)
-				if err := saveState(cfg.StateFile, state); err != nil {
-					return Result{}, err
-				}
-				r.recordTransition("rejected", remoteSHA, head, remoteSHA, reason)
-				return Result{Status: "rejected", Reason: reason, Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
-			}
-			if github.CurrentAppToken() == "" {
-				reason := "github app token unavailable"
-				state.setCandidateOutcome("rejected", reason)
-				if err := saveState(cfg.StateFile, state); err != nil {
-					return Result{}, err
-				}
-				r.recordTransition("rejected", remoteSHA, head, remoteSHA, reason)
-				return Result{Status: "rejected", Reason: reason, Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
-			}
-		}
-		gate, err := cfg.gateCommit(ctx, repo, remoteSHA, required)
-		if err != nil {
-			reason := err.Error()
-			state.setCandidateOutcome("rejected", reason)
-			if err := saveState(cfg.StateFile, state); err != nil {
-				return Result{}, err
-			}
-			r.recordTransition("rejected", remoteSHA, head, remoteSHA, reason)
-			return Result{Status: "rejected", Reason: reason, Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
-		}
-		if reason, waiting := gateBlockReason(gate); reason != "" {
-			outcome := "rejected"
-			status := "rejected"
-			if waiting {
-				outcome = "waiting"
-				status = "waiting"
-			}
-			state.setCandidateOutcome(outcome, reason)
-			if err := saveState(cfg.StateFile, state); err != nil {
-				return Result{}, err
-			}
-			r.recordTransition(outcome, remoteSHA, head, remoteSHA, reason)
-			return Result{Status: status, Reason: reason, Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
-		}
-		state.PendingSHA = remoteSHA
-		state.PendingAt = now
-		state.setCandidateOutcome("approved", "")
-		r.recordTransition("approved", remoteSHA, head, remoteSHA, strings.Join(required, ","))
-	} else {
-		repo, _ = cfg.repository(ctx)
-		state.PendingSHA = remoteSHA
-		state.PendingAt = now
-		state.setCandidateOutcome("approved", "manual override")
-		r.recordTransition("approved", remoteSHA, head, remoteSHA, "manual override")
-	}
-	if err := saveState(cfg.StateFile, state); err != nil {
+	repo, gateResult, err := r.evaluateCandidate(ctx, cfg, &state, remoteSHA, head, changed, now, overrideActive)
+	if err != nil {
 		return Result{}, err
+	}
+	if err := saveCandidateState(cfg.StateFile, state, gateResult != nil || cfg.Mode != ModeAuto || state.PendingSHA == remoteSHA); err != nil {
+		return Result{}, err
+	}
+	if gateResult != nil {
+		return *gateResult, nil
 	}
 	if cfg.Mode != ModeAuto {
 		return Result{Status: "approved", Reason: state.CandidateReason, Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
 	}
-	latestSHA, err := lsRemoteBranchSHA(ctx, cfg.RepoDir, cfg.Remote, cfg.Branch)
-	if err != nil {
-		return Result{}, fmt.Errorf("re-resolve remote sha %s/%s: %w", cfg.Remote, cfg.Branch, err)
-	}
-	if latestSHA != remoteSHA {
-		r.recordTransition("superseded", remoteSHA, head, latestSHA, "candidate changed before apply")
-		state.CandidateSHA = latestSHA
-		state.CandidateState = "seen"
-		state.CandidateReason = ""
-		state.CandidateSeenAt = now
-		state.PendingSHA = ""
-		state.PendingAt = time.Time{}
-		if err := saveState(cfg.StateFile, state); err != nil {
+	if result, waiting, err := r.handleSupersededCandidate(ctx, cfg, &state, head, remoteSHA, repo, now); err != nil || waiting {
+		if err != nil {
 			return Result{}, err
 		}
-		return Result{Status: "waiting", Reason: "candidate changed before apply", Repo: repo, OldSHA: head, NewSHA: latestSHA}, nil
+		return result, nil
 	}
 	if _, err := fetchObject(ctx, cfg.RepoDir, cfg.Remote, remoteSHA); err != nil {
 		return Result{}, err
@@ -320,6 +208,171 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 	}
 	r.recordTransition("applied", remoteSHA, head, remoteSHA, "")
 	return Result{Status: "applied", Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
+}
+
+func (r *Runner) noteCandidateSeen(state *persistedState, head, remoteSHA string, now time.Time) {
+	if state.CandidateSHA == remoteSHA {
+		return
+	}
+	if state.CandidateSHA != "" && state.CandidateSHA != head {
+		r.recordTransition("superseded", state.CandidateSHA, head, remoteSHA, "candidate replaced by newer remote sha")
+	}
+	state.CandidateSHA = remoteSHA
+	state.CandidateState = "seen"
+	state.CandidateReason = ""
+	state.CandidateSeenAt = now
+	r.recordTransition("candidate_seen", remoteSHA, head, remoteSHA, "")
+}
+
+func preflightResult(ctx context.Context, cfg Config) (Result, bool) {
+	if !cfg.Enabled {
+		return Result{Status: "disabled"}, true
+	}
+	if cfg.Mode != ModeAuto && cfg.Mode != ModeNotify {
+		return Result{Status: "blocked", Reason: "invalid mode: " + cfg.Mode}, true
+	}
+	if reason := repoBlockReason(ctx, cfg); reason != "" {
+		return Result{Status: "blocked", Reason: reason}, true
+	}
+	return Result{}, false
+}
+
+func resolveSHAs(ctx context.Context, cfg Config) (head, remoteSHA string, err error) {
+	head, err = git(ctx, cfg.RepoDir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", "", fmt.Errorf("rev-parse HEAD: %w", err)
+	}
+	remoteSHA, err = lsRemoteBranchSHA(ctx, cfg.RepoDir, cfg.Remote, cfg.Branch)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve remote sha %s/%s: %w", cfg.Remote, cfg.Branch, err)
+	}
+	return head, remoteSHA, nil
+}
+
+func saveCandidateState(path string, state persistedState, shouldSave bool) error {
+	if !shouldSave {
+		return nil
+	}
+	return saveState(path, state)
+}
+
+func clearPendingState(path, head string) error {
+	if path == "" {
+		return nil
+	}
+	state, err := loadState(path)
+	if err != nil {
+		return err
+	}
+	if state.PendingSHA != head {
+		return nil
+	}
+	state.PendingSHA = ""
+	state.PendingAt = time.Time{}
+	return saveState(path, state)
+}
+
+func validateCandidateSHA(ctx context.Context, cfg Config, head, remoteSHA string) (Result, bool, error) {
+	if _, err := fetchObject(ctx, cfg.RepoDir, cfg.Remote, remoteSHA); err != nil {
+		return Result{}, false, err
+	}
+	if isAncestor(ctx, cfg.RepoDir, head, remoteSHA) {
+		return Result{}, false, nil
+	}
+	return Result{Status: "blocked", Reason: "local branch is ahead or diverged", OldSHA: head, NewSHA: remoteSHA}, true, nil
+}
+
+func (r *Runner) handleSupersededCandidate(ctx context.Context, cfg Config, state *persistedState, head, remoteSHA, repo string, now time.Time) (Result, bool, error) {
+	latestSHA, err := lsRemoteBranchSHA(ctx, cfg.RepoDir, cfg.Remote, cfg.Branch)
+	if err != nil {
+		return Result{}, false, fmt.Errorf("re-resolve remote sha %s/%s: %w", cfg.Remote, cfg.Branch, err)
+	}
+	if latestSHA == remoteSHA {
+		return Result{}, false, nil
+	}
+	r.recordTransition("superseded", remoteSHA, head, latestSHA, "candidate changed before apply")
+	state.CandidateSHA = latestSHA
+	state.CandidateState = "seen"
+	state.CandidateReason = ""
+	state.CandidateSeenAt = now
+	state.PendingSHA = ""
+	state.PendingAt = time.Time{}
+	if err := saveState(cfg.StateFile, *state); err != nil {
+		return Result{}, false, err
+	}
+	return Result{Status: "waiting", Reason: "candidate changed before apply", Repo: repo, OldSHA: head, NewSHA: latestSHA}, true, nil
+}
+
+func (r *Runner) evaluateCandidate(ctx context.Context, cfg Config, state *persistedState, remoteSHA, head string, changed []string, now time.Time, overrideActive bool) (string, *Result, error) {
+	if overrideActive {
+		repo, _ := cfg.repository(ctx)
+		state.PendingSHA = remoteSHA
+		state.PendingAt = now
+		state.setCandidateOutcome("approved", "manual override")
+		r.recordTransition("approved", remoteSHA, head, remoteSHA, "manual override")
+		return repo, nil, nil
+	}
+	required := github.NormalizeRequiredChecks(cfg.RequiredChecks)
+	if len(required) == 0 {
+		return "", r.rejectEmptyRequiredChecks(cfg, state, remoteSHA, head, changed), nil
+	}
+	repo, err := cfg.repository(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	if result := r.ensureGithubToken(ctx, cfg, state, repo, remoteSHA, head, changed); result != nil {
+		return repo, result, nil
+	}
+	gate, err := cfg.gateCommit(ctx, repo, remoteSHA, required)
+	if err != nil {
+		return repo, r.rejectCandidate(state, repo, remoteSHA, head, changed, err.Error()), nil
+	}
+	if reason, waiting := gateBlockReason(gate); reason != "" {
+		status := "rejected"
+		outcome := "rejected"
+		if waiting {
+			status = "waiting"
+			outcome = "waiting"
+		}
+		return repo, r.rejectCandidateWithStatus(state, repo, remoteSHA, head, changed, outcome, status, reason), nil
+	}
+	state.PendingSHA = remoteSHA
+	state.PendingAt = now
+	state.setCandidateOutcome("approved", "")
+	r.recordTransition("approved", remoteSHA, head, remoteSHA, strings.Join(required, ","))
+	return repo, nil, nil
+}
+
+func (r *Runner) rejectEmptyRequiredChecks(cfg Config, state *persistedState, remoteSHA, head string, changed []string) *Result {
+	reason := "required checks are empty"
+	if cfg.Mode != ModeAuto {
+		state.setCandidateOutcome("seen", reason)
+		return &Result{Status: "available", Reason: reason, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}
+	}
+	return r.rejectCandidate(state, "", remoteSHA, head, changed, reason)
+}
+
+func (r *Runner) ensureGithubToken(ctx context.Context, cfg Config, state *persistedState, repo, remoteSHA, head string, changed []string) *Result {
+	if cfg.GateCommit != nil {
+		return nil
+	}
+	if err := github.RefreshAppToken(ctx); err != nil {
+		return r.rejectCandidate(state, repo, remoteSHA, head, changed, "github app token refresh failed: "+err.Error())
+	}
+	if github.CurrentAppToken() == "" {
+		return r.rejectCandidate(state, repo, remoteSHA, head, changed, "github app token unavailable")
+	}
+	return nil
+}
+
+func (r *Runner) rejectCandidate(state *persistedState, repo, remoteSHA, head string, changed []string, reason string) *Result {
+	return r.rejectCandidateWithStatus(state, repo, remoteSHA, head, changed, "rejected", "rejected", reason)
+}
+
+func (r *Runner) rejectCandidateWithStatus(state *persistedState, repo, remoteSHA, head string, changed []string, outcome, status, reason string) *Result {
+	state.setCandidateOutcome(outcome, reason)
+	r.recordTransition(outcome, remoteSHA, head, remoteSHA, reason)
+	return &Result{Status: status, Reason: reason, Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}
 }
 
 func (r *Runner) check(ctx context.Context) {

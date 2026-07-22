@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -199,11 +200,15 @@ func restMergeable(state string) string {
 // latest-only rollup would otherwise hide. fetched reports whether the fetch
 // and parse both succeeded; false must never be read as "no check runs".
 func fetchCheckRunsWith(e execer, owner, name, sha, filter string) (runs restCheckRuns, fetched bool) {
+	return fetchCheckRunsCtxWith(context.Background(), e, owner, name, sha, filter)
+}
+
+func fetchCheckRunsCtxWith(ctx context.Context, e execer, owner, name, sha, filter string) (runs restCheckRuns, fetched bool) {
 	path := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, name, sha)
 	if filter != "" {
 		path += "?filter=" + filter
 	}
-	resp, err := runGHAPIWith(e, "30s", path)
+	resp, err := runGHAPICtxWith(ctx, e, "30s", path)
 	if err != nil {
 		return restCheckRuns{}, false
 	}

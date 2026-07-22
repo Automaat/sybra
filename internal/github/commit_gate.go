@@ -46,7 +46,7 @@ func fetchCommitGateWith(ctx context.Context, e execer, repo, sha string, requir
 		statuses[name] = ""
 	}
 
-	runs, fetched := fetchCheckRunsWith(e, owner, name, sha, "")
+	runs, fetched := fetchCheckRunsCtxWith(ctx, e, owner, name, sha, "")
 	if !fetched {
 		return CommitGate{}, fmt.Errorf("fetch check-runs %s@%s: request failed", repo, sha)
 	}
