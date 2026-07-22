@@ -699,6 +699,21 @@ func TestClaimTaskDispatch(t *testing.T) {
 	m.ReleaseTaskDispatch("never-claimed")
 }
 
+func TestHasRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	m.mu.Lock()
+	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.mu.Unlock()
+
+	if m.HasRunningAgentForTask("t1") {
+		t.Fatal("stale dispatch claim with no agent should not report running")
+	}
+	if m.IsDispatching("t1") {
+		t.Fatal("stale dispatch claim should be removed")
+	}
+}
+
 // TestIsDispatching verifies the read-only peek other coordinators (e.g.
 // internal/workflow.Engine's DispatchEvent/ResumeStalled) consult as the
 // single ground truth for "does some dispatcher already own this task's next
@@ -861,6 +876,23 @@ func TestHasOtherRunningAgentForTask(t *testing.T) {
 	m.ClaimTaskDispatch("t1")
 	if !m.HasOtherRunningAgentForTask("t1", "a1") {
 		t.Error("a held dispatch claim should count as another running agent")
+	}
+}
+
+func TestHasOtherRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	running := &Agent{ID: "a1", TaskID: "t1", State: StateRunning, cancel: func() {}}
+	m.mu.Lock()
+	m.agents["a1"] = running
+	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.mu.Unlock()
+
+	if m.HasOtherRunningAgentForTask("t1", "a1") {
+		t.Fatal("stale dispatch claim should not count as another running agent")
+	}
+	if m.IsDispatching("t1") {
+		t.Fatal("stale dispatch claim should be removed")
 	}
 }
 
