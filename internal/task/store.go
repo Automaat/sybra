@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/google/uuid"
@@ -1300,6 +1301,9 @@ func applyUpdateFields(t *Task, u Update) error {
 		if u.StatusReason == nil {
 			t.StatusReason = ""
 		}
+		if u.Blocker == nil {
+			t.Blocker = blocker.State{}
+		}
 		// Stamp ClosedAt on transition into a terminal status; clear on exit.
 		wasTerminal := IsTerminalStatus(oldStatus)
 		isTerminal := IsTerminalStatus(t.Status)
@@ -1313,6 +1317,15 @@ func applyUpdateFields(t *Task, u Update) error {
 	}
 	if u.StatusReason != nil {
 		t.StatusReason = *u.StatusReason
+		if *u.StatusReason == "" && u.Blocker == nil {
+			t.Blocker = blocker.State{}
+		}
+	}
+	if u.Blocker != nil {
+		if err := blocker.ValidateStatus(string(t.Status), *u.Blocker); err != nil {
+			return err
+		}
+		t.Blocker = *u.Blocker
 	}
 	if u.BlockedByIssue != nil {
 		t.BlockedByIssue = *u.BlockedByIssue

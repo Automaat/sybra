@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/executil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -364,7 +365,7 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 		return
 	}
 	t, err := r.tasks.Get(issue.TaskID)
-	if err != nil || t.Status == task.StatusHumanRequired {
+	if err != nil || t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked {
 		return
 	}
 	reason := exhaustedFixReason(github.MaxRetries, issue.Kind)
@@ -372,9 +373,16 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 		return tag == reconciledLatchTag
 	})
 	if _, err := r.tasks.Update(issue.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
+		Status:       task.Ptr(task.StatusBlocked),
 		StatusReason: task.Ptr(reason),
-		Tags:         task.Ptr(tags),
+		Blocker: &blocker.State{
+			Kind:       blocker.KindReviewFixExhausted,
+			Actor:      blocker.ActorReview,
+			Code:       string(issue.Kind),
+			NextAction: "reprobe_pr",
+			Exhausted:  true,
+		},
+		Tags: task.Ptr(tags),
 	}); err != nil {
 		r.logger.Error("pr-monitor.fix-exhausted.escalate", "task_id", issue.TaskID, "err", err)
 		return

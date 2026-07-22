@@ -1504,6 +1504,19 @@ func (h *humanReviewHandler) writePromptTaskDetails(b *strings.Builder, t task.T
 	if t.StatusReason != "" {
 		fmt.Fprintf(b, "- Status reason: %s\n", t.StatusReason)
 	}
+	if !t.Blocker.IsZero() {
+		fmt.Fprintf(b, "- Blocker: kind=%s actor=%s", t.Blocker.Kind, t.Blocker.Actor)
+		if t.Blocker.Code != "" {
+			fmt.Fprintf(b, " code=%s", t.Blocker.Code)
+		}
+		if t.Blocker.NextAction != "" {
+			fmt.Fprintf(b, " next_action=%s", t.Blocker.NextAction)
+		}
+		if t.Blocker.Exhausted {
+			b.WriteString(" exhausted=true")
+		}
+		b.WriteString("\n")
+	}
 	if t.ProjectID != "" {
 		fmt.Fprintf(b, "- Project: %s\n", t.ProjectID)
 	}

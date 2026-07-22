@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -16,6 +17,7 @@ type Update struct {
 	Slug                  *string
 	Status                *Status
 	StatusReason          *string
+	Blocker               *blocker.State
 	BlockedByIssue        *string
 	UmbrellaIssue         *string
 	DependsOn             *[]string

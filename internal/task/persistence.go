@@ -4,6 +4,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -26,6 +27,7 @@ type taskFrontmatter struct {
 	Issue                  string              `yaml:"issue,omitempty"`
 	RefIssue               string              `yaml:"ref_issue,omitempty"`
 	StatusReason           string              `yaml:"status_reason,omitempty"`
+	Blocker                *blocker.State      `yaml:"blocker,omitempty"`
 	HandoffSourceProvider  string              `yaml:"handoff_source_provider,omitempty"`
 	BlockedByIssue         string              `yaml:"blocked_by_issue,omitempty"`
 	UmbrellaIssue          string              `yaml:"umbrella_issue,omitempty"`
@@ -118,6 +120,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		Issue:                  fm.Issue,
 		RefIssue:               fm.RefIssue,
 		StatusReason:           fm.StatusReason,
+		Blocker:                derefBlocker(fm.Blocker),
 		HandoffSourceProvider:  fm.HandoffSourceProvider,
 		BlockedByIssue:         fm.BlockedByIssue,
 		UmbrellaIssue:          fm.UmbrellaIssue,
@@ -194,6 +197,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		Issue:                  t.Issue,
 		RefIssue:               t.RefIssue,
 		StatusReason:           t.StatusReason,
+		Blocker:                blockerPtr(t.Blocker),
 		HandoffSourceProvider:  t.HandoffSourceProvider,
 		BlockedByIssue:         t.BlockedByIssue,
 		UmbrellaIssue:          t.UmbrellaIssue,
@@ -228,6 +232,21 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		MirrorRev:              t.MirrorRev,
 		MirrorUpdatedAt:        t.MirrorUpdatedAt,
 	}
+}
+
+func blockerPtr(b blocker.State) *blocker.State {
+	if b.IsZero() {
+		return nil
+	}
+	out := b
+	return &out
+}
+
+func derefBlocker(b *blocker.State) blocker.State {
+	if b == nil {
+		return blocker.State{}
+	}
+	return *b
 }
 
 func agentRunsFromRecords(records []agentRunRecord) []AgentRun {
