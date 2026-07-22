@@ -64,12 +64,12 @@ Rules:
 - tags: pick from: backend, frontend, infra, docs, ci, auth, db, test. Also include one of small|medium|large and one of bug|feature|refactor|review|chore|docs — 2-5 of these vocabulary tags. Separately, add the routing tags "noplan" and/or "trivial" when the task qualifies (see the noplan/trivial guide below): these are the only tags outside the lists above you may emit, and they do NOT count toward the 2-5 — never drop a deserved "noplan"/"trivial" to stay under the cap.
 - size: small|medium|large
 - type: bug|feature|refactor|review|chore|docs
-- mode: headless (automated, no human-in-the-loop needed) or interactive (needs human judgment during execution)
+- mode: headless or interactive. Headless is the default pick for every task; use interactive only for legacy/back-compat cases that absolutely cannot run headless.
 - project_id: if the task title or body contains a github.com URL matching one of the registered projects below, set this to that project's "owner/repo". Otherwise empty string. If the "System metadata" section below already shows an existing_project_id or issue_url resolving to a registered project, leave project_id empty — the system already knows the answer and will not use your guess to override it. Only ever set this from a clear github.com URL, never from topical/vocabulary similarity to a project's name.
 
 Decision guide for mode:
-- PR review, simple fix, test writing, refactor → headless
-- Architecture decision, unclear scope, complex debugging → interactive
+- Default to headless for PR review, simple fix, test writing, refactor, debugging, and implementation work in general.
+- Only emit interactive when the task explicitly requires live human participation during execution and cannot be decomposed into a headless run. This is a legacy escape hatch and should almost never be chosen.
 
 Decision guide for size:
 - small: <50 LOC, single file, trivial
