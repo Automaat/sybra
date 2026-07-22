@@ -21,6 +21,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/Automaat/sybra/internal/task"
@@ -126,7 +127,7 @@ func TestAuthMiddlewareRejectsMissingToken(t *testing.T) {
 
 func TestWebhookHandlerCreatesUnsignedTaskWithDefaultsAndMetadata(t *testing.T) {
 	creator := &fakeWebhookTaskCreator{created: task.Task{ID: "task-1"}}
-	handler := newWebhookHandler(testLogger(), "", creator)
+	handler := newWebhookHandler(testLogger(), "", creator, nil)
 	body := []byte(`{"title":" from webhook ","body":"payload","tags":[" webhook ","","ops"],"project_id":" Automaat/sybra "}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
@@ -169,7 +170,7 @@ func TestWebhookHandlerCreatesUnsignedTaskWithDefaultsAndMetadata(t *testing.T) 
 
 func TestWebhookHandlerCreatesSignedTask(t *testing.T) {
 	creator := &fakeWebhookTaskCreator{created: task.Task{ID: "task-signed"}}
-	handler := newWebhookHandler(testLogger(), "secret", creator)
+	handler := newWebhookHandler(testLogger(), "secret", creator, nil)
 	body := []byte(`{"title":"signed","mode":"interactive"}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
@@ -186,7 +187,7 @@ func TestWebhookHandlerCreatesSignedTask(t *testing.T) {
 }
 
 func TestWebhookHandlerRejectsMissingSignature(t *testing.T) {
-	handler := newWebhookHandler(testLogger(), "secret", &fakeWebhookTaskCreator{})
+	handler := newWebhookHandler(testLogger(), "secret", &fakeWebhookTaskCreator{}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(`{"title":"signed"}`))
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -197,7 +198,7 @@ func TestWebhookHandlerRejectsMissingSignature(t *testing.T) {
 }
 
 func TestWebhookHandlerRejectsBadSignature(t *testing.T) {
-	handler := newWebhookHandler(testLogger(), "secret", &fakeWebhookTaskCreator{})
+	handler := newWebhookHandler(testLogger(), "secret", &fakeWebhookTaskCreator{}, nil)
 	body := []byte(`{"title":"signed"}`)
 	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
 	req.Header.Set(webhookSignatureHeader, webhookSignature("wrong", body))
@@ -222,7 +223,7 @@ func TestWebhookHandlerRejectsInvalidPayload(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			handler := newWebhookHandler(testLogger(), "", &fakeWebhookTaskCreator{})
+			handler := newWebhookHandler(testLogger(), "", &fakeWebhookTaskCreator{}, nil)
 			req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(tc.body))
 			rr := httptest.NewRecorder()
 			handler.ServeHTTP(rr, req)
@@ -235,7 +236,7 @@ func TestWebhookHandlerRejectsInvalidPayload(t *testing.T) {
 }
 
 func TestWebhookHandlerRejectsWrongMethod(t *testing.T) {
-	handler := newWebhookHandler(testLogger(), "", &fakeWebhookTaskCreator{})
+	handler := newWebhookHandler(testLogger(), "", &fakeWebhookTaskCreator{}, nil)
 	req := httptest.NewRequest(http.MethodGet, "/webhook/task", http.NoBody)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -290,7 +291,7 @@ func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveWebhookTaskCreator: %v", err)
 	}
-	handler := newWebhookHandler(logger, "", creator)
+	handler := newWebhookHandler(logger, "", creator, nil)
 	body := []byte(`{"title":"from webhook","body":"hook body","tags":["webhook","ext"],"project_id":"Automaat/sybra"}`)
 	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
 	rr := httptest.NewRecorder()
@@ -338,6 +339,58 @@ func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("task:created event for %s not observed", resp.TaskID)
+	}
+}
+
+func TestWebhookHandlerRejectsTaskCreationDuringDrain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+
+	cfg := startupLikeServerTestConfig(home)
+	logger := slog.New(slog.DiscardHandler)
+	app := sybra.NewApp(logger, &slog.LevelVar{}, cfg)
+	if err := app.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	t.Cleanup(func() {
+		app.Shutdown(context.Background())
+	})
+
+	creator, err := resolveWebhookTaskCreator(app)
+	if err != nil {
+		t.Fatalf("resolveWebhookTaskCreator: %v", err)
+	}
+	handler := newWebhookHandler(logger, "", creator, func() error {
+		return app.HTTPAdmission("TaskService", "CreateTask", httpapi.MethodMeta{})
+	})
+	app.BeginDrain()
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(`{"title":"from webhook"}`))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rr.Code)
+	}
+	var resp webhookErrorEnvelope
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Code != string(httpapi.ErrCodeUnavailable) {
+		t.Fatalf("code = %q, want %q", resp.Code, httpapi.ErrCodeUnavailable)
+	}
+
+	taskSvc, ok := sybra.ServiceRegistry(app)["TaskService"].Impl.(*sybra.TaskService)
+	if !ok {
+		t.Fatal("TaskService impl missing")
+	}
+	tasks, err := taskSvc.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("tasks created during drain = %d, want 0", len(tasks))
 	}
 }
 

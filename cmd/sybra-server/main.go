@@ -419,6 +419,8 @@ type webhookTaskCreator interface {
 	CreateTaskWithInit(title, body, mode string, init task.Update) (task.Task, error)
 }
 
+type webhookAdmissionFunc func() error
+
 type webhookTaskRequest struct {
 	Title     string   `json:"title"`
 	Body      string   `json:"body"`
@@ -448,7 +450,7 @@ func resolveWebhookTaskCreator(app *sybra.App) (webhookTaskCreator, error) {
 	return creator, nil
 }
 
-func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCreator) http.Handler {
+func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCreator, admit webhookAdmissionFunc) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webhook/task", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -469,6 +471,12 @@ func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCr
 		if secret != "" && !validWebhookSignature(secret, r.Header.Get(webhookSignatureHeader), body) {
 			writeWebhookError(w, logger, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
 			return
+		}
+		if admit != nil {
+			if err := admit(); err != nil {
+				writeWebhookAdmissionError(w, logger, err)
+				return
+			}
 		}
 
 		var req webhookTaskRequest
@@ -553,6 +561,20 @@ func writeWebhookError(w http.ResponseWriter, logger *slog.Logger, status int, c
 	writeWebhookJSON(w, status, webhookErrorEnvelope{Error: message, Code: code})
 }
 
+func writeWebhookAdmissionError(w http.ResponseWriter, logger *slog.Logger, err error) {
+	var clientErr httpapi.ClientError
+	if errors.As(err, &clientErr) {
+		code := "validation_error"
+		if clientErr.HTTPStatus() == http.StatusServiceUnavailable {
+			code = string(httpapi.ErrCodeUnavailable)
+		}
+		writeWebhookError(w, logger, clientErr.HTTPStatus(), code, clientErr.Error())
+		return
+	}
+	logger.Warn("webhook.admission.error", "err", err)
+	writeWebhookError(w, logger, http.StatusInternalServerError, "internal_error", "internal error")
+}
+
 func startWebhookServer(ctx context.Context, cfg *config.Config, app *sybra.App, logger *slog.Logger) (*http.Server, chan error, error) {
 	if cfg == nil || !cfg.Webhook.Enabled {
 		return nil, nil, nil
@@ -561,7 +583,10 @@ func startWebhookServer(ctx context.Context, cfg *config.Config, app *sybra.App,
 	if err != nil {
 		return nil, nil, fmt.Errorf("webhook: %w", err)
 	}
-	return startWebhookServerWithHandler(ctx, cfg.Webhook, newWebhookHandler(logger, cfg.Webhook.Secret, creator), logger)
+	admit := func() error {
+		return app.HTTPAdmission("TaskService", "CreateTask", httpapi.MethodMeta{})
+	}
+	return startWebhookServerWithHandler(ctx, cfg.Webhook, newWebhookHandler(logger, cfg.Webhook.Secret, creator, admit), logger)
 }
 
 func startWebhookServerWithHandler(ctx context.Context, cfg config.WebhookConfig, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
