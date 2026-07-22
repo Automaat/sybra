@@ -158,10 +158,18 @@ func (m *Manager) StopAgents(agents []*Agent) {
 // callers that just want a best-effort stop, like DeleteTask) must check it
 // rather than assume a timed-out call still stopped everything.
 func (m *Manager) KillAgentsForTask(taskID string, timeout time.Duration) (allExited bool) {
+	return m.KillAgentsForTaskAllowingAgent(taskID, "", timeout)
+}
+
+// KillAgentsForTaskAllowingAgent is KillAgentsForTask excluding exceptAgentID.
+func (m *Manager) KillAgentsForTaskAllowingAgent(taskID, exceptAgentID string, timeout time.Duration) (allExited bool) {
 	m.mu.RLock()
 	var targets []*Agent
 	for _, a := range m.agents {
 		if a.TaskID == taskID {
+			if exceptAgentID != "" && a.ID == exceptAgentID {
+				continue
+			}
 			targets = append(targets, a)
 		}
 	}

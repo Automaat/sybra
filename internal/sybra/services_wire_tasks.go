@@ -45,11 +45,11 @@ func (a *App) wireTaskService() {
 		a.humanReview.dispatchFromHumanRequired = func(id, target, reason, completingAgentID string) (task.Task, error) {
 			return a.taskSvc.dispatchFromHumanRequiredAllowingAgent(id, target, reason, completingAgentID)
 		}
-		a.humanReview.advanceClosedTaskPR = func(ctx context.Context, taskID string, prNumber int, state string) error {
+		a.humanReview.advanceClosedTaskPR = func(ctx context.Context, taskID string, prNumber int, state, completingAgentID string) error {
 			if a.reviewer == nil {
 				return errors.New("review handler unavailable")
 			}
-			return a.reviewer.AdvanceClosedTaskPR(ctx, taskID, prNumber, state)
+			return a.reviewer.AdvanceClosedTaskPRAllowingAgent(ctx, taskID, prNumber, state, completingAgentID)
 		}
 	}
 }

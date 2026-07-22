@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -78,7 +80,7 @@ type humanReviewHandler struct {
 	// legacy direct status write when dispatch wiring is unavailable.
 	dispatchFromHumanRequired func(id, target, reason, completingAgentID string) (task.Task, error)
 	fetchPRState              func(repo string, number int) (github.PRState, error)
-	advanceClosedTaskPR       func(ctx context.Context, taskID string, prNumber int, state string) error
+	advanceClosedTaskPR       func(ctx context.Context, taskID string, prNumber int, state, completingAgentID string) error
 
 	mu       sync.Mutex
 	inflight map[string]string      // taskID -> agent ID
@@ -90,6 +92,8 @@ type humanReviewHandler struct {
 // --json-schema (verdict.Schema) and parsed by verdict.Parse. Aliased here
 // so the rest of this file (and its tests) keep the historical local name.
 type verdictDecision = verdict.Decision
+
+var humanReviewPRNumberRe = regexp.MustCompile(`(?i)(?:\bPR\s*#|/pull/)([1-9]\d*)\b`)
 
 type humanReviewSpawnOptions struct {
 	Provider              string
@@ -413,10 +417,18 @@ func (h *humanReviewHandler) humanReviewCycleRunCount(t task.Task) int {
 func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID string, v verdictDecision) {
 	note := h.scrubForTask(current.ProjectID, v.Summary)
 	status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
-	if ok && current.Status == task.StatusHumanRequired && h.verifyUnblocked(current) && h.verifyDoneRecovery(current, status) {
+	if ok && current.Status == task.StatusHumanRequired && h.verifyUnblocked(current) {
+		var prepared bool
+		current, prepared = h.prepareDoneRecovery(current, status, v)
+		if !prepared || !h.verifyDoneRecovery(current, status) {
+			if h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
+				h.markVerdictRendered(current.ID, agentID)
+			}
+			return
+		}
 		statusReason := "auto-review recovery: " + strings.TrimSpace(v.Summary)
 		if status == task.StatusDone {
-			if err := h.advanceDoneRecovery(current); err != nil {
+			if err := h.advanceDoneRecovery(current, agentID); err != nil {
 				h.logger.Error("human-review.unblocked.land-closed-pr",
 					"task_id", current.ID, "agent_id", agentID, "pr_number", current.PRNumber, "err", err)
 				return
@@ -512,11 +524,13 @@ func (h *humanReviewHandler) recoverRenderedUnblockedTasks() {
 		if !ok {
 			continue
 		}
-		if !h.verifyDoneRecovery(t, status) {
-			continue
-		}
 		if status == task.StatusDone {
-			if err := h.advanceDoneRecovery(t); err != nil {
+			var prepared bool
+			t, prepared = h.prepareDoneRecovery(t, status, v)
+			if !prepared || !h.verifyDoneRecovery(t, status) {
+				continue
+			}
+			if err := h.advanceDoneRecovery(t, agentID); err != nil {
 				h.logger.Warn("human-review.recover-rendered.land-closed-pr",
 					"task_id", t.ID, "agent_id", agentID, "pr_number", t.PRNumber, "err", err)
 				continue
@@ -676,11 +690,42 @@ func (h *humanReviewHandler) verifyDoneRecovery(t task.Task, status task.Status)
 	return true
 }
 
-func (h *humanReviewHandler) advanceDoneRecovery(t task.Task) error {
+func (h *humanReviewHandler) prepareDoneRecovery(t task.Task, status task.Status, v verdictDecision) (task.Task, bool) {
+	if status != task.StatusDone || t.PRNumber > 0 {
+		return t, true
+	}
+	number, ok := humanReviewRecoverPRNumber(v)
+	if !ok {
+		return t, true
+	}
+	updated, err := h.tasks.Update(t.ID, task.Update{PRNumber: task.Ptr(number)})
+	if err != nil {
+		h.logger.Warn("human-review.unblocked.done-pr-backfill",
+			"task_id", t.ID, "project_id", t.ProjectID, "pr_number", number, "err", err)
+		return t, false
+	}
+	return updated, true
+}
+
+func humanReviewRecoverPRNumber(v verdictDecision) (int, bool) {
+	for _, text := range []string{v.Summary, v.Reason} {
+		match := humanReviewPRNumberRe.FindStringSubmatch(text)
+		if len(match) != 2 {
+			continue
+		}
+		number, err := strconv.Atoi(match[1])
+		if err == nil && number > 0 {
+			return number, true
+		}
+	}
+	return 0, false
+}
+
+func (h *humanReviewHandler) advanceDoneRecovery(t task.Task, completingAgentID string) error {
 	if h.advanceClosedTaskPR == nil {
 		return fmt.Errorf("closed PR landing handler unavailable")
 	}
-	return h.advanceClosedTaskPR(context.Background(), t.ID, t.PRNumber, "MERGED")
+	return h.advanceClosedTaskPR(context.Background(), t.ID, t.PRNumber, "MERGED", completingAgentID)
 }
 
 func safeHumanReviewRecoveryStatus(action string) (task.Status, bool) {
