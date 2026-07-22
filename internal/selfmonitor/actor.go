@@ -41,10 +41,8 @@ func (a *Actor) Act(_ context.Context, inv InvestigatedFinding) ActionRecord {
 	}
 }
 
-// flipAgentMode repoints a confirmed triage_mismatch task back to headless.
-// Interactive mode is being retired; the actor's job is now to steer stale
-// legacy tasks onto the default execution path instead of minting new
-// interactive runs.
+// flipAgentMode requeues a confirmed triage_mismatch task onto the headless
+// execution path.
 func (a *Actor) flipAgentMode(inv InvestigatedFinding) ActionRecord {
 	rec := ActionRecord{
 		Category:    string(inv.Finding.Category),
@@ -66,7 +64,11 @@ func (a *Actor) flipAgentMode(inv InvestigatedFinding) ActionRecord {
 	}
 
 	mode := task.AgentModeHeadless
-	if _, err := a.Tasks.Update(inv.Finding.TaskID, task.Update{AgentMode: &mode}); err != nil {
+	status := task.StatusTodo
+	if _, err := a.Tasks.Update(inv.Finding.TaskID, task.Update{
+		AgentMode: &mode,
+		Status:    &status,
+	}); err != nil {
 		rec.Error = fmt.Sprintf("update task: %s", err)
 		a.Logger.Warn("actor.flip_agent_mode.failed",
 			"task", inv.Finding.TaskID, "err", err)

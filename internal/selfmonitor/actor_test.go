@@ -78,6 +78,9 @@ func TestActor_FlipsAgentMode_ConfirmedTriageMismatch(t *testing.T) {
 	if u.AgentMode == nil || *u.AgentMode != task.AgentModeHeadless {
 		t.Errorf("AgentMode = %v, want headless", u.AgentMode)
 	}
+	if u.Status == nil || *u.Status != task.StatusTodo {
+		t.Errorf("Status = %v, want todo", u.Status)
+	}
 }
 
 func TestActor_DryRun_DoesNotUpdate(t *testing.T) {
@@ -211,8 +214,12 @@ func TestActor_FlipsAgentModeViaServicePipeline(t *testing.T) {
 	if r.ActionsTaken[0].Kind != "flip_agent_mode" {
 		t.Errorf("Kind = %q, want flip_agent_mode", r.ActionsTaken[0].Kind)
 	}
-	if _, ok := updater.updated["task-wired"]; !ok {
+	u, ok := updater.updated["task-wired"]
+	if !ok {
 		t.Error("task-wired not updated via pipeline")
+	}
+	if u.Status == nil || *u.Status != task.StatusTodo {
+		t.Errorf("Status = %v, want todo", u.Status)
 	}
 }
 
