@@ -377,9 +377,9 @@ func (e *Engine) verifyCommitsAfterAutoCommit(taskID, wtPath string, t TaskInfo)
 		return nil, "", "", false
 	}
 	e.logger.Warn("workflow.verify-commits.auto-committed", "task_id", taskID)
-	if recovered, out, ok := e.verifyCommitsRecoveredRemoteAdopt(taskID, wtPath, t); ok || out != "" {
+	if recovered, source, out, ok := e.verifyCommitsRecoveredRemoteAdopt(taskID, wtPath, t); ok || out != "" {
 		if ok {
-			return recovered, finalCommitSourceAgent, "", true
+			return recovered, source, "", true
 		}
 		return nil, "", out, false
 	}
@@ -394,19 +394,24 @@ func (e *Engine) verifyCommitsAfterAutoCommit(taskID, wtPath string, t TaskInfo)
 	return recovered, finalCommitSourceFallback, "", true
 }
 
-func (e *Engine) verifyCommitsRecoveredRemoteAdopt(taskID, wtPath string, t TaskInfo) (output []byte, stepOutput string, ok bool) {
+func (e *Engine) verifyCommitsRecoveredRemoteAdopt(taskID, wtPath string, t TaskInfo) (output []byte, source, stepOutput string, ok bool) {
 	_, adopted, err := e.adoptEquivalentRemoteCommit(taskID, wtPath, t)
-	if err != nil || !adopted {
-		return nil, "", false
-	}
-	output, err = e.gitLogAheadOfBase(wtPath)
 	if err != nil {
-		return nil, "", false
+		out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error after auto-commit remote reconcile: ")
+		return nil, "", out, false
+	}
+	if !adopted {
+		return nil, "", "", false
+	}
+	output, err = e.gitLogAheadOfBaseWithRetry(taskID, wtPath, t)
+	if err != nil {
+		out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error after auto-commit remote reconcile: ")
+		return nil, "", out, false
 	}
 	if strings.TrimSpace(string(output)) == "" {
-		return output, "", false
+		return output, "", "", false
 	}
-	return output, finalCommitSourceAgent, true
+	return output, finalCommitSourceAgent, "", true
 }
 
 func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExec *Execution, wtPath string) StepOutput {
@@ -441,7 +446,9 @@ func (e *Engine) recordFinalCommitState(taskID string, wfExec *Execution, wtPath
 	if agentID == "" {
 		return
 	}
-	headSHA := revParseCommit(context.Background(), wtPath, "HEAD")
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	headSHA := revParseCommit(ctx, wtPath, "HEAD")
 	if headSHA == "" {
 		return
 	}

@@ -412,6 +412,10 @@ file="$3"
 content="$4"
 stage="$5"
 repo="$stage/repo"
+cleanup() {
+  rm -rf "$stage"
+}
+trap cleanup EXIT INT TERM
 git clone "$remote" "$repo" >/dev/null 2>&1
 cd "$repo"
 if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
@@ -423,13 +427,16 @@ printf '%s' "$content" > "$file"
 git add "$file"
 git -c user.email=fake-claude@test.local -c user.name="Fake Claude" commit -m "feat: remote race" >/dev/null 2>&1
 git push origin "HEAD:refs/heads/$branch" >/dev/null 2>&1
-rm -rf "$stage"
 `
 	cmd := exec.CommandContext(context.Background(), "bash", "-lc", script, "bash", remote, branch, fileName, content, stageDir)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		_ = os.RemoveAll(stageDir)
+		return err
+	}
+	return nil
 }
 
 func gitOutput(dir string, args ...string) (string, error) {

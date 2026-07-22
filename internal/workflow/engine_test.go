@@ -8157,6 +8157,94 @@ func TestExecVerifyCommits_AutoCommitsUncommittedWork(t *testing.T) {
 	}
 }
 
+func TestExecVerifyCommits_AutoCommitRemoteReconcileGitErrorEscalates(t *testing.T) {
+	countFile := filepath.Join(t.TempDir(), "read-tree-count")
+	withFakeGit(t, `#!/bin/sh
+if [ "$1" = "read-tree" ] && [ "$2" = "HEAD" ]; then
+  count=0
+  if [ -f "`+countFile+`" ]; then
+    count=$(cat "`+countFile+`")
+  fi
+  count=$((count + 1))
+  printf "%s" "$count" > "`+countFile+`"
+  if [ "$count" = "2" ]; then
+    echo "fatal: synthetic read-tree failure" >&2
+    exit 128
+  fi
+fi
+exec "{{REAL_GIT}}" "$@"
+`)
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit */)
+	if err := os.WriteFile(filepath.Join(wtDir, "uncommitted.txt"), []byte("finished work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "git error") {
+		t.Fatalf("Output = %q, want git error after remote reconcile failure", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Fatalf("task status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "after auto-commit remote reconcile") {
+		t.Fatalf("status reason = %q, want auto-commit remote reconcile context", reason)
+	}
+	if got := strings.TrimSpace(readFile(t, countFile)); got != "2" {
+		t.Fatalf("read-tree calls = %q, want 2 (pre- and post-auto-commit probes)", got)
+	}
+}
+
+func TestRecordFinalCommitState_ContextCancelDoesNotHang(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1"}},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, true /* withExtraCommit */)
+	withFakeGit(t, `#!/bin/sh
+if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "HEAD^{commit}" ]; then
+  sleep 30
+fi
+exec "{{REAL_GIT}}" "$@"
+`)
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	engine.SetContext(parentCtx)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	wfExec := &Execution{StepHistory: []StepRecord{{StepID: "implement", Status: "completed", AgentID: "a1"}}}
+
+	start := time.Now()
+	engine.recordFinalCommitState("t1", wfExec, wtDir, finalCommitSourceAgent)
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("recordFinalCommitState took %v after ctx cancel; want prompt return", elapsed)
+	}
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.AgentRuns[0].HeadSHA != "" {
+		t.Fatalf("head_sha = %q, want empty when rev-parse is canceled", ti.AgentRuns[0].HeadSHA)
+	}
+}
+
 // makeGitRepoBehindOrigin builds a worktree where HEAD is an ancestor of
 // origin/main: origin/main points at commit B, HEAD is reset to commit A
 // (a parent of B). `git log origin/main..HEAD` is empty AND HEAD != base.tip.
