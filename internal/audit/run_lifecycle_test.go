@@ -3,6 +3,8 @@ package audit
 import (
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/runoutcome"
 )
 
 func TestNormalizeAgentRuns(t *testing.T) {
@@ -74,12 +76,15 @@ func TestNormalizeAgentRuns(t *testing.T) {
 		t.Fatalf("reattached run mismatch: %+v", reattached)
 	}
 
-	missingState := assertRun("a-legacy")
-	if missingState.Failed {
-		t.Fatalf("missing-state completed run must not fail: %+v", missingState)
+	missingOutcome := assertRun("a-legacy")
+	if missingOutcome.Failed {
+		t.Fatalf("missing-outcome completed run must not fail: %+v", missingOutcome)
 	}
-	if missingState.Compatibility != RunCompatMissingStateAssumedStopped {
-		t.Fatalf("missing-state compatibility = %q, want %q", missingState.Compatibility, RunCompatMissingStateAssumedStopped)
+	if missingOutcome.Outcome != runoutcome.Unknown {
+		t.Fatalf("missing-outcome outcome = %q, want %q", missingOutcome.Outcome, runoutcome.Unknown)
+	}
+	if missingOutcome.Compatibility != RunCompatMissingOutcomeUnknown {
+		t.Fatalf("missing-outcome compatibility = %q, want %q", missingOutcome.Compatibility, RunCompatMissingOutcomeUnknown)
 	}
 
 	legacyFailed := assertRun("a-legacy-failed")

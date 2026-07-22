@@ -17,7 +17,7 @@ func TestIsAgentFailure(t *testing.T) {
 		{"legacy failed event", audit.Event{Type: audit.EventAgentFailed}, true},
 		{"completed stopped is success", audit.Event{Type: audit.EventAgentCompleted, Data: map[string]any{"state": "stopped"}}, false},
 		{"completed error is failure", audit.Event{Type: audit.EventAgentCompleted, Data: map[string]any{"state": "error"}}, true},
-		{"completed without state is success", audit.Event{Type: audit.EventAgentCompleted, Data: map[string]any{}}, false},
+		{"completed without state is unknown non-failure", audit.Event{Type: audit.EventAgentCompleted, Data: map[string]any{}}, false},
 		{"unrelated event", audit.Event{Type: audit.EventTaskCreated}, false},
 	}
 	for _, tt := range tests {
