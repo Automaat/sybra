@@ -473,17 +473,17 @@ func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note 
 		if err := h.landClosedPR(ctx, current.ID, prNumber, "MERGED", agentID); err != nil {
 			h.logger.Error("human-review.unblocked.land-merged",
 				"task_id", current.ID, "agent_id", agentID, "pr", prNumber, "err", err)
+		} else {
+			if err := h.finalizeDoneRecovery(current.ID, prNumber, mergedPR); err != nil {
+				h.logger.Error("human-review.unblocked.finalize-done",
+					"task_id", current.ID, "agent_id", agentID, "pr", prNumber, "err", err)
+				return
+			}
+			if h.appendNote(current.ID, "Auto-review: unblocked", note) {
+				h.markVerdictRendered(current.ID, agentID)
+			}
 			return
 		}
-		if err := h.finalizeDoneRecovery(current.ID, prNumber, mergedPR); err != nil {
-			h.logger.Error("human-review.unblocked.finalize-done",
-				"task_id", current.ID, "agent_id", agentID, "pr", prNumber, "err", err)
-			return
-		}
-		if h.appendNote(current.ID, "Auto-review: unblocked", note) {
-			h.markVerdictRendered(current.ID, agentID)
-		}
-		return
 	}
 
 	statusReason := "auto-review recovery: " + strings.TrimSpace(v.Summary)

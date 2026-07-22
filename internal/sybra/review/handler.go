@@ -1053,9 +1053,11 @@ func (r *Handler) AdvanceClosedTaskPRAllowingAgent(ctx context.Context, taskID s
 }
 
 func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, completingAgentID string) error {
-	hasRunning := r.hasBlockingAgentForTask(ctx, c.TaskID)
+	var hasRunning bool
 	if completingAgentID != "" {
 		hasRunning = r.hasBlockingAgentForTaskAllowingAgent(ctx, c.TaskID, completingAgentID)
+	} else {
+		hasRunning = r.hasBlockingAgentForTask(ctx, c.TaskID)
 	}
 	if hasRunning {
 		r.logger.Info("pr-monitor.closed-stop-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
