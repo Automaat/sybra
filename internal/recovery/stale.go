@@ -162,7 +162,7 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	// the single dispatch choke point this path and the workflow resume path
 	// both funnel through — so it is delivered exactly once regardless of
 	// which loop re-dispatches the task.
-	prompt := "Continue implementing this task. When done, commit your work and push the branch to origin. Do NOT create a PR; Sybra's workflow will create, link, and stamp the PR after review and testing pass."
+	prompt := "Continue implementing this task. When done, commit your work and push the branch to origin. Do NOT create a PR; Sybra's workflow will create, link, and stamp the PR after review and testing have passed."
 	currentStatus := t.Status
 	r.WG.Go(func() {
 		_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false, oneShot)
