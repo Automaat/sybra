@@ -332,6 +332,16 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 	}
 
 	if strings.TrimSpace(string(output)) == "" {
+		adoption := e.handleVerifyCommitsRemoteAdoption(taskID, wtPath, step, t)
+		if adoption.stop {
+			return adoption.stepOutput, nil
+		}
+		if adoption.adopted {
+			output = adoption.output
+		}
+	}
+
+	if strings.TrimSpace(string(output)) == "" {
 		// A crashed implementation agent (e.g. API error mid-run) leaves a fresh
 		// worktree branch sitting exactly on the base tip — git-indistinguishable
 		// from "work already merged via another branch". Marking such a task done
@@ -416,20 +426,109 @@ func branchMergedIntoBase(parentCtx context.Context, wtPath string) bool {
 }
 
 func (e *Engine) gitLogAheadOfBase(wtPath string) ([]byte, error) {
+	return e.gitLogRefAheadOfBase(wtPath, "HEAD")
+}
+
+func (e *Engine) gitLogRefAheadOfBase(wtPath, headRef string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	baseRef := resolveOriginBase(ctx, wtPath)
-	cmd := exec.CommandContext(ctx, "git", "log", baseRef+"..HEAD", "--oneline")
+	cmd := exec.CommandContext(ctx, "git", "log", baseRef+".."+headRef, "--oneline")
 	cmd.Dir = wtPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		detail := strings.TrimSpace(string(out))
 		if detail == "" {
-			return out, fmt.Errorf("git log %s..HEAD: %w", baseRef, err)
+			return out, fmt.Errorf("git log %s..%s: %w", baseRef, headRef, err)
 		}
-		return out, fmt.Errorf("git log %s..HEAD: %w: %s", baseRef, err, detail)
+		return out, fmt.Errorf("git log %s..%s: %w: %s", baseRef, headRef, err, detail)
 	}
 	return out, nil
+}
+
+type verifyCommitsRemoteAdoption struct {
+	output     []byte
+	adopted    bool
+	stop       bool
+	stepOutput StepOutput
+}
+
+func (e *Engine) handleVerifyCommitsRemoteAdoption(taskID, wtPath string, step *Step, t TaskInfo) verifyCommitsRemoteAdoption {
+	recovered, ok, recErr := e.adoptRemoteTaskBranchAheadOfBase(taskID, wtPath, t)
+	if recErr == nil {
+		return verifyCommitsRemoteAdoption{output: recovered, adopted: ok}
+	}
+	if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
+		e.logger.Warn("workflow.verify-commits.canceled", "task_id", taskID, "err", recErr)
+		return verifyCommitsRemoteAdoption{
+			stop:       true,
+			stepOutput: StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"},
+		}
+	}
+
+	diagnosis := diagnoseWorktreeState(e.ctx, wtPath)
+	e.logger.Warn("workflow.verify-commits.remote-adopt-error", "task_id", taskID, "worktree", wtPath, "err", recErr, "diagnosis", diagnosis)
+	reason := "worktree git error while adopting remote task branch: " + recErr.Error()
+	if diagnosis != "" {
+		reason += " (" + diagnosis + ")"
+	}
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
+	}
+	return verifyCommitsRemoteAdoption{
+		stop:       true,
+		stepOutput: StepOutput{StepID: step.ID, Status: "completed", Output: "remote branch adopt error: flipped to human-required"},
+	}
+}
+
+func (e *Engine) adoptRemoteTaskBranchAheadOfBase(taskID, wtPath string, t TaskInfo) (output []byte, adopted bool, err error) {
+	branch := strings.TrimSpace(t.Branch)
+	if !validVerifyCommitsBranch(branch) {
+		return nil, false, nil
+	}
+	if !e.recoverVerifyCommitsRefs(taskID, wtPath, t) {
+		return nil, false, nil
+	}
+
+	remoteRef := "origin/" + branch
+	remoteAhead, err := e.gitLogRefAheadOfBase(wtPath, remoteRef)
+	if err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(string(remoteAhead)) == "" {
+		return nil, false, nil
+	}
+
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	current, err := currentGitBranch(ctx, wtPath)
+	if err != nil {
+		return nil, false, err
+	}
+	if current != branch {
+		return nil, false, fmt.Errorf("remote task branch %q is ahead of base but worktree is on %q", branch, current)
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "reset", "--hard", remoteRef)
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			return nil, false, fmt.Errorf("git reset --hard %s: %w", remoteRef, err)
+		}
+		return nil, false, fmt.Errorf("git reset --hard %s: %w: %s", remoteRef, err, detail)
+	}
+
+	recovered, err := e.gitLogAheadOfBase(wtPath)
+	if err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(string(recovered)) == "" {
+		recovered = remoteAhead
+	}
+	e.logger.Warn("workflow.verify-commits.remote-adopted", "task_id", taskID, "branch", branch)
+	return recovered, true, nil
 }
 
 func shouldRetryVerifyCommitsGitError(err error, output []byte) bool {
@@ -463,7 +562,7 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 	defer cancel()
 
 	branch := strings.TrimSpace(t.Branch)
-	if branch == "" || strings.HasPrefix(branch, "-") || strings.Contains(branch, "..") || strings.Contains(branch, " ") {
+	if !validVerifyCommitsBranch(branch) {
 		e.logger.Warn("workflow.verify-commits.ref-recovery.skip", "task_id", taskID, "branch", branch)
 		return false
 	}
@@ -506,6 +605,24 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 	}
 	e.logger.Warn("workflow.verify-commits.ref-recovery.fetched", "task_id", taskID, "branch", branch, "base", baseRef)
 	return true
+}
+
+func validVerifyCommitsBranch(branch string) bool {
+	return branch != "" && !strings.HasPrefix(branch, "-") && !strings.Contains(branch, "..") && !strings.Contains(branch, " ")
+}
+
+func currentGitBranch(ctx context.Context, wtPath string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "branch", "--show-current")
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			return "", fmt.Errorf("git branch --show-current: %w", err)
+		}
+		return "", fmt.Errorf("git branch --show-current: %w: %s", err, detail)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func verifyCommitsNegotiationTips(ctx context.Context, wtPath, baseRef string) []string {

@@ -8,13 +8,13 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-// ReconcileLostPRNumber self-heals in-review tasks whose pr_number is 0: with
-// no linked PR the landing detector can never match a merged PR, so the task
-// orphans at in-review while every recovery pass re-derives that status from
-// its stale workflow. A merged PR (resolved by branch, then linked issue)
-// advances the task to done and clears the workflow so the status sticks; an
-// open PR backfills pr_number; no match is left untouched. A nil PRs resolver
-// makes this a no-op so it never blocks a machine without GitHub configured.
+// ReconcileLostPRNumber self-heals review/PR-stage tasks whose pr_number is 0:
+// with no linked PR the landing detector can never match a merged PR, so the
+// task orphans while every recovery pass re-derives that status from its stale
+// workflow. A merged PR (resolved by branch, then linked issue) advances the
+// task to done and clears the workflow so the status sticks; an open PR
+// backfills pr_number; no match is left untouched. A nil PRs resolver makes this
+// a no-op so it never blocks a machine without GitHub configured.
 func (r *Recovery) ReconcileLostPRNumber(ctx context.Context) {
 	if r.PRs == nil {
 		return
@@ -72,7 +72,7 @@ func (r *Recovery) reconcileBackfillPR(t *task.Task, prNumber int) {
 }
 
 func reconcileLostPREligible(t *task.Task) bool {
-	if t.Status != task.StatusInReview {
+	if t.Status != task.StatusReadyReview && t.Status != task.StatusInReview && t.Status != task.StatusReadyPR {
 		return false
 	}
 	if t.PRNumber != 0 || t.Branch == "" || t.ProjectID == "" {

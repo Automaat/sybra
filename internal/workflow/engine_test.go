@@ -8089,6 +8089,40 @@ func TestExecVerifyCommits_BranchAncestorOfBaseMarksDone(t *testing.T) {
 	}
 }
 
+func TestExecVerifyCommits_AdoptsRemoteTaskBranchBeforeMergedDecision(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	const branch = "fix/remote-only"
+	wtDir := makeGitRepoWithRemoteOnlyTaskBranch(t, branch)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Errorf("Output = %q, want 'commits verified'", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress (not auto-done)", ti.Status)
+	}
+	if got := strings.TrimSpace(runGitAt(t, wtDir, "branch", "--show-current")); got != branch {
+		t.Fatalf("current branch = %q, want %q", got, branch)
+	}
+	log := runGitAt(t, wtDir, "log", "origin/main..HEAD", "--name-only", "--oneline")
+	if !strings.Contains(log, "remote.txt") {
+		t.Fatalf("git log origin/main..HEAD = %q, want remote-only commit", log)
+	}
+}
+
 // TestExecVerifyCommits_AgentFailedFlipsHumanRequired covers the false-positive
 // auto-close: a fresh worktree branch sits exactly on origin/main (no commits
 // ahead, HEAD == base.tip — git-identical to "already merged") *because the
@@ -8226,6 +8260,43 @@ func makeGitRepoBehindOrigin(t *testing.T) string {
 	run("reset", "--hard", "HEAD~1")
 
 	return dir
+}
+
+func makeGitRepoWithRemoteOnlyTaskBranch(t *testing.T, branch string) string {
+	t.Helper()
+	root := t.TempDir()
+	seed := filepath.Join(root, "seed")
+	remote := filepath.Join(root, "remote.git")
+	wt := filepath.Join(root, "wt")
+
+	if err := os.Mkdir(seed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "init", "-b", "main")
+	runGitAt(t, seed, "config", "user.email", "test@test.com")
+	runGitAt(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "add", "README.md")
+	runGitAt(t, seed, "commit", "-m", "init")
+	runGitAt(t, seed, "clone", "--bare", seed, remote)
+
+	runGitAt(t, root, "clone", remote, wt)
+	runGitAt(t, wt, "config", "user.email", "test@test.com")
+	runGitAt(t, wt, "config", "user.name", "Test")
+	runGitAt(t, wt, "checkout", "-b", branch, "origin/main")
+
+	runGitAt(t, seed, "remote", "add", "origin", remote)
+	runGitAt(t, seed, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(seed, "remote.txt"), []byte("remote work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "add", "remote.txt")
+	runGitAt(t, seed, "commit", "-m", "feat: remote work")
+	runGitAt(t, seed, "push", "origin", branch)
+
+	return wt
 }
 
 // --- require_sidecar step ---

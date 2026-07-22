@@ -27,11 +27,15 @@ func (f *fakePRResolver) ResolvePRForTask(context.Context, string, string, strin
 
 func newInReviewOrphan(t *testing.T, tasks *task.Manager, mutate func(*task.Update)) string {
 	t.Helper()
+	return newLostPROrphanWithStatus(t, tasks, task.StatusInReview, mutate)
+}
+
+func newLostPROrphanWithStatus(t *testing.T, tasks *task.Manager, status task.Status, mutate func(*task.Update)) string {
+	t.Helper()
 	created, err := tasks.Create("lost pr number", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
-	status := task.StatusInReview
 	branch := "feat/thing-abcd1234"
 	proj := "owner/repo"
 	wf := &workflow.Execution{
@@ -75,6 +79,7 @@ func newReconcileRecovery(t *testing.T, tasks *task.Manager, resolver recovery.P
 func TestReconcileLostPRNumber(t *testing.T) {
 	cases := []struct {
 		name            string
+		initialStatus   task.Status
 		ref             recovery.PRRef
 		resolveErr      error
 		wantStatus      task.Status
@@ -83,28 +88,46 @@ func TestReconcileLostPRNumber(t *testing.T) {
 	}{
 		{
 			name:            "merged PR advances to done and clears workflow",
+			initialStatus:   task.StatusInReview,
 			ref:             recovery.PRRef{Number: 1775, State: "MERGED"},
 			wantStatus:      task.StatusDone,
 			wantPR:          1775,
 			wantWorkflowNil: true,
 		},
 		{
-			name:       "open PR backfills pr_number and stays in-review",
-			ref:        recovery.PRRef{Number: 42, State: "OPEN"},
-			wantStatus: task.StatusInReview,
-			wantPR:     42,
+			name:          "open PR backfills pr_number and stays in-review",
+			initialStatus: task.StatusInReview,
+			ref:           recovery.PRRef{Number: 42, State: "OPEN"},
+			wantStatus:    task.StatusInReview,
+			wantPR:        42,
 		},
 		{
-			name:       "no matching PR leaves the task unchanged",
-			ref:        recovery.PRRef{},
-			wantStatus: task.StatusInReview,
-			wantPR:     0,
+			name:          "ready-review orphan backfills open PR",
+			initialStatus: task.StatusReadyReview,
+			ref:           recovery.PRRef{Number: 43, State: "OPEN"},
+			wantStatus:    task.StatusReadyReview,
+			wantPR:        43,
 		},
 		{
-			name:       "resolver error leaves the task unchanged",
-			resolveErr: errors.New("gh unavailable"),
-			wantStatus: task.StatusInReview,
-			wantPR:     0,
+			name:          "ready-pr orphan backfills open PR",
+			initialStatus: task.StatusReadyPR,
+			ref:           recovery.PRRef{Number: 44, State: "OPEN"},
+			wantStatus:    task.StatusReadyPR,
+			wantPR:        44,
+		},
+		{
+			name:          "no matching PR leaves the task unchanged",
+			initialStatus: task.StatusInReview,
+			ref:           recovery.PRRef{},
+			wantStatus:    task.StatusInReview,
+			wantPR:        0,
+		},
+		{
+			name:          "resolver error leaves the task unchanged",
+			initialStatus: task.StatusInReview,
+			resolveErr:    errors.New("gh unavailable"),
+			wantStatus:    task.StatusInReview,
+			wantPR:        0,
 		},
 	}
 
@@ -115,7 +138,7 @@ func TestReconcileLostPRNumber(t *testing.T) {
 				t.Fatal(err)
 			}
 			tasks := task.NewManager(store, nil)
-			id := newInReviewOrphan(t, tasks, nil)
+			id := newLostPROrphanWithStatus(t, tasks, tc.initialStatus, nil)
 
 			resolver := &fakePRResolver{ref: tc.ref, err: tc.resolveErr}
 			r, wg := newReconcileRecovery(t, tasks, resolver)
@@ -164,6 +187,10 @@ func TestReconcileLostPRNumberSkipsIneligible(t *testing.T) {
 		{
 			name:   "no branch to resolve from",
 			mutate: func(u *task.Update) { u.Branch = task.Ptr("") },
+		},
+		{
+			name:   "todo status",
+			mutate: func(u *task.Update) { u.Status = task.Ptr(task.StatusTodo) },
 		},
 	}
 
