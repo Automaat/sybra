@@ -21,8 +21,6 @@
   const loadEvaluation = lazyComponent(() => import('../pages/Evaluation.svelte'))
   const loadReviews = lazyComponent(() => import('../pages/Reviews.svelte'))
   const loadSettings = lazyComponent(() => import('../pages/Settings.svelte'))
-  const loadChatList = lazyComponent(() => import('../pages/ChatList.svelte'))
-  const loadChatDetail = lazyComponent(() => import('../pages/ChatDetail.svelte'))
   const loadWorkflowList = lazyComponent(() => import('../pages/WorkflowList.svelte'))
   const loadWorkflowDetail = lazyComponent(() => import('../pages/WorkflowDetail.svelte'))
   const loadLogbook = lazyComponent(() => import('../pages/Logbook.svelte'))
@@ -34,7 +32,6 @@
     onfocusedtaskchange: (id: string | null) => void
     navTaskDetail: (id: string) => void
     navAgentDetail: (id: string) => void
-    navChatDetail: (id: string) => void
     navProjectDetail: (id: string) => void
     navWorkflowDetail: (id: string) => void
     onnewTask: () => void
@@ -48,7 +45,6 @@
     onfocusedtaskchange,
     navTaskDetail,
     navAgentDetail,
-    navChatDetail,
     navProjectDetail,
     navWorkflowDetail,
     onnewTask,
@@ -95,18 +91,6 @@
     {#await loadProjectDetail() then ProjectDetail}
       <ProjectDetail
         projectId={navStore.page.projectId}
-        onback={() => navStore.back()}
-        onviewtask={navTaskDetail}
-      />
-    {/await}
-  {:else if navStore.page.kind === 'chats'}
-    {#await loadChatList() then ChatList}
-      <ChatList onselect={navChatDetail} />
-    {/await}
-  {:else if navStore.page.kind === 'chat-detail'}
-    {#await loadChatDetail() then ChatDetail}
-      <ChatDetail
-        agentId={navStore.page.agentId}
         onback={() => navStore.back()}
         onviewtask={navTaskDetail}
       />

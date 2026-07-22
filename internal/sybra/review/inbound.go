@@ -594,8 +594,7 @@ func indexPRsByKey(prs []github.PullRequest) map[string]github.PullRequest {
 }
 
 func reviewClosedPREligible(t *task.Task) bool {
-	return !task.IsChatTask(t) &&
-		!task.IsTerminalStatus(t.Status) &&
+	return !task.IsTerminalStatus(t.Status) &&
 		slices.Contains(t.Tags, "review") &&
 		t.ProjectID != "" &&
 		t.PRNumber != 0

@@ -1674,10 +1674,6 @@ func (r *Handler) includeKnownTaskPRs(ctx context.Context, tasks []task.Task, mo
 // Branch-only matching stays gated on in-review to avoid false positives
 // from tasks that pushed a WIP branch without opening a PR yet.
 func prMonitorEligible(t *task.Task) bool {
-	if task.IsChatTask(t) {
-		// Chat tasks are ephemeral and never have PRs — exclude from PR monitoring.
-		return false
-	}
 	if slices.Contains(t.Tags, "review") {
 		// Review tasks are inbound (reviewing someone else's PR), not tasks
 		// whose own PR is being tracked. They're handled separately.
@@ -1712,7 +1708,7 @@ func prClosedEligible(t *task.Task) bool {
 	if prMonitorEligible(t) {
 		return true
 	}
-	if task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
+	if slices.Contains(t.Tags, "review") {
 		return false
 	}
 	return t.Status == task.StatusHumanRequired && t.PRNumber != 0
@@ -1746,10 +1742,10 @@ func hasOrphanStrandReason(reason string) bool {
 // For human-required tasks the strand-reason gate prevents resurrecting a task
 // that a human or the watchdog deliberately stopped. For in-review tasks no
 // reason gate is needed — a task already in review with no PR is unambiguously
-// an orphan regardless of how it got there. Chat tasks and inbound review tasks
-// are never own-PR tasks.
+// an orphan regardless of how it got there. Inbound review tasks are never
+// own-PR tasks.
 func orphanPRAdoptionEligible(t *task.Task) bool {
-	if task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
+	if slices.Contains(t.Tags, "review") {
 		return false
 	}
 	if t.PRNumber != 0 || t.Branch == "" || t.ProjectID == "" {
