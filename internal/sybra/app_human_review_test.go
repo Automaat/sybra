@@ -631,6 +631,151 @@ func TestRecoverRenderedUnblockedTasks_DispatchesMissingWorktreeCircuitBreaker(t
 	}
 }
 
+func TestRecoverRenderedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "hr-rendered-done"
+	tk, err := tasks.Create("Recover rendered merged PR", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         agentID,
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "success",
+		VerdictRendered: true,
+		Result:          `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for merged rendered recovery")
+		return task.Task{}, nil
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
+	}
+	h.landClosedPR = func(_ context.Context, id string, prNumber int, state, completingAgentID string) error {
+		if id != tk.ID {
+			t.Fatalf("taskID = %q, want %q", id, tk.ID)
+		}
+		if prNumber != 2417 {
+			t.Fatalf("prNumber = %d, want 2417", prNumber)
+		}
+		if state != "MERGED" {
+			t.Fatalf("state = %q, want MERGED", state)
+		}
+		if completingAgentID != agentID {
+			t.Fatalf("completingAgentID = %q, want %q", completingAgentID, agentID)
+		}
+		_, err := tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusDone),
+			Outcome:      task.Ptr("merged"),
+			StatusReason: task.Ptr(""),
+		})
+		return err
+	}
+
+	h.recoverRenderedUnblockedTasks()
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if got.PRNumber != 2417 {
+		t.Fatalf("prNumber = %d, want 2417", got.PRNumber)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared merged landing", got.StatusReason)
+	}
+}
+
+func TestRecoverRenderedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "hr-rendered-done-closed"
+	tk, err := tasks.Create("Recover rendered closed PR", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         agentID,
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "success",
+		VerdictRendered: true,
+		Result:          `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for unmerged rendered recovery")
+		return task.Task{}, nil
+	}
+	h.landClosedPR = func(context.Context, string, int, string, string) error {
+		t.Fatal("unexpected merged landing for unmerged rendered recovery")
+		return nil
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "CLOSED"}, nil
+	}
+
+	h.recoverRenderedUnblockedTasks()
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.Outcome != "" {
+		t.Fatalf("outcome = %q, want empty", got.Outcome)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked claim not verified") {
+		t.Fatalf("expected verification failure note in body; got:\n%s", got.Body)
+	}
+}
+
 func TestRecoverRenderedUnblockedTasks_IgnoresUnrenderedVerdict(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)

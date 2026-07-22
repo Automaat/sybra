@@ -639,6 +639,11 @@ func (h *humanReviewHandler) recoverRenderedUnblockedTasks() {
 		if !ok {
 			continue
 		}
+		if status == task.StatusDone {
+			note := h.scrubForTask(t.ProjectID, v.Summary)
+			h.applyDoneRecovery(t, agentID, note, v)
+			continue
+		}
 		target, prepErr := h.prepareRecoveryDispatch(t, status)
 		if prepErr != nil {
 			h.logger.Warn("human-review.recover-rendered.prepare",
