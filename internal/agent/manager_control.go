@@ -292,16 +292,22 @@ func (m *Manager) ActiveLogPaths() map[string]bool {
 // the goroutine finishes — avoiding a race where the worktree is cleaned up while the
 // agent process is still using it.
 func (m *Manager) HasRunningAgentForTask(taskID string) bool {
+	now := time.Now()
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	// An in-flight dispatch counts as "running": the agent is mid-start and
 	// not yet in the map, but a second dispatcher must not treat the task as
 	// idle. Lets recovery / ResumeStalled / pr-fix pollers skip during the
 	// worktree-prep window instead of racing the dispatch.
-	if _, held := m.dispatchClaims[taskID]; held {
-		return true
+	dispatching, stale := m.dispatchClaimHeldReadLocked(taskID, now)
+	live := m.hasLiveRegisteredAgent(taskID)
+	m.mu.RUnlock()
+	if !stale {
+		return dispatching || live
 	}
-	return m.hasLiveRegisteredAgent(taskID)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dispatchClaimHeldLocked(taskID, now) || m.hasLiveRegisteredAgent(taskID)
 }
 
 // HasLiveRegisteredAgentForTask reports whether a genuinely registered Agent
@@ -375,11 +381,21 @@ func (m *Manager) hasLiveRegisteredAgent(taskID string) bool {
 // after onComplete returns (see runner_headless), so it would otherwise still
 // read as running.
 func (m *Manager) HasOtherRunningAgentForTask(taskID, exceptAgentID string) bool {
+	now := time.Now()
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if _, held := m.dispatchClaims[taskID]; held {
-		return true
+	dispatching, stale := m.dispatchClaimHeldReadLocked(taskID, now)
+	live := m.hasLiveRegisteredAgentExcept(taskID, exceptAgentID)
+	m.mu.RUnlock()
+	if !stale {
+		return dispatching || live
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dispatchClaimHeldLocked(taskID, now) || m.hasLiveRegisteredAgentExcept(taskID, exceptAgentID)
+}
+
+func (m *Manager) hasLiveRegisteredAgentExcept(taskID, exceptAgentID string) bool {
 	for _, a := range m.agents {
 		if a.TaskID != taskID || a.ID == exceptAgentID {
 			continue
