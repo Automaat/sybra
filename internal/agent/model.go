@@ -61,6 +61,7 @@ type Agent struct {
 	PID             int       `json:"pid,omitempty"`
 	Command         string    `json:"command,omitempty"`
 	Name            string    `json:"name,omitempty"`
+	Role            Role      `json:"role,omitempty"`
 	Project         string    `json:"project,omitempty"`
 	Provider        string    `json:"provider,omitempty"`
 	Node            string    `json:"node,omitempty"`
@@ -322,6 +323,7 @@ type View struct {
 	PID                      int       `json:"pid,omitempty"`
 	Command                  string    `json:"command,omitempty"`
 	Name                     string    `json:"name,omitempty"`
+	Role                     Role      `json:"role,omitempty"`
 	Project                  string    `json:"project,omitempty"`
 	Provider                 string    `json:"provider,omitempty"`
 	Node                     string    `json:"node,omitempty"`
@@ -381,6 +383,7 @@ func (a *Agent) viewLocked(hasStdinPipe bool) View {
 		PID:                      a.PID,
 		Command:                  a.Command,
 		Name:                     a.Name,
+		Role:                     a.Role,
 		Project:                  a.Project,
 		Provider:                 a.Provider,
 		Node:                     a.Node,
@@ -457,6 +460,7 @@ func (a *Agent) toRecord() Record {
 		ID:                      a.ID,
 		TaskID:                  a.TaskID,
 		Name:                    a.Name,
+		Role:                    a.Role,
 		Mode:                    a.Mode,
 		Provider:                a.Provider,
 		Model:                   a.Model,
@@ -508,6 +512,7 @@ func fromRecord(r Record) *Agent {
 		ID:                      r.ID,
 		TaskID:                  r.TaskID,
 		Name:                    r.Name,
+		Role:                    r.Role,
 		Mode:                    r.Mode,
 		Provider:                r.Provider,
 		Model:                   r.Model,
@@ -570,6 +575,19 @@ func (a *Agent) GetState() State {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.State
+}
+
+// EffectiveRole returns the explicitly recorded role when present, falling
+// back to the legacy name-prefix parser for pre-role records/fixtures.
+func (a *Agent) EffectiveRole() Role {
+	a.mu.RLock()
+	role := a.Role
+	name := a.Name
+	a.mu.RUnlock()
+	if role != "" {
+		return role
+	}
+	return RoleFromName(name)
 }
 
 // MarkStopped records that the agent was stopped intentionally via StopAgent.
@@ -1742,6 +1760,7 @@ func (a *Agent) Output() []StreamEvent {
 type RunConfig struct {
 	TaskID string
 	Name   string
+	Role   Role
 	Mode   string // "headless", "interactive", or "conversational"
 	Prompt string
 	// AllowedTools is honoured only by providers whose HonorsAllowedTools()

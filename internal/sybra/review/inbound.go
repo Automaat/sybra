@@ -105,6 +105,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	ag, err := r.agents.Run(agent.RunConfig{
 		TaskID:                 t.ID,
 		Name:                   agent.RoleFixReview.AgentName(t.Title),
+		Role:                   agent.RoleFixReview,
 		Mode:                   "headless",
 		Prompt:                 prompt,
 		Dir:                    dir,
@@ -217,6 +218,7 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 	return agent.RunConfig{
 		TaskID:                 t.ID,
 		Name:                   agent.RoleReview.AgentName(t.Title),
+		Role:                   agent.RoleReview,
 		Mode:                   "headless",
 		Prompt:                 prompt,
 		Dir:                    dir,

@@ -311,6 +311,7 @@ func (h *humanReviewHandler) spawnReviewConfig(t task.Task, taskID, prompt, dir 
 	cfg := agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RoleHumanReview.AgentName(t.Title),
+		Role:                   agent.RoleHumanReview,
 		Mode:                   "headless",
 		Provider:               strings.TrimSpace(opts.Provider),
 		Model:                  model,

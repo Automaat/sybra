@@ -49,7 +49,7 @@ func (m *Manager) FindRunningAgentForTask(taskID string, role Role) *Agent {
 		if a.TaskID != taskID || !isLive(a.GetState()) {
 			continue
 		}
-		if RoleFromName(a.Name) != role {
+		if a.EffectiveRole() != role {
 			continue
 		}
 		return a
@@ -58,7 +58,7 @@ func (m *Manager) FindRunningAgentForTask(taskID string, role Role) *Agent {
 }
 
 // CountLiveByRole returns the number of live agents (across all tasks) whose
-// role — derived from the agent name prefix — matches role. Used to enforce
+// role matches role. Used to enforce
 // the per-machine test-runner concurrency cap independently of the global
 // MaxConcurrent limit.
 func (m *Manager) CountLiveByRole(role Role) int {
@@ -66,7 +66,7 @@ func (m *Manager) CountLiveByRole(role Role) int {
 	defer m.mu.RUnlock()
 	n := 0
 	for _, a := range m.agents {
-		if isLive(a.GetState()) && RoleFromName(a.Name) == role {
+		if isLive(a.GetState()) && a.EffectiveRole() == role {
 			n++
 		}
 	}
@@ -83,7 +83,7 @@ func (m *Manager) FindAllRunningAgentsForTask(taskID string, role Role) []*Agent
 		if a.TaskID != taskID || !isLive(a.GetState()) {
 			continue
 		}
-		if role != "" && RoleFromName(a.Name) != role {
+		if role != "" && a.EffectiveRole() != role {
 			continue
 		}
 		result = append(result, a)

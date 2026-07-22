@@ -141,6 +141,11 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := validateRunDir(cfg.Dir); err != nil {
 		return cfg, nil, err
 	}
+	role, roleErr := ResolveRunRole(cfg.Role, cfg.Name)
+	if roleErr != nil {
+		return cfg, nil, roleErr
+	}
+	cfg.Role = role
 	m.mu.RLock()
 	if cfg.Model == "" {
 		cfg.Model = m.defaultModel
@@ -190,7 +195,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		m.mu.RUnlock()
 		// Verifier/system roles and fix-review dispatch unattended (no caller
 		// ever writes a steer message) — see Role.SupportsHeadlessSteer.
-		cfg.HeadlessSteerable = steerable && RoleFromName(cfg.Name).SupportsHeadlessSteer()
+		cfg.HeadlessSteerable = steerable && cfg.Role.SupportsHeadlessSteer()
 	}
 	cfg.approvalAddr = m.approvalAddr
 	// Headless Claude runs with require_permissions:true rely on Sybra's
@@ -793,6 +798,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		ID:                      id,
 		TaskID:                  cfg.TaskID,
 		Name:                    cfg.Name,
+		Role:                    cfg.Role,
 		Mode:                    cfg.Mode,
 		Provider:                prov.Name(),
 		Model:                   cfg.resolvedModel,

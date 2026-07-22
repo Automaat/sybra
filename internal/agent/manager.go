@@ -823,7 +823,7 @@ func (m *Manager) Guardrails() Guardrails {
 // it at a stale $0 for the whole run, and a verifier stuck in a loop should
 // escalate rather than silently get 2x/4x/8x the turn budget.
 func (m *Manager) canAutoContinueTurns(a *Agent) bool {
-	if RoleFromName(a.Name).IsVerifier() {
+	if a.EffectiveRole().IsVerifier() {
 		return false
 	}
 	m.mu.RLock()
@@ -840,7 +840,7 @@ func (m *Manager) canAutoContinueTurns(a *Agent) bool {
 }
 
 func (m *Manager) canCheckpointOnTurnCeiling(a *Agent) bool {
-	if !RoleFromName(a.Name).AuthorsCode() {
+	if !a.EffectiveRole().AuthorsCode() {
 		return false
 	}
 	m.mu.RLock()
