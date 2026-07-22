@@ -81,8 +81,8 @@ type AgentStartFailure struct {
 // status_reason and a "permanent" flag.
 //
 // permanent=true means retrying without human action will not help — the
-// caller should flip the task to human-required and stop the resume loop
-// from hammering it once a minute.
+// caller should park the task and stop the resume loop from hammering it
+// once a minute.
 //
 // Reason is a single line, capped at startReasonMaxLen. Empty err yields
 // ("", false) so callers don't have to guard.
@@ -278,6 +278,5 @@ func truncateReason(s string) string {
 // FormatStartFailure is a tiny helper for callers that want to log the same
 // classified text. Keeps the log line and the on-task reason consistent.
 func FormatStartFailure(taskID string, err error) string {
-	reason, _ := ClassifyAgentStartError(err)
-	return fmt.Sprintf("task %s: %s", taskID, reason)
+	return fmt.Sprintf("task %s: %s", taskID, ClassifyAgentStartFailure(err).Reason)
 }

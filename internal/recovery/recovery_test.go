@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/recovery"
@@ -1041,7 +1042,7 @@ func TestRestartStaleInteractiveNoRunWithoutProjectEscalates(t *testing.T) {
 	}
 }
 
-// TestRestartStalePRFixRebaseFailedFlipsToHumanRequired covers the actual
+// TestRestartStalePRFixRebaseFailedFlipsToBlocked covers the actual
 // path that had the infinite-retry bug this PR fixes: run_role=="pr-fix"
 // skips markRebaseBlocked (unlike the other three agent-start call sites) and
 // returns worktreeerr.ErrRebaseFailed straight through to
@@ -1049,7 +1050,7 @@ func TestRestartStaleInteractiveNoRunWithoutProjectEscalates(t *testing.T) {
 // treat it as permanent, RestartStaleInProgress would keep re-dispatching
 // StartPRFixAgent against the same doomed rebase every restartStaleMinAge
 // tick, forever.
-func TestRestartStalePRFixRebaseFailedFlipsToHumanRequired(t *testing.T) {
+func TestRestartStalePRFixRebaseFailedFlipsToBlocked(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 
@@ -1120,11 +1121,14 @@ func TestRestartStalePRFixRebaseFailedFlipsToHumanRequired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != task.StatusHumanRequired {
-		t.Errorf("status = %s, want %s (rebase failure must escalate, not retry forever)", updated.Status, task.StatusHumanRequired)
+	if updated.Status != task.StatusBlocked {
+		t.Errorf("status = %s, want %s (rebase failure must park, not retry forever)", updated.Status, task.StatusBlocked)
 	}
 	if !strings.Contains(updated.StatusReason, "branch stale") {
 		t.Errorf("status reason = %q, want rebase-failed classification", updated.StatusReason)
+	}
+	if updated.Blocker.Kind != blocker.KindWorktreeRepair {
+		t.Errorf("blocker kind = %q, want %q", updated.Blocker.Kind, blocker.KindWorktreeRepair)
 	}
 }
 
