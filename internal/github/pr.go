@@ -1000,6 +1000,11 @@ func RequestReviewers(repo string, number int, reviewers []string) error {
 	return requestReviewersWith(defaultExecer, repo, number, reviewers)
 }
 
+// RequestCopilotReview requests GitHub Copilot code review for a pull request.
+func RequestCopilotReview(repo string, number int) error {
+	return RequestReviewers(repo, number, []string{"copilot-pull-request-reviewer[bot]"})
+}
+
 func requestReviewersWith(e execer, repo string, number int, reviewers []string) error {
 	if len(reviewers) == 0 {
 		return nil

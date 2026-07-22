@@ -6240,11 +6240,15 @@ func newEnsurePRStep() *Step {
 }
 
 type fakePRReviewRequester struct {
-	reviewers []string
-	err       error
-	calls     int
-	repo      string
-	prNumber  int
+	reviewers       []string
+	err             error
+	copilotErr      error
+	calls           int
+	copilotCalls    int
+	repo            string
+	prNumber        int
+	copilotRepo     string
+	copilotPRNumber int
 }
 
 func (f *fakePRReviewRequester) RerequestReview(repo string, prNumber int) ([]string, error) {
@@ -6252,6 +6256,13 @@ func (f *fakePRReviewRequester) RerequestReview(repo string, prNumber int) ([]st
 	f.repo = repo
 	f.prNumber = prNumber
 	return f.reviewers, f.err
+}
+
+func (f *fakePRReviewRequester) RequestCopilotReview(repo string, prNumber int) error {
+	f.copilotCalls++
+	f.copilotRepo = repo
+	f.copilotPRNumber = prNumber
+	return f.copilotErr
 }
 
 func newRerequestReviewStep() *Step {
