@@ -1024,7 +1024,7 @@ func (r *Handler) advanceClosedTaskPRs(ctx context.Context, monitoredPRs []githu
 func (r *Handler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher, fetchFn func(repo string, number int) (github.PRState, error)) {
 	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, fetchFn)
 	for _, c := range closedPRs {
-		if err := r.advanceClosedTaskPR(ctx, c); err != nil {
+		if err := r.advanceClosedTaskPR(ctx, c, ""); err != nil {
 			r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
 		}
 	}
@@ -1033,6 +1033,13 @@ func (r *Handler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPR
 // AdvanceClosedTaskPR runs the same landing pipeline used by the PR monitor
 // for a task whose linked PR has already reached a terminal GitHub state.
 func (r *Handler) AdvanceClosedTaskPR(ctx context.Context, taskID string, prNumber int, state string) error {
+	return r.AdvanceClosedTaskPRAllowingAgent(ctx, taskID, prNumber, state, "")
+}
+
+// AdvanceClosedTaskPRAllowingAgent is AdvanceClosedTaskPR from an agent
+// completion callback. The completing agent is excluded from the stop/wait
+// phase because its done channel closes only after the callback returns.
+func (r *Handler) AdvanceClosedTaskPRAllowingAgent(ctx context.Context, taskID string, prNumber int, state, completingAgentID string) error {
 	if taskID == "" {
 		return fmt.Errorf("task id is required")
 	}
@@ -1042,13 +1049,23 @@ func (r *Handler) AdvanceClosedTaskPR(ctx context.Context, taskID string, prNumb
 	if state != "MERGED" && state != "CLOSED" {
 		return fmt.Errorf("unsupported closed PR state %q", state)
 	}
-	return r.advanceClosedTaskPR(ctx, github.ClosedPR{TaskID: taskID, PRNumber: prNumber, State: state})
+	return r.advanceClosedTaskPR(ctx, github.ClosedPR{TaskID: taskID, PRNumber: prNumber, State: state}, completingAgentID)
 }
 
-func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR) error {
-	if r.hasBlockingAgentForTask(ctx, c.TaskID) {
+func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, completingAgentID string) error {
+	var hasRunning bool
+	if completingAgentID != "" {
+		hasRunning = r.hasBlockingAgentForTaskAllowingAgent(ctx, c.TaskID, completingAgentID)
+	} else {
+		hasRunning = r.hasBlockingAgentForTask(ctx, c.TaskID)
+	}
+	if hasRunning {
 		r.logger.Info("pr-monitor.closed-stop-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
-		r.agents.KillAgentsForTask(c.TaskID, 10*time.Second)
+		if completingAgentID != "" {
+			r.agents.KillOtherAgentsForTask(c.TaskID, completingAgentID, 10*time.Second)
+		} else {
+			r.agents.KillAgentsForTask(c.TaskID, 10*time.Second)
+		}
 	}
 	// Flip to done immediately with the base outcome — the status transition
 	// must never wait on GitHub enrichment.

@@ -211,6 +211,25 @@ func (r *Handler) hasBlockingAgentForTask(ctx context.Context, taskID string) bo
 	return true
 }
 
+func (r *Handler) hasBlockingAgentForTaskAllowingAgent(ctx context.Context, taskID, exceptAgentID string) bool {
+	if r == nil || r.agents == nil {
+		return false
+	}
+	if !r.agents.HasOtherRunningAgentForTask(taskID, exceptAgentID) {
+		return false
+	}
+	releasedAgents := r.agents.ReleaseStaleStoppedAgentsForTask(ctx, taskID, stalePRDispatchGateAge)
+	releasedClaim := r.agents.ReleaseStaleTaskDispatch(taskID, stalePRDispatchGateAge)
+	if releasedAgents > 0 || releasedClaim {
+		if r.logger != nil {
+			r.logger.Warn("reviews.dispatch.gate.stale-released",
+				"task_id", taskID, "agents", releasedAgents, "dispatch_claim", releasedClaim)
+		}
+		return r.agents.HasOtherRunningAgentForTask(taskID, exceptAgentID)
+	}
+	return true
+}
+
 // indexMonitoredPRs builds the by-number and by-branch lookup maps shared by
 // every reconciliation pass over a poll cycle's monitoredPRs snapshot.
 func indexMonitoredPRs(monitoredPRs []github.PullRequest) (byNumber map[int]*github.PullRequest, byBranch map[string]*github.PullRequest) {
