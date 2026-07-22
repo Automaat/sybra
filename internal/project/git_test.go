@@ -3832,9 +3832,16 @@ func TestPreflightPushCredentials_SkipsPrePushHook(t *testing.T) {
 	if err := os.WriteFile(argsLog, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Fail any non-dry-run push so a regression away from the dry-run probe is
+	// caught here instead of silently passing. Log path quoted for TMPDIRs with
+	// spaces.
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = "push" ]; then
-  printf '%%s\n' "$*" >> %s
+  if [ "$2" != "--dry-run" ]; then
+    echo "unexpected non-dry-run push: $*" >&2
+    exit 1
+  fi
+  printf '%%s\n' "$*" >> "%s"
   exit 0
 fi
 exec %q "$@"
