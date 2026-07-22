@@ -147,7 +147,8 @@ func strictCommitGateState(c gqlCheckContext) string {
 		if c.Status != "" && c.Status != "COMPLETED" {
 			return "PENDING"
 		}
-		if strings.EqualFold(c.Conclusion, "SUCCESS") {
+		switch strings.ToUpper(c.Conclusion) {
+		case "SUCCESS", "NEUTRAL", "SKIPPED":
 			return "SUCCESS"
 		}
 		return "FAILURE"

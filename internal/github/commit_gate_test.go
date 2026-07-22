@@ -97,6 +97,31 @@ func TestFetchCommitGateWith_CancelledCheckFailsClosed(t *testing.T) {
 	}
 }
 
+func TestFetchCommitGateWith_NeutralAndSkippedChecksPass(t *testing.T) {
+	t.Parallel()
+
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/abc/check-runs": `{"check_runs":[
+			{"name":"test","status":"completed","conclusion":"neutral"},
+			{"name":"lint","status":"completed","conclusion":"skipped"}]}`,
+		"repos/o/r/commits/abc/status": `{"statuses":[]}`,
+	}}
+
+	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test", "lint"})
+	if err != nil {
+		t.Fatalf("fetchCommitGateWith() err = %v", err)
+	}
+	if !got.Approved() {
+		t.Fatalf("Approved() = false, want true: %+v", got)
+	}
+	if got.Checks["test"] != "SUCCESS" || got.Checks["lint"] != "SUCCESS" {
+		t.Fatalf("Checks = %v, want test/lint SUCCESS", got.Checks)
+	}
+	if len(got.Succeeded) != 2 || len(got.Failed) != 0 || len(got.Pending) != 0 || len(got.Missing) != 0 {
+		t.Fatalf("unexpected gate = %+v", got)
+	}
+}
+
 func TestFetchCommitGateWith_FailsClosedOnCheckRunFetchFailure(t *testing.T) {
 	t.Parallel()
 
