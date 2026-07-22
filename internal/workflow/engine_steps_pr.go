@@ -120,7 +120,9 @@ func (e *Engine) requestCopilotReview(taskID, repo string, prNumber int) {
 	if repo == "" || prNumber <= 0 || e.prReviewers == nil {
 		return
 	}
-	if err := e.prReviewers.RequestCopilotReview(repo, prNumber); err != nil {
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	if err := e.prReviewers.RequestCopilotReview(ctx, repo, prNumber); err != nil {
 		e.logger.Warn("workflow.create-pr.copilot-review.failed", "task_id", taskID, "repo", repo, "pr", prNumber, "err", err)
 		return
 	}

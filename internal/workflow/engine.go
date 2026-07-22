@@ -196,7 +196,7 @@ type PRLinker interface {
 // workflow fixes review comments and pushes updated commits.
 type PRReviewRequester interface {
 	RerequestReview(repo string, prNumber int) (reviewers []string, err error)
-	RequestCopilotReview(repo string, prNumber int) error
+	RequestCopilotReview(ctx context.Context, repo string, prNumber int) error
 }
 
 // PRStateFetcher fetches the live state of a GitHub pull request. Used by

@@ -6258,7 +6258,7 @@ func (f *fakePRReviewRequester) RerequestReview(repo string, prNumber int) ([]st
 	return f.reviewers, f.err
 }
 
-func (f *fakePRReviewRequester) RequestCopilotReview(repo string, prNumber int) error {
+func (f *fakePRReviewRequester) RequestCopilotReview(_ context.Context, repo string, prNumber int) error {
 	f.copilotCalls++
 	f.copilotRepo = repo
 	f.copilotPRNumber = prNumber

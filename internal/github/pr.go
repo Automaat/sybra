@@ -997,15 +997,24 @@ func editPRBodyWith(e execer, repo string, number int, body string) error {
 
 // RequestReviewers requests a review from the given GitHub user logins.
 func RequestReviewers(repo string, number int, reviewers []string) error {
-	return requestReviewersWith(defaultExecer, repo, number, reviewers)
+	return requestReviewersCtxWith(context.Background(), defaultExecer, repo, number, reviewers)
 }
 
 // RequestCopilotReview requests GitHub Copilot code review for a pull request.
 func RequestCopilotReview(repo string, number int) error {
-	return RequestReviewers(repo, number, []string{"copilot-pull-request-reviewer[bot]"})
+	return RequestCopilotReviewCtx(context.Background(), repo, number)
+}
+
+// RequestCopilotReviewCtx requests GitHub Copilot code review under ctx.
+func RequestCopilotReviewCtx(ctx context.Context, repo string, number int) error {
+	return requestReviewersCtxWith(ctx, defaultExecer, repo, number, []string{"copilot-pull-request-reviewer[bot]"})
 }
 
 func requestReviewersWith(e execer, repo string, number int, reviewers []string) error {
+	return requestReviewersCtxWith(context.Background(), e, repo, number, reviewers)
+}
+
+func requestReviewersCtxWith(ctx context.Context, e execer, repo string, number int, reviewers []string) error {
 	if len(reviewers) == 0 {
 		return nil
 	}
@@ -1022,7 +1031,7 @@ func requestReviewersWith(e execer, repo string, number int, reviewers []string)
 	if len(args) == 3 {
 		return nil
 	}
-	resp, err := runGHAPIWith(e, "", args...)
+	resp, err := runGHAPICtxWith(ctx, e, "", args...)
 	if err != nil {
 		return fmt.Errorf("gh request reviewers %d: %s: %w", number, sanitizeGHOutput(resp.body), err)
 	}
