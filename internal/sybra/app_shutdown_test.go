@@ -98,11 +98,9 @@ func TestShutdownDrainsAcceptedWorkBeforeCancel(t *testing.T) {
 	a.initLifecycle(context.Background())
 
 	release := make(chan struct{})
-	a.wg.Add(1)
-	go func() {
-		defer a.wg.Done()
+	a.wg.Go(func() {
 		<-release
-	}()
+	})
 
 	shutdownDone := make(chan struct{})
 	go func() {
