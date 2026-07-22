@@ -103,14 +103,13 @@ type Recovery struct {
 }
 
 // RunStartupCleanup sequences boot-time maintenance in the order that lets
-// each step see the output of the previous one: chats first so their
-// worktrees show up as orphans to the subsequent sweep; stale run state
-// next so restart-stale sees a clean slate.
+// each step see the output of the previous one: worktree repair first so
+// orphans show up to the subsequent sweep; stale run state next so
+// restart-stale sees a clean slate.
 func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	// Reattach to surviving agent subprocesses FIRST so the sweeps below —
 	// which all key off HasRunningAgentForTask — see them as live and do
-	// not remove their worktrees, gc their chat tasks, mark their runs
-	// stale, or restart them.
+	// not remove their worktrees, mark their runs stale, or restart them.
 	if reattached := r.Agents.ReattachAllContext(ctx); len(reattached) > 0 {
 		r.Logger.Info("recovery.reattach", "count", len(reattached))
 	}
@@ -118,7 +117,6 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 		r.Logger.Info("recovery.orphan_reap", "count", reaped)
 	}
 	r.Worktrees.RepairAll(ctx)
-	r.gcOrphanChats(ctx)
 	r.pruneTrash(ctx)
 	r.Worktrees.CleanupOrphaned(ctx)
 	r.cleanupOrphanedSandboxes(ctx)
@@ -162,9 +160,9 @@ func (r *Recovery) effectiveTrashRetentionDays() int {
 }
 
 // pruneTrash permanently removes trash generations older than
-// TrashRetentionDays, run right after gcOrphanChats (whose Delete calls just
-// trashed any orphaned chat tasks) and before Worktrees.CleanupOrphaned.
-// Logs the resulting count and every generation removed. Fires
+// TrashRetentionDays, run right after the startup worktree repair sweep and
+// before Worktrees.CleanupOrphaned. Logs the resulting count and every
+// generation removed. Fires
 // CommitBeforePrune first (nil-safe) so a git snapshot exists immediately
 // before this bulk-delete sweep.
 func (r *Recovery) pruneTrash(ctx context.Context) {

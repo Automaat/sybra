@@ -75,7 +75,7 @@ func (a *Assigner) Tick(ctx context.Context) {
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if task.IsTerminalStatus(t.Status) || task.IsChatTask(t) || t.Status == task.StatusBlocked {
+		if task.IsTerminalStatus(t.Status) || t.Status == task.StatusBlocked {
 			continue
 		}
 		home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)

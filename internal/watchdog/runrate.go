@@ -25,9 +25,6 @@ func (w *Watchdog) checkRunRate(now time.Time) {
 	}
 	for i := range tasks {
 		t := &tasks[i]
-		if task.IsChatTask(t) {
-			continue
-		}
 		// in-review is watched alongside in-progress: pr-fix — one of the
 		// exact same-role thrash targets this check exists for — dispatches
 		// against StatusInReview tasks (see prMonitorEligible), not just
