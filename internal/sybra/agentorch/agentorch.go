@@ -891,8 +891,12 @@ func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
 		o.LogAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
 		o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
 	case errors.Is(err, agent.ErrProviderModelIncompatible):
-		if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
-			o.logger.Error("task.revert-on-model", "task_id", taskID, "err", rerr)
+		reason := fmt.Sprintf("provider/model incompatible: %s", err)
+		if _, rerr := o.tasks.Update(taskID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(reason),
+		}); rerr != nil {
+			o.logger.Error("task.park-on-model", "task_id", taskID, "err", rerr)
 		}
 		o.LogAudit(audit.EventProviderModelIncompatible, taskID, "", map[string]any{"err": err.Error()})
 		o.logger.Warn("agent.start.model_incompatible", "task_id", taskID, "err", err)

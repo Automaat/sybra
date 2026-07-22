@@ -132,6 +132,42 @@ func TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch(t *testing.T) {
 	}
 }
 
+func TestHandleProviderGateStartError_ModelIncompatibleParksHumanRequired(t *testing.T) {
+	t.Parallel()
+
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+	created, err := tm.Create("incompatible model", "", "headless")
+	if err != nil {
+		t.Fatalf("task Create: %v", err)
+	}
+	if _, err := tm.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+		t.Fatalf("task Update: %v", err)
+	}
+
+	o := New(tm, nil, nil, nil, discardSlogLogger(), nil, &config.Config{})
+	o.handleProviderGateStartError(created.ID, &agent.ProviderModelIncompatibleError{
+		RequestedProvider: "claude",
+		SelectedProvider:  "codex",
+		Model:             "claude-fable-5",
+	})
+
+	got, err := tm.Get(created.ID)
+	if err != nil {
+		t.Fatalf("task Get: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(got.StatusReason, "provider/model incompatible") ||
+		!strings.Contains(got.StatusReason, "claude-fable-5") {
+		t.Fatalf("status_reason = %q, want model incompatibility details", got.StatusReason)
+	}
+}
+
 // TestStartAgentWithAssignment_PropagatesOutputSchema is the regression guard
 // for #2235's second finding: outputSchema used to be silently dropped on
 // this path (the common implementation-role, no-pre-staged-worktree
