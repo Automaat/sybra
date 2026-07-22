@@ -28,8 +28,8 @@ import (
 // Returns the (possibly updated) RunConfig, whether a provider switch
 // occurred, and a non-nil error only when the current provider is unhealthy
 // and no per-turn-capable peer is usable. On that error path cfg is returned
-// unmodified and the caller must not spawn a turn; the agent's error kind is
-// set to "rate_limit" so the existing isRateLimitedRun /
+// unmodified and the caller must not spawn a turn. Quota/health exhaustion is
+// marked "rate_limit" so the existing isRateLimitedRun /
 // RescheduleRateLimitedAgent reschedule-and-park behavior stays reachable,
 // exactly as it would for an in-flight run that hit the same cap.
 //
@@ -188,7 +188,7 @@ func (m *Manager) completeRegateProviderSwitch(ctx context.Context, a *Agent, cf
 	if err != nil {
 		m.logger.Warn("agent.convo.provider_model_incompatible",
 			"id", a.ID, "task", cfg.TaskID, "from", current, "to", altProv.Name(), "model", requestedModel, "err", err)
-		a.SetError("rate_limit", err.Error())
+		a.SetError(providerModelIncompatibleErrorKind, err.Error())
 		return cfg, false, fmt.Errorf("agent regate: %w", err)
 	}
 

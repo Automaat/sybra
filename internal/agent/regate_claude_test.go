@@ -90,6 +90,34 @@ func TestRegateBeforeClaudeTurn_FailoverToHealthyPeer(t *testing.T) {
 	}
 }
 
+func TestRegateBeforeClaudeTurn_IncompatibleModelIsNotRateLimited(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy: map[string]bool{"claude": false, "codex": true},
+		reasons: map[string]string{"claude": "rate_limited"},
+	})
+
+	a := &Agent{ID: "cn2badmodel", Provider: "claude", Model: "claude-fable-5"}
+	cfg := RunConfig{Provider: "claude", Model: "claude-fable-5", TaskID: "tcn2badmodel"}
+
+	got, switched, err := m.regateBeforeClaudeTurn(t.Context(), a, cfg)
+	if err == nil {
+		t.Fatal("expected incompatible model error")
+	}
+	if switched {
+		t.Fatal("switched must be false when the selected peer cannot run the requested model")
+	}
+	if got.Provider != "claude" || a.Provider != "claude" {
+		t.Errorf("provider must be unmodified on incompatibility, cfg=%q agent=%q", got.Provider, a.Provider)
+	}
+	if a.GetErrorKind() != providerModelIncompatibleErrorKind {
+		t.Fatalf("error kind = %q, want %q", a.GetErrorKind(), providerModelIncompatibleErrorKind)
+	}
+	if a.GetErrorKind() == "rate_limit" {
+		t.Fatal("incompatible model must not be retry-classified as rate_limit")
+	}
+}
+
 // TestRegateBeforeClaudeTurn_NoPeerRejected verifies that when no
 // per-turn-capable peer is healthy, regateBeforeClaudeTurn refuses the turn
 // and records a rate_limit-compatible error kind, without ever switching

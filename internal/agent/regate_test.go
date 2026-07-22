@@ -107,6 +107,34 @@ func TestRegateForTurn_FailoverToHealthyPeer(t *testing.T) {
 	}
 }
 
+func TestRegateForTurn_IncompatibleModelIsNotRateLimited(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy: map[string]bool{"codex": false, "copilot": true},
+		reasons: map[string]string{"codex": "rate_limited"},
+	})
+
+	a := &Agent{ID: "a2badmodel", Provider: "codex", Model: "gpt-custom-preview"}
+	cfg := RunConfig{Provider: "codex", Model: "gpt-custom-preview", TaskID: "t2badmodel"}
+
+	got, switched, err := m.regateForTurn(t.Context(), a, cfg, nil)
+	if err == nil {
+		t.Fatal("expected incompatible model error")
+	}
+	if switched {
+		t.Fatal("switched must be false when the selected peer cannot run the requested model")
+	}
+	if got.Provider != "codex" || a.Provider != "codex" {
+		t.Errorf("provider must be unmodified on incompatibility, cfg=%q agent=%q", got.Provider, a.Provider)
+	}
+	if a.GetErrorKind() != providerModelIncompatibleErrorKind {
+		t.Fatalf("error kind = %q, want %q", a.GetErrorKind(), providerModelIncompatibleErrorKind)
+	}
+	if a.GetErrorKind() == "rate_limit" {
+		t.Fatal("incompatible model must not be retry-classified as rate_limit")
+	}
+}
+
 // TestRegateForTurn_NoPerTurnPeerRejected verifies that when the only healthy
 // alternative is persistent Claude (not per-turn-capable), regateForTurn
 // refuses to spawn a turn and marks a rate-limit-compatible error kind so the
