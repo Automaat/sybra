@@ -94,6 +94,7 @@ type agentRunRecord struct {
 	TestOutcome             string    `yaml:"test_outcome,omitempty"`
 	TestFailureFingerprint  string    `yaml:"test_failure_fingerprint,omitempty"`
 	HeadSHA                 string    `yaml:"head_sha,omitempty"`
+	FinalCommitSource       string    `yaml:"final_commit_source,omitempty"`
 	SubagentCallCount       int       `yaml:"subagent_call_count,omitempty"`
 }
 

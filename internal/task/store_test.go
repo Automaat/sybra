@@ -916,6 +916,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		TestOutcome:             Ptr("product_bug"),
 		TestFailureFingerprint:  Ptr("fingerprint-123"),
 		HeadSHA:                 Ptr("0123456789abcdef0123456789abcdef01234567"),
+		FinalCommitSource:       Ptr("fallback"),
 		SubagentCallCount:       Ptr(3),
 	}
 	assertRunPatchCoversEveryField(t, patch)
@@ -966,6 +967,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		TestOutcome:             "product_bug",
 		TestFailureFingerprint:  "fingerprint-123",
 		HeadSHA:                 "0123456789abcdef0123456789abcdef01234567",
+		FinalCommitSource:       "fallback",
 		SubagentCallCount:       3,
 	})
 }
@@ -1067,6 +1069,9 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	}
 	if got.HeadSHA != want.HeadSHA {
 		t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, want.HeadSHA)
+	}
+	if got.FinalCommitSource != want.FinalCommitSource {
+		t.Errorf("FinalCommitSource = %q, want %q", got.FinalCommitSource, want.FinalCommitSource)
 	}
 	if got.SubagentCallCount != want.SubagentCallCount {
 		t.Errorf("SubagentCallCount = %d, want %d", got.SubagentCallCount, want.SubagentCallCount)
