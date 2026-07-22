@@ -446,6 +446,30 @@ func TestRequestReviewersWith_passesArgs(t *testing.T) {
 	}
 }
 
+func TestRequestCopilotReview_RequestsCopilotBot(t *testing.T) {
+	orig := defaultExecer
+	fe := &recordingExecer{output: []byte("HTTP/2.0 201 Created\n\n{}")}
+	defaultExecer = fe
+	t.Cleanup(func() { defaultExecer = orig })
+
+	if err := RequestCopilotReview("owner/repo", 42); err != nil {
+		t.Fatalf("RequestCopilotReview: %v", err)
+	}
+	want := []string{
+		"api", "--include", "--method", "POST",
+		"repos/owner/repo/pulls/42/requested_reviewers",
+		"-f", "reviewers[]=copilot-pull-request-reviewer[bot]",
+	}
+	if len(fe.lastArgs) != len(want) {
+		t.Fatalf("args = %v, want %v", fe.lastArgs, want)
+	}
+	for i, a := range fe.lastArgs {
+		if a != want[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, a, want[i])
+		}
+	}
+}
+
 func TestRequestReviewersWith_emptySkips(t *testing.T) {
 	t.Parallel()
 	fe := &recordingExecer{}

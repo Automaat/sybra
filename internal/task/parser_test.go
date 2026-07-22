@@ -422,6 +422,7 @@ func TestMarshalRoundTripAgentRunOperationalFields(t *testing.T) {
 			SessionID:         "session-001",
 			ProtocolViolation: "missing-contract",
 			HeadSHA:           "abcdef123456",
+			FinalCommitSource: "agent",
 		}},
 	}
 
@@ -453,6 +454,9 @@ func TestMarshalRoundTripAgentRunOperationalFields(t *testing.T) {
 	}
 	if got.HeadSHA != original.AgentRuns[0].HeadSHA {
 		t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, original.AgentRuns[0].HeadSHA)
+	}
+	if got.FinalCommitSource != original.AgentRuns[0].FinalCommitSource {
+		t.Errorf("FinalCommitSource = %q, want %q", got.FinalCommitSource, original.AgentRuns[0].FinalCommitSource)
 	}
 }
 

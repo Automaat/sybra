@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/runacct"
+	"github.com/Automaat/sybra/internal/runoutcome"
 )
 
 const (
@@ -28,8 +30,8 @@ var statusDwellThresholds = map[string]float64{
 // emits failures as agent.completed with state != "stopped"; the legacy
 // agent.failed type is also accepted for forward/test compatibility.
 func isAgentFailure(e audit.Event) bool {
-	runs := audit.NormalizeAgentRuns([]audit.Event{e})
-	return len(runs) == 1 && runs[0].Terminal && runs[0].Failed
+	counts := runacct.Count(audit.RunRecords([]audit.Event{e}), nil, runacct.CountConfig{})
+	return counts.Failures == 1
 }
 
 // checkAgentRetryLoops flags tasks that have 2+ failed agent runs in the
@@ -38,15 +40,15 @@ func isAgentFailure(e audit.Event) bool {
 func checkAgentRetryLoops(events []audit.Event, now time.Time) []Finding {
 	failuresPerTask := make(map[string]int)
 	lastRole := make(map[string]string)
-	runs := audit.NormalizeAgentRuns(events)
-	for i := range runs {
-		run := &runs[i]
-		if !run.Terminal || !run.Failed || run.TaskID == "" {
+	records := audit.RunRecords(events)
+	for i := range records {
+		rec := records[i]
+		if rec.TaskID == "" || rec.Outcome != runoutcome.Failed {
 			continue
 		}
-		failuresPerTask[run.TaskID]++
-		if role, ok := run.TerminalEvent.Data["role"].(string); ok {
-			lastRole[run.TaskID] = role
+		failuresPerTask[rec.TaskID]++
+		if rec.Role != "" {
+			lastRole[rec.TaskID] = rec.Role
 		}
 	}
 

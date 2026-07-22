@@ -24,7 +24,7 @@ func TestListTasksForNodeFiltersByAssignedNode(t *testing.T) {
 	mustPut(task.Task{ID: "mine", Title: "mine", Status: task.StatusTodo, AssignedNode: "home-nas", UpdatedAt: time.Now()})
 	mustPut(task.Task{ID: "elsewhere", Title: "elsewhere", Status: task.StatusTodo, AssignedNode: "other-box", UpdatedAt: time.Now()})
 	mustPut(task.Task{ID: "unassigned", Title: "unassigned", Status: task.StatusTodo, UpdatedAt: time.Now()})
-	mustPut(task.Task{ID: "chat-mine", Title: "chat", Status: task.StatusTodo, AssignedNode: "home-nas", TaskType: task.TaskTypeChat, UpdatedAt: time.Now()})
+	mustPut(task.Task{ID: "chat-mine", Title: "chat", Status: task.StatusTodo, AssignedNode: "home-nas", Tags: []string{task.ChatTag}, UpdatedAt: time.Now()})
 
 	got, err := svc.ListTasksForNode("home-nas")
 	if err != nil {

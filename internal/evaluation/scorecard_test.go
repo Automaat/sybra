@@ -1307,8 +1307,8 @@ func TestCompareByAgentModelSplitsDirectFromConformantReview(t *testing.T) {
 	if skillRow.Runs != 1 {
 		t.Fatalf("skill row = %+v, want 1 run", *skillRow)
 	}
-	if directRow.Runs != 2 || directRow.Failures != 1 {
-		t.Fatalf("direct row = %+v, want 2 runs / 1 failure", *directRow)
+	if directRow.Runs != 2 || directRow.ResolvedRuns != 0 || directRow.Failures != 0 {
+		t.Fatalf("direct row = %+v, want 2 runs / 0 resolved / 0 failures for a non-code-author review cohort", *directRow)
 	}
 }
 

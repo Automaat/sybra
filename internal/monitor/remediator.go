@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -24,10 +25,25 @@ type taskAPI interface {
 type remediator struct {
 	tasks            taskAPI
 	recoverLostAgent func(context.Context, string)
+	fetchPRState     func(repo string, number int) (github.PRState, error)
+	landClosedPR     func(context.Context, string, int, string) error
 }
 
-func newRemediator(t taskAPI, recoverLostAgent func(context.Context, string)) *remediator {
-	return &remediator{tasks: t, recoverLostAgent: recoverLostAgent}
+func newRemediator(
+	t taskAPI,
+	recoverLostAgent func(context.Context, string),
+	fetchPRState func(repo string, number int) (github.PRState, error),
+	landClosedPR func(context.Context, string, int, string) error,
+) *remediator {
+	if fetchPRState == nil {
+		fetchPRState = github.FetchPRState
+	}
+	return &remediator{
+		tasks:            t,
+		recoverLostAgent: recoverLostAgent,
+		fetchPRState:     fetchPRState,
+		landClosedPR:     landClosedPR,
+	}
 }
 
 // Apply executes the action for one anomaly. Returns a label suitable for the
@@ -41,7 +57,7 @@ func (r *remediator) Apply(ctx context.Context, a Anomaly) (string, error) {
 		return r.tagUntriaged(a)
 	case KindStuckHumanBlocked:
 		if isHumanRequiredStuck(a) {
-			return r.remediateHumanRequiredStuck(a)
+			return r.remediateHumanRequiredStuck(ctx, a)
 		}
 		return "", fmt.Errorf("remediator: stuck_human_blocked remediation requires human-required status")
 	default:
@@ -97,21 +113,46 @@ func (r *remediator) tagUntriaged(a Anomaly) (string, error) {
 // lost_agent investigation (detectStuckHumanBlocked's
 // known_lost_agent_investigation evidence), this instead auto-retries the
 // task once — see retryKnownLostAgentStuck.
-func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
+func (r *remediator) remediateHumanRequiredStuck(ctx context.Context, a Anomaly) (string, error) {
 	if a.TaskID == "" {
 		return "", fmt.Errorf("stuck_human_blocked without task id")
 	}
+	t, err := r.tasks.Get(a.TaskID)
+	if err != nil {
+		return "", fmt.Errorf("inspect stuck_human_blocked task %s: %w", a.TaskID, err)
+	}
+	if merged, err := r.landMergedPR(ctx, t); err != nil {
+		return "", err
+	} else if merged {
+		return string(a.Kind) + ":merged:" + a.TaskID, nil
+	}
 	if known, _ := a.Evidence["known_lost_agent_investigation"].(bool); known {
-		t, err := r.tasks.Get(a.TaskID)
-		if err != nil {
-			return "", fmt.Errorf("inspect known lost_agent stuck task %s: %w", a.TaskID, err)
-		}
 		if humanReviewVerdict(a) == "human" || workflow.IsTamperFlaggedReason(t.StatusReason) {
 			return r.refreshHumanRequiredStuck(a)
 		}
 		return r.retryKnownLostAgentStuck(a, t)
 	}
 	return r.refreshHumanRequiredStuck(a)
+}
+
+func (r *remediator) landMergedPR(ctx context.Context, t task.Task) (bool, error) {
+	if t.ProjectID == "" || t.PRNumber == 0 {
+		return false, nil
+	}
+	state, err := r.fetchPRState(t.ProjectID, t.PRNumber)
+	if err != nil {
+		return false, err
+	}
+	if state.State != "MERGED" {
+		return false, nil
+	}
+	if r.landClosedPR == nil {
+		return false, nil
+	}
+	if err := r.landClosedPR(ctx, t.ID, t.PRNumber, state.State); err != nil {
+		return false, fmt.Errorf("land merged PR task %s: %w", t.ID, err)
+	}
+	return true, nil
 }
 
 func (r *remediator) refreshHumanRequiredStuck(a Anomaly) (string, error) {

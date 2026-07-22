@@ -23,7 +23,7 @@ export class AgentRun {
     "agentId": string;
 
     /**
-     * triage, plan, eval, pr-fix, or "" for implementation
+     * explicit run role; legacy empty still means implementation
      */
     "role": string;
     "mode": string;
@@ -132,6 +132,13 @@ export class AgentRun {
      * human edits after the agent (merged_with_edits) and measure edit distance.
      */
     "headSha"?: string;
+
+    /**
+     * FinalCommitSource records who owned the branch head that verify_commits
+     * settled on: "agent" when the final head came from the agent-pushed remote
+     * commit, "fallback" when verify_commits had to auto-commit recovered work.
+     */
+    "finalCommitSource"?: string;
 
     /**
      * SubagentCallCount is the number of distinct forked-Claude subagent calls
@@ -635,25 +642,13 @@ export class Task {
 }
 
 /**
- * TaskType distinguishes a task's role for agents beyond its lifecycle
- * Status — e.g. TaskTypeChat and TaskTypeUmbrella are synthetic types that
- * run no agent of their own and are excluded from normal dispatch.
+ * TaskType is an internal marker for umbrella tracker tasks.
  */
 export enum TaskType {
     /**
      * The Go zero value for the underlying type of the enum.
      */
     $zero = "",
-
-    TaskTypeNormal = "normal",
-    TaskTypeDebug = "debug",
-    TaskTypeResearch = "research",
-
-    /**
-     * TaskTypeChat is a synthetic task created for interactive chat sessions.
-     * Hidden from the task list UI and skipped by restart-stale/watchdog.
-     */
-    TaskTypeChat = "chat",
 
     /**
      * TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.

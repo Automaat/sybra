@@ -98,6 +98,7 @@ type AgentRunInfo struct {
 	TestOutcome            string
 	TestFailureFingerprint string
 	HeadSHA                string
+	FinalCommitSource      string
 }
 
 // TaskProvider reads and updates tasks.
@@ -109,6 +110,7 @@ type TaskProvider interface {
 	MarkTaskReviewed(id string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
 	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
+	RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error
 	AppendTaskBody(id, content string) error
 	// ReplaceTaskBody overwrites the task's full body. Used by the test-route
 	// step to archive/strip a stale "## Test Failures" section before
@@ -196,6 +198,7 @@ type PRLinker interface {
 // workflow fixes review comments and pushes updated commits.
 type PRReviewRequester interface {
 	RerequestReview(repo string, prNumber int) (reviewers []string, err error)
+	RequestCopilotReview(ctx context.Context, repo string, prNumber int) error
 }
 
 // PRStateFetcher fetches the live state of a GitHub pull request. Used by
@@ -246,6 +249,14 @@ type PRCloser interface {
 // then skipped and create_pr always attempts a fresh push/create.
 type PRFinder interface {
 	FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error)
+}
+
+// PRAnyStateFinder resolves a PR for a head branch across open and merged
+// states. Used as a stronger duplicate guard before create_pr opens a new PR:
+// a previously squash-merged PR can leave the branch tip non-ancestor of base
+// while the tree diff is already present on base.
+type PRAnyStateFinder interface {
+	FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error)
 }
 
 // PRCreateRequest describes a new pull request to open for an
@@ -324,6 +335,7 @@ type Engine struct {
 	prCreator        PRCreator
 	prCloser         PRCloser
 	prFinder         PRFinder
+	prAnyStateFinder PRAnyStateFinder
 	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
 	attemptNotes     AttemptNoteAppender
@@ -370,7 +382,7 @@ type Engine struct {
 	reviewLoopDisabled bool
 	// maxReviewRounds bounds how many automated review rounds one
 	// simple-task-review execution may spend before it is parked
-	// human-required. 0 → config.DefaultMaxReviewRounds.
+	// blocked. 0 → config.DefaultMaxReviewRounds.
 	maxReviewRounds int
 	// allowUnboundedReviewRounds restores the legacy uncapped
 	// review→fix→review loop. Defaults to false.
@@ -528,6 +540,10 @@ func (e *Engine) SetPRCloser(c PRCloser) { e.prCloser = c }
 // idempotency guard. Leaving it unset skips the guard.
 func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
 
+// SetPRAnyStateFinder wires the all-state branch lookup used by create_pr's
+// squash-merge duplicate guard. Leaving it unset skips the guard.
+func (e *Engine) SetPRAnyStateFinder(f PRAnyStateFinder) { e.prAnyStateFinder = f }
+
 // SetPRContentGenerator wires the LLM-backed title/body drafter used by the
 // `create_pr` step. Leaving it unset falls back to a templated title/body.
 func (e *Engine) SetPRContentGenerator(g PRContentGenerator) { e.prContentGen = g }
@@ -598,7 +614,7 @@ func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
 
 // SetMaxReviewRounds sets how many automated review rounds one
 // simple-task-review execution may spend before the task is parked
-// human-required. Values <= 0 fall back to config.DefaultMaxReviewRounds.
+// blocked. Values <= 0 fall back to config.DefaultMaxReviewRounds.
 func (e *Engine) SetMaxReviewRounds(n int) { e.maxReviewRounds = n }
 
 // SetAllowUnboundedReviewRounds restores the legacy uncapped

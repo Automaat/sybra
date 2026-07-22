@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
@@ -142,15 +143,8 @@ func run(args []string) int {
 			fmt.Fprintf(os.Stderr, "hook: load config: %v (continuing fail-open)\n", err)
 			return 0
 		}
-		if store, dir, ok, openErr := openFallbackTaskStore(cmd); ok {
-			if openErr != nil {
-				return fatal(jsonOut, "load config: %v (task-store fallback failed: %v)", err, openErr)
-			}
-			fmt.Fprintf(os.Stderr,
-				"warning: load config failed (%v); falling back to task store at %s for `%s`\n",
-				err, dir, cmd,
-			)
-			return dispatch(cmd, rest, nil, store, nil, false, jsonOut)
+		if code, handled := dispatchTaskStoreFallback(cmd, rest, jsonOut, err); handled {
+			return code
 		}
 		return fatal(jsonOut, "load config: %v", err)
 	}
@@ -359,16 +353,18 @@ func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
 	return task.NewManager(rawStore, nil), projStore, nil
 }
 
-func openFallbackTaskStore(cmd string) (store *task.Manager, dir string, ok bool, err error) {
+func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr error) (code int, handled bool) {
 	if !supportsTaskStoreFallback(cmd) {
-		return nil, "", false, nil
+		return 0, false
 	}
-	dir = fallbackTasksDir()
-	rawStore, err := task.NewStore(dir)
+	store, tasksDir, err := openFallbackTaskStore()
 	if err != nil {
-		return nil, dir, true, fmt.Errorf("open fallback task store: %w", err)
+		return fatal(jsonOut, "load config: %v (fallback task store: %v)", loadErr, err), true
 	}
-	return task.NewManager(rawStore, nil), dir, true, nil
+	fmt.Fprintf(os.Stderr,
+		"warning: load config: %v; falling back to direct task store at %s for `%s`\n",
+		loadErr, tasksDir, cmd)
+	return dispatch(cmd, rest, nil, store, nil, false, jsonOut), true
 }
 
 func supportsTaskStoreFallback(cmd string) bool {
@@ -380,11 +376,16 @@ func supportsTaskStoreFallback(cmd string) bool {
 	}
 }
 
-func fallbackTasksDir() string {
-	if dir := strings.TrimSpace(os.Getenv("SYBRA_TASKS_DIR")); dir != "" {
-		return dir
+func openFallbackTaskStore() (manager *task.Manager, tasksDir string, err error) {
+	tasksDir = strings.TrimSpace(os.Getenv("SYBRA_TASKS_DIR"))
+	if tasksDir == "" {
+		tasksDir = filepath.Join(config.HomeDir(), "tasks")
 	}
-	return filepath.Join(config.HomeDir(), "tasks")
+	rawStore, err := task.NewStore(tasksDir)
+	if err != nil {
+		return nil, "", fmt.Errorf("open store %q: %w", tasksDir, err)
+	}
+	return task.NewManager(rawStore, nil), tasksDir, nil
 }
 
 func cmdList(s *task.Manager, args []string, jsonOut bool) int {
@@ -458,9 +459,6 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	fmt.Printf("Title:  %s\n", t.Title)
 	fmt.Printf("Status: %s\n", t.Status)
 	fmt.Printf("Mode:   %s\n", t.AgentMode)
-	if t.TaskType != "" {
-		fmt.Printf("Type:   %s\n", t.TaskType)
-	}
 	if len(t.Tags) > 0 {
 		fmt.Printf("Tags:   %s\n", strings.Join(t.Tags, ", "))
 	}
@@ -537,7 +535,6 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	planDecisions := fs.String("plan-decisions", "", "plan decisions markdown")
 	planBrief := fs.String("plan-brief", "", "plan brief markdown")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
-	ttype := fs.String("type", "normal", "task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags")
 	proj := fs.String("project", "", "project id (owner/repo)")
 	branch := fs.String("branch", "", "Git branch name")
@@ -549,9 +546,6 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	}
 	if *title == "" {
 		return fatal(jsonOut, "title is required")
-	}
-	if _, err := task.ValidateTaskType(*ttype); err != nil {
-		return fatal(jsonOut, "%v", err)
 	}
 
 	if !*allowDup {
@@ -573,7 +567,7 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "%v", err)
 	}
 
-	updates := buildCreateUpdateMap(*ttype, *tags, *proj, *branch, *pr, *issue,
+	updates := buildCreateUpdateMap(*tags, *proj, *branch, *pr, *issue,
 		*plan, *planContract, *planCritique, *planResearch, *planDecisions, *planBrief)
 	if len(updates) > 0 {
 		t, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
@@ -589,12 +583,9 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	return 0
 }
 
-func buildCreateUpdateMap(ttype, tags, proj, branch string, pr int, issue,
+func buildCreateUpdateMap(tags, proj, branch string, pr int, issue,
 	plan, planContract, planCritique, planResearch, planDecisions, planBrief string) map[string]any {
 	updates := map[string]any{}
-	if ttype != "" && ttype != string(task.TaskTypeNormal) {
-		updates["task_type"] = ttype
-	}
 	if tags != "" {
 		tagList := strings.Split(tags, ",")
 		for i := range tagList {
@@ -1180,7 +1171,6 @@ type updateFlags struct {
 	codeReview        *string
 	codeReviewFile    *string
 	mode              *string
-	taskType          *string
 	tags              *string
 	project           *string
 	branch            *string
@@ -1212,7 +1202,6 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		codeReview:        fs.String("code-review", "", "code review markdown (empty string clears review)"),
 		codeReviewFile:    fs.String("code-review-file", "", "path to file with code review content"),
 		mode:              fs.String("mode", "", "new agent mode"),
-		taskType:          fs.String("type", "", "new task type: normal|debug|research"),
 		tags:              fs.String("tags", "", "comma-separated tags (replaces existing)"),
 		project:           fs.String("project", "", "project id (owner/repo)"),
 		branch:            fs.String("branch", "", "Git branch name"),
@@ -1288,12 +1277,6 @@ func applySidecarUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateF
 }
 
 func applyTypedUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
-	if *f.taskType != "" {
-		if _, err := task.ValidateTaskType(*f.taskType); err != nil {
-			return err
-		}
-		updates["task_type"] = *f.taskType
-	}
 	if flagWasProvided(fs, "source-provider") {
 		v, err := normalizeHandoffSourceProvider(*f.sourceProvider)
 		if err != nil {
@@ -2217,8 +2200,7 @@ Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
            STATUS: %s
   get      [--compact] <id>
-  create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
-           TYPE: normal|debug|research
+  create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
   handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--source-provider claude|codex|copilot|opencode] [--pr N] [--mode MODE] [--tags t1,t2]
            Hand a task to Sybra at a workflow entry point, reusing the given git worktree
            (default: cwd). Project is derived from the worktree's origin remote
@@ -2232,7 +2214,7 @@ Commands:
            Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker
            plus one blocked child per sub-issue, with dependency edges extracted by an
            LLM planner. Re-running only materializes sub-issues without an existing task.
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
            --issue sets ref_issue, an ad-hoc reference annotation — it never
            overwrites the task's canonical (auto-close) issue set at creation
   link-pr  <id> <pr-number>
@@ -2928,6 +2910,8 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 			add("error", "%s", msg)
 		}
 	}
+	addGitHubPollingFindings(cfg, add)
+	addProviderModelCompatibilityFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
 	for _, warning := range routing.Warnings {
@@ -2981,6 +2965,30 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	return 0
 }
 
+func addGitHubPollingFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil {
+		return
+	}
+	add("ok", "github issues polling: %s", githubPollingStatus(cfg.GitHub.Enabled, cfg.GitHub.Polling.Issues.Enabled, cfg.GitHub.RunsSearchPollers(), false))
+	add("ok", "github sybra prs polling: %s", githubPollingStatus(cfg.GitHub.Enabled, cfg.GitHub.Polling.SybraPRs.Enabled, cfg.GitHub.RunsSearchPollers(), true))
+	add("ok", "github assigned prs polling: %s", githubPollingStatus(cfg.GitHub.Enabled, cfg.GitHub.Polling.AssignedPRs.Enabled, cfg.GitHub.RunsSearchPollers(), false))
+}
+
+func githubPollingStatus(githubEnabled, streamEnabled, ownsSearches, localMonitorOnly bool) string {
+	switch {
+	case !githubEnabled:
+		return "disabled by github.enabled=false"
+	case !streamEnabled:
+		return "disabled by stream toggle"
+	case localMonitorOnly && !ownsSearches:
+		return "active (known linked PR monitor only; poller_role=secondary)"
+	case !ownsSearches:
+		return "inactive on this machine (poller_role=secondary)"
+	default:
+		return "active"
+	}
+}
+
 // addK8sFailedTTLFindings warns when ttl_seconds_after_finished is set low
 // enough to undermine failed_ttl_seconds_after_finished: the runner extends a
 // failed Job's TTL by PATCHing it after the fact
@@ -2996,6 +3004,26 @@ func addK8sFailedTTLFindings(cfg *config.Config, add func(severity, format strin
 	if ttl > 0 && ttl < 30 && failedTTL != ttl {
 		add("warning", "agent.k8s_jobs.ttl_seconds_after_finished is %ds — Kubernetes does not guarantee honoring the failed_ttl_seconds_after_finished extension once such a short window has already elapsed", ttl)
 	}
+}
+
+func addProviderModelCompatibilityFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil || !cfg.Providers.AutoFailover {
+		return
+	}
+	check := func(path, provider, model string) {
+		trimmed := strings.TrimSpace(model)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := modeltier.InferTier(trimmed); ok {
+			return
+		}
+		add("warning", "%s=%q targets provider %q, but failover cannot remap that concrete model on provider switch", path, trimmed, provider)
+	}
+	check("agent.model", cfg.Agent.Provider, cfg.Agent.Model)
+	check("monitor.model", cfg.Agent.Provider, cfg.Monitor.Model)
+	check("watchdog.model", cfg.Agent.Provider, cfg.Watchdog.Model)
+	check("human_review.model", cfg.Agent.Provider, cfg.HumanReviewModel())
 }
 
 func addConfigPermFindings(add func(severity, format string, a ...any)) {

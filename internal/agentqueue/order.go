@@ -115,5 +115,16 @@ func lessByPriority(a Item, aPri task.Priority, b Item, bPri task.Priority) bool
 	if ar, br := dispatchorder.Rank(string(a.Status)), dispatchorder.Rank(string(b.Status)); ar != br {
 		return ar < br // dispatchorder.Rank ASC
 	}
-	return a.Enqueued.Before(b.Enqueued) // Enqueued ASC
+	// Zero enqueue times come from synthetic/non-queued placeholders outside
+	// the durable queue (for example ResumeStalled's comparator inputs). They
+	// must sort after real queue timestamps so an actual queued item keeps its
+	// place when compared against an unqueued stalled task.
+	switch {
+	case a.Enqueued.IsZero():
+		return false
+	case b.Enqueued.IsZero():
+		return true
+	default:
+		return a.Enqueued.Before(b.Enqueued) // Enqueued ASC
+	}
 }

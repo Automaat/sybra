@@ -61,10 +61,12 @@ type Agent struct {
 	PID             int       `json:"pid,omitempty"`
 	Command         string    `json:"command,omitempty"`
 	Name            string    `json:"name,omitempty"`
+	Role            Role      `json:"role,omitempty"`
 	Project         string    `json:"project,omitempty"`
 	Provider        string    `json:"provider,omitempty"`
 	Node            string    `json:"node,omitempty"`
 	Model           string    `json:"model,omitempty"`
+	RequestedModel  string    `json:"-"`
 	ExperimentID    string    `json:"experimentId,omitempty"`
 	VariantID       string    `json:"variantId,omitempty"`
 	RoutingReason   string    `json:"routingReason,omitempty"`
@@ -321,6 +323,7 @@ type View struct {
 	PID                      int       `json:"pid,omitempty"`
 	Command                  string    `json:"command,omitempty"`
 	Name                     string    `json:"name,omitempty"`
+	Role                     Role      `json:"role,omitempty"`
 	Project                  string    `json:"project,omitempty"`
 	Provider                 string    `json:"provider,omitempty"`
 	Node                     string    `json:"node,omitempty"`
@@ -380,6 +383,7 @@ func (a *Agent) viewLocked(hasStdinPipe bool) View {
 		PID:                      a.PID,
 		Command:                  a.Command,
 		Name:                     a.Name,
+		Role:                     a.Role,
 		Project:                  a.Project,
 		Provider:                 a.Provider,
 		Node:                     a.Node,
@@ -456,9 +460,11 @@ func (a *Agent) toRecord() Record {
 		ID:                      a.ID,
 		TaskID:                  a.TaskID,
 		Name:                    a.Name,
+		Role:                    a.Role,
 		Mode:                    a.Mode,
 		Provider:                a.Provider,
 		Model:                   a.Model,
+		RequestedModel:          a.RequestedModel,
 		ExperimentID:            a.ExperimentID,
 		VariantID:               a.VariantID,
 		RoutingReason:           a.RoutingReason,
@@ -498,13 +504,19 @@ func (a *Agent) toRecord() Record {
 // fromRecord builds a detached reattach skeleton, not a general Agent factory.
 // Reattach callers own runtime wiring such as cancel, done, cmd, and promptCh.
 func fromRecord(r Record) *Agent {
+	requestedModel := r.RequestedModel
+	if requestedModel == "" {
+		requestedModel = r.Model
+	}
 	return &Agent{
 		ID:                      r.ID,
 		TaskID:                  r.TaskID,
 		Name:                    r.Name,
+		Role:                    r.Role,
 		Mode:                    r.Mode,
 		Provider:                r.Provider,
 		Model:                   r.Model,
+		RequestedModel:          requestedModel,
 		ExperimentID:            r.ExperimentID,
 		VariantID:               r.VariantID,
 		RoutingReason:           r.RoutingReason,
@@ -565,10 +577,24 @@ func (a *Agent) GetState() State {
 	return a.State
 }
 
+// EffectiveRole returns the explicitly recorded role when present, falling
+// back to the legacy name-prefix parser for pre-role records/fixtures.
+func (a *Agent) EffectiveRole() Role {
+	a.mu.RLock()
+	role := a.Role
+	name := a.Name
+	a.mu.RUnlock()
+	if role != "" {
+		return role
+	}
+	return RoleFromName(name)
+}
+
 // MarkStopped records that the agent was stopped intentionally via StopAgent.
 func (a *Agent) MarkStopped() {
 	a.mu.Lock()
 	a.stopped = true
+	a.LastEventAt = time.Now().UTC()
 	a.mu.Unlock()
 }
 
@@ -731,6 +757,18 @@ func (a *Agent) SetProviderAndModel(prov, model string) {
 	a.Provider = prov
 	a.Model = model
 	a.mu.Unlock()
+}
+
+func (a *Agent) SetRequestedModel(model string) {
+	a.mu.Lock()
+	a.RequestedModel = model
+	a.mu.Unlock()
+}
+
+func (a *Agent) GetRequestedModel() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.RequestedModel
 }
 
 // GetProvider returns the agent's current provider name. Safe to call
@@ -1722,6 +1760,7 @@ func (a *Agent) Output() []StreamEvent {
 type RunConfig struct {
 	TaskID string
 	Name   string
+	Role   Role
 	Mode   string // "headless", "interactive", or "conversational"
 	Prompt string
 	// AllowedTools is honoured only by providers whose HonorsAllowedTools()
@@ -1743,7 +1782,7 @@ type RunConfig struct {
 	// outside sandbox enforce mode.
 	ReadOnlyDir        bool
 	Provider           string // "claude", "codex", or "copilot"
-	Model              string // "opus", "sonnet", or full model ID
+	Model              string // requested model: tier alias or full provider model ID
 	ExperimentID       string
 	VariantID          string
 	RoutingReason      string
@@ -1881,6 +1920,9 @@ type RunConfig struct {
 	// gates and failover. Replay paths that do not have RunConfig resolve from
 	// the persisted provider string instead.
 	provider Provider
+	// resolvedModel is the provider-specific model slug selected after the
+	// provider gate chose the final provider.
+	resolvedModel string
 	// resolvedSandboxHome is the per-task sandbox home directory resolved by
 	// injectSandboxHome, reused by injectProcessSandbox as one of the
 	// sandbox's allowed write roots. Never set by callers.
@@ -1897,6 +1939,10 @@ type RunConfig struct {
 	// operators are forced to require_permissions:false, which collapses to
 	// --dangerously-skip-permissions. Never set by callers.
 	approvalAddr string
+	// capacityReservation is an optional held pool slot reserved before
+	// expensive pre-run work (worktree setup). registerRunningAgent consumes it
+	// atomically with the live-agent registration.
+	capacityReservation *CapacityReservation
 }
 
 // needsApprovalHook reports whether a run should wire the PreToolUse approval

@@ -147,14 +147,13 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 	}
 }
 
-func createResearchTaskWithPriority(t *testing.T, tasks *task.Manager, title string, priority task.Priority) task.Task {
+func createTaskWithPriority(t *testing.T, tasks *task.Manager, title string, priority task.Priority) task.Task {
 	t.Helper()
 	created, err := tasks.Create(title, "", "headless")
 	if err != nil {
 		t.Fatalf("task Create(%q): %v", title, err)
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
-		TaskType: task.Ptr(task.TaskTypeResearch),
 		Priority: task.Ptr(priority),
 	})
 	if err != nil {
@@ -598,14 +597,14 @@ func TestStartAgentTaskNotFound(t *testing.T) {
 func TestStartAgentQueuedManualDoesNotRegisterLiveAgent(t *testing.T) {
 	a := setupManualQueueApp(t, "", "", 1)
 
-	blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+	blocker := createTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
 	blockerAgent, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
 	}
 	t.Cleanup(func() { _ = a.agents.StopAgent(blockerAgent.ID) })
 
-	queuedTask := createResearchTaskWithPriority(t, a.tasks, "queued manual", task.PriorityHigh)
+	queuedTask := createTaskWithPriority(t, a.tasks, "queued manual", task.PriorityHigh)
 	queued, err := a.StartAgent(queuedTask.ID, "headless", "ship it", true)
 	if err != nil {
 		t.Fatalf("StartAgent(queuedTask): %v", err)
@@ -646,21 +645,21 @@ func TestManualQueueDrainPriorityAndWorkflowPreservation(t *testing.T) {
 		<-done
 	}()
 
-	blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+	blocker := createTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
 	_, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
 	}
 
-	high := createResearchTaskWithPriority(t, a.tasks, "manual high", task.PriorityHigh)
-	low := createResearchTaskWithPriority(t, a.tasks, "manual low", task.PriorityLow)
+	high := createTaskWithPriority(t, a.tasks, "manual high", task.PriorityHigh)
+	low := createTaskWithPriority(t, a.tasks, "manual low", task.PriorityLow)
 	if _, err := a.StartAgent(high.ID, "headless", "high", false); err != nil {
 		t.Fatalf("StartAgent(high): %v", err)
 	}
 	if _, err := a.StartAgent(low.ID, "headless", "low", false); err != nil {
 		t.Fatalf("StartAgent(low): %v", err)
 	}
-	workflowTask := createResearchTaskWithPriority(t, a.tasks, "workflow token", task.PriorityUrgent)
+	workflowTask := createTaskWithPriority(t, a.tasks, "workflow token", task.PriorityUrgent)
 	a.agentQueue.Offer(agentqueue.Item{
 		TaskID:   workflowTask.ID,
 		Role:     string(agent.RoleImplementation),
@@ -704,12 +703,12 @@ func TestManualQueueReloadDrainsAfterRestart(t *testing.T) {
 	queueDir := t.TempDir()
 
 	first := setupManualQueueApp(t, taskDir, queueDir, 1)
-	blocker := createResearchTaskWithPriority(t, first.tasks, "blocker", task.PriorityMedium)
+	blocker := createTaskWithPriority(t, first.tasks, "blocker", task.PriorityMedium)
 	blockerAgent, err := first.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
 	}
-	queuedTask := createResearchTaskWithPriority(t, first.tasks, "restart queued", task.PriorityHigh)
+	queuedTask := createTaskWithPriority(t, first.tasks, "restart queued", task.PriorityHigh)
 	if _, err := first.StartAgent(queuedTask.ID, "headless", "after restart", false); err != nil {
 		t.Fatalf("StartAgent(queuedTask): %v", err)
 	}
@@ -867,12 +866,11 @@ func TestResolvePermission(t *testing.T) {
 	}
 }
 
-func TestResolveExecutionDebugAlwaysRequiresPermissions(t *testing.T) {
+func TestResolveExecutionUsesExplicitPermissionOverride(t *testing.T) {
 	t.Parallel()
-	tk := task.Task{TaskType: task.TaskTypeDebug, RequirePermissions: task.Ptr(false)}
-	// TaskTypeDebug hardcodes requirePerm=true regardless of task field.
+	tk := task.Task{RequirePermissions: task.Ptr(false)}
 	_, _, requirePerm, _ := agentorch.ResolveExecution(tk, "headless", "", nil)
-	if !requirePerm {
-		t.Error("debug task should always require permissions")
+	if requirePerm {
+		t.Error("task-level permission override should be honored")
 	}
 }

@@ -180,6 +180,7 @@ func (s *OrchestratorService) StartOrchestratorContext(ctx context.Context) erro
 
 	a, err := s.agents.RunContext(ctx, s.agents.ApplyABVariant(agent.RunConfig{
 		Name:                   orchestratorAgentName,
+		Role:                   agent.RoleOrchestrator,
 		Mode:                   "interactive",
 		Dir:                    config.HomeDir(),
 		Prompt:                 orchestratorKickoffPrompt,

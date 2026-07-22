@@ -141,6 +141,51 @@ func TestResolveRejectsNonIntegralDurationAliasForIntField(t *testing.T) {
 	}
 }
 
+func TestResolveAcceptsLegacyGitHubPollingDurationAliases(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"github:",
+		"  enabled: true",
+		"  poller_role: secondary",
+		"  polling:",
+		"    issues:",
+		"      enabled: true",
+		"      interval: 11m",
+		"    sybra_prs:",
+		"      enabled: true",
+		"      active_interval: 2m",
+		"      idle_interval: 9m",
+		"    assigned_prs:",
+		"      enabled: false",
+		"      active_interval: 3m",
+		"      idle_interval: 8m",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolved.Config.GitHub.Polling.Issues.IntervalSeconds; got != 11*60 {
+		t.Fatalf("Issues.IntervalSeconds = %d, want %d", got, 11*60)
+	}
+	if got := resolved.Config.GitHub.Polling.SybraPRs.ActiveIntervalSeconds; got != 2*60 {
+		t.Fatalf("SybraPRs.ActiveIntervalSeconds = %d, want %d", got, 2*60)
+	}
+	if got := resolved.Config.GitHub.Polling.SybraPRs.IdleIntervalSeconds; got != 9*60 {
+		t.Fatalf("SybraPRs.IdleIntervalSeconds = %d, want %d", got, 9*60)
+	}
+	if got := resolved.Config.GitHub.Polling.AssignedPRs.ActiveIntervalSeconds; got != 3*60 {
+		t.Fatalf("AssignedPRs.ActiveIntervalSeconds = %d, want %d", got, 3*60)
+	}
+	if got := resolved.Config.GitHub.Polling.AssignedPRs.IdleIntervalSeconds; got != 8*60 {
+		t.Fatalf("AssignedPRs.IdleIntervalSeconds = %d, want %d", got, 8*60)
+	}
+}
+
 func TestResolveLoadsNamespacedV2Config(t *testing.T) {
 	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
 		"schema_version: 2",
@@ -830,6 +875,9 @@ func TestLoadAutoUpdateDefaults(t *testing.T) {
 	if cfg.AutoUpdate.Mode != "notify" {
 		t.Fatalf("auto_update.mode = %q, want notify", cfg.AutoUpdate.Mode)
 	}
+	if len(cfg.AutoUpdate.RequiredChecks) != 0 {
+		t.Fatalf("auto_update.required_checks = %v, want empty", cfg.AutoUpdate.RequiredChecks)
+	}
 	if cfg.AutoUpdate.PollSeconds != 300 {
 		t.Fatalf("auto_update.poll_seconds = %d, want 300", cfg.AutoUpdate.PollSeconds)
 	}
@@ -1069,7 +1117,7 @@ func TestHumanReviewModelDefault(t *testing.T) {
 		yaml string
 		want string
 	}{
-		{name: "empty defaults to haiku", yaml: "human_review:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "empty defaults to haiku", yaml: "human_review:\n  enabled: true\n", want: "haiku"},
 		{name: "explicit override preserved", yaml: "human_review:\n  model: opus\n", want: "opus"},
 	}
 	for _, tc := range cases {
@@ -1096,7 +1144,7 @@ func TestMonitorModelDefault(t *testing.T) {
 		yaml string
 		want string
 	}{
-		{name: "empty defaults to haiku", yaml: "monitor:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "empty defaults to haiku", yaml: "monitor:\n  enabled: true\n", want: "haiku"},
 		{name: "explicit override preserved", yaml: "monitor:\n  model: sonnet\n", want: "sonnet"},
 	}
 	for _, tc := range cases {
@@ -1203,14 +1251,14 @@ func TestLoadWatchdogDefaults(t *testing.T) {
 			yaml:          "agent:\n  max_concurrent: 10\n",
 			wantEnabled:   true,
 			wantThreshold: 6,
-			wantModel:     "claude-haiku-4-5-20251001",
+			wantModel:     "haiku",
 		},
 		{
 			name:          "explicit loop_threshold 0 disables loop detection",
 			yaml:          "watchdog:\n  enabled: true\n  loop_threshold: 0\n",
 			wantEnabled:   true,
 			wantThreshold: 0,
-			wantModel:     "claude-haiku-4-5-20251001",
+			wantModel:     "haiku",
 		},
 		{
 			name:          "explicit overrides preserved",
@@ -1420,11 +1468,14 @@ func TestDefaultConfigMatchesLegacyEmptyFileGitHubBehavior(t *testing.T) {
 	if !cfg.GitHub.Enabled {
 		t.Error("DefaultConfig GitHub.Enabled should match legacy empty-file resolution")
 	}
-	if !cfg.GitHub.IssuesEnabled {
-		t.Error("default GitHub.IssuesEnabled should be true so github.enabled=true enables issues")
+	if !cfg.GitHub.Polling.Issues.Enabled {
+		t.Error("default GitHub polling.issues.enabled should be true so github.enabled=true enables issues")
 	}
-	if !cfg.GitHub.ReviewsEnabled {
-		t.Error("default GitHub.ReviewsEnabled should be true so github.enabled=true enables reviews")
+	if !cfg.GitHub.Polling.SybraPRs.Enabled {
+		t.Error("default GitHub polling.sybra_prs.enabled should be true so github.enabled=true enables Sybra PR monitoring")
+	}
+	if !cfg.GitHub.Polling.AssignedPRs.Enabled {
+		t.Error("default GitHub polling.assigned_prs.enabled should be true so github.enabled=true enables assigned PR discovery")
 	}
 	if cfg.GitHub.NativeAutoMerge {
 		t.Error("default GitHub.NativeAutoMerge should be false (kill-switch, opt-in)")
@@ -1534,44 +1585,74 @@ func TestLoadLegacyConfigWithoutGitHubEnabledKeepsGitHubOn(t *testing.T) {
 
 func TestLoadGitHubSubToggleOverrides(t *testing.T) {
 	tests := []struct {
-		name           string
-		yaml           string
-		wantIssues     bool
-		wantReviews    bool
-		wantRunsIssues bool
-		wantRunsRevs   bool
+		name             string
+		yaml             string
+		wantIssues       bool
+		wantSybraPRs     bool
+		wantAssignedPRs  bool
+		wantRunsIssues   bool
+		wantRunsSybraPRs bool
+		wantRunsAssigned bool
 	}{
 		{
-			name:           "no overrides keep default-true sub-toggles",
-			yaml:           "github:\n  enabled: true\n",
-			wantIssues:     true,
-			wantReviews:    true,
-			wantRunsIssues: true,
-			wantRunsRevs:   true,
+			name:             "no overrides keep default-true sub-toggles",
+			yaml:             "github:\n  enabled: true\n",
+			wantIssues:       true,
+			wantSybraPRs:     true,
+			wantAssignedPRs:  true,
+			wantRunsIssues:   true,
+			wantRunsSybraPRs: true,
+			wantRunsAssigned: true,
 		},
 		{
-			name:           "issues_enabled false overrides only issues",
-			yaml:           "github:\n  enabled: true\n  issues_enabled: false\n",
-			wantIssues:     false,
-			wantReviews:    true,
-			wantRunsIssues: false,
-			wantRunsRevs:   true,
+			name:             "issues_enabled false overrides only issues",
+			yaml:             "github:\n  enabled: true\n  issues_enabled: false\n",
+			wantIssues:       false,
+			wantSybraPRs:     true,
+			wantAssignedPRs:  true,
+			wantRunsIssues:   false,
+			wantRunsSybraPRs: true,
+			wantRunsAssigned: true,
 		},
 		{
-			name:           "reviews_enabled false overrides only reviews",
-			yaml:           "github:\n  enabled: true\n  reviews_enabled: false\n",
-			wantIssues:     true,
-			wantReviews:    false,
-			wantRunsIssues: true,
-			wantRunsRevs:   false,
+			name:             "reviews_enabled false overrides both pr streams",
+			yaml:             "github:\n  enabled: true\n  reviews_enabled: false\n",
+			wantIssues:       true,
+			wantSybraPRs:     false,
+			wantAssignedPRs:  false,
+			wantRunsIssues:   true,
+			wantRunsSybraPRs: false,
+			wantRunsAssigned: false,
 		},
 		{
-			name:           "top-level enabled false forces both off regardless of sub-toggles",
-			yaml:           "github:\n  enabled: false\n  issues_enabled: true\n  reviews_enabled: true\n",
-			wantIssues:     true,
-			wantReviews:    true,
-			wantRunsIssues: false,
-			wantRunsRevs:   false,
+			name:             "explicit new assigned stream overrides legacy reviews_enabled false",
+			yaml:             "github:\n  enabled: true\n  reviews_enabled: false\n  polling:\n    assigned_prs:\n      enabled: true\n",
+			wantIssues:       true,
+			wantSybraPRs:     false,
+			wantAssignedPRs:  true,
+			wantRunsIssues:   true,
+			wantRunsSybraPRs: false,
+			wantRunsAssigned: true,
+		},
+		{
+			name:             "explicit new issues stream overrides legacy issues_enabled false",
+			yaml:             "github:\n  enabled: true\n  issues_enabled: false\n  polling:\n    issues:\n      enabled: true\n",
+			wantIssues:       true,
+			wantSybraPRs:     true,
+			wantAssignedPRs:  true,
+			wantRunsIssues:   true,
+			wantRunsSybraPRs: true,
+			wantRunsAssigned: true,
+		},
+		{
+			name:             "top-level enabled false forces every stream off regardless of sub-toggles",
+			yaml:             "github:\n  enabled: false\n  issues_enabled: true\n  reviews_enabled: true\n  polling:\n    issues:\n      enabled: true\n    sybra_prs:\n      enabled: true\n    assigned_prs:\n      enabled: true\n",
+			wantIssues:       true,
+			wantSybraPRs:     true,
+			wantAssignedPRs:  true,
+			wantRunsIssues:   false,
+			wantRunsSybraPRs: false,
+			wantRunsAssigned: false,
 		},
 	}
 
@@ -1588,17 +1669,23 @@ func TestLoadGitHubSubToggleOverrides(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.GitHub.IssuesEnabled != tt.wantIssues {
-				t.Errorf("IssuesEnabled = %v, want %v", cfg.GitHub.IssuesEnabled, tt.wantIssues)
+			if cfg.GitHub.Polling.Issues.Enabled != tt.wantIssues {
+				t.Errorf("Polling.Issues.Enabled = %v, want %v", cfg.GitHub.Polling.Issues.Enabled, tt.wantIssues)
 			}
-			if cfg.GitHub.ReviewsEnabled != tt.wantReviews {
-				t.Errorf("ReviewsEnabled = %v, want %v", cfg.GitHub.ReviewsEnabled, tt.wantReviews)
+			if cfg.GitHub.Polling.SybraPRs.Enabled != tt.wantSybraPRs {
+				t.Errorf("Polling.SybraPRs.Enabled = %v, want %v", cfg.GitHub.Polling.SybraPRs.Enabled, tt.wantSybraPRs)
+			}
+			if cfg.GitHub.Polling.AssignedPRs.Enabled != tt.wantAssignedPRs {
+				t.Errorf("Polling.AssignedPRs.Enabled = %v, want %v", cfg.GitHub.Polling.AssignedPRs.Enabled, tt.wantAssignedPRs)
 			}
 			if got := cfg.GitHub.RunsIssuesFetcher(); got != tt.wantRunsIssues {
 				t.Errorf("RunsIssuesFetcher() = %v, want %v", got, tt.wantRunsIssues)
 			}
-			if got := cfg.GitHub.RunsReviewer(); got != tt.wantRunsRevs {
-				t.Errorf("RunsReviewer() = %v, want %v", got, tt.wantRunsRevs)
+			if got := cfg.GitHub.RunsSybraPRs(); got != tt.wantRunsSybraPRs {
+				t.Errorf("RunsSybraPRs() = %v, want %v", got, tt.wantRunsSybraPRs)
+			}
+			if got := cfg.GitHub.RunsAssignedPRs(); got != tt.wantRunsAssigned {
+				t.Errorf("RunsAssignedPRs() = %v, want %v", got, tt.wantRunsAssigned)
 			}
 		})
 	}
@@ -1608,16 +1695,73 @@ func TestGitHubRunsHelpers(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		cfg         GitHubConfig
-		wantIssues  bool
-		wantReviews bool
+		name            string
+		cfg             GitHubConfig
+		wantIssues      bool
+		wantSybraPRs    bool
+		wantAssignedPRs bool
+		wantReviewer    bool
 	}{
-		{"all enabled", GitHubConfig{Enabled: true, IssuesEnabled: true, ReviewsEnabled: true}, true, true},
-		{"top-level disabled forces both off", GitHubConfig{Enabled: false, IssuesEnabled: true, ReviewsEnabled: true}, false, false},
-		{"issues off, reviews on", GitHubConfig{Enabled: true, IssuesEnabled: false, ReviewsEnabled: true}, false, true},
-		{"issues on, reviews off", GitHubConfig{Enabled: true, IssuesEnabled: true, ReviewsEnabled: false}, true, false},
-		{"both sub-toggles off", GitHubConfig{Enabled: true, IssuesEnabled: false, ReviewsEnabled: false}, false, false},
+		{
+			name: "all enabled",
+			cfg: GitHubConfig{
+				Enabled: true,
+				Polling: GitHubPollingConfig{
+					Issues:      GitHubPollingStreamConfig{Enabled: true},
+					SybraPRs:    GitHubPRPollingConfig{Enabled: true},
+					AssignedPRs: GitHubPRPollingConfig{Enabled: true},
+				},
+			},
+			wantIssues: true, wantSybraPRs: true, wantAssignedPRs: true, wantReviewer: true,
+		},
+		{
+			name: "top-level disabled forces all off",
+			cfg: GitHubConfig{
+				Enabled: false,
+				Polling: GitHubPollingConfig{
+					Issues:      GitHubPollingStreamConfig{Enabled: true},
+					SybraPRs:    GitHubPRPollingConfig{Enabled: true},
+					AssignedPRs: GitHubPRPollingConfig{Enabled: true},
+				},
+			},
+			wantIssues: false, wantSybraPRs: false, wantAssignedPRs: false, wantReviewer: false,
+		},
+		{
+			name: "issues off, pr streams on",
+			cfg: GitHubConfig{
+				Enabled: true,
+				Polling: GitHubPollingConfig{
+					Issues:      GitHubPollingStreamConfig{Enabled: false},
+					SybraPRs:    GitHubPRPollingConfig{Enabled: true},
+					AssignedPRs: GitHubPRPollingConfig{Enabled: true},
+				},
+			},
+			wantIssues: false, wantSybraPRs: true, wantAssignedPRs: true, wantReviewer: true,
+		},
+		{
+			name: "sybra prs on, assigned off",
+			cfg: GitHubConfig{
+				Enabled: true,
+				Polling: GitHubPollingConfig{
+					Issues:      GitHubPollingStreamConfig{Enabled: true},
+					SybraPRs:    GitHubPRPollingConfig{Enabled: true},
+					AssignedPRs: GitHubPRPollingConfig{Enabled: false},
+				},
+			},
+			wantIssues: true, wantSybraPRs: true, wantAssignedPRs: false, wantReviewer: true,
+		},
+		{
+			name: "all pr streams off",
+			cfg: GitHubConfig{
+				Enabled: true,
+				Polling: GitHubPollingConfig{
+					Issues:      GitHubPollingStreamConfig{Enabled: true},
+					SybraPRs:    GitHubPRPollingConfig{Enabled: false},
+					AssignedPRs: GitHubPRPollingConfig{Enabled: false},
+				},
+			},
+			wantIssues: true, wantSybraPRs: false, wantAssignedPRs: false, wantReviewer: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1626,8 +1770,14 @@ func TestGitHubRunsHelpers(t *testing.T) {
 			if got := tt.cfg.RunsIssuesFetcher(); got != tt.wantIssues {
 				t.Errorf("RunsIssuesFetcher() = %v, want %v", got, tt.wantIssues)
 			}
-			if got := tt.cfg.RunsReviewer(); got != tt.wantReviews {
-				t.Errorf("RunsReviewer() = %v, want %v", got, tt.wantReviews)
+			if got := tt.cfg.RunsSybraPRs(); got != tt.wantSybraPRs {
+				t.Errorf("RunsSybraPRs() = %v, want %v", got, tt.wantSybraPRs)
+			}
+			if got := tt.cfg.RunsAssignedPRs(); got != tt.wantAssignedPRs {
+				t.Errorf("RunsAssignedPRs() = %v, want %v", got, tt.wantAssignedPRs)
+			}
+			if got := tt.cfg.RunsReviewer(); got != tt.wantReviewer {
+				t.Errorf("RunsReviewer() = %v, want %v", got, tt.wantReviewer)
 			}
 		})
 	}

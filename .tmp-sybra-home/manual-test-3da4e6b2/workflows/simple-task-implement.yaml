@@ -1,0 +1,137 @@
+id: simple-task-implement
+name: Simple Task — Implement
+description: Run the implementation agent and verify commits. Triggered by the cascade after simple-task-plan flips status to in-progress; hands off to simple-task-review via task.status=ready-review on completion.
+trigger:
+    "on": task.status_changed
+    conditions:
+        - field: task.status
+          operator: equals
+          value: in-progress
+        - field: task.tags
+          operator: not_contains
+          value: review
+        - field: task.tags
+          operator: not_contains
+          value: prompt-lab-proposal
+steps:
+    - id: implement
+      name: Implement
+      type: run_agent
+      config:
+        role: implementation
+        mode: '{{.Task.AgentMode}}'
+        model: sonnet
+        prompt: |-
+            Implement this task. When done, commit your work and push the branch to origin. Do NOT create a PR yet — the PR will be created after local code review and manual testing pass, so fixes land in the same branch before it is opened.
+            For full task context, run `sybra-cli get --compact {{.Task.ID}}`.
+            Downstream, after you push, Sybra runs three deterministic checks that are not yours to run to completion: a codegen/format gate re-applies the project's configured codegen and formatter commands and commits any resulting drift; a tamper detector inspects the diff for reward-hacking edits (deleted assertions, skip/xfail markers, neutered CI config); and the project's `checks.verify` suite is the authoritative pass/fail gate, not any local run of it. While editing, use focused checks — a single test, package, or lint pass scoped to the files you touched — to iterate; do not repeatedly run the full build/lint/test suite as a substitute for that gate. Stop once your focused checks pass and you are satisfied with the diff: commit and push. If the deterministic suite later fails, you will be re-asked with the exact failing command and its output. {{- if currenttestfailures .Task.Body}}
+            A prior implementation FAILED adversarial manual testing. Fix the root cause of every defect reported below (not just the symptom) — the feature will be re-tested after this run.
+            ## Current Test Failures
+            {{currenttestfailures .Task.Body}} {{- end}} {{- if acceptanceledger .Task.Body}}
+            ## Acceptance Ledger — all must hold simultaneously
+            {{acceptanceledger .Task.Body}} {{- end}} {{- if getvar .Vars "verify_reask_note"}}
+            {{getvar .Vars "verify_reask_note"}} {{- end}} {{- if getvar .Vars "focused_checks_reask_note"}}
+            {{getvar .Vars "focused_checks_reask_note"}} {{- end}} {{- if getvar .Vars "watchdog_reask_note"}}
+            {{getvar .Vars "watchdog_reask_note"}} {{- end}}
+            Before committing broad/sweep changes ("everywhere", "all", "single utility", "unified", "no raw X remains"), derive and run a cheap acceptance probe such as a repo-wide `rg` invariant that would catch missed call sites. If the task has a plan contract, follow its files, steps, verification commands/manual checks, and acceptance criteria as the primary implementation contract. For every manual verification item, perform the check and include the observed evidence in your final response; if you cannot perform it, stop and mark the task human-required with the blocker.
+            Never weaken, skip, delete, comment out, or hardcode tests, snapshots, or fixtures to make checks pass, and never edit CI config to neuter a gate. If an existing test is genuinely wrong, fix it correctly and explain why in the commit message — do not silently disable it. Tampering is detected mechanically and will block the task.
+            Before finishing, re-check your change against a short checklist: tests updated, edge cases covered, no leftover debug code. {{- if .Task.PlanContract}}
+            ## Executable Plan Contract
+            ```json {{plancontractjson .Task.PlanContract .Task.ID}} ``` {{- else if .Task.Plan}}
+            ## Plan
+            {{.Task.Plan}} {{- end}}
+        max_retries: 2
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - goto: verify_commits
+    - id: verify_commits
+      name: Verify Commits
+      type: verify_commits
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - when:
+            field: task.status
+            operator: equals
+            value: done
+          goto: ""
+        - goto: codegen_gate
+    - id: codegen_gate
+      name: Codegen Gate
+      type: codegen_gate
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - goto: focused_checks
+    - id: focused_checks
+      name: Focused Checks
+      type: focused_checks
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - goto: detect_tampering
+    - id: detect_tampering
+      name: Detect Test Tampering
+      type: detect_tampering
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - goto: verify_checks
+    - id: verify_checks
+      name: Verify Checks
+      type: verify_checks
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: blocked
+          goto: ""
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - when:
+            field: task.pr_number
+            operator: not_equals
+            value: ""
+          goto: set_ready_pr_existing
+        - goto: set_ready_review
+    - id: set_ready_review
+      name: Hand Off to Review
+      type: set_status
+      config:
+        status: ready-review
+      next:
+        - goto: ""
+    - id: set_ready_pr_existing
+      name: Hand Off to In-Review (existing PR)
+      type: set_status
+      config:
+        status: in-review
+      next:
+        - goto: ""
+builtin: true
+created_at: 2026-07-20T19:57:16.115235447Z
+updated_at: 2026-07-20T19:57:16.115235447Z

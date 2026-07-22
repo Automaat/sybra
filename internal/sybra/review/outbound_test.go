@@ -125,7 +125,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:      42,
 			Repository:  "Automaat/sybra",
 			HeadRefName: "feat/watchdog-pr",
@@ -173,7 +173,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:      77,
 			Repository:  "Automaat/sybra",
 			HeadRefName: "feat/branch-only",
@@ -233,7 +233,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:      42,
 			Repository:  "Automaat/sybra",
 			HeadRefName: "feat/watchdog-pr",
@@ -284,7 +284,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:           55,
 			Repository:       "Automaat/sybra",
 			HeadRefName:      "feat/not-green",
@@ -336,7 +336,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:         66,
 			Repository:     "Automaat/sybra",
 			HeadRefName:    "feat/rest-ci-unknown",
@@ -365,7 +365,9 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 func TestPollKnownTaskPRs_CancelsBranchOnlySettledImplementationWorkflow(t *testing.T) {
 	r, tasks := newOutboundWorkflowTestHandler(t)
 	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+	gh := testGitHubConfig()
+	gh.PollerRole = "secondary"
+	r.cfg = &config.Config{GitHub: gh}
 
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
@@ -567,7 +569,7 @@ func TestReconcilePRPhases(t *testing.T) {
 		{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
 		{Number: 7, ReviewDecision: "CHANGES_REQUESTED"},
 	}
-	r.reconcilePRPhases(all, prs)
+	r.reconcilePRPhases(context.Background(), all, prs)
 
 	got, err := tasks.Get(own.ID)
 	if err != nil {
@@ -612,7 +614,7 @@ func TestReconcilePRPhasesClearsStaleWhenIneligible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, CIStatus: "SUCCESS"}})
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -664,7 +666,7 @@ func TestReconcilePRPhasesDoesNotReactivateFreshManualHumanRequired(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -698,7 +700,7 @@ func TestReconcilePRPhasesDoesNotReactivateReasonedHumanRequired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -734,7 +736,7 @@ func TestReconcilePRPhasesDoesNotReactivateLaterManualHumanRequired(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -767,7 +769,7 @@ func TestReconcilePRPhasesDoesNotReactivateWithoutLivePR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, nil)
+	r.reconcilePRPhases(context.Background(), all, nil)
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -838,7 +840,7 @@ func TestHumanRequiredBlockerReconcilable(t *testing.T) {
 		{"comments exhaustion needs a human", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: exhaustedFixReason(3, github.PRIssueComments)}, "", false},
 		{"review-tagged task is inbound", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason, Tags: []string{"review"}}, "", false},
 		{"latched task does not re-reconcile", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason, Tags: []string{reconciledLatchTag}}, "", false},
-		{"chat task never own-PR", &task.Task{TaskType: task.TaskTypeChat, Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason}, "", false},
+		{"chat task never own-PR", &task.Task{Tags: []string{task.ChatTag}, Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason}, "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1012,7 +1014,7 @@ func TestReconcileHumanRequiredBlockersNoDoubleMoveWithReactivateLinkedOwnPR(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 	afterPhases, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -1200,7 +1202,9 @@ func TestPollKnownTaskPRs_ReconcilesHumanRequiredBlocker(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 	r.prTracker = github.NewIssueTracker(0)
 	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+	gh := testGitHubConfig()
+	gh.PollerRole = "secondary"
+	r.cfg = &config.Config{GitHub: gh}
 
 	parked := mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
 
@@ -1238,7 +1242,9 @@ func TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 	r.prTracker = github.NewIssueTracker(0)
 	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+	gh := testGitHubConfig()
+	gh.PollerRole = "secondary"
+	r.cfg = &config.Config{GitHub: gh}
 
 	projDir := t.TempDir()
 	projStore, err := project.NewStore(projDir, t.TempDir())
@@ -1400,7 +1406,7 @@ func TestMergeReconciledReady_SkipsTaskWithRunningAgent(t *testing.T) {
 		Kind: github.PRIssueReadyToMerge, TaskID: created.ID,
 		PR: github.PullRequest{Number: 42, Repository: "pet-owner/pet-repo", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
 	}
-	got := r.mergeReconciledReady([]github.PRIssue{issue}, nil)
+	got := r.mergeReconciledReady(context.Background(), []github.PRIssue{issue}, nil)
 
 	if merged {
 		t.Fatal("handleAutoMerge ran while an agent is live for the task")
@@ -1440,7 +1446,7 @@ func TestMergeReconciledReady_SkipsTaskWithActiveWorkflow(t *testing.T) {
 		Kind: github.PRIssueReadyToMerge, TaskID: created.ID,
 		PR: github.PullRequest{Number: 42, Repository: "Automaat/sybra", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
 	}
-	got := r.mergeReconciledReady([]github.PRIssue{issue}, nil)
+	got := r.mergeReconciledReady(context.Background(), []github.PRIssue{issue}, nil)
 
 	if merged {
 		t.Fatal("handleAutoMerge ran while the task's workflow is still active")

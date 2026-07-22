@@ -75,10 +75,32 @@ type Plan struct {
 // without spawning a CLI.
 type Runner func(ctx context.Context, prompt, schema string) (string, error)
 
+// PlannerProgressKind is one coarse stage inside Generate/attemptPlan.
+type PlannerProgressKind string
+
+const (
+	PlannerProgressAttempt     PlannerProgressKind = "attempt"
+	PlannerProgressRepair      PlannerProgressKind = "repair"
+	PlannerProgressCriticReask PlannerProgressKind = "critic_reask"
+	PlannerProgressExhausted   PlannerProgressKind = "exhausted"
+	PlannerProgressFallback    PlannerProgressKind = "fallback"
+	PlannerProgressSuccess     PlannerProgressKind = "success"
+)
+
+// PlannerProgress is one coarse planner event suitable for durable UI state.
+type PlannerProgress struct {
+	Kind    PlannerProgressKind
+	Attempt int
+}
+
+// PlannerProgressFunc receives coarse planner progress events.
+type PlannerProgressFunc func(PlannerProgress)
+
 // generateConfig holds the optional settings GenerateOption values apply.
 type generateConfig struct {
-	lister  TrackedFilesFunc
-	minSubs int
+	lister   TrackedFilesFunc
+	minSubs  int
+	progress PlannerProgressFunc
 }
 
 // GenerateOption configures an optional Generate behavior.
@@ -93,6 +115,13 @@ func WithGrounder(lister TrackedFilesFunc, minSubs int) GenerateOption {
 	return func(c *generateConfig) {
 		c.lister = lister
 		c.minSubs = minSubs
+	}
+}
+
+// WithProgress installs a coarse planner progress callback.
+func WithProgress(fn PlannerProgressFunc) GenerateOption {
+	return func(c *generateConfig) {
+		c.progress = fn
 	}
 }
 
@@ -128,16 +157,25 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 	plan, err := attemptPlan(ctx, run, idx, prompt, schema, subs, cfg)
 	if err != nil {
 		if plannerExhausted(err) {
-			return linearChainFallback(subs)
+			emitPlannerProgress(cfg.progress, PlannerProgress{Kind: PlannerProgressExhausted})
+			fallback, ferr := linearChainFallback(subs)
+			if ferr != nil {
+				return Plan{}, ferr
+			}
+			emitPlannerProgress(cfg.progress, PlannerProgress{Kind: PlannerProgressFallback})
+			return fallback, nil
 		}
 		return Plan{}, err
 	}
 	if flatPlanSuspicious(plan, subs) {
+		emitPlannerProgress(cfg.progress, PlannerProgress{Kind: PlannerProgressCriticReask})
 		reasked, err := attemptPlan(ctx, run, idx, prompt+"\n\n"+criticSuffix, schema, subs, cfg)
 		if err == nil {
+			emitPlannerProgress(cfg.progress, PlannerProgress{Kind: PlannerProgressSuccess})
 			return reasked, nil
 		}
 	}
+	emitPlannerProgress(cfg.progress, PlannerProgress{Kind: PlannerProgressSuccess})
 	return plan, nil
 }
 
@@ -154,7 +192,8 @@ func plannerExhausted(err error) bool {
 func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt, schema string, subs []SubIssue, cfg generateConfig) (Plan, error) {
 	var lastErr error
 	attemptPrompt := prompt
-	for range plannerAttempts {
+	for attempt := range plannerAttempts {
+		emitPlannerProgress(cfg.progress, PlannerProgress{Kind: PlannerProgressAttempt, Attempt: attempt + 1})
 		raw, err := run(ctx, attemptPrompt, schema)
 		if err != nil {
 			return Plan{}, fmt.Errorf("run planner: %w", err)
@@ -162,11 +201,13 @@ func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt, schema s
 		plan, err := ParsePlan(raw)
 		if err != nil {
 			lastErr = err
+			emitPlannerProgress(cfg.progress, PlannerProgress{Kind: PlannerProgressRepair, Attempt: attempt + 1})
 			attemptPrompt = correctivePrompt(prompt, err)
 			continue
 		}
 		if err := plan.resolve(idx); err != nil {
 			lastErr = err
+			emitPlannerProgress(cfg.progress, PlannerProgress{Kind: PlannerProgressRepair, Attempt: attempt + 1})
 			attemptPrompt = correctivePrompt(prompt, err)
 			continue
 		}
@@ -176,6 +217,7 @@ func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt, schema s
 		plan.deriveEdges(subs)
 		if err := plan.validate(subs); err != nil {
 			lastErr = err
+			emitPlannerProgress(cfg.progress, PlannerProgress{Kind: PlannerProgressRepair, Attempt: attempt + 1})
 			attemptPrompt = correctivePrompt(prompt, err)
 			continue
 		}
@@ -185,6 +227,12 @@ func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt, schema s
 		return plan, nil
 	}
 	return Plan{}, fmt.Errorf("planner produced no valid plan in %d attempts: %w: %w", plannerAttempts, errPlannerExhausted, lastErr)
+}
+
+func emitPlannerProgress(fn PlannerProgressFunc, event PlannerProgress) {
+	if fn != nil {
+		fn(event)
+	}
 }
 
 // correctivePrompt appends the previous attempt's parse/resolve/validate

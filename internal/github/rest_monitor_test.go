@@ -18,6 +18,12 @@ type pathExecer struct {
 	err       error
 }
 
+type restRecordingExecer struct {
+	args []string
+	body string
+	err  error
+}
+
 func (p *pathExecer) run(args ...string) ([]byte, error) {
 	if p.err != nil {
 		return nil, p.err
@@ -27,6 +33,14 @@ func (p *pathExecer) run(args ...string) ([]byte, error) {
 		return []byte(body), nil
 	}
 	return nil, fmt.Errorf("no stub for endpoint %q (args: %s)", endpoint, strings.Join(args, " "))
+}
+
+func (r *restRecordingExecer) run(args ...string) ([]byte, error) {
+	r.args = append([]string(nil), args...)
+	if r.err != nil {
+		return nil, r.err
+	}
+	return []byte(r.body), nil
 }
 
 // ghFlagsWithValue lists the `gh api` flags that consume the following argv
@@ -64,6 +78,27 @@ func restAPIEndpoint(args []string) string {
 	return strings.Join(args, " ")
 }
 
+func restAPIArg(args []string) string {
+	for i, a := range args {
+		if a != "api" {
+			continue
+		}
+		for j := i + 1; j < len(args); {
+			cur := args[j]
+			if ghFlagsWithValue[cur] {
+				j += 2
+				continue
+			}
+			if strings.HasPrefix(cur, "-") {
+				j++
+				continue
+			}
+			return cur
+		}
+	}
+	return strings.Join(args, " ")
+}
+
 func TestRestMergeable(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
@@ -80,6 +115,21 @@ func TestRestMergeable(t *testing.T) {
 		if got := restMergeable(in); got != want {
 			t.Errorf("restMergeable(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestFetchCheckRunsCtxWith_RequestsFullPage(t *testing.T) {
+	t.Parallel()
+
+	e := &restRecordingExecer{body: `{"check_runs":[]}`}
+	if _, fetched := fetchCheckRunsCtxWith(t.Context(), e, "o", "r", "abc", "all"); !fetched {
+		t.Fatal("fetchCheckRunsCtxWith() fetched = false, want true")
+	}
+
+	endpoint := restAPIArg(e.args)
+	want := "repos/o/r/commits/abc/check-runs?per_page=100&filter=all"
+	if endpoint != want {
+		t.Fatalf("endpoint = %q, want %q", endpoint, want)
 	}
 }
 

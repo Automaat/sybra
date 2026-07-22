@@ -31,6 +31,23 @@ var expandIssueLocker = fsutil.NewKeyedLocker()
 // writing (and without firing a task:updated event).
 var errSkipUpdate = errors.New("skip update")
 
+// expandFailAfter is a test seam: when set to a checkpoint name, Expand
+// fails immediately after durably writing that checkpoint. Tests use it to
+// prove resume converges from fetched/planned partial state.
+var expandFailAfter string
+
+const (
+	expandCheckpointAfterFetched = "fetched_checkpoint"
+	expandCheckpointAfterPlanned = "planned_checkpoint"
+)
+
+func injectedExpandFailure(checkpoint string) error {
+	if expandFailAfter == checkpoint {
+		return fmt.Errorf("%s: %w", checkpoint, errInjectedFailure)
+	}
+	return nil
+}
+
 // PlannerAttemptTimeout is the floor of the per-attempt planner budget. It is
 // passed to llmjob.Run as Spec.AttemptTimeout so every repair attempt gets its
 // budget fresh, instead of splitting a single shared deadline across them
@@ -136,6 +153,15 @@ type Result struct {
 	MaxParallel int  // effective expansion cap the plan materialized with; 0 on the all-materialized short-circuit, where no plan runs
 }
 
+type fetchedExpandState struct {
+	tracker    existingTracker
+	checkpoint trackerExpandCheckpoint
+	umb        github.Issue
+	subs       []github.Issue
+	planSubs   []SubIssue
+	byRef      map[string]github.Issue
+}
+
 // Expand fetches a GitHub umbrella issue's native sub-issues, runs the planner
 // to extract a dependency DAG, and materializes one `umbrella` tracker task
 // plus one `blocked`+gated child per open sub-issue. It is idempotent: only
@@ -144,14 +170,11 @@ type Result struct {
 // plannerTimeout, scaled to the sub-issue count. Shared by the `sybra-cli
 // umbrella` command and the GitHub issue fetcher's auto-detect path.
 func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL string, opts ...ExpandOption) (Result, error) {
-	var cfg expandConfig
-	for _, opt := range opts {
-		opt(&cfg)
-	}
 	repo, number, ok := ParseRef(issueURL)
 	if !ok {
 		return Result{}, fmt.Errorf("not a GitHub issue URL: %s", issueURL)
 	}
+	cfg := expandOptions(opts)
 	unlock, err := lockExpandIssue(tasks, issueURL)
 	if err != nil {
 		return Result{}, err
@@ -161,99 +184,219 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 			slog.Warn("umbrella.expand.unlock_failed", "issue", issueURL, "err", err)
 		}
 	}()
-	umb, subs, err := fetchUmbrellaBounded(ctx, repo, number)
-	if err != nil {
-		return Result{}, fmt.Errorf("fetch umbrella: %w", err)
-	}
-	if len(subs) == 0 {
-		return Result{}, fmt.Errorf("umbrella %s has no sub-issues", issueURL)
-	}
-
-	// Index sub-issues by canonical (URL) ref for planner input + later lookup.
-	planSubs := make([]SubIssue, len(subs))
-	byRef := make(map[string]github.Issue, len(subs))
-	for i := range subs {
-		planSubs[i] = SubIssue{
-			Ref:    subs[i].URL,
-			Title:  subs[i].Title,
-			Body:   subs[i].Body,
-			Closed: strings.EqualFold(subs[i].State, "CLOSED"),
-		}
-		byRef[NormalizeIssueRef(subs[i].URL)] = subs[i]
-	}
-
-	existing, tracker, err := scanExisting(tasks, umb.URL)
+	existing, tracker, err := scanExisting(tasks, issueURL)
 	if err != nil {
 		return Result{}, fmt.Errorf("scan existing tasks: %w", err)
 	}
+	state, err := fetchExpandState(ctx, tasks, repo, number, issueURL, tracker)
+	if err != nil {
+		return Result{}, err
+	}
+
 	// Short-circuit a full re-run: nothing to create means no (costly,
 	// stochastic) planner call. Children can also materialize between failed
 	// planner runs (manual CLI expansion, another instance), so drop any
 	// recorded failure state here too — otherwise the tracker reads as
 	// expand-failing forever and trackerRollup never closes the umbrella.
-	if tracker.exists && allMaterialized(planSubs, existing) {
-		if err := clearExpandFailure(tasks, tracker.id); err != nil {
-			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
-		}
-		return Result{UmbrellaURL: umb.URL, Skipped: len(subs), ChildCount: len(subs)}, nil
+	if res, done := expandAllMaterialized(tasks, state.tracker, state.umb.URL, state.subs, state.planSubs, existing); done {
+		return res, nil
 	}
+
+	plan, err := planExpandState(ctx, tasks, run, cfg, state)
+	if err != nil {
+		return Result{}, err
+	}
+
+	existing, state.tracker, err = scanExisting(tasks, state.umb.URL)
+	if err != nil {
+		return Result{}, fmt.Errorf("re-scan existing tasks: %w", err)
+	}
+	if res, done := expandAllMaterialized(tasks, state.tracker, state.umb.URL, state.subs, state.planSubs, existing); done {
+		return res, nil
+	}
+	return materializeExpandState(tasks, existing, state, plan)
+}
+
+func expandOptions(opts []ExpandOption) expandConfig {
+	var cfg expandConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return cfg
+}
+
+func fetchExpandState(ctx context.Context, tasks *task.Manager, repo string, number int, issueURL string, tracker existingTracker) (fetchedExpandState, error) {
+	state := fetchedExpandState{tracker: tracker}
+	if tracker.exists {
+		state.checkpoint, _ = parseExpandCheckpoint(tracker.body)
+	}
+
+	umb, subs, err := fetchUmbrellaBounded(ctx, repo, number)
+	if err != nil {
+		return fetchedExpandState{}, fmt.Errorf("fetch umbrella: %w", err)
+	}
+	if len(subs) == 0 {
+		return fetchedExpandState{}, fmt.Errorf("umbrella %s has no sub-issues", issueURL)
+	}
+	planSubs, byRef := buildPlanIndex(subs)
+	nextCheckpoint := trackerExpandCheckpoint{
+		Version: expandCheckpointVersion,
+		Fetched: &trackerExpandFetchedCheckpoint{Umbrella: umb, Subs: slices.Clone(subs)},
+	}
+	if fetched := checkpointFetchedState(state.checkpoint); fetched.ok && sameFetchedTopology(fetched.subs, subs) {
+		nextCheckpoint.Planned = state.checkpoint.Planned
+	}
+	state = fetchedExpandState{
+		tracker:    tracker,
+		checkpoint: nextCheckpoint,
+		umb:        umb,
+		subs:       subs,
+		planSubs:   planSubs,
+		byRef:      byRef,
+	}
+	state.tracker, err = upsertExpandTracker(tasks, state.tracker, umb, ExpandPhaseFetched, state.checkpoint)
+	if err != nil {
+		return fetchedExpandState{}, err
+	}
+	if err := injectedExpandFailure(expandCheckpointAfterFetched); err != nil {
+		return fetchedExpandState{}, err
+	}
+	return state, nil
+}
+
+func sameFetchedTopology(a, b []github.Issue) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]bool, len(a))
+	for i := range a {
+		ref := NormalizeIssueRef(a[i].URL)
+		if ref == "" {
+			return false
+		}
+		if _, ok := seen[ref]; ok {
+			return false
+		}
+		seen[ref] = strings.EqualFold(a[i].State, "CLOSED")
+	}
+	matched := make(map[string]bool, len(b))
+	for i := range b {
+		ref := NormalizeIssueRef(b[i].URL)
+		if matched[ref] {
+			return false
+		}
+		matched[ref] = true
+		closed, ok := seen[ref]
+		if !ok || closed != strings.EqualFold(b[i].State, "CLOSED") {
+			return false
+		}
+	}
+	return true
+}
+
+func expandAllMaterialized(tasks *task.Manager, tracker existingTracker, umbrellaURL string, subs []github.Issue, planSubs []SubIssue, existing map[string]bool) (Result, bool) {
+	if !tracker.exists || !allMaterialized(planSubs, existing) {
+		return Result{}, false
+	}
+	if err := clearExpandFailure(tasks, tracker.id); err != nil {
+		slog.Error("umbrella.expand.clear-failure", "issue", umbrellaURL, "err", err)
+	}
+	return Result{UmbrellaURL: umbrellaURL, Skipped: len(subs), ChildCount: len(subs)}, true
+}
+
+func planExpandState(ctx context.Context, tasks *task.Manager, run Runner, cfg expandConfig, state fetchedExpandState) (Plan, error) {
+	plan, havePlannedCheckpoint := checkpointPlannedState(state.checkpoint, state.planSubs)
 	// A tracker parked human-required after ExpandFailThreshold consecutive
 	// planner failures stops calling the planner entirely — the incident this
 	// guards against (#1570) burned a killed sonnet call every ~5 minutes
 	// indefinitely because nothing remembered prior failures across calls. A
-	// human must move the tracker off human-required (or clear the tag) to
-	// resume retrying.
-	if tracker.exists && tracker.status == task.StatusHumanRequired &&
-		ParseExpandFailCount(tracker.tags) >= ExpandFailThreshold {
-		return Result{}, fmt.Errorf("umbrella expansion parked human-required after %d consecutive planner failures", ParseExpandFailCount(tracker.tags))
+	// valid planned checkpoint is exempt: it resumes straight to materialize
+	// without another planner call.
+	if !havePlannedCheckpoint &&
+		state.tracker.exists &&
+		state.tracker.status == task.StatusHumanRequired &&
+		ParseExpandFailCount(state.tracker.tags) >= ExpandFailThreshold {
+		return Plan{}, fmt.Errorf("umbrella expansion parked human-required after %d consecutive planner failures", ParseExpandFailCount(state.tracker.tags))
+	}
+
+	if havePlannedCheckpoint {
+		return plan, nil
 	}
 
 	var genOpts []GenerateOption
 	if cfg.lister != nil {
 		genOpts = append(genOpts, WithGrounder(cfg.lister, cfg.minSubs))
 	}
+	genOpts = append(genOpts, expandPlannerProgress(tasks, state.tracker.id, state.umb.URL))
 
-	pctx, cancel := context.WithTimeout(ctx, plannerTimeout(len(subs)))
+	pctx, cancel := context.WithTimeout(ctx, plannerTimeout(len(state.subs)))
 	defer cancel()
-	plan, err := Generate(pctx, run, umb.URL, umb.Body, planSubs, genOpts...)
+	plan, err := Generate(pctx, run, state.umb.URL, state.umb.Body, state.planSubs, genOpts...)
 	if err != nil {
-		if recErr := recordExpandFailure(tasks, umb, tracker, err); recErr != nil {
-			slog.Error("umbrella.expand.record-failure", "issue", umb.URL, "err", recErr)
+		if recErr := recordExpandFailure(tasks, state.umb, state.tracker, err); recErr != nil {
+			slog.Error("umbrella.expand.record-failure", "issue", state.umb.URL, "err", recErr)
 		}
-		return Result{}, fmt.Errorf("plan umbrella: %w", err)
+		return Plan{}, fmt.Errorf("plan umbrella: %w", err)
 	}
+	state.checkpoint.Planned = &trackerExpandPlannedCheckpoint{Plan: plan}
+	if _, err := upsertExpandTracker(tasks, state.tracker, state.umb, ExpandPhasePlanned, state.checkpoint); err != nil {
+		return Plan{}, err
+	}
+	if err := injectedExpandFailure(expandCheckpointAfterPlanned); err != nil {
+		return Plan{}, err
+	}
+	return plan, nil
+}
 
-	// Re-read right before writes. The planner can run for minutes, and issue/
-	// task mutations outside Expand do not take this lock. Writing against the
-	// pre-plan snapshot would reopen the exact stale-check -> persist gap this
-	// helper exists to close.
-	existing, tracker, err = scanExisting(tasks, umb.URL)
-	if err != nil {
-		return Result{}, fmt.Errorf("re-scan existing tasks: %w", err)
-	}
-	if tracker.exists && allMaterialized(planSubs, existing) {
-		if err := clearExpandFailure(tasks, tracker.id); err != nil {
-			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
+func expandPlannerProgress(tasks *task.Manager, trackerID, issueURL string) GenerateOption {
+	return WithProgress(func(event PlannerProgress) {
+		phase, ok := plannerExpandPhase(event)
+		if !ok {
+			return
 		}
-		return Result{UmbrellaURL: umb.URL, Skipped: len(subs), ChildCount: len(subs)}, nil
-	}
+		if err := setExpandTrackerPhase(tasks, trackerID, phase); err != nil {
+			slog.Error("umbrella.expand.phase", "issue", issueURL, "phase", phase, "err", err)
+		}
+	})
+}
 
-	specs := ChildSpecs(plan, planSubs, existing)
-	created, err := materialize(tasks, umb, specs, byRef, tracker.exists, tracker.id, plan.MaxParallel, plan.Fallback)
+func plannerExpandPhase(event PlannerProgress) (ExpandPhase, bool) {
+	switch event.Kind {
+	case PlannerProgressAttempt:
+		return ExpandPhasePlanning, true
+	case PlannerProgressRepair:
+		return ExpandPhaseRepairing, true
+	case PlannerProgressCriticReask:
+		return ExpandPhaseCriticReask, true
+	case PlannerProgressExhausted:
+		return ExpandPhaseExhausted, true
+	case PlannerProgressFallback:
+		return ExpandPhaseFallback, true
+	default:
+		return "", false
+	}
+}
+
+func materializeExpandState(tasks *task.Manager, existing map[string]bool, state fetchedExpandState, plan Plan) (Result, error) {
+	if err := setExpandTrackerPhase(tasks, state.tracker.id, ExpandPhaseMaterializing); err != nil {
+		return Result{}, err
+	}
+	specs := ChildSpecs(plan, state.planSubs, existing)
+	created, err := materialize(tasks, state.umb, specs, state.byRef, state.tracker.exists, state.tracker.id, plan.MaxParallel, plan.Fallback)
 	if err != nil {
 		return Result{}, err
 	}
-	if tracker.exists {
-		if err := clearExpandFailure(tasks, tracker.id); err != nil {
-			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
+	if state.tracker.exists {
+		if err := clearExpandFailure(tasks, state.tracker.id); err != nil {
+			slog.Error("umbrella.expand.clear-failure", "issue", state.umb.URL, "err", err)
 		}
 	}
 	return Result{
-		UmbrellaURL: umb.URL,
+		UmbrellaURL: state.umb.URL,
 		Created:     created,
-		Skipped:     len(subs) - created,
+		Skipped:     len(state.subs) - created,
 		Degraded:    plan.Fallback,
-		ChildCount:  len(subs),
+		ChildCount:  len(state.subs),
 		MaxParallel: plan.MaxParallel,
 	}, nil
 }
@@ -291,6 +434,7 @@ func allMaterialized(subs []SubIssue, existing map[string]bool) bool {
 type existingTracker struct {
 	exists       bool
 	id           string
+	body         string
 	tags         []string
 	status       task.Status
 	statusReason string
@@ -313,7 +457,7 @@ func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool
 			refs[NormalizeIssueRef(t.Issue)] = true
 		}
 		if t.TaskType == task.TaskTypeUmbrella && NormalizeIssueRef(t.Issue) == umbKey {
-			tracker = existingTracker{exists: true, id: t.ID, tags: t.Tags, status: t.Status, statusReason: t.StatusReason}
+			tracker = existingTracker{exists: true, id: t.ID, body: t.Body, tags: t.Tags, status: t.Status, statusReason: t.StatusReason}
 		}
 	}
 	return refs, tracker, nil
@@ -322,6 +466,244 @@ func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool
 func findTracker(tasks *task.Manager, umbrellaURL string) (existingTracker, error) {
 	_, tracker, err := scanExisting(tasks, umbrellaURL)
 	return tracker, err
+}
+
+const (
+	expandCheckpointVersion = 1
+	expandCheckpointStart   = "<!-- sybra:umbrella-expansion:start"
+	expandCheckpointEnd     = "sybra:umbrella-expansion:end -->"
+)
+
+type trackerExpandCheckpoint struct {
+	Version int                             `json:"version"`
+	Fetched *trackerExpandFetchedCheckpoint `json:"fetched,omitempty"`
+	Planned *trackerExpandPlannedCheckpoint `json:"planned,omitempty"`
+}
+
+type trackerExpandFetchedCheckpoint struct {
+	Umbrella github.Issue   `json:"umbrella"`
+	Subs     []github.Issue `json:"subs"`
+}
+
+type trackerExpandPlannedCheckpoint struct {
+	Plan Plan `json:"plan"`
+}
+
+func parseExpandCheckpoint(body string) (trackerExpandCheckpoint, bool) {
+	start := strings.Index(body, expandCheckpointStart)
+	if start < 0 {
+		return trackerExpandCheckpoint{}, false
+	}
+	searchFrom := start + len(expandCheckpointStart)
+	relEnd := strings.Index(body[searchFrom:], expandCheckpointEnd)
+	if relEnd < 0 {
+		return trackerExpandCheckpoint{}, false
+	}
+	raw := strings.TrimSpace(body[searchFrom : searchFrom+relEnd])
+	if raw == "" {
+		return trackerExpandCheckpoint{}, false
+	}
+	var cp trackerExpandCheckpoint
+	if err := json.Unmarshal([]byte(raw), &cp); err != nil {
+		return trackerExpandCheckpoint{}, false
+	}
+	if cp.Version != expandCheckpointVersion || cp.Fetched == nil {
+		return trackerExpandCheckpoint{}, false
+	}
+	if strings.TrimSpace(cp.Fetched.Umbrella.URL) == "" {
+		return trackerExpandCheckpoint{}, false
+	}
+	for i := range cp.Fetched.Subs {
+		if strings.TrimSpace(cp.Fetched.Subs[i].URL) == "" {
+			return trackerExpandCheckpoint{}, false
+		}
+	}
+	return cp, true
+}
+
+func renderExpandCheckpointBlock(cp trackerExpandCheckpoint) string {
+	cp.Version = expandCheckpointVersion
+	raw, err := json.Marshal(cp)
+	if err != nil {
+		panic("renderExpandCheckpointBlock: marshal checkpoint: " + err.Error())
+	}
+	return expandCheckpointStart + "\n" + string(raw) + "\n" + expandCheckpointEnd
+}
+
+func upsertExpandCheckpointBody(body string, cp trackerExpandCheckpoint) string {
+	block := renderExpandCheckpointBlock(cp)
+	start := strings.Index(body, expandCheckpointStart)
+	if start >= 0 {
+		searchFrom := start + len(expandCheckpointStart)
+		if relEnd := strings.Index(body[searchFrom:], expandCheckpointEnd); relEnd >= 0 {
+			end := searchFrom + relEnd + len(expandCheckpointEnd)
+			return body[:start] + block + body[end:]
+		}
+		return body[:start] + block
+	}
+	if strings.TrimSpace(body) == "" {
+		return block
+	}
+	sep := "\n\n"
+	if strings.HasSuffix(body, "\n\n") {
+		sep = ""
+	} else if strings.HasSuffix(body, "\n") {
+		sep = "\n"
+	}
+	return body + sep + block
+}
+
+func removeExpandCheckpointBody(body string) string {
+	start := strings.Index(body, expandCheckpointStart)
+	if start < 0 {
+		return body
+	}
+	searchFrom := start + len(expandCheckpointStart)
+	relEnd := strings.Index(body[searchFrom:], expandCheckpointEnd)
+	if relEnd < 0 {
+		return body
+	}
+	end := searchFrom + relEnd + len(expandCheckpointEnd)
+	before := strings.TrimRight(body[:start], "\n")
+	after := strings.TrimLeft(body[end:], "\n")
+	switch {
+	case before == "":
+		return after
+	case after == "":
+		return before
+	default:
+		return before + "\n\n" + after
+	}
+}
+
+type fetchedCheckpointState struct {
+	umbrella github.Issue
+	subs     []github.Issue
+	planSubs []SubIssue
+	byRef    map[string]github.Issue
+	ok       bool
+}
+
+func checkpointFetchedState(cp trackerExpandCheckpoint) fetchedCheckpointState {
+	if cp.Fetched == nil || len(cp.Fetched.Subs) == 0 {
+		return fetchedCheckpointState{}
+	}
+	planSubs, byRef := buildPlanIndex(cp.Fetched.Subs)
+	return fetchedCheckpointState{
+		umbrella: cp.Fetched.Umbrella,
+		subs:     slices.Clone(cp.Fetched.Subs),
+		planSubs: planSubs,
+		byRef:    byRef,
+		ok:       true,
+	}
+}
+
+func checkpointPlannedState(cp trackerExpandCheckpoint, subs []SubIssue) (Plan, bool) {
+	if cp.Planned == nil {
+		return Plan{}, false
+	}
+	plan := cp.Planned.Plan
+	if err := plan.resolve(buildRefIndex(subs)); err != nil {
+		return Plan{}, false
+	}
+	if err := plan.validate(subs); err != nil {
+		return Plan{}, false
+	}
+	if plan.MaxParallel <= 0 {
+		plan.MaxParallel = DefaultMaxParallel
+	}
+	return plan, true
+}
+
+func upsertExpandTracker(tasks *task.Manager, tracker existingTracker, umb github.Issue, phase ExpandPhase, cp trackerExpandCheckpoint) (existingTracker, error) {
+	if !tracker.exists {
+		body := upsertExpandCheckpointBody(umb.Body, cp)
+		created, err := tasks.CreateFull(umb.Title, body, task.AgentModeHeadless, task.Update{
+			Issue:     task.Ptr(umb.URL),
+			TaskType:  task.Ptr(task.TaskTypeUmbrella),
+			ProjectID: task.Ptr(umb.Repository),
+			Status:    task.Ptr(task.StatusInProgress),
+			Tags:      task.Ptr([]string{"umbrella", ExpandPhaseTag(phase)}),
+		})
+		if err != nil {
+			return existingTracker{}, fmt.Errorf("create expansion tracker: %w", err)
+		}
+		return existingTrackerFromTask(created), nil
+	}
+	updated, err := tasks.UpdateFn(tracker.id, func(cur task.Task) (task.Update, error) {
+		baseBody := cur.Body
+		if strings.TrimSpace(baseBody) == "" {
+			baseBody = umb.Body
+		}
+		nextBody := upsertExpandCheckpointBody(baseBody, cp)
+		nextTags := ReplaceTagPrefix(cur.Tags, ExpandPhaseTagPrefix, ExpandPhaseTag(phase))
+		upd := task.Update{}
+		changed := false
+		if cur.Title != umb.Title {
+			upd.Title = task.Ptr(umb.Title)
+			changed = true
+		}
+		if cur.Issue != umb.URL {
+			upd.Issue = task.Ptr(umb.URL)
+			changed = true
+		}
+		if cur.ProjectID != umb.Repository {
+			upd.ProjectID = task.Ptr(umb.Repository)
+			changed = true
+		}
+		if cur.TaskType != task.TaskTypeUmbrella {
+			upd.TaskType = task.Ptr(task.TaskTypeUmbrella)
+			changed = true
+		}
+		if nextBody != cur.Body {
+			upd.Body = task.Ptr(nextBody)
+			changed = true
+		}
+		if !slices.Equal(cur.Tags, nextTags) {
+			upd.Tags = task.Ptr(nextTags)
+			changed = true
+		}
+		if !changed {
+			return task.Update{}, errSkipUpdate
+		}
+		return upd, nil
+	})
+	if err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			current, gerr := tasks.Get(tracker.id)
+			if gerr != nil {
+				return existingTracker{}, fmt.Errorf("get unchanged expansion tracker: %w", gerr)
+			}
+			return existingTrackerFromTask(current), nil
+		}
+		return existingTracker{}, fmt.Errorf("update expansion tracker: %w", err)
+	}
+	return existingTrackerFromTask(updated), nil
+}
+
+func setExpandTrackerPhase(tasks *task.Manager, trackerID string, phase ExpandPhase) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		nextTags := ReplaceTagPrefix(cur.Tags, ExpandPhaseTagPrefix, ExpandPhaseTag(phase))
+		if slices.Equal(cur.Tags, nextTags) {
+			return task.Update{}, errSkipUpdate
+		}
+		return task.Update{Tags: task.Ptr(nextTags)}, nil
+	})
+	if err != nil && !errors.Is(err, errSkipUpdate) {
+		return fmt.Errorf("set expansion phase: %w", err)
+	}
+	return nil
+}
+
+func existingTrackerFromTask(t task.Task) existingTracker {
+	return existingTracker{
+		exists:       true,
+		id:           t.ID,
+		body:         t.Body,
+		tags:         t.Tags,
+		status:       t.Status,
+		statusReason: t.StatusReason,
+	}
 }
 
 // materialize creates the tracker (when absent) and one gated todo child per
@@ -333,19 +715,21 @@ func findTracker(tasks *task.Manager, umbrellaURL string) (existingTracker, erro
 // tracker created by an earlier, successful run.
 func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef map[string]github.Issue, trackerExists bool, trackerID string, maxParallel int, degraded bool) (int, error) {
 	if !trackerExists {
-		tags := []string{"umbrella", MaxParallelTag(maxParallel)}
+		tags := []string{"umbrella", MaxParallelTag(maxParallel), ExpandingTag}
 		if degraded {
 			tags = append(tags, FallbackTag)
 		}
-		if _, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+		tracker, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
 			Issue:     task.Ptr(umb.URL),
 			TaskType:  task.Ptr(task.TaskTypeUmbrella),
 			ProjectID: task.Ptr(umb.Repository),
 			Status:    task.Ptr(task.StatusInProgress),
 			Tags:      task.Ptr(tags),
-		}); err != nil {
+		})
+		if err != nil {
 			return 0, fmt.Errorf("create tracker: %w", err)
 		}
+		trackerID = tracker.ID
 	} else {
 		// A tracker can already exist without a MaxParallelTag: recordExpandFailure
 		// creates a placeholder tracker on a planner failure that never reaches
@@ -355,6 +739,9 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		if err := ensureMaxParallelTag(tasks, trackerID, maxParallel); err != nil {
 			return 0, err
 		}
+		if err := markTrackerExpanding(tasks, trackerID); err != nil {
+			return 0, err
+		}
 		if degraded {
 			if err := tagTrackerDegraded(tasks, trackerID); err != nil {
 				return 0, err
@@ -362,7 +749,14 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		}
 	}
 
-	return createChildren(tasks, umb, specs, byRef)
+	created, err := createChildren(tasks, umb, specs, byRef)
+	if err != nil {
+		return created, err
+	}
+	if err := clearTrackerExpanding(tasks, trackerID); err != nil {
+		return created, err
+	}
+	return created, nil
 }
 
 // createChildren creates one gated todo child task per spec, deriving each
@@ -405,6 +799,41 @@ func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
 			return nil
 		}
 		return fmt.Errorf("tag tracker degraded: %w", err)
+	}
+	return nil
+}
+
+func markTrackerExpanding(tasks *task.Manager, trackerID string) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if slices.Contains(cur.Tags, ExpandingTag) {
+			return task.Update{}, errSkipUpdate
+		}
+		return task.Update{Tags: task.Ptr(append(slices.Clone(cur.Tags), ExpandingTag))}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			return nil
+		}
+		return fmt.Errorf("mark tracker expanding: %w", err)
+	}
+	return nil
+}
+
+func clearTrackerExpanding(tasks *task.Manager, trackerID string) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if !slices.Contains(cur.Tags, ExpandingTag) {
+			return task.Update{}, errSkipUpdate
+		}
+		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
+			return t == ExpandingTag
+		})
+		return task.Update{Tags: task.Ptr(newTags)}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			return nil
+		}
+		return fmt.Errorf("clear tracker expanding: %w", err)
 	}
 	return nil
 }
@@ -485,18 +914,28 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 	return nil
 }
 
-// clearExpandFailure strips the failure-count tag from a tracker once
-// expansion succeeds again, so a transient blip doesn't keep counting toward
-// ExpandFailThreshold on the next genuine failure.
+// clearExpandFailure strips the failure-count tag, active expansion phase, and
+// resume checkpoint from a tracker once expansion succeeds again. Checkpoints
+// are only crash-resume state; keeping them after success would make later
+// expansions trust a stale sub-issue snapshot.
 func clearExpandFailure(tasks *task.Manager, trackerID string) error {
 	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
-		if ParseExpandFailCount(cur.Tags) == 0 {
+		nextBody := removeExpandCheckpointBody(cur.Body)
+		if ParseExpandFailCount(cur.Tags) == 0 &&
+			!HasActiveExpandPhase(cur.Tags) &&
+			!slices.Contains(cur.Tags, ExpandingTag) &&
+			nextBody == cur.Body {
 			return task.Update{}, errSkipUpdate
 		}
 		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
-			return strings.HasPrefix(t, ExpandFailTagPrefix)
+			return strings.HasPrefix(t, ExpandFailTagPrefix) ||
+				strings.HasPrefix(t, ExpandPhaseTagPrefix) ||
+				t == ExpandingTag
 		})
 		upd := task.Update{Tags: task.Ptr(newTags)}
+		if nextBody != cur.Body {
+			upd.Body = task.Ptr(nextBody)
+		}
 		if strings.HasPrefix(cur.StatusReason, "umbrella expansion failed (attempt ") {
 			upd.StatusReason = task.Ptr("")
 		}

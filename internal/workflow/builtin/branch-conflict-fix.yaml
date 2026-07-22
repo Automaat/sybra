@@ -1,12 +1,13 @@
 id: branch-conflict-fix
-name: Branch Conflict Fix (no PR)
+name: Branch Conflict Fix
 description: >-
-  Recover a worktree-prep merge conflict for a task with no linked PR yet by
-  merging the project's base branch into the task's own branch (a bounded
-  headless pr-fix sub-run), then resume the task's original interrupted
-  workflow/stage. Contains no PR-tail steps (link_pr_and_review,
-  ensure_pr_closes_issue, rerequest_review, route_pr_fix_result's PR-relink
-  path) since there is no PR yet.
+  Recover a worktree-prep conflict on the task's own branch via a bounded
+  headless pr-fix sub-run, then resume the task's original interrupted
+  workflow/stage. The injected prompt decides whether this is a no-PR
+  base-merge recovery or a PR-backed same-branch divergence recovery. Contains
+  no PR-tail steps (link_pr_and_review, ensure_pr_closes_issue,
+  rerequest_review, route_pr_fix_result's PR-relink path); it only repairs the
+  task branch itself and then hands control back to the interrupted stage.
 builtin: true
 trigger:
   # Started directly by ID via ReviewHandler.recoverBranchConflictNoPR ->
@@ -28,7 +29,7 @@ steps:
     type: set_status
     config:
       status: in-progress
-      status_reason: "recovering from a branch conflict (no PR yet)"
+      status_reason: "recovering from a branch conflict"
     next:
       - goto: fix
 

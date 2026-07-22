@@ -1,5 +1,8 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import type { AppSettings } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+  import { EventsOn } from '$lib/api'
+  import { IssuesUpdated, ReviewsUpdated } from '$lib/events.js'
   import Section from './fields/Section.svelte'
   import ToggleField from './fields/ToggleField.svelte'
   import SelectField from './fields/SelectField.svelte'
@@ -15,6 +18,45 @@
   let { settings = $bindable(), defaults }: Props = $props()
   const g = $derived(settings.github)
   const d = $derived(defaults.github)
+  let issuesLastSeen = $state<Date | null>(null)
+  let reviewsLastSeen = $state<Date | null>(null)
+
+  const ownsSearches = $derived((settings.github.pollerRole ?? '').trim().toLowerCase() !== 'secondary')
+
+  function lastSeenLabel(value: Date | null, fallback: string): string {
+    if (!value) return fallback
+    return `Last live update: ${value.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+  }
+
+  function issuesActivity(): string {
+    if (!settings.github.enabled) return 'Disabled by top-level GitHub toggle'
+    if (!settings.github.polling.issues.enabled) return 'Disabled by Issues stream toggle'
+    if (!ownsSearches) return 'Inactive on this machine; secondary skips issue searches'
+    return 'Active on this machine'
+  }
+
+  function sybraPRsActivity(): string {
+    if (!settings.github.enabled) return 'Disabled by top-level GitHub toggle'
+    if (!settings.github.polling.sybraPrs.enabled) return 'Disabled by Sybra PR stream toggle'
+    if (!ownsSearches) return 'Active in local-only mode; known linked task PRs still reconcile'
+    return 'Active on this machine'
+  }
+
+  function assignedPRsActivity(): string {
+    if (!settings.github.enabled) return 'Disabled by top-level GitHub toggle'
+    if (!settings.github.polling.assignedPrs.enabled) return 'Disabled by Assigned PR stream toggle'
+    if (!ownsSearches) return 'Inactive on this machine; secondary skips assigned/reviewed searches'
+    return 'Active on this machine'
+  }
+
+  onMount(() => {
+    const offIssues = EventsOn(IssuesUpdated, () => { issuesLastSeen = new Date() })
+    const offReviews = EventsOn(ReviewsUpdated, () => { reviewsLastSeen = new Date() })
+    return () => {
+      offIssues?.()
+      offReviews?.()
+    }
+  })
 </script>
 
 <Section
@@ -66,19 +108,82 @@
 
     <AdvancedDisclosure label="Poll intervals (seconds)">
       <p class="text-xs text-surface-500 dark:text-surface-400">Zero uses the built-in default. Raise to cut request volume; lower only on a high-limit App-token instance.</p>
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <NumberField id="gh-reviews-fast" label="Reviews (fast)" keyPath="integrations.github.reviews_fast" min={0}
-          bind:value={settings.github.reviewsFastSeconds}
-          modified={g.reviewsFastSeconds !== d.reviewsFastSeconds}
-          onreset={() => (settings.github.reviewsFastSeconds = d.reviewsFastSeconds)} />
-        <NumberField id="gh-reviews-slow" label="Reviews (slow)" keyPath="integrations.github.reviews_slow" min={0}
-          bind:value={settings.github.reviewsSlowSeconds}
-          modified={g.reviewsSlowSeconds !== d.reviewsSlowSeconds}
-          onreset={() => (settings.github.reviewsSlowSeconds = d.reviewsSlowSeconds)} />
-        <NumberField id="gh-issues" label="Issues" keyPath="integrations.github.issues" min={0}
-          bind:value={settings.github.issuesSeconds}
-          modified={g.issuesSeconds !== d.issuesSeconds}
-          onreset={() => (settings.github.issuesSeconds = d.issuesSeconds)} />
+      <div class="grid grid-cols-1 gap-4">
+        <div class="rounded-xl border border-surface-200/70 bg-surface-50/70 p-4 dark:border-surface-700/70 dark:bg-surface-900/40">
+          <div class="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <h4 class="text-sm font-semibold">Issues</h4>
+              <p class="text-xs text-surface-500 dark:text-surface-400">{issuesActivity()}</p>
+              <p class="text-xs text-surface-500 dark:text-surface-400">{lastSeenLabel(issuesLastSeen, ownsSearches ? 'No live issue update seen in this session' : 'No live issue search runs on secondary')}</p>
+            </div>
+            <ToggleField
+              label="Enable Issues stream"
+              description="Assigned/labeled issue ingestion"
+              keyPath="integrations.github.polling.issues.enabled"
+              bind:checked={settings.github.polling.issues.enabled}
+              modified={g.polling.issues.enabled !== d.polling.issues.enabled}
+              onreset={() => (settings.github.polling.issues.enabled = d.polling.issues.enabled)}
+            />
+          </div>
+          <NumberField id="gh-issues" label="Issues interval" keyPath="integrations.github.polling.issues.interval" min={0}
+            bind:value={settings.github.polling.issues.intervalSeconds}
+            modified={g.polling.issues.intervalSeconds !== d.polling.issues.intervalSeconds}
+            onreset={() => (settings.github.polling.issues.intervalSeconds = d.polling.issues.intervalSeconds)} />
+        </div>
+        <div class="rounded-xl border border-surface-200/70 bg-surface-50/70 p-4 dark:border-surface-700/70 dark:bg-surface-900/40">
+          <div class="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <h4 class="text-sm font-semibold">Sybra PRs</h4>
+              <p class="text-xs text-surface-500 dark:text-surface-400">{sybraPRsActivity()}</p>
+              <p class="text-xs text-surface-500 dark:text-surface-400">{lastSeenLabel(reviewsLastSeen, ownsSearches ? 'No live PR update seen in this session' : 'No review search event on secondary; linked PRs still reconcile locally')}</p>
+            </div>
+            <ToggleField
+              label="Enable Sybra PR stream"
+              description="Self-authored and linked task PR monitoring"
+              keyPath="integrations.github.polling.sybra_prs.enabled"
+              bind:checked={settings.github.polling.sybraPrs.enabled}
+              modified={g.polling.sybraPrs.enabled !== d.polling.sybraPrs.enabled}
+              onreset={() => (settings.github.polling.sybraPrs.enabled = d.polling.sybraPrs.enabled)}
+            />
+          </div>
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <NumberField id="gh-sybra-prs-fast" label="Active interval" keyPath="integrations.github.polling.sybra_prs.active_interval" min={0}
+              bind:value={settings.github.polling.sybraPrs.activeIntervalSeconds}
+              modified={g.polling.sybraPrs.activeIntervalSeconds !== d.polling.sybraPrs.activeIntervalSeconds}
+              onreset={() => (settings.github.polling.sybraPrs.activeIntervalSeconds = d.polling.sybraPrs.activeIntervalSeconds)} />
+            <NumberField id="gh-sybra-prs-slow" label="Idle interval" keyPath="integrations.github.polling.sybra_prs.idle_interval" min={0}
+              bind:value={settings.github.polling.sybraPrs.idleIntervalSeconds}
+              modified={g.polling.sybraPrs.idleIntervalSeconds !== d.polling.sybraPrs.idleIntervalSeconds}
+              onreset={() => (settings.github.polling.sybraPrs.idleIntervalSeconds = d.polling.sybraPrs.idleIntervalSeconds)} />
+          </div>
+        </div>
+        <div class="rounded-xl border border-surface-200/70 bg-surface-50/70 p-4 dark:border-surface-700/70 dark:bg-surface-900/40">
+          <div class="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <h4 class="text-sm font-semibold">Assigned PRs</h4>
+              <p class="text-xs text-surface-500 dark:text-surface-400">{assignedPRsActivity()}</p>
+              <p class="text-xs text-surface-500 dark:text-surface-400">{lastSeenLabel(reviewsLastSeen, ownsSearches ? 'No live assigned-review update seen in this session' : 'No assigned-review searches run on secondary')}</p>
+            </div>
+            <ToggleField
+              label="Enable Assigned PR stream"
+              description="Review-requested and reviewed-by discovery"
+              keyPath="integrations.github.polling.assigned_prs.enabled"
+              bind:checked={settings.github.polling.assignedPrs.enabled}
+              modified={g.polling.assignedPrs.enabled !== d.polling.assignedPrs.enabled}
+              onreset={() => (settings.github.polling.assignedPrs.enabled = d.polling.assignedPrs.enabled)}
+            />
+          </div>
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <NumberField id="gh-assigned-prs-fast" label="Active interval" keyPath="integrations.github.polling.assigned_prs.active_interval" min={0}
+              bind:value={settings.github.polling.assignedPrs.activeIntervalSeconds}
+              modified={g.polling.assignedPrs.activeIntervalSeconds !== d.polling.assignedPrs.activeIntervalSeconds}
+              onreset={() => (settings.github.polling.assignedPrs.activeIntervalSeconds = d.polling.assignedPrs.activeIntervalSeconds)} />
+            <NumberField id="gh-assigned-prs-slow" label="Idle interval" keyPath="integrations.github.polling.assigned_prs.idle_interval" min={0}
+              bind:value={settings.github.polling.assignedPrs.idleIntervalSeconds}
+              modified={g.polling.assignedPrs.idleIntervalSeconds !== d.polling.assignedPrs.idleIntervalSeconds}
+              onreset={() => (settings.github.polling.assignedPrs.idleIntervalSeconds = d.polling.assignedPrs.idleIntervalSeconds)} />
+          </div>
+        </div>
         <NumberField id="gh-renovate-fast" label="Renovate (fast)" keyPath="integrations.github.renovate_fast" min={0}
           bind:value={settings.github.renovateFastSeconds}
           modified={g.renovateFastSeconds !== d.renovateFastSeconds}

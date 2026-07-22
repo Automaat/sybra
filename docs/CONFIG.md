@@ -65,7 +65,7 @@ How Sybra launches and routes agent work across providers and local backends.
 | `execution.agent.assistant_event_multiplier` | `float64` | `0` |  |  | `agent.assistant_event_multiplier`, `agent.turn_multiplier` | `false` | `hot` |  | TurnMultiplier scales the assistant-event ceiling on each auto-continuation. Default 2 when unset. |
 | `execution.agent.require_permissions` | `*bool` | _(nil)_ |  |  | `agent.require_permissions` | `false` | `hot` |  | RequirePermissions sets the default permission requirement for agents. nil means not configured (falls back to true — safe default). Set to false in config to opt all tasks into skip-permissions mode. |
 | `execution.agent.review_until_clean` | `*bool` | _(nil)_ |  |  | `agent.review_until_clean` | `false` | `hot` |  | ReviewUntilClean keeps simple-task-review cycling review→fix→review until the reviewer returns a CLEAN verdict, so the fix agent's diff is never the last word. nil means not configured (falls back to true). false falls back to a single review pass per task: cheaper and more predictable when no per-task budget is configured. |
-| `execution.agent.max_review_rounds` | `int` | `3` |  |  | `agent.max_review_rounds` | `false` | `hot` |  | MaxReviewRounds bounds how many automated review rounds a single simple-task-review execution may spend before Sybra parks the task human-required. 0 means use DefaultMaxReviewRounds (3). Ignored when ReviewUntilClean is false or AllowUnboundedReviewRounds is true. |
+| `execution.agent.max_review_rounds` | `int` | `3` |  |  | `agent.max_review_rounds` | `false` | `hot` |  | MaxReviewRounds bounds how many automated review rounds a single simple-task-review execution may spend before Sybra parks the task blocked. 0 means use DefaultMaxReviewRounds (3). Ignored when ReviewUntilClean is false or AllowUnboundedReviewRounds is true. |
 | `execution.agent.allow_unbounded_review_rounds` | `*bool` | _(nil)_ |  |  | `agent.allow_unbounded_review_rounds` | `false` | `hot` |  | AllowUnboundedReviewRounds restores the legacy "loop until CLEAN with no review-round cap" posture. nil means not configured (defaults to false). Use only with a deliberate MaxTaskCostUSD backstop. |
 | `execution.agent.bash_timeout` | `int` | `0` | `seconds` |  | `agent.bash_timeout_seconds`, `agent.bash_timeout` | `false` | `hot` |  | BashTimeoutSeconds sets the per-bash-tool-call timeout passed to claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env vars (claude has no equivalent CLI flag). 0 means use DefaultBashTimeoutSeconds (300). |
 | `execution.agent.retry_watchdog` | `int` | `0` |  |  | `agent.retry_watchdog` | `false` | `hot` |  | RetryWatchdog sets CLAUDE_CODE_RETRY_WATCHDOG on the claude subprocess for headless (unattended) runs. Replaces CLAUDE_CODE_MAX_RETRIES (now capped at 15) for server/unattended sessions. 0 means use DefaultRetryWatchdog (30). Negative (e.g. -1) disables the watchdog entirely (env var omitted), matching the zero-omit semantics at the RunConfig level. |
@@ -319,15 +319,16 @@ External systems Sybra talks to on the operator's behalf.
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `integrations.github.enabled` | `bool` | `true` |  |  | `github.enabled` | `false` | `restart` |  | Enabled is the top-level kill-switch: false forces every GitHub automation off regardless of the sub-toggles below. Fresh generated configs set this to false so first-run GitHub polling is opt-in. Legacy configs that omit this key keep the old enabled behavior during load. true defers to IssuesEnabled/ReviewsEnabled. |
-| `integrations.github.issues_enabled` | `bool` | `true` |  |  | `github.issues_enabled` | `false` | `restart` |  | IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && IssuesEnabled — use RunsIssuesFetcher() rather than reading this field directly. |
-| `integrations.github.reviews_enabled` | `bool` | `true` |  |  | `github.reviews_enabled` | `false` | `restart` |  | ReviewsEnabled gates PR reviewer poll registration specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this field directly. |
+| `integrations.github.polling` | `GitHubPollingConfig` | _(see below)_ |  |  |  | `false` |  |  | Polling is the primary stream-level control surface for GitHub polling. The legacy fields below remain as compatibility inputs during load but new code should read this block through the effective helper methods. |
+| `integrations.github.issues_enabled` | `bool` | `false` |  |  | `github.issues_enabled` | `false` | `restart` |  | IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to true for legacy configs. Deprecated compatibility input for github.polling.issues.enabled. |
+| `integrations.github.reviews_enabled` | `bool` | `false` |  |  | `github.reviews_enabled` | `false` | `restart` |  | ReviewsEnabled gates PR reviewer poll registration specifically. Deprecated compatibility input for both github.polling.sybra_prs.enabled and github.polling.assigned_prs.enabled. |
 | `integrations.github.poller_role` | `string` | `""` |  |  | `github.poller_role` | `false` | `restart` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |
-| `integrations.github.reviews_fast` | `int` | `0` | `seconds` |  | `github.reviews_fast_seconds`, `github.reviews_fast` | `false` | `restart` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. |
+| `integrations.github.reviews_fast` | `int` | `0` | `seconds` |  | `github.reviews_fast_seconds`, `github.reviews_fast` | `false` | `restart` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. Deprecated compatibility input for both PR streams' active intervals. |
 | `integrations.github.review_rounds_per_hour` | `int` | `0` |  |  | `github.review_rounds_per_hour` | `false` | `restart` |  | ReviewRoundsPerHour caps automated review runs one PR may receive in a rolling hour before the task is parked for a human. 0 uses the default; negative disables the cap. Rate-based rather than a lifetime total so a long-lived PR that is legitimately re-reviewed after each push is never blocked, while a runaway loop is stopped within the hour (#2164 sustained ~5/hour for 23 hours). |
-| `integrations.github.reviews_slow` | `int` | `0` | `seconds` |  | `github.reviews_slow_seconds`, `github.reviews_slow` | `false` | `restart` |  |  |
+| `integrations.github.reviews_slow` | `int` | `0` | `seconds` |  | `github.reviews_slow_seconds`, `github.reviews_slow` | `false` | `restart` |  | Deprecated compatibility input for both PR streams' idle intervals. |
 | `integrations.github.reviews_max_prs_per_tick` | `int` | `0` |  |  | `github.reviews_max_prs_per_tick` | `false` | `restart` |  | ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR poller fetches in one tick. Zero falls back to the built-in default; resolved non-positive values mean "unlimited". |
 | `integrations.github.reviews_stable_backoff_max_ticks` | `int` | `0` |  |  | `github.reviews_stable_backoff_max_ticks` | `false` | `restart` |  | ReviewsStableBackoffMaxTicks caps the exponential skip window for linked PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls back to the built-in default; resolved non-positive values disable the backoff entirely. |
-| `integrations.github.issues` | `int` | `0` | `seconds` |  | `github.issues_seconds`, `github.issues` | `false` | `restart` |  |  |
+| `integrations.github.issues` | `int` | `0` | `seconds` |  | `github.issues_seconds`, `github.issues` | `false` | `restart` |  | Deprecated compatibility input for github.polling.issues.interval. |
 | `integrations.github.mention_trigger_phrase` | `string` | `""` |  |  | `github.mention_trigger_phrase` | `false` | `restart` |  | MentionTriggerPhrase, when set, gates a comment-mention search alongside the existing assigned/labeled issue paths: an open issue whose comments contain this phrase (e.g. "@sybra") gets a task via the same dedup/creation path. Empty (default) disables the feature — existing installs see no behavior change. |
 | `integrations.github.renovate_fast` | `int` | `0` | `seconds` |  | `github.renovate_fast_seconds`, `github.renovate_fast` | `false` | `restart` |  |  |
 | `integrations.github.renovate_slow` | `int` | `0` | `seconds` |  | `github.renovate_slow_seconds`, `github.renovate_slow` | `false` | `restart` |  |  |
@@ -336,6 +337,37 @@ External systems Sybra talks to on the operator's behalf.
 | `integrations.github.auto_resolve_clean_merges` | `bool` | `false` |  |  | `github.auto_resolve_clean_merges` | `false` | `restart` |  | AutoResolveCleanMerges is a kill-switch for the deterministic clean-merge fast-path: before dispatching a conflict-recovery agent, Sybra attempts a plain `git merge` of the PR's base branch in Go. When that merge creates a commit with no conflicting hunks, it is pushed and no agent is spawned; conflicts, no-op merges, and errors still fall through to the agent-assisted path. Default off (zero value = false). |
 | `integrations.github.flaky_detection` | `bool` | `false` |  |  | `github.flaky_detection` | `false` | `restart` |  | FlakyDetection is a kill-switch for same-commit CI flakiness classification. When true, a lone ci_failure issue is classified via ClassifyCIFlakiness (the head commit's full check-run history, not just the latest attempt) before it is escalated to a fix agent or a human: a check that both passed and failed on the same SHA at or above FlakySuccessThreshold is flaky, and gets a targeted rerun plus a distinct audit event instead. Default off (zero value = false). |
 | `integrations.github.flaky_success_threshold` | `float64` | `0` |  |  | `github.flaky_success_threshold` | `false` | `restart` |  | FlakySuccessThreshold is the minimum same-check success rate (0-1) for a currently-failing gating check to be classified flaky rather than deterministic. Zero falls back to the built-in default; see GitHubConfig.FlakyThreshold(). |
+
+### GitHubPollingConfig (`integrations.github.polling`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.issues` | `GitHubPollingStreamConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `integrations.github.polling.sybra_prs` | `GitHubPRPollingConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `integrations.github.polling.assigned_prs` | `GitHubPRPollingConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+
+### GitHubPollingStreamConfig (`integrations.github.polling.issues`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.issues.enabled` | `bool` | `true` |  |  | `github.polling.issues.enabled` | `false` | `restart` |  |  |
+| `integrations.github.polling.issues.interval` | `int` | `0` | `seconds` |  | `github.polling.issues.interval_seconds`, `github.polling.issues.interval` | `false` | `restart` |  |  |
+
+### GitHubPRPollingConfig (`integrations.github.polling.sybra_prs`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.sybra_prs.enabled` | `bool` | `true` |  |  | `github.polling.sybra_prs.enabled` | `false` | `restart` |  |  |
+| `integrations.github.polling.sybra_prs.active_interval` | `int` | `0` | `seconds` |  | `github.polling.sybra_prs.active_interval_seconds`, `github.polling.sybra_prs.active_interval` | `false` | `restart` |  |  |
+| `integrations.github.polling.sybra_prs.idle_interval` | `int` | `0` | `seconds` |  | `github.polling.sybra_prs.idle_interval_seconds`, `github.polling.sybra_prs.idle_interval` | `false` | `restart` |  |  |
+
+### GitHubPRPollingConfig (`integrations.github.polling.assigned_prs`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.assigned_prs.enabled` | `bool` | `true` |  |  | `github.polling.assigned_prs.enabled` | `false` | `restart` |  |  |
+| `integrations.github.polling.assigned_prs.active_interval` | `int` | `0` | `seconds` |  | `github.polling.assigned_prs.active_interval_seconds`, `github.polling.assigned_prs.active_interval` | `false` | `restart` |  |  |
+| `integrations.github.polling.assigned_prs.idle_interval` | `int` | `0` | `seconds` |  | `github.polling.assigned_prs.idle_interval_seconds`, `github.polling.assigned_prs.idle_interval` | `false` | `restart` |  |  |
 
 ### GitHubAppConfig (`integrations.github.app`)
 
@@ -413,7 +445,7 @@ focused headless agent for anomalies that need LLM judgment.
 |---|---|---|---|---|---|---|---|---|---|
 | `supervision.monitor.enabled` | `bool` | `true` |  |  | `monitor.enabled` | `false` | `restart` |  |  |
 | `supervision.monitor.interval` | `int` | `300` | `seconds` |  | `monitor.interval_seconds`, `monitor.interval` | `false` | `restart` |  |  |
-| `supervision.monitor.model` | `string` | `"claude-haiku-4-5-20251001"` |  |  | `monitor.model` | `false` | `restart` |  |  |
+| `supervision.monitor.model` | `string` | `"haiku"` |  |  | `monitor.model` | `false` | `restart` |  |  |
 | `supervision.monitor.issue_cooldown` | `int` | `30` | `minutes` |  | `monitor.issue_cooldown_minutes`, `monitor.issue_cooldown` | `false` | `restart` |  |  |
 | `supervision.monitor.dispatch_limit` | `int` | `25` |  |  | `monitor.dispatch_limit` | `false` | `restart` |  |  |
 | `supervision.monitor.stuck_human` | `float64` | `8` | `hours` |  | `monitor.stuck_human_hours`, `monitor.stuck_human` | `false` | `restart` |  |  |
@@ -441,7 +473,7 @@ that the dwell budget (hours) would only catch much later.
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `supervision.watchdog.enabled` | `bool` | `true` |  |  | `watchdog.enabled` | `false` | `restart` |  |  |
-| `supervision.watchdog.model` | `string` | `"claude-haiku-4-5-20251001"` |  |  | `watchdog.model` | `false` | `restart` |  |  |
+| `supervision.watchdog.model` | `string` | `"haiku"` |  |  | `watchdog.model` | `false` | `restart` |  |  |
 | `supervision.watchdog.loop_threshold` | `int` | `6` |  |  | `watchdog.loop_threshold` | `false` | `restart` |  |  |
 | `supervision.watchdog.max_runs_per_window` | `int` | `30` |  |  | `watchdog.max_runs_per_window` | `false` | `restart` |  |  |
 | `supervision.watchdog.run_window` | `int` | `30` | `minutes` |  | `watchdog.run_window_minutes`, `watchdog.run_window` | `false` | `restart` |  |  |
@@ -830,6 +862,7 @@ fast-forward update is applied and Sybra requests a supervisor restart.
 | `auto_update.remote` | `string` | `"origin"` |  |  |  | `false` | `restart` |  |  |
 | `auto_update.branch` | `string` | `"main"` |  |  |  | `false` | `restart` |  |  |
 | `auto_update.mode` | `string` | `"notify"` |  |  |  | `false` | `restart` |  |  |
+| `auto_update.required_checks` | `[]string` |  |  |  |  | `false` | `restart` |  | RequiredChecks is the exact set of status/check names that must report SUCCESS on the candidate commit before auto mode may apply it. Empty is allowed in notify mode; auto mode fails closed when this list is empty. |
 | `auto_update.poll` | `int` | `300` | `seconds` |  | `auto_update.poll_seconds` | `false` | `restart` |  |  |
 | `auto_update.restart_delay` | `int` | `2` | `seconds` |  | `auto_update.restart_delay_seconds` | `false` | `restart` |  | Deprecated: ignored. Kept so existing config files continue to load. |
 

@@ -3,6 +3,8 @@ package audit
 import (
 	"math"
 	"time"
+
+	"github.com/Automaat/sybra/internal/runacct"
 )
 
 type Summary struct {
@@ -12,6 +14,9 @@ type Summary struct {
 	AvgCycleTimeHours float64            `json:"avg_cycle_time_hours"`
 	TotalCostUSD      float64            `json:"total_cost_usd"`
 	AgentRuns         int                `json:"agent_runs"`
+	ResolvedRuns      int                `json:"resolved_runs"`
+	StalledRuns       int                `json:"stalled_runs"`
+	UnknownRuns       int                `json:"unknown_runs"`
 	FailureRate       float64            `json:"failure_rate"`
 	PlanRejectionRate float64            `json:"plan_rejection_rate"`
 	StatusBottlenecks map[string]float64 `json:"status_bottlenecks_hours"`
@@ -33,7 +38,6 @@ func Summarize(events []Event, since, until time.Time) Summary {
 
 	var cycleTimes []float64
 	var planApproved, planRejected int
-	runs := NormalizeAgentRuns(events)
 
 	for _, e := range events {
 		switch e.Type {
@@ -81,21 +85,19 @@ func Summarize(events []Event, since, until time.Time) Summary {
 		s.AvgCycleTimeHours = round2(sum / float64(len(cycleTimes)))
 	}
 
-	var failedRuns int
-	for i := range runs {
-		if !runs[i].Terminal {
-			continue
-		}
-		s.AgentRuns++
-		if runs[i].Failed {
-			failedRuns++
-		}
-		if cost, ok := runs[i].TerminalEvent.Data["cost_usd"].(float64); ok {
-			s.TotalCostUSD += cost
-		}
+	records := RunRecords(events)
+	counts := runacct.Count(records, nil, runacct.CountConfig{
+		CountsTowardFailure: runacct.CountsTowardCodeAuthorFailureRate,
+	})
+	s.AgentRuns = counts.Runs
+	s.ResolvedRuns = counts.Resolved
+	s.StalledRuns = counts.Stalled
+	s.UnknownRuns = counts.Unknown
+	for i := range records {
+		s.TotalCostUSD += records[i].CostUSD
 	}
-	if s.AgentRuns > 0 {
-		s.FailureRate = round2(float64(failedRuns) / float64(s.AgentRuns))
+	if s.ResolvedRuns > 0 {
+		s.FailureRate = round2(float64(counts.Failures) / float64(s.ResolvedRuns))
 	}
 
 	planTotal := planApproved + planRejected

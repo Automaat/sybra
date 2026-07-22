@@ -78,8 +78,17 @@ func TestRegateForTurn_FailoverToHealthyPeer(t *testing.T) {
 	if got.Provider != "copilot" {
 		t.Errorf("cfg.Provider = %q, want copilot", got.Provider)
 	}
+	if got.Model != "opus" {
+		t.Errorf("cfg.Model = %q, want opus", got.Model)
+	}
 	if a.Provider != "copilot" {
 		t.Errorf("agent provider = %q, want copilot", a.Provider)
+	}
+	if a.Model != "gemini-3.1-pro-preview" {
+		t.Errorf("agent model = %q, want gemini-3.1-pro-preview", a.Model)
+	}
+	if a.GetRequestedModel() != "opus" {
+		t.Errorf("requested model = %q, want opus", a.GetRequestedModel())
 	}
 	if a.GetSessionID() != "" {
 		t.Errorf("session id must be cleared on switch, got %q", a.GetSessionID())
@@ -95,6 +104,34 @@ func TestRegateForTurn_FailoverToHealthyPeer(t *testing.T) {
 	}
 	if m.liveByProvider["copilot"] != 1 {
 		t.Errorf("copilot bucket should carry the moved count, got %+v", m.liveByProvider)
+	}
+}
+
+func TestRegateForTurn_IncompatibleModelIsNotRateLimited(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy: map[string]bool{"codex": false, "copilot": true},
+		reasons: map[string]string{"codex": "rate_limited"},
+	})
+
+	a := &Agent{ID: "a2badmodel", Provider: "codex", Model: "gpt-custom-preview"}
+	cfg := RunConfig{Provider: "codex", Model: "gpt-custom-preview", TaskID: "t2badmodel"}
+
+	got, switched, err := m.regateForTurn(t.Context(), a, cfg, nil)
+	if err == nil {
+		t.Fatal("expected incompatible model error")
+	}
+	if switched {
+		t.Fatal("switched must be false when the selected peer cannot run the requested model")
+	}
+	if got.Provider != "codex" || a.Provider != "codex" {
+		t.Errorf("provider must be unmodified on incompatibility, cfg=%q agent=%q", got.Provider, a.Provider)
+	}
+	if a.GetErrorKind() != providerModelIncompatibleErrorKind {
+		t.Fatalf("error kind = %q, want %q", a.GetErrorKind(), providerModelIncompatibleErrorKind)
+	}
+	if a.GetErrorKind() == "rate_limit" {
+		t.Fatal("incompatible model must not be retry-classified as rate_limit")
 	}
 }
 

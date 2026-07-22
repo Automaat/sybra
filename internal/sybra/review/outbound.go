@@ -26,7 +26,7 @@ const reconciledLatchTag = "monitor:reconciled"
 // task (status in-review/ready-review, not tag `review`) from the live
 // monitored PRs and persists any delta. The phase is a pure overlay on the In
 // Review column — it never changes task.Status.
-func (r *Handler) reconcilePRPhases(tasks []task.Task, monitoredPRs []github.PullRequest) {
+func (r *Handler) reconcilePRPhases(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest) {
 	byNumber, byBranch := indexMonitoredPRs(monitoredPRs)
 
 	for i := range tasks {
@@ -53,7 +53,7 @@ func (r *Handler) reconcilePRPhases(tasks []task.Task, monitoredPRs []github.Pul
 		}
 
 		r.applyPRPhase(t, computePRPhase(prSignals{
-			AgentRunning:     r.agents.HasRunningAgentForTask(t.ID),
+			AgentRunning:     r.hasBlockingAgentForTask(ctx, t.ID),
 			IsDraft:          pr.IsDraft,
 			CIStatus:         pr.CIStatus,
 			HasPendingChecks: pr.HasPendingChecks,
@@ -73,7 +73,7 @@ func (r *Handler) reconcilePRPhases(tasks []task.Task, monitoredPRs []github.Pul
 // Intentionally scoped to the implement step itself. A workflow parked on later
 // deterministic gates (verify_checks, etc.) still owns meaningful work and must
 // not be short-circuited just because an older PR snapshot looks green.
-func (r *Handler) cancelSettledImplementationWorkflows(tasks []task.Task, monitoredPRs []github.PullRequest) {
+func (r *Handler) cancelSettledImplementationWorkflows(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest) {
 	if r.WorkflowEngine == nil {
 		return
 	}
@@ -84,7 +84,7 @@ func (r *Handler) cancelSettledImplementationWorkflows(tasks []task.Task, monito
 		if !staleImplementationWorkflowEligible(t) {
 			continue
 		}
-		if r.hasRunningAgentForTask(t.ID) {
+		if r.hasRunningAgentForTask(ctx, t.ID) {
 			continue
 		}
 		pr := matchingPR(t, byNumber, byBranch)
@@ -122,7 +122,7 @@ func (r *Handler) settledImplementationFetchMatchers(ctx context.Context, tasks 
 		if !staleImplementationWorkflowEligible(t) || t.ProjectID == "" {
 			continue
 		}
-		if r.hasRunningAgentForTask(t.ID) {
+		if r.hasRunningAgentForTask(ctx, t.ID) {
 			continue
 		}
 		m := github.TaskMatcher{
@@ -188,8 +188,46 @@ func (r *Handler) findOpenPRForBranch(ctx context.Context, repo, branch string) 
 	return github.FindPRForBranch(ctx, repo, branch)
 }
 
-func (r *Handler) hasRunningAgentForTask(taskID string) bool {
-	return r != nil && r.agents != nil && r.agents.HasRunningAgentForTask(taskID)
+func (r *Handler) hasRunningAgentForTask(ctx context.Context, taskID string) bool {
+	return r.hasBlockingAgentForTask(ctx, taskID)
+}
+
+func (r *Handler) hasBlockingAgentForTask(ctx context.Context, taskID string) bool {
+	if r == nil || r.agents == nil {
+		return false
+	}
+	if !r.agents.HasRunningAgentForTask(taskID) {
+		return false
+	}
+	releasedAgents := r.agents.ReleaseStaleStoppedAgentsForTask(ctx, taskID, stalePRDispatchGateAge)
+	releasedClaim := r.agents.ReleaseStaleTaskDispatch(taskID, stalePRDispatchGateAge)
+	if releasedAgents > 0 || releasedClaim {
+		if r.logger != nil {
+			r.logger.Warn("reviews.dispatch.gate.stale-released",
+				"task_id", taskID, "agents", releasedAgents, "dispatch_claim", releasedClaim)
+		}
+		return r.agents.HasRunningAgentForTask(taskID)
+	}
+	return true
+}
+
+func (r *Handler) hasBlockingAgentForTaskAllowingAgent(ctx context.Context, taskID, exceptAgentID string) bool {
+	if r == nil || r.agents == nil {
+		return false
+	}
+	if !r.agents.HasOtherRunningAgentForTask(taskID, exceptAgentID) {
+		return false
+	}
+	releasedAgents := r.agents.ReleaseStaleStoppedAgentsForTask(ctx, taskID, stalePRDispatchGateAge)
+	releasedClaim := r.agents.ReleaseStaleTaskDispatch(taskID, stalePRDispatchGateAge)
+	if releasedAgents > 0 || releasedClaim {
+		if r.logger != nil {
+			r.logger.Warn("reviews.dispatch.gate.stale-released",
+				"task_id", taskID, "agents", releasedAgents, "dispatch_claim", releasedClaim)
+		}
+		return r.agents.HasOtherRunningAgentForTask(taskID, exceptAgentID)
+	}
+	return true
 }
 
 // indexMonitoredPRs builds the by-number and by-branch lookup maps shared by
@@ -254,7 +292,7 @@ func (r *Handler) reactivateLinkedOwnPR(t *task.Task, livePR bool) *task.Task {
 }
 
 func linkedOwnPRHumanRequiredDrift(t *task.Task, livePR bool) bool {
-	if t == nil || t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if t == nil || task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
 		return false
 	}
 	if !livePR || t.Status != task.StatusHumanRequired || t.PRNumber == 0 || strings.TrimSpace(t.StatusReason) != "" {
@@ -301,7 +339,7 @@ func settledOwnPR(pr github.PullRequest) bool {
 // ownPRColumnTask reports whether a task is one of the user's own PRs shown in
 // the In Review column — the set reconcilePRPhases assigns a PR phase to.
 func ownPRColumnTask(t *task.Task) bool {
-	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
 		return false
 	}
 	if t.Status != task.StatusInReview && t.Status != task.StatusReadyReview {
@@ -378,7 +416,7 @@ func exhaustedFixReasonKind(reason string) (github.PRIssueKind, bool) {
 // human-authored reasons, and tasks already reconciled once (latch tag present,
 // to prevent flip-flopping).
 func humanRequiredBlockerReconcilable(t *task.Task) (kind github.PRIssueKind, ok bool) {
-	if t == nil || t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if t == nil || task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
 		return "", false
 	}
 	if t.Status != task.StatusHumanRequired || t.PRNumber == 0 {
@@ -422,9 +460,10 @@ func hasFixableIssue(issues []github.PRIssue) bool {
 		switch issues[i].Kind {
 		case github.PRIssueConflict, github.PRIssueCIFailure, github.PRIssueComments:
 			return true
-		case github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueReadyToMerge, github.PRIssueCIFlake:
-			// branch_conflict_no_pr and ci_flake are tracker-only (never
-			// emitted by MatchTaskPRs); ready_to_merge is not a blocker.
+		case github.PRIssueBranchConflictNoPR, github.PRIssueTaskBranchConflict, github.PRIssueBranchRecreate, github.PRIssueReadyToMerge, github.PRIssueCIFlake:
+			// branch_conflict_no_pr, task_branch_conflict, and ci_flake
+			// are tracker-only (never emitted by MatchTaskPRs);
+			// ready_to_merge is not a blocker.
 		}
 	}
 	return false

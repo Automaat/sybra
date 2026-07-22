@@ -699,6 +699,21 @@ func TestClaimTaskDispatch(t *testing.T) {
 	m.ReleaseTaskDispatch("never-claimed")
 }
 
+func TestHasRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	m.mu.Lock()
+	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.mu.Unlock()
+
+	if m.HasRunningAgentForTask("t1") {
+		t.Fatal("stale dispatch claim with no agent should not report running")
+	}
+	if m.IsDispatching("t1") {
+		t.Fatal("stale dispatch claim should be removed")
+	}
+}
+
 // TestIsDispatching verifies the read-only peek other coordinators (e.g.
 // internal/workflow.Engine's DispatchEvent/ResumeStalled) consult as the
 // single ground truth for "does some dispatcher already own this task's next
@@ -864,6 +879,56 @@ func TestHasOtherRunningAgentForTask(t *testing.T) {
 	}
 }
 
+func TestHasOtherRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	running := &Agent{ID: "a1", TaskID: "t1", State: StateRunning, cancel: func() {}}
+	m.mu.Lock()
+	m.agents["a1"] = running
+	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.mu.Unlock()
+
+	if m.HasOtherRunningAgentForTask("t1", "a1") {
+		t.Fatal("stale dispatch claim should not count as another running agent")
+	}
+	if m.IsDispatching("t1") {
+		t.Fatal("stale dispatch claim should be removed")
+	}
+}
+
+func TestKillOtherAgentsForTaskExcludesCompletingAgent(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	selfDone := make(chan struct{})
+	otherDone := make(chan struct{})
+	var closeOther sync.Once
+	self := &Agent{ID: "self", TaskID: "t1", State: StateRunning, done: selfDone, cancel: func() {
+		t.Fatal("excluded completing agent was cancelled")
+	}}
+	other := &Agent{ID: "other", TaskID: "t1", State: StateRunning, done: otherDone, cancel: func() {
+		closeOther.Do(func() { close(otherDone) })
+	}}
+	m.mu.Lock()
+	m.agents[self.ID] = self
+	m.agents[other.ID] = other
+	m.mu.Unlock()
+
+	if !m.KillOtherAgentsForTask("t1", "self", time.Second) {
+		t.Fatal("expected non-excluded agent to exit")
+	}
+	if self.GetState() != StateRunning {
+		t.Fatalf("self state = %q, want running", self.GetState())
+	}
+	select {
+	case <-selfDone:
+		t.Fatal("excluded completing agent done channel was closed")
+	default:
+	}
+	if other.GetState() != StateStopped {
+		t.Fatalf("other state = %q, want stopped", other.GetState())
+	}
+}
+
 func TestBuildCommand(t *testing.T) {
 	// Reset server-side env override so tests see the default sandbox logic.
 	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "")
@@ -878,22 +943,22 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "no model no tools",
 			cfg:     RunConfig{},
-			wantCmd: "claude --dangerously-skip-permissions --model sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model sonnet",
 		},
 		{
 			name:    "valid model",
 			cfg:     RunConfig{Model: "claude-opus-4-6"},
-			wantCmd: "claude --dangerously-skip-permissions --model claude-opus-4-6",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model claude-opus-4-6",
 		},
 		{
 			name:    "valid tools",
 			cfg:     RunConfig{AllowedTools: []string{"Read", "Write", "Bash"}},
-			wantCmd: "claude --allowedTools Read,Write,Bash --model sonnet",
+			wantCmd: "claude --allowedTools Read,Write,Bash --disallowedTools ScheduleWakeup --model sonnet",
 		},
 		{
 			name:    "valid model and tools",
 			cfg:     RunConfig{Model: "claude-sonnet-4-6", AllowedTools: []string{"Read"}},
-			wantCmd: "claude --allowedTools Read --model claude-sonnet-4-6",
+			wantCmd: "claude --allowedTools Read --disallowedTools ScheduleWakeup --model claude-sonnet-4-6",
 		},
 		{
 			name:    "model with shell metachar semicolon",
@@ -938,7 +1003,7 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "valid model with slash and dot",
 			cfg:     RunConfig{Model: "anthropic/claude-3.5-sonnet"},
-			wantCmd: "claude --dangerously-skip-permissions --model anthropic/claude-3.5-sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model anthropic/claude-3.5-sonnet",
 		},
 		{
 			name:    "codex default model mapping",
@@ -958,22 +1023,22 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "fable alias",
 			cfg:     RunConfig{Model: "fable"},
-			wantCmd: "claude --dangerously-skip-permissions --model fable",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model fable",
 		},
 		{
 			name:    "fable with 1m suffix stripped",
 			cfg:     RunConfig{Model: "fable[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --model fable",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model fable",
 		},
 		{
 			name:    "claude-fable-5 with 1m suffix stripped",
 			cfg:     RunConfig{Model: "claude-fable-5[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --model claude-fable-5",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model claude-fable-5",
 		},
 		{
 			name:    "sonnet with 1m suffix stripped",
 			cfg:     RunConfig{Model: "sonnet[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --model sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model sonnet",
 		},
 		{
 			name:    "codex fable passes through as explicit model",

@@ -372,6 +372,7 @@ func looksLikeAuthFailure(output string) bool {
 		"gh_token is invalid",
 		"github_token is invalid",
 		"token has expired",
+		"could not read username for 'https://github.com'",
 		"401 unauthorized",
 	}
 	for _, p := range patterns {

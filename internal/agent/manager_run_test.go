@@ -60,6 +60,75 @@ func TestRegisterMarkAgentDone_ProviderAccountingInvariant(t *testing.T) {
 	}
 }
 
+func TestReleaseStaleStoppedAgentsForTask_ReleasesDoneGate(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.deadAgentRetention = 0
+	stale := &Agent{
+		ID:          "stale-stopped",
+		TaskID:      "task-1",
+		Provider:    "claude",
+		State:       StateStopped,
+		LastEventAt: time.Now().Add(-30 * time.Minute),
+		done:        make(chan struct{}),
+	}
+	if err := m.registerRunningAgent(stale, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("precondition: stopped agent with open done channel should still gate liveness")
+	}
+
+	if got := m.ReleaseStaleStoppedAgentsForTask(context.Background(), "task-1", 15*time.Minute); got != 1 {
+		t.Fatalf("released = %d, want 1", got)
+	}
+	if m.HasRunningAgentForTask("task-1") {
+		t.Fatal("stale stopped agent should no longer gate dispatch")
+	}
+}
+
+func TestReleaseStaleStoppedAgentsForTask_KeepsFreshStopRace(t *testing.T) {
+	m, _ := newTestManager(t)
+	fresh := &Agent{
+		ID:          "fresh-stopped",
+		TaskID:      "task-1",
+		Provider:    "claude",
+		State:       StateStopped,
+		LastEventAt: time.Now().Add(-30 * time.Minute),
+		done:        make(chan struct{}),
+	}
+	fresh.MarkStopped()
+	if err := m.registerRunningAgent(fresh, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	t.Cleanup(func() { m.markAgentDone(context.Background(), fresh) })
+
+	if got := m.ReleaseStaleStoppedAgentsForTask(context.Background(), "task-1", 15*time.Minute); got != 0 {
+		t.Fatalf("released = %d, want 0", got)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("fresh stopped agent should still gate until its runner exits")
+	}
+}
+
+func TestClaimTaskDispatch_ExpiresLeakedClaim(t *testing.T) {
+	m, _ := newTestManager(t)
+	if !m.ClaimTaskDispatch("task-1") {
+		t.Fatal("initial claim failed")
+	}
+	if m.ClaimTaskDispatch("task-1") {
+		t.Fatal("fresh duplicate claim should be rejected")
+	}
+
+	m.mu.Lock()
+	m.dispatchClaims["task-1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.mu.Unlock()
+
+	if !m.ClaimTaskDispatch("task-1") {
+		t.Fatal("stale leaked claim should be released and reacquired")
+	}
+	m.ReleaseTaskDispatch("task-1")
+}
+
 // TestMarkAgentDone_EvictsFromRegistry locks in that a finished agent is
 // eventually removed from m.agents once its terminal path runs, so a
 // long-lived server does not accumulate output buffers and prompts forever
@@ -435,6 +504,29 @@ func TestTryReserveSlot(t *testing.T) {
 	}
 }
 
+func TestTryHoldCapacity(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 1
+	m.mu.Unlock()
+
+	reservation, ok := m.TryHoldCapacity()
+	if !ok || reservation == nil {
+		t.Fatal("expected reservation under the cap")
+	}
+	if m.TryReserveSlot() {
+		t.Fatal("held reservation must consume visible capacity")
+	}
+	if _, ok := m.TryHoldCapacity(); ok {
+		t.Fatal("second reservation at cap must fail")
+	}
+
+	reservation.Release()
+	if !m.TryReserveSlot() {
+		t.Fatal("released reservation must free capacity")
+	}
+}
+
 func TestAvailableQueueDrainSlots(t *testing.T) {
 	m, _ := newTestManager(t)
 
@@ -592,6 +684,37 @@ func TestTryReserveSlot_RegisterNoDoubleCount(t *testing.T) {
 	}
 	if got := m.InFlightByProvider()["claude"]; got != 1 {
 		t.Fatalf("claude in-flight = %d, want 1", got)
+	}
+	assertAccountingInvariant(t, m)
+}
+
+func TestRunWithCapacityReservation_ConsumesHeldSlot(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 1
+	m.mu.Unlock()
+
+	reservation, ok := m.TryHoldCapacity()
+	if !ok || reservation == nil {
+		t.Fatal("expected reservation under the cap")
+	}
+
+	a := &Agent{ID: "held-slot", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{capacityReservation: reservation}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent with reservation: %v", err)
+	}
+	if got := m.RunningCount(); got != 1 {
+		t.Fatalf("RunningCount = %d, want 1", got)
+	}
+	if m.TryReserveSlot() {
+		t.Fatal("live agent should still occupy the only slot after reservation consumption")
+	}
+
+	// Consumed reservation is already inactive; a deferred caller Release must
+	// be a no-op rather than freeing the live agent's slot.
+	reservation.Release()
+	if m.TryReserveSlot() {
+		t.Fatal("Release after consumption must not free a live agent slot")
 	}
 	assertAccountingInvariant(t, m)
 }

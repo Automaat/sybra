@@ -59,6 +59,30 @@ func captureStdout(t *testing.T, fn func() int) (exitCode int, output string) {
 	return code, string(buf[:n])
 }
 
+func runCLIWithStderr(t *testing.T, args ...string) (exitCode int, stdout, stderr string) {
+	t.Helper()
+	oldOut := os.Stdout
+	outR, outW, _ := os.Pipe()
+	os.Stdout = outW
+
+	oldErr := os.Stderr
+	errR, errW, _ := os.Pipe()
+	os.Stderr = errW
+
+	code := run(args)
+
+	_ = outW.Close()
+	_ = errW.Close()
+	os.Stdout = oldOut
+	os.Stderr = oldErr
+
+	outBuf := make([]byte, 64*1024)
+	outN, _ := outR.Read(outBuf)
+	errBuf := make([]byte, 64*1024)
+	errN, _ := errR.Read(errBuf)
+	return code, string(outBuf[:outN]), string(errBuf[:errN])
+}
+
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -119,76 +143,6 @@ func TestCreateAndGet(t *testing.T) {
 	}
 	if got.ID != created.ID {
 		t.Errorf("get returned id %q, want %q", got.ID, created.ID)
-	}
-}
-
-func TestCLIWorksWithV2ObservabilityConfig(t *testing.T) {
-	dir := setupStore(t)
-	raw := strings.Join([]string{
-		"schema_version: 2",
-		"observability:",
-		"  logging:",
-		"    level: debug",
-		"  ab_testing:",
-		"    enabled: true",
-		"",
-	}, "\n")
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(raw), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	code, out := runCLI(t, "--json", "create", "--title", "observability task")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
-	var created task.Task
-	mustUnmarshal(t, out, &created)
-
-	code, out = runCLI(t, "--json", "get", created.ID)
-	if code != 0 {
-		t.Fatalf("get exit %d: %s", code, out)
-	}
-	var got task.Task
-	mustUnmarshal(t, out, &got)
-	if got.ID != created.ID {
-		t.Fatalf("get returned id %q, want %q", got.ID, created.ID)
-	}
-}
-
-func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
-	setupStore(t)
-
-	code, out := runCLI(t, "--json", "create", "--title", "fallback task")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
-	var created task.Task
-	mustUnmarshal(t, out, &created)
-
-	origLoad := loadCLIConfig
-	loadCLIConfig = func() (*config.Config, error) {
-		return nil, fmt.Errorf("unknown config key %q", "observability")
-	}
-	t.Cleanup(func() { loadCLIConfig = origLoad })
-
-	code, out = runCLI(t, "--json", "get", created.ID)
-	if code != 0 {
-		t.Fatalf("fallback get exit %d: %s", code, out)
-	}
-	var got task.Task
-	mustUnmarshal(t, out, &got)
-	if got.ID != created.ID {
-		t.Fatalf("fallback get returned id %q, want %q", got.ID, created.ID)
-	}
-
-	code, out = runCLI(t, "--json", "update", created.ID, "--status", "in-progress")
-	if code != 0 {
-		t.Fatalf("fallback update exit %d: %s", code, out)
-	}
-	var updated task.Task
-	mustUnmarshal(t, out, &updated)
-	if updated.Status != task.StatusInProgress {
-		t.Fatalf("fallback update status = %q, want %q", updated.Status, task.StatusInProgress)
 	}
 }
 
@@ -297,6 +251,100 @@ func TestUpdateStatus(t *testing.T) {
 	mustUnmarshal(t, out, &updated)
 	if updated.Status != "in-progress" {
 		t.Errorf("status = %q", updated.Status)
+	}
+}
+
+func TestCLIWorksWithV2ObservabilityConfig(t *testing.T) {
+	dir := setupStore(t)
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	cfg := strings.Join([]string{
+		"schema_version: 2",
+		"observability:",
+		"  logging:",
+		"    level: debug",
+		"  audit:",
+		"    enabled: true",
+		"server:",
+		"  auth_token: local-test-token",
+		"",
+	}, "\n")
+	if err := os.WriteFile(config.ConfigPath(), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	created, err := manager.Create("observability task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	code, out := runCLI(t, "--json", "get", "--compact", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.ID != created.ID {
+		t.Fatalf("get id = %q, want %q", got.ID, created.ID)
+	}
+
+	code, out = runCLI(t, "--json", "update", created.ID, "--status", "in-progress")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	mustUnmarshal(t, out, &got)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+}
+
+func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
+	dir := setupStore(t)
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	created, err := manager.Create("fallback task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	code, stdout, stderr := runCLIWithStderr(t, "--json", "get", "--compact", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "falling back to direct task store") {
+		t.Fatalf("stderr missing fallback warning:\n%s", stderr)
+	}
+	var got task.Task
+	mustUnmarshal(t, stdout, &got)
+	if got.ID != created.ID {
+		t.Fatalf("get id = %q, want %q", got.ID, created.ID)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "update", created.ID, "--status", "in-progress", "--status-reason", "fallback path")
+	if code != 0 {
+		t.Fatalf("update exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "falling back to direct task store") {
+		t.Fatalf("stderr missing fallback warning on update:\n%s", stderr)
+	}
+	mustUnmarshal(t, stdout, &got)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if got.StatusReason != "fallback path" {
+		t.Fatalf("status reason = %q, want fallback path", got.StatusReason)
 	}
 }
 
@@ -659,6 +707,35 @@ func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONReportsGitHubPollingStates(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.GitHub.PollerRole = "secondary"
+	cfg.GitHub.Polling.AssignedPRs.Enabled = false
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected status-only doctor to stay non-fatal, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, want := range []string{
+		"github issues polling: inactive on this machine (poller_role=secondary)",
+		"github sybra prs polling: active (known linked PR monitor only; poller_role=secondary)",
+		"github assigned prs polling: disabled by stream toggle",
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "ok" && strings.Contains(f.Message, want)
+		}) {
+			t.Fatalf("expected %q in doctor report: %+v", want, report.Findings)
+		}
+	}
+}
+
 func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	setupStore(t)
 
@@ -994,6 +1071,36 @@ func TestConfigDoctorJSONReportsRoutingSummaryAndWarnings(t *testing.T) {
 			return f.Severity == "warning" && f.Message == want
 		}) {
 			t.Fatalf("expected routing warning %q in %+v", want, report.Findings)
+		}
+	}
+}
+
+func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Providers.AutoFailover = true
+	cfg.Agent.Provider = "claude"
+	cfg.Agent.Model = "claude-fable-5"
+	cfg.Monitor.Model = "claude-fable-5"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, want := range []string{
+		`agent.model="claude-fable-5" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
+		`monitor.model="claude-fable-5" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "warning" && f.Message == want
+		}) {
+			t.Fatalf("expected warning %q in %+v", want, report.Findings)
 		}
 	}
 }

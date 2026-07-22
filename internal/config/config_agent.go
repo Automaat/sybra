@@ -51,7 +51,7 @@ type AgentDefaults struct {
 	ReviewUntilClean *bool `yaml:"review_until_clean" json:"reviewUntilClean"`
 	// MaxReviewRounds bounds how many automated review rounds a single
 	// simple-task-review execution may spend before Sybra parks the task
-	// human-required. 0 means use DefaultMaxReviewRounds (3). Ignored when
+	// blocked. 0 means use DefaultMaxReviewRounds (3). Ignored when
 	// ReviewUntilClean is false or AllowUnboundedReviewRounds is true.
 	MaxReviewRounds int `yaml:"max_review_rounds" json:"maxReviewRounds"`
 	// AllowUnboundedReviewRounds restores the legacy "loop until CLEAN with no

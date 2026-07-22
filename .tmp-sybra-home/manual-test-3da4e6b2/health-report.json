@@ -1,0 +1,109 @@
+{
+  "generatedAt": "2026-07-20T19:57:16.21674325Z",
+  "periodStart": "2026-07-19T19:57:16.21674325Z",
+  "periodEnd": "2026-07-20T19:57:16.21674325Z",
+  "score": "good",
+  "findings": null,
+  "stats": {
+    "totalAgentRuns": 0,
+    "failedAgentRuns": 0,
+    "failureRate": 0,
+    "costByRole": {},
+    "totalCostUsd": 0
+  },
+  "pressure": {
+    "diskFreePct": 61.2095947265625,
+    "memAvailablePct": 94.57579056421915,
+    "loadPerCpu": 0.3225,
+    "warningDiskFreePct": 15,
+    "criticalDiskFreePct": 5
+  },
+  "processes": {
+    "topCpu": [
+      {
+        "pid": 573077,
+        "pgid": 573070,
+        "name": "codex",
+        "cpuPercent": 14.1,
+        "memPercent": 0.3,
+        "owned": false
+      },
+      {
+        "pid": 572662,
+        "pgid": 572655,
+        "name": "codex",
+        "cpuPercent": 10,
+        "memPercent": 0.3,
+        "owned": false
+      },
+      {
+        "pid": 424514,
+        "pgid": 424514,
+        "name": "sybra-server",
+        "cpuPercent": 7.6,
+        "memPercent": 1.1,
+        "owned": false
+      },
+      {
+        "pid": 571423,
+        "pgid": 571416,
+        "name": "codex",
+        "cpuPercent": 6.4,
+        "memPercent": 0.3,
+        "owned": false
+      },
+      {
+        "pid": 572961,
+        "pgid": 572961,
+        "name": "npm exec @playw",
+        "cpuPercent": 2.4,
+        "memPercent": 0.3,
+        "owned": false
+      }
+    ],
+    "topMem": [
+      {
+        "pid": 424514,
+        "pgid": 424514,
+        "name": "sybra-server",
+        "cpuPercent": 7.6,
+        "memPercent": 1.1,
+        "owned": false
+      },
+      {
+        "pid": 577101,
+        "pgid": 577101,
+        "name": "rg",
+        "cpuPercent": 0,
+        "memPercent": 1,
+        "owned": false
+      },
+      {
+        "pid": 577337,
+        "pgid": 577176,
+        "name": "claude",
+        "cpuPercent": 0,
+        "memPercent": 0.7,
+        "owned": false
+      },
+      {
+        "pid": 959,
+        "pgid": 959,
+        "name": "alloy",
+        "cpuPercent": 0.3,
+        "memPercent": 0.5,
+        "owned": false
+      },
+      {
+        "pid": 573013,
+        "pgid": 572961,
+        "name": "MainThread",
+        "cpuPercent": 2,
+        "memPercent": 0.4,
+        "owned": false
+      }
+    ],
+    "sampledAt": "2026-07-20T19:57:16.258046686Z",
+    "available": true
+  }
+}

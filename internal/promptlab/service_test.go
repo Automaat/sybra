@@ -30,7 +30,7 @@ func TestRunFilesHumanRequired(t *testing.T) {
 	outDir := filepath.Join(dir, "out")
 	var records []stats.RunRecord
 	records = append(records, weakRoleRecords("implementation", 10, 20)...) // 0.50 failure rate
-	records = append(records, weakRoleRecords("review", 0, 20)...)          // 0.00, dilutes baseline to 0.25
+	records = append(records, weakRoleRecords("pr-fix", 0, 20)...)          // 0.00, dilutes baseline to 0.25
 
 	result, err := Run(context.Background(), Options{
 		Records:       records,
@@ -62,9 +62,9 @@ func TestRunCapsProposalsAndLogs(t *testing.T) {
 	dir := t.TempDir()
 	var records []stats.RunRecord
 	records = append(records, weakRoleRecords("implementation", 12, 20)...) // 0.60
-	records = append(records, weakRoleRecords("review", 10, 20)...)         // 0.50
+	records = append(records, weakRoleRecords("pr-fix", 10, 20)...)         // 0.50
 	records = append(records, weakRoleRecords("fix-review", 8, 20)...)      // 0.40
-	records = append(records, weakRoleRecords("docs", 0, 100)...)           // dilutes baseline to 0.1875
+	records = append(records, weakRoleRecords("test-fix", 0, 100)...)       // dilutes baseline to 0.1875
 
 	result, err := Run(context.Background(), Options{
 		Records:       records,

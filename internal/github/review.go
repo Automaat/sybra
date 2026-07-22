@@ -22,6 +22,7 @@ const reviewSummaryQuery = `query($q: String!) {
         title
         url
         headRefName
+        headRepositoryOwner { login }
         baseRefName
         isDraft
         mergeable
@@ -82,6 +83,7 @@ const monitorPRFields = `
       url
       state
       headRefName
+      headRepositoryOwner { login }
       baseRefName
       isDraft
       mergeable
@@ -260,6 +262,18 @@ type MonitorPRResult struct {
 // FetchReviews returns open PRs created by the user and review requests, excluding bots.
 func FetchReviews() (ReviewSummary, error) {
 	return fetchReviewsWith(defaultExecer)
+}
+
+// FetchCreatedByMePRs returns open self-authored PRs for the outbound Sybra PR
+// monitor.
+func FetchCreatedByMePRs() ([]PullRequest, error) {
+	return fetchCreatedByMePRsWith(defaultExecer)
+}
+
+// FetchAssignedReviewSummary returns the inbound review discovery legs only:
+// review-requested:@me plus approved reviewed-by:@me PRs.
+func FetchAssignedReviewSummary() (ReviewSummary, error) {
+	return fetchAssignedReviewSummaryWith(defaultExecer)
 }
 
 // FetchPRForMonitor fetches one PR with the same signals used by FetchReviews,
@@ -464,51 +478,19 @@ func fetchPRBatchWith(e execer, refs []PRRef) []MonitorPRResult {
 }
 
 func fetchReviewsWith(e execer) (ReviewSummary, error) {
-	const (
-		createdQuery   = "is:pr is:open author:@me"
-		requestedQuery = "is:pr is:open review-requested:@me"
-		reviewedQuery  = "is:pr is:open reviewed-by:@me"
-	)
-	cacheKey := createdQuery + "||" + requestedQuery + "||" + reviewedQuery
-	if runtimeCacheEnabled(e) {
-		if cached, ok := reviewSummaryCache.Get(cacheKey); ok {
-			return cached, nil
-		}
-		// Pace the search legs by the live GraphQL budget: when it is low, serve
-		// a stale summary if we have one, otherwise back off (ErrBudgetExhausted
-		// is transient) instead of firing three searches that would only be
-		// rejected and burn the last of the shared budget.
-		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
-			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
-				return stale, nil
-			}
-			return ReviewSummary{}, ErrBudgetExhausted
-		}
-	}
-
-	created, err := fetchReviewSearchWith(e, createdQuery)
+	created, err := fetchCreatedByMePRsWith(e)
 	if err != nil {
-		return staleReviewSummaryOrError(e, cacheKey, "created", err)
+		return ReviewSummary{}, err
 	}
-	requested, err := fetchReviewSearchWith(e, requestedQuery)
+	assigned, err := fetchAssignedReviewSummaryWith(e)
 	if err != nil {
-		return staleReviewSummaryOrError(e, cacheKey, "requested", err)
+		return ReviewSummary{}, err
 	}
-	reviewed, err := fetchReviewSearchWith(e, reviewedQuery)
-	if err != nil {
-		return staleReviewSummaryOrError(e, cacheKey, "reviewed", err)
-	}
-
-	summary := ReviewSummary{
+	return ReviewSummary{
 		CreatedByMe:     created,
-		ReviewRequested: requested,
-		ReviewedByMe:    approvedOnly(reviewed),
-	}
-	if runtimeCacheEnabled(e) {
-		reviewSummaryCache.Set(cacheKey, summary, 2*time.Minute)
-	}
-
-	return summary, nil
+		ReviewRequested: assigned.ReviewRequested,
+		ReviewedByMe:    assigned.ReviewedByMe,
+	}, nil
 }
 
 func staleReviewSummaryOrError(e execer, cacheKey, leg string, err error) (ReviewSummary, error) {
@@ -518,6 +500,70 @@ func staleReviewSummaryOrError(e execer, cacheKey, leg string, err error) (Revie
 		}
 	}
 	return ReviewSummary{}, fmt.Errorf("fetch %s reviews: %w", leg, err)
+}
+
+const (
+	createdReviewQuery   = "is:pr is:open author:@me"
+	requestedReviewQuery = "is:pr is:open review-requested:@me"
+	reviewedReviewQuery  = "is:pr is:open reviewed-by:@me"
+)
+
+func fetchCreatedByMePRsWith(e execer) ([]PullRequest, error) {
+	cacheKey := createdReviewQuery
+	if runtimeCacheEnabled(e) {
+		if cached, ok := reviewSummaryCache.Get(cacheKey); ok {
+			return cached.CreatedByMe, nil
+		}
+		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
+			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
+				return stale.CreatedByMe, nil
+			}
+			return nil, ErrBudgetExhausted
+		}
+	}
+
+	created, err := fetchReviewSearchWith(e, createdReviewQuery)
+	if err != nil {
+		summary, staleErr := staleReviewSummaryOrError(e, cacheKey, "created", err)
+		return summary.CreatedByMe, staleErr
+	}
+	if runtimeCacheEnabled(e) {
+		reviewSummaryCache.Set(cacheKey, ReviewSummary{CreatedByMe: created}, 2*time.Minute)
+	}
+	return created, nil
+}
+
+func fetchAssignedReviewSummaryWith(e execer) (ReviewSummary, error) {
+	cacheKey := requestedReviewQuery + "||" + reviewedReviewQuery
+	if runtimeCacheEnabled(e) {
+		if cached, ok := reviewSummaryCache.Get(cacheKey); ok {
+			return cached, nil
+		}
+		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
+			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
+				return stale, nil
+			}
+			return ReviewSummary{}, ErrBudgetExhausted
+		}
+	}
+
+	requested, err := fetchReviewSearchWith(e, requestedReviewQuery)
+	if err != nil {
+		return staleReviewSummaryOrError(e, cacheKey, "requested", err)
+	}
+	reviewed, err := fetchReviewSearchWith(e, reviewedReviewQuery)
+	if err != nil {
+		return staleReviewSummaryOrError(e, cacheKey, "reviewed", err)
+	}
+
+	summary := ReviewSummary{
+		ReviewRequested: requested,
+		ReviewedByMe:    approvedOnly(reviewed),
+	}
+	if runtimeCacheEnabled(e) {
+		reviewSummaryCache.Set(cacheKey, summary, 2*time.Minute)
+	}
+	return summary, nil
 }
 
 func fetchReviewSearchWith(e execer, query string) ([]PullRequest, error) {

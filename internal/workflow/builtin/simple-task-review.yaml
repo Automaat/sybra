@@ -15,10 +15,15 @@ trigger:
       operator: equals
       value: ""
 steps:
-  # Skip review when tagged noreview/trivial or already reviewed in a prior
-  # run. On skip, jump straight to done_review so the task still advances to
-  # testing — trivial-tagged tasks then also skip testing (see
-  # testing-task.yaml's maybe_test), landing directly on ready-pr.
+  # Skip review when tagged noreview/trivial or already CLEAN-reviewed in a
+  # prior run. A persisted NEEDS_FIXES review must win over task.reviewed: the
+  # review role marks task.reviewed when it completes, even for non-clean
+  # verdicts. If the review loop later hits max_review_rounds, that unresolved
+  # verdict parks the task blocked; the next ready-review pass must not skip
+  # the fresh code review.
+  # On skip, jump straight to done_review so the task still advances to
+  # testing — trivial-tagged tasks then also skip testing (see testing-task.yaml's
+  # maybe_test), landing directly on ready-pr.
   - id: maybe_review
     name: Review Decision
     type: condition
@@ -28,6 +33,11 @@ steps:
         operator: not_contains
         value: noreview
     next:
+      - when:
+          field: task.code_review
+          operator: starts_with
+          value: 'Review Verdict: NEEDS_FIXES'
+        goto: triage_review
       - when:
           field: task.reviewed
           operator: equals
@@ -322,8 +332,8 @@ steps:
     name: Review Round Limit Hit
     type: set_status
     config:
-      status: human-required
-      status_reason: automated review hit max_review_rounds without a CLEAN verdict — inspect the latest review or opt into allow_unbounded_review_rounds
+      status: blocked
+      status_reason: automated review hit max_review_rounds without a CLEAN verdict - latest NEEDS_FIXES review is not eligible for testing or PR creation; inspect the latest review or opt into allow_unbounded_review_rounds
     next:
       - goto: ""
 

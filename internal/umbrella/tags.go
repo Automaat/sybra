@@ -18,6 +18,11 @@ const MaxParallelTagPrefix = "umbrella-max-parallel:"
 // silently masked.
 const FallbackTag = "umbrella-planner-fallback"
 
+// ExpandingTag marks a tracker whose child DAG is still being materialized.
+// The app gate holds release/rollup while this is present so a tracker created
+// before all children exist cannot expose a partial DAG to the orchestrator.
+const ExpandingTag = "umbrella-expanding"
+
 // MaxParallelTag renders the tracker tag encoding n.
 func MaxParallelTag(n int) string {
 	return MaxParallelTagPrefix + strconv.Itoa(n)
@@ -29,6 +34,64 @@ func MaxParallelTag(n int) string {
 // stub enrichment, `sybra-cli umbrella`) instead of living in one process's
 // memory.
 const ExpandFailTagPrefix = "umbrella-expand-fail:"
+
+// ExpandPhaseTagPrefix carries the umbrella expansion's resumable phase,
+// e.g. "umbrella-expand-phase:planning". Persisted on the tracker so the GUI
+// can show in-flight expansion and release/rollup can distinguish a complete
+// childless umbrella from one whose DAG is still being fetched/planned/
+// materialized.
+const ExpandPhaseTagPrefix = "umbrella-expand-phase:"
+
+// ExpandPhase is the coarse resumable phase of an umbrella expansion.
+type ExpandPhase string
+
+const (
+	ExpandPhaseFetched       ExpandPhase = "fetched"
+	ExpandPhasePlanning      ExpandPhase = "planning"
+	ExpandPhaseRepairing     ExpandPhase = "repairing"
+	ExpandPhaseCriticReask   ExpandPhase = "critic"
+	ExpandPhaseExhausted     ExpandPhase = "exhausted"
+	ExpandPhaseFallback      ExpandPhase = "fallback"
+	ExpandPhasePlanned       ExpandPhase = "planned"
+	ExpandPhaseMaterializing ExpandPhase = "materializing"
+)
+
+// ExpandPhaseTag renders the tracker tag encoding phase.
+func ExpandPhaseTag(phase ExpandPhase) string {
+	if phase == "" {
+		return ""
+	}
+	return ExpandPhaseTagPrefix + string(phase)
+}
+
+// ParseExpandPhase reads the persisted expansion phase from tags.
+func ParseExpandPhase(tags []string) ExpandPhase {
+	var phase ExpandPhase
+	for _, t := range tags {
+		rest, ok := strings.CutPrefix(t, ExpandPhaseTagPrefix)
+		if !ok {
+			continue
+		}
+		switch ExpandPhase(strings.TrimSpace(rest)) {
+		case ExpandPhaseFetched,
+			ExpandPhasePlanning,
+			ExpandPhaseRepairing,
+			ExpandPhaseCriticReask,
+			ExpandPhaseExhausted,
+			ExpandPhaseFallback,
+			ExpandPhasePlanned,
+			ExpandPhaseMaterializing:
+			phase = ExpandPhase(strings.TrimSpace(rest))
+		}
+	}
+	return phase
+}
+
+// HasActiveExpandPhase reports whether a tracker carries a resumable expansion
+// phase that means its DAG is not durably complete yet.
+func HasActiveExpandPhase(tags []string) bool {
+	return ParseExpandPhase(tags) != ""
+}
 
 // ExpandFailThreshold is how many consecutive Expand failures against an
 // already-materialized tracker are tolerated before Expand stops calling the

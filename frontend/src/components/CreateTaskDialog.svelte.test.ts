@@ -45,7 +45,7 @@ describe('CreateTaskDialog', () => {
     expect(container).toBeDefined()
   })
 
-  it('marks the required title and explains the Type field', () => {
+  it('marks the required title', () => {
     const { container } = render(CreateTaskDialog, {
       props: { open: true, onOpenChange: vi.fn() },
     })
@@ -56,7 +56,5 @@ describe('CreateTaskDialog', () => {
     )
     expect(titleLabel?.querySelector('input[required]')).not.toBeNull()
     expect(titleLabel?.querySelector('.sr-only')?.textContent).toContain('required')
-    // One-line Type helper.
-    expect(container.textContent).toContain('Sets how the agent runs')
   })
 })

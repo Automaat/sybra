@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/providerid"
@@ -27,8 +28,8 @@ import (
 // Returns the (possibly updated) RunConfig, whether a provider switch
 // occurred, and a non-nil error only when the current provider is unhealthy
 // and no per-turn-capable peer is usable. On that error path cfg is returned
-// unmodified and the caller must not spawn a turn; the agent's error kind is
-// set to "rate_limit" so the existing isRateLimitedRun /
+// unmodified and the caller must not spawn a turn. Quota/health exhaustion is
+// marked "rate_limit" so the existing isRateLimitedRun /
 // RescheduleRateLimitedAgent reschedule-and-park behavior stays reachable,
 // exactly as it would for an in-flight run that hit the same cap.
 //
@@ -168,11 +169,28 @@ func (m *Manager) regate(ctx context.Context, a *Agent, cfg RunConfig, logWriter
 		return cfg, false, fmt.Errorf("agent regate: %s capped, no per-turn-capable peer available: %s", current, reason)
 	}
 
+	return m.completeRegateProviderSwitch(ctx, a, cfg, logWriter, current, alt, deferPersist)
+}
+
+func (m *Manager) completeRegateProviderSwitch(ctx context.Context, a *Agent, cfg RunConfig, logWriter io.Writer, current, alt string, deferPersist bool) (RunConfig, bool, error) {
 	altProv, err := lookupProvider(alt)
 	if err != nil {
 		return cfg, false, err
 	}
-	newModel := altProv.NormalizeModel(cfg.Model)
+	requestedModel := cfg.Model
+	if strings.TrimSpace(requestedModel) == "" {
+		requestedModel = a.GetRequestedModel()
+	}
+	if strings.TrimSpace(requestedModel) == "" {
+		requestedModel = a.Model
+	}
+	newModel, nextRequestedModel, err := resolveRunModel(current, altProv.Name(), requestedModel)
+	if err != nil {
+		m.logger.Warn("agent.convo.provider_model_incompatible",
+			"id", a.ID, "task", cfg.TaskID, "from", current, "to", altProv.Name(), "model", requestedModel, "err", err)
+		a.SetError(providerModelIncompatibleErrorKind, err.Error())
+		return cfg, false, fmt.Errorf("agent regate: %w", err)
+	}
 
 	m.logger.Warn("agent.convo.failover", "id", a.ID, "task", cfg.TaskID, "from", current, "to", alt)
 
@@ -180,12 +198,15 @@ func (m *Manager) regate(ctx context.Context, a *Agent, cfg RunConfig, logWriter
 	// continue the old provider's session, so start it fresh rather than
 	// attempting a cross-provider resume.
 	a.SetProviderAndModel(alt, newModel)
+	a.SetRequestedModel(nextRequestedModel)
 	a.SetSessionID("")
 	a.SetSessionFilePath("")
 	m.moveLiveProviderCount(current, alt)
 
 	cfg.Provider = alt
+	cfg.Model = nextRequestedModel
 	cfg.provider = altProv
+	cfg.resolvedModel = newModel
 
 	if !deferPersist {
 		// Marker must land before the registry write below: on a crash between
