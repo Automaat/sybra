@@ -33,12 +33,13 @@ func lifecycleBaseContext(ctx context.Context) context.Context {
 	return context.WithoutCancel(ctx)
 }
 
-func (a *App) initLifecycle(ctx context.Context) (appCtx, schedulerCtx context.Context) {
+func (a *App) initLifecycle(ctx context.Context) (appCtx, schedulerCtx, watcherCtx context.Context) {
 	base := lifecycleBaseContext(ctx)
 	a.ctx, a.cancel = context.WithCancel(base)
 	a.schedulerCtx, a.schedulerCancel = context.WithCancel(a.ctx)
+	a.watcherCtx, a.watcherCancel = context.WithCancel(base)
 	a.lifecycle.Store(uint32(lifecycleStateRunning))
-	return a.ctx, a.schedulerCtx
+	return a.ctx, a.schedulerCtx, a.watcherCtx
 }
 
 func (a *App) BeginDrain() bool {

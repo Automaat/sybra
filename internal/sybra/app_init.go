@@ -181,10 +181,11 @@ func (a *App) initBgops(emit func(string, any)) {
 
 func (a *App) initFileWatcher(ctx context.Context, emit func(string, any)) {
 	w := watcher.New(a.tasksDir, emit, a.logger)
-	a.watcher = w
 	if err := w.Start(ctx); err != nil {
 		a.logger.Error("watcher.start", "err", err)
+		return
 	}
+	a.watcher = w
 }
 
 // MonitorReportBinding is the Wails-friendly envelope for the latest

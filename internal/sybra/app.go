@@ -69,6 +69,8 @@ type App struct {
 	cancel          context.CancelFunc
 	schedulerCtx    context.Context
 	schedulerCancel context.CancelFunc
+	watcherCtx      context.Context
+	watcherCancel   context.CancelFunc
 	lifecycle       atomic.Uint32
 	wg              sync.WaitGroup
 	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
@@ -296,10 +298,10 @@ func (a *App) acquireHomeLock() error {
 	return nil
 }
 
-func (a *App) startLifecycle(schedulerCtx context.Context, emit func(string, any)) {
+func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func(string, any)) {
 	a.applyInstanceRole()
 	a.initLoopScheduler(schedulerCtx, emit)
-	a.initFileWatcher(schedulerCtx, emit)
+	a.initFileWatcher(watcherCtx, emit)
 
 	issuesFetcher := a.initAutomations(emit)
 	a.wireServices(emit)
@@ -342,6 +344,7 @@ func (a *App) cleanupFailedStartup() {
 	if a.cancel != nil {
 		a.cancel()
 	}
+	a.stopFileWatcher()
 	if a.homeUnlock != nil {
 		if err := a.homeUnlock(); err != nil {
 			a.logger.Warn("app.home_unlock.failed", "err", err)
@@ -377,7 +380,7 @@ func (a *App) Startup(ctx context.Context) error {
 		a.cleanupFailedStartup()
 	}()
 
-	appCtx, schedulerCtx := a.initLifecycle(ctx)
+	appCtx, schedulerCtx, watcherCtx := a.initLifecycle(ctx)
 	a.logger.Info("app.starting")
 
 	a.initAudit()
@@ -450,7 +453,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.initAgentConfig()
 
-	a.startLifecycle(schedulerCtx, emit)
+	a.startLifecycle(schedulerCtx, watcherCtx, emit)
 
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")
@@ -597,6 +600,7 @@ func (a *App) Shutdown(_ context.Context) {
 	if a.agents != nil {
 		a.agents.Shutdown()
 	}
+	a.stopFileWatcher()
 	if a.audit != nil {
 		_ = a.audit.Close()
 	}
@@ -611,6 +615,7 @@ func (a *App) Shutdown(_ context.Context) {
 }
 
 const appShutdownWaitGrace = 15 * time.Second
+const fileWatcherShutdownGrace = 2 * time.Second
 
 func waitGroupTimeout(wg *sync.WaitGroup, grace time.Duration) bool {
 	done := make(chan struct{})
@@ -623,6 +628,23 @@ func waitGroupTimeout(wg *sync.WaitGroup, grace time.Duration) bool {
 		return true
 	case <-time.After(grace):
 		return false
+	}
+}
+
+func (a *App) stopFileWatcher() {
+	cancel := a.watcherCancel
+	a.watcherCancel = nil
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if a.watcher == nil {
+		return
+	}
+	select {
+	case <-a.watcher.Done():
+	case <-time.After(fileWatcherShutdownGrace):
+		a.logger.Warn("watcher.shutdown.timeout", "grace", fileWatcherShutdownGrace)
 	}
 }
 

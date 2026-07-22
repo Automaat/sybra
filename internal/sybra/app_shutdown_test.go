@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/httpapi"
 )
 
@@ -88,5 +90,61 @@ func TestBeginShutdownCancelsAcceptedWork(t *testing.T) {
 	}
 	if got := a.lifecycleState(); got != lifecycleStateStopping {
 		t.Fatalf("lifecycle state = %v, want stopping", got)
+	}
+}
+
+func TestTaskWatcherStaysAliveUntilAgentShutdownFinishes(t *testing.T) {
+	taskEvents := make(chan string, 1)
+	a := &App{
+		tasksDir: t.TempDir(),
+		logger:   discardLogger(),
+		emit:     func(string, any) {},
+	}
+	a.initLifecycle(context.Background())
+	a.initFileWatcher(a.watcherCtx, func(event string, _ any) {
+		select {
+		case taskEvents <- event:
+		default:
+		}
+	})
+	t.Cleanup(a.stopFileWatcher)
+
+	select {
+	case <-a.watcher.Ready():
+	case <-time.After(time.Second):
+		t.Fatal("task watcher did not become ready")
+	}
+
+	a.BeginDrain()
+	a.beginShutdown()
+
+	select {
+	case <-a.ctx.Done():
+	default:
+		t.Fatal("app ctx not canceled by beginShutdown")
+	}
+	select {
+	case <-a.watcher.Done():
+		t.Fatal("task watcher stopped before agent shutdown finished")
+	default:
+	}
+
+	if err := os.WriteFile(a.tasksDir+"/during-shutdown.md", []byte("---\nid: during-shutdown\nstatus: done\n---\n"), 0o644); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+	select {
+	case got := <-taskEvents:
+		if got != events.TaskCreated && got != events.TaskUpdated {
+			t.Fatalf("watcher event = %q, want task create/update", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("task watcher did not emit after beginShutdown")
+	}
+
+	a.stopFileWatcher()
+	select {
+	case <-a.watcher.Done():
+	case <-time.After(time.Second):
+		t.Fatal("task watcher did not stop after explicit shutdown")
 	}
 }
