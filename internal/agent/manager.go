@@ -365,9 +365,34 @@ func (m *Manager) ReleaseTaskDispatch(taskID string) {
 // instead of each maintaining its own separate view of dispatch-in-flight
 // state.
 func (m *Manager) IsDispatching(taskID string) bool {
+	return m.dispatchClaimHeld(taskID, time.Now())
+}
+
+// dispatchClaimHeld reports whether taskID has a non-stale dispatch claim.
+// The common fresh/no-claim path only takes a read lock; stale claims upgrade
+// to a write lock and re-check before deleting.
+func (m *Manager) dispatchClaimHeld(taskID string, now time.Time) bool {
+	m.mu.RLock()
+	held, stale := m.dispatchClaimHeldReadLocked(taskID, now)
+	m.mu.RUnlock()
+	if !stale {
+		return held
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.dispatchClaimHeldLocked(taskID, time.Now())
+	return m.dispatchClaimHeldLocked(taskID, now)
+}
+
+func (m *Manager) dispatchClaimHeldReadLocked(taskID string, now time.Time) (held bool, stale bool) {
+	claimedAt, held := m.dispatchClaims[taskID]
+	if !held {
+		return false, false
+	}
+	if now.Sub(claimedAt) >= staleDispatchClaimAge {
+		return false, true
+	}
+	return true, false
 }
 
 // dispatchClaimHeldLocked reports whether taskID has a non-stale dispatch
@@ -375,19 +400,17 @@ func (m *Manager) IsDispatching(taskID string) bool {
 // dispatchClaims as liveness uses the same self-healing semantics.
 // Callers must hold m.mu for writing.
 func (m *Manager) dispatchClaimHeldLocked(taskID string, now time.Time) bool {
-	claimedAt, held := m.dispatchClaims[taskID]
-	if !held {
-		return false
+	held, stale := m.dispatchClaimHeldReadLocked(taskID, now)
+	if !stale {
+		return held
 	}
+	claimedAt := m.dispatchClaims[taskID]
 	age := now.Sub(claimedAt)
-	if age >= staleDispatchClaimAge {
-		if m.logger != nil {
-			m.logger.Warn("agent.dispatch-claim.stale-release", "task_id", taskID, "age", age)
-		}
-		delete(m.dispatchClaims, taskID)
-		return false
+	if m.logger != nil {
+		m.logger.Warn("agent.dispatch-claim.stale-release", "task_id", taskID, "age", age)
 	}
-	return true
+	delete(m.dispatchClaims, taskID)
+	return false
 }
 
 // DispatchClaim is a held per-task dispatch claim returned by

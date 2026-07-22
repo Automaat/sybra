@@ -158,10 +158,21 @@ func (m *Manager) StopAgents(agents []*Agent) {
 // callers that just want a best-effort stop, like DeleteTask) must check it
 // rather than assume a timed-out call still stopped everything.
 func (m *Manager) KillAgentsForTask(taskID string, timeout time.Duration) (allExited bool) {
+	return m.killAgentsForTask(taskID, "", timeout)
+}
+
+// KillOtherAgentsForTask is KillAgentsForTask excluding exceptAgentID. This is
+// for completion callbacks where the completing agent's done channel cannot
+// close until the callback returns.
+func (m *Manager) KillOtherAgentsForTask(taskID, exceptAgentID string, timeout time.Duration) (allExited bool) {
+	return m.killAgentsForTask(taskID, exceptAgentID, timeout)
+}
+
+func (m *Manager) killAgentsForTask(taskID, exceptAgentID string, timeout time.Duration) (allExited bool) {
 	m.mu.RLock()
 	var targets []*Agent
 	for _, a := range m.agents {
-		if a.TaskID == taskID {
+		if a.TaskID == taskID && a.ID != exceptAgentID {
 			targets = append(targets, a)
 		}
 	}
@@ -281,16 +292,22 @@ func (m *Manager) ActiveLogPaths() map[string]bool {
 // the goroutine finishes — avoiding a race where the worktree is cleaned up while the
 // agent process is still using it.
 func (m *Manager) HasRunningAgentForTask(taskID string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	now := time.Now()
+	m.mu.RLock()
 	// An in-flight dispatch counts as "running": the agent is mid-start and
 	// not yet in the map, but a second dispatcher must not treat the task as
 	// idle. Lets recovery / ResumeStalled / pr-fix pollers skip during the
 	// worktree-prep window instead of racing the dispatch.
-	if m.dispatchClaimHeldLocked(taskID, time.Now()) {
-		return true
+	dispatching, stale := m.dispatchClaimHeldReadLocked(taskID, now)
+	live := m.hasLiveRegisteredAgent(taskID)
+	m.mu.RUnlock()
+	if !stale {
+		return dispatching || live
 	}
-	return m.hasLiveRegisteredAgent(taskID)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dispatchClaimHeldLocked(taskID, now) || m.hasLiveRegisteredAgent(taskID)
 }
 
 // HasLiveRegisteredAgentForTask reports whether a genuinely registered Agent
@@ -364,11 +381,21 @@ func (m *Manager) hasLiveRegisteredAgent(taskID string) bool {
 // after onComplete returns (see runner_headless), so it would otherwise still
 // read as running.
 func (m *Manager) HasOtherRunningAgentForTask(taskID, exceptAgentID string) bool {
+	now := time.Now()
+	m.mu.RLock()
+	dispatching, stale := m.dispatchClaimHeldReadLocked(taskID, now)
+	live := m.hasLiveRegisteredAgentExcept(taskID, exceptAgentID)
+	m.mu.RUnlock()
+	if !stale {
+		return dispatching || live
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.dispatchClaimHeldLocked(taskID, time.Now()) {
-		return true
-	}
+	return m.dispatchClaimHeldLocked(taskID, now) || m.hasLiveRegisteredAgentExcept(taskID, exceptAgentID)
+}
+
+func (m *Manager) hasLiveRegisteredAgentExcept(taskID, exceptAgentID string) bool {
 	for _, a := range m.agents {
 		if a.TaskID != taskID || a.ID == exceptAgentID {
 			continue
