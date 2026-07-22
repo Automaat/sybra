@@ -6,8 +6,6 @@ export type Page =
   | { kind: 'task-detail'; taskId: string }
   | { kind: 'project-list' }
   | { kind: 'project-detail'; projectId: string }
-  | { kind: 'chats' }
-  | { kind: 'chat-detail'; agentId: string }
   | { kind: 'agents'; tab?: string }
   | { kind: 'agent-detail'; agentId: string }
   | { kind: 'github' }
@@ -21,7 +19,7 @@ export type Page =
   | { kind: 'logbook' }
   | { kind: 'notifications' }
 
-export type TabKey = 'board' | 'chats' | 'agents' | 'reviews' | 'more'
+export type TabKey = 'board' | 'agents' | 'reviews' | 'more'
 
 export type PrimaryAction = {
   label: string
@@ -146,8 +144,6 @@ class NavStore {
       case 'task-detail': return ''
       case 'project-list': return 'Projects'
       case 'project-detail': return 'Project Detail'
-      case 'chats': return 'Chats'
-      case 'chat-detail': return 'Chat'
       case 'agents': return 'Agents'
       case 'agent-detail': return 'Agent Detail'
       case 'github': return 'GitHub'
@@ -169,9 +165,6 @@ class NavStore {
       case 'task-list':
       case 'task-detail':
         return 'board'
-      case 'chats':
-      case 'chat-detail':
-        return 'chats'
       case 'agents':
       case 'agent-detail':
         return 'agents'
@@ -203,10 +196,6 @@ export function pageToPath(p: Page): string {
       return '/projects'
     case 'project-detail':
       return `/projects/${encodeURIComponent(p.projectId)}`
-    case 'chats':
-      return '/chats'
-    case 'chat-detail':
-      return `/chats/${encodeURIComponent(p.agentId)}`
     case 'agents':
       return p.tab ? `/agents?tab=${encodeURIComponent(p.tab)}` : '/agents'
     case 'agent-detail':
@@ -261,11 +250,6 @@ export function pageFromLocation(location: { pathname: string; search: string })
       const projectId = safeDecode(rawId)
       return projectId ? { kind: 'project-detail', projectId } : { kind: 'project-list' }
     }
-    case 'chats': {
-      if (segments.length === 1) return { kind: 'chats' }
-      const agentId = safeDecode(rawId)
-      return agentId ? { kind: 'chat-detail', agentId } : { kind: 'chats' }
-    }
     case 'agents': {
       if (segments.length === 1) {
         const tab = params.get('tab')
@@ -297,7 +281,6 @@ function samePage(a: Page, b: Page): boolean {
   if (a.kind === 'task-list' && b.kind === 'task-list') return (a.filter ?? '') === (b.filter ?? '')
   if (a.kind === 'task-detail' && b.kind === 'task-detail') return a.taskId === b.taskId
   if (a.kind === 'project-detail' && b.kind === 'project-detail') return a.projectId === b.projectId
-  if (a.kind === 'chat-detail' && b.kind === 'chat-detail') return a.agentId === b.agentId
   if (a.kind === 'agent-detail' && b.kind === 'agent-detail') return a.agentId === b.agentId
   if (a.kind === 'workflow-detail' && b.kind === 'workflow-detail') return a.workflowId === b.workflowId
   return true

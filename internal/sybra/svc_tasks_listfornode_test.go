@@ -9,8 +9,8 @@ import (
 
 // TestListTasksForNodeFiltersByAssignedNode verifies the cluster-mirror-only
 // listing (see internal/cluster.Client.ListTasks and #2258) only returns
-// tasks assigned to the requested node, never tasks assigned elsewhere, to
-// this node's own board, or ephemeral chat tasks.
+// tasks assigned to the requested node, never tasks assigned elsewhere or
+// unassigned to this node's own board.
 func TestListTasksForNodeFiltersByAssignedNode(t *testing.T) {
 	svc, a := setupTaskService(t)
 
@@ -24,7 +24,6 @@ func TestListTasksForNodeFiltersByAssignedNode(t *testing.T) {
 	mustPut(task.Task{ID: "mine", Title: "mine", Status: task.StatusTodo, AssignedNode: "home-nas", UpdatedAt: time.Now()})
 	mustPut(task.Task{ID: "elsewhere", Title: "elsewhere", Status: task.StatusTodo, AssignedNode: "other-box", UpdatedAt: time.Now()})
 	mustPut(task.Task{ID: "unassigned", Title: "unassigned", Status: task.StatusTodo, UpdatedAt: time.Now()})
-	mustPut(task.Task{ID: "chat-mine", Title: "chat", Status: task.StatusTodo, AssignedNode: "home-nas", Tags: []string{task.ChatTag}, UpdatedAt: time.Now()})
 
 	got, err := svc.ListTasksForNode("home-nas")
 	if err != nil {

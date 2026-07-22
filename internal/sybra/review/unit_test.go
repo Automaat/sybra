@@ -584,11 +584,6 @@ func TestPrClosedEligible(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "human-required chat task — excluded",
-			tk:   task.Task{Tags: []string{task.ChatTag}, Status: task.StatusHumanRequired, PRNumber: 42},
-			want: false,
-		},
-		{
 			name: "todo with PR — eligible (via prMonitorEligible)",
 			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42},
 			want: true,
@@ -660,16 +655,6 @@ func TestReviewClosedPREligible(t *testing.T) {
 				Status:    task.StatusInReview,
 				Tags:      []string{"review"},
 				ProjectID: "o/r",
-			},
-			want: false,
-		},
-		{
-			name: "chat task skipped",
-			tk: task.Task{
-				Status:    task.StatusInReview,
-				Tags:      []string{task.ChatTag, "review"},
-				ProjectID: "o/r",
-				PRNumber:  42,
 			},
 			want: false,
 		},
@@ -991,14 +976,12 @@ func TestOrphanPRAdoptionEligible(t *testing.T) {
 		{"watchdog stop not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "watchdog: runaway loop"}, false},
 		{"unrelated reason not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "needs design input"}, false},
 		{"review task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, Tags: []string{"review"}}, false},
-		{"chat task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, Tags: []string{task.ChatTag}}, false},
 		// in-review cases (no strand-reason gate: already in review with no PR is unambiguously an orphan)
 		{"in-review no PR — eligible", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r"}, true},
 		{"in-review with PR — not eligible (already linked)", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", PRNumber: 5}, false},
 		{"in-review no branch — not eligible", task.Task{Status: task.StatusInReview, ProjectID: "o/r"}, false},
 		{"in-review no project — not eligible", task.Task{Status: task.StatusInReview, Branch: "b"}, false},
 		{"in-review review tag excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", Tags: []string{"review"}}, false},
-		{"in-review chat task excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", Tags: []string{task.ChatTag}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -46,9 +46,6 @@ func (s *managerTaskService) ListTasksForNode(node string) ([]task.Task, error) 
 	out := all[:0]
 	for i := range all {
 		t := all[i]
-		if task.IsChatTask(t) {
-			continue
-		}
 		if t.AssignedNode != node {
 			continue
 		}

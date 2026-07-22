@@ -52,12 +52,6 @@ export function buildCommands(ctx: PaletteCtx): Command[] {
     run: ctx.openNewProject,
   })
   cmds.push({
-    id: 'action:new-chat',
-    title: 'New Chat',
-    section: 'action',
-    run: () => ctx.navigate({ kind: 'chats' }),
-  })
-  cmds.push({
     id: 'action:keyboard-help',
     title: 'Keyboard Shortcuts',
     section: 'action',
@@ -81,7 +75,6 @@ export function buildCommands(ctx: PaletteCtx): Command[] {
     { id: 'page:reviews', title: 'Reviews', shortcut: '⌘5', page: { kind: 'reviews' } },
     { id: 'page:stats', title: 'Stats', shortcut: '⌘6', page: { kind: 'stats' } },
     { id: 'page:settings', title: 'Settings', shortcut: '⌘,', page: { kind: 'settings' } },
-    { id: 'page:chats', title: 'Chats', page: { kind: 'chats' } },
     { id: 'page:workflows', title: 'Workflows', page: { kind: 'workflows' } },
   ]
   for (const p of pageEntries) {
