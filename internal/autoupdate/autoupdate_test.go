@@ -175,6 +175,37 @@ func TestWriteRestartMarkerCreatesMarker(t *testing.T) {
 	}
 }
 
+func TestSaveStateAtomicReplace(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "autoupdate-state.json")
+	initial := persistedState{CandidateSHA: "old", CandidateState: "pending"}
+	if err := saveState(path, initial); err != nil {
+		t.Fatalf("saveState(initial): %v", err)
+	}
+
+	next := persistedState{CandidateSHA: "new", CandidateState: "approved"}
+	if err := saveState(path, next); err != nil {
+		t.Fatalf("saveState(next): %v", err)
+	}
+
+	got, err := loadState(path)
+	if err != nil {
+		t.Fatalf("loadState(): %v", err)
+	}
+	if got.CandidateSHA != next.CandidateSHA || got.CandidateState != next.CandidateState {
+		t.Fatalf("state = %+v, want %+v", got, next)
+	}
+
+	tmpFiles, err := filepath.Glob(path + ".tmp-*")
+	if err != nil {
+		t.Fatalf("Glob(): %v", err)
+	}
+	if len(tmpFiles) != 0 {
+		t.Fatalf("temp files left behind: %v", tmpFiles)
+	}
+}
+
 func TestCheckAndApplyBlocksDirtyWorktree(t *testing.T) {
 	_, work := seedRepos(t)
 	writeFile(t, work, "dirty.txt", "dirty\n")

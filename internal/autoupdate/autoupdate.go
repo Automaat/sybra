@@ -493,12 +493,17 @@ func git(ctx context.Context, dir, name string, args ...string) (string, error) 
 }
 
 func lsRemoteBranchSHA(ctx context.Context, repoDir, remote, branch string) (string, error) {
-	out, err := git(ctx, repoDir, "ls-remote", "--exit-code", "--heads", remote, branch)
+	ref := "refs/heads/" + branch
+	out, err := git(ctx, repoDir, "ls-remote", "--exit-code", remote, ref)
 	if err != nil {
 		return "", err
 	}
-	fields := strings.Fields(out)
-	if len(fields) == 0 || fields[0] == "" {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 1 {
+		return "", fmt.Errorf("remote branch %s resolved to %d refs", ref, len(lines))
+	}
+	fields := strings.Fields(lines[0])
+	if len(fields) != 2 || fields[0] == "" || fields[1] != ref {
 		return "", errors.New("remote branch sha not found")
 	}
 	return fields[0], nil
@@ -567,14 +572,34 @@ func saveState(path string, state persistedState) error {
 	if path == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create autoupdate state dir: %w", err)
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal autoupdate state: %w", err)
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create autoupdate state temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write autoupdate state temp file: %w", err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod autoupdate state temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close autoupdate state temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("write autoupdate state: %w", err)
 	}
 	return nil

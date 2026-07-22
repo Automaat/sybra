@@ -74,7 +74,7 @@ same directory `auto_update.repo_dir` builds and ff-merges from (#1925) —
 see the config section below.
 
 autoupdate also persists state under `~/.sybra/autoupdate-state.json` so the
-next restart-coalescing step can see the latest approved/appplied SHA. The
+next restart-coalescing step can see the latest approved/applied SHA. The
 manual emergency bypass is a one-shot marker file at
 `~/.sybra/autoupdate-override`: create it to let the next poll deploy the
 current remote SHA even if CI is red/pending, and autoupdate deletes it after a

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -204,9 +205,9 @@ func fetchCheckRunsWith(e execer, owner, name, sha, filter string) (runs restChe
 }
 
 func fetchCheckRunsCtxWith(ctx context.Context, e execer, owner, name, sha, filter string) (runs restCheckRuns, fetched bool) {
-	path := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, name, sha)
+	path := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs?per_page=100", owner, name, sha)
 	if filter != "" {
-		path += "?filter=" + filter
+		path += "&filter=" + url.QueryEscape(filter)
 	}
 	resp, err := runGHAPICtxWith(ctx, e, "30s", path)
 	if err != nil {
