@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -241,6 +242,29 @@ func TestWebhookHandlerRejectsWrongMethod(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+func TestNewRestartRequestCoalescesWakeups(t *testing.T) {
+	shutdownCh := make(chan struct{}, 1)
+	var restart atomic.Bool
+
+	restartReq := newRestartRequest(shutdownCh, &restart)
+	restartReq()
+	restartReq()
+
+	if !restart.Load() {
+		t.Fatal("restart flag = false, want true")
+	}
+	select {
+	case <-shutdownCh:
+	default:
+		t.Fatal("shutdown signal not delivered")
+	}
+	select {
+	case <-shutdownCh:
+		t.Fatal("shutdown signal delivered twice; want coalesced wakeup")
+	default:
 	}
 }
 

@@ -42,6 +42,14 @@ func ServiceRegistry(a *App) map[string]httpapi.Service {
 }
 
 func (a *App) coreHTTPServices() map[string]httpapi.Service {
+	out := make(map[string]httpapi.Service)
+	maps.Copy(out, a.coreAppHTTPServices())
+	maps.Copy(out, a.coreTaskHTTPServices())
+	maps.Copy(out, a.coreInfraHTTPServices())
+	return out
+}
+
+func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 	return map[string]httpapi.Service{
 		"App": httpapi.NewService(a,
 			"GetMonitorReport",
@@ -113,6 +121,11 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"GetCopilotModels",
 			"GetAvailableRuntimes",
 		),
+	}
+}
+
+func (a *App) coreTaskHTTPServices() map[string]httpapi.Service {
+	return map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(a.taskSvc,
 			"AssignTask",
 			"BlessTampering",
@@ -158,6 +171,11 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			// StoreDigest excluded: the raw store is never scrubbed at write
 			// time (see internal/learning package doc) — Wails/local-only.
 		).WithReadOnly("ListDigests", "GetLatestDigest"),
+	}
+}
+
+func (a *App) coreInfraHTTPServices() map[string]httpapi.Service {
+	return map[string]httpapi.Service{
 		"QueueService": httpapi.NewService(a.queueSvc,
 			"SnapshotDepth",
 		).WithReadOnly("SnapshotDepth"),

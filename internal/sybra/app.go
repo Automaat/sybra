@@ -296,10 +296,10 @@ func (a *App) acquireHomeLock() error {
 	return nil
 }
 
-func (a *App) startLifecycle(_ context.Context, emit func(string, any)) {
+func (a *App) startLifecycle(schedulerCtx context.Context, emit func(string, any)) {
 	a.applyInstanceRole()
-	a.initLoopScheduler(a.schedulerCtx, emit)
-	a.initFileWatcher(a.schedulerCtx, emit)
+	a.initLoopScheduler(schedulerCtx, emit)
+	a.initFileWatcher(schedulerCtx, emit)
 
 	issuesFetcher := a.initAutomations(emit)
 	a.wireServices(emit)
@@ -316,7 +316,7 @@ func (a *App) startLifecycle(_ context.Context, emit func(string, any)) {
 	// into an uninitialized git dir and fail silently. StartManagers'
 	// startTaskSnapshotLoop calls EnsureRepo again (idempotent).
 	if a.cfg.TaskSnapshotEnabled() {
-		a.snapshotter.EnsureRepo(a.schedulerCtx)
+		a.snapshotter.EnsureRepo(schedulerCtx)
 	}
 	a.recovery = a.newRecovery()
 	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
@@ -325,16 +325,16 @@ func (a *App) startLifecycle(_ context.Context, emit func(string, any)) {
 	// Routing reads the evaluation service's cached report on its own
 	// goroutine, so the service pointer must be published before routing
 	// primes or starts ticking.
-	lm.startEvaluationService(a.schedulerCtx, emit)
+	lm.startEvaluationService(schedulerCtx, emit)
 	// Routing must prime before Startup returns; otherwise the first workflow
 	// dispatch after a fresh enabled boot can beat version 1 publication.
-	lm.startRoutingService(a.schedulerCtx, emit)
-	lm.StartWatchers(a.schedulerCtx)
+	lm.startRoutingService(schedulerCtx, emit)
+	lm.StartWatchers(schedulerCtx)
 
 	a.wg.Go(func() {
-		a.recovery.RunStartupCleanup(a.schedulerCtx)
-		lm.StartManagers(a.schedulerCtx, emit)
-		lm.StartPollers(a.schedulerCtx, emit, issuesFetcher)
+		a.recovery.RunStartupCleanup(schedulerCtx)
+		lm.StartManagers(schedulerCtx, emit)
+		lm.StartPollers(schedulerCtx, emit, issuesFetcher)
 	})
 }
 
@@ -377,7 +377,7 @@ func (a *App) Startup(ctx context.Context) error {
 		a.cleanupFailedStartup()
 	}()
 
-	a.initLifecycle(ctx)
+	appCtx, schedulerCtx := a.initLifecycle(ctx)
 	a.logger.Info("app.starting")
 
 	a.initAudit()
@@ -403,7 +403,7 @@ func (a *App) Startup(ctx context.Context) error {
 		return fmt.Errorf("loop agents: %w", err)
 	}
 	if a.emitFactory != nil {
-		a.emit = a.emitFactory(a.ctx)
+		a.emit = a.emitFactory(appCtx)
 	} else {
 		a.emit = func(string, any) {}
 	}
@@ -420,10 +420,10 @@ func (a *App) Startup(ctx context.Context) error {
 	// initSandboxes has no agent-manager dependency and must run before
 	// initAgentManager so ManagerConfig.SandboxHome can be wired at construction.
 	a.initSandboxes()
-	if err := a.initAgentManager(a.ctx, emit); err != nil {
+	if err := a.initAgentManager(appCtx, emit); err != nil {
 		return err
 	}
-	a.initProviderHealth(a.schedulerCtx, emit)
+	a.initProviderHealth(schedulerCtx, emit)
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 
@@ -440,7 +440,7 @@ func (a *App) Startup(ctx context.Context) error {
 		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
 	})
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
-	a.agentOrch.SetContext(a.ctx)
+	a.agentOrch.SetContext(appCtx)
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 	a.reviewer.SetABTestingSource(a.abTestingConfig)
 
@@ -450,7 +450,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.initAgentConfig()
 
-	a.startLifecycle(a.schedulerCtx, emit)
+	a.startLifecycle(schedulerCtx, emit)
 
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")

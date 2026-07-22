@@ -97,29 +97,32 @@ func run() (int, error) {
 	broker := sse.New()
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
+	shutdownCh := make(chan struct{}, 1)
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signalCh)
 	var restartRequested atomic.Bool
 
 	app := sybra.NewApp(logger, levelVar, cfg,
 		sybra.WithEmit(broker.Emit),
 		sybra.WithSkillsFS(skills.FS),
-		sybra.WithRestartRequest(func() {
-			restartRequested.Store(true)
-			rootCancel()
-		}),
+		sybra.WithRestartRequest(newRestartRequest(shutdownCh, &restartRequested)),
 	)
 
-	ctx, stop := signal.NotifyContext(rootCtx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	if err := app.Startup(ctx); err != nil {
+	if err := app.Startup(rootCtx); err != nil {
 		return 1, fmt.Errorf("startup: %w", err)
 	}
-	defer app.Shutdown(ctx)
+	shutdownApp := true
+	defer func() {
+		if shutdownApp {
+			app.Shutdown(context.Background())
+		}
+	}()
 	if restartRequested.Load() {
 		return autoupdate.RestartExitCode, nil
 	}
 
-	webhookSrv, webhookErrCh, err := startWebhookServer(ctx, cfg, app, logger)
+	webhookSrv, webhookErrCh, err := startWebhookServer(rootCtx, cfg, app, logger)
 	if err != nil {
 		return 1, err
 	}
@@ -134,30 +137,21 @@ func run() (int, error) {
 	// reaching it.
 	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
 
-	srv, errCh, err := serveAll(ctx, cfg, handler, logger)
+	srv, errCh, err := serveAll(rootCtx, cfg, handler, logger)
 	if err != nil {
 		shutdownBackgroundServer(webhookSrv, logger, "webhook")
 		return 1, err
 	}
 
 	select {
-	case <-ctx.Done():
-		app.BeginDrain()
-		logger.Info("server.shutdown")
-		go forceExitAfter(logger, shutdownHardDeadline, &restartRequested)
-		// 30s window covers the agent manager's 20s grace (giving SIGTERM'd
-		// claude/codex processes a chance to flush their final result event)
-		// plus headroom for HTTP handlers to drain. Previously 10s, which
-		// caused server.shutdown.err: context deadline exceeded on every
-		// restart because HTTP + agent drains both ran inside that window.
-		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if shutErr := srv.Shutdown(shutCtx); shutErr != nil {
-			logger.Error("server.shutdown.err", "err", shutErr)
-		}
-		if shutErr := shutdownHTTPServer(shutCtx, webhookSrv); shutErr != nil {
-			logger.Error("webhook.shutdown.err", "err", shutErr)
-		}
+	case sig := <-signalCh:
+		logger.Info("server.signal", "signal", sig.String())
+		shutdownApp = false
+		runGracefulShutdown(logger, app, srv, webhookSrv, &restartRequested)
+	case <-shutdownCh:
+		logger.Info("server.restart.requested")
+		shutdownApp = false
+		runGracefulShutdown(logger, app, srv, webhookSrv, &restartRequested)
 	case serveErr := <-errCh:
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			return 1, fmt.Errorf("serve: %w", serveErr)
@@ -173,7 +167,47 @@ func run() (int, error) {
 	return 0, nil
 }
 
-const shutdownHardDeadline = 60 * time.Second
+const (
+	shutdownHardDeadline  = 40 * time.Second
+	drainAdmissionWindow  = 1 * time.Second
+	httpShutdownDeadline  = 20 * time.Second
+	webhookShutdownBudget = 5 * time.Second
+)
+
+func newRestartRequest(shutdownCh chan<- struct{}, restart *atomic.Bool) func() {
+	return func() {
+		restart.Store(true)
+		notifyShutdown(shutdownCh)
+	}
+}
+
+func notifyShutdown(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func runGracefulShutdown(logger *slog.Logger, app *sybra.App, srv, webhookSrv *http.Server, restart *atomic.Bool) {
+	app.BeginDrain()
+	logger.Info("server.shutdown", "restart", restart.Load(), "deadline", shutdownHardDeadline.String(), "drain_window", drainAdmissionWindow.String())
+	go forceExitAfter(logger, shutdownHardDeadline, restart)
+	time.Sleep(drainAdmissionWindow)
+	shutdownServer(logger, "server", srv, httpShutdownDeadline)
+	shutdownServer(logger, "webhook", webhookSrv, webhookShutdownBudget)
+	app.Shutdown(context.Background())
+}
+
+func shutdownServer(logger *slog.Logger, name string, srv *http.Server, grace time.Duration) {
+	if srv == nil {
+		return
+	}
+	shutCtx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	if err := shutdownHTTPServer(shutCtx, srv); err != nil {
+		logger.Error(name+".shutdown.err", "err", err)
+	}
+}
 
 func forceExitAfter(logger *slog.Logger, d time.Duration, restart *atomic.Bool) {
 	time.Sleep(d)

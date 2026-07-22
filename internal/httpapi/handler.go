@@ -69,128 +69,159 @@ func (s Service) WithReadOnly(methods ...string) Service {
 // unknown services or non-allowlisted methods return 404.
 func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger, admit AdmissionFunc) {
 	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
-		svcName := r.PathValue("service")
-		methodName := r.PathValue("method")
-
-		svc, ok := services[svcName]
+		svcName, methodName, svc, _, ok := admittedMethod(w, logger, r, services, admit)
 		if !ok {
-			respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown service: %s", svcName))
 			return
 		}
-
-		meta, allowed := svc.methods[methodName]
-		if !allowed {
-			respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown method: %s.%s", svcName, methodName))
+		call, rawArgs, ok := decodeCall(w, logger, r, svcName, methodName, svc)
+		if !ok {
 			return
 		}
-		if admit != nil {
-			if err := admit(svcName, methodName, meta); err != nil {
-				var ce ClientError
-				if errors.As(err, &ce) {
-					respondError(w, logger, ce.HTTPStatus(), codeForStatus(ce.HTTPStatus()), ce.Error())
-				} else {
-					logger.Warn("httpapi.admission.error", "service", svcName, "method", methodName, "err", err)
-					respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")
-				}
-				return
-			}
-		}
-
-		rv := reflect.ValueOf(svc.Impl)
-		m := rv.MethodByName(methodName)
-		if !m.IsValid() {
-			respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown method: %s.%s", svcName, methodName))
+		out, ok := invoke(call, rawArgs, w, logger, svcName, methodName)
+		if !ok {
 			return
 		}
-
-		mt := m.Type()
-
-		// Cap body size before reading. MaxBytesReader replaces r.Body with a
-		// reader that returns an error after MaxRequestBody bytes — protects
-		// against a multi-GB POST exhausting server memory.
-		r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBody)
-		// Read body once.
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) {
-				respondError(w, logger, http.StatusRequestEntityTooLarge, ErrCodeTooLarge, "request body too large")
-			} else {
-				respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, "failed to read request body")
-			}
-			return
-		}
-
-		// Parse JSON array of arguments when body is non-empty.
-		var rawArgs []json.RawMessage
-		if len(body) > 0 {
-			if err := json.Unmarshal(body, &rawArgs); err != nil {
-				respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, "invalid JSON in args")
-				return
-			}
-		}
-
-		numIn := mt.NumIn()
-		if len(rawArgs) != numIn {
-			respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, fmt.Sprintf("%s.%s expects %d args, got %d", svcName, methodName, numIn, len(rawArgs)))
-			return
-		}
-
-		// Convert each raw JSON arg to the method's expected parameter type.
-		in := make([]reflect.Value, numIn)
-		for i := range numIn {
-			paramType := mt.In(i)
-			// Allocate a pointer to the param type so json.Unmarshal can fill it.
-			ptr := reflect.New(paramType)
-			if err := json.Unmarshal(rawArgs[i], ptr.Interface()); err != nil {
-				respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, fmt.Sprintf("arg %d: invalid argument type", i))
-				return
-			}
-			in[i] = ptr.Elem()
-		}
-
-		// Call the method.
-		out := m.Call(in)
-
-		// Extract error return (last out value if it implements error).
-		if len(out) > 0 {
-			last := out[len(out)-1]
-			if last.Type().Implements(errType) {
-				if !last.IsNil() {
-					callErr, _ := last.Interface().(error)
-					var ce ClientError
-					if errors.As(callErr, &ce) {
-						respondError(w, logger, ce.HTTPStatus(), codeForStatus(ce.HTTPStatus()), ce.Error())
-					} else {
-						logger.Warn("httpapi.call.error",
-							"service", svcName, "method", methodName, "err", callErr)
-						respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")
-					}
-					return
-				}
-				out = out[:len(out)-1]
-			}
-		}
-
-		// No result to encode.
-		if len(out) == 0 {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		result := out[0].Interface()
-		if len(out) > 1 {
-			results := make([]any, len(out))
-			for i := range out {
-				results[i] = out[i].Interface()
-			}
-			result = results
-		}
-		if err := json.NewEncoder(w).Encode(result); err != nil {
-			logger.Error("httpapi.encode", "service", svcName, "method", methodName, "err", err)
-		}
+		writeResponse(w, logger, svcName, methodName, out)
 	})
+}
+
+func admittedMethod(w http.ResponseWriter, logger *slog.Logger, r *http.Request, services map[string]Service, admit AdmissionFunc) (svcName, methodName string, svc Service, meta MethodMeta, ok bool) {
+	svcName = r.PathValue("service")
+	methodName = r.PathValue("method")
+
+	svc, ok = services[svcName]
+	if !ok {
+		respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown service: %s", svcName))
+		return "", "", Service{}, MethodMeta{}, false
+	}
+	meta, ok = svc.methods[methodName]
+	if !ok {
+		respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown method: %s.%s", svcName, methodName))
+		return "", "", Service{}, MethodMeta{}, false
+	}
+	if admit != nil {
+		if err := admit(svcName, methodName, meta); err != nil {
+			respondAdmissionError(w, logger, svcName, methodName, err)
+			return "", "", Service{}, MethodMeta{}, false
+		}
+	}
+	return svcName, methodName, svc, meta, true
+}
+
+func respondAdmissionError(w http.ResponseWriter, logger *slog.Logger, svcName, methodName string, err error) {
+	var ce ClientError
+	if errors.As(err, &ce) {
+		respondError(w, logger, ce.HTTPStatus(), codeForStatus(ce.HTTPStatus()), ce.Error())
+		return
+	}
+	logger.Warn("httpapi.admission.error", "service", svcName, "method", methodName, "err", err)
+	respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")
+}
+
+func decodeCall(w http.ResponseWriter, logger *slog.Logger, r *http.Request, svcName, methodName string, svc Service) (reflect.Value, []json.RawMessage, bool) {
+	call := reflect.ValueOf(svc.Impl).MethodByName(methodName)
+	if !call.IsValid() {
+		respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown method: %s.%s", svcName, methodName))
+		return reflect.Value{}, nil, false
+	}
+	rawArgs, ok := readArgs(w, logger, r)
+	if !ok {
+		return reflect.Value{}, nil, false
+	}
+	return call, rawArgs, true
+}
+
+func readArgs(w http.ResponseWriter, logger *slog.Logger, r *http.Request) ([]json.RawMessage, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBody)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			respondError(w, logger, http.StatusRequestEntityTooLarge, ErrCodeTooLarge, "request body too large")
+		} else {
+			respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, "failed to read request body")
+		}
+		return nil, false
+	}
+	if len(body) == 0 {
+		return nil, true
+	}
+	var rawArgs []json.RawMessage
+	if err := json.Unmarshal(body, &rawArgs); err != nil {
+		respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, "invalid JSON in args")
+		return nil, false
+	}
+	return rawArgs, true
+}
+
+func invoke(call reflect.Value, rawArgs []json.RawMessage, w http.ResponseWriter, logger *slog.Logger, svcName, methodName string) ([]reflect.Value, bool) {
+	args, ok := decodeInputs(call.Type(), rawArgs, w, logger, svcName, methodName)
+	if !ok {
+		return nil, false
+	}
+	out := call.Call(args)
+	return stripErrorResult(out, w, logger, svcName, methodName)
+}
+
+func decodeInputs(mt reflect.Type, rawArgs []json.RawMessage, w http.ResponseWriter, logger *slog.Logger, svcName, methodName string) ([]reflect.Value, bool) {
+	numIn := mt.NumIn()
+	if len(rawArgs) != numIn {
+		respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, fmt.Sprintf("%s.%s expects %d args, got %d", svcName, methodName, numIn, len(rawArgs)))
+		return nil, false
+	}
+
+	in := make([]reflect.Value, numIn)
+	for i := range numIn {
+		ptr := reflect.New(mt.In(i))
+		if err := json.Unmarshal(rawArgs[i], ptr.Interface()); err != nil {
+			respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, fmt.Sprintf("arg %d: invalid argument type", i))
+			return nil, false
+		}
+		in[i] = ptr.Elem()
+	}
+	return in, true
+}
+
+func stripErrorResult(out []reflect.Value, w http.ResponseWriter, logger *slog.Logger, svcName, methodName string) ([]reflect.Value, bool) {
+	if len(out) == 0 {
+		return out, true
+	}
+	last := out[len(out)-1]
+	if !last.Type().Implements(errType) {
+		return out, true
+	}
+	if last.IsNil() {
+		return out[:len(out)-1], true
+	}
+	callErr, _ := last.Interface().(error)
+	var ce ClientError
+	if errors.As(callErr, &ce) {
+		respondError(w, logger, ce.HTTPStatus(), codeForStatus(ce.HTTPStatus()), ce.Error())
+	} else {
+		logger.Warn("httpapi.call.error", "service", svcName, "method", methodName, "err", callErr)
+		respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")
+	}
+	return nil, false
+}
+
+func writeResponse(w http.ResponseWriter, logger *slog.Logger, svcName, methodName string, out []reflect.Value) {
+	if len(out) == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	result := out[0].Interface()
+	if len(out) > 1 {
+		results := make([]any, len(out))
+		for i := range out {
+			results[i] = out[i].Interface()
+		}
+		result = results
+	}
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		logger.Error("httpapi.encode", "service", svcName, "method", methodName, "err", err)
+	}
 }
 
 var errType = reflect.TypeFor[error]()
