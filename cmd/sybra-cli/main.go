@@ -364,7 +364,33 @@ func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr 
 	fmt.Fprintf(os.Stderr,
 		"warning: load config: %v; falling back to direct task store at %s for `%s`\n",
 		loadErr, tasksDir, cmd)
-	return dispatch(cmd, rest, nil, store, nil, false, jsonOut), true
+	// Dispatched directly (not via dispatch()) so this path never carries a
+	// nil cfg/projStore into the shared switch — nilaway can't correlate
+	// supportsTaskStoreFallback's allowlist with dispatch()'s cases, so
+	// routing through it flags every cfg/projStore-using branch as a
+	// potential nil deref even though none of these commands touch them.
+	switch cmd {
+	case "list":
+		return cmdList(store, rest, jsonOut), true
+	case "get":
+		return cmdGet(store, rest, jsonOut), true
+	case "create":
+		return cmdCreate(store, nil, rest, jsonOut), true
+	case "update":
+		return cmdUpdate(store, nil, rest, jsonOut), true
+	case "delete":
+		return cmdDelete(store, nil, rest, jsonOut), true
+	case "reopen":
+		return cmdReopen(store, rest, jsonOut), true
+	case "link-pr":
+		return cmdLinkPR(store, nil, rest, jsonOut), true
+	case "board":
+		return cmdBoard(store, jsonOut), true
+	case "trash":
+		return cmdTrash(store, rest, jsonOut), true
+	default:
+		return 0, false
+	}
 }
 
 func supportsTaskStoreFallback(cmd string) bool {
