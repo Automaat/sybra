@@ -4501,6 +4501,53 @@ func TestExecRunAgent_PersistsPreparedWorktreeDir(t *testing.T) {
 	}
 }
 
+func TestExecRunAgent_UsesConfiguredScratchDirForPlan(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	scratchDir := t.TempDir()
+	tasks.Put(TaskInfo{ID: "t1", Status: "plan-needed", AgentMode: "headless"})
+	step := &Step{
+		ID:   "plan",
+		Type: StepRunAgent,
+		Config: StepConfig{
+			Role:          "plan",
+			Prompt:        "plan",
+			NeedsWorktree: true,
+			Dir:           scratchDir,
+		},
+	}
+	wfExec := &Execution{
+		WorkflowID: "plan-scratch",
+		State:      ExecRunning,
+		Variables: map[string]string{
+			WorkflowVarDir: filepath.Join(os.TempDir(), "sybra-test-t1"),
+		},
+	}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(agents.calls) != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1", len(agents.calls))
+	}
+	if agents.calls[0].Dir != scratchDir {
+		t.Fatalf("StartAgent dir = %q, want configured scratch dir %q", agents.calls[0].Dir, scratchDir)
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow.Variables[WorkflowVarDir] != scratchDir {
+		t.Fatalf("%s = %q, want configured scratch dir %q", WorkflowVarDir, got.Workflow.Variables[WorkflowVarDir], scratchDir)
+	}
+}
+
 func TestExecRunAgent_ABTestingOverridesProviderModel(t *testing.T) {
 	prev := providerAvailable
 	providerAvailable = func(string) bool { return true }

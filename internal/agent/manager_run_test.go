@@ -60,6 +60,75 @@ func TestRegisterMarkAgentDone_ProviderAccountingInvariant(t *testing.T) {
 	}
 }
 
+func TestReleaseStaleStoppedAgentsForTask_ReleasesDoneGate(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.deadAgentRetention = 0
+	stale := &Agent{
+		ID:          "stale-stopped",
+		TaskID:      "task-1",
+		Provider:    "claude",
+		State:       StateStopped,
+		LastEventAt: time.Now().Add(-30 * time.Minute),
+		done:        make(chan struct{}),
+	}
+	if err := m.registerRunningAgent(stale, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("precondition: stopped agent with open done channel should still gate liveness")
+	}
+
+	if got := m.ReleaseStaleStoppedAgentsForTask(context.Background(), "task-1", 15*time.Minute); got != 1 {
+		t.Fatalf("released = %d, want 1", got)
+	}
+	if m.HasRunningAgentForTask("task-1") {
+		t.Fatal("stale stopped agent should no longer gate dispatch")
+	}
+}
+
+func TestReleaseStaleStoppedAgentsForTask_KeepsFreshStopRace(t *testing.T) {
+	m, _ := newTestManager(t)
+	fresh := &Agent{
+		ID:          "fresh-stopped",
+		TaskID:      "task-1",
+		Provider:    "claude",
+		State:       StateStopped,
+		LastEventAt: time.Now().Add(-30 * time.Minute),
+		done:        make(chan struct{}),
+	}
+	fresh.MarkStopped()
+	if err := m.registerRunningAgent(fresh, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	t.Cleanup(func() { m.markAgentDone(context.Background(), fresh) })
+
+	if got := m.ReleaseStaleStoppedAgentsForTask(context.Background(), "task-1", 15*time.Minute); got != 0 {
+		t.Fatalf("released = %d, want 0", got)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("fresh stopped agent should still gate until its runner exits")
+	}
+}
+
+func TestClaimTaskDispatch_ExpiresLeakedClaim(t *testing.T) {
+	m, _ := newTestManager(t)
+	if !m.ClaimTaskDispatch("task-1") {
+		t.Fatal("initial claim failed")
+	}
+	if m.ClaimTaskDispatch("task-1") {
+		t.Fatal("fresh duplicate claim should be rejected")
+	}
+
+	m.mu.Lock()
+	m.dispatchClaims["task-1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.mu.Unlock()
+
+	if !m.ClaimTaskDispatch("task-1") {
+		t.Fatal("stale leaked claim should be released and reacquired")
+	}
+	m.ReleaseTaskDispatch("task-1")
+}
+
 // TestMarkAgentDone_EvictsFromRegistry locks in that a finished agent is
 // eventually removed from m.agents once its terminal path runs, so a
 // long-lived server does not accumulate output buffers and prompts forever

@@ -1514,7 +1514,7 @@ func TestIncludeKnownTaskPRsAddsLinkedPRsMissingFromSearch(t *testing.T) {
 		},
 	}
 
-	got := r.includeKnownTaskPRs([]task.Task{
+	got := r.includeKnownTaskPRs(context.Background(), []task.Task{
 		{
 			ID:        "already-search",
 			Status:    task.StatusInReview,

@@ -30,6 +30,8 @@ import (
 
 const TransientFetchWarnThreshold = 3
 
+const stalePRDispatchGateAge = 15 * time.Minute
+
 // readyPRState is a cached "confirmed ready to merge" snapshot for a task's
 // linked PR, keyed by "repo#number". fetchKnownTaskPRs reuses it across poll
 // cycles instead of re-running the full per-PR fetch (reviews, threads,
@@ -379,7 +381,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 		return r.nextInterval(false, false)
 	}
 
-	selection := r.selectKnownPRPoll(tasks)
+	selection := r.selectKnownPRPoll(ctx, tasks)
 	r.logger.Info("reviews.poll.bounded",
 		"selected", selection.selectedPRs,
 		"deferred", selection.deferredPRs,
@@ -435,9 +437,9 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 
 	r.scanForReverts(ctx, tasks)
 	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
-	r.reconcilePRPhases(tasks, monitoredPRs)
+	r.reconcilePRPhases(ctx, tasks, monitoredPRs)
 	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
-	issues = r.mergeReconciledReady(reconciledReady, issues)
+	issues = r.mergeReconciledReady(ctx, reconciledReady, issues)
 	r.closeFinishedReviewTasks(tasks, nil)
 	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 
@@ -456,13 +458,13 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 // dispatch (e.g. a second poller instance) could already have a workflow or
 // agent live against it by the time this runs — merging out from under that
 // would race the in-flight run.
-func (r *Handler) mergeReconciledReady(reconciledReady, issues []github.PRIssue) []github.PRIssue {
+func (r *Handler) mergeReconciledReady(ctx context.Context, reconciledReady, issues []github.PRIssue) []github.PRIssue {
 	if r.projects == nil {
 		return issues
 	}
 	for i := range reconciledReady {
 		issue := reconciledReady[i]
-		if r.agents.HasRunningAgentForTask(issue.TaskID) {
+		if r.hasBlockingAgentForTask(ctx, issue.TaskID) {
 			r.logger.Info("reviews.dispatch.gate", "task_id", issue.TaskID, "gate", "running_agent", "kind", issue.Kind)
 			continue
 		}
@@ -609,7 +611,7 @@ func (r *Handler) handleTransientReviewFetchError(ctx context.Context, tasks []t
 
 func (r *Handler) processSybraPRPoll(ctx context.Context, tasks []task.Task, summary github.ReviewSummary) bool {
 	monitoredPRs := r.monitoredPRs(summary)
-	monitoredPRs = r.includeKnownTaskPRs(tasks, monitoredPRs)
+	monitoredPRs = r.includeKnownTaskPRs(ctx, tasks, monitoredPRs)
 
 	// Recover PRs orphaned by a workflow that exited before linking — e.g. a
 	// task stranded in human-required while a late-finishing agent opened the
@@ -629,12 +631,12 @@ func (r *Handler) processSybraPRPoll(ctx context.Context, tasks []task.Task, sum
 
 	r.scanForReverts(ctx, tasks)
 	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
-	r.reconcilePRPhases(tasks, monitoredPRs)
+	r.reconcilePRPhases(ctx, tasks, monitoredPRs)
 	// monitoredPRs here is the author:@me search result (r.monitoredPRs), which
 	// already spans every open PR the user authored regardless of task status —
 	// no separate fetch is needed to reach a human-required task's own PR.
 	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
-	issues = r.mergeReconciledReady(reconciledReady, issues)
+	issues = r.mergeReconciledReady(ctx, reconciledReady, issues)
 	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 
 	return prNeedsAttention(monitoredPRs)
@@ -685,7 +687,7 @@ func buildOutboundMatchers(tasks []task.Task) (matchers, closedMatchers []github
 // gates a SourcedViaREST PR on the strict REST readiness check
 // (readyForRESTAutoMerge) rather than the Copilot/thread-based gate.
 func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []task.Task) {
-	selection := r.selectKnownPRPoll(tasks)
+	selection := r.selectKnownPRPoll(ctx, tasks)
 	r.logger.Info("reviews.poll.bounded",
 		"selected", selection.selectedPRs,
 		"deferred", selection.deferredPRs,
@@ -733,7 +735,7 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 		}
 		r.handleMatchedPRIssues(ctx, handled)
 	}
-	r.cancelSettledImplementationWorkflows(tasks, monitoredPRs)
+	r.cancelSettledImplementationWorkflows(ctx, tasks, monitoredPRs)
 	if len(closedMatchers) > 0 {
 		fetchState := github.FetchPRStateViaREST
 		if r.fetchPRStateFn != nil {
@@ -753,7 +755,7 @@ func (r *Handler) handleMatchedOwnPRs(ctx context.Context, tasks []task.Task, mo
 		r.cancelResolvedPRFixWorkflows(tasks, issues, github.MatchTaskPRIndex(monitoredPRs, matchers))
 		r.handleMatchedPRIssues(ctx, issues)
 	}
-	r.cancelSettledImplementationWorkflows(tasks, monitoredPRs)
+	r.cancelSettledImplementationWorkflows(ctx, tasks, monitoredPRs)
 	return issues
 }
 
@@ -794,7 +796,7 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 		kinds = append(kinds, string(issues[i].Kind))
 	}
 	r.logger.Info("reviews.task-issues", "task_id", taskID, "kinds", kinds)
-	if r.agents.HasRunningAgentForTask(taskID) {
+	if r.hasBlockingAgentForTask(ctx, taskID) {
 		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "running_agent")
 		return
 	}
@@ -1051,9 +1053,9 @@ func (r *Handler) AdvanceClosedTaskPRAllowingAgent(ctx context.Context, taskID s
 }
 
 func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, completingAgentID string) error {
-	hasRunning := r.agents.HasRunningAgentForTask(c.TaskID)
+	hasRunning := r.hasBlockingAgentForTask(ctx, c.TaskID)
 	if completingAgentID != "" {
-		hasRunning = r.agents.HasOtherRunningAgentForTask(c.TaskID, completingAgentID)
+		hasRunning = r.hasBlockingAgentForTaskAllowingAgent(ctx, c.TaskID, completingAgentID)
 	}
 	if hasRunning {
 		r.logger.Info("pr-monitor.closed-stop-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
@@ -1594,8 +1596,8 @@ func (r *Handler) monitoredPRs(summary github.ReviewSummary) []github.PullReques
 // result. FetchReviews is intentionally search-based and can miss PRs created
 // by another machine/account in the cluster; linked task metadata is the
 // canonical fallback for those outbound PRs.
-func (r *Handler) includeKnownTaskPRs(tasks []task.Task, monitoredPRs []github.PullRequest) []github.PullRequest {
-	selection := r.selectKnownPRPoll(tasks)
+func (r *Handler) includeKnownTaskPRs(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest) []github.PullRequest {
+	selection := r.selectKnownPRPoll(ctx, tasks)
 	if r.logger != nil {
 		r.logger.Info("reviews.poll.bounded",
 			"selected", selection.selectedPRs,

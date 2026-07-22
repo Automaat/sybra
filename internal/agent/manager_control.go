@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -88,6 +89,41 @@ func (m *Manager) FindAllRunningAgentsForTask(taskID string, role Role) []*Agent
 		result = append(result, a)
 	}
 	return result
+}
+
+// ReleaseStaleStoppedAgentsForTask releases manager liveness for agents that
+// are already marked stopped but whose runner goroutine never closed its done
+// channel. It does not stop running/paused agents. The caller supplies grace so
+// short StopAgent races still keep protecting the worktree and dispatch path.
+func (m *Manager) ReleaseStaleStoppedAgentsForTask(ctx context.Context, taskID string, grace time.Duration) int {
+	if grace <= 0 {
+		return 0
+	}
+	cutoff := time.Now().Add(-grace)
+	var stale []*Agent
+	m.mu.RLock()
+	for _, a := range m.agents {
+		if a.TaskID != taskID || a.done == nil || a.GetState() != StateStopped {
+			continue
+		}
+		if last := a.GetLastEventAt(); !last.IsZero() && last.After(cutoff) {
+			continue
+		}
+		select {
+		case <-a.done:
+		default:
+			stale = append(stale, a)
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, a := range stale {
+		if m.logger != nil {
+			m.logger.Warn("agent.stale-stopped.release", "agent_id", a.ID, "task_id", taskID, "last_event_at", a.GetLastEventAt())
+		}
+		m.markAgentDone(ctx, a)
+	}
+	return len(stale)
 }
 
 // StopAgents stops the provided agents without waiting for their goroutines to

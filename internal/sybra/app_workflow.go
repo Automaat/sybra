@@ -841,7 +841,53 @@ func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.
 		return a.resolveWorktreeDir(t, taskID, string(role), cleanRetryRef, claim)
 	}
 	if _, statErr := os.Stat(dir); statErr == nil {
-		return t, dir, false, nil
+		repair, repairErr := a.providedWorktreeNeedsRepair(t, taskID, role, dir)
+		if repairErr != nil {
+			return t, "", false, repairErr
+		}
+		if !repair {
+			return t, dir, false, nil
+		}
+		updated, resolvedDir, cleanRetryReset, err := a.reprepareProvidedWorktreeDir(t, taskID, role, dir, cleanRetryRef, claim)
+		return updated, resolvedDir, cleanRetryReset, err
+	} else if !os.IsNotExist(statErr) {
+		return t, "", false, fmt.Errorf("stat provided worktree dir %s: %w", dir, statErr)
+	}
+	updated, resolvedDir, cleanRetryReset, err = a.reprepareProvidedWorktreeDir(t, taskID, role, dir, cleanRetryRef, claim)
+	return updated, resolvedDir, cleanRetryReset, err
+}
+
+func (a *agentAdapter) providedWorktreeNeedsRepair(t task.Task, taskID string, role agent.Role, dir string) (bool, error) {
+	if !role.AuthorsCode() || strings.TrimSpace(t.Branch) == "" {
+		return false, nil
+	}
+	currentBranch, err := project.CurrentBranch(context.Background(), dir)
+	if err != nil {
+		if t.WorktreeDir != "" {
+			return false, fmt.Errorf("resolve adopted worktree branch %s: %w", dir, err)
+		}
+		a.agentOrch.Logger().Warn("workflow.worktree.branch-unreadable",
+			"task_id", taskID, "role", role, "path", dir, "err", err)
+		return true, nil
+	}
+	if currentBranch == t.Branch {
+		return false, nil
+	}
+	if t.WorktreeDir != "" {
+		return false, fmt.Errorf("adopted worktree branch %q does not match task branch %q", currentBranch, t.Branch)
+	}
+	a.agentOrch.Logger().Warn("workflow.worktree.branch-mismatch",
+		"task_id", taskID, "role", role, "path", dir, "branch", currentBranch, "want_branch", t.Branch)
+	return true, nil
+}
+
+func (a *agentAdapter) reprepareProvidedWorktreeDir(t task.Task, taskID string, role agent.Role, dir, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, resolvedDir string, cleanRetryReset bool, err error) {
+	if _, statErr := os.Stat(dir); statErr == nil {
+		if t.WorktreeDir != "" {
+			return t, "", false, fmt.Errorf("provided adopted worktree dir %s is stale for task branch %q", dir, t.Branch)
+		}
+		resolvedDir, cleanRetryReset, err = a.reprepareExistingWorktreeDir(t, taskID, role, dir, cleanRetryRef, claim)
+		return t, resolvedDir, cleanRetryReset, err
 	} else if !os.IsNotExist(statErr) {
 		return t, "", false, fmt.Errorf("stat provided worktree dir %s: %w", dir, statErr)
 	}
@@ -863,13 +909,30 @@ func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.
 	return t, resolvedDir, cleanRetryReset, err
 }
 
+func (a *agentAdapter) reprepareExistingWorktreeDir(t task.Task, taskID string, role agent.Role, dir, cleanRetryRef string, claim *agent.DispatchClaim) (resolvedDir string, cleanRetryReset bool, err error) {
+	resolvedDir, cleanRetryReset, err = a.reprepareProvidedWorktreeForRole(t, taskID, role, dir, claim)
+	if err != nil {
+		return "", false, err
+	}
+	if cleanRetryRef != "" {
+		if _, resetErr := a.resetWorktreeForRetry(t, resolvedDir, cleanRetryRef); resetErr != nil {
+			return "", false, resetErr
+		}
+		cleanRetryReset = true
+	}
+	return resolvedDir, cleanRetryReset, nil
+}
+
 func (a *agentAdapter) reprepareMissingWorktreeDir(t task.Task, taskID string, role agent.Role, missingDir string, claim *agent.DispatchClaim) (dir string, cleanRetryReset bool, err error) {
 	if t.WorktreeDir != "" {
 		return "", false, fmt.Errorf("provided adopted worktree dir %s missing: %w", missingDir, os.ErrNotExist)
 	}
 	a.agentOrch.Logger().Warn("workflow.worktree.dir-missing",
 		"task_id", taskID, "role", role, "path", missingDir)
+	return a.reprepareProvidedWorktreeForRole(t, taskID, role, missingDir, claim)
+}
 
+func (a *agentAdapter) reprepareProvidedWorktreeForRole(t task.Task, taskID string, role agent.Role, dir string, claim *agent.DispatchClaim) (resolvedDir string, cleanRetryReset bool, err error) {
 	switch role {
 	case agent.RolePRFix, agent.RoleTestFix:
 		if t.PRNumber == 0 {

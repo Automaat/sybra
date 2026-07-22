@@ -2,6 +2,7 @@ package review
 
 import (
 	"cmp"
+	"context"
 	"slices"
 
 	"github.com/Automaat/sybra/internal/config"
@@ -37,7 +38,7 @@ func expBackoff(streak, maxTicks int) int {
 	return skip
 }
 
-func (r *Handler) selectKnownPRPoll(tasks []task.Task) knownPRPollSelection {
+func (r *Handler) selectKnownPRPoll(ctx context.Context, tasks []task.Task) knownPRPollSelection {
 	if r.prPollState == nil {
 		r.prPollState = make(map[string]prPollEntry)
 	}
@@ -50,7 +51,7 @@ func (r *Handler) selectKnownPRPoll(tasks []task.Task) knownPRPollSelection {
 
 	for i := range tasks {
 		tk := tasks[i]
-		if r.agents != nil && r.agents.HasRunningAgentForTask(tk.ID) {
+		if r.hasBlockingAgentForTask(ctx, tk.ID) {
 			active = append(active, tk)
 			if knownPRPollEligible(&tk) {
 				activePRs++
