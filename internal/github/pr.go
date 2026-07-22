@@ -1015,10 +1015,6 @@ func RequestCopilotReviewCtx(ctx context.Context, repo string, number int) error
 	return requestReviewersCtxWith(ctx, defaultExecer, repo, number, []string{"copilot-pull-request-reviewer[bot]"})
 }
 
-func requestReviewersWith(e execer, repo string, number int, reviewers []string) error {
-	return requestReviewersCtxWith(context.Background(), e, repo, number, reviewers)
-}
-
 func requestReviewersCtxWith(ctx context.Context, e execer, repo string, number int, reviewers []string) error {
 	if len(reviewers) == 0 {
 		return nil

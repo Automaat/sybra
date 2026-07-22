@@ -224,7 +224,11 @@ func TestRunStartupCleanup_ReapsDeletedCWDOrphanProcess(t *testing.T) {
 
 	logger := discardLogger()
 	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	worktreesDir := t.TempDir()
+	root := t.TempDir()
+	worktreesDir := filepath.Join(root, "worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: worktreesDir,
 		Tasks:        tasks,
@@ -232,16 +236,17 @@ func TestRunStartupCleanup_ReapsDeletedCWDOrphanProcess(t *testing.T) {
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	orphanCWD := filepath.Join(worktreesDir, "orphan-task")
+	orphanCWD := filepath.Join(worktreesDir, "task-1")
 	if err := os.MkdirAll(orphanCWD, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	sleepBin, err := exec.LookPath("sleep")
+	tailBin, err := exec.LookPath("tail")
 	if err != nil {
 		t.Fatal(err)
 	}
-	proc := exec.Command(sleepBin, "30")
+	proc := exec.Command(tailBin, "-f", "/dev/null")
 	proc.Dir = orphanCWD
+	proc.Env = scrubRecoveryAmbientOwnerEnv(os.Environ())
 	if err := proc.Start(); err != nil {
 		t.Fatalf("start orphan process: %v", err)
 	}
@@ -262,7 +267,7 @@ func TestRunStartupCleanup_ReapsDeletedCWDOrphanProcess(t *testing.T) {
 		Throttle:    logging.NewErrorThrottle(),
 		WG:          &wg,
 		LogDir:      t.TempDir(),
-		OrphanRoots: []string{worktreesDir},
+		OrphanRoots: []string{root},
 	}
 	r.RunStartupCleanup(context.Background())
 	wg.Wait()
@@ -2272,4 +2277,36 @@ func waitForRecoveryProcessExit(t *testing.T, pid int) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("pid %d still alive after startup cleanup", pid)
+}
+
+func scrubRecoveryAmbientOwnerEnv(env []string) []string {
+	return stripEnvKeys(
+		env,
+		"SYBRA_AGENT_OWNER",
+		"SYBRA_AGENT_ID",
+		"SYBRA_TASK_ID",
+		"SYBRA_AGENT_MODE",
+		"SYBRA_MCP_OWNER",
+		"SYBRA_MCP_AGENT_ID",
+		"SYBRA_MCP_TASK_ID",
+		"SYBRA_MCP_AGENT_MODE",
+	)
+}
+
+func stripEnvKeys(env []string, keys ...string) []string {
+	deny := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		deny[key] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, blocked := deny[key]; blocked {
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }

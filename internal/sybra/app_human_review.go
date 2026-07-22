@@ -98,8 +98,6 @@ var humanReviewPRNumberRE = regexp.MustCompile(`(?i)\bpr\s*#(\d+)\b`)
 // so the rest of this file (and its tests) keep the historical local name.
 type verdictDecision = verdict.Decision
 
-var humanReviewPRNumberRe = regexp.MustCompile(`(?i)(?:\bPR\s*#|/pull/)([1-9]\d*)\b`)
-
 type humanReviewSpawnOptions struct {
 	Provider              string
 	Model                 string
@@ -798,103 +796,6 @@ func (h *humanReviewHandler) verifyUnblocked(t task.Task) bool {
 		return false
 	}
 	return true
-}
-
-func (h *humanReviewHandler) verifyDoneRecovery(t task.Task, status task.Status) bool {
-	if status != task.StatusDone {
-		return true
-	}
-	if strings.TrimSpace(t.ProjectID) == "" || t.PRNumber <= 0 {
-		h.logger.Warn("human-review.unblocked.done-missing-pr", "task_id", t.ID, "project_id", t.ProjectID, "pr_number", t.PRNumber)
-		return false
-	}
-	if h.fetchPRState == nil {
-		h.logger.Warn("human-review.unblocked.done-no-pr-fetcher", "task_id", t.ID, "project_id", t.ProjectID, "pr_number", t.PRNumber)
-		return false
-	}
-	state, err := h.fetchPRState(t.ProjectID, t.PRNumber)
-	if err != nil {
-		h.logger.Warn("human-review.unblocked.done-pr-state", "task_id", t.ID, "project_id", t.ProjectID, "pr_number", t.PRNumber, "err", err)
-		return false
-	}
-	if state.State != "MERGED" {
-		h.logger.Warn("human-review.unblocked.done-pr-not-merged", "task_id", t.ID, "project_id", t.ProjectID, "pr_number", t.PRNumber, "state", state.State)
-		return false
-	}
-	return true
-}
-
-func (h *humanReviewHandler) prepareDoneRecovery(t task.Task, status task.Status, v verdictDecision) task.Task {
-	if status != task.StatusDone {
-		return t
-	}
-	number, ok := humanReviewRecoverPRNumber(v)
-	if !ok || number == t.PRNumber {
-		return t
-	}
-	t.PRNumber = number
-	return t
-}
-
-func (h *humanReviewHandler) persistDoneRecoveryPR(t task.Task, originalPRNumber int, status task.Status) (task.Task, bool) {
-	if status != task.StatusDone || t.PRNumber == originalPRNumber {
-		return t, true
-	}
-	updated, err := h.tasks.Update(t.ID, task.Update{PRNumber: task.Ptr(t.PRNumber)})
-	if err != nil {
-		h.logger.Warn("human-review.unblocked.done-pr-backfill",
-			"task_id", t.ID, "project_id", t.ProjectID, "pr_number", t.PRNumber, "err", err)
-		return t, false
-	}
-	return updated, true
-}
-
-func humanReviewRecoverPRNumber(v verdictDecision) (int, bool) {
-	for _, text := range []string{v.Summary, v.Reason} {
-		match := humanReviewPRNumberRe.FindStringSubmatch(text)
-		if len(match) != 2 {
-			continue
-		}
-		number, err := strconv.Atoi(match[1])
-		if err == nil && number > 0 {
-			return number, true
-		}
-	}
-	return 0, false
-}
-
-func (h *humanReviewHandler) advanceDoneRecovery(t task.Task, completingAgentID string) error {
-	if h.advanceClosedTaskPR == nil {
-		return fmt.Errorf("closed PR landing handler unavailable")
-	}
-	return h.advanceClosedTaskPR(context.Background(), t.ID, t.PRNumber, "MERGED", completingAgentID)
-}
-
-func (h *humanReviewHandler) persistVerifiedDoneRecovery(t task.Task, agentID, note string) {
-	updated, err := h.tasks.Update(t.ID, task.Update{
-		Status:  task.Ptr(task.StatusDone),
-		Outcome: task.Ptr("merged"),
-	})
-	if err != nil {
-		h.logger.Error("human-review.unblocked.done-fallback-update",
-			"task_id", t.ID, "agent_id", agentID, "pr_number", t.PRNumber, "err", err)
-		return
-	}
-	if updated.Status != task.StatusDone || updated.Outcome != "merged" {
-		h.logger.Error("human-review.unblocked.done-fallback-mismatch",
-			"task_id", t.ID, "agent_id", agentID, "pr_number", t.PRNumber,
-			"got_status", updated.Status, "got_outcome", updated.Outcome)
-		return
-	}
-	if strings.TrimSpace(note) == "" {
-		if agentID != "" {
-			h.markVerdictRendered(t.ID, agentID)
-		}
-		return
-	}
-	if h.appendNote(t.ID, "Auto-review: unblocked", note) {
-		h.markVerdictRendered(t.ID, agentID)
-	}
 }
 
 func safeHumanReviewRecoveryStatus(action string) (task.Status, bool) {
