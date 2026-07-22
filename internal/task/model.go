@@ -329,7 +329,7 @@ type Task struct {
 	// this after creation to attach an unrelated reference — use RefIssue.
 	Issue        string        `json:"issue"`
 	StatusReason string        `json:"statusReason"`
-	Blocker      blocker.State `json:"blocker,omitempty"`
+	Blocker      blocker.State `json:"blocker,omitzero"`
 	// HandoffSourceProvider records which local agent provider produced the
 	// work before a handoff skipped directly into review/testing/PR. Workflow
 	// steps with provider=cross use it when there is no Sybra-authored run
