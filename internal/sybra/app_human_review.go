@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
@@ -76,6 +77,7 @@ type humanReviewHandler struct {
 	// Nil-safe for focused tests: applyUnblockedRecovery falls back to the
 	// legacy direct status write when dispatch wiring is unavailable.
 	dispatchFromHumanRequired func(id, target, reason, completingAgentID string) (task.Task, error)
+	fetchPRState              func(repo string, number int) (github.PRState, error)
 
 	mu       sync.Mutex
 	inflight map[string]string      // taskID -> agent ID
@@ -116,17 +118,18 @@ func newHumanReviewHandler(
 	workCtx func(projectID string) *WorkScrubContext,
 ) *humanReviewHandler {
 	return &humanReviewHandler{
-		cfg:      cfg,
-		tasks:    tasks,
-		agents:   agents,
-		audit:    al,
-		logger:   logger,
-		homeDir:  homeDir,
-		logFile:  logFile,
-		now:      time.Now,
-		workCtx:  workCtx,
-		inflight: make(map[string]string),
-		perTask:  make(map[string][]time.Time),
+		cfg:          cfg,
+		tasks:        tasks,
+		agents:       agents,
+		audit:        al,
+		logger:       logger,
+		homeDir:      homeDir,
+		logFile:      logFile,
+		now:          time.Now,
+		workCtx:      workCtx,
+		fetchPRState: github.FetchPRState,
+		inflight:     make(map[string]string),
+		perTask:      make(map[string][]time.Time),
 	}
 }
 
@@ -409,7 +412,7 @@ func (h *humanReviewHandler) humanReviewCycleRunCount(t task.Task) int {
 func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID string, v verdictDecision) {
 	note := h.scrubForTask(current.ProjectID, v.Summary)
 	status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
-	if ok && current.Status == task.StatusHumanRequired && h.verifyUnblocked(current) {
+	if ok && current.Status == task.StatusHumanRequired && h.verifyUnblocked(current) && h.verifyDoneRecovery(current, status) {
 		statusReason := "auto-review recovery: " + strings.TrimSpace(v.Summary)
 		if h.dispatchFromHumanRequired != nil {
 			target, err := h.prepareRecoveryDispatch(current, status)
@@ -495,6 +498,9 @@ func (h *humanReviewHandler) recoverRenderedUnblockedTasks() {
 		}
 		status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
 		if !ok {
+			continue
+		}
+		if !h.verifyDoneRecovery(t, status) {
 			continue
 		}
 		target, prepErr := h.prepareRecoveryDispatch(t, status)
@@ -619,6 +625,30 @@ func (h *humanReviewHandler) verifyUnblocked(t task.Task) bool {
 	if remoteHead == "" || remoteHead != localHead {
 		h.logger.Warn("human-review.unblocked.unpushed",
 			"task_id", t.ID, "branch", branch, "local_head", localHead, "remote_head", remoteHead)
+		return false
+	}
+	return true
+}
+
+func (h *humanReviewHandler) verifyDoneRecovery(t task.Task, status task.Status) bool {
+	if status != task.StatusDone {
+		return true
+	}
+	if strings.TrimSpace(t.ProjectID) == "" || t.PRNumber <= 0 {
+		h.logger.Warn("human-review.unblocked.done-missing-pr", "task_id", t.ID, "project_id", t.ProjectID, "pr_number", t.PRNumber)
+		return false
+	}
+	if h.fetchPRState == nil {
+		h.logger.Warn("human-review.unblocked.done-no-pr-fetcher", "task_id", t.ID, "project_id", t.ProjectID, "pr_number", t.PRNumber)
+		return false
+	}
+	state, err := h.fetchPRState(t.ProjectID, t.PRNumber)
+	if err != nil {
+		h.logger.Warn("human-review.unblocked.done-pr-state", "task_id", t.ID, "project_id", t.ProjectID, "pr_number", t.PRNumber, "err", err)
+		return false
+	}
+	if state.State != "MERGED" {
+		h.logger.Warn("human-review.unblocked.done-pr-not-merged", "task_id", t.ID, "project_id", t.ProjectID, "pr_number", t.PRNumber, "state", state.State)
 		return false
 	}
 	return true
