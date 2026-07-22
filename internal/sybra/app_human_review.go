@@ -568,12 +568,12 @@ func (h *humanReviewHandler) finalizeDoneRecovery(taskID string, prNumber int, m
 		StatusReason: task.Ptr(""),
 	}
 	if mergedPR {
-		update.Outcome = task.Ptr("merged")
-	}
-	if mergedPR {
 		current, err := h.tasks.Get(taskID)
 		if err != nil {
 			return err
+		}
+		if current.Outcome == "" {
+			update.Outcome = task.Ptr("merged")
 		}
 		if current.PRNumber == 0 {
 			update.PRNumber = task.Ptr(prNumber)
