@@ -382,6 +382,45 @@ func TestCheckAndApplyOverrideBypassesGateOnce(t *testing.T) {
 	}
 }
 
+func TestCheckAndApplyNotifyOverrideIsConsumed(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	override := filepath.Join(t.TempDir(), "autoupdate-override")
+	if err := os.WriteFile(override, []byte("override\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(Config{
+		Enabled:        true,
+		RepoDir:        work,
+		Remote:         "origin",
+		Branch:         "main",
+		Mode:           ModeNotify,
+		Repository:     "o/r",
+		RequiredChecks: []string{"test"},
+		OverrideFile:   override,
+		GateCommit:     failedGate,
+	}, nil)
+
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "approved" || res.Reason != "manual override" {
+		t.Fatalf("result = %+v, want approved/manual override", res)
+	}
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
+		t.Fatalf("feature.txt exists after notify mode: %v", err)
+	}
+	if _, err := os.Stat(override); !os.IsNotExist(err) {
+		t.Fatalf("override file still exists: %v", err)
+	}
+}
+
 func TestCheckAndApplyDoesNotMergeWhenOverrideCannotBeConsumed(t *testing.T) {
 	t.Parallel()
 

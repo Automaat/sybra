@@ -169,6 +169,11 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if overrideActive {
+		if err := clearOverride(cfg.OverrideFile); err != nil {
+			return Result{}, err
+		}
+	}
 	if err := saveCandidateState(cfg.StateFile, state, gateResult != nil || cfg.Mode != ModeAuto || state.PendingSHA == remoteSHA); err != nil {
 		return Result{}, err
 	}
@@ -186,11 +191,6 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 	}
 	if _, err := fetchObject(ctx, cfg.RepoDir, cfg.Remote, remoteSHA); err != nil {
 		return Result{}, err
-	}
-	if overrideActive {
-		if err := clearOverride(cfg.OverrideFile); err != nil {
-			return Result{}, err
-		}
 	}
 	if _, err := git(ctx, cfg.RepoDir, "merge", "--ff-only", remoteSHA); err != nil {
 		return Result{}, fmt.Errorf("fast-forward %s: %w", remoteSHA, err)
