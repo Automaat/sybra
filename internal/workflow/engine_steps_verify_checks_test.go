@@ -769,6 +769,241 @@ func TestRunVerifyCommands_GOCACHEIsPerTaskWhileGOMODCACHEStaysShared(t *testing
 	}
 }
 
+func TestDiscoverEnvtestPlan_UsesExplicitVersionAndControllerRuntimeRelease(t *testing.T) {
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, "Makefile"), "ENVTEST_K8S_VERSION ?= 1.31\n")
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+import "sigs.k8s.io/controller-runtime/pkg/envtest"
+`)
+
+	plan, err := discoverEnvtestPlan(wt)
+	if err != nil {
+		t.Fatalf("discoverEnvtestPlan: %v", err)
+	}
+	if !plan.Needed {
+		t.Fatal("Needed = false, want true")
+	}
+	if got, want := plan.VersionSpec, "1.31"; got != want {
+		t.Fatalf("VersionSpec = %q, want %q", got, want)
+	}
+	if got, want := plan.SetupEnvtestRef, "release-0.20"; got != want {
+		t.Fatalf("SetupEnvtestRef = %q, want %q", got, want)
+	}
+}
+
+func TestDiscoverEnvtestPlan_IgnoresToolingMentionsWithoutEnvtestImport(t *testing.T) {
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, ".github", "workflows", "ci.yml"), `name: ci
+jobs:
+  test:
+    steps:
+      - run: echo KUBEBUILDER_ASSETS setup-envtest
+`)
+	writeTestFile(t, filepath.Join(wt, "hack", "envtest.sh"), `#!/bin/sh
+echo "setup-envtest use 1.31"
+`)
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+func TestUnit(t *testing.T) {}
+`)
+
+	plan, err := discoverEnvtestPlan(wt)
+	if err != nil {
+		t.Fatalf("discoverEnvtestPlan: %v", err)
+	}
+	if plan.Needed {
+		t.Fatal("Needed = true, want false")
+	}
+	if got, want := plan.VersionSpec, "1.31"; got != want {
+		t.Fatalf("VersionSpec = %q, want %q", got, want)
+	}
+	if got, want := plan.SetupEnvtestRef, "release-0.20"; got != want {
+		t.Fatalf("SetupEnvtestRef = %q, want %q", got, want)
+	}
+}
+
+func TestDiscoverEnvtestPlan_SkipsOversizeFiles(t *testing.T) {
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+import "sigs.k8s.io/controller-runtime/pkg/envtest"
+`)
+	writeTestFile(t, filepath.Join(wt, "hack", "envtest.sh"), "ENVTEST_K8S_VERSION=1.31\n")
+	oversize := strings.Repeat("# filler\n", maxEnvtestInspectFileSize/8+1)
+	writeTestFile(t, filepath.Join(wt, ".github", "workflows", "generated.yml"), oversize+"ENVTEST_K8S_VERSION=1.99\n")
+
+	plan, err := discoverEnvtestPlan(wt)
+	if err != nil {
+		t.Fatalf("discoverEnvtestPlan: %v", err)
+	}
+	if !plan.Needed {
+		t.Fatal("Needed = false, want true")
+	}
+	if got, want := plan.VersionSpec, "1.31"; got != want {
+		t.Fatalf("VersionSpec = %q, want %q", got, want)
+	}
+}
+
+func TestVerifyCommandEnv_InjectsEnvtestAssetsForGoCommands(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+import "sigs.k8s.io/controller-runtime/pkg/envtest"
+`)
+
+	assetsDir := filepath.Join(t.TempDir(), "kubebuilder", "bin")
+	argsLog := fakeSetupEnvtest(t, assetsDir)
+	env, err := verifyCommandEnv(context.Background(), "t1", wt, "mise exec -- go test ./...")
+	if err != nil {
+		t.Fatalf("verifyCommandEnv: %v", err)
+	}
+	if got := envValue(env, "KUBEBUILDER_ASSETS"); got != assetsDir {
+		t.Fatalf("KUBEBUILDER_ASSETS = %q, want %q", got, assetsDir)
+	}
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	if got := strings.TrimSpace(string(args)); got != "use -p path 1.32.x!" {
+		t.Fatalf("setup-envtest args = %q, want %q", got, "use -p path 1.32.x!")
+	}
+}
+
+func TestGoPackageAffectedByChanges_SkipsEnvtestProvisionForGoList(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+import "sigs.k8s.io/controller-runtime/pkg/envtest"
+`)
+	argsLog := fakeSetupEnvtest(t, filepath.Join(t.TempDir(), "kubebuilder", "bin"))
+
+	affected, err := goPackageAffectedByChanges(context.Background(), "t1", wt, "internal/controller", map[string]bool{
+		"internal/other": true,
+	}, "example.com/operator")
+	if err != nil {
+		t.Fatalf("goPackageAffectedByChanges: %v", err)
+	}
+	if affected {
+		t.Fatal("affected = true, want false")
+	}
+	if _, err := os.Stat(argsLog); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("setup-envtest should not run, stat err = %v", err)
+	}
+}
+
+func TestVerifyCommandEnv_InjectsEnvtestAssetsForGoListCommands(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+import "sigs.k8s.io/controller-runtime/pkg/envtest"
+`)
+
+	assetsDir := filepath.Join(t.TempDir(), "kubebuilder", "bin")
+	argsLog := fakeSetupEnvtest(t, assetsDir)
+	env, err := verifyCommandEnv(context.Background(), "t1", wt, "go list -deps ./internal/controller")
+	if err != nil {
+		t.Fatalf("verifyCommandEnv: %v", err)
+	}
+	if got := envValue(env, "KUBEBUILDER_ASSETS"); got != assetsDir {
+		t.Fatalf("KUBEBUILDER_ASSETS = %q, want %q", got, assetsDir)
+	}
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	if got := strings.TrimSpace(string(args)); got != "use -p path 1.32.x!" {
+		t.Fatalf("setup-envtest args = %q, want %q", got, "use -p path 1.32.x!")
+	}
+}
+
+func TestVerifyCommandEnv_SkipsEnvtestForNonGoCommands(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	wt := t.TempDir()
+	writeTestFile(t, filepath.Join(wt, "go.mod"), `module example.com/operator
+
+go 1.26
+
+require (
+	k8s.io/api v0.32.4
+	sigs.k8s.io/controller-runtime v0.20.3
+)
+`)
+	writeTestFile(t, filepath.Join(wt, "internal", "controller", "suite_test.go"), `package controller
+
+import "sigs.k8s.io/controller-runtime/pkg/envtest"
+`)
+
+	argsLog := fakeSetupEnvtest(t, filepath.Join(t.TempDir(), "kubebuilder", "bin"))
+	env, err := verifyCommandEnv(context.Background(), "t1", wt, "(cd frontend && npm run check)")
+	if err != nil {
+		t.Fatalf("verifyCommandEnv: %v", err)
+	}
+	if got := envValue(env, "KUBEBUILDER_ASSETS"); got != "" {
+		t.Fatalf("KUBEBUILDER_ASSETS = %q, want empty", got)
+	}
+	if _, err := os.Stat(argsLog); err == nil {
+		t.Fatal("setup-envtest should not run for non-Go commands")
+	}
+}
+
 func TestEnsureNodeToolchain_RepairsCorruptBin(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
@@ -975,8 +1210,23 @@ func fakeNPM(t *testing.T, markerName string) {
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+func fakeSetupEnvtest(t *testing.T, assetsDir string) string {
+	t.Helper()
+	fakeBin := t.TempDir()
+	argsLog := filepath.Join(t.TempDir(), "setup-envtest.args")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' \"$*\" > %q\nprintf '%%s\\n' %q\n", argsLog, assetsDir)
+	if err := os.WriteFile(filepath.Join(fakeBin, "setup-envtest"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return argsLog
+}
+
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}

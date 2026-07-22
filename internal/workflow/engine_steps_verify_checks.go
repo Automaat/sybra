@@ -15,8 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/Automaat/sybra/internal/buildcache"
 )
 
 // verifyChecksDefaultTimeout bounds the whole verify run (every command). A test
@@ -807,7 +805,7 @@ func goPackageAffectedByChanges(
 	}
 	cmd := exec.CommandContext(ctx, "go", "list", "-deps", target)
 	cmd.Dir = wtPath
-	env, err := verifyCommandEnv(taskID)
+	env, err := verifyCommandEnv(ctx, taskID, wtPath)
 	if err != nil {
 		return false, err
 	}
@@ -1227,7 +1225,7 @@ func ownedByNpm(dir string) bool {
 // of stdout/stderr cannot exhaust memory.
 func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
-	cmdEnv, err := verifyCommandEnv(taskID)
+	cmdEnv, err := verifyCommandEnv(ctx, taskID, wtPath, cmds...)
 	if err != nil {
 		return "", tail.String(), err
 	}
@@ -1265,10 +1263,6 @@ func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, c
 		}
 	}
 	return "", tail.String(), nil
-}
-
-func verifyCommandEnv(taskID string) ([]string, error) {
-	return buildcache.PrepareGoEnv(taskID, os.Environ())
 }
 
 // boundedTail is a concurrency-safe io.Writer that retains only the last `max`
