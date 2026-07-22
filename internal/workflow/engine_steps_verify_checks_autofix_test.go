@@ -187,6 +187,59 @@ func TestExecVerifyChecks_AutoFixMultipleChangedLintFiles(t *testing.T) {
 	}
 }
 
+// incidentLinterVerifyOutput mimics real golangci-lint output combining three
+// distinct linters (errorlint, exhaustive, typecheck) on the same changed
+// file — regression coverage for the incident where these linters' findings
+// were not recognized as auto-fixable because they were assumed to be
+// gocritic-shaped.
+func incidentLinterVerifyOutput(file string) string {
+	return file + ":10:5: comparing with == will fail on wrapped errors, use errors.Is (errorlint)\n" +
+		file + ":20:2: missing cases in switch of type Kind: KindBar (exhaustive)\n" +
+		file + ":30:1: undefined: someIdentifier (typecheck)\n"
+}
+
+func incidentLinterVerifyCommand(file string) string {
+	return "printf '" + strings.ReplaceAll(incidentLinterVerifyOutput(file), "\n", "\\n") + "' >&2; exit 1 # golangci-lint"
+}
+
+func TestExecVerifyChecks_AutoFixIncidentLinters(t *testing.T) {
+	t.Parallel()
+	wt := makeLintVerifyRepo(t)
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{incidentLinterVerifyCommand("internal/foo/foo.go")})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("parked output should be zero, got %+v", out)
+	}
+	if wf.CurrentStep != verifyChecksImplStepID {
+		t.Errorf("CurrentStep = %q, want %q", wf.CurrentStep, verifyChecksImplStepID)
+	}
+	if wf.State != ExecWaiting {
+		t.Errorf("State = %q, want %q", wf.State, ExecWaiting)
+	}
+	if got := wf.Variables["step.verify_checks.auto_fix"]; got != "1" {
+		t.Errorf("auto_fix counter = %q, want 1", got)
+	}
+	note := wf.Variables[verifyReaskNoteVar]
+	if !strings.Contains(note, "internal/foo/foo.go:10:5") ||
+		!strings.Contains(note, "errorlint") ||
+		!strings.Contains(note, "internal/foo/foo.go:20:2") ||
+		!strings.Contains(note, "exhaustive") ||
+		!strings.Contains(note, "internal/foo/foo.go:30:1") ||
+		!strings.Contains(note, "typecheck") ||
+		!strings.Contains(note, "golangci-lint") {
+		t.Errorf("reask note missing incident-linter finding detail:\n%s", note)
+	}
+	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want in-progress (not escalated on first failure)", ti.Status)
+	}
+}
+
 func TestExecVerifyChecks_DeterministicFrontendFailureRewindsToImplement(t *testing.T) {
 	t.Parallel()
 	wt := makeFrontendVerifyRepo(t)
