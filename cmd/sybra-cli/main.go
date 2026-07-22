@@ -22,6 +22,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/modeltier"
@@ -1133,7 +1134,7 @@ func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "%v", err)
 	}
 
-	updates, uErr := buildUpdateMap(fs, flags)
+	updates, uErr := buildUpdateMap(s, id, fs, flags)
 	if uErr != nil {
 		return fatal(jsonOut, "%v", uErr)
 	}
@@ -1182,6 +1183,12 @@ type updateFlags struct {
 	statusReason      *string
 	maxTurns          *int
 	reasoningEffort   *string
+	blockerKind       *string
+	blockerCode       *string
+	blockerNextAction *string
+	blockerRetryAfter *string
+	blockerExhausted  *bool
+	blockerClear      *bool
 }
 
 func newUpdateFlags(fs *flag.FlagSet) updateFlags {
@@ -1213,10 +1220,16 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		statusReason:      fs.String("status-reason", "", "reason for status change"),
 		maxTurns:          fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
 		reasoningEffort:   fs.String("reasoning-effort", "", "reasoning effort (all providers): low|medium|high|xhigh ('default' or 'none' clears the override)"),
+		blockerKind:       fs.String("blocker-kind", "", "blocker kind (e.g. operator_decision|credential_required|policy_approval|worktree_repair|review_fix_exhausted|triage_retry_exhausted)"),
+		blockerCode:       fs.String("blocker-code", "", "blocker code (short machine-readable subtype)"),
+		blockerNextAction: fs.String("blocker-next-action", "", "next automatic action for the blocker (e.g. repair_worktree)"),
+		blockerRetryAfter: fs.String("blocker-retry-after", "", "RFC3339 timestamp before which the blocker should not be retried"),
+		blockerExhausted:  fs.Bool("blocker-exhausted", false, "mark the blocker's automated retry budget as exhausted"),
+		blockerClear:      fs.Bool("blocker-clear", false, "clear any blocker state on this task"),
 	}
 }
 
-func buildUpdateMap(fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
+func buildUpdateMap(s *task.Manager, id string, fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
 	updates := map[string]any{}
 	applyBasicUpdateFlags(updates, f)
 	if err := applySidecarUpdateFlags(fs, updates, f); err != nil {
@@ -1225,7 +1238,69 @@ func buildUpdateMap(fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
 	if err := applyTypedUpdateFlags(fs, updates, f); err != nil {
 		return nil, err
 	}
+	if err := applyBlockerUpdateFlags(s, id, fs, updates, f); err != nil {
+		return nil, err
+	}
 	return updates, nil
+}
+
+// applyBlockerUpdateFlags builds a "blocker" entry in updates from the
+// --blocker-* flags. Task.Update.Blocker is a whole-value replacement (see
+// applyBlockerField), so when only some attributes are provided this seeds
+// the replacement from the task's current blocker state — an operator
+// running e.g. `--blocker-exhausted` alone must not blank out the kind/code
+// the workflow engine already recorded.
+func applyBlockerUpdateFlags(s *task.Manager, id string, fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
+	if *f.blockerClear {
+		updates["blocker"] = map[string]any{}
+		return nil
+	}
+	provided := flagWasProvided(fs, "blocker-kind") ||
+		flagWasProvided(fs, "blocker-code") ||
+		flagWasProvided(fs, "blocker-next-action") ||
+		flagWasProvided(fs, "blocker-retry-after") ||
+		flagWasProvided(fs, "blocker-exhausted")
+	if !provided {
+		return nil
+	}
+	m := map[string]any{}
+	if cur, err := s.Get(id); err == nil {
+		if cur.Blocker.Kind != "" {
+			m["kind"] = string(cur.Blocker.Kind)
+		}
+		if cur.Blocker.Actor != "" {
+			m["actor"] = string(cur.Blocker.Actor)
+		}
+		if cur.Blocker.Code != "" {
+			m["code"] = cur.Blocker.Code
+		}
+		if cur.Blocker.NextAction != "" {
+			m["next_action"] = cur.Blocker.NextAction
+		}
+		if cur.Blocker.RetryAfter != nil {
+			m["retry_after"] = cur.Blocker.RetryAfter.Format(time.RFC3339)
+		}
+		if cur.Blocker.Exhausted {
+			m["exhausted"] = true
+		}
+	}
+	if flagWasProvided(fs, "blocker-kind") {
+		m["kind"] = *f.blockerKind
+	}
+	if flagWasProvided(fs, "blocker-code") {
+		m["code"] = *f.blockerCode
+	}
+	if flagWasProvided(fs, "blocker-next-action") {
+		m["next_action"] = *f.blockerNextAction
+	}
+	if flagWasProvided(fs, "blocker-retry-after") {
+		m["retry_after"] = *f.blockerRetryAfter
+	}
+	if flagWasProvided(fs, "blocker-exhausted") {
+		m["exhausted"] = *f.blockerExhausted
+	}
+	updates["blocker"] = m
+	return nil
 }
 
 func applyBasicUpdateFlags(updates map[string]any, f updateFlags) {
@@ -1635,13 +1710,14 @@ func cmdProjectDelete(ps *project.Store, args []string, jsonOut bool) int {
 }
 
 type boardTask struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	ProjectID    string    `json:"project_id,omitempty"`
-	AgentID      string    `json:"agent_id,omitempty"`
-	StartedAt    time.Time `json:"started_at"`
-	RunningForS  int64     `json:"running_for_s,omitempty"`
-	StatusReason string    `json:"status_reason,omitempty"`
+	ID           string        `json:"id"`
+	Title        string        `json:"title"`
+	ProjectID    string        `json:"project_id,omitempty"`
+	AgentID      string        `json:"agent_id,omitempty"`
+	StartedAt    time.Time     `json:"started_at"`
+	RunningForS  int64         `json:"running_for_s,omitempty"`
+	StatusReason string        `json:"status_reason,omitempty"`
+	Blocker      blocker.State `json:"blocker,omitzero"`
 }
 
 type boardSummary struct {
@@ -1649,6 +1725,7 @@ type boardSummary struct {
 	InProgress    []boardTask    `json:"in_progress"`
 	PlanReview    []boardTask    `json:"plan_review"`
 	HumanRequired []boardTask    `json:"human_required"`
+	Blocked       []boardTask    `json:"blocked"`
 }
 
 func cmdBoard(s *task.Manager, jsonOut bool) int {
@@ -1672,6 +1749,7 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 			Title:        t.Title,
 			ProjectID:    t.ProjectID,
 			StatusReason: t.StatusReason,
+			Blocker:      t.Blocker,
 		}
 		// Find the latest running agent run.
 		for i := range slices.Backward(t.AgentRuns) {
@@ -1691,6 +1769,7 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		InProgress:    []boardTask{},
 		PlanReview:    []boardTask{},
 		HumanRequired: []boardTask{},
+		Blocked:       []boardTask{},
 	}
 
 	for i := range tasks {
@@ -1701,6 +1780,8 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 			summary.PlanReview = append(summary.PlanReview, toBoardTask(tasks[i]))
 		case task.StatusHumanRequired:
 			summary.HumanRequired = append(summary.HumanRequired, toBoardTask(tasks[i]))
+		case task.StatusBlocked:
+			summary.Blocked = append(summary.Blocked, toBoardTask(tasks[i]))
 		default:
 		}
 	}
@@ -1734,6 +1815,21 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 			_, _ = fmt.Fprintf(w3, "%s\t%s\t%s\n", t.ID, t.Title, t.StatusReason)
 		}
 		_ = w3.Flush()
+	}
+
+	if len(summary.Blocked) > 0 {
+		fmt.Println("\nBLOCKED:")
+		w4 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(w4, "ID\tTITLE\tKIND\tNEXT_ACTION\tRETRY_AFTER\tEXHAUSTED\tREASON")
+		for _, t := range summary.Blocked {
+			retryAfter := ""
+			if t.Blocker.RetryAfter != nil {
+				retryAfter = t.Blocker.RetryAfter.Format(time.RFC3339)
+			}
+			_, _ = fmt.Fprintf(w4, "%s\t%s\t%s\t%s\t%s\t%t\t%s\n",
+				t.ID, t.Title, t.Blocker.Kind, t.Blocker.NextAction, retryAfter, t.Blocker.Exhausted, t.StatusReason)
+		}
+		_ = w4.Flush()
 	}
 
 	return 0
@@ -2216,7 +2312,8 @@ Commands:
            Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker
            plus one blocked child per sub-issue, with dependency edges extracted by an
            LLM planner. Re-running only materializes sub-issues without an existing task.
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E] [--blocker-kind K] [--blocker-code C] [--blocker-next-action A] [--blocker-retry-after RFC3339] [--blocker-exhausted] [--blocker-clear]
+           --blocker-* flags seed from the task's current blocker state and override only the given fields; --blocker-clear removes it entirely.
            --issue sets ref_issue, an ad-hoc reference annotation — it never
            overwrites the task's canonical (auto-close) issue set at creation
   link-pr  <id> <pr-number>

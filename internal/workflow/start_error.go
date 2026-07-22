@@ -137,7 +137,11 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 			Actor:      blocker.ActorWorkflow,
 			Code:       "disk_space",
 			NextAction: "repair_worktree",
-			Exhausted:  true,
+			// Not Exhausted: the pressure gate's automatic reclaimer may free
+			// space before the next resume tick, and the disk-repair retry
+			// budget in engine_events.go (canRetryWorktreeRepair) is what
+			// decides when this genuinely stops being retryable, not the
+			// first classification of the failure.
 		}
 	case errors.Is(err, project.ErrProjectNotRegistered):
 		out.Permanent = true
@@ -177,7 +181,8 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 			Actor:      blocker.ActorWorkflow,
 			Code:       "rebase_failed",
 			NextAction: "repair_worktree",
-			Exhausted:  true,
+			// Not Exhausted: see the disk-space case above — retry budget is
+			// tracked and enforced by canRetryWorktreeRepair, not here.
 		}
 	case errors.Is(err, worktreeerr.ErrTransientFetch):
 		// Transient: a network blip during the remote fetch/ls-remote, not a
