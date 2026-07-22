@@ -45,7 +45,7 @@ func startFakeAPIServer(t *testing.T, tasksDir string) string {
 	mux := http.NewServeMux()
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(svc, "GetTask", "UpdateTask", "CreateTask", "DeleteTask"),
-	}, slog.Default())
+	}, slog.Default(), nil)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -72,7 +72,7 @@ func startFailingAPIServer(t *testing.T, tasksDir string) string {
 	mux := http.NewServeMux()
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(svc, "GetTask", "UpdateTask", "CreateTask", "DeleteTask"),
-	}, slog.Default())
+	}, slog.Default(), nil)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
