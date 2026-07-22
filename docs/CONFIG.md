@@ -862,6 +862,7 @@ fast-forward update is applied and Sybra requests a supervisor restart.
 | `auto_update.remote` | `string` | `"origin"` |  |  |  | `false` | `restart` |  |  |
 | `auto_update.branch` | `string` | `"main"` |  |  |  | `false` | `restart` |  |  |
 | `auto_update.mode` | `string` | `"notify"` |  |  |  | `false` | `restart` |  |  |
+| `auto_update.required_checks` | `[]string` |  |  |  |  | `false` | `restart` |  | RequiredChecks is the exact set of status/check names that must report SUCCESS on the candidate commit before auto mode may apply it. Empty is allowed in notify mode; auto mode fails closed when this list is empty. |
 | `auto_update.poll` | `int` | `300` | `seconds` |  | `auto_update.poll_seconds` | `false` | `restart` |  |  |
 | `auto_update.restart_delay` | `int` | `2` | `seconds` |  | `auto_update.restart_delay_seconds` | `false` | `restart` |  | Deprecated: ignored. Kept so existing config files continue to load. |
 
