@@ -1410,8 +1410,8 @@ func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictRe
 }
 
 func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) bool {
-	reason, permanent := workflow.ClassifyAgentStartError(startErr)
-	if permanent {
+	failure := workflow.ClassifyAgentStartFailure(startErr)
+	if failure.Permanent {
 		return false
 	}
 	fresh, err := r.tasks.Get(taskID)
@@ -1432,8 +1432,8 @@ func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) b
 	}
 
 	update := task.Update{Status: task.Ptr(task.StatusInReview)}
-	if reason != "" {
-		update.StatusReason = task.Ptr(reason)
+	if failure.Reason != "" {
+		update.StatusReason = task.Ptr(failure.Reason)
 	} else {
 		update.StatusReason = task.Ptr("")
 	}

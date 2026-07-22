@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -376,8 +377,8 @@ func (r *Recovery) recoverCancelledPRFix(t *task.Task) bool {
 
 // surfaceStartFailure mirrors workflow.Engine.surfaceStartFailure for the
 // recovery path: write a UI-visible reason on every retry, and flip to
-// human-required when the error is permanent (e.g. project not registered)
-// so the periodic resume loop stops hammering it.
+// the classified parked status when the error is permanent so the periodic
+// resume loop stops hammering it.
 //
 // ctx is the same context RestartStaleInProgress/RestartTaskIfStale received
 // (ultimately the app's root context) — checked via
@@ -391,18 +392,25 @@ func (r *Recovery) surfaceStartFailure(ctx context.Context, taskID string, curre
 		r.Logger.Info("restart-stale.shutdown-cancellation.suppress", "task_id", taskID)
 		return
 	}
-	reason, permanent := workflow.ClassifyAgentStartError(err)
-	if reason == "" {
+	failure := workflow.ClassifyAgentStartFailure(err)
+	if failure.Reason == "" {
 		return
 	}
 	target := currentStatus
-	if permanent {
+	if failure.Permanent {
 		target = task.StatusHumanRequired
+		if !failure.Blocker.IsZero() && !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+			target = task.StatusBlocked
+		}
 	}
-	if _, uErr := r.Tasks.Update(taskID, task.Update{
+	update := task.Update{
 		Status:       task.Ptr(target),
-		StatusReason: task.Ptr(reason),
-	}); uErr != nil {
+		StatusReason: task.Ptr(failure.Reason),
+	}
+	if !failure.Blocker.IsZero() {
+		update.Blocker = &failure.Blocker
+	}
+	if _, uErr := r.Tasks.Update(taskID, update); uErr != nil {
 		r.Logger.Error("restart-stale.surface", "task_id", taskID, "err", uErr)
 	}
 }
