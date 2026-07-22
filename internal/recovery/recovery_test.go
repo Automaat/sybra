@@ -774,6 +774,7 @@ func TestRestartStaleInteractiveOneShotRestartsAsOneShot(t *testing.T) {
 	if !stub.lastOneShot {
 		t.Fatal("interactive one-shot stale restart must preserve oneShot=true")
 	}
+	assertStaleRecoveryPromptDefersPR(t, stub.lastPrompt)
 }
 
 func TestRestartStaleInteractiveNoRunRedispatchesWhenProjectAssigned(t *testing.T) {
@@ -830,6 +831,7 @@ func TestRestartStaleInteractiveNoRunRedispatchesWhenProjectAssigned(t *testing.
 	if stub.lastOneShot {
 		t.Fatal("zero-run stale restart must not force oneShot")
 	}
+	assertStaleRecoveryPromptDefersPR(t, stub.lastPrompt)
 }
 
 func TestRestartStaleInteractiveNoWorkflowRedispatches(t *testing.T) {
@@ -894,6 +896,7 @@ func TestRestartStaleInteractiveNoWorkflowRedispatches(t *testing.T) {
 	if stub.lastOneShot {
 		t.Fatal("interactive stale redispatch without workflow must not force oneShot")
 	}
+	assertStaleRecoveryPromptDefersPR(t, stub.lastPrompt)
 }
 
 // TestRestartStaleInteractiveModeMismatchRedispatches covers the Copilot
@@ -963,6 +966,20 @@ func TestRestartStaleInteractiveModeMismatchRedispatches(t *testing.T) {
 	}
 	if stub.lastOneShot {
 		t.Fatal("mode-mismatch stale restart must not force oneShot")
+	}
+	assertStaleRecoveryPromptDefersPR(t, stub.lastPrompt)
+}
+
+func assertStaleRecoveryPromptDefersPR(t *testing.T, prompt string) {
+	t.Helper()
+	if !strings.Contains(prompt, "push the branch to origin") {
+		t.Fatalf("prompt = %q, want branch push instruction", prompt)
+	}
+	if !strings.Contains(prompt, "Do NOT create a PR") {
+		t.Fatalf("prompt = %q, want explicit PR creation ban", prompt)
+	}
+	if strings.Contains(prompt, "gh pr create") {
+		t.Fatalf("prompt = %q, must not tell stale recovery to create a PR", prompt)
 	}
 }
 
