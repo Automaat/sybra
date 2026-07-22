@@ -2,6 +2,7 @@ package selfmonitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -14,8 +15,10 @@ import (
 // Defined as a local interface so tests can inject a fake without pulling in
 // the full filesystem-backed store.
 type taskUpdater interface {
-	Update(id string, u task.Update) (task.Task, error)
+	UpdateFn(id string, fn func(cur task.Task) (task.Update, error)) (task.Task, error)
 }
+
+var errTriageMismatchStatusChanged = errors.New("triage_mismatch task status changed")
 
 // Actor applies autonomous remediations to confirmed health findings.
 // DryRun=true (the config default) logs the intended action without modifying
@@ -65,18 +68,38 @@ func (a *Actor) flipAgentMode(inv InvestigatedFinding) ActionRecord {
 
 	mode := task.AgentModeHeadless
 	status := task.StatusTodo
-	if _, err := a.Tasks.Update(inv.Finding.TaskID, task.Update{
-		AgentMode: &mode,
-		Status:    &status,
+	currentStatus := task.Status("")
+	if _, err := a.Tasks.UpdateFn(inv.Finding.TaskID, func(cur task.Task) (task.Update, error) {
+		currentStatus = cur.Status
+		if cur.Status != task.StatusHumanRequired {
+			return task.Update{}, errTriageMismatchStatusChanged
+		}
+		return task.Update{
+			AgentMode: &mode,
+			Status:    &status,
+		}, nil
 	}); err != nil {
+		if errors.Is(err, errTriageMismatchStatusChanged) {
+			if a.Logger != nil {
+				a.Logger.Info("actor.flip_agent_mode.skipped",
+					"task", inv.Finding.TaskID,
+					"fingerprint", inv.Fingerprint,
+					"status", currentStatus)
+			}
+			return ActionRecord{}
+		}
 		rec.Error = fmt.Sprintf("update task: %s", err)
-		a.Logger.Warn("actor.flip_agent_mode.failed",
-			"task", inv.Finding.TaskID, "err", err)
+		if a.Logger != nil {
+			a.Logger.Warn("actor.flip_agent_mode.failed",
+				"task", inv.Finding.TaskID, "err", err)
+		}
 		return rec
 	}
 
-	a.Logger.Info("actor.flip_agent_mode",
-		"task", inv.Finding.TaskID, "fingerprint", inv.Fingerprint)
+	if a.Logger != nil {
+		a.Logger.Info("actor.flip_agent_mode",
+			"task", inv.Finding.TaskID, "fingerprint", inv.Fingerprint)
+	}
 	return rec
 }
 
