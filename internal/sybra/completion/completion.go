@@ -222,7 +222,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	// parent task and skip the storage paths below, but their lifecycle
 	// still belongs in the audit trail.
 	duration := runDurationSeconds(ag)
-	role := h.roleForAgentName(ag.Name)
+	role := h.roleForAgent(ag)
 	outcome := h.runOutcome(ag, role, exitErr, resultContent)
 	auditData := buildCompletionAuditData(ag, state, role, outcome, cost, duration, premiumRequests, input, output, cacheCreate, cacheRead, reasoning)
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
@@ -264,14 +264,14 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	// feed into the workflow engine (which would advance the step that
 	// originally caused the human-required transition based on the
 	// diagnostic verdict).
-	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+	if ag.EffectiveRole() == agent.RoleHumanReview {
 		if h.humanReviewComplete != nil {
 			h.humanReviewComplete(ag)
 		}
 		return
 	}
 
-	if agent.RoleFromName(ag.Name) == agent.RoleFixReview && exitErr == nil {
+	if ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil {
 		h.handleFixReviewCompletion(ag)
 	}
 
@@ -279,7 +279,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		return
 	}
 
-	if agent.RoleFromName(ag.Name) == agent.RoleTestRunner {
+	if ag.EffectiveRole() == agent.RoleTestRunner {
 		h.importEvidenceForAgent(ag)
 	}
 
@@ -465,7 +465,7 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	// For human-review agents, parse the verdict from the live (untruncated)
 	// output and persist it in its own field so detector.go can read it even
 	// when the full result text is longer than maxResultLen.
-	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+	if ag.EffectiveRole() == agent.RoleHumanReview {
 		if v, _, err := verdict.Parse(finalAssistantText(ag)); err == nil {
 			runUpdates.Verdict = task.Ptr(v.Decision)
 		}
@@ -561,7 +561,7 @@ func runTerminalOutcome(ag *agent.Agent, exitErr error) string {
 }
 
 func (h *Handler) markCompletedReview(ag *agent.Agent, exitErr error) {
-	if agent.RoleFromName(ag.Name) != agent.RoleReview || exitErr != nil {
+	if ag.EffectiveRole() != agent.RoleReview || exitErr != nil {
 		return
 	}
 	reviewed := true
@@ -571,7 +571,7 @@ func (h *Handler) markCompletedReview(ag *agent.Agent, exitErr error) {
 }
 
 func (h *Handler) salvageInterruptedReview(ag *agent.Agent) {
-	if h.tasks == nil || agent.RoleFromName(ag.Name) != agent.RoleReview || ag.GetEscalationReason() != "cost" {
+	if h.tasks == nil || ag.EffectiveRole() != agent.RoleReview || ag.GetEscalationReason() != "cost" {
 		return
 	}
 	current, err := h.tasks.Get(ag.TaskID)
@@ -818,12 +818,15 @@ func (h *Handler) isSupersededStop(taskID string) bool {
 	return strings.Contains(strings.ToLower(t.Workflow.Variables["cancel_reason"]), "superseded")
 }
 
-func (h *Handler) roleForAgentName(name string) agent.Role {
-	role, ok := agent.ParseRoleFromName(name)
-	if ok || !strings.Contains(name, ":") {
+func (h *Handler) roleForAgent(ag *agent.Agent) agent.Role {
+	role := ag.EffectiveRole()
+	if ag.Role != "" || !strings.Contains(ag.Name, ":") {
 		return role
 	}
-	h.logger.Warn("agent.role.unknown-prefix", "name", name)
+	if _, ok := agent.ParseRoleFromName(ag.Name); ok {
+		return role
+	}
+	h.logger.Warn("agent.role.unknown-prefix", "name", ag.Name)
 	return role
 }
 

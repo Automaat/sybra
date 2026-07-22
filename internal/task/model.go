@@ -206,7 +206,7 @@ const (
 // Task.AgentRuns across its lifetime, most-recent last.
 type AgentRun struct {
 	AgentID  string `json:"agentId"`
-	Role     string `json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
+	Role     string `json:"role"` // explicit run role; legacy empty still means implementation
 	Mode     string `json:"mode"`
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`

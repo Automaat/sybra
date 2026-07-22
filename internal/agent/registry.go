@@ -21,6 +21,7 @@ type Record struct {
 	ID              string    `yaml:"id"`
 	TaskID          string    `yaml:"task_id,omitempty"`
 	Name            string    `yaml:"name,omitempty"`
+	Role            Role      `yaml:"role,omitempty"`
 	Mode            string    `yaml:"mode"`
 	Provider        string    `yaml:"provider"`
 	Model           string    `yaml:"model,omitempty"`

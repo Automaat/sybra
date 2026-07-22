@@ -778,6 +778,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	cfg := agent.RunConfig{
 		TaskID:                  taskID,
 		Name:                    r.AgentName(t.Title),
+		Role:                    r,
 		Mode:                    mode,
 		Prompt:                  prompt,
 		AllowedTools:            allowedTools,

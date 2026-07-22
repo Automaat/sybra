@@ -672,6 +672,7 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 	return agent.RunConfig{
 		TaskID:                  p.taskID,
 		Name:                    p.t.Title,
+		Role:                    agent.RoleImplementation,
 		Mode:                    p.effMode,
 		Prompt:                  p.fullPrompt,
 		AllowedTools:            p.t.AllowedTools,
@@ -1051,7 +1052,7 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 	// invoke recordImplAgentStart on an agent built outside that path.
 	ag.SetPromptHash(skillattr.HashSourceID(ag.Prompt))
 	o.LogAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
-		"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider,
+		"mode": effMode, "title": t.Title, "role": string(agent.RoleImplementation), "task_type": string(t.TaskType), "provider": ag.Provider,
 		"model": ag.Model, "experiment_id": ag.ExperimentID, "variant_id": ag.VariantID,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
 		"permission_posture": posture, "prompt_hash": ag.GetPromptHash(),
@@ -1142,6 +1143,7 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             t.ID,
 		Name:               t.Title,
+		Role:               agent.RoleChat,
 		Mode:               "interactive",
 		Provider:           prov,
 		Prompt:             prompt,
@@ -1293,6 +1295,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RolePRFix.AgentName(t.Title),
+		Role:                   agent.RolePRFix,
 		Mode:                   effMode,
 		Prompt:                 prompt,
 		AllowedTools:           t.AllowedTools,

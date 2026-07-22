@@ -662,6 +662,7 @@ func (a *App) StartK8sPocAgent(prompt string) (*agent.Agent, error) {
 	ag, err := a.agents.Run(agent.RunConfig{
 		TaskID:   "k8s-poc-" + uuid.NewString()[:8],
 		Name:     string(agent.RoleImplementation),
+		Role:     agent.RoleImplementation,
 		Mode:     "headless",
 		Prompt:   prompt,
 		Dir:      home,
