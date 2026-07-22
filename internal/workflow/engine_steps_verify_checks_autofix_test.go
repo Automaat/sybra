@@ -1,9 +1,11 @@
 package workflow
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -184,6 +186,108 @@ func TestExecVerifyChecks_AutoFixMultipleChangedLintFiles(t *testing.T) {
 	if !strings.Contains(note, "internal/foo/foo.go:3:1: unnamedResult") ||
 		!strings.Contains(note, "internal/bar/bar.go:3:1: unnamedResult") {
 		t.Fatalf("reask note missing multi-file lint detail:\n%s", note)
+	}
+}
+
+// incidentLinterVerifyOutput mimics real golangci-lint output combining three
+// distinct linters (errorlint, exhaustive, typecheck) on the same changed
+// file — regression coverage for the incident where these linters' findings
+// were not recognized as auto-fixable because they were assumed to be
+// gocritic-shaped.
+func incidentLinterVerifyOutput(file string) string {
+	return file + ":10:5: comparing with == will fail on wrapped errors, use errors.Is (errorlint)\n" +
+		file + ":20:2: missing cases in switch of type Kind: KindBar (exhaustive)\n" +
+		file + ":30:1: undefined: someIdentifier (typecheck)\n"
+}
+
+// incidentLinterVerifyCommand runs the fixture through a script FILE rather
+// than inlining the finding text into the shell command string itself. Every
+// invocation is echoed verbatim ("$ <raw command>\n") into the same output
+// buffer parseGolangCILintGoFiles scans (engine_steps_verify_checks.go's
+// runVerifyCommands); a command that embeds "<file>:<line>:<col>:" literally
+// (e.g. an inline `printf '...file.go:10:5...'`) makes that echoed line match
+// verifyGolangCILintFindingRe on its own, well before the real output — which
+// silently corrupts the classifier's lintFiles with the whole command string
+// as a bogus "file" that changedFiles never contains, forcing
+// classifyCodeFixableLintFailure's ok=false path. Only the script *path* gets
+// echoed here, so the actual finding lines are the only ones matched.
+func incidentLinterVerifyCommand(t *testing.T, file string) string {
+	t.Helper()
+	script := "#!/bin/sh\ncat <<'EOF' >&2\n" + incidentLinterVerifyOutput(file) + "EOF\nexit 1\n"
+	path := filepath.Join(t.TempDir(), "incident-lint.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return "sh " + path + " # golangci-lint"
+}
+
+func TestExecVerifyChecks_AutoFixIncidentLinters(t *testing.T) {
+	t.Parallel()
+	wt := makeLintVerifyRepo(t)
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{incidentLinterVerifyCommand(t, "internal/foo/foo.go")})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	rec := &recordingArtifactRecorder{}
+	engine.SetArtifactRecorder(rec)
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("parked output should be zero, got %+v", out)
+	}
+	if wf.CurrentStep != verifyChecksImplStepID {
+		t.Errorf("CurrentStep = %q, want %q", wf.CurrentStep, verifyChecksImplStepID)
+	}
+	if wf.State != ExecWaiting {
+		t.Errorf("State = %q, want %q", wf.State, ExecWaiting)
+	}
+	if got := wf.Variables["step.verify_checks.auto_fix"]; got != "1" {
+		t.Errorf("auto_fix counter = %q, want 1", got)
+	}
+
+	// The rewind/counter/note assertions above are also produced by the
+	// unclassified catch-all fallback in execVerifyChecks (it calls the same
+	// autoFixOrFlagVerifyChecks with a generic reason), so they alone cannot
+	// tell "classifier correctly recognized errorlint/exhaustive/typecheck as
+	// code_fixable_lint" apart from "classifier recognized nothing and the
+	// fallback happened to produce the same shape". The recorded
+	// verify-checks.json artifact is the one place the classifier's actual
+	// verdict is observable, so assert on it directly.
+	var report verifyChecksReport
+	found := false
+	for _, put := range rec.puts {
+		if put.name != "verify-checks.json" {
+			continue
+		}
+		found = true
+		if err := json.Unmarshal([]byte(put.content), &report); err != nil {
+			t.Fatalf("unmarshal verify-checks.json: %v", err)
+		}
+	}
+	if !found {
+		t.Fatalf("no verify-checks.json artifact recorded")
+	}
+	if report.Classification != "code_fixable_lint" {
+		t.Fatalf("classification = %q, want code_fixable_lint (errorlint/exhaustive/typecheck findings not recognized as auto-fixable lint)", report.Classification)
+	}
+	if !slices.Contains(report.ChangedFiles, "internal/foo/foo.go") {
+		t.Fatalf("classified ChangedFiles = %v, want to contain internal/foo/foo.go", report.ChangedFiles)
+	}
+
+	note := wf.Variables[verifyReaskNoteVar]
+	if !strings.Contains(note, "internal/foo/foo.go:10:5") ||
+		!strings.Contains(note, "errorlint") ||
+		!strings.Contains(note, "internal/foo/foo.go:20:2") ||
+		!strings.Contains(note, "exhaustive") ||
+		!strings.Contains(note, "internal/foo/foo.go:30:1") ||
+		!strings.Contains(note, "typecheck") ||
+		!strings.Contains(note, "golangci-lint") {
+		t.Errorf("reask note missing incident-linter finding detail:\n%s", note)
+	}
+	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want in-progress (not escalated on first failure)", ti.Status)
 	}
 }
 
