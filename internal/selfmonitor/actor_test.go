@@ -75,8 +75,8 @@ func TestActor_FlipsAgentMode_ConfirmedTriageMismatch(t *testing.T) {
 	if !ok {
 		t.Fatal("task-flip not updated")
 	}
-	if u.AgentMode == nil || *u.AgentMode != task.AgentModeInteractive {
-		t.Errorf("AgentMode = %v, want interactive", u.AgentMode)
+	if u.AgentMode == nil || *u.AgentMode != task.AgentModeHeadless {
+		t.Errorf("AgentMode = %v, want headless", u.AgentMode)
 	}
 }
 
