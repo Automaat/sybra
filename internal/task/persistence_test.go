@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -237,6 +238,14 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.RefIssue = "owner/repo#999"
 	case "StatusReason":
 		task.StatusReason = "testing"
+	case "Blocker":
+		task.Blocker = blocker.State{
+			Kind:       blocker.KindWorktreeRepair,
+			Actor:      blocker.ActorWorkflow,
+			Code:       "rebase_failed",
+			NextAction: "repair_worktree",
+			Exhausted:  true,
+		}
 	case "HandoffSourceProvider":
 		task.HandoffSourceProvider = "codex"
 	case "BlockedByIssue":

@@ -1406,21 +1406,24 @@ func TestEscalateExhaustedFix(t *testing.T) {
 		return r, tasks, created.ID
 	}
 
-	t.Run("conflict exhaustion parks to human-required", func(t *testing.T) {
+	t.Run("conflict exhaustion parks to blocked", func(t *testing.T) {
 		r, tasks, id := newHandler(t)
 		r.escalateExhaustedFix(github.PRIssue{Kind: github.PRIssueConflict, TaskID: id, PR: github.PullRequest{Number: 9}})
 		got, _ := tasks.Get(id)
-		if got.Status != task.StatusHumanRequired {
-			t.Fatalf("conflict: status = %q, want human-required", got.Status)
+		if got.Status != task.StatusBlocked {
+			t.Fatalf("conflict: status = %q, want blocked", got.Status)
+		}
+		if got.Blocker.Code != string(github.PRIssueConflict) {
+			t.Fatalf("conflict: blocker code = %q, want %q", got.Blocker.Code, github.PRIssueConflict)
 		}
 	})
 
-	t.Run("ci_failure exhaustion parks to human-required", func(t *testing.T) {
+	t.Run("ci_failure exhaustion parks to blocked", func(t *testing.T) {
 		r, tasks, id := newHandler(t)
 		r.escalateExhaustedFix(github.PRIssue{Kind: github.PRIssueCIFailure, TaskID: id, PR: github.PullRequest{Number: 9}})
 		got, _ := tasks.Get(id)
-		if got.Status != task.StatusHumanRequired {
-			t.Fatalf("ci_failure: status = %q, want human-required", got.Status)
+		if got.Status != task.StatusBlocked {
+			t.Fatalf("ci_failure: status = %q, want blocked", got.Status)
 		}
 	})
 
@@ -1452,7 +1455,7 @@ func TestEscalateExhaustedFix(t *testing.T) {
 		}
 	})
 
-	t.Run("comments exhaustion parks to human-required and clears tracker", func(t *testing.T) {
+	t.Run("comments exhaustion parks to blocked and clears tracker", func(t *testing.T) {
 		r, tasks, id := newHandler(t)
 		// Spend the budget so the tracker has a non-zero retry count to clear.
 		for range github.MaxRetries {
@@ -1460,8 +1463,8 @@ func TestEscalateExhaustedFix(t *testing.T) {
 		}
 		r.escalateExhaustedFix(github.PRIssue{Kind: github.PRIssueComments, TaskID: id, PR: github.PullRequest{Number: 9}})
 		got, _ := tasks.Get(id)
-		if got.Status != task.StatusHumanRequired {
-			t.Fatalf("comments: status = %q, want human-required", got.Status)
+		if got.Status != task.StatusBlocked {
+			t.Fatalf("comments: status = %q, want blocked", got.Status)
 		}
 		if got.StatusReason == "" {
 			t.Error("comments: want a status reason explaining the escalation")

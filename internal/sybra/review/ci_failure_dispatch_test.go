@@ -675,8 +675,8 @@ func TestEscalateExhaustedFix_DeterministicCIFailureStillEscalates(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required (deterministic failures still escalate)", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked (deterministic failures still park without false human escalation)", got.Status)
 	}
 }
 

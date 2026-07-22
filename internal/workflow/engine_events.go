@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
@@ -1923,8 +1924,8 @@ func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf
 }
 
 func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err error, wf *Execution, stepID string) {
-	reason, permanent := ClassifyAgentStartError(err)
-	if reason == "" {
+	failure := ClassifyAgentStartFailure(err)
+	if failure.Reason == "" {
 		return
 	}
 	// Sticky: a task already parked at human-required must not be touched
@@ -1935,8 +1936,11 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 		return
 	}
 	target := currentStatus
-	if permanent {
+	if failure.Permanent {
 		target = "human-required"
+		if !failure.Blocker.IsZero() && !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+			target = "blocked"
+		}
 	}
 	// A provider being rate-limited right now is a transient capacity condition,
 	// not a genuine start failure: counting it toward the breaker would trip a
@@ -1961,8 +1965,11 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 			// refuses to touch a workflow whose State is ExecFailed.
 			wf.State = ExecFailed
 			target = "human-required"
-			reason = fmt.Sprintf("circuit breaker: %s (tripped after %d dispatch failures for step %q within %s)",
-				reason, attempts, stepID, circuitBreakerWindow)
+			if !failure.Blocker.IsZero() && !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+				target = "blocked"
+			}
+			failure.Reason = fmt.Sprintf("circuit breaker: %s (tripped after %d dispatch failures for step %q within %s)",
+				failure.Reason, attempts, stepID, circuitBreakerWindow)
 			e.logger.Warn("workflow.circuit-breaker.tripped",
 				"task_id", taskID, "step", stepID, "attempts", attempts)
 		}
@@ -1970,7 +1977,13 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 			e.logger.Error("workflow.circuit-breaker.persist", "task_id", taskID, "step", stepID, "err", setErr)
 		}
 	}
-	if uErr := e.tasks.UpdateTaskStatus(taskID, target, reason); uErr != nil {
+	var uErr error
+	if failure.Blocker.IsZero() {
+		uErr = e.tasks.UpdateTaskStatus(taskID, target, failure.Reason)
+	} else {
+		uErr = e.tasks.UpdateTaskBlocker(taskID, target, failure.Reason, failure.Blocker)
+	}
+	if uErr != nil {
 		e.logger.Error("workflow.resume-stalled.surface", "task_id", taskID, "err", uErr)
 	}
 }

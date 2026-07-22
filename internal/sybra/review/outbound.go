@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -409,8 +410,9 @@ func exhaustedFixReasonKind(reason string) (github.PRIssueKind, bool) {
 	return github.PRIssueKind(kind), true
 }
 
-// humanRequiredBlockerReconcilable reports whether t is a human-required task
-// parked solely by a PR blocker a live PR probe can decide resolved itself.
+// humanRequiredBlockerReconcilable reports whether t is a blocked or
+// human-required task parked solely by a PR blocker a live PR probe can decide
+// resolved itself.
 // Excludes watchdog stops, tamper flags, comment-review exhaustion (no CI-state
 // probe can tell whether reviewer feedback was actually addressed),
 // human-authored reasons, and tasks already reconciled once (latch tag present,
@@ -419,10 +421,17 @@ func humanRequiredBlockerReconcilable(t *task.Task) (kind github.PRIssueKind, ok
 	if t == nil || task.IsChatTask(t) || slices.Contains(t.Tags, "review") {
 		return "", false
 	}
-	if t.Status != task.StatusHumanRequired || t.PRNumber == 0 {
+	if (t.Status != task.StatusHumanRequired && t.Status != task.StatusBlocked) || t.PRNumber == 0 {
 		return "", false
 	}
 	if slices.Contains(t.Tags, reconciledLatchTag) {
+		return "", false
+	}
+	if t.Blocker.Kind == blocker.KindReviewFixExhausted && t.Blocker.Actor == blocker.ActorReview {
+		kind := github.PRIssueKind(t.Blocker.Code)
+		if kind == github.PRIssueCIFailure || kind == github.PRIssueConflict {
+			return kind, true
+		}
 		return "", false
 	}
 	reason := strings.TrimSpace(t.StatusReason)

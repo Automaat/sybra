@@ -18,6 +18,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/attribution"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/prompteval"
@@ -236,6 +237,20 @@ func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
 	}
 	t.Status = status
 	t.StatusReason = reason
+	m.reasons[id] = reason
+	return nil
+}
+
+func (m *memTasks) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Status = status
+	t.StatusReason = reason
+	t.Blocker = state
 	m.reasons[id] = reason
 	return nil
 }
