@@ -943,22 +943,22 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "no model no tools",
 			cfg:     RunConfig{},
-			wantCmd: "claude --dangerously-skip-permissions --model sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model sonnet",
 		},
 		{
 			name:    "valid model",
 			cfg:     RunConfig{Model: "claude-opus-4-6"},
-			wantCmd: "claude --dangerously-skip-permissions --model claude-opus-4-6",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model claude-opus-4-6",
 		},
 		{
 			name:    "valid tools",
 			cfg:     RunConfig{AllowedTools: []string{"Read", "Write", "Bash"}},
-			wantCmd: "claude --allowedTools Read,Write,Bash --model sonnet",
+			wantCmd: "claude --allowedTools Read,Write,Bash --disallowedTools ScheduleWakeup --model sonnet",
 		},
 		{
 			name:    "valid model and tools",
 			cfg:     RunConfig{Model: "claude-sonnet-4-6", AllowedTools: []string{"Read"}},
-			wantCmd: "claude --allowedTools Read --model claude-sonnet-4-6",
+			wantCmd: "claude --allowedTools Read --disallowedTools ScheduleWakeup --model claude-sonnet-4-6",
 		},
 		{
 			name:    "model with shell metachar semicolon",
@@ -1003,7 +1003,7 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "valid model with slash and dot",
 			cfg:     RunConfig{Model: "anthropic/claude-3.5-sonnet"},
-			wantCmd: "claude --dangerously-skip-permissions --model anthropic/claude-3.5-sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model anthropic/claude-3.5-sonnet",
 		},
 		{
 			name:    "codex default model mapping",
@@ -1023,22 +1023,22 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "fable alias",
 			cfg:     RunConfig{Model: "fable"},
-			wantCmd: "claude --dangerously-skip-permissions --model fable",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model fable",
 		},
 		{
 			name:    "fable with 1m suffix stripped",
 			cfg:     RunConfig{Model: "fable[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --model fable",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model fable",
 		},
 		{
 			name:    "claude-fable-5 with 1m suffix stripped",
 			cfg:     RunConfig{Model: "claude-fable-5[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --model claude-fable-5",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model claude-fable-5",
 		},
 		{
 			name:    "sonnet with 1m suffix stripped",
 			cfg:     RunConfig{Model: "sonnet[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --model sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model sonnet",
 		},
 		{
 			name:    "codex fable passes through as explicit model",

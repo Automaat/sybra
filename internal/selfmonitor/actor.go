@@ -45,7 +45,9 @@ func (a *Actor) Act(_ context.Context, inv InvestigatedFinding) ActionRecord {
 }
 
 // flipAgentMode requeues a confirmed triage_mismatch task onto the headless
-// execution path.
+// execution path. The task already escalated to human-required at least
+// once, so this re-dispatch is a retry, not a mode change — interactive is
+// going away as a remediation target (see the interactive-removal umbrella).
 func (a *Actor) flipAgentMode(inv InvestigatedFinding) ActionRecord {
 	rec := ActionRecord{
 		Category:    string(inv.Finding.Category),

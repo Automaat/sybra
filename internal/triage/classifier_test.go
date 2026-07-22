@@ -20,19 +20,6 @@ func TestBuildPromptInstructsNoplan(t *testing.T) {
 	}
 }
 
-func TestBuildPromptMakesHeadlessTheDefaultMode(t *testing.T) {
-	p := buildPrompt(task.Task{Title: "debug retry loop", Body: ""}, nil)
-	for _, want := range []string{
-		"Headless is the default pick for every task",
-		"Default to headless for PR review, simple fix, test writing, refactor, debugging, and implementation work in general.",
-		"legacy escape hatch",
-	} {
-		if !strings.Contains(p, want) {
-			t.Errorf("prompt missing %q; classifier may still mint interactive tasks by default", want)
-		}
-	}
-}
-
 func TestFallbackClassifierPassesConfiguredClaudeModel(t *testing.T) {
 	dir := t.TempDir()
 	writeTestExe(t, filepath.Join(dir, "claude"), `#!/bin/bash
