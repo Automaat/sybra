@@ -177,24 +177,24 @@ func inferEnvtestVersionFromText(data []byte) string {
 }
 
 func cleanEnvtestVersionToken(raw string) string {
-	token := strings.TrimSpace(raw)
-	if fields := strings.Fields(token); len(fields) > 0 {
-		token = fields[0]
+	versionToken := strings.TrimSpace(raw)
+	if fields := strings.Fields(versionToken); len(fields) > 0 {
+		versionToken = fields[0]
 	}
-	token = strings.Trim(token, `"'()[]{};,`)
-	if token == "" {
+	versionToken = strings.Trim(versionToken, `"'()[]{};,`)
+	if versionToken == "" {
 		return ""
 	}
-	token = strings.TrimPrefix(token, "v")
-	if !strings.HasPrefix(token, "1.") {
+	versionToken = strings.TrimPrefix(versionToken, "v")
+	if !strings.HasPrefix(versionToken, "1.") {
 		return ""
 	}
-	for _, ch := range token {
+	for _, ch := range versionToken {
 		if (ch < '0' || ch > '9') && ch != '.' && ch != 'x' && ch != '!' {
 			return ""
 		}
 	}
-	return token
+	return versionToken
 }
 
 func inferEnvtestVersionFromGoMod(goMod []byte) string {
