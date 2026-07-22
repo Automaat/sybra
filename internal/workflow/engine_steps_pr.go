@@ -438,12 +438,15 @@ func prRetryReason(base, detail string) string {
 }
 
 func truncateMiddle(s string, limit int) string {
-	if limit <= 0 || len(s) <= limit {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
 		return s
 	}
 	marker := "\n... (truncated) ...\n"
 	if limit <= len(marker)+2 {
-		return truncate(s, limit)
+		return s[:limit]
 	}
 	keep := limit - len(marker)
 	head := keep / 2

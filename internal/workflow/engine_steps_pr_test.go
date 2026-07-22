@@ -999,6 +999,15 @@ func TestPRRetryReasonPreservesTailForLongHookOutput(t *testing.T) {
 	}
 }
 
+func TestTruncateMiddleHonorsSmallLimit(t *testing.T) {
+	for _, limit := range []int{-1, 0, 1, 5, 20} {
+		got := truncateMiddle("abcdefghijklmnopqrstuvwxyz", limit)
+		if len(got) > max(0, limit) {
+			t.Fatalf("limit %d: len(%q) = %d, want <= %d", limit, got, len(got), max(0, limit))
+		}
+	}
+}
+
 // TestClassifyPRGitError_UnclassifiedFailureParksOnceThenEscalates covers a
 // push rejected by a project's own pre-push hook (e.g. `go test ./...`
 // failing under concurrent-agent CPU contention) — output that matches none
