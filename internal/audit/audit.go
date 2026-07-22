@@ -156,6 +156,10 @@ const (
 	// Data.reason carries an actionable, categorical explanation; the
 	// previous digest is left intact.
 	EventLearningDigestFailed = "learning.digest_failed"
+	// EventAutoUpdateTransition records one autoupdate candidate transition:
+	// seen, waiting, rejected, approved, applied, or superseded. Data carries
+	// only SHAs/reasons for deployment state explainability.
+	EventAutoUpdateTransition = "autoupdate.transition"
 
 	// EventUmbrellaRecovery records one outcome of the async degraded-umbrella
 	// auto-recovery pass (internal/umbrella.RecoverDegraded): attempted,

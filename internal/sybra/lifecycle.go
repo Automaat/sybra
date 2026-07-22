@@ -287,8 +287,14 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 		Remote:         a.cfg.AutoUpdate.Remote,
 		Branch:         a.cfg.AutoUpdate.Branch,
 		Mode:           a.cfg.AutoUpdate.Mode,
+		RequiredChecks: a.cfg.AutoUpdate.RequiredChecks,
 		PollInterval:   time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
+		StateFile:      filepath.Join(config.HomeDir(), "autoupdate-state.json"),
+		OverrideFile:   filepath.Join(config.HomeDir(), "autoupdate-override"),
 		RequestRestart: a.requestRestart,
+		AuditTransition: func(data map[string]any) {
+			a.logAudit(audit.EventAutoUpdateTransition, "", "", data)
+		},
 	}, a.logger)
 	if a.reviewer != nil {
 		a.reviewer.SetAutoMergeAppliedHook(runner.TriggerCheck)

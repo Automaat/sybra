@@ -875,6 +875,9 @@ func TestLoadAutoUpdateDefaults(t *testing.T) {
 	if cfg.AutoUpdate.Mode != "notify" {
 		t.Fatalf("auto_update.mode = %q, want notify", cfg.AutoUpdate.Mode)
 	}
+	if len(cfg.AutoUpdate.RequiredChecks) != 0 {
+		t.Fatalf("auto_update.required_checks = %v, want empty", cfg.AutoUpdate.RequiredChecks)
+	}
 	if cfg.AutoUpdate.PollSeconds != 300 {
 		t.Fatalf("auto_update.poll_seconds = %d, want 300", cfg.AutoUpdate.PollSeconds)
 	}
