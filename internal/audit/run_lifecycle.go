@@ -8,10 +8,10 @@ import (
 )
 
 const (
-	RunCompatCanonical                  = "canonical"
-	RunCompatLegacyFailed               = "legacy_failed"
-	RunCompatLegacyFailedShadowed       = "legacy_failed_shadowed"
-	RunCompatMissingOutcomeUnknown      = "missing_outcome_unknown"
+	RunCompatCanonical             = "canonical"
+	RunCompatLegacyFailed          = "legacy_failed"
+	RunCompatLegacyFailedShadowed  = "legacy_failed_shadowed"
+	RunCompatMissingOutcomeUnknown = "missing_outcome_unknown"
 )
 
 // RunLifecycle normalizes the audit-visible lifecycle of one agent run.

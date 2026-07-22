@@ -1,13 +1,13 @@
 package runoutcome
 
 const (
-	Started            = "started"
-	Stalled            = "stalled"
-	Completed          = "completed"
-	Failed             = "failed"
-	CancelledShutdown  = "cancelled_shutdown"
-	Superseded         = "superseded"
-	Unknown            = "unknown"
+	Started           = "started"
+	Stalled           = "stalled"
+	Completed         = "completed"
+	Failed            = "failed"
+	CancelledShutdown = "cancelled_shutdown"
+	Superseded        = "superseded"
+	Unknown           = "unknown"
 )
 
 func Normalize(outcome string) string {
