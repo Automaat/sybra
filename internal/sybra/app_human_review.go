@@ -443,6 +443,9 @@ func (h *humanReviewHandler) prepareRecoveryDispatch(current task.Task, status t
 	if target == task.StatusReadyPR && current.PRNumber == 0 && workflow.IsTamperFlaggedReason(current.StatusReason) {
 		target = task.StatusInProgress
 	}
+	if target == task.StatusInReview && current.PRNumber == 0 {
+		target = task.StatusReadyReview
+	}
 	if target == task.StatusReadyReview && current.PRNumber != 0 {
 		target = task.StatusInReview
 	}
@@ -452,6 +455,71 @@ func (h *humanReviewHandler) prepareRecoveryDispatch(current task.Task, status t
 		}
 	}
 	return target, nil
+}
+
+func (h *humanReviewHandler) recoverRenderedUnblockedTasks() {
+	if h == nil || h.tasks == nil || h.dispatchFromHumanRequired == nil {
+		return
+	}
+	tasks, err := h.tasks.List()
+	if err != nil {
+		h.logger.Warn("human-review.recover-rendered.list", "err", err)
+		return
+	}
+	for i := range tasks {
+		t := tasks[i]
+		if !missingCachedWorktreeCircuitBreaker(t) {
+			continue
+		}
+		agentID, v, ok := latestHumanReviewUnblockedVerdict(t)
+		if !ok {
+			continue
+		}
+		status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
+		if !ok {
+			continue
+		}
+		target, prepErr := h.prepareRecoveryDispatch(t, status)
+		if prepErr != nil {
+			h.logger.Warn("human-review.recover-rendered.prepare",
+				"task_id", t.ID, "agent_id", agentID, "target", status, "err", prepErr)
+			continue
+		}
+		reason := "auto-review recovery retry: " + strings.TrimSpace(v.Summary)
+		if _, err := h.dispatchFromHumanRequired(t.ID, string(target), reason, agentID); err != nil {
+			h.logger.Warn("human-review.recover-rendered.dispatch",
+				"task_id", t.ID, "agent_id", agentID, "target", target, "err", err)
+			continue
+		}
+		h.logger.Info("human-review.recover-rendered.dispatched",
+			"task_id", t.ID, "agent_id", agentID, "target", target)
+	}
+}
+
+func missingCachedWorktreeCircuitBreaker(t task.Task) bool {
+	if t.Status != task.StatusHumanRequired {
+		return false
+	}
+	reason := strings.ToLower(t.StatusReason)
+	return strings.Contains(reason, "circuit breaker: agent start failed") &&
+		strings.Contains(reason, "dir ") &&
+		strings.Contains(reason, "not accessible") &&
+		strings.Contains(reason, "/worktrees/")
+}
+
+func latestHumanReviewUnblockedVerdict(t task.Task) (agentID string, v verdictDecision, ok bool) {
+	for i := range slices.Backward(t.AgentRuns) {
+		run := &t.AgentRuns[i]
+		if run.Role != string(agent.RoleHumanReview) || !run.VerdictRendered || strings.TrimSpace(run.Result) == "" {
+			continue
+		}
+		parsed, _, err := verdict.Parse(run.Result)
+		if err != nil || parsed.Decision != "unblocked" {
+			continue
+		}
+		return run.AgentID, parsed, true
+	}
+	return "", verdictDecision{}, false
 }
 
 func recoveryNeedsTamperBless(current task.Task, target task.Status) bool {

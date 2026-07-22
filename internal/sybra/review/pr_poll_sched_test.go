@@ -70,7 +70,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 			},
 		}
 
-		sel := r.selectKnownPRPoll([]task.Task{
+		sel := r.selectKnownPRPoll(context.Background(), []task.Task{
 			newTask("older", 3, base.Add(-2*time.Hour)),
 			newTask("active", 1, base.Add(-4*time.Hour)),
 			newTask("newest", 2, base),
@@ -93,7 +93,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 			},
 		}
 
-		sel := r.selectKnownPRPoll([]task.Task{
+		sel := r.selectKnownPRPoll(context.Background(), []task.Task{
 			newTask("mid", 2, base.Add(-time.Minute)),
 			newTask("old", 3, base.Add(-2*time.Minute)),
 			newTask("new", 1, base),
@@ -123,7 +123,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		reviewTask := newTask("review-task", 3, base.Add(-2*time.Second))
 		reviewTask.Tags = []string{"review"}
 
-		sel := r.selectKnownPRPoll([]task.Task{
+		sel := r.selectKnownPRPoll(context.Background(), []task.Task{
 			done,
 			chat,
 			reviewTask,
@@ -151,7 +151,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		tk := newTask("deferred", 7, base)
 
 		for i, wantSkip := range []int{1, 0} {
-			sel := r.selectKnownPRPoll([]task.Task{tk})
+			sel := r.selectKnownPRPoll(context.Background(), []task.Task{tk})
 			if len(sel.tasks) != 0 {
 				t.Fatalf("poll %d selected ids = %v, want none while deferred", i+1, taskIDs(sel.tasks))
 			}
@@ -163,7 +163,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 			}
 		}
 
-		sel := r.selectKnownPRPoll([]task.Task{tk})
+		sel := r.selectKnownPRPoll(context.Background(), []task.Task{tk})
 		if got := taskIDs(sel.tasks); len(got) != 1 || got[0] != "deferred" {
 			t.Fatalf("selected ids = %v, want [deferred] after countdown", got)
 		}
@@ -190,7 +190,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 			},
 		}
 
-		sel := r.selectKnownPRPoll([]task.Task{tk})
+		sel := r.selectKnownPRPoll(context.Background(), []task.Task{tk})
 		if got := taskIDs(sel.tasks); len(got) != 1 || got[0] != "reviewed" {
 			t.Fatalf("selected ids = %v, want [reviewed] when updatedAt changes", got)
 		}
@@ -220,7 +220,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 			},
 		}
 
-		sel := r.selectKnownPRPoll([]task.Task{tk})
+		sel := r.selectKnownPRPoll(context.Background(), []task.Task{tk})
 		if got := taskIDs(sel.tasks); len(got) != 0 {
 			t.Fatalf("selected ids = %v, want none while probe error preserves backoff", got)
 		}
@@ -284,7 +284,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		}
 		tasks[0].ID = "active-1"
 
-		sel := r.selectKnownPRPoll(tasks)
+		sel := r.selectKnownPRPoll(context.Background(), tasks)
 		if sel.selectedPRs != 25 {
 			t.Fatalf("selectedPRs = %d, want 25", sel.selectedPRs)
 		}

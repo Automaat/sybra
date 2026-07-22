@@ -569,6 +569,7 @@ func (a *Agent) GetState() State {
 func (a *Agent) MarkStopped() {
 	a.mu.Lock()
 	a.stopped = true
+	a.LastEventAt = time.Now().UTC()
 	a.mu.Unlock()
 }
 

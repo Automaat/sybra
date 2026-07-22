@@ -299,6 +299,9 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 
 	issuesFetcher := a.initAutomations(emit)
 	a.wireServices(emit)
+	if a.humanReview != nil {
+		a.wg.Go(a.humanReview.recoverRenderedUnblockedTasks)
+	}
 
 	// syncSkillsBundle's deep diagnostic logging uses context.Background()
 	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
