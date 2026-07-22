@@ -589,14 +589,15 @@ func (a *App) fleetWorkBlocklist() ([]string, error) {
 }
 
 func (a *App) Shutdown(_ context.Context) {
-	a.logger.Info("app.stopping")
-	a.beginShutdown()
+	a.BeginDrain()
 	if a.loopSched != nil {
 		a.loopSched.Stop()
 	}
 	if !waitGroupTimeout(&a.wg, appShutdownWaitGrace) {
 		a.logger.Warn("app.shutdown.wait_timeout", "grace", appShutdownWaitGrace, "stacks", a.dumpGoroutineStacks())
 	}
+	a.logger.Info("app.stopping")
+	a.beginShutdown()
 	if a.agents != nil {
 		a.agents.Shutdown()
 	}

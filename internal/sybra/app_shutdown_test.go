@@ -79,7 +79,7 @@ func TestBeginDrainCancelsSchedulerOnly(t *testing.T) {
 }
 
 func TestBeginShutdownCancelsAcceptedWork(t *testing.T) {
-	a := &App{}
+	a := &App{logger: discardLogger()}
 	a.initLifecycle(context.Background())
 	a.beginShutdown()
 
@@ -90,6 +90,63 @@ func TestBeginShutdownCancelsAcceptedWork(t *testing.T) {
 	}
 	if got := a.lifecycleState(); got != lifecycleStateStopping {
 		t.Fatalf("lifecycle state = %v, want stopping", got)
+	}
+}
+
+func TestShutdownDrainsAcceptedWorkBeforeCancel(t *testing.T) {
+	a := &App{logger: discardLogger()}
+	a.initLifecycle(context.Background())
+
+	release := make(chan struct{})
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		<-release
+	}()
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		a.Shutdown(context.Background())
+		close(shutdownDone)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if a.lifecycleState() == lifecycleStateDraining {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := a.lifecycleState(); got != lifecycleStateDraining {
+		t.Fatalf("lifecycle state during wait = %v, want draining", got)
+	}
+	select {
+	case <-a.schedulerCtx.Done():
+	default:
+		t.Fatal("schedulerCtx not canceled during shutdown drain")
+	}
+	select {
+	case <-a.ctx.Done():
+		t.Fatal("app ctx canceled before accepted work drained")
+	default:
+	}
+	select {
+	case <-shutdownDone:
+		t.Fatal("Shutdown returned before accepted work completed")
+	default:
+	}
+
+	close(release)
+
+	select {
+	case <-shutdownDone:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not complete after accepted work drained")
+	}
+	select {
+	case <-a.ctx.Done():
+	default:
+		t.Fatal("app ctx not canceled after shutdown moved to stopping")
 	}
 }
 
