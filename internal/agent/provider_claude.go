@@ -169,7 +169,7 @@ func effortArgs(effort string) []string {
 // headless run is a single `claude -p` process that reads one NDJSON stream
 // and exits, so nothing ever re-invokes it later. A run that schedules a
 // wakeup and then ends its turn strands itself — zero commits, clean exit —
-// which verify_commits cannot tell apart from "nothing to do here" (#2296).
+// which verify_commits cannot tell apart from a task with nothing to do.
 func claudePermissionArgs(allowed []string, requirePerms bool, mode string) []string {
 	return append(claudePermissionModeArgs(allowed, requirePerms, mode), "--disallowedTools", "ScheduleWakeup")
 }
