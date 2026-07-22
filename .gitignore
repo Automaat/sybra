@@ -57,3 +57,9 @@ deploy/k8s-poc/.env
 # Stray secondary git-dirs from sandboxed/isolated tool invocations
 # (see AutoCommitUncommitted's embedded-git-dir guard in internal/project/git.go)
 .git-local/
+
+# Local Codex/sandbox artifacts
+.codex-go-cache/
+.codex-golangci-cache/
+.codex-test-home/
+internal/sybra/zz_probe_release_test.go
