@@ -12,6 +12,7 @@ const (
 	verifyFailedPrefix         = "watchdog: verify suite still fails after loop stop:"
 	verifyUnconfirmedPrefix    = "watchdog: could not confirm agent stopped before verify"
 	retryBudgetExhaustedPhrase = "retry budget exhausted"
+	ZeroOutputBeforeStartup    = "zero output before startup timeout"
 )
 
 func IsHang(reason string) bool {
@@ -24,6 +25,11 @@ func IsRateLimit(reason string) bool {
 	return reason == rateLimitPrefix || strings.HasPrefix(reason, rateLimitPrefix+":")
 }
 
+func IsZeroOutputRateLimit(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	return reason == RateLimit(ZeroOutputBeforeStartup)
+}
+
 func LoopStop(reason string) string {
 	return withDetail(loopStopPrefix, reason)
 }
@@ -34,6 +40,10 @@ func BudgetStop(reason string) string {
 
 func RewardHacking(reason string) string {
 	return withDetail(rewardHackingPrefix, reason)
+}
+
+func RateLimit(reason string) string {
+	return withDetail(rateLimitPrefix, reason)
 }
 
 // IsRetryableStop reports whether a human-required watchdog stop is a

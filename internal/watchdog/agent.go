@@ -904,10 +904,7 @@ func trimTail(failedCmd, output string, n int) string {
 // left in-progress — human-required is reserved for genuine reward-hacking
 // loops per #1310's scoping.
 func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
-	reason := "watchdog: rate limit"
-	if verdict.Reason != "" {
-		reason = "watchdog: rate limit: " + verdict.Reason
-	}
+	reason := watchdogreason.RateLimit(verdict.Reason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.rate_limit.untracked",
 			"id", ag.ID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
@@ -991,7 +988,7 @@ const rewardHackingRetryStatusReason = "watchdog: reward-hacking retry"
 // startup hang (see inspectHeadless). Kept distinct from the generic
 // "rate_limited" reason so provider health status/logs can tell the two
 // apart even though both share the SignalRateLimit health-gate bucket.
-const zeroOutputReason = "zero output before startup timeout"
+const zeroOutputReason = watchdogreason.ZeroOutputBeforeStartup
 
 // handleZeroOutputStall handles a "stall" trigger on a headless agent that
 // never produced any output at all. This reuses stopForRateLimit's recovery
@@ -1007,7 +1004,7 @@ func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Dura
 	w.logger.Warn("agent.watchdog.zero_output_stall",
 		"id", ag.ID, "task_id", ag.TaskID, "provider", ag.Provider,
 		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
-	reason := "watchdog: rate limit: " + zeroOutputReason
+	reason := watchdogreason.RateLimit(zeroOutputReason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.zero_output_stall.untracked", "id", ag.ID, "provider", ag.Provider)
 	} else if _, err := w.tasks.Update(ag.TaskID, task.Update{
