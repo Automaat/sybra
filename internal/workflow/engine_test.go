@@ -8204,6 +8204,89 @@ exec "{{REAL_GIT}}" "$@"
 	}
 }
 
+func TestExecVerifyCommits_AutoCommitAdoptsEquivalentRemoteCommitAfterRetry(t *testing.T) {
+	prevSleep := verifyCommitsRetrySleep
+	prevBackoffs := verifyCommitsRetryBackoffs
+	t.Cleanup(func() {
+		verifyCommitsRetrySleep = prevSleep
+		verifyCommitsRetryBackoffs = prevBackoffs
+	})
+
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+
+	wtDir := t.TempDir()
+	runGitAt(t, wtDir, "init", "-b", "main")
+	runGitAt(t, wtDir, "config", "user.email", "test@test.com")
+	runGitAt(t, wtDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtDir, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtDir, "add", "README.md")
+	runGitAt(t, wtDir, "commit", "-m", "init")
+	runGitAt(t, wtDir, "remote", "add", "origin", remote)
+	runGitAt(t, wtDir, "push", "-u", "origin", "main")
+
+	const branch = "feat/verify-commits-race"
+	runGitAt(t, wtDir, "checkout", "-b", branch)
+	runGitAt(t, wtDir, "push", "-u", "origin", branch)
+
+	const (
+		fileName = "verify-commits-race.txt"
+		content  = "verify_commits race\n"
+	)
+	if err := os.WriteFile(filepath.Join(wtDir, fileName), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stageDir := t.TempDir()
+	var pushed sync.Once
+	verifyCommitsRetryBackoffs = []time.Duration{time.Nanosecond}
+	verifyCommitsRetrySleep = func(time.Duration) {
+		pushed.Do(func() {
+			repoDir := filepath.Join(stageDir, "repo")
+			runGitAt(t, "", "clone", remote, repoDir)
+			runGitAt(t, repoDir, "checkout", "-B", branch, "origin/"+branch)
+			if err := os.WriteFile(filepath.Join(repoDir, fileName), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGitAt(t, repoDir, "add", fileName)
+			runGitAt(t, repoDir, "-c", "user.email=fake-claude@test.local", "-c", "user.name=Fake Claude", "commit", "-m", "feat: remote race")
+			runGitAt(t, repoDir, "push", "origin", "HEAD:refs/heads/"+branch)
+		})
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Fatalf("Output = %q, want commits verified", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Fatalf("task status = %q, want in-progress", ti.Status)
+	}
+
+	runGitAt(t, wtDir, "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
+	localHead := strings.TrimSpace(runGitAt(t, wtDir, "rev-parse", "HEAD"))
+	remoteHead := strings.TrimSpace(runGitAt(t, wtDir, "rev-parse", "refs/remotes/origin/"+branch))
+	if localHead != remoteHead {
+		t.Fatalf("local HEAD %q != remote HEAD %q; want verify_commits to adopt the equivalent remote commit", localHead, remoteHead)
+	}
+	if got := strings.TrimSpace(runGitAt(t, wtDir, "rev-list", "--count", "origin/main..HEAD")); got != "1" {
+		t.Fatalf("origin/main..HEAD commit count = %q, want 1 implementation lineage", got)
+	}
+	if status := strings.TrimSpace(runGitAt(t, wtDir, "status", "--porcelain")); status != "" {
+		t.Fatalf("worktree dirty after reconcile: %q", status)
+	}
+}
+
 func TestRecordFinalCommitState_ContextCancelDoesNotHang(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

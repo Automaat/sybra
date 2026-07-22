@@ -397,23 +397,39 @@ func (e *Engine) verifyCommitsAfterAutoCommit(taskID, wtPath string, t TaskInfo)
 }
 
 func (e *Engine) verifyCommitsRecoveredRemoteAdopt(taskID, wtPath string, t TaskInfo) (output []byte, source, stepOutput string, ok bool) {
-	_, adopted, err := e.adoptEquivalentRemoteCommit(taskID, wtPath, t)
-	if err != nil {
-		out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error after auto-commit remote reconcile: ")
-		return nil, "", out, false
+	// The agent may already be pushing an equivalent commit when we recover
+	// uncommitted work locally. Give that agent-owned lineage the same bounded
+	// retry window as the ref/object recovery path before we keep a duplicate
+	// fallback commit.
+	for attempt := 0; ; attempt++ {
+		_, adopted, err := e.adoptEquivalentRemoteCommit(taskID, wtPath, t)
+		if err != nil {
+			out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error after auto-commit remote reconcile: ")
+			return nil, "", out, false
+		}
+		if adopted {
+			output, err = e.gitLogAheadOfBaseWithRetry(taskID, wtPath, t)
+			if err != nil {
+				out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error after auto-commit remote reconcile: ")
+				return nil, "", out, false
+			}
+			if strings.TrimSpace(string(output)) == "" {
+				return output, "", "", false
+			}
+			return output, finalCommitSourceAgent, "", true
+		}
+		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
+			return nil, "", "", false
+		}
+		if attempt >= len(verifyCommitsRetryBackoffs) {
+			return nil, "", "", false
+		}
+		e.logger.Warn("workflow.verify-commits.remote-adopt-retry",
+			"task_id", taskID,
+			"worktree", wtPath,
+			"attempt", attempt+1)
+		verifyCommitsRetrySleep(verifyCommitsRetryBackoffs[attempt])
 	}
-	if !adopted {
-		return nil, "", "", false
-	}
-	output, err = e.gitLogAheadOfBaseWithRetry(taskID, wtPath, t)
-	if err != nil {
-		out, _ := e.verifyCommitsGitErrorOutput(taskID, wtPath, err, "worktree git error after auto-commit remote reconcile: ")
-		return nil, "", out, false
-	}
-	if strings.TrimSpace(string(output)) == "" {
-		return output, "", "", false
-	}
-	return output, finalCommitSourceAgent, "", true
 }
 
 func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExec *Execution, wtPath string) StepOutput {
