@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/github"
@@ -705,11 +707,35 @@ func pruneBrokenVerifyCommitRefs(ctx context.Context, wtPath, barePath, taskBran
 func revParseCommit(ctx context.Context, wtPath, ref string) string {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref+"^{commit}")
 	cmd.Dir = wtPath
+	configureWorkflowGitCancel(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func configureWorkflowGitCancel(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
+	cmd.WaitDelay = time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
 }
 
 func revParseTree(ctx context.Context, wtPath, ref string) string {
