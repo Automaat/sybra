@@ -384,7 +384,7 @@ func (m *Manager) dispatchClaimHeld(taskID string, now time.Time) bool {
 	return m.dispatchClaimHeldLocked(taskID, now)
 }
 
-func (m *Manager) dispatchClaimHeldReadLocked(taskID string, now time.Time) (held bool, stale bool) {
+func (m *Manager) dispatchClaimHeldReadLocked(taskID string, now time.Time) (held, stale bool) {
 	claimedAt, held := m.dispatchClaims[taskID]
 	if !held {
 		return false, false
