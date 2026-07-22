@@ -76,6 +76,27 @@ func TestFetchCommitGateWith_PrefersWorseLegacyStatus(t *testing.T) {
 	}
 }
 
+func TestFetchCommitGateWith_CancelledCheckFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/abc/check-runs": `{"check_runs":[
+			{"name":"test","status":"completed","conclusion":"cancelled"}]}`,
+		"repos/o/r/commits/abc/status": `{"statuses":[]}`,
+	}}
+
+	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test"})
+	if err != nil {
+		t.Fatalf("fetchCommitGateWith() err = %v", err)
+	}
+	if len(got.Failed) != 1 || got.Failed[0] != "test" {
+		t.Fatalf("Failed = %v, want [test]", got.Failed)
+	}
+	if got.Checks["test"] != "FAILURE" {
+		t.Fatalf("Checks[test] = %q, want FAILURE", got.Checks["test"])
+	}
+}
+
 func TestFetchCommitGateWith_FailsClosedOnCheckRunFetchFailure(t *testing.T) {
 	t.Parallel()
 

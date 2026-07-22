@@ -221,7 +221,7 @@ func (r *Runner) noteCandidateSeen(state *persistedState, head, remoteSHA string
 	state.CandidateState = "seen"
 	state.CandidateReason = ""
 	state.CandidateSeenAt = now
-	r.recordTransition("candidate_seen", remoteSHA, head, remoteSHA, "")
+	r.recordTransition("seen", remoteSHA, head, remoteSHA, "")
 }
 
 func preflightResult(ctx context.Context, cfg Config) (Result, bool) {

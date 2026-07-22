@@ -55,7 +55,7 @@ func fetchCommitGateWith(ctx context.Context, e execer, repo, sha string, requir
 		if _, want := statuses[checkName]; !want {
 			continue
 		}
-		state := effectiveCheckState(gqlCheckContext{
+		state := strictCommitGateState(gqlCheckContext{
 			Typename:   "CheckRun",
 			Status:     strings.ToUpper(run.Status),
 			Conclusion: strings.ToUpper(run.Conclusion),
@@ -83,7 +83,7 @@ func fetchCommitGateWith(ctx context.Context, e execer, repo, sha string, requir
 		if _, want := statuses[checkName]; !want {
 			continue
 		}
-		state := effectiveCheckState(gqlCheckContext{
+		state := strictCommitGateState(gqlCheckContext{
 			Typename: "StatusContext",
 			State:    strings.ToUpper(status.State),
 		})
@@ -138,5 +138,39 @@ func statePriority(state string) int {
 		return 1
 	default:
 		return 0
+	}
+}
+
+func strictCommitGateState(c gqlCheckContext) string {
+	switch c.Typename {
+	case "CheckRun":
+		if c.Status != "" && c.Status != "COMPLETED" {
+			return "PENDING"
+		}
+		if strings.ToUpper(c.Conclusion) == "SUCCESS" {
+			return "SUCCESS"
+		}
+		return "FAILURE"
+	case "StatusContext":
+		switch strings.ToUpper(c.State) {
+		case "SUCCESS":
+			return "SUCCESS"
+		case "PENDING", "EXPECTED":
+			return "PENDING"
+		case "FAILURE", "ERROR":
+			return "FAILURE"
+		default:
+			return "FAILURE"
+		}
+	default:
+		if c.Status != "" || c.Conclusion != "" {
+			c.Typename = "CheckRun"
+			return strictCommitGateState(c)
+		}
+		if c.State != "" {
+			c.Typename = "StatusContext"
+			return strictCommitGateState(c)
+		}
+		return "FAILURE"
 	}
 }
