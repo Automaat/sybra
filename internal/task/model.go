@@ -2,7 +2,6 @@ package task
 
 import (
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/attachment"
@@ -111,19 +110,6 @@ var validTaskTypes = map[TaskType]bool{
 // string is also accepted as the implicit default but is not returned here.
 func AllTaskTypes() []TaskType {
 	return []TaskType{TaskTypeUmbrella}
-}
-
-const ChatTag = "chat"
-
-func IsChatTask(t any) bool {
-	switch tt := t.(type) {
-	case Task:
-		return slices.Contains(tt.Tags, ChatTag)
-	case *Task:
-		return tt != nil && slices.Contains(tt.Tags, ChatTag)
-	default:
-		return false
-	}
 }
 
 // ValidateTaskType parses s into a TaskType, returning an error naming every

@@ -22,7 +22,6 @@ import (
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
-	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
@@ -36,12 +35,7 @@ import (
 // whether project worktree setup should be skipped. Task mode is explicit; task
 // type does not affect execution.
 func ResolveExecution(t task.Task, hintMode, researchMachineDir string, cfg *config.Config) (mode, dir string, requirePerm, skipWorktree bool) {
-	switch {
-	case task.IsChatTask(t):
-		return "interactive", "", ResolvePermission(t, cfg), false
-	default:
-		return hintMode, "", ResolvePermission(t, cfg), false
-	}
+	return hintMode, "", ResolvePermission(t, cfg), false
 }
 
 // ResolvePermission returns the effective require_permissions value for a task.
@@ -1105,81 +1099,6 @@ func BuildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription boo
 		return base
 	}
 	return base + "\n\n---\n\n" + prompt
-}
-
-// StartChat creates a synthetic chat task bound to projectID, prepares a
-// dedicated (local-only) worktree, and launches an interactive agent with
-// the requested provider. Rolls back on any failure so no orphans leak.
-func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
-	prov := strings.ToLower(strings.TrimSpace(providerName))
-	if !providerid.IsKnown(prov) {
-		return nil, fmt.Errorf("invalid provider %q: must be one of %s", providerName, providerid.List())
-	}
-	if strings.TrimSpace(projectID) == "" {
-		return nil, errors.New("project_id is required")
-	}
-	if _, err := o.projects.Get(projectID); err != nil {
-		return nil, fmt.Errorf("project %s: %w", projectID, err)
-	}
-
-	t, err := o.tasks.CreateChat(projectID)
-	if err != nil {
-		return nil, fmt.Errorf("create chat task: %w", err)
-	}
-
-	opID, onPhase := o.startWorktreeOp("Preparing chat worktree", projectID, t.ID)
-	dir, err := o.worktrees.PrepareForChat(o.baseCtx(), t, onPhase)
-	if err != nil {
-		o.failWorktreeOp(opID, err)
-		if delErr := o.tasks.Delete(t.ID); delErr != nil {
-			o.logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
-		}
-		return nil, fmt.Errorf("prepare chat worktree: %w", err)
-	}
-	o.completeWorktreeOp(opID)
-
-	requirePerm := ResolvePermission(t, o.cfg)
-	o.logSandboxEscapeHatch(t.ID, t)
-	ag, err := o.agents.Run(agent.RunConfig{
-		TaskID:             t.ID,
-		Name:               t.Title,
-		Role:               agent.RoleChat,
-		Mode:               "interactive",
-		Provider:           prov,
-		Prompt:             prompt,
-		Dir:                dir,
-		Model:              "sonnet",
-		RequirePermissions: requirePerm,
-		SandboxMode:        ResolveSandboxMode(t, o.cfg),
-	})
-	if err != nil {
-		// context.Background(): StartChat is a Wails-bound method with no ctx.
-		o.worktrees.Remove(context.Background(), t.ID)
-		if delErr := o.tasks.Delete(t.ID); delErr != nil {
-			o.logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
-		}
-		return nil, err
-	}
-
-	o.LogAudit(audit.EventAgentStarted, t.ID, ag.ID, map[string]any{
-		"mode": "interactive", "title": t.Title, "role": "chat",
-		"provider":            ag.Provider,
-		"require_permissions": requirePerm,
-	})
-	if err := o.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID:       ag.ID,
-		Role:          "chat",
-		Mode:          "interactive",
-		Provider:      ag.Provider,
-		Model:         ag.Model,
-		RoutingReason: ag.RoutingReason,
-		State:         string(agent.StateRunning),
-		StartedAt:     ag.StartedAt,
-		Prompt:        prompt,
-	}); err != nil {
-		o.logger.Error("chat.add-run", "task_id", t.ID, "err", err)
-	}
-	return ag, nil
 }
 
 // AutoAssignProject assigns a project to a project-less task that needs one

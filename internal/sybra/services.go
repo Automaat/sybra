@@ -61,8 +61,6 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"StartAgent",
 			"StartK8sPocAgent",
 			"AgentQueueSnapshot",
-			"StartChat",
-			"StopChat",
 			"ListBackgroundOps",
 			"ListNotifications",
 			"SetDesktopNotifications",

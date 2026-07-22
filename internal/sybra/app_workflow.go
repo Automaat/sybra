@@ -149,9 +149,6 @@ func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
 	}
 	infos := make([]workflow.TaskInfo, 0, len(tasks))
 	for i := range tasks {
-		if task.IsChatTask(tasks[i]) {
-			continue
-		}
 		infos = append(infos, taskToInfo(tasks[i]))
 	}
 	return infos, nil

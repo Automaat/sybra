@@ -155,61 +155,6 @@ func TestRunStartupCleanup_CleansOrphanedSandboxes(t *testing.T) {
 	}
 }
 
-// TestRunStartupCleanup_GcOrphanChatIsTrashedNotLost verifies the
-// gcOrphanChats → pruneTrash ordering: an orphaned chat task gc'd during
-// startup goes through Tasks.Delete (now a soft delete, see
-// internal/task.Store.Delete), so a wrongly-collected chat is still
-// recoverable via trash restore rather than gone for good. pruneTrash runs
-// immediately after gcOrphanChats in the same pass, but with retention
-// unset (0 → default 14 days) a same-day trash entry must survive it.
-func TestRunStartupCleanup_GcOrphanChatIsTrashedNotLost(t *testing.T) {
-	dir := t.TempDir()
-	store, err := task.NewStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tasks := task.NewManager(store, nil)
-
-	chat, err := tasks.CreateChat("owner/repo")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	logger := discardLogger()
-	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	wm := worktree.New(worktree.Config{
-		WorktreesDir: t.TempDir(),
-		Tasks:        tasks,
-		Logger:       logger,
-		AgentChecker: agents.HasRunningAgentForTask,
-	})
-
-	var wg sync.WaitGroup
-	r := &recovery.Recovery{
-		Tasks:     tasks,
-		Agents:    agents,
-		Worktrees: wm,
-		Logger:    logger,
-		Throttle:  logging.NewErrorThrottle(),
-		WG:        &wg,
-		LogDir:    t.TempDir(),
-	}
-	r.RunStartupCleanup(context.Background())
-	wg.Wait()
-
-	if _, err := tasks.Get(chat.ID); err == nil {
-		t.Fatal("orphaned chat task should no longer be live after startup cleanup")
-	}
-
-	entries, err := tasks.ListTrash()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].ID != chat.ID {
-		t.Fatalf("ListTrash() = %+v, want the gc'd chat task preserved in trash", entries)
-	}
-}
-
 func TestRunStartupCleanup_ReapsDeletedCWDOrphanProcess(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("linux-only process enumeration test")

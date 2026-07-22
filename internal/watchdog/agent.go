@@ -492,7 +492,7 @@ func (w *Watchdog) reapTaskAgentForStatus(ag *agent.Agent) bool {
 	if err != nil {
 		return false
 	}
-	if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
+	if t.TaskType == task.TaskTypeUmbrella {
 		return false
 	}
 	if !shouldReleaseTaskAgentForStatus(t.Status) || isHumanReviewAgent(ag) {
@@ -514,7 +514,7 @@ func (w *Watchdog) reapIdleInteractive(ag *agent.Agent, now time.Time) {
 	if err != nil {
 		return
 	}
-	if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
+	if t.TaskType == task.TaskTypeUmbrella {
 		return
 	}
 	if shouldReleaseTaskAgentForStatus(t.Status) && !isHumanReviewAgent(ag) {

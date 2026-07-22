@@ -254,9 +254,6 @@ func (s *Service) closeMergedHumanRequiredPRs(ctx context.Context, tasks []task.
 		if t.Status != task.StatusHumanRequired || t.ProjectID == "" || t.PRNumber == 0 {
 			continue
 		}
-		if task.IsChatTask(t) {
-			continue
-		}
 		if !projectAllowed(s.allowsProject, t.ProjectID) {
 			continue
 		}
