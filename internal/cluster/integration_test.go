@@ -42,7 +42,7 @@ func realServer(t *testing.T, token string, svc *fakeTaskService) *httptest.Serv
 	})
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(svc, "ListTasks", "GetTask", "AssignTask"),
-	}, slog.Default())
+	}, slog.Default(), nil)
 
 	authed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {

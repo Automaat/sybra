@@ -128,7 +128,7 @@ func realFollowerServer(t *testing.T, mgr *task.Manager) *httptest.Server {
 	})
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(&managerTaskService{mgr: mgr}, "ListTasks", "ListTasksForNode", "GetTask", "AssignTask"),
-	}, slog.New(slog.DiscardHandler))
+	}, slog.New(slog.DiscardHandler), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv

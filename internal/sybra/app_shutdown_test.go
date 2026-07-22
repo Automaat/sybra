@@ -1,9 +1,14 @@
 package sybra
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/httpapi"
 )
 
 func TestWaitGroupTimeout(t *testing.T) {
@@ -30,5 +35,58 @@ func TestWaitGroupTimeout(t *testing.T) {
 				wg.Done()
 			}
 		})
+	}
+}
+
+func TestBeginDrainCancelsSchedulerOnly(t *testing.T) {
+	a := &App{}
+	a.initLifecycle(context.Background())
+
+	if !a.BeginDrain() {
+		t.Fatal("BeginDrain = false, want true")
+	}
+
+	select {
+	case <-a.schedulerCtx.Done():
+	default:
+		t.Fatal("schedulerCtx not canceled by BeginDrain")
+	}
+	select {
+	case <-a.ctx.Done():
+		t.Fatal("app ctx canceled during drain; want accepted work to stay alive")
+	default:
+	}
+
+	if err := a.HTTPAdmission("App", "ListBackgroundOps", httpapi.MethodMeta{ReadOnly: true}); err != nil {
+		t.Fatalf("read-only admission error = %v, want nil", err)
+	}
+	err := a.HTTPAdmission("App", "SetDesktopNotifications", httpapi.MethodMeta{})
+	if err == nil {
+		t.Fatal("mutating admission error = nil, want service unavailable")
+	}
+	var clientErr interface {
+		error
+		HTTPStatus() int
+	}
+	if !errors.As(err, &clientErr) {
+		t.Fatalf("mutating admission error type = %T, want ClientError", err)
+	}
+	if clientErr.HTTPStatus() != http.StatusServiceUnavailable {
+		t.Fatalf("mutating admission status = %d, want 503", clientErr.HTTPStatus())
+	}
+}
+
+func TestBeginShutdownCancelsAcceptedWork(t *testing.T) {
+	a := &App{}
+	a.initLifecycle(context.Background())
+	a.beginShutdown()
+
+	select {
+	case <-a.ctx.Done():
+	default:
+		t.Fatal("app ctx not canceled by beginShutdown")
+	}
+	if got := a.lifecycleState(); got != lifecycleStateStopping {
+		t.Fatalf("lifecycle state = %v, want stopping", got)
 	}
 }

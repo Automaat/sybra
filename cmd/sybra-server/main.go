@@ -142,6 +142,7 @@ func run() (int, error) {
 
 	select {
 	case <-ctx.Done():
+		app.BeginDrain()
 		logger.Info("server.shutdown")
 		go forceExitAfter(logger, shutdownHardDeadline, &restartRequested)
 		// 30s window covers the agent manager's 20s grace (giving SIGTERM'd
@@ -226,7 +227,7 @@ func buildMux(logger *slog.Logger, broker *sse.Broker, app *sybra.App) *http.Ser
 	mux.HandleFunc("GET /api/events/{eventName}", broker.ServeHTTP)
 
 	// API dispatch: POST /api/{service}/{method}
-	httpapi.Mount(mux, sybra.ServiceRegistry(app), logger)
+	httpapi.Mount(mux, sybra.ServiceRegistry(app), logger, app.HTTPAdmission)
 
 	// Optional SPA static files.
 	if staticDir := os.Getenv("SYBRA_STATIC_DIR"); staticDir != "" {

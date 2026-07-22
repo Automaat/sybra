@@ -30,22 +30,44 @@ const MaxRequestBody = 32 * 1024 * 1024
 // all other exported methods return 404.
 type Service struct {
 	Impl    any
-	methods map[string]struct{}
+	methods map[string]MethodMeta
 }
+
+// MethodMeta carries per-method HTTP metadata used by admission hooks.
+type MethodMeta struct {
+	ReadOnly bool
+}
+
+// AdmissionFunc decides whether a registered service method may run.
+// It runs after allowlist validation and before request-body parsing.
+type AdmissionFunc func(service, method string, meta MethodMeta) error
 
 // NewService creates a Service that permits only the named methods over HTTP.
 func NewService(impl any, methods ...string) Service {
-	m := make(map[string]struct{}, len(methods))
+	m := make(map[string]MethodMeta, len(methods))
 	for _, name := range methods {
-		m[name] = struct{}{}
+		m[name] = MethodMeta{}
 	}
 	return Service{Impl: impl, methods: m}
+}
+
+// WithReadOnly marks the named allowlisted methods as read-only.
+func (s Service) WithReadOnly(methods ...string) Service {
+	for _, name := range methods {
+		meta, ok := s.methods[name]
+		if !ok {
+			continue
+		}
+		meta.ReadOnly = true
+		s.methods[name] = meta
+	}
+	return s
 }
 
 // Mount registers POST /api/{service}/{method} handlers for every service in
 // the registry. Only methods listed in each Service's allowlist are reachable;
 // unknown services or non-allowlisted methods return 404.
-func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger) {
+func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger, admit AdmissionFunc) {
 	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
 		svcName := r.PathValue("service")
 		methodName := r.PathValue("method")
@@ -56,9 +78,22 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger)
 			return
 		}
 
-		if _, allowed := svc.methods[methodName]; !allowed {
+		meta, allowed := svc.methods[methodName]
+		if !allowed {
 			respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown method: %s.%s", svcName, methodName))
 			return
+		}
+		if admit != nil {
+			if err := admit(svcName, methodName, meta); err != nil {
+				var ce ClientError
+				if errors.As(err, &ce) {
+					respondError(w, logger, ce.HTTPStatus(), codeForStatus(ce.HTTPStatus()), ce.Error())
+				} else {
+					logger.Warn("httpapi.admission.error", "service", svcName, "method", methodName, "err", err)
+					respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")
+				}
+				return
+			}
 		}
 
 		rv := reflect.ValueOf(svc.Impl)
@@ -166,6 +201,8 @@ func codeForStatus(status int) ErrorCode {
 	switch status {
 	case http.StatusConflict:
 		return ErrCodeConflict
+	case http.StatusServiceUnavailable:
+		return ErrCodeUnavailable
 	default:
 		return ErrCodeValidation
 	}

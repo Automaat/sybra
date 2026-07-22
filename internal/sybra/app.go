@@ -36,6 +36,7 @@ import (
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/logging"
@@ -64,9 +65,12 @@ import (
 )
 
 type App struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx             context.Context
+	cancel          context.CancelFunc
+	schedulerCtx    context.Context
+	schedulerCancel context.CancelFunc
+	lifecycle       atomic.Uint32
+	wg              sync.WaitGroup
 	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
 	fetchPRHeadSHA    func(ctx context.Context, repo string, number int) (string, error)
 	tasks             *task.Manager
@@ -292,10 +296,10 @@ func (a *App) acquireHomeLock() error {
 	return nil
 }
 
-func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
+func (a *App) startLifecycle(_ context.Context, emit func(string, any)) {
 	a.applyInstanceRole()
-	a.initLoopScheduler(ctx, emit)
-	a.initFileWatcher(ctx, emit)
+	a.initLoopScheduler(a.schedulerCtx, emit)
+	a.initFileWatcher(a.schedulerCtx, emit)
 
 	issuesFetcher := a.initAutomations(emit)
 	a.wireServices(emit)
@@ -312,7 +316,7 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 	// into an uninitialized git dir and fail silently. StartManagers'
 	// startTaskSnapshotLoop calls EnsureRepo again (idempotent).
 	if a.cfg.TaskSnapshotEnabled() {
-		a.snapshotter.EnsureRepo(ctx)
+		a.snapshotter.EnsureRepo(a.schedulerCtx)
 	}
 	a.recovery = a.newRecovery()
 	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
@@ -321,16 +325,16 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 	// Routing reads the evaluation service's cached report on its own
 	// goroutine, so the service pointer must be published before routing
 	// primes or starts ticking.
-	lm.startEvaluationService(ctx, emit)
+	lm.startEvaluationService(a.schedulerCtx, emit)
 	// Routing must prime before Startup returns; otherwise the first workflow
 	// dispatch after a fresh enabled boot can beat version 1 publication.
-	lm.startRoutingService(ctx, emit)
-	lm.StartWatchers(ctx)
+	lm.startRoutingService(a.schedulerCtx, emit)
+	lm.StartWatchers(a.schedulerCtx)
 
 	a.wg.Go(func() {
-		a.recovery.RunStartupCleanup(ctx)
-		lm.StartManagers(ctx, emit)
-		lm.StartPollers(ctx, emit, issuesFetcher)
+		a.recovery.RunStartupCleanup(a.schedulerCtx)
+		lm.StartManagers(a.schedulerCtx, emit)
+		lm.StartPollers(a.schedulerCtx, emit, issuesFetcher)
 	})
 }
 
@@ -373,8 +377,7 @@ func (a *App) Startup(ctx context.Context) error {
 		a.cleanupFailedStartup()
 	}()
 
-	ctx, a.cancel = context.WithCancel(ctx)
-	a.ctx = ctx
+	a.initLifecycle(ctx)
 	a.logger.Info("app.starting")
 
 	a.initAudit()
@@ -400,7 +403,7 @@ func (a *App) Startup(ctx context.Context) error {
 		return fmt.Errorf("loop agents: %w", err)
 	}
 	if a.emitFactory != nil {
-		a.emit = a.emitFactory(ctx)
+		a.emit = a.emitFactory(a.ctx)
 	} else {
 		a.emit = func(string, any) {}
 	}
@@ -417,10 +420,10 @@ func (a *App) Startup(ctx context.Context) error {
 	// initSandboxes has no agent-manager dependency and must run before
 	// initAgentManager so ManagerConfig.SandboxHome can be wired at construction.
 	a.initSandboxes()
-	if err := a.initAgentManager(ctx, emit); err != nil {
+	if err := a.initAgentManager(a.ctx, emit); err != nil {
 		return err
 	}
-	a.initProviderHealth(ctx, emit)
+	a.initProviderHealth(a.schedulerCtx, emit)
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 
@@ -437,7 +440,7 @@ func (a *App) Startup(ctx context.Context) error {
 		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
 	})
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
-	a.agentOrch.SetContext(ctx)
+	a.agentOrch.SetContext(a.ctx)
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 	a.reviewer.SetABTestingSource(a.abTestingConfig)
 
@@ -447,7 +450,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.initAgentConfig()
 
-	a.startLifecycle(ctx, emit)
+	a.startLifecycle(a.schedulerCtx, emit)
 
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")
@@ -584,11 +587,9 @@ func (a *App) fleetWorkBlocklist() ([]string, error) {
 
 func (a *App) Shutdown(_ context.Context) {
 	a.logger.Info("app.stopping")
+	a.beginShutdown()
 	if a.loopSched != nil {
 		a.loopSched.Stop()
-	}
-	if a.cancel != nil {
-		a.cancel()
 	}
 	if !waitGroupTimeout(&a.wg, appShutdownWaitGrace) {
 		a.logger.Warn("app.shutdown.wait_timeout", "grace", appShutdownWaitGrace, "stacks", a.dumpGoroutineStacks())
@@ -605,6 +606,7 @@ func (a *App) Shutdown(_ context.Context) {
 		}
 		a.homeUnlock = nil
 	}
+	a.finishShutdown()
 	a.logger.Info("app.stopped")
 }
 
@@ -764,3 +766,8 @@ func (a *App) RegisterSpotlightHotkey() {
 
 // Context returns the app's running context.
 func (a *App) Context() context.Context { return a.ctx }
+
+// HTTPAdmission decides whether one HTTP API method may run.
+func (a *App) HTTPAdmission(service, method string, meta httpapi.MethodMeta) error {
+	return a.httpAdmission(service, method, meta)
+}

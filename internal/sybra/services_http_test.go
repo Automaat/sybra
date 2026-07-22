@@ -27,7 +27,7 @@ func TestLearningServiceHTTPAllowlist(t *testing.T) {
 	a := &App{learningSvc: &LearningService{store: store}}
 
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -59,7 +59,7 @@ func TestQueueServiceHTTPAllowlist(t *testing.T) {
 	a := &App{queueSvc: &QueueService{queue: queue}}
 
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -99,7 +99,7 @@ func TestAppHTTPAllowlist(t *testing.T) {
 	a := &App{queueSvc: &QueueService{queue: queue}}
 
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -135,7 +135,7 @@ func TestTaskServiceHTTPAllowlist_ListTaskProgress(t *testing.T) {
 	a := &App{taskSvc: &TaskService{}}
 
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -171,7 +171,7 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 	a := &App{promptLabSvc: &PromptLabService{tasks: mgr, artifacts: artifacts}}
 
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
