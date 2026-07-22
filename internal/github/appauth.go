@@ -107,6 +107,19 @@ func RefreshAppToken(ctx context.Context) error {
 	return src.refresh(ctx, false)
 }
 
+// RefreshAppTokenEnv mints or renews the installation token, then exports it
+// for gh subprocesses spawned outside this package.
+func RefreshAppTokenEnv(ctx context.Context) error {
+	if err := RefreshAppToken(ctx); err != nil {
+		return err
+	}
+	if tok := CurrentAppToken(); tok != "" {
+		_ = os.Setenv("GH_TOKEN", tok)
+		_ = os.Setenv("GITHUB_TOKEN", tok)
+	}
+	return nil
+}
+
 // ForceRefreshAppToken always mints a new installation token when App auth is
 // enabled, even if the cached token isn't near expiry by our locally recorded
 // timestamp. A preflight failure landing right at the hourly rotation
