@@ -990,9 +990,9 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 // resumeSkipReasonForStatus reports whether ResumeStalled must not resume a
 // task in the given status, and why.
 //
-// human-required: the task was halted by a competing path or parked for a
-// human. Resuming would override the triage verdict and re-dispatch an agent
-// the operator already suppressed.
+// human-required/blocked: the task was halted by a competing path or parked
+// for human/operator follow-up. Resuming would override that verdict and
+// re-dispatch an agent the operator or workflow already suppressed.
 //
 // done/cancelled: the task reached a terminal status (e.g. its PR merged)
 // while its Workflow record was still Running/Waiting from before that
@@ -1005,6 +1005,8 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 	switch status {
 	case "human-required":
 		return "human_required", true
+	case "blocked":
+		return "blocked", true
 	case "done", "cancelled":
 		return "terminal_status", true
 	default:

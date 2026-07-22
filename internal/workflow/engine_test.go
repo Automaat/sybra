@@ -3379,6 +3379,51 @@ func TestRescheduleRateLimitedAgent_SkippedSharedClaimDoesNotConsumeWatchdogRetr
 	}
 }
 
+func TestRescheduleRateLimitedAgent_SkipsBlockedStatus(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "blocked",
+		StatusReason: "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecFailed,
+			Variables: map[string]string{
+				watchdogRateLimitRetryKey("implement"): strconv.Itoa(maxWatchdogRateLimitRetries),
+			},
+		},
+	})
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+
+	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("unexpected replacement agent starts = %d, want 0", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", got.Status)
+	}
+	if got.StatusReason != "watchdog: zero-output startup retry budget exhausted after 3 identical attempts" {
+		t.Fatalf("status_reason = %q", got.StatusReason)
+	}
+	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != strconv.Itoa(maxWatchdogRateLimitRetries) {
+		t.Fatalf("rate-limit retry var = %q, want %d", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")], maxWatchdogRateLimitRetries)
+	}
+	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+		t.Fatal("rate-limited agent step mapping was not cleared")
+	}
+}
+
 func TestRescheduleRateLimitedAgent_HoldsDispatchClaimAcrossRescheduleAttempt(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -4001,6 +4046,34 @@ func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	// Must NOT dispatch an agent: human-required overrides the workflow.
 	if agents.CallCount() != 0 {
 		t.Fatalf("expected 0 agent starts for human-required task, got %d", agents.CallCount())
+	}
+}
+
+func TestResumeStalled_SkipsBlockedStatus(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "blocked",
+		StatusReason: "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecFailed,
+			Variables: map[string]string{
+				watchdogRateLimitRetryKey("implement"): strconv.Itoa(maxWatchdogRateLimitRetries),
+			},
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if agents.CallCount() != 0 {
+		t.Fatalf("expected 0 agent starts for blocked task, got %d", agents.CallCount())
 	}
 }
 

@@ -288,6 +288,13 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 			status: map[string]string{"task-x": "human-required"},
 		},
 		{
+			name: "blocked task still has live agent",
+			record: func(pid int) Record {
+				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
+			},
+			status: map[string]string{"task-x": "blocked"},
+		},
+		{
 			name: "done task still has live agent",
 			record: func(pid int) Record {
 				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
