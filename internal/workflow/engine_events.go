@@ -1272,39 +1272,47 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 		return
 	}
 
-	// Re-read to guard against stale snapshots from concurrent ResumeStalled
-	// calls: by the time we pass the preflight, a prior goroutine may have
-	// already advanced the workflow past this step.
-	fresh, skip := e.shouldSkipResumeAfterFreshRead(t.ID, t.Workflow)
-	if skip {
-		e.clearResumeDispatching(t.ID)
+	fresh, abort := e.resolveFreshTaskForResume(t, step, &def)
+	if abort {
 		return
 	}
-	if _, reconciled, rErr := e.reconcileCurrentStepFromStatus(t.ID, fresh, &def, fresh.Status); rErr != nil {
-		e.clearResumeDispatching(t.ID)
-		e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-status-step", t.ID, rErr, "task_id", t.ID)
-		return
-	} else if reconciled {
-		e.clearResumeDispatching(t.ID)
-		return
-	}
-	nextFresh, reconciled, rErr := e.reconcileCurrentStepFromPriorCondition(t.ID, fresh, &def)
-	if rErr != nil {
-		e.clearResumeDispatching(t.ID)
-		e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-condition", t.ID, rErr, "task_id", t.ID)
-		return
-	}
-	if reconciled {
-		e.clearResumeDispatching(t.ID)
-		return
-	}
-	fresh = nextFresh
 	if e.handleWatchdogRateLimitRetry(&fresh, step) {
 		e.clearResumeDispatching(t.ID)
 		return
 	}
 
 	e.finishResumeStalledStep(t.ID, &def, step, t.Workflow, fresh)
+}
+
+// resolveFreshTaskForResume re-reads and reconciles the task's current step to guard
+// against stale snapshots from concurrent ResumeStalled calls: by the time we pass the
+// preflight, a prior goroutine may have already advanced the workflow past this step.
+// It clears the resume-dispatching claim itself whenever it returns abort=true.
+func (e *Engine) resolveFreshTaskForResume(t *TaskInfo, step *Step, def *Definition) (TaskInfo, bool) {
+	fresh, skip := e.shouldSkipResumeAfterFreshRead(t.ID, t.Workflow)
+	if skip {
+		e.clearResumeDispatching(t.ID)
+		return fresh, true
+	}
+	if _, reconciled, rErr := e.reconcileCurrentStepFromStatus(t.ID, fresh, def, fresh.Status); rErr != nil {
+		e.clearResumeDispatching(t.ID)
+		e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-status-step", t.ID, rErr, "task_id", t.ID)
+		return fresh, true
+	} else if reconciled {
+		e.clearResumeDispatching(t.ID)
+		return fresh, true
+	}
+	nextFresh, reconciled, rErr := e.reconcileCurrentStepFromPriorCondition(t.ID, fresh, def)
+	if rErr != nil {
+		e.clearResumeDispatching(t.ID)
+		e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-condition", t.ID, rErr, "task_id", t.ID)
+		return fresh, true
+	}
+	if reconciled {
+		e.clearResumeDispatching(t.ID)
+		return fresh, true
+	}
+	return nextFresh, false
 }
 
 func (e *Engine) resumeStalledReconciledStatus(t TaskInfo, def *Definition) bool {
