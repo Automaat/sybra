@@ -22,7 +22,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		Slug:                   "task-slug",
 		Title:                  "Task title",
 		Status:                 StatusTesting,
-		TaskType:               TaskTypeResearch,
+		TaskType:               TaskTypeUmbrella,
 		AgentMode:              AgentModeHeadless,
 		AllowedTools:           []string{"Read", "Write"},
 		Tags:                   []string{"backend", "refactor"},
@@ -216,7 +216,7 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 	case "Status":
 		task.Status = StatusTesting
 	case "TaskType":
-		task.TaskType = TaskTypeResearch
+		task.TaskType = TaskTypeUmbrella
 	case "AgentMode":
 		task.AgentMode = AgentModeHeadless
 	case "AllowedTools":

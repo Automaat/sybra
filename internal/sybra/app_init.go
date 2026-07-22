@@ -643,7 +643,7 @@ func (a *App) initStatusHook() {
 		runsNoAgent := false
 		if t, err := a.tasks.Get(taskID); err == nil {
 			local = a.runsTaskLocally(t)
-			runsNoAgent = t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella
+			runsNoAgent = task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella
 		}
 
 		// Wake the dispatch pass immediately so a task that just became ready
@@ -898,7 +898,7 @@ func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
 		// a tracker is a guaranteed 3-attempt circuit-breaker trip that
 		// flips the tracker to human-required — and umbrella.rollup then
 		// flips it back to in-progress on the next tick, looping forever.
-		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+		if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
 			return
 		}
 	}

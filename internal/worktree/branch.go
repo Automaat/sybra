@@ -31,14 +31,10 @@ func branchPrefixForTask(t task.Task) string {
 	if typ, ok := conventionalType(t.Title); ok {
 		return typ
 	}
-	switch t.TaskType {
-	case task.TaskTypeDebug:
-		return "fix"
-	case task.TaskTypeResearch, task.TaskTypeChat:
-		return "chore"
-	default:
+	if task.IsChatTask(t) {
 		return "chore"
 	}
+	return "chore"
 }
 
 func conventionalType(title string) (string, bool) {

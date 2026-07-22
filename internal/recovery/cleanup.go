@@ -16,7 +16,7 @@ func (r *Recovery) cleanStaleRuns() {
 		return
 	}
 	for i := range tasks {
-		if tasks[i].TaskType == task.TaskTypeChat {
+		if task.IsChatTask(tasks[i]) {
 			continue
 		}
 		for j := range tasks[i].AgentRuns {
@@ -47,7 +47,7 @@ func (r *Recovery) gcOrphanChats(ctx context.Context) {
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if t.TaskType != task.TaskTypeChat {
+		if !task.IsChatTask(t) {
 			continue
 		}
 		if r.Agents.HasRunningAgentForTask(t.ID) {

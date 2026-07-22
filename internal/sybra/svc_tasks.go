@@ -125,7 +125,7 @@ func (s *TaskService) ListTasks() ([]task.Task, error) {
 	}
 	out := all[:0]
 	for i := range all {
-		if all[i].TaskType == task.TaskTypeChat {
+		if task.IsChatTask(all[i]) {
 			continue
 		}
 		out = append(out, all[i])
@@ -154,7 +154,7 @@ func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
 	out := all[:0]
 	for i := range all {
 		t := all[i]
-		if t.TaskType == task.TaskTypeChat {
+		if task.IsChatTask(t) {
 			continue
 		}
 		if t.AssignedNode != node {
@@ -720,8 +720,8 @@ func assignedTaskNoOp(current, pushed task.Task) bool {
 }
 
 func normalizeAssignedTaskForCompare(t task.Task, fallback *task.Task) task.Task {
-	if t.TaskType == "" {
-		t.TaskType = task.TaskTypeNormal
+	if t.TaskType != task.TaskTypeUmbrella {
+		t.TaskType = ""
 	}
 	// Ignore leader-owned mirror bookkeeping when deciding whether a pushed
 	// follower task would change local semantics; otherwise a mirror-only bump

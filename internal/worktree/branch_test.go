@@ -83,18 +83,8 @@ func TestBranchPrefixForTask_Fallbacks(t *testing.T) {
 		want string
 	}{
 		{
-			name: "debug",
-			task: task.Task{TaskType: task.TaskTypeDebug, Title: "crash on start"},
-			want: "fix",
-		},
-		{
-			name: "research",
-			task: task.Task{TaskType: task.TaskTypeResearch, Title: "compare providers"},
-			want: "chore",
-		},
-		{
-			name: "normal",
-			task: task.Task{TaskType: task.TaskTypeNormal, Title: "update copy"},
+			name: "default",
+			task: task.Task{Title: "update copy"},
 			want: "chore",
 		},
 	}

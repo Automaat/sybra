@@ -254,8 +254,8 @@ func TestApplyGuardsUmbrellaTitledTaskWithNormalType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if created.TaskType != task.TaskTypeNormal {
-		t.Fatalf("precondition: want task_type=normal, got %s", created.TaskType)
+	if created.TaskType != "" {
+		t.Fatalf("precondition: want no task_type, got %s", created.TaskType)
 	}
 	v := Verdict{
 		Title: created.Title,

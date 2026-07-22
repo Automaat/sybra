@@ -16,7 +16,6 @@ func TestFromTaskDeterministic(t *testing.T) {
 		ID:        "task-1",
 		Title:     "Ship feature",
 		Tags:      []string{"backend"},
-		TaskType:  task.TaskTypeNormal,
 		AgentMode: task.AgentModeHeadless,
 		ProjectID: "owner/repo",
 		Outcome:   "merged",

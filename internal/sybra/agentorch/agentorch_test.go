@@ -155,7 +155,7 @@ func TestStartAgentWithAssignment_PropagatesOutputSchema(t *testing.T) {
 		},
 	})
 
-	tk := newResearchTask(t, tm, "schema-enforced dispatch")
+	tk := newAgentTask(t, tm, "schema-enforced dispatch")
 	schema := `{"type":"object","properties":{"verdict":{"type":"string"}}}`
 	ag, _, err := o.StartAgentWithAssignment(tk.ID, "headless", "go", false, false, "", schema, workflow.AgentAssignment{})
 	if err != nil {
@@ -244,11 +244,8 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 		t.Fatalf("agent.NewManager: %v", err)
 	}
 
-	// TaskTypeResearch + a real ResearchMachineDir skips worktree/project
-	// setup entirely (see ResolveExecution), so the dispatch reaches
-	// o.agents.Run directly without any git/project plumbing. Disabling
-	// require_permissions avoids the "needs a running approval server"
-	// error a gated headless run would hit first.
+	// Disabling require_permissions avoids the "needs a running approval
+	// server" error a gated headless run would hit first.
 	noPermissions := false
 	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
 		Agent: config.AgentDefaults{
@@ -261,9 +258,6 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task Create (first): %v", err)
 	}
-	if _, err := tm.Update(first.ID, task.Update{TaskType: task.Ptr(task.TaskTypeResearch)}); err != nil {
-		t.Fatalf("Update (first): %v", err)
-	}
 	if err := o.StartPRFixAgent(first.ID); err != nil {
 		t.Fatalf("StartPRFixAgent(first) unexpected err: %v", err)
 	}
@@ -273,10 +267,6 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task Create (second): %v", err)
 	}
-	if _, err := tm.Update(second.ID, task.Update{TaskType: task.Ptr(task.TaskTypeResearch)}); err != nil {
-		t.Fatalf("Update (second): %v", err)
-	}
-
 	err = o.StartPRFixAgent(second.ID)
 	if err == nil {
 		t.Fatal("expected pool-busy error once the single slot is saturated, got nil")
@@ -323,18 +313,11 @@ func newFakeClaudeManager(t *testing.T, maxConcurrent int) *agent.Manager {
 	return am
 }
 
-// newResearchTask creates a task whose TaskTypeResearch (plus a real
-// ResearchMachineDir on the orchestrator's config) skips worktree/project
-// setup entirely (see ResolveExecution), so dispatch reaches o.agents.Run
-// directly without any git/project plumbing.
-func newResearchTask(t *testing.T, tm *task.Manager, title string) task.Task {
+func newAgentTask(t *testing.T, tm *task.Manager, title string) task.Task {
 	t.Helper()
 	tk, err := tm.Create(title, "", "headless")
 	if err != nil {
 		t.Fatalf("task Create(%q): %v", title, err)
-	}
-	if _, err := tm.Update(tk.ID, task.Update{TaskType: task.Ptr(task.TaskTypeResearch)}); err != nil {
-		t.Fatalf("Update TaskType(%q): %v", title, err)
 	}
 	return tk
 }
@@ -367,13 +350,13 @@ func TestStartAgentWithAssignment_AdmissionQueueOnPoolBusy(t *testing.T) {
 	})
 	o.SetQueue(q)
 
-	first := newResearchTask(t, tm, "occupies the only pool slot")
+	first := newAgentTask(t, tm, "occupies the only pool slot")
 	if _, _, err := o.StartAgentWithAssignment(first.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); err != nil {
 		t.Fatalf("StartAgentWithAssignment(first) unexpected err: %v", err)
 	}
 	t.Cleanup(func() { am.KillAgentsForTask(first.ID, 5*time.Second) })
 
-	second := newResearchTask(t, tm, "pool-busy, falls back to the queue")
+	second := newAgentTask(t, tm, "pool-busy, falls back to the queue")
 	_, _, err = o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{})
 	if !errors.Is(err, workflow.ErrAgentPoolBusy) {
 		t.Fatalf("StartAgentWithAssignment(second) err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
@@ -399,7 +382,7 @@ func TestStartAgentWithAssignment_AdmissionQueueOnPoolBusy(t *testing.T) {
 
 	// A manual/direct StartAgent call must persist a manual replay item and
 	// return a synthetic queued agent without consuming a live slot.
-	third := newResearchTask(t, tm, "manual dispatch queues durably")
+	third := newAgentTask(t, tm, "manual dispatch queues durably")
 	ag, err := o.StartAgent(third.ID, "headless", "go", true, false)
 	if err != nil {
 		t.Fatalf("StartAgent(third) unexpected err: %v", err)
@@ -458,18 +441,18 @@ func TestStartAgentWithAssignment_MaxDepthRejectsWithoutPoolBusySentinel(t *test
 	})
 	o.SetQueue(q)
 
-	first := newResearchTask(t, tm, "occupies the only pool slot")
+	first := newAgentTask(t, tm, "occupies the only pool slot")
 	if _, _, err := o.StartAgentWithAssignment(first.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); err != nil {
 		t.Fatalf("StartAgentWithAssignment(first) unexpected err: %v", err)
 	}
 	t.Cleanup(func() { am.KillAgentsForTask(first.ID, 5*time.Second) })
 
-	second := newResearchTask(t, tm, "fills the queue to max depth")
+	second := newAgentTask(t, tm, "fills the queue to max depth")
 	if _, _, err := o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); !errors.Is(err, workflow.ErrAgentPoolBusy) {
 		t.Fatalf("StartAgentWithAssignment(second) err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
 	}
 
-	third := newResearchTask(t, tm, "rejected: queue already at max depth")
+	third := newAgentTask(t, tm, "rejected: queue already at max depth")
 	_, _, err = o.StartAgentWithAssignment(third.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{})
 	if err == nil {
 		t.Fatal("expected a non-nil error once the queue is at max depth")
@@ -505,18 +488,18 @@ func TestStartAgent_MaxDepthRejectsManualQueue(t *testing.T) {
 	})
 	o.SetQueue(q)
 
-	blocker := newResearchTask(t, tm, "occupies the only pool slot")
+	blocker := newAgentTask(t, tm, "occupies the only pool slot")
 	if _, _, err := o.StartAgentWithAssignment(blocker.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); err != nil {
 		t.Fatalf("StartAgentWithAssignment(blocker) unexpected err: %v", err)
 	}
 	t.Cleanup(func() { am.KillAgentsForTask(blocker.ID, 5*time.Second) })
 
-	firstQueued := newResearchTask(t, tm, "fills the only queue slot")
+	firstQueued := newAgentTask(t, tm, "fills the only queue slot")
 	if _, _, err := o.StartAgentWithAssignment(firstQueued.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); !errors.Is(err, workflow.ErrAgentPoolBusy) {
 		t.Fatalf("StartAgentWithAssignment(firstQueued) err = %v, want workflow.ErrAgentPoolBusy", err)
 	}
 
-	manual := newResearchTask(t, tm, "manual queue rejection")
+	manual := newAgentTask(t, tm, "manual queue rejection")
 	ag, err := o.StartAgent(manual.ID, "headless", "go", false, false)
 	if err == nil {
 		t.Fatalf("StartAgent(manual) = %+v, want non-nil error once queue is at max depth", ag)
