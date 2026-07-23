@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -162,7 +163,7 @@ func TestGHRequestGateExecute_SuppressesCallsWhileAuthCircuitOpen(t *testing.T) 
 
 	g := newGHRequestGate()
 	calls := 0
-	out, err := g.execute(func() ([]byte, error) {
+	out, err := g.execute(context.Background(), func() ([]byte, error) {
 		calls++
 		return []byte("should not run"), nil
 	})
@@ -191,7 +192,7 @@ func TestGHRequestGateExecute_ObservesCallResult(t *testing.T) {
 	DisableAppAuth()
 
 	g := newGHRequestGate()
-	_, _ = g.execute(func() ([]byte, error) {
+	_, _ = g.execute(context.Background(), func() ([]byte, error) {
 		return []byte("gh: HTTP 401: Bad credentials"), fmt.Errorf("exit status 1")
 	})
 

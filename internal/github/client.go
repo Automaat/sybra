@@ -23,10 +23,11 @@ type execer interface {
 type ghExecer struct{}
 
 func (ghExecer) run(args ...string) ([]byte, error) {
-	return ghGate.execute(func() ([]byte, error) {
-		// context.Background(): this is the plain, uncancellable fallback path
-		// (see runE below) — callers that want cancellation use runCtx/ghRunCtx.
-		cmd := exec.CommandContext(context.Background(), "gh", args...)
+	// context.Background(): this is the plain, uncancellable fallback path
+	// (see runE below) — callers that want cancellation use runCtx/ghRunCtx.
+	ctx := context.Background()
+	return ghGate.execute(ctx, func() ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "gh", args...)
 		if env := ghEnv(); env != nil {
 			cmd.Env = env
 		}
@@ -38,7 +39,7 @@ func (ghExecer) run(args ...string) ([]byte, error) {
 // expires — releasing the global request gate instead of holding it for the
 // kernel TCP timeout. Used by latency-sensitive callers (the PR poll loop).
 func ghRunCtx(ctx context.Context, args ...string) ([]byte, error) {
-	return ghGate.execute(func() ([]byte, error) {
+	return ghGate.execute(ctx, func() ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "gh", args...)
 		if env := ghEnv(); env != nil {
 			cmd.Env = env

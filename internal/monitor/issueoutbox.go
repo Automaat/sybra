@@ -221,9 +221,9 @@ func (d *DurableGHIssueSink) OldestPendingAge(now time.Time) time.Duration {
 	pending := d.store.load(d.logger)
 	d.mu.Unlock()
 	var oldest time.Time
-	for _, it := range pending {
-		if oldest.IsZero() || it.FirstFailedAt.Before(oldest) {
-			oldest = it.FirstFailedAt
+	for i := range pending {
+		if oldest.IsZero() || pending[i].FirstFailedAt.Before(oldest) {
+			oldest = pending[i].FirstFailedAt
 		}
 	}
 	if oldest.IsZero() {

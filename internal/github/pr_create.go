@@ -24,7 +24,7 @@ type CreatePRRequest struct {
 // createPRRunner runs `gh pr create` in dir and returns its combined output.
 // A package var so tests can inject a fake without a real gh/network.
 var createPRRunner = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	return ghGate.execute(func() ([]byte, error) {
+	return ghGate.execute(ctx, func() ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "gh", args...)
 		cmd.Dir = dir
 		if env := ghEnv(); env != nil {
