@@ -42,6 +42,7 @@ var (
 	_ workflow.PRCreator              = (*prCreatorAdapter)(nil)
 	_ workflow.PRCloser               = (*prCloserAdapter)(nil)
 	_ workflow.PRFinder               = (*prFinderAdapter)(nil)
+	_ workflow.PRExistenceChecker     = (*prExistenceCheckerAdapter)(nil)
 	_ workflow.PRContentGenerator     = (*prContentGeneratorAdapter)(nil)
 	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
@@ -442,6 +443,15 @@ func (prFinderAdapter) FindPRForBranch(ctx context.Context, repo, head string) (
 
 func (prFinderAdapter) FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error) {
 	return github.FindPRForBranchAnyState(ctx, repo, head)
+}
+
+// prExistenceCheckerAdapter wires the workflow engine's PRExistenceChecker
+// interface to the github package. Stateless — all state lives in `gh` /
+// GitHub.
+type prExistenceCheckerAdapter struct{}
+
+func (prExistenceCheckerAdapter) PRExists(ctx context.Context, repo string, number int) (bool, error) {
+	return github.PRExists(ctx, repo, number)
 }
 
 // prContentGeneratorAdapter wires the workflow engine's PRContentGenerator

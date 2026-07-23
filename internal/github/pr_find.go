@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -13,6 +14,22 @@ import (
 // so the idempotency lookup shares the same rate-limit pacing and GitHub App
 // installation-token identity as the CreatePR call it guards.
 var findPRRunner = ghRunCtx
+
+// PRExists reports whether PR #number resolves against repo, guarding
+// link_pr_and_review against trusting a pr_number that was set for the wrong
+// repo — e.g. an agent that ran a bare `gh pr create` inside a fork-remote
+// worktree and got the PR opened against the fork itself instead of
+// upstream. A non-nil err means the check itself failed (gh
+// unavailable/unauthenticated, network, or the PR genuinely not existing in
+// repo) — callers must not read err as proof the PR doesn't exist, only that
+// its presence could not be confirmed.
+func PRExists(ctx context.Context, repo string, number int) (bool, error) {
+	out, err := findPRRunner(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", "number")
+	if err != nil {
+		return false, fmt.Errorf("gh pr view %d --repo %s: %s: %w", number, repo, sanitizeGHOutput(out), err)
+	}
+	return true, nil
+}
 
 // FindPRForBranch returns the number of an open PR whose head is branch, if
 // one exists. head may be a bare branch name or "fork-owner:branch"; since

@@ -56,9 +56,34 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 	}
 
-	// Path 1: PR already linked on task.
+	// Path 1: PR already linked on task — but only trust it once confirmed to
+	// exist in the project's own repo, when a checker is wired. A
+	// stale/misrouted pr_number (e.g. an agent that ran a bare
+	// `gh pr create` inside a fork-remote worktree and got a PR opened
+	// against the fork's own default branch instead of upstream) must not
+	// silently flip the task to in-review against a PR nobody but the agent
+	// will ever look at.
 	if t.PRNumber > 0 {
-		return setInReview(t.PRNumber, "task.pr_number")
+		if t.ProjectID == "" || e.prExistence == nil {
+			return setInReview(t.PRNumber, "task.pr_number")
+		}
+		ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+		exists, verifyErr := e.prExistence.PRExists(ctx, t.ProjectID, t.PRNumber)
+		cancel()
+		switch {
+		case exists:
+			return setInReview(t.PRNumber, "task.pr_number")
+		case verifyErr != nil:
+			// verifyErr does NOT prove the PR is absent from repo — gh being
+			// unavailable/unauthenticated or a network blip fails the same
+			// way as a genuine "wrong repo" PR number. Log it as unverified
+			// (with the underlying detail) and fall through to the discovery
+			// paths below rather than asserting non-existence or trusting an
+			// unverifiable number outright.
+			e.logger.Warn("workflow.link-pr.pr-number-unverified", "task_id", taskID, "pr", t.PRNumber, "repo", t.ProjectID, "err", verifyErr)
+		default:
+			e.logger.Warn("workflow.link-pr.pr-number-not-in-repo", "task_id", taskID, "pr", t.PRNumber, "repo", t.ProjectID)
+		}
 	}
 
 	// Path 2: Scan step history for a GitHub PR URL or owner/repo#N in agent output.

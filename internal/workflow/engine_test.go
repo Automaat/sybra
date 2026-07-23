@@ -9590,6 +9590,109 @@ func TestExecLinkPRAndReview_PRAlreadyLinked(t *testing.T) {
 	}
 }
 
+// fakePRExistenceChecker is a canned workflow.PRExistenceChecker for tests
+// that need to control whether link_pr_and_review trusts task.pr_number.
+type fakePRExistenceChecker struct {
+	exists bool
+	err    error
+}
+
+func (f fakePRExistenceChecker) PRExists(context.Context, string, int) (bool, error) {
+	return f.exists, f.err
+}
+
+func TestExecLinkPRAndReview_PRNumberNotInRepoFallsThrough(t *testing.T) {
+	// A pr_number that doesn't resolve against the project's own repo (e.g.
+	// an agent that ran a bare `gh pr create` inside a fork worktree and got
+	// a PR opened in the fork itself) must not be trusted blindly — it
+	// should fall through to the other discovery paths instead of flipping
+	// straight to in-review against a PR nobody upstream will ever see.
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	engine := newEngineForEval(t, tasks)
+	engine.SetPRExistenceChecker(fakePRExistenceChecker{exists: false})
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "completed", AgentID: "a1", Output: "changes pushed"},
+		},
+	}
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), wfExec, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress (must not trust the wrong-repo pr_number)", ti.Status)
+	}
+}
+
+func TestExecLinkPRAndReview_PRNumberUnverifiedFallsThrough(t *testing.T) {
+	// A checker that fails to confirm (gh unavailable/unauthenticated,
+	// network) must be treated the same as "not confirmed" — never as proof
+	// the PR is absent, but also never trusted outright.
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	engine := newEngineForEval(t, tasks)
+	engine.SetPRExistenceChecker(fakePRExistenceChecker{err: errors.New("gh: authentication failed")})
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), &Execution{}, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress (must not trust an unverifiable pr_number)", ti.Status)
+	}
+}
+
+func TestExecLinkPRAndReview_PRNumberVerifiedInRepoTrusted(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	engine := newEngineForEval(t, tasks)
+	engine.SetPRExistenceChecker(fakePRExistenceChecker{exists: true})
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), &Execution{}, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review", ti.Status)
+	}
+	if ti.PRNumber != 8 {
+		t.Errorf("pr_number = %d, want 8", ti.PRNumber)
+	}
+}
+
+func TestExecLinkPRAndReview_NoCheckerTrustsPRNumber(t *testing.T) {
+	// Guards the documented "operates with a nil checker" fallback contract.
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), &Execution{}, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review", ti.Status)
+	}
+}
+
 func TestExecLinkPRAndReview_FullURLInAgentOutput(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})

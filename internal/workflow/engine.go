@@ -262,6 +262,15 @@ type PRAnyStateFinder interface {
 	FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error)
 }
 
+// PRExistenceChecker confirms a pr_number actually resolves against a given
+// repo, guarding link_pr_and_review against trusting an out-of-band pr_number
+// set for the wrong repo (e.g. an agent that created a PR in its own fork
+// instead of upstream). Engine operates with a nil checker — the guard is
+// then skipped and task.pr_number is trusted as before.
+type PRExistenceChecker interface {
+	PRExists(ctx context.Context, repo string, number int) (bool, error)
+}
+
 // PRCreateRequest describes a new pull request to open for an
 // already-pushed branch.
 type PRCreateRequest struct {
@@ -339,6 +348,7 @@ type Engine struct {
 	prCloser         PRCloser
 	prFinder         PRFinder
 	prAnyStateFinder PRAnyStateFinder
+	prExistence      PRExistenceChecker
 	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
 	attemptNotes     AttemptNoteAppender
@@ -546,6 +556,12 @@ func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
 // SetPRAnyStateFinder wires the all-state branch lookup used by create_pr's
 // squash-merge duplicate guard. Leaving it unset skips the guard.
 func (e *Engine) SetPRAnyStateFinder(f PRAnyStateFinder) { e.prAnyStateFinder = f }
+
+// SetPRExistenceChecker wires the pr_number-belongs-to-repo verification used
+// by link_pr_and_review's Path 1. Leaving it unset skips the check and
+// trusts task.pr_number outright, matching the engine's pre-existing
+// behavior.
+func (e *Engine) SetPRExistenceChecker(c PRExistenceChecker) { e.prExistence = c }
 
 // SetPRContentGenerator wires the LLM-backed title/body drafter used by the
 // `create_pr` step. Leaving it unset falls back to a templated title/body.
