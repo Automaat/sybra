@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2028,6 +2029,113 @@ func TestRestartStaleSkipsWhileRecoveryClaimHeld(t *testing.T) {
 	}
 	if stub.startCalls != 0 {
 		t.Errorf("StartAgent called %d times; want 0 (recovery claim held elsewhere)", stub.startCalls)
+	}
+}
+
+// recordingWorkflowStub is a recovery.WorkflowRestarter used to reproduce the
+// production race with real concurrency (not a pre-held claim): unlike
+// stubWorkflowEngine, HandleAgentComplete here mimics the one synchronous
+// side effect restartTaskIfStale's own guards depend on — the real engine's
+// AdvanceStep persists a StepRecord for the current step before returning.
+// Without that persisted record, a second racer's decision would (correctly)
+// see the same "unprocessed step" shape regardless of whether recovery
+// re-fetches, defeating the point of the test.
+type recordingWorkflowStub struct {
+	tasks *task.Manager
+	calls atomic.Int64
+}
+
+func (s *recordingWorkflowStub) StartWorkflow(string, string) error { return nil }
+
+func (s *recordingWorkflowStub) DispatchEvent(string, string, map[string]string, map[string]string) (string, error) {
+	return "", nil
+}
+
+func (s *recordingWorkflowStub) HandleAgentComplete(taskID string, _ workflow.AgentCompletion) {
+	s.calls.Add(1)
+	cur, err := s.tasks.Get(taskID)
+	if err != nil || cur.Workflow == nil {
+		return
+	}
+	wf := cur.Workflow
+	wf.RecordStep(workflow.StepRecord{StepID: wf.CurrentStep, Status: "completed"})
+	_, _ = s.tasks.Update(taskID, task.Update{Workflow: &wf})
+}
+
+// TestRestartStaleConcurrentPathsDoNotDoubleFireHandleAgentComplete is a
+// regression test for sybra#2452's actual race, reproduced with real
+// goroutines rather than a pre-held claim: the periodic
+// RestartStaleInProgress sweep and a targeted RestartTaskIfStale call each
+// read their own task snapshot (List() vs Get()) before ever attempting the
+// recovery claim. If the loser of the claim race is simply slow to reach
+// TryClaimRecovery — arriving only after the winner has already applied its
+// decision and released — its decision must still be made from a fresh
+// re-read, not the snapshot it captured before the race even started, or it
+// re-applies the same completed-run recovery a second time.
+func TestRestartStaleConcurrentPathsDoNotDoubleFireHandleAgentComplete(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	ctx := context.Background()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	const iterations = 200
+	for i := range iterations {
+		taskID := newReviewTaskWithHeadlessRun(t, tasks, task.AgentRun{
+			AgentID:   fmt.Sprintf("ag-review-%d", i),
+			Role:      "review",
+			Mode:      "headless",
+			State:     string(agent.StateStopped),
+			Outcome:   task.RunOutcomeSuccess,
+			Result:    "review posted",
+			StartedAt: time.Now().Add(-10 * time.Minute),
+		})
+
+		wfStub := &recordingWorkflowStub{tasks: tasks}
+		var wg sync.WaitGroup
+		r := &recovery.Recovery{
+			Tasks:          tasks,
+			Agents:         agents,
+			Worktrees:      wm,
+			Orchestrator:   &stubOrchestrator{},
+			WorkflowEngine: wfStub,
+			Logger:         logger,
+			Throttle:       logging.NewErrorThrottle(),
+			WG:             &wg,
+			LogDir:         t.TempDir(),
+		}
+
+		var start sync.WaitGroup
+		start.Add(1)
+		var racers sync.WaitGroup
+		racers.Add(2)
+		go func() {
+			defer racers.Done()
+			start.Wait()
+			r.RestartStaleInProgress(ctx)
+		}()
+		go func() {
+			defer racers.Done()
+			start.Wait()
+			_ = r.RestartTaskIfStale(ctx, taskID)
+		}()
+		start.Done()
+		racers.Wait()
+		wg.Wait()
+
+		if calls := wfStub.calls.Load(); calls > 1 {
+			t.Fatalf("iter %d: HandleAgentComplete called %d times concurrently; want at most 1 (recovery decision must act on live task state, not a pre-claim snapshot)", i, calls)
+		}
 	}
 }
 

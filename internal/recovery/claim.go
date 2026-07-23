@@ -26,12 +26,17 @@ type RecoveryClaim struct {
 // e.g. both firing WorkflowEngine.HandleAgentComplete for the same completed
 // run — double-advancing the workflow.
 //
-// restartTaskIfStale is the sole caller: it claims right after the cheap,
-// side-effect-free guards (task type, dispatch gate, status, running-agent,
-// in-flight-dispatch) and defers Release, so the claim spans every
-// synchronous decision branch (recoverCompletedHeadlessRun,
-// recoverCancelledPRFix, handleTerminalWorkflow, the interactive-recovery
-// path) of that task's recovery pass.
+// Winning the claim only serializes entry into the decision logic — it says
+// nothing about whether the task data the decision reads is still current.
+// The caller passes in whatever snapshot it read before even attempting the
+// claim (List() for the sweep, Get() for the targeted call), and the
+// goroutine that held the claim just before it may have mutated that same
+// task in the meantime. restartTaskIfStale is the sole caller: it re-fetches
+// the task immediately after winning the claim and makes every synchronous
+// decision (recoverCompletedHeadlessRun, recoverCancelledPRFix,
+// handleTerminalWorkflow, the interactive-recovery path) from that fresh
+// read, never from the pre-claim snapshot — so a decision already applied by
+// the previous claim holder is visible and skipped instead of re-applied.
 func (r *Recovery) TryClaimRecovery(taskID string) (claim *RecoveryClaim, ok bool) {
 	r.recoveryMu.Lock()
 	defer r.recoveryMu.Unlock()

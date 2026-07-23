@@ -65,15 +65,16 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 		return
 	}
 	// Claim sole ownership of this task's recovery decision for the rest of
-	// this call: the periodic RestartStaleInProgress sweep and a targeted
-	// RestartTaskIfStale call (cluster monitor's lost-agent recovery) run on
-	// independent goroutines and can both reach this point for the same task
-	// from the same stale snapshot. See TryClaimRecovery.
-	claim, claimed := r.TryClaimRecovery(t.ID)
-	if !claimed {
-		r.Logger.Info("restart-stale.skip", "task_id", t.ID, "reason", "recovery_in_progress")
+	// this call, then re-fetch under the claim: the periodic
+	// RestartStaleInProgress sweep and a targeted RestartTaskIfStale call
+	// (cluster monitor's lost-agent recovery) run on independent goroutines
+	// and can both reach this point for the same task from the same stale
+	// snapshot. See claimAndRefetch and TryClaimRecovery.
+	fresh, claim, ok := r.claimAndRefetch(t.ID)
+	if !ok {
 		return
 	}
+	t = fresh
 	defer claim.Release()
 	// Don't re-dispatch to the same provider while it is rate-limited; do
 	// continue when failover can route this run to a healthy peer. (A
@@ -184,6 +185,39 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			r.surfaceStartFailure(ctx, taskID, currentStatus, err)
 		}
 	})
+}
+
+// claimAndRefetch acquires the sole recovery claim for taskID and re-fetches
+// the task under it. ok=false means the caller must not proceed: the claim is
+// held by another in-flight recovery pass, the re-fetch failed, or the fresh
+// state no longer qualifies (status moved off in-progress, an agent is now
+// running or dispatching) — every case is already logged here.
+//
+// The re-fetch matters because taskID's caller (restartTaskIfStale) is always
+// handed a task snapshot read before the claim was even attempted
+// (RestartStaleInProgress's List(), or RestartTaskIfStale's Get()). Winning
+// the claim only serializes *entry* into the decision logic; without
+// re-reading, a recovery pass that wins the claim only after another pass has
+// already applied its decision and released would still act on the same
+// stale facts and double-apply it (e.g. both calling
+// WorkflowEngine.HandleAgentComplete for one completed run).
+func (r *Recovery) claimAndRefetch(taskID string) (fresh task.Task, claim *RecoveryClaim, ok bool) {
+	claim, claimed := r.TryClaimRecovery(taskID)
+	if !claimed {
+		r.Logger.Info("restart-stale.skip", "task_id", taskID, "reason", "recovery_in_progress")
+		return task.Task{}, nil, false
+	}
+	fresh, err := r.Tasks.Get(taskID)
+	if err != nil {
+		r.Logger.Error("restart-stale.reget-after-claim.failed", "task_id", taskID, "err", err)
+		claim.Release()
+		return task.Task{}, nil, false
+	}
+	if fresh.Status != task.StatusInProgress || r.Agents.HasRunningAgentForTask(taskID) || r.Agents.IsDispatching(taskID) {
+		claim.Release()
+		return task.Task{}, nil, false
+	}
+	return fresh, claim, true
 }
 
 // handleTerminalWorkflow handles a task whose workflow reached a terminal state
