@@ -386,6 +386,12 @@ const reattachMaxAge = 6 * time.Hour
 
 func (m *Manager) reattachStaleReason(r Record, now time.Time) string {
 	if strings.TrimSpace(r.TaskID) == "" {
+		// The orchestrator brain is a deliberately taskless, long-lived
+		// headless agent (see svc_orchestrator.go) — it must survive a
+		// restart like any other live process, not be reaped as an orphan.
+		if r.Role == RoleOrchestrator {
+			return ""
+		}
 		return "no_task"
 	}
 	if existsFn := m.taskExistsFn(); existsFn != nil && !existsFn(r.TaskID) {

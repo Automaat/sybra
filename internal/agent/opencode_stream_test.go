@@ -53,9 +53,9 @@ func TestParseOpenCodeLineAssistantAndTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tool parse: %v", err)
 	}
-	ce := opencodeEventToConvoEvent(toolResult)
-	if ce.Type != "user" || len(ce.ToolResults) != 1 || ce.ToolResults[0].ToolUseID != "call-1" || !ce.ToolResults[0].IsError {
-		t.Fatalf("tool convo event = %+v", ce)
+	se = opencodeEventToStreamEvent(toolResult)
+	if se.Type != "tool_result" || len(se.toolResults) != 1 || se.toolResults[0].ToolUseID != "call-1" || !se.toolResults[0].IsError {
+		t.Fatalf("tool stream event = %+v", se)
 	}
 }
 
