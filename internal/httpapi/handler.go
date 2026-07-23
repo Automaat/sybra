@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"reflect"
 )
 
@@ -195,9 +196,23 @@ func stripErrorResult(out []reflect.Value, w http.ResponseWriter, logger *slog.L
 	}
 	callErr, _ := last.Interface().(error)
 	var ce ClientError
-	if errors.As(callErr, &ce) {
+	switch {
+	case errors.As(callErr, &ce):
 		respondError(w, logger, ce.HTTPStatus(), codeForStatus(ce.HTTPStatus()), ce.Error())
-	} else {
+	case errors.Is(callErr, os.ErrNotExist):
+		// A missing-file error (e.g. task.Store.Get on a trashed/deleted task)
+		// is a normal, expected outcome for callers like the cluster mirror's
+		// reconcileMissing, which needs to tell "the follower confirms this
+		// task is gone" apart from "the follower is unreachable" to reconcile
+		// its own stale copy instead of leaving it dangling forever. Surfacing
+		// it as 404 lets those callers branch on http.StatusNotFound instead of
+		// treating every GetTask failure as an opaque, non-retryable 500. The
+		// raw error is logged server-side only — like the default 500 case
+		// below, it wraps an *fs.PathError carrying the store's absolute
+		// filesystem path, which must never reach an HTTP client.
+		logger.Info("httpapi.call.not_found", "service", svcName, "method", methodName, "err", callErr)
+		respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, "not found")
+	default:
 		logger.Warn("httpapi.call.error", "service", svcName, "method", methodName, "err", callErr)
 		respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")
 	}
