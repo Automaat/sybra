@@ -163,15 +163,6 @@ export function StartAgent(taskID: string, mode: string, prompt: string, include
 }
 
 /**
- * StartChat creates a new interactive chat bound to projectID using the
- * requested provider ("claude" or "codex"). Each chat gets a dedicated
- * local-only worktree that is cleaned up when StopChat is called.
- */
-export function StartChat(projectID: string, providerName: string, prompt: string): $CancellablePromise<agent$0.Agent | null> {
-    return $Call.ByID(4013768999, projectID, providerName, prompt);
-}
-
-/**
  * StartK8sPocAgent starts a project-less headless run directly through
  * agent.Manager. It exists to smoke-test the experimental Kubernetes Job runner
  * without requiring a project/worktree. Normal production dispatch should keep
@@ -200,15 +191,6 @@ export function StartK8sPocAgent(prompt: string): $CancellablePromise<agent$0.Ag
  */
 export function Startup(): $CancellablePromise<void> {
     return $Call.ByID(2295615836);
-}
-
-/**
- * StopChat stops a chat agent, deletes its synthetic task, and removes its
- * worktree. Refuses to operate on agents that are not bound to a chat task
- * so the UI cannot accidentally delete a real task.
- */
-export function StopChat(agentID: string): $CancellablePromise<void> {
-    return $Call.ByID(2858183885, agentID);
 }
 
 /**
