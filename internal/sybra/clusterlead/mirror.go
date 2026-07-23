@@ -287,6 +287,10 @@ func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, 
 		if errors.Is(err, os.ErrNotExist) {
 			return m.adoptFollowerTask(ctx, node, follower)
 		}
+		// A genuine local-store fault (I/O, corrupt frontmatter), not
+		// "doesn't exist yet" — the discarded bool at the call site leaves
+		// this as the only trace convergence stalled for this task.
+		m.logger.Warn("cluster.mirror.apply.get_failed", "node", node, "task", follower.ID, "err", err)
 		return false
 	}
 	if canonical.AssignedNode != node {

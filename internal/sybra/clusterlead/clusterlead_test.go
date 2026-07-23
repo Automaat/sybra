@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -669,6 +671,35 @@ func TestMirrorAdoptsUnknownFollowerTask(t *testing.T) {
 	}
 	if got.MirrorRev != 1 {
 		t.Errorf("MirrorRev = %d, want 1 on first adoption", got.MirrorRev)
+	}
+}
+
+// TestMirrorApplyLogsGenuineLocalStoreFailure covers a Copilot-review finding
+// on this PR: a m.tasks.Get failure that is NOT "doesn't exist yet" (I/O
+// fault, corrupt frontmatter, ...) took the same silent `return false` as
+// every other case, and the caller discards the bool — so a real local-store
+// fault left zero trace anywhere that mirror convergence had stalled for
+// that task.
+func TestMirrorApplyLogsGenuineLocalStoreFailure(t *testing.T) {
+	cfg := leaderConfig("http://unused", []string{"owner/pet"})
+	roster, _ := NewRoster(cfg, nil)
+	mgr := newManager(t)
+
+	corrupt := filepath.Join(mgr.Store().Dir(), "broken.md")
+	if err := os.WriteFile(corrupt, []byte("---\nstatus: [not, a, string]\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf syncBuffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	mirror := NewMirror(cfg, mgr, roster, logger, time.Second)
+
+	follower := task.Task{ID: "broken", Status: task.StatusDone, UpdatedAt: time.Unix(100, 0)}
+	if mirror.applyFollowerTask("pet-box", follower) {
+		t.Error("apply must not report success over an unreadable canonical file")
+	}
+	if !strings.Contains(buf.String(), "cluster.mirror.apply.get_failed") {
+		t.Errorf("expected a get_failed warn log for the genuine store fault, got:\n%s", buf.String())
 	}
 }
 
