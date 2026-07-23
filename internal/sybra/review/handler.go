@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
@@ -159,6 +160,11 @@ type Handler struct {
 	// prPollState tracks stable linked PRs across poll cycles so the known-PR
 	// fetch path can defer unchanged PRs with exponential backoff.
 	prPollState map[string]prPollEntry
+	// autoMergeBackoff persists a retry fingerprint (repo, PR, head SHA,
+	// error class) for failed auto-merge/arm attempts so handleAutoMerge
+	// backs off exponentially instead of re-attempting unchanged state every
+	// poll tick (#2450). Lazily initialized by mergeBackoff().
+	autoMergeBackoff *github.AutoMergeBackoff
 	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
 	// falls back to github.FetchReviews.
 	fetchReviewsFn func() (github.ReviewSummary, error)
@@ -441,7 +447,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
 	issues = r.mergeReconciledReady(ctx, reconciledReady, issues)
 	r.closeFinishedReviewTasks(tasks, nil)
-	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
+	r.maybeArmNativeAutoMerge(ctx, tasks, monitoredPRs, issues)
 
 	return r.nextInterval(prNeedsAttention(monitoredPRs), false)
 }
@@ -472,7 +478,7 @@ func (r *Handler) mergeReconciledReady(ctx context.Context, reconciledReady, iss
 			r.logger.Info("reviews.dispatch.gate", "task_id", issue.TaskID, "gate", "active_workflow", "kind", issue.Kind)
 			continue
 		}
-		r.handleAutoMerge(issue)
+		r.handleAutoMerge(ctx, issue)
 		issues = append(issues, issue)
 	}
 	return issues
@@ -637,7 +643,7 @@ func (r *Handler) processSybraPRPoll(ctx context.Context, tasks []task.Task, sum
 	// no separate fetch is needed to reach a human-required task's own PR.
 	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
 	issues = r.mergeReconciledReady(ctx, reconciledReady, issues)
-	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
+	r.maybeArmNativeAutoMerge(ctx, tasks, monitoredPRs, issues)
 
 	return prNeedsAttention(monitoredPRs)
 }
@@ -876,7 +882,7 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	case flaky != nil:
 		r.handleFlakyCI(*flaky)
 	case merge != nil:
-		r.handleAutoMerge(*merge)
+		r.handleAutoMerge(ctx, *merge)
 	}
 }
 
@@ -1969,10 +1975,11 @@ func findMergedPRByBranch(repo, branch string) (int, error) {
 // handleAutoMerge's own gate already decided on) — e.g. a PR still waiting on
 // CI to go green, which produces no PRIssue at all. Reuses monitoredPRs
 // already fetched this cycle rather than issuing fresh GraphQL calls.
-func (r *Handler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []github.PullRequest, issues []github.PRIssue) {
+func (r *Handler) maybeArmNativeAutoMerge(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest, issues []github.PRIssue) {
 	if r.cfg == nil || !r.cfg.GitHub.NativeAutoMerge {
 		return
 	}
+	backoff := r.mergeBackoff()
 	handled := make(map[string]bool, len(issues))
 	for i := range issues {
 		handled[issues[i].TaskID] = true
@@ -2015,27 +2022,30 @@ func (r *Handler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []gith
 			continue
 		}
 
-		supportsFn := r.supportsAutoMergeFn
-		if supportsFn == nil {
-			supportsFn = github.SupportsNativeAutoMerge
-		}
-		ok, serr := supportsFn(pr.Repository, pr.BaseRefName)
-		if serr != nil || !ok {
+		stateSig := autoMergeStateSignature(*pr)
+		if !backoff.ShouldAttempt(pr.Repository, pr.Number, pr.HeadSHA, stateSig) {
+			metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(pr.Repository, pr.Number)))
 			continue
 		}
-
-		enableFn := r.enableAutoMergeFn
-		if enableFn == nil {
-			enableFn = github.EnableAutoMerge
-		}
-		if aerr := enableFn(pr.Repository, pr.Number); aerr != nil {
-			r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", pr.Number, "err", aerr)
+		res := r.tryArmNativeAutoMerge(*t, github.PRIssue{
+			Kind:   github.PRIssueReadyToMerge,
+			TaskID: t.ID,
+			PR:     *pr,
+		}, "")
+		if res.armed {
+			r.clearMergeBackoff(ctx, pr.Repository, pr.Number)
+			metrics.AutoMergeAttempt(ctx, "armed", "")
+			r.evictReadyPRCache(pr.Repository, pr.Number)
 			continue
 		}
-		r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", map[string]any{
-			"pr": pr.Number, "repo": pr.Repository,
-		})
-		r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", pr.Number)
+		if res.err == nil {
+			continue
+		}
+		metrics.AutoMergeAttempt(ctx, "attempted", "")
+		class := github.ClassifyMergeError(res.err)
+		if backoff.RecordFailure(pr.Repository, pr.Number, pr.HeadSHA, stateSig, class) {
+			metrics.AutoMergeAttempt(ctx, "terminal", string(class))
+		}
 	}
 }
 
