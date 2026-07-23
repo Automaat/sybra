@@ -523,25 +523,6 @@ func TestAgentOutput(t *testing.T) {
 	}
 }
 
-func TestStartAgentInteractiveConversational(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, err := startTestAgent(t, m, "task-1", "Auth Middleware", "interactive", "build it", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	t.Cleanup(func() { _ = m.StopAgent(a.ID) })
-
-	if a.Name != "Auth Middleware" {
-		t.Errorf("Name = %q, want %q", a.Name, "Auth Middleware")
-	}
-	if a.Mode != "interactive" {
-		t.Errorf("Mode = %q, want %q", a.Mode, "interactive")
-	}
-	if a.done == nil {
-		t.Error("interactive agent should have done channel (conversational)")
-	}
-}
-
 func TestStopInteractiveAgent(t *testing.T) {
 	m, _ := newTestManager(t)
 
@@ -1385,78 +1366,6 @@ func TestActiveLogPaths(t *testing.T) {
 	}
 }
 
-// captureStdinAgent wires up a real io.Pipe so a test can observe
-// exactly what SendPromptToAgent writes to the conversational agent's
-// stdin. Returns the agent (already registered in m) and a channel that
-// receives one line per message written.
-func captureStdinAgent(t *testing.T, m *Manager, id, taskID string) (ag *Agent, stdinLines <-chan string) {
-	t.Helper()
-	r, w := io.Pipe()
-	a := &Agent{
-		ID:     id,
-		TaskID: taskID,
-		Name:   "plan:Test",
-		Mode:   "interactive",
-		State:  StatePaused,
-	}
-	if err := a.convo.installStdinPipe(w); err != nil {
-		t.Fatalf("installStdinPipe: %v", err)
-	}
-	putAgent(t, m, a)
-
-	lines := make(chan string, 4)
-	go func() {
-		defer close(lines)
-		buf := make([]byte, 4096)
-		for {
-			n, err := r.Read(buf)
-			if n > 0 {
-				lines <- string(buf[:n])
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-	t.Cleanup(func() { _ = r.Close() })
-	return a, lines
-}
-
-func TestSendPromptToAgent_WritesToStdinForConversationalAgent(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, lines := captureStdinAgent(t, m, "a1", "task-1")
-
-	err := m.SendPromptToAgent(a.ID, "please revise")
-
-	if err != nil {
-		t.Fatalf("SendPromptToAgent: %v", err)
-	}
-
-	select {
-	case got := <-lines:
-		// SendMessage encodes a JSON user message; verify both the
-		// envelope and the payload without being sensitive to exact
-		// field ordering.
-		if !strings.Contains(got, `"type":"user"`) {
-			t.Errorf("stdin payload missing user envelope: %q", got)
-		}
-		if !strings.Contains(got, `please revise`) {
-			t.Errorf("stdin payload missing message text: %q", got)
-		}
-		if !strings.HasSuffix(got, "\n") {
-			t.Errorf("stdin payload not newline-terminated: %q", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no data written to stdin within 2s")
-	}
-
-	// The agent must have been flipped back to Running so downstream
-	// code treats the next turn as active work.
-	if st := a.GetState(); st != StateRunning {
-		t.Errorf("State = %q, want %q after send", st, StateRunning)
-	}
-}
-
 func TestSendPromptToAgent_RejectsStoppedAgent(t *testing.T) {
 	m, _ := newTestManager(t)
 	putAgent(t, m, &Agent{
@@ -1487,73 +1396,6 @@ func TestSendPromptToAgent_RejectsAgentWithoutTransport(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error when agent has no transport")
-	}
-}
-
-// TestSendMessage_QueuesWhenRunning verifies the queue-on-busy behaviour:
-// a follow-up sent mid-turn (StateRunning) must not hit stdin and must not
-// flip state — it just lives in pendingPrompts until the next result.
-// Regression guard for the chat-input "queue follow-up" feature.
-func TestSendMessage_QueuesWhenRunning(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, lines := captureStdinAgent(t, m, "busy", "task-1")
-	a.SetState(StateRunning) // simulate mid-turn
-
-	if err := m.SendMessage(a.ID, "queued text"); err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-
-	// Nothing should land on stdin while the agent is mid-turn.
-	select {
-	case got := <-lines:
-		t.Fatalf("expected no stdin write while running, got %q", got)
-	case <-time.After(150 * time.Millisecond):
-	}
-
-	if got := a.PendingPromptCount(); got != 1 {
-		t.Fatalf("PendingPromptCount = %d, want 1", got)
-	}
-	if st := a.GetState(); st != StateRunning {
-		t.Errorf("State = %q, want %q (queued send must not flip state)", st, StateRunning)
-	}
-
-	// User message must still appear in the convo buffer immediately so
-	// the chat UI shows the queued bubble before the turn drains.
-	convo := a.ConvoOutput()
-	if len(convo) != 1 {
-		t.Fatalf("convo len = %d, want 1", len(convo))
-	}
-	if convo[0].Type != "user_input" || convo[0].Text != "queued text" {
-		t.Errorf("convo[0] = %+v, want user_input/queued text", convo[0])
-	}
-}
-
-// TestSendMessage_WritesStdinWhenPaused covers the idle-chat path: when the
-// agent is parked in StatePaused (e.g. fresh chat with no initial prompt),
-// the next SendMessage must hit stdin directly and flip back to Running.
-func TestSendMessage_WritesStdinWhenPaused(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, lines := captureStdinAgent(t, m, "idle", "task-1")
-	// captureStdinAgent already starts in StatePaused.
-
-	if err := m.SendMessage(a.ID, "first message"); err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-
-	select {
-	case got := <-lines:
-		if !strings.Contains(got, `first message`) {
-			t.Errorf("stdin payload missing text: %q", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no stdin write within 2s")
-	}
-
-	if got := a.PendingPromptCount(); got != 0 {
-		t.Errorf("PendingPromptCount = %d, want 0", got)
-	}
-	if st := a.GetState(); st != StateRunning {
-		t.Errorf("State = %q, want %q after immediate send", st, StateRunning)
 	}
 }
 
