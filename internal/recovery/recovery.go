@@ -87,6 +87,12 @@ type Recovery struct {
 
 	DispatchGate func(task.Task) bool
 
+	// recoveryMu guards recoveryClaims.
+	recoveryMu sync.Mutex
+	// recoveryClaims tracks task IDs with an in-flight recovery decision. See
+	// TryClaimRecovery.
+	recoveryClaims map[string]struct{}
+
 	// TrashRetentionDays bounds how long a soft-deleted task (see
 	// task.Store.Delete) survives under the trash dir before
 	// pruneTrash permanently removes it. A negative value disables

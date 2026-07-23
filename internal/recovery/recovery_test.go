@@ -1927,6 +1927,110 @@ func TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag(t *te
 	}
 }
 
+// TestTryClaimRecoveryMutualExclusion verifies the primitive backing the
+// concurrent-recovery-race fix: a second claim attempt for the same task
+// fails while the first is held, and succeeds again once released.
+func TestTryClaimRecoveryMutualExclusion(t *testing.T) {
+	r := &recovery.Recovery{}
+
+	claim, ok := r.TryClaimRecovery("task-1")
+	if !ok || claim == nil {
+		t.Fatal("expected first claim to succeed")
+	}
+	if _, ok := r.TryClaimRecovery("task-1"); ok {
+		t.Fatal("expected second claim for the same task to fail while the first is held")
+	}
+	// A different task is unaffected.
+	if other, ok := r.TryClaimRecovery("task-2"); !ok {
+		t.Fatal("expected claim for a different task to succeed")
+	} else {
+		other.Release()
+	}
+
+	claim.Release()
+	if again, ok := r.TryClaimRecovery("task-1"); !ok {
+		t.Fatal("expected claim to succeed again after release")
+	} else {
+		again.Release()
+	}
+
+	// Release is idempotent and nil-safe.
+	claim.Release()
+	var nilClaim *recovery.RecoveryClaim
+	nilClaim.Release()
+}
+
+// TestRestartStaleSkipsWhileRecoveryClaimHeld proves the fix for the race
+// described in sybra#2452: the periodic RestartStaleInProgress sweep and a
+// targeted RestartTaskIfStale call (cluster monitor's lost-agent recovery)
+// run on independent goroutines and can both reach the same stale task's
+// recovery decision — e.g. both observing an unprocessed workflow step for a
+// completed headless run and each firing WorkflowEngine.HandleAgentComplete.
+// Simulating the second caller by pre-holding the recovery claim (the same
+// technique TestRestartStaleSkipsWhileDispatchInFlight uses for the
+// dispatch claim) proves the sweep now backs off instead of double-applying
+// the recovery decision.
+func TestRestartStaleSkipsWhileRecoveryClaimHeld(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	taskID := newReviewTaskWithHeadlessRun(t, tasks, task.AgentRun{
+		AgentID:   "ag-review",
+		Role:      "review",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		Outcome:   task.RunOutcomeSuccess,
+		Result:    "review posted",
+		StartedAt: time.Now().Add(-10 * time.Minute),
+	})
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+
+	claim, ok := r.TryClaimRecovery(taskID)
+	if !ok {
+		t.Fatal("expected to acquire recovery claim")
+	}
+	defer claim.Release()
+
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.completions) != 0 {
+		t.Errorf("HandleAgentComplete called %d times; want 0 (recovery claim held elsewhere)", len(wfStub.completions))
+	}
+	if stub.startCalls != 0 {
+		t.Errorf("StartAgent called %d times; want 0 (recovery claim held elsewhere)", stub.startCalls)
+	}
+}
+
 type stubOrchestrator struct {
 	startCalls    int
 	prFixCalls    int

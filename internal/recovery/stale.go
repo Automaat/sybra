@@ -64,6 +64,17 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	if r.Agents.IsDispatching(t.ID) {
 		return
 	}
+	// Claim sole ownership of this task's recovery decision for the rest of
+	// this call: the periodic RestartStaleInProgress sweep and a targeted
+	// RestartTaskIfStale call (cluster monitor's lost-agent recovery) run on
+	// independent goroutines and can both reach this point for the same task
+	// from the same stale snapshot. See TryClaimRecovery.
+	claim, claimed := r.TryClaimRecovery(t.ID)
+	if !claimed {
+		r.Logger.Info("restart-stale.skip", "task_id", t.ID, "reason", "recovery_in_progress")
+		return
+	}
+	defer claim.Release()
 	// Don't re-dispatch to the same provider while it is rate-limited; do
 	// continue when failover can route this run to a healthy peer. (A
 	// rate-limited run is stalled in-progress by the completion handler, not
