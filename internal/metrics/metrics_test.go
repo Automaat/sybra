@@ -83,6 +83,20 @@ func TestMetricsPipeline(t *testing.T) {
 	RegisterProviderRawHealth(func() map[string]int64 {
 		return map[string]int64{"claude": 1, "codex": 0}
 	})
+	RegisterGHAuthState(func() map[string]int64 {
+		return map[string]int64{"healthy": 1, "unavailable": 0}
+	})
+	RegisterGHAuthTransitions(func() int64 { return 4 })
+	RegisterGHAuthSuppressedCalls(func() int64 { return 2 })
+	RegisterGHIssueOutboxPending(func() map[string]int64 {
+		return map[string]int64{"monitor": 1}
+	})
+	RegisterGHIssueOutboxReplayed(func() map[string]int64 {
+		return map[string]int64{"monitor": 3}
+	})
+	RegisterGHIssueOutboxOldestAgeSeconds(func() map[string]int64 {
+		return map[string]int64{"monitor": 120}
+	})
 
 	body := scrape(t)
 
@@ -111,6 +125,12 @@ func TestMetricsPipeline(t *testing.T) {
 		"sybra_agents_gated_total",
 		"sybra_provider_healthy",
 		"sybra_provider_raw_healthy",
+		"sybra_github_auth_state",
+		"sybra_github_auth_transitions_total",
+		"sybra_github_auth_suppressed_calls_total",
+		"sybra_github_issue_outbox_pending",
+		"sybra_github_issue_outbox_replayed_total",
+		"sybra_github_issue_outbox_oldest_pending_age_seconds",
 		`status="todo"`,
 		`state="running"`,
 		`result="ok"`,
@@ -120,6 +140,8 @@ func TestMetricsPipeline(t *testing.T) {
 		`provider="claude"`,
 		`from="claude"`,
 		`to="codex"`,
+		`state="healthy"`,
+		`sink="monitor"`,
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(body, want) {

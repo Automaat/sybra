@@ -219,6 +219,69 @@ func TestDurableGHIssueSink_BoundedDepth(t *testing.T) {
 	}
 }
 
+func TestDurableGHIssueSink_ReplayPendingDrainsOutboxAndCountsReplays(t *testing.T) {
+	inner := &fakeSubmitter{err: errAuthFailed}
+	d, _ := newTestDurableSink(t, inner)
+
+	if _, _, err := d.SubmitIssue(context.Background(), "queued anomaly", "body", nil); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	if got := d.Depth(); got != 1 {
+		t.Fatalf("Depth() = %d, want 1", got)
+	}
+	if got := d.OldestPendingAge(time.Now()); got <= 0 {
+		t.Fatalf("OldestPendingAge() = %v, want > 0 for a queued item", got)
+	}
+	if got := d.ReplayedTotal(); got != 0 {
+		t.Fatalf("ReplayedTotal() = %d, want 0 before recovery", got)
+	}
+
+	// Simulate the github.OnAuthRecovered hook firing: credentials recover
+	// and ReplayPending is invoked directly, without waiting for another
+	// SubmitIssue call.
+	inner.markHealthy()
+	d.ReplayPending(context.Background())
+
+	if got := d.Depth(); got != 0 {
+		t.Fatalf("Depth() after replay = %d, want 0", got)
+	}
+	if got := d.ReplayedTotal(); got != 1 {
+		t.Fatalf("ReplayedTotal() after replay = %d, want 1", got)
+	}
+	if got := d.OldestPendingAge(time.Now()); got != 0 {
+		t.Fatalf("OldestPendingAge() after drain = %v, want 0", got)
+	}
+}
+
+func TestDurableGHIssueSink_ReplayPendingConcurrentWithSubmitIssueNeverDoubleFiles(t *testing.T) {
+	inner := &fakeSubmitter{err: errAuthFailed}
+	d, _ := newTestDurableSink(t, inner)
+
+	if _, _, err := d.SubmitIssue(context.Background(), "racy anomaly", "body", nil); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	inner.markHealthy()
+
+	// A recovery-triggered ReplayPending racing with the sink's own
+	// opportunistic flush (via a concurrent SubmitIssue for an unrelated
+	// title) must not file the same pending item twice.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); d.ReplayPending(context.Background()) }()
+	go func() {
+		defer wg.Done()
+		_, _, _ = d.SubmitIssue(context.Background(), "unrelated anomaly", "body2", nil)
+	}()
+	wg.Wait()
+
+	if got := d.Depth(); got != 0 {
+		t.Fatalf("Depth() = %d, want 0 after both flushes settle", got)
+	}
+	if got := d.ReplayedTotal(); got != 1 {
+		t.Fatalf("ReplayedTotal() = %d, want exactly 1 (no double-file)", got)
+	}
+}
+
 func TestDurableGHIssueSink_SubmitDelegatesToAnomalyShapedSubmitIssue(t *testing.T) {
 	inner := &fakeSubmitter{healthy: true}
 	d, _ := newTestDurableSink(t, inner)
