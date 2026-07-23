@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"encoding/json"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -191,4 +193,58 @@ var oneMSuffixRe = regexp.MustCompile(`(?i)\[1m\]$`)
 
 func stripContextSuffix(model string) string {
 	return oneMSuffixRe.ReplaceAllString(strings.TrimSpace(model), "")
+}
+
+type claudeHookSettings struct {
+	Hooks map[string][]claudeHookEntry `json:"hooks"`
+}
+
+type claudeHookEntry struct {
+	Matcher string             `json:"matcher"`
+	Hooks   []claudeHookAction `json:"hooks"`
+}
+
+type claudeHookAction struct {
+	Type    string `json:"type"`
+	Command string `json:"command,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Timeout int    `json:"timeout"`
+}
+
+func buildClaudeHookSettings(approvalAddr string, needsApproval bool) string {
+	var actions []claudeHookAction
+	if bin, ok := resolveKlaudiushHookBin(); ok {
+		actions = append(actions, claudeHookAction{
+			Type:    "command",
+			Command: bin + " --hook-type PreToolUse",
+			Timeout: 30,
+		})
+	}
+
+	// Only wire the approval hook for agents that actually need permission checks.
+	// Agents with --dangerously-skip-permissions still get klaudiush validation,
+	// but should not block on Sybra's human approval server.
+	if approvalAddr != "" && needsApproval {
+		actions = append(actions, claudeHookAction{
+			Type:    "http",
+			URL:     fmt.Sprintf("http://%s/hooks/pre-tool-use", approvalAddr),
+			Timeout: 300,
+		})
+	}
+	if len(actions) == 0 {
+		return ""
+	}
+	settings := claudeHookSettings{
+		Hooks: map[string][]claudeHookEntry{
+			"PreToolUse": {{
+				Matcher: "",
+				Hooks:   actions,
+			}},
+		},
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

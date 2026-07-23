@@ -56,24 +56,6 @@ func (opencodeProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 	return opencodeEventToStreamEvent(oe), nil
 }
 
-func (opencodeProvider) UsesPerTurnConvo() bool { return true }
-
-func (p opencodeProvider) BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation {
-	skillNames := discoverOpencodeSkills()
-	rendered, unrendered := computeSkillRender(prompt, skillNames)
-	a.SetPromptRender("slash-stripped", rendered, unrendered)
-	prompt = stripSkillInvocations(prompt, skillNames)
-	return perTurnConvoInvocation{bin: "opencode", args: buildOpenCodeRunArgs(a, cfg, prompt)}
-}
-
-func (opencodeProvider) ParseConvoLine(line []byte) (ConvoEvent, error) {
-	oe, err := ParseOpenCodeLine(line)
-	if err != nil {
-		return ConvoEvent{}, err
-	}
-	return opencodeEventToConvoEvent(oe), nil
-}
-
 func (opencodeProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {
 	return providerpkg.ClassifyOpenCodeError(sample)
 }

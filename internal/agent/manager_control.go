@@ -8,7 +8,8 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 )
 
-// SendPromptToAgent delivers a follow-up prompt to an interactive agent.
+// SendPromptToAgent delivers a follow-up prompt to a steerable headless
+// claude agent via its stdin transport.
 func (m *Manager) SendPromptToAgent(agentID, text string) error {
 	a, err := m.GetAgent(agentID)
 	if err != nil {
@@ -18,17 +19,41 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 		return fmt.Errorf("agent %s is stopped", agentID)
 	}
 
-	// Conversational agents: write to stdin via SendMessage.
 	if a.convo.hasStdinPipe() {
 		return m.SendMessage(agentID, text)
 	}
 
-	// Per-turn conversational agents (codex/copilot/opencode): deliver via promptCh.
-	if a.hasPromptChannel() {
-		return m.sendConvoPrompt(agentID, text)
-	}
+	return fmt.Errorf("agent %s has no active transport (no stdin pipe)", agentID)
+}
 
-	return fmt.Errorf("agent %s has no active transport (no stdin pipe or prompt channel)", agentID)
+// SendMessage sends a follow-up user message to a live steerable headless
+// claude run (see RunConfig.HeadlessSteerable). When the agent is mid-turn
+// (StateRunning), the message is appended to a pending queue and flushed on
+// the next "result" event, so users can pile up follow-ups without waiting
+// for each turn to settle. A run that has begun finalizing (no steer message
+// was pending at its last result, so stdin was already closed) rejects
+// rather than queuing a message that would never be delivered.
+func (m *Manager) SendMessage(agentID, text string) error {
+	a, err := m.GetAgent(agentID)
+	if err != nil {
+		return err
+	}
+	if !a.convo.hasStdinPipe() {
+		return conflictError(fmt.Sprintf("agent %s has no stdin transport for follow-up messages", agentID))
+	}
+	if a.Mode != "headless" {
+		return conflictError(fmt.Sprintf("agent %s is not in headless steerable mode", agentID))
+	}
+	return m.sendHeadlessSteerMessage(a, text)
+}
+
+// GetConvoOutput returns the full conversation event buffer for an agent.
+func (m *Manager) GetConvoOutput(agentID string) ([]ConvoEvent, error) {
+	a, err := m.GetAgent(agentID)
+	if err != nil {
+		return nil, err
+	}
+	return a.ConvoOutput(), nil
 }
 
 // isLive reports whether an agent is still alive from the user's perspective.
