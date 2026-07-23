@@ -839,6 +839,53 @@ func TestMirrorReconcileMissingSurvivesReassignRace(t *testing.T) {
 	}
 }
 
+// TestMirrorReconcileMissingResetsStreakOnDirectHit covers a Copilot-review
+// finding on this PR: a direct GetTask hit (the follower has the task even
+// though this tick's ListTasksForNode snapshot omitted it) must clear any
+// in-progress confirmed-404 streak, or a later, unrelated absence inherits
+// the stale count and can trash the canonical copy before
+// missingConfirmThreshold truly fresh confirmations have accumulated.
+func TestMirrorReconcileMissingResetsStreakOnDirectHit(t *testing.T) {
+	stub := &followerStub{live: map[string]task.Task{}}
+	srv := stub.server(t)
+
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	if _, _, err := mgr.Put(task.Task{
+		ID: "flaky-listing", Status: task.StatusInProgress, AssignedNode: "pet-box",
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mirror := NewMirror(cfg, mgr, roster, slog.New(slog.DiscardHandler), time.Second)
+	var consecutiveFailures int
+	mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+
+	stub.mu.Lock()
+	stub.live["flaky-listing"] = task.Task{
+		ID: "flaky-listing", Status: task.StatusInProgress, AssignedNode: "pet-box",
+		UpdatedAt: time.Now().Add(time.Minute),
+	}
+	stub.mu.Unlock()
+	mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+
+	stub.mu.Lock()
+	delete(stub.live, "flaky-listing")
+	stub.mu.Unlock()
+	for range missingConfirmThreshold - 1 {
+		mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+	}
+
+	if _, err := mgr.Get("flaky-listing"); err != nil {
+		t.Fatalf("canonical copy trashed on a stale pre-reset streak: %v", err)
+	}
+}
+
 // TestMirrorReconcileMissingLeavesCanonicalOnTransientError is the negative
 // case for TestMirrorReconcileMissingTrashesConfirmedGoneTask: a GetTask
 // failure that is not a confirmed 404 (follower down, network blip) must

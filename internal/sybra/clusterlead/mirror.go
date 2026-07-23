@@ -235,6 +235,9 @@ func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *clus
 			m.logger.Debug("cluster.mirror.reconcile_missing.failed", "node", node, "task", t.ID, "err", gerr)
 			continue
 		}
+		// Found despite this tick's snapshot omitting it — a later absence
+		// is unrelated and must not inherit a stale streak.
+		m.clearMissingStreak(node, t.ID)
 		m.applyFollowerTaskWithContext(ctx, node, follower)
 	}
 }
