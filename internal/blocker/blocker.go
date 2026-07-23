@@ -9,12 +9,13 @@ import (
 type Kind string
 
 const (
-	KindOperatorDecision     Kind = "operator_decision"
-	KindCredentialRequired   Kind = "credential_required"
-	KindPolicyApproval       Kind = "policy_approval"
-	KindWorktreeRepair       Kind = "worktree_repair"
-	KindReviewFixExhausted   Kind = "review_fix_exhausted"
-	KindTriageRetryExhausted Kind = "triage_retry_exhausted"
+	KindOperatorDecision           Kind = "operator_decision"
+	KindCredentialRequired         Kind = "credential_required"
+	KindPolicyApproval             Kind = "policy_approval"
+	KindWorktreeRepair             Kind = "worktree_repair"
+	KindReviewFixExhausted         Kind = "review_fix_exhausted"
+	KindTriageRetryExhausted       Kind = "triage_retry_exhausted"
+	KindWatchdogRateLimitExhausted Kind = "watchdog_rate_limit_exhausted"
 )
 
 // Actor identifies which subsystem authored the blocker.
