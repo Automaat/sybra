@@ -769,6 +769,118 @@ func TestPickImplementationResumeSession(t *testing.T) {
 			},
 			want: "ses-codex",
 		},
+		{
+			name: "one zero-output stall (below threshold) — still resumes",
+			runs: []task.AgentRun{
+				{
+					Role:                  string(agent.RoleImplementation),
+					SessionID:             "ses-poison",
+					ResumeZeroOutputStall: true,
+				},
+			},
+			want: "ses-poison",
+		},
+		{
+			name: "two consecutive zero-output stalls (at threshold) — session poisoned, fresh session",
+			runs: []task.AgentRun{
+				{
+					Role:                  string(agent.RoleImplementation),
+					SessionID:             "ses-poison",
+					ResumeZeroOutputStall: true,
+					StartedAt:             wfStart,
+				},
+				{
+					Role:                  string(agent.RoleImplementation),
+					SessionID:             "ses-poison",
+					ResumeZeroOutputStall: true,
+					StartedAt:             wfStart.Add(time.Minute),
+				},
+			},
+			want: "",
+		},
+		{
+			name: "two stalls then a later non-stall run of same session — resumes, never poisoned",
+			runs: []task.AgentRun{
+				{
+					Role:                  string(agent.RoleImplementation),
+					SessionID:             "ses-recovered",
+					ResumeZeroOutputStall: true,
+					StartedAt:             wfStart,
+				},
+				{
+					Role:                  string(agent.RoleImplementation),
+					SessionID:             "ses-recovered",
+					ResumeZeroOutputStall: true,
+					StartedAt:             wfStart.Add(time.Minute),
+				},
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-recovered",
+					StartedAt: wfStart.Add(2 * time.Minute),
+				},
+			},
+			want: "ses-recovered",
+		},
+		{
+			name: "newest session poisoned, older distinct session still qualifying — falls back to older",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-older",
+					StartedAt: wfStart,
+				},
+				{
+					Role:                  string(agent.RoleImplementation),
+					SessionID:             "ses-newer-poisoned",
+					ResumeZeroOutputStall: true,
+					StartedAt:             wfStart.Add(time.Minute),
+				},
+				{
+					Role:                  string(agent.RoleImplementation),
+					SessionID:             "ses-newer-poisoned",
+					ResumeZeroOutputStall: true,
+					StartedAt:             wfStart.Add(2 * time.Minute),
+				},
+			},
+			want: "ses-older",
+		},
+		{
+			name: "newest session sub-threshold stall + older distinct qualifying session — resumes newest",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-older",
+					StartedAt: wfStart,
+				},
+				{
+					Role:                  string(agent.RoleImplementation),
+					SessionID:             "ses-newer",
+					ResumeZeroOutputStall: true,
+					StartedAt:             wfStart.Add(time.Minute),
+				},
+			},
+			want: "ses-newer",
+		},
+		{
+			name: "non-stall rate-limited run of same session never counts toward the streak",
+			runs: []task.AgentRun{
+				{
+					Role:                  string(agent.RoleImplementation),
+					SessionID:             "ses-mixed",
+					ResumeZeroOutputStall: true,
+					StartedAt:             wfStart,
+				},
+				{
+					// A different (non-zero-output) rate-limit stop: buildRunPatch
+					// never sets ResumeZeroOutputStall for these, so this run must
+					// resolve the candidate immediately rather than extend the streak.
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-mixed",
+					StartedAt: wfStart.Add(time.Minute),
+				},
+			},
+			want: "ses-mixed",
+		},
 	}
 
 	for _, tc := range cases {

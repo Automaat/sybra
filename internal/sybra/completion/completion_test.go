@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -207,6 +208,63 @@ func TestBuildRunPatchIncludesSkillAttributionMetadata(t *testing.T) {
 	if patch.SubagentCallCount == nil || *patch.SubagentCallCount != 2 {
 		t.Fatalf("SubagentCallCount = %v, want 2 distinct parents", patch.SubagentCallCount)
 	}
+}
+
+// TestBuildRunPatchMarksResumeZeroOutputStall covers the circuit-breaker
+// marker (see agentorch.PickImplementationResumeSession): buildRunPatch must
+// set ResumeZeroOutputStall only for the specific errorKind/errorMsg pair the
+// watchdog's zero-output-stall path records, never for a generic rate limit
+// or any other terminal state.
+func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
+	t.Parallel()
+
+	t.Run("zero-output stall sets the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-1", TaskID: "task-1"}
+		ag.SetError("rate_limit", watchdogreason.ZeroOutputBeforeStartup)
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall == nil || !*patch.ResumeZeroOutputStall {
+			t.Fatalf("ResumeZeroOutputStall = %v, want true", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("generic rate limit does not set the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-2", TaskID: "task-1"}
+		ag.SetError("rate_limit", "rate_limited")
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall != nil {
+			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("wrapped zero-output reason (task status_reason form) does not set the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-3", TaskID: "task-1"}
+		ag.SetError("rate_limit", watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup))
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall != nil {
+			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("zero-output message without rate_limit kind does not set the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-4", TaskID: "task-1"}
+		ag.SetError("crash", watchdogreason.ZeroOutputBeforeStartup)
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall != nil {
+			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+		}
+	})
 }
 
 // TestBuildRunPatchDowngradesConformanceWhenReceiptMissing covers #2009: a

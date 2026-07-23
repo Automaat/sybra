@@ -1982,3 +1982,23 @@ func (a *Agent) GetErrorKind() string {
 	defer a.mu.RUnlock()
 	return a.ErrorKind
 }
+
+// GetErrorMsg returns the classified error message recorded alongside
+// GetErrorKind, e.g. watchdogreason.ZeroOutputBeforeStartup for a zero-output
+// stall reported via RecordProviderSignal.
+func (a *Agent) GetErrorMsg() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ErrorMsg
+}
+
+// GetError returns the classified error kind and message as one atomic
+// snapshot under a single RLock. SetError writes both fields together, so a
+// caller that needs to compare them in tandem (e.g. poison-stall detection)
+// must read them together to avoid a torn kind/msg pairing when SetError
+// interleaves between two separate getter calls.
+func (a *Agent) GetError() (kind, msg string) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ErrorKind, a.ErrorMsg
+}

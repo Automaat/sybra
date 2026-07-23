@@ -278,6 +278,11 @@ type AgentRun struct {
 	// observed in the run. Zero for non-Claude runs and runs recorded before
 	// fan-out counting existed.
 	SubagentCallCount int `json:"subagentCallCount,omitempty"`
+	// ResumeZeroOutputStall marks a run whose zero-output watchdog stall fired
+	// (errorKind "rate_limit" + errorMsg watchdogreason.ZeroOutputBeforeStartup).
+	// It is the durable poison signal agentorch.PickImplementationResumeSession
+	// counts to detect a session stuck in a resume-stall loop.
+	ResumeZeroOutputStall bool `json:"zeroOutputStall,omitempty"`
 }
 
 // Attachment re-exports the persisted task attachment metadata type.

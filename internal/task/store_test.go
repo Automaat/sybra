@@ -918,6 +918,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		HeadSHA:                 Ptr("0123456789abcdef0123456789abcdef01234567"),
 		FinalCommitSource:       Ptr("fallback"),
 		SubagentCallCount:       Ptr(3),
+		ResumeZeroOutputStall:   Ptr(true),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 
@@ -969,6 +970,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		HeadSHA:                 "0123456789abcdef0123456789abcdef01234567",
 		FinalCommitSource:       "fallback",
 		SubagentCallCount:       3,
+		ResumeZeroOutputStall:   true,
 	})
 }
 
@@ -1076,6 +1078,9 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	if got.SubagentCallCount != want.SubagentCallCount {
 		t.Errorf("SubagentCallCount = %d, want %d", got.SubagentCallCount, want.SubagentCallCount)
 	}
+	if got.ResumeZeroOutputStall != want.ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %t, want %t", got.ResumeZeroOutputStall, want.ResumeZeroOutputStall)
+	}
 }
 
 func TestStoreUpdateRunNotFound(t *testing.T) {
@@ -1158,6 +1163,88 @@ func TestStoreUpdateRunSessionID(t *testing.T) {
 	}
 	if reloaded.AgentRuns[0].SessionID != "ses-abc123" {
 		t.Errorf("reloaded SessionID = %q, want %q", reloaded.AgentRuns[0].SessionID, "ses-abc123")
+	}
+}
+
+func TestStoreUpdateRunResumeZeroOutputStall(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Zero output stall task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-z", Mode: "headless", State: "running"}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun(created.ID, "agent-z", RunPatch{
+		State:                 Ptr("done"),
+		ResumeZeroOutputStall: Ptr(true),
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %v, want true", got.AgentRuns[0].ResumeZeroOutputStall)
+	}
+
+	// Verify YAML round-trip persists the marker.
+	reloaded, err := Parse(got.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("reloaded ResumeZeroOutputStall = %v, want true", reloaded.AgentRuns[0].ResumeZeroOutputStall)
+	}
+}
+
+// TestStoreUpdateRunResumeZeroOutputStallFalseNeverClears mirrors the
+// SessionID/HeadSHA "empty means unchanged" guard: RunPatch.ResumeZeroOutputStall
+// is a latch like VerdictRendered — a false pointer must never clear an
+// already-set marker, since applyRunLifecycle only ever sets it true.
+func TestStoreUpdateRunResumeZeroOutputStallFalseNeverClears(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Zero output stall latch task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{
+		AgentID:               "agent-latch",
+		Mode:                  "headless",
+		State:                 "running",
+		ResumeZeroOutputStall: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun(created.ID, "agent-latch", RunPatch{
+		State:                 Ptr("done"),
+		ResumeZeroOutputStall: Ptr(false),
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %v, want true (latch must not clear)", got.AgentRuns[0].ResumeZeroOutputStall)
 	}
 }
 
