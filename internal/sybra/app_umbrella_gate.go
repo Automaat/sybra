@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -115,20 +116,22 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 			// Gate-marked todo children (current model) and legacy
 			// blocked+gated children (tasks created before this change)
 			// are both eligible for release. Never release a task that is
-			// blocked without the gating tag (contained Sybra bug), and never
-			// release one the workflow engine itself parked blocked (e.g. a
-			// watchdog-exhausted retry, see isWorkflowOwnedBlock) even if it
-			// still carries the gating tag — that hold is not the umbrella
-			// gate's own and releasing it would discard the child's in-flight
-			// workflow (#2538). A child whose umbrella is currently
-			// mid-recovery is held regardless — RecoverDegraded may be
-			// mutating this same umbrella's children concurrently, so this
-			// tick must not release from a partial graph.
+			// blocked without the gating tag (contained Sybra bug), one the
+			// workflow engine itself parked blocked (e.g. a watchdog-exhausted
+			// retry, see isWorkflowOwnedBlock), or one that already ran an
+			// implementation agent — none of these holds is the umbrella
+			// gate's own, and releasing one would discard the child's
+			// in-flight workflow (#2538), even if it still carries the gating
+			// tag. A child whose umbrella is currently mid-recovery is held
+			// regardless — RecoverDegraded may be mutating this same
+			// umbrella's children concurrently, so this tick must not
+			// release from a partial graph.
 			Awaiting: t.UmbrellaIssue != "" &&
 				!inFlight[umbrella.NormalizeIssueRef(t.UmbrellaIssue)] &&
 				!expanding &&
 				(t.Status == task.StatusTodo || t.Status == task.StatusBlocked) &&
 				!isWorkflowOwnedBlock(t) &&
+				!hasStartedImplementation(t) &&
 				slices.Contains(t.Tags, umbrellaGatedTag),
 		}
 	}
@@ -159,6 +162,21 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	// snapshot RecoverDegraded may be mutating underneath. Unrelated
 	// umbrellas continue rolling up normally.
 	a.rollupTrackers(states, cyclic)
+}
+
+// hasStartedImplementation reports whether t has ever run an implementation
+// agent. A dependency-gated child that never left blocked-awaiting-deps has
+// none; the umbrella gate must never release one that does, since a blocked
+// status on a child that already ran implementation means a watchdog
+// exhaustion, not an unmet dependency (sybra#2538).
+func hasStartedImplementation(t *task.Task) bool {
+	for i := range slices.Backward(t.AgentRuns) {
+		role := t.AgentRuns[i].Role
+		if role == "" || role == string(agent.RoleImplementation) {
+			return true
+		}
+	}
+	return false
 }
 
 // accumulateChild folds one child task's status into its umbrella's tally.

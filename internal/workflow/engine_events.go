@@ -1662,6 +1662,11 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 	if attempts >= maxWatchdogRateLimitRetries {
 		targetStatus, reason, terminalState := watchdogRateLimitExhaustionResolution(*t, step, attempts)
 		t.Workflow.State = terminalState
+		if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) {
+			// Bump past PickImplementationResumeSession's StartedAt fence so the
+			// next dispatch stops resuming this poisoned session. See sybra#2542.
+			t.Workflow.StartedAt = time.Now().UTC()
+		}
 		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 			e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
 		}

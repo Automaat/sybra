@@ -3229,13 +3229,15 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 }
 
 func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
+	oldStartedAt := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name       string
-		retries    string
-		wantStarts int
-		wantStatus string
-		wantReason string
-		wantRetry  string
+		name             string
+		retries          string
+		wantStarts       int
+		wantStatus       string
+		wantReason       string
+		wantRetry        string
+		wantSessionFence bool
 	}{
 		{
 			name:       "resume consumes persisted retry and reruns",
@@ -3246,12 +3248,13 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			wantRetry:  "2",
 		},
 		{
-			name:       "third identical zero-output attempt blocks",
-			retries:    strconv.Itoa(maxWatchdogRateLimitRetries),
-			wantStarts: 0,
-			wantStatus: "blocked",
-			wantReason: "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
-			wantRetry:  strconv.Itoa(maxWatchdogRateLimitRetries),
+			name:             "third identical zero-output attempt blocks and fences off the poisoned session",
+			retries:          strconv.Itoa(maxWatchdogRateLimitRetries),
+			wantStarts:       0,
+			wantStatus:       "blocked",
+			wantReason:       "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
+			wantRetry:        strconv.Itoa(maxWatchdogRateLimitRetries),
+			wantSessionFence: true,
 		},
 	}
 	for _, tc := range tests {
@@ -3275,6 +3278,7 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 					CurrentStep: "implement",
 					State:       ExecWaiting,
 					Variables:   vars,
+					StartedAt:   oldStartedAt,
 				},
 			})
 
@@ -3295,6 +3299,17 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			}
 			if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != tc.wantRetry {
 				t.Fatalf("rate-limit retry var = %q, want %q", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")], tc.wantRetry)
+			}
+			// sybra#2542: exhausting the zero-output-stall budget must bump
+			// Workflow.StartedAt past every prior agent run, so
+			// PickImplementationResumeSession's StartedAt fence rejects the
+			// poisoned session and the next dispatch starts fresh instead of
+			// resuming the same session that just hung.
+			if tc.wantSessionFence && !got.Workflow.StartedAt.After(oldStartedAt) {
+				t.Fatalf("workflow.started_at = %v, want it bumped past %v to fence off the poisoned resume session", got.Workflow.StartedAt, oldStartedAt)
+			}
+			if !tc.wantSessionFence && !got.Workflow.StartedAt.Equal(oldStartedAt) {
+				t.Fatalf("workflow.started_at = %v, want unchanged %v", got.Workflow.StartedAt, oldStartedAt)
 			}
 		})
 	}
