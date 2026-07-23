@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
@@ -1978,6 +1979,7 @@ func (r *Handler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []gith
 	if r.cfg == nil || !r.cfg.GitHub.NativeAutoMerge {
 		return
 	}
+	backoff := r.mergeBackoff()
 	handled := make(map[string]bool, len(issues))
 	for i := range issues {
 		handled[issues[i].TaskID] = true
@@ -2020,27 +2022,30 @@ func (r *Handler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []gith
 			continue
 		}
 
-		supportsFn := r.supportsAutoMergeFn
-		if supportsFn == nil {
-			supportsFn = github.SupportsNativeAutoMerge
-		}
-		ok, serr := supportsFn(pr.Repository, pr.BaseRefName)
-		if serr != nil || !ok {
+		stateSig := autoMergeStateSignature(*pr)
+		if !backoff.ShouldAttempt(pr.Repository, pr.Number, pr.HeadSHA, stateSig) {
+			metrics.AutoMergeAttempt(context.Background(), "suppressed", string(backoff.Class(pr.Repository, pr.Number)))
 			continue
 		}
-
-		enableFn := r.enableAutoMergeFn
-		if enableFn == nil {
-			enableFn = github.EnableAutoMerge
-		}
-		if aerr := enableFn(pr.Repository, pr.Number); aerr != nil {
-			r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", pr.Number, "err", aerr)
+		res := r.tryArmNativeAutoMerge(*t, github.PRIssue{
+			Kind:   github.PRIssueReadyToMerge,
+			TaskID: t.ID,
+			PR:     *pr,
+		}, "")
+		if res.armed {
+			r.clearMergeBackoff(pr.Repository, pr.Number)
+			metrics.AutoMergeAttempt(context.Background(), "armed", "")
+			r.evictReadyPRCache(pr.Repository, pr.Number)
 			continue
 		}
-		r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", map[string]any{
-			"pr": pr.Number, "repo": pr.Repository,
-		})
-		r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", pr.Number)
+		if res.err == nil {
+			continue
+		}
+		metrics.AutoMergeAttempt(context.Background(), "attempted", "")
+		class := github.ClassifyMergeError(res.err)
+		if backoff.RecordFailure(pr.Repository, pr.Number, pr.HeadSHA, stateSig, class) {
+			metrics.AutoMergeAttempt(context.Background(), "terminal", string(class))
+		}
 	}
 }
 

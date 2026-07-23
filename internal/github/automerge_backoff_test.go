@@ -39,24 +39,28 @@ func TestAutoMergeBackoff_ShouldAttempt(t *testing.T) {
 	b := NewAutoMergeBackoff()
 	b.now = func() time.Time { return now }
 
-	if !b.ShouldAttempt("owner/repo", 1, "sha1") {
+	if !b.ShouldAttempt("owner/repo", 1, "sha1", "state1") {
 		t.Fatal("first sighting must always attempt")
 	}
 
-	b.RecordFailure("owner/repo", 1, "sha1", MergeErrorBlocked)
-	if b.ShouldAttempt("owner/repo", 1, "sha1") {
+	b.RecordFailure("owner/repo", 1, "sha1", "state1", MergeErrorBlocked)
+	if b.ShouldAttempt("owner/repo", 1, "sha1", "state1") {
 		t.Fatal("expected suppressed immediately after a recorded failure")
 	}
 
 	// A different head SHA (new push) reprobes immediately, regardless of
 	// the still-open backoff window on the old SHA.
-	if !b.ShouldAttempt("owner/repo", 1, "sha2") {
+	if !b.ShouldAttempt("owner/repo", 1, "sha2", "state1") {
 		t.Fatal("expected immediate reprobe on a new head SHA")
+	}
+
+	if !b.ShouldAttempt("owner/repo", 1, "sha1", "state2") {
+		t.Fatal("expected immediate reprobe on changed PR/check state")
 	}
 
 	// Advancing past the backoff window on the original SHA allows retry.
 	now = now.Add(3 * time.Hour)
-	if !b.ShouldAttempt("owner/repo", 1, "sha1") {
+	if !b.ShouldAttempt("owner/repo", 1, "sha1", "state1") {
 		t.Fatal("expected attempt allowed once the backoff window elapses")
 	}
 }
@@ -71,7 +75,7 @@ func TestAutoMergeBackoff_ExponentialGrowthAndCeiling(t *testing.T) {
 	delay := base
 	atCeiling := false
 	for i := 0; i < 10; i++ {
-		atCeiling = b.RecordFailure("owner/repo", 5, "sha1", MergeErrorBlocked)
+		atCeiling = b.RecordFailure("owner/repo", 5, "sha1", "state1", MergeErrorBlocked)
 		if b.Attempts("owner/repo", 5) != i+1 {
 			t.Fatalf("attempts = %d, want %d", b.Attempts("owner/repo", 5), i+1)
 		}
@@ -90,14 +94,14 @@ func TestAutoMergeBackoff_ExponentialGrowthAndCeiling(t *testing.T) {
 	}
 
 	// One more failure at the ceiling must not exceed it.
-	b.RecordFailure("owner/repo", 5, "sha1", MergeErrorBlocked)
+	b.RecordFailure("owner/repo", 5, "sha1", "state1", MergeErrorBlocked)
 	// nextTry - now should be capped at max; verify indirectly via ShouldAttempt.
 	now = now.Add(max - time.Second)
-	if b.ShouldAttempt("owner/repo", 5, "sha1") {
+	if b.ShouldAttempt("owner/repo", 5, "sha1", "state1") {
 		t.Fatal("expected still suppressed just before the ceiling elapses")
 	}
 	now = now.Add(2 * time.Second)
-	if !b.ShouldAttempt("owner/repo", 5, "sha1") {
+	if !b.ShouldAttempt("owner/repo", 5, "sha1", "state1") {
 		t.Fatal("expected attempt allowed once the ceiling window elapses")
 	}
 }
@@ -108,19 +112,37 @@ func TestAutoMergeBackoff_ClassChangeResetsAttempts(t *testing.T) {
 	b := NewAutoMergeBackoff()
 	b.now = func() time.Time { return now }
 
-	b.RecordFailure("owner/repo", 9, "sha1", MergeErrorBlocked)
-	b.RecordFailure("owner/repo", 9, "sha1", MergeErrorBlocked)
+	b.RecordFailure("owner/repo", 9, "sha1", "state1", MergeErrorBlocked)
+	b.RecordFailure("owner/repo", 9, "sha1", "state1", MergeErrorBlocked)
 	if got := b.Attempts("owner/repo", 9); got != 2 {
 		t.Fatalf("attempts = %d, want 2", got)
 	}
 
 	// A genuinely different failure mode on the same SHA gets a fresh curve.
-	b.RecordFailure("owner/repo", 9, "sha1", MergeErrorAuth)
+	b.RecordFailure("owner/repo", 9, "sha1", "state1", MergeErrorAuth)
 	if got := b.Attempts("owner/repo", 9); got != 1 {
 		t.Fatalf("attempts after class change = %d, want 1 (reset)", got)
 	}
 	if got := b.Class("owner/repo", 9); got != MergeErrorAuth {
 		t.Fatalf("class = %q, want %q", got, MergeErrorAuth)
+	}
+}
+
+func TestAutoMergeBackoff_StateChangeResetsAttempts(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
+	b := NewAutoMergeBackoff()
+	b.now = func() time.Time { return now }
+
+	b.RecordFailure("owner/repo", 9, "sha1", "state1", MergeErrorBlocked)
+	b.RecordFailure("owner/repo", 9, "sha1", "state1", MergeErrorBlocked)
+	if got := b.Attempts("owner/repo", 9); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
+	}
+
+	b.RecordFailure("owner/repo", 9, "sha1", "state2", MergeErrorBlocked)
+	if got := b.Attempts("owner/repo", 9); got != 1 {
+		t.Fatalf("attempts after state change = %d, want 1", got)
 	}
 }
 
@@ -132,11 +154,11 @@ func TestAutoMergeBackoff_Clear(t *testing.T) {
 		t.Fatal("Clear on an untracked key must report recovered=false")
 	}
 
-	b.RecordFailure("owner/repo", 2, "sha1", MergeErrorTransient)
+	b.RecordFailure("owner/repo", 2, "sha1", "state1", MergeErrorTransient)
 	if recovered := b.Clear("owner/repo", 2); !recovered {
 		t.Fatal("Clear after a recorded failure must report recovered=true")
 	}
-	if !b.ShouldAttempt("owner/repo", 2, "sha1") {
+	if !b.ShouldAttempt("owner/repo", 2, "sha1", "state1") {
 		t.Fatal("expected attempt allowed immediately after Clear")
 	}
 }

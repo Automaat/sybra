@@ -99,6 +99,7 @@ func mergeBackoffWindow(class MergeErrorClass) (base, max time.Duration) {
 
 type autoMergeBackoffEntry struct {
 	headSHA  string
+	stateSig string
 	class    MergeErrorClass
 	attempts int
 	nextTry  time.Time
@@ -129,35 +130,36 @@ func autoMergeBackoffKey(repo string, number int) string {
 }
 
 // ShouldAttempt reports whether a merge/arm attempt against repo#number at
-// headSHA should proceed now. True on the first sighting of this head SHA
-// (nothing to back off from yet) and once the backoff window from the last
-// recorded failure has elapsed.
-func (b *AutoMergeBackoff) ShouldAttempt(repo string, number int, headSHA string) bool {
+// headSHA should proceed now. True on the first sighting of this head SHA or
+// stateSig (nothing to back off from yet) and once the backoff window from the
+// last recorded failure has elapsed.
+func (b *AutoMergeBackoff) ShouldAttempt(repo string, number int, headSHA, stateSig string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	entry, ok := b.entries[autoMergeBackoffKey(repo, number)]
-	if !ok || entry.headSHA != headSHA {
+	if !ok || entry.headSHA != headSHA || entry.stateSig != stateSig {
 		return true
 	}
 	return !b.now().Before(entry.nextTry)
 }
 
-// RecordFailure records a failed attempt and computes the next eligible
-// retry time. A head-SHA or error-class change resets the attempt counter —
-// a new push, or a genuinely different failure mode, gets its own backoff
-// curve rather than inheriting the prior problem's position on it.
+// RecordFailure records a failed attempt and computes the next eligible retry
+// time. A head-SHA, stateSig, or error-class change resets the attempt counter
+// — a new push, changed PR/check state, or a genuinely different failure mode
+// gets its own backoff curve rather than inheriting the prior problem's
+// position on it.
 // atCeiling reports whether this failure's computed delay has saturated at
 // its class's maximum, i.e. this PR has been failing long enough that
 // backoff can no longer grow — a signal worth surfacing (see
 // metrics.AutoMergeAttempt "terminal") without escalating the task, since a
 // green PR that simply hasn't merged is never itself a failure.
-func (b *AutoMergeBackoff) RecordFailure(repo string, number int, headSHA string, class MergeErrorClass) (atCeiling bool) {
+func (b *AutoMergeBackoff) RecordFailure(repo string, number int, headSHA, stateSig string, class MergeErrorClass) (atCeiling bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	key := autoMergeBackoffKey(repo, number)
 	entry, ok := b.entries[key]
-	if !ok || entry.headSHA != headSHA || entry.class != class {
-		entry = autoMergeBackoffEntry{headSHA: headSHA, class: class}
+	if !ok || entry.headSHA != headSHA || entry.stateSig != stateSig || entry.class != class {
+		entry = autoMergeBackoffEntry{headSHA: headSHA, stateSig: stateSig, class: class}
 	}
 	entry.attempts++
 	base, max := mergeBackoffWindow(class)

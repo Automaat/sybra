@@ -1204,6 +1204,76 @@ func TestHandleAutoMerge_ArmFailureBacksOff(t *testing.T) {
 	}
 }
 
+func TestMaybeArmNativeAutoMerge_BacksOffRepeatedFailuresUntilStateChanges(t *testing.T) {
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(81),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	taskList, err := tasks.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	var armCalls int
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: github.NewIssueTracker(time.Minute),
+		cfg:       &config.Config{GitHub: config.GitHubConfig{NativeAutoMerge: true}},
+		supportsAutoMergeFn: func(repo, baseBranch string) (bool, error) {
+			return true, nil
+		},
+		enableAutoMergeFn: func(repo string, number int) error {
+			armCalls++
+			return errors.New("gh pr merge --auto: API rate limit exceeded for user")
+		},
+	}
+
+	pr := github.PullRequest{
+		Repository:      "pet-owner/pet-repo",
+		Number:          81,
+		BaseRefName:     "main",
+		Mergeable:       "MERGEABLE",
+		CIStatus:        "PENDING",
+		CopilotReviewed: true,
+		HeadSHA:         "sha-arm-a",
+	}
+
+	for i := range 5 {
+		r.maybeArmNativeAutoMerge(taskList, []github.PullRequest{pr}, nil)
+		if armCalls != 1 {
+			t.Fatalf("after poll %d: armCalls = %d, want 1 (repeated polls against unchanged state must be suppressed)", i+1, armCalls)
+		}
+	}
+
+	pr.CIStatus = "SUCCESS"
+	r.maybeArmNativeAutoMerge(taskList, []github.PullRequest{pr}, nil)
+	if armCalls != 2 {
+		t.Fatalf("after CI state change: armCalls = %d, want 2 (same-SHA state change must reprobe immediately)", armCalls)
+	}
+}
+
 // TestHandleKnownPRConflictsViaREST_RoutesReadyToMerge verifies the
 // budget-exhausted REST-only pass now routes a ready_to_merge issue through
 // to handleAutoMerge (and its REST merge), where it used to be dropped
