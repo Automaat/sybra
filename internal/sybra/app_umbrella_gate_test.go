@@ -338,7 +338,36 @@ func TestTrackerRollup(t *testing.T) {
 		{"cycle", umbrellaState{total: 2}, true, true, task.StatusHumanRequired, false},
 		{"stuck child", umbrellaState{total: 2, anyHR: true}, false, true, task.StatusHumanRequired, false},
 		{"blocked child", umbrellaState{total: 2, anyBlocked: true}, false, true, task.StatusHumanRequired, false},
-		{"cancelled child", umbrellaState{total: 2, anyCancelled: true}, false, true, task.StatusHumanRequired, false},
+		{
+			"cancelled child with no live sibling",
+			umbrellaState{total: 2, children: []umbrellaProgressChild{
+				{id: "a", issue: "Automaat/sybra#1", status: task.StatusCancelled},
+				{id: "b", issue: "Automaat/sybra#2", status: task.StatusDone},
+			}},
+			false, true, task.StatusHumanRequired, false,
+		},
+		{
+			// A cancelled task can never reach Done, so it must not count
+			// against total — otherwise doneCount == total is impossible
+			// forever, and the umbrella sits at in-progress with no signal.
+			"cancelled duplicate with a live sibling on the same issue completes",
+			umbrellaState{total: 2, doneCount: 1, children: []umbrellaProgressChild{
+				{id: "a", issue: "Automaat/sybra#1", status: task.StatusCancelled},
+				{id: "b", issue: "Automaat/sybra#1", status: task.StatusDone},
+			}},
+			false, true, task.StatusDone, true,
+		},
+		{
+			// Excluding the resolved duplicate from total must not mask a
+			// genuinely unfinished sibling under the same umbrella.
+			"cancelled duplicate does not mask other still-running work",
+			umbrellaState{total: 3, doneCount: 1, children: []umbrellaProgressChild{
+				{id: "a", issue: "Automaat/sybra#1", status: task.StatusCancelled},
+				{id: "b", issue: "Automaat/sybra#1", status: task.StatusDone},
+				{id: "c", issue: "Automaat/sybra#2", status: task.StatusInProgress},
+			}},
+			false, true, task.StatusInProgress, false,
+		},
 		{"all done", umbrellaState{total: 2, doneCount: 2}, false, true, task.StatusDone, true},
 		{"in progress", umbrellaState{total: 2, doneCount: 1}, false, true, task.StatusInProgress, false},
 		{"zero children settled completes", umbrellaState{total: 0}, false, true, task.StatusDone, true},

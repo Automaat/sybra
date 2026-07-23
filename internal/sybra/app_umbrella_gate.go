@@ -27,17 +27,16 @@ const umbrellaSettleDelay = 2 * time.Minute
 
 // umbrellaState aggregates one umbrella's tracker and children for a gate tick.
 type umbrellaState struct {
-	tracker      *task.Task
-	cap          int // max children running at once
-	total        int // child task count
-	doneCount    int
-	active       int // children occupying a parallelism slot
-	anyHR        bool
-	anyCancelled bool
-	anyBlocked   bool // non-gated child stuck in `blocked` (e.g. human-review flip)
-	expanding    bool
-	released     int // children released so far this tick (counts toward the cap)
-	children     []umbrellaProgressChild
+	tracker    *task.Task
+	cap        int // max children running at once
+	total      int // child task count
+	doneCount  int
+	active     int // children occupying a parallelism slot
+	anyHR      bool
+	anyBlocked bool // non-gated child stuck in `blocked` (e.g. human-review flip)
+	expanding  bool
+	released   int // children released so far this tick (counts toward the cap)
+	children   []umbrellaProgressChild
 }
 
 type umbrellaProgressChild struct {
@@ -170,10 +169,11 @@ func accumulateChild(st *umbrellaState, t *task.Task) {
 	case task.StatusDone:
 		st.doneCount++
 	case task.StatusCancelled:
-		// A cancelled prerequisite is a deliberate abandonment — surface it for
-		// a human rather than silently completing the umbrella or proceeding on
-		// the cancelled work (its dependents stay held; see depsSatisfied).
-		st.anyCancelled = true
+		// No side effect here: whether a cancelled child blocks rollup depends
+		// on whether a sibling still covers its issue (a cancelled duplicate
+		// from an umbrella-expansion race vs. a genuine abandonment), which
+		// needs the full child set — see unresolvedCancellation, called from
+		// trackerRollup once every child has been folded in.
 	case task.StatusHumanRequired:
 		if watchdogreason.IsRetryableStop(t.StatusReason) {
 			st.active++
@@ -458,21 +458,65 @@ func umbrellaProgressIssueSuffix(ref string) string {
 	return " (" + ref + ")"
 }
 
+// resolveCancellations classifies every cancelled child in children against
+// its siblings. An umbrella-expansion race can materialize the same sub-issue
+// as two tasks; cleanup cancels the loser in favor of its live twin (see
+// releaseUnblockedChildren's dedup path and #2294's post-mortem). That
+// cancellation is not an abandonment — the issue is still covered — and must
+// not permanently gate the umbrella to human-required. Only a cancellation
+// with no live (non-cancelled) sibling for its issue is a genuine deliberate
+// abandonment worth surfacing (dependents on that issue would otherwise stall
+// forever with no escalation; see depsSatisfied): unresolved reports whether
+// any such abandonment exists. resolved counts the opposite case — a
+// cancelled duplicate whose issue is covered by a live sibling — which the
+// caller must exclude from a total/doneCount completion check, or an umbrella
+// with a resolved duplicate could never satisfy doneCount == total (a
+// cancelled task never becomes done) and would sit at in-progress forever
+// with no signal at all once it stops being surfaced as human-required.
+func resolveCancellations(children []umbrellaProgressChild) (unresolved bool, resolved int) {
+	liveIssue := make(map[string]bool, len(children))
+	for _, c := range children {
+		if c.status == task.StatusCancelled {
+			continue
+		}
+		if key := umbrella.NormalizeIssueRef(c.issue); key != "" {
+			liveIssue[key] = true
+		}
+	}
+	for _, c := range children {
+		if c.status != task.StatusCancelled {
+			continue
+		}
+		key := umbrella.NormalizeIssueRef(c.issue)
+		if key == "" || !liveIssue[key] {
+			unresolved = true
+			continue
+		}
+		resolved++
+	}
+	return unresolved, resolved
+}
+
 // trackerRollup decides an umbrella tracker's status from its children. A
-// cycle, a stuck (human-required) child, a non-gated blocked child, or a
-// cancelled child surfaces as human-required (halting only that chain);
-// all-done closes the umbrella. A
-// tracker with no children (every sub-issue was already closed at expansion)
-// is vacuously complete, but only once `settled` (so a tracker observed while
-// its children are still being materialized is not closed prematurely) and
-// only when expansion isn't currently failing — a tracker carrying
-// umbrella.ExpandFailTagPrefix (see internal/umbrella.recordExpandFailure)
-// never had a chance to materialize its children in the first place, and
-// closing it would silently drop the umbrella issue while sub-issues remain
-// open on GitHub (#1570).
+// cycle, a stuck (human-required) child, a non-gated blocked child, or an
+// unresolved cancellation (see resolveCancellations) surfaces as
+// human-required (halting only that chain); all-done closes the umbrella. A
+// resolved cancellation (a cancelled duplicate whose issue has a live
+// sibling) counts against neither total nor doneCount, so it can never block
+// completion the way a cancelled child that never reaches Done otherwise
+// would. A tracker with no children (every sub-issue was already closed at
+// expansion) is vacuously complete, but only once `settled` (so a tracker
+// observed while its children are still being materialized is not closed
+// prematurely) and only when expansion isn't currently failing — a tracker
+// carrying umbrella.ExpandFailTagPrefix (see
+// internal/umbrella.recordExpandFailure) never had a chance to materialize
+// its children in the first place, and closing it would silently drop the
+// umbrella issue while sub-issues remain open on GitHub (#1570).
 func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status, reason string, doClose bool) {
 	expandFailing := st.tracker != nil && umbrella.ParseExpandFailCount(st.tracker.Tags) > 0
 	expandActive := st.tracker != nil && umbrella.HasActiveExpandPhase(st.tracker.Tags)
+	unresolvedCancellation, resolvedCancellations := resolveCancellations(st.children)
+	effectiveTotal := st.total - resolvedCancellations
 	switch {
 	case cyclic:
 		return task.StatusHumanRequired, "umbrella dependency cycle detected", false
@@ -480,7 +524,7 @@ func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status,
 		return task.StatusHumanRequired, "umbrella child needs attention", false
 	case st.anyBlocked:
 		return task.StatusHumanRequired, "umbrella child is blocked", false
-	case st.anyCancelled:
+	case unresolvedCancellation:
 		return task.StatusHumanRequired, "umbrella child was cancelled", false
 	case expandFailing:
 		// Defer entirely to internal/umbrella.recordExpandFailure, which owns
@@ -488,9 +532,9 @@ func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status,
 		// must not overwrite that state just because the tracker already has
 		// children or all currently-materialized children happen to be done.
 		return st.tracker.Status, st.tracker.StatusReason, false
-	case st.total > 0 && st.doneCount == st.total:
+	case effectiveTotal > 0 && st.doneCount == effectiveTotal:
 		return task.StatusDone, "all umbrella children complete", true
-	case st.total == 0 && settled && !expandActive:
+	case effectiveTotal == 0 && settled && !expandActive:
 		return task.StatusDone, "umbrella has no open sub-issues", true
 	default:
 		return task.StatusInProgress, "umbrella in progress", false
