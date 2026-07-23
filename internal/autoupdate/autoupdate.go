@@ -23,20 +23,25 @@ const (
 )
 
 type Config struct {
-	Enabled         bool
-	RepoDir         string
-	Remote          string
-	Branch          string
-	Mode            string
-	Repository      string
-	RequiredChecks  []string
-	PollInterval    time.Duration
-	StateFile       string
-	OverrideFile    string
-	RequestRestart  func()
-	AuditTransition func(map[string]any)
-	Now             func() time.Time
-	GateCommit      func(context.Context, string, string, []string) (github.CommitGate, error)
+	Enabled        bool
+	RepoDir        string
+	Remote         string
+	Branch         string
+	Mode           string
+	Repository     string
+	RequiredChecks []string
+	PollInterval   time.Duration
+	// CoalesceInterval is the minimum time between graceful restarts in auto
+	// mode. An approved candidate is held (superseding any earlier pending
+	// candidate) until this interval has elapsed since the last restart, so
+	// a burst of merges produces at most one restart per interval.
+	CoalesceInterval time.Duration
+	StateFile        string
+	OverrideFile     string
+	RequestRestart   func()
+	AuditTransition  func(map[string]any)
+	Now              func() time.Time
+	GateCommit       func(context.Context, string, string, []string) (github.CommitGate, error)
 }
 
 type Result struct {
@@ -46,6 +51,13 @@ type Result struct {
 	OldSHA       string
 	NewSHA       string
 	ChangedFiles []string
+	// PendingSHA, when non-empty, is the approved candidate held back by
+	// restart coalescing.
+	PendingSHA            string
+	PendingAgeSeconds     int
+	NextRestartEligibleAt time.Time
+	CoalescedCount        int
+	RestartReason         string
 }
 
 type Runner struct {
@@ -64,6 +76,7 @@ type persistedState struct {
 	LastAppliedSHA  string    `json:"last_applied_sha,omitempty"`
 	LastAppliedAt   time.Time `json:"last_applied_at,omitzero"`
 	LastRestartAt   time.Time `json:"last_restart_at,omitzero"`
+	CoalescedCount  int       `json:"coalesced_count,omitempty"`
 }
 
 func New(cfg Config, logger *slog.Logger) *Runner {
@@ -183,6 +196,12 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 	if cfg.Mode != ModeAuto {
 		return Result{Status: "approved", Reason: state.CandidateReason, Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
 	}
+	if result, coalesced, err := r.checkCoalesceGate(cfg, &state, overrideActive, head, remoteSHA, repo, changed, now); err != nil || coalesced {
+		if err != nil {
+			return Result{}, err
+		}
+		return result, nil
+	}
 	if result, waiting, err := r.handleSupersededCandidate(ctx, cfg, &state, head, remoteSHA, repo, now); err != nil || waiting {
 		if err != nil {
 			return Result{}, err
@@ -195,11 +214,13 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 	if _, err := git(ctx, cfg.RepoDir, "merge", "--ff-only", remoteSHA); err != nil {
 		return Result{}, fmt.Errorf("fast-forward %s: %w", remoteSHA, err)
 	}
+	restartReason := restartReasonFor(overrideActive, state.LastRestartAt)
 	state.PendingSHA = ""
 	state.PendingAt = time.Time{}
 	state.LastAppliedSHA = remoteSHA
 	state.LastAppliedAt = now
 	state.LastRestartAt = now
+	state.CoalescedCount = 0
 	state.setCandidateOutcome("applied", "")
 	r.recordTransition("applied", remoteSHA, head, remoteSHA, "")
 	reason := ""
@@ -207,7 +228,58 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 		reason = "post-apply state update failed: " + err.Error()
 		r.logger.Warn("autoupdate.post_apply_state.failed", "err", err, "sha", shortSHA(remoteSHA))
 	}
-	return Result{Status: "applied", Reason: reason, Repo: repo, OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}, nil
+	return Result{
+		Status:                "applied",
+		Reason:                reason,
+		Repo:                  repo,
+		OldSHA:                head,
+		NewSHA:                remoteSHA,
+		ChangedFiles:          changed,
+		NextRestartEligibleAt: now.Add(cfg.CoalesceInterval),
+		RestartReason:         restartReason,
+	}, nil
+}
+
+// restartReasonFor explains why a restart is firing now, using the
+// pre-apply LastRestartAt so the reason reflects what actually gated it.
+func restartReasonFor(overrideActive bool, lastRestartAt time.Time) string {
+	switch {
+	case overrideActive:
+		return "manual override"
+	case lastRestartAt.IsZero():
+		return "initial apply"
+	default:
+		return "coalesce interval elapsed"
+	}
+}
+
+// checkCoalesceGate holds an approved candidate when a restart happened too
+// recently, so a burst of merges produces at most one restart per
+// CoalesceInterval. The manual override marker bypasses the gate entirely.
+func (r *Runner) checkCoalesceGate(cfg Config, state *persistedState, overrideActive bool, head, remoteSHA, repo string, changed []string, now time.Time) (Result, bool, error) {
+	if overrideActive || now.Sub(state.LastRestartAt) >= cfg.CoalesceInterval {
+		return Result{}, false, nil
+	}
+	state.CoalescedCount++
+	nextEligible := state.LastRestartAt.Add(cfg.CoalesceInterval)
+	reason := fmt.Sprintf("restart coalescing active, next eligible at %s", nextEligible.Format(time.RFC3339))
+	r.recordTransition("coalesced", remoteSHA, head, remoteSHA, reason)
+	if err := saveState(cfg.StateFile, *state); err != nil {
+		return Result{}, false, err
+	}
+	return Result{
+		Status:                "coalesced",
+		Reason:                reason,
+		Repo:                  repo,
+		OldSHA:                head,
+		NewSHA:                remoteSHA,
+		ChangedFiles:          changed,
+		PendingSHA:            state.PendingSHA,
+		PendingAgeSeconds:     int(now.Sub(state.PendingAt).Seconds()),
+		NextRestartEligibleAt: nextEligible,
+		CoalescedCount:        state.CoalescedCount,
+		RestartReason:         "coalescing",
+	}, true, nil
 }
 
 func (r *Runner) noteCandidateSeen(state *persistedState, head, remoteSHA string, now time.Time) {
@@ -399,6 +471,18 @@ func (r *Runner) check(ctx context.Context) {
 	}
 	if len(res.ChangedFiles) > 0 {
 		attrs = append(attrs, "changed", res.ChangedFiles)
+	}
+	if res.PendingSHA != "" {
+		attrs = append(attrs, "pending", shortSHA(res.PendingSHA), "pending_age_s", res.PendingAgeSeconds)
+	}
+	if !res.NextRestartEligibleAt.IsZero() {
+		attrs = append(attrs, "next_restart_eligible_at", res.NextRestartEligibleAt.Format(time.RFC3339))
+	}
+	if res.CoalescedCount > 0 {
+		attrs = append(attrs, "coalesced_count", res.CoalescedCount)
+	}
+	if res.RestartReason != "" {
+		attrs = append(attrs, "restart_reason", res.RestartReason)
 	}
 	r.logger.Info("autoupdate.check", attrs...)
 	if res.Status == "applied" && r.cfg.RequestRestart != nil {
@@ -649,6 +733,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.PollInterval <= 0 {
 		c.PollInterval = 5 * time.Minute
+	}
+	if c.CoalesceInterval <= 0 {
+		c.CoalesceInterval = time.Hour
 	}
 	c.RequiredChecks = github.NormalizeRequiredChecks(c.RequiredChecks)
 	if c.Now == nil {

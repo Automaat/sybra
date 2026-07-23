@@ -652,6 +652,226 @@ func TestCheckAndApplyAuditsTransitions(t *testing.T) {
 	}
 }
 
+func TestCheckAndApplyCoalescesRestartsWithinInterval(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	stateFile := filepath.Join(t.TempDir(), "autoupdate-state.json")
+	commit := func(name, body string) {
+		writeFile(t, upstream, name, body)
+		gitTest(t, upstream, "add", name)
+		gitTest(t, upstream, "commit", "-m", "add "+name)
+	}
+
+	clockNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	restarts := 0
+	r := New(Config{
+		Enabled:          true,
+		RepoDir:          work,
+		Remote:           "origin",
+		Branch:           "main",
+		Mode:             ModeAuto,
+		Repository:       "o/r",
+		RequiredChecks:   []string{"test"},
+		StateFile:        stateFile,
+		CoalesceInterval: time.Hour,
+		GateCommit:       greenGate,
+		Now:              func() time.Time { return clockNow },
+		RequestRestart:   func() { restarts++ },
+	}, nil)
+
+	commit("feature-1.txt", "one\n")
+	r.check(t.Context())
+	if restarts != 1 {
+		t.Fatalf("restarts after first apply = %d, want 1", restarts)
+	}
+	firstRestartAt := clockNow
+
+	// Two more merges land within the coalesce window: both are held, not applied.
+	clockNow = clockNow.Add(10 * time.Minute)
+	commit("feature-2.txt", "two\n")
+	res2, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Status != "coalesced" || res2.CoalescedCount != 1 {
+		t.Fatalf("res2 = %+v, want coalesced/CoalescedCount=1", res2)
+	}
+	if res2.PendingSHA == "" {
+		t.Fatal("res2.PendingSHA empty, want held candidate sha")
+	}
+	if want := firstRestartAt.Add(time.Hour); !res2.NextRestartEligibleAt.Equal(want) {
+		t.Fatalf("res2.NextRestartEligibleAt = %v, want %v", res2.NextRestartEligibleAt, want)
+	}
+	if _, err := os.Stat(filepath.Join(work, "feature-2.txt")); !os.IsNotExist(err) {
+		t.Fatalf("feature-2.txt merged despite coalescing: %v", err)
+	}
+
+	clockNow = clockNow.Add(10 * time.Minute)
+	commit("feature-3.txt", "three\n")
+	res3, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res3.Status != "coalesced" || res3.CoalescedCount != 2 {
+		t.Fatalf("res3 = %+v, want coalesced/CoalescedCount=2", res3)
+	}
+	r.check(t.Context())
+	if restarts != 1 {
+		t.Fatalf("restarts while still inside coalesce window = %d, want still 1", restarts)
+	}
+
+	// Once the interval elapses, exactly one restart fires and the newest
+	// candidate (not the first-seen one) is the one that gets applied.
+	clockNow = clockNow.Add(45 * time.Minute)
+	r.check(t.Context())
+	if restarts != 2 {
+		t.Fatalf("restarts after interval elapsed = %d, want 2", restarts)
+	}
+	if _, err := os.Stat(filepath.Join(work, "feature-3.txt")); err != nil {
+		t.Fatalf("feature-3.txt missing after coalesced apply: %v", err)
+	}
+	state, err := loadState(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CoalescedCount != 0 {
+		t.Fatalf("CoalescedCount after apply = %d, want reset to 0", state.CoalescedCount)
+	}
+}
+
+func TestCheckAndApplyCoalesceThrottlePersistsAcrossRunnerRecreation(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	stateFile := filepath.Join(t.TempDir(), "autoupdate-state.json")
+
+	clockNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newRunner := func() *Runner {
+		return New(Config{
+			Enabled:          true,
+			RepoDir:          work,
+			Remote:           "origin",
+			Branch:           "main",
+			Mode:             ModeAuto,
+			Repository:       "o/r",
+			RequiredChecks:   []string{"test"},
+			StateFile:        stateFile,
+			CoalesceInterval: time.Hour,
+			GateCommit:       greenGate,
+			Now:              func() time.Time { return clockNow },
+		}, nil)
+	}
+
+	writeFile(t, upstream, "feature-1.txt", "one\n")
+	gitTest(t, upstream, "add", "feature-1.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature-1")
+
+	res1, err := newRunner().CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1.Status != "applied" {
+		t.Fatalf("res1 = %+v, want applied", res1)
+	}
+
+	// A brand new Runner (simulating a process restart) must still see the
+	// persisted LastRestartAt and hold the next candidate — the throttle
+	// lives in the state file, not in-memory Runner state.
+	clockNow = clockNow.Add(10 * time.Minute)
+	writeFile(t, upstream, "feature-2.txt", "two\n")
+	gitTest(t, upstream, "add", "feature-2.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature-2")
+
+	res2, err := newRunner().CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Status != "coalesced" {
+		t.Fatalf("res2 = %+v, want coalesced (throttle must survive runner recreation)", res2)
+	}
+}
+
+func TestCheckAndApplyOverrideBypassesCoalesceGate(t *testing.T) {
+	t.Parallel()
+
+	upstream, work := seedRepos(t)
+	stateFile := filepath.Join(t.TempDir(), "autoupdate-state.json")
+	overrideFile := filepath.Join(t.TempDir(), "autoupdate-override")
+
+	clockNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	r := New(Config{
+		Enabled:          true,
+		RepoDir:          work,
+		Remote:           "origin",
+		Branch:           "main",
+		Mode:             ModeAuto,
+		Repository:       "o/r",
+		RequiredChecks:   []string{"test"},
+		StateFile:        stateFile,
+		OverrideFile:     overrideFile,
+		CoalesceInterval: time.Hour,
+		GateCommit:       greenGate,
+		Now:              func() time.Time { return clockNow },
+	}, nil)
+
+	writeFile(t, upstream, "feature-1.txt", "one\n")
+	gitTest(t, upstream, "add", "feature-1.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature-1")
+
+	res1, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1.Status != "applied" {
+		t.Fatalf("res1 = %+v, want applied", res1)
+	}
+
+	// A second update lands minutes later, well inside the coalesce window —
+	// an operator writes the override marker to force it through immediately.
+	clockNow = clockNow.Add(5 * time.Minute)
+	writeFile(t, upstream, "feature-2.txt", "two\n")
+	gitTest(t, upstream, "add", "feature-2.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature-2")
+	if err := os.WriteFile(overrideFile, []byte("override\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res2, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Status != "applied" || res2.RestartReason != "manual override" {
+		t.Fatalf("res2 = %+v, want applied/manual override", res2)
+	}
+	if _, err := os.Stat(overrideFile); !os.IsNotExist(err) {
+		t.Fatalf("override file still exists after bypass: %v", err)
+	}
+	state, err := loadState(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CoalescedCount != 0 {
+		t.Fatalf("CoalescedCount after override apply = %d, want reset to 0", state.CoalescedCount)
+	}
+
+	// A third update within the window, with no override this time, must be
+	// coalesced again — the one-shot override must not disable coalescing
+	// for subsequent checks.
+	clockNow = clockNow.Add(5 * time.Minute)
+	writeFile(t, upstream, "feature-3.txt", "three\n")
+	gitTest(t, upstream, "add", "feature-3.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature-3")
+
+	res3, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res3.Status != "coalesced" || res3.CoalescedCount != 1 {
+		t.Fatalf("res3 = %+v, want coalesced/CoalescedCount=1", res3)
+	}
+}
+
 func writeFile(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {

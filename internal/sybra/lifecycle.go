@@ -286,16 +286,17 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 		return
 	}
 	runner := autoupdate.New(autoupdate.Config{
-		Enabled:        a.cfg.AutoUpdate.Enabled,
-		RepoDir:        repoDir,
-		Remote:         a.cfg.AutoUpdate.Remote,
-		Branch:         a.cfg.AutoUpdate.Branch,
-		Mode:           a.cfg.AutoUpdate.Mode,
-		RequiredChecks: a.cfg.AutoUpdate.RequiredChecks,
-		PollInterval:   time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
-		StateFile:      filepath.Join(config.HomeDir(), "autoupdate-state.json"),
-		OverrideFile:   filepath.Join(config.HomeDir(), "autoupdate-override"),
-		RequestRestart: a.requestRestart,
+		Enabled:          a.cfg.AutoUpdate.Enabled,
+		RepoDir:          repoDir,
+		Remote:           a.cfg.AutoUpdate.Remote,
+		Branch:           a.cfg.AutoUpdate.Branch,
+		Mode:             a.cfg.AutoUpdate.Mode,
+		RequiredChecks:   a.cfg.AutoUpdate.RequiredChecks,
+		PollInterval:     time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
+		CoalesceInterval: time.Duration(a.cfg.AutoUpdate.CoalesceSeconds) * time.Second,
+		StateFile:        filepath.Join(config.HomeDir(), "autoupdate-state.json"),
+		OverrideFile:     filepath.Join(config.HomeDir(), "autoupdate-override"),
+		RequestRestart:   a.requestRestart,
 		AuditTransition: func(data map[string]any) {
 			a.logAudit(audit.EventAutoUpdateTransition, "", "", data)
 		},

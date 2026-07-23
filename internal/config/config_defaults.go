@@ -721,6 +721,7 @@ func defaultSeedConfig() *Config {
 			Mode:                "notify",
 			PollSeconds:         300,
 			RestartDelaySeconds: 2,
+			CoalesceSeconds:     3600,
 		},
 		Providers: ProvidersConfig{
 			HealthCheck: ProviderHealthCheckConfig{
@@ -1117,6 +1118,9 @@ func applyAutoUpdateDefaults(cfg *Config) {
 	}
 	if cfg.AutoUpdate.RestartDelaySeconds <= 0 {
 		cfg.AutoUpdate.RestartDelaySeconds = 2
+	}
+	if cfg.AutoUpdate.CoalesceSeconds <= 0 {
+		cfg.AutoUpdate.CoalesceSeconds = 3600
 	}
 }
 
