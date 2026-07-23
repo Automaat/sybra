@@ -64,6 +64,8 @@ var (
 	agentFailoversCounter metric.Int64Counter
 	agentsGatedCounter    metric.Int64Counter
 
+	autoMergeAttempts metric.Int64Counter
+
 	// Observable gauge providers, mutated at wiring time and read from the
 	// meter's registered callback. Guarded by obsMu.
 	obsMu               sync.RWMutex
@@ -163,6 +165,9 @@ func createInstruments() error {
 		return err
 	}
 	if err := createProviderInstruments(); err != nil {
+		return err
+	}
+	if err := createAutoMergeInstruments(); err != nil {
 		return err
 	}
 	return createObservableGauges()
@@ -314,6 +319,19 @@ func createProviderInstruments() error {
 	agentsGatedCounter, err = m.Int64Counter(
 		"sybra_agents_gated_total",
 		metric.WithDescription("Agent runs refused by the provider health gate, by provider and reason."),
+	)
+	return err
+}
+
+func createAutoMergeInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
+	var err error
+	autoMergeAttempts, err = m.Int64Counter(
+		"sybra_automerge_attempts_total",
+		metric.WithDescription("Auto-merge decision points, by result (attempted/failed/suppressed/armed/recovered/terminal) and error class."),
 	)
 	return err
 }
@@ -649,6 +667,22 @@ func AgentGated(name, reason string) {
 		metric.WithAttributes(
 			attribute.String("provider", name),
 			attribute.String("reason", reason),
+		))
+}
+
+// AutoMergeAttempt records one auto-merge decision point. result is one of
+// "attempted", "failed", "suppressed", "armed", "recovered", or "terminal";
+// class is the github.MergeErrorClass behind a failed/suppressed/terminal
+// result, empty otherwise. Passed as a plain string so this package does not
+// need to import internal/github.
+func AutoMergeAttempt(ctx context.Context, result, class string) {
+	if autoMergeAttempts == nil {
+		return
+	}
+	autoMergeAttempts.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("result", result),
+			attribute.String("class", class),
 		))
 }
 

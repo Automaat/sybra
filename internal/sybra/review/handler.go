@@ -159,6 +159,11 @@ type Handler struct {
 	// prPollState tracks stable linked PRs across poll cycles so the known-PR
 	// fetch path can defer unchanged PRs with exponential backoff.
 	prPollState map[string]prPollEntry
+	// autoMergeBackoff persists a retry fingerprint (repo, PR, head SHA,
+	// error class) for failed auto-merge/arm attempts so handleAutoMerge
+	// backs off exponentially instead of re-attempting unchanged state every
+	// poll tick (#2450). Lazily initialized by mergeBackoff().
+	autoMergeBackoff *github.AutoMergeBackoff
 	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
 	// falls back to github.FetchReviews.
 	fetchReviewsFn func() (github.ReviewSummary, error)
