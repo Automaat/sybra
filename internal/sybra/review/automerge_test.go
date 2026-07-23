@@ -261,7 +261,7 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 				},
 			}
 
-			r.handleAutoMerge(github.PRIssue{
+			r.handleAutoMerge(context.Background(), github.PRIssue{
 				Kind:   github.PRIssueReadyToMerge,
 				TaskID: created.ID,
 				PR:     tt.pr,
@@ -434,7 +434,7 @@ func TestHandleAutoMerge_ArmsNative(t *testing.T) {
 				},
 			}
 
-			r.handleAutoMerge(github.PRIssue{
+			r.handleAutoMerge(context.Background(), github.PRIssue{
 				Kind:   github.PRIssueReadyToMerge,
 				TaskID: created.ID,
 				PR:     pr,
@@ -504,7 +504,7 @@ func TestHandleAutoMerge_FallsBackToNativeWhenDirectMergeBlockedByPolicy(t *test
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{
+	r.handleAutoMerge(context.Background(), github.PRIssue{
 		Kind:   github.PRIssueReadyToMerge,
 		TaskID: created.ID,
 		PR: github.PullRequest{
@@ -578,7 +578,7 @@ func TestHandleAutoMerge_DirectMergePolicyBlockedHonorsNativeKillSwitch(t *testi
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{
+	r.handleAutoMerge(context.Background(), github.PRIssue{
 		Kind:   github.PRIssueReadyToMerge,
 		TaskID: created.ID,
 		PR: github.PullRequest{
@@ -650,7 +650,7 @@ func TestHandleAutoMerge_DirectMergeOrdinaryFailureDoesNotArmNative(t *testing.T
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{
+	r.handleAutoMerge(context.Background(), github.PRIssue{
 		Kind:   github.PRIssueReadyToMerge,
 		TaskID: created.ID,
 		PR: github.PullRequest{
@@ -760,7 +760,7 @@ func TestHandleAutoMerge_REST(t *testing.T) {
 				},
 			}
 
-			r.handleAutoMerge(github.PRIssue{
+			r.handleAutoMerge(context.Background(), github.PRIssue{
 				Kind:   github.PRIssueReadyToMerge,
 				TaskID: created.ID,
 				PR:     tt.pr,
@@ -827,7 +827,7 @@ func TestHandleAutoMerge_REST_AuditPayload(t *testing.T) {
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{
+	r.handleAutoMerge(context.Background(), github.PRIssue{
 		Kind:   github.PRIssueReadyToMerge,
 		TaskID: created.ID,
 		PR: github.PullRequest{
@@ -898,7 +898,7 @@ func TestHandleAutoMerge_FiresAppliedHook(t *testing.T) {
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{
+	r.handleAutoMerge(context.Background(), github.PRIssue{
 		Kind:   github.PRIssueReadyToMerge,
 		TaskID: created.ID,
 		PR: github.PullRequest{
@@ -968,7 +968,7 @@ func TestHandleAutoMerge_BacksOffRepeatedDirectMergeFailures(t *testing.T) {
 	}
 
 	for i := range 5 {
-		r.handleAutoMerge(github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+		r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 		if mergeCalls != 1 {
 			t.Fatalf("after poll %d: mergeCalls = %d, want 1 (repeated polls against unchanged state must be suppressed)", i+1, mergeCalls)
 		}
@@ -977,7 +977,7 @@ func TestHandleAutoMerge_BacksOffRepeatedDirectMergeFailures(t *testing.T) {
 	// A new push (head SHA change) must reprobe immediately, not wait out the
 	// backoff window computed for the old SHA.
 	pr.HeadSHA = "sha-b"
-	r.handleAutoMerge(github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 	if mergeCalls != 2 {
 		t.Fatalf("after head SHA change: mergeCalls = %d, want 2 (new push must reprobe immediately)", mergeCalls)
 	}
@@ -1036,7 +1036,7 @@ func TestHandleAutoMerge_BackoffClearsOnSuccess(t *testing.T) {
 		HeadSHA:         "sha-x",
 	}
 
-	r.handleAutoMerge(github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 	if mergeCalls != 1 {
 		t.Fatalf("mergeCalls after first failure = %d, want 1", mergeCalls)
 	}
@@ -1046,7 +1046,7 @@ func TestHandleAutoMerge_BackoffClearsOnSuccess(t *testing.T) {
 
 	// Same head SHA, still within the backoff window: a retry must not merge.
 	failNext = false
-	r.handleAutoMerge(github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 	if mergeCalls != 1 {
 		t.Fatalf("mergeCalls while suppressed = %d, want 1", mergeCalls)
 	}
@@ -1054,7 +1054,7 @@ func TestHandleAutoMerge_BackoffClearsOnSuccess(t *testing.T) {
 	// A new push clears the suppression; the (now-succeeding) merge clears
 	// the backoff entry entirely.
 	pr.HeadSHA = "sha-y"
-	r.handleAutoMerge(github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 	if mergeCalls != 2 {
 		t.Fatalf("mergeCalls after new push = %d, want 2", mergeCalls)
 	}
@@ -1119,7 +1119,7 @@ func TestHandleAutoMerge_ArmNotSupportedFallsThroughToDirectMerge(t *testing.T) 
 		HeadSHA:         "sha-z",
 	}
 
-	r.handleAutoMerge(github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 	if mergedNum != 79 {
 		t.Fatalf("mergedNum = %d, want 79 (arm-unsupported must fall through to direct merge in the same cycle)", mergedNum)
 	}
@@ -1191,14 +1191,14 @@ func TestHandleAutoMerge_ArmFailureBacksOff(t *testing.T) {
 	}
 
 	for i := range 5 {
-		r.handleAutoMerge(github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+		r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 		if armCalls != 1 {
 			t.Fatalf("after poll %d: armCalls = %d, want 1 (repeated polls against unchanged state must be suppressed)", i+1, armCalls)
 		}
 	}
 
 	pr.HeadSHA = "sha-arm-b"
-	r.handleAutoMerge(github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 	if armCalls != 2 {
 		t.Fatalf("after head SHA change: armCalls = %d, want 2 (new push must reprobe immediately)", armCalls)
 	}
@@ -1261,14 +1261,14 @@ func TestMaybeArmNativeAutoMerge_BacksOffRepeatedFailuresUntilStateChanges(t *te
 	}
 
 	for i := range 5 {
-		r.maybeArmNativeAutoMerge(taskList, []github.PullRequest{pr}, nil)
+		r.maybeArmNativeAutoMerge(context.Background(), taskList, []github.PullRequest{pr}, nil)
 		if armCalls != 1 {
 			t.Fatalf("after poll %d: armCalls = %d, want 1 (repeated polls against unchanged state must be suppressed)", i+1, armCalls)
 		}
 	}
 
 	pr.CIStatus = "SUCCESS"
-	r.maybeArmNativeAutoMerge(taskList, []github.PullRequest{pr}, nil)
+	r.maybeArmNativeAutoMerge(context.Background(), taskList, []github.PullRequest{pr}, nil)
 	if armCalls != 2 {
 		t.Fatalf("after CI state change: armCalls = %d, want 2 (same-SHA state change must reprobe immediately)", armCalls)
 	}

@@ -447,7 +447,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
 	issues = r.mergeReconciledReady(ctx, reconciledReady, issues)
 	r.closeFinishedReviewTasks(tasks, nil)
-	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
+	r.maybeArmNativeAutoMerge(ctx, tasks, monitoredPRs, issues)
 
 	return r.nextInterval(prNeedsAttention(monitoredPRs), false)
 }
@@ -478,7 +478,7 @@ func (r *Handler) mergeReconciledReady(ctx context.Context, reconciledReady, iss
 			r.logger.Info("reviews.dispatch.gate", "task_id", issue.TaskID, "gate", "active_workflow", "kind", issue.Kind)
 			continue
 		}
-		r.handleAutoMerge(issue)
+		r.handleAutoMerge(ctx, issue)
 		issues = append(issues, issue)
 	}
 	return issues
@@ -643,7 +643,7 @@ func (r *Handler) processSybraPRPoll(ctx context.Context, tasks []task.Task, sum
 	// no separate fetch is needed to reach a human-required task's own PR.
 	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
 	issues = r.mergeReconciledReady(ctx, reconciledReady, issues)
-	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
+	r.maybeArmNativeAutoMerge(ctx, tasks, monitoredPRs, issues)
 
 	return prNeedsAttention(monitoredPRs)
 }
@@ -882,7 +882,7 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	case flaky != nil:
 		r.handleFlakyCI(*flaky)
 	case merge != nil:
-		r.handleAutoMerge(*merge)
+		r.handleAutoMerge(ctx, *merge)
 	}
 }
 
@@ -1975,7 +1975,7 @@ func findMergedPRByBranch(repo, branch string) (int, error) {
 // handleAutoMerge's own gate already decided on) — e.g. a PR still waiting on
 // CI to go green, which produces no PRIssue at all. Reuses monitoredPRs
 // already fetched this cycle rather than issuing fresh GraphQL calls.
-func (r *Handler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []github.PullRequest, issues []github.PRIssue) {
+func (r *Handler) maybeArmNativeAutoMerge(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest, issues []github.PRIssue) {
 	if r.cfg == nil || !r.cfg.GitHub.NativeAutoMerge {
 		return
 	}
@@ -2024,7 +2024,7 @@ func (r *Handler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []gith
 
 		stateSig := autoMergeStateSignature(*pr)
 		if !backoff.ShouldAttempt(pr.Repository, pr.Number, pr.HeadSHA, stateSig) {
-			metrics.AutoMergeAttempt(context.Background(), "suppressed", string(backoff.Class(pr.Repository, pr.Number)))
+			metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(pr.Repository, pr.Number)))
 			continue
 		}
 		res := r.tryArmNativeAutoMerge(*t, github.PRIssue{
@@ -2033,18 +2033,18 @@ func (r *Handler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []gith
 			PR:     *pr,
 		}, "")
 		if res.armed {
-			r.clearMergeBackoff(pr.Repository, pr.Number)
-			metrics.AutoMergeAttempt(context.Background(), "armed", "")
+			r.clearMergeBackoff(ctx, pr.Repository, pr.Number)
+			metrics.AutoMergeAttempt(ctx, "armed", "")
 			r.evictReadyPRCache(pr.Repository, pr.Number)
 			continue
 		}
 		if res.err == nil {
 			continue
 		}
-		metrics.AutoMergeAttempt(context.Background(), "attempted", "")
+		metrics.AutoMergeAttempt(ctx, "attempted", "")
 		class := github.ClassifyMergeError(res.err)
 		if backoff.RecordFailure(pr.Repository, pr.Number, pr.HeadSHA, stateSig, class) {
-			metrics.AutoMergeAttempt(context.Background(), "terminal", string(class))
+			metrics.AutoMergeAttempt(ctx, "terminal", string(class))
 		}
 	}
 }

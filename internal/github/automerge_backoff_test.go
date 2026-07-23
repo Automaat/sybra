@@ -71,10 +71,10 @@ func TestAutoMergeBackoff_ExponentialGrowthAndCeiling(t *testing.T) {
 	b := NewAutoMergeBackoff()
 	b.now = func() time.Time { return now }
 
-	base, max := mergeBackoffWindow(MergeErrorBlocked)
+	base, ceiling := mergeBackoffWindow(MergeErrorBlocked)
 	delay := base
 	atCeiling := false
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		atCeiling = b.RecordFailure("owner/repo", 5, "sha1", "state1", MergeErrorBlocked)
 		if b.Attempts("owner/repo", 5) != i+1 {
 			t.Fatalf("attempts = %d, want %d", b.Attempts("owner/repo", 5), i+1)
@@ -87,16 +87,16 @@ func TestAutoMergeBackoff_ExponentialGrowthAndCeiling(t *testing.T) {
 	if !atCeiling {
 		t.Fatal("expected backoff to reach its ceiling within 10 failures")
 	}
-	if delay < max {
+	if delay < ceiling {
 		// Growth may have saturated on an earlier iteration than our doubling
 		// loop above computed; just confirm the ceiling was in fact reached.
-		t.Logf("delay estimate %s reached ceiling %s early", delay, max)
+		t.Logf("delay estimate %s reached ceiling %s early", delay, ceiling)
 	}
 
 	// One more failure at the ceiling must not exceed it.
 	b.RecordFailure("owner/repo", 5, "sha1", "state1", MergeErrorBlocked)
-	// nextTry - now should be capped at max; verify indirectly via ShouldAttempt.
-	now = now.Add(max - time.Second)
+	// nextTry - now should be capped at ceiling; verify indirectly via ShouldAttempt.
+	now = now.Add(ceiling - time.Second)
 	if b.ShouldAttempt("owner/repo", 5, "sha1", "state1") {
 		t.Fatal("expected still suppressed just before the ceiling elapses")
 	}

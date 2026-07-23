@@ -207,7 +207,43 @@ func restRenovateGreen(pr github.PullRequest) bool {
 		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "")
 }
 
-func (r *Handler) handleAutoMerge(issue github.PRIssue) {
+// preflightArmNativeAutoMerge prefers arming GitHub's native auto-merge over
+// Sybra's own squash merge when it's available and the PR is otherwise ready
+// — it's cheaper (REST poll on GitHub's side) than Sybra's GraphQL merge-gate
+// polling. Only tried once the CI-green-gated legacy path in handleAutoMerge
+// would otherwise fire, so this never delays a merge; it just lets GitHub
+// finish the last mile. Returns true once armed, so the caller can stop
+// without falling through to the direct-merge path.
+//
+// Gated on the same backoff as the direct-merge path: an arm attempt that
+// itself keeps failing (bad credentials, a transient API error) must not be
+// retried every poll tick either (#2450).
+func (r *Handler) preflightArmNativeAutoMerge(ctx context.Context, t task.Task, issue github.PRIssue, backoff *github.AutoMergeBackoff, stateSig string) bool {
+	if !r.nativeAutoMergeEnabled() || !readyToArmNativeAutoMerge(issue.PR) {
+		return false
+	}
+	if !backoff.ShouldAttempt(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig) {
+		metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(issue.PR.Repository, issue.PR.Number)))
+		return false
+	}
+	res := r.tryArmNativeAutoMerge(t, issue, "")
+	if res.armed {
+		r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
+		metrics.AutoMergeAttempt(ctx, "armed", "")
+		r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
+		return true
+	}
+	if res.err != nil {
+		metrics.AutoMergeAttempt(ctx, "attempted", "")
+		class := github.ClassifyMergeError(res.err)
+		if backoff.RecordFailure(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig, class) {
+			metrics.AutoMergeAttempt(ctx, "terminal", string(class))
+		}
+	}
+	return false
+}
+
+func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 	t, err := r.tasks.Get(issue.TaskID)
 	if err != nil {
 		return
@@ -231,34 +267,8 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	backoff := r.mergeBackoff()
 	stateSig := autoMergeStateSignature(issue.PR)
 
-	// Prefer arming GitHub's native auto-merge over Sybra's own squash merge
-	// when it's available and the PR is otherwise ready — it's cheaper (REST
-	// poll on GitHub's side) than Sybra's GraphQL merge-gate polling. Only
-	// tried once the CI-green-gated legacy path would otherwise fire, so this
-	// never delays a merge; it just lets GitHub finish the last mile.
-	//
-	// Gated on the same backoff as the direct-merge path below: an arm
-	// attempt that itself keeps failing (bad credentials, a transient API
-	// error) must not be retried every poll tick either (#2450).
-	if r.nativeAutoMergeEnabled() && readyToArmNativeAutoMerge(issue.PR) {
-		if backoff.ShouldAttempt(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig) {
-			res := r.tryArmNativeAutoMerge(t, issue, "")
-			if res.armed {
-				r.clearMergeBackoff(issue.PR.Repository, issue.PR.Number)
-				metrics.AutoMergeAttempt(context.Background(), "armed", "")
-				r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
-				return
-			}
-			if res.err != nil {
-				metrics.AutoMergeAttempt(context.Background(), "attempted", "")
-				class := github.ClassifyMergeError(res.err)
-				if backoff.RecordFailure(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig, class) {
-					metrics.AutoMergeAttempt(context.Background(), "terminal", string(class))
-				}
-			}
-		} else {
-			metrics.AutoMergeAttempt(context.Background(), "suppressed", string(backoff.Class(issue.PR.Repository, issue.PR.Number)))
-		}
+	if r.preflightArmNativeAutoMerge(ctx, t, issue, backoff, stateSig) {
+		return
 	}
 
 	renovateFix := slices.Contains(t.Tags, "renovate-fix")
@@ -299,10 +309,10 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	// elapsed, instead of hammering an unresolved failure every poll tick
 	// (#2450). A new push (different head SHA) always reprobes immediately.
 	if !backoff.ShouldAttempt(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig) {
-		metrics.AutoMergeAttempt(context.Background(), "suppressed", string(backoff.Class(issue.PR.Repository, issue.PR.Number)))
+		metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(issue.PR.Repository, issue.PR.Number)))
 		return
 	}
-	metrics.AutoMergeAttempt(context.Background(), "attempted", "")
+	metrics.AutoMergeAttempt(ctx, "attempted", "")
 
 	var mergeErr error
 	if issue.PR.SourcedViaREST {
@@ -322,20 +332,20 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	if mergeErr != nil {
 		if r.nativeAutoMergeEnabled() && !issue.PR.SourcedViaREST && requiresNativeAutoMerge(mergeErr) {
 			if res := r.tryArmNativeAutoMerge(t, issue, "direct_merge_rejected"); res.armed {
-				r.clearMergeBackoff(issue.PR.Repository, issue.PR.Number)
-				metrics.AutoMergeAttempt(context.Background(), "armed", "")
+				r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
+				metrics.AutoMergeAttempt(ctx, "armed", "")
 				return
 			}
 		}
 		class := github.ClassifyMergeError(mergeErr)
 		if backoff.RecordFailure(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig, class) {
-			metrics.AutoMergeAttempt(context.Background(), "terminal", string(class))
+			metrics.AutoMergeAttempt(ctx, "terminal", string(class))
 		}
 		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", mergeErr, "class", string(class))
 		return
 	}
 
-	r.clearMergeBackoff(issue.PR.Repository, issue.PR.Number)
+	r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
 	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
 	auditData := map[string]any{
 		"pr": issue.PR.Number, "repo": issue.PR.Repository,
@@ -366,9 +376,9 @@ func (r *Handler) mergeBackoff() *github.AutoMergeBackoff {
 // failure had been recorded there, records a "recovered" metric — a
 // suppressed/failing PR that just succeeded, not a routine first-attempt
 // merge.
-func (r *Handler) clearMergeBackoff(repo string, number int) {
+func (r *Handler) clearMergeBackoff(ctx context.Context, repo string, number int) {
 	if r.mergeBackoff().Clear(repo, number) {
-		metrics.AutoMergeAttempt(context.Background(), "recovered", "")
+		metrics.AutoMergeAttempt(ctx, "recovered", "")
 	}
 }
 

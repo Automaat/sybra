@@ -90,7 +90,7 @@ var autoMergeBackoffWindow = map[MergeErrorClass]struct{ base, max time.Duration
 	MergeErrorUnknown:   {2 * time.Minute, 2 * time.Hour},
 }
 
-func mergeBackoffWindow(class MergeErrorClass) (base, max time.Duration) {
+func mergeBackoffWindow(class MergeErrorClass) (base, ceiling time.Duration) {
 	if w, ok := autoMergeBackoffWindow[class]; ok {
 		return w.base, w.max
 	}
@@ -162,11 +162,11 @@ func (b *AutoMergeBackoff) RecordFailure(repo string, number int, headSHA, state
 		entry = autoMergeBackoffEntry{headSHA: headSHA, stateSig: stateSig, class: class}
 	}
 	entry.attempts++
-	base, max := mergeBackoffWindow(class)
-	delay := expoBackoff(base, entry.attempts, max)
+	base, ceiling := mergeBackoffWindow(class)
+	delay := expoBackoff(base, entry.attempts, ceiling)
 	entry.nextTry = b.now().Add(delay)
 	b.entries[key] = entry
-	return delay >= max
+	return delay >= ceiling
 }
 
 // Clear drops backoff state for repo#number, reporting whether an entry
@@ -198,16 +198,16 @@ func (b *AutoMergeBackoff) Class(repo string, number int) MergeErrorClass {
 	return b.entries[autoMergeBackoffKey(repo, number)].class
 }
 
-func expoBackoff(base time.Duration, attempts int, max time.Duration) time.Duration {
+func expoBackoff(base time.Duration, attempts int, ceiling time.Duration) time.Duration {
 	d := base
 	for i := 1; i < attempts; i++ {
 		d *= 2
-		if d >= max {
-			return max
+		if d >= ceiling {
+			return ceiling
 		}
 	}
-	if d > max {
-		return max
+	if d > ceiling {
+		return ceiling
 	}
 	return d
 }
