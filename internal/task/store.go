@@ -1836,13 +1836,14 @@ func statusChangedAtBackfill(t Task, fallback time.Time) time.Time {
 // that only ever flips true.
 type RunPatch struct {
 	// Lifecycle
-	State             *string
-	Outcome           *string
-	EscalationReason  *string
-	Result            *string
-	LogFile           *string
-	HeadSHA           *string
-	FinalCommitSource *string
+	State                 *string
+	Outcome               *string
+	EscalationReason      *string
+	Result                *string
+	LogFile               *string
+	HeadSHA               *string
+	FinalCommitSource     *string
+	ResumeZeroOutputStall *bool
 
 	// Cost/tokens
 	CostUSD         *float64
@@ -1894,6 +1895,9 @@ func applyRunLifecycle(run *AgentRun, p RunPatch) {
 	}
 	if p.FinalCommitSource != nil && *p.FinalCommitSource != "" {
 		run.FinalCommitSource = *p.FinalCommitSource
+	}
+	if p.ResumeZeroOutputStall != nil && *p.ResumeZeroOutputStall {
+		run.ResumeZeroOutputStall = true
 	}
 }
 

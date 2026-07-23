@@ -1982,3 +1982,12 @@ func (a *Agent) GetErrorKind() string {
 	defer a.mu.RUnlock()
 	return a.ErrorKind
 }
+
+// GetErrorMsg returns the classified error message recorded alongside
+// GetErrorKind, e.g. watchdogreason.ZeroOutputBeforeStartup for a zero-output
+// stall reported via RecordProviderSignal.
+func (a *Agent) GetErrorMsg() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ErrorMsg
+}

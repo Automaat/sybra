@@ -150,6 +150,14 @@ export class AgentRun {
      */
     "subagentCallCount"?: number;
 
+    /**
+     * ResumeZeroOutputStall marks a run whose zero-output watchdog stall fired
+     * (errorKind "rate_limit" + errorMsg watchdogreason.ZeroOutputBeforeStartup).
+     * It is the durable poison signal agentorch.PickImplementationResumeSession
+     * counts to detect a session stuck in a resume-stall loop.
+     */
+    "zeroOutputStall"?: boolean;
+
     /** Creates a new AgentRun instance. */
     constructor($$source: Partial<AgentRun> = {}) {
         if (!("agentId" in $$source)) {

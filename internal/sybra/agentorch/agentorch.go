@@ -75,9 +75,17 @@ func ResolveSandboxMode(t task.Task, cfg *config.Config) string {
 	return cfg.DefaultSandboxMode()
 }
 
+// maxResumeZeroOutputStalls is the number of consecutive zero-output-stall
+// runs a session may accumulate (see AgentRun.ResumeZeroOutputStall) before
+// PickImplementationResumeSession treats it as poisoned and abandons it for
+// an older session, or a fresh one.
+const maxResumeZeroOutputStalls = 2
+
 // PickImplementationResumeSession walks AgentRuns newest-first and returns
 // the most recent session_id from a prior implementation run that belongs
-// to the current workflow execution and provider.
+// to the current workflow execution and provider — unless that session has
+// been poisoned by repeated zero-output stalls (see below), in which case it
+// is skipped in favor of an older, non-poisoned qualifying session.
 //
 // Three filters are applied:
 //
@@ -103,7 +111,25 @@ func ResolveSandboxMode(t task.Task, cfg *config.Config) string {
 //     prompt is ever sent. Empty run.Provider is allowed only for legacy
 //     runs predating provider recording; provider="" disables the filter
 //     (useful for callers that have no provider context).
+//
+// Circuit breaker: contiguity for "N consecutive stalls" is defined over the
+// qualifying subsequence (i.e. runs that already passed the three filters
+// above), not the raw run list — a run belonging to a different role/provider
+// or predating workflowStart never breaks a streak, it is simply invisible to
+// this logic. Walking that subsequence newest-first, runs are grouped by
+// SessionID: the first (newest) group is the resume candidate. If it
+// accumulates maxResumeZeroOutputStalls consecutive ResumeZeroOutputStall
+// runs with no intervening non-stall run, it is poisoned and skipped — the
+// walk continues into the next distinct SessionID group as the new candidate.
+// A qualifying run of the current (not-yet-poisoned) candidate session that
+// is NOT a zero-output stall resolves the candidate immediately: a session
+// that has ever produced output is never treated as poisoned, no matter what
+// stalls happened earlier in its history.
 func PickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Time, dispatchProvider string) string {
+	candidate := ""
+	stallStreak := 0
+	poisoned := false
+
 	for i := range slices.Backward(runs) {
 		run := &runs[i]
 		if run.SessionID == "" {
@@ -118,7 +144,24 @@ func PickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Ti
 		if dispatchProvider != "" && run.Provider != "" && run.Provider != dispatchProvider {
 			continue
 		}
-		return run.SessionID
+		if run.SessionID != candidate {
+			candidate = run.SessionID
+			stallStreak = 0
+			poisoned = false
+		}
+		if poisoned {
+			continue
+		}
+		if !run.ResumeZeroOutputStall {
+			return candidate
+		}
+		stallStreak++
+		if stallStreak >= maxResumeZeroOutputStalls {
+			poisoned = true
+		}
+	}
+	if candidate != "" && !poisoned {
+		return candidate
 	}
 	return ""
 }

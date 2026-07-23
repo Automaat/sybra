@@ -98,6 +98,7 @@ type agentRunRecord struct {
 	HeadSHA                 string    `yaml:"head_sha,omitempty"`
 	FinalCommitSource       string    `yaml:"final_commit_source,omitempty"`
 	SubagentCallCount       int       `yaml:"subagent_call_count,omitempty"`
+	ResumeZeroOutputStall   bool      `yaml:"zero_output_stall,omitempty"`
 }
 
 // taskFromFrontmatter rebuilds the persisted task fields. Store loading

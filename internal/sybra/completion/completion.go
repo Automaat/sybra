@@ -30,6 +30,7 @@ import (
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -474,6 +475,17 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	// landing can later detect human edits after the agent (merged_with_edits).
 	if sha := h.captureHeadSHA(ag.TaskID); sha != "" {
 		runUpdates.HeadSHA = task.Ptr(sha)
+	}
+	// Watchdog.handleZeroOutputStall reports the signal with the bare
+	// zeroOutputReason constant (internal/watchdog/agent.go), not the
+	// "watchdog: rate limit: ..." string watchdogreason.RateLimit wraps it in
+	// for the task's StatusReason — RecordProviderSignal persists exactly the
+	// reason string it is handed, so ag.GetErrorMsg() here is the bare
+	// constant. Comparing directly against it (not via
+	// watchdogreason.IsZeroOutputRateLimit, which checks the wrapped form)
+	// is intentional.
+	if ag.GetErrorKind() == "rate_limit" && ag.GetErrorMsg() == watchdogreason.ZeroOutputBeforeStartup {
+		runUpdates.ResumeZeroOutputStall = task.Ptr(true)
 	}
 	return runUpdates
 }
