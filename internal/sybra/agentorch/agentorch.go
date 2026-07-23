@@ -145,6 +145,14 @@ func PickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Ti
 			continue
 		}
 		if run.SessionID != candidate {
+			// About to cross into an older, distinct session group. If the
+			// current candidate accumulated stalls but never reached the
+			// poison threshold, it is still valid and newer — resolve it now
+			// rather than discarding it for a staler session. Mirrors the
+			// post-loop fallback so it applies at every group boundary too.
+			if candidate != "" && !poisoned {
+				return candidate
+			}
 			candidate = run.SessionID
 			stallStreak = 0
 			poisoned = false

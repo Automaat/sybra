@@ -845,6 +845,23 @@ func TestPickImplementationResumeSession(t *testing.T) {
 			want: "ses-older",
 		},
 		{
+			name: "newest session sub-threshold stall + older distinct qualifying session — resumes newest",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-older",
+					StartedAt: wfStart,
+				},
+				{
+					Role:                  string(agent.RoleImplementation),
+					SessionID:             "ses-newer",
+					ResumeZeroOutputStall: true,
+					StartedAt:             wfStart.Add(time.Minute),
+				},
+			},
+			want: "ses-newer",
+		},
+		{
 			name: "non-stall rate-limited run of same session never counts toward the streak",
 			runs: []task.AgentRun{
 				{
