@@ -1557,52 +1557,6 @@ func TestSendMessage_WritesStdinWhenPaused(t *testing.T) {
 	}
 }
 
-// TestStreamConvoOutput_FlushesQueueOnResult verifies that streamConvoOutput
-// drains the pending prompt queue when a result event arrives — the next
-// queued prompt is written to stdin and the agent stays Running. Without
-// this drain, queued chat follow-ups would never reach claude.
-func TestStreamConvoOutput_FlushesQueueOnResult(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, lines := captureStdinAgent(t, m, "drain", "task-1")
-	a.SetState(StateRunning)
-	a.EnqueuePrompt("next turn please")
-
-	resultLine := `{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.1,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"
-	m.streamConvoOutput(context.Background(), a, strings.NewReader(resultLine), nil, false)
-
-	select {
-	case got := <-lines:
-		if !strings.Contains(got, `next turn please`) {
-			t.Errorf("queued prompt not drained to stdin: %q", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("queued prompt was not written to stdin within 2s")
-	}
-
-	if got := a.PendingPromptCount(); got != 0 {
-		t.Errorf("PendingPromptCount after drain = %d, want 0", got)
-	}
-	if st := a.GetState(); st != StateRunning {
-		t.Errorf("State = %q, want Running while queue still has work in flight", st)
-	}
-}
-
-// TestStreamConvoOutput_PausesWhenQueueEmpty verifies the default no-queue
-// path: a result event with an empty pending queue must flip the agent to
-// StatePaused so the chat input goes from "thinking" to typeable.
-func TestStreamConvoOutput_PausesWhenQueueEmpty(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, _ := captureStdinAgent(t, m, "calm", "task-1")
-	a.SetState(StateRunning)
-
-	resultLine := `{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.05}` + "\n"
-	m.streamConvoOutput(context.Background(), a, strings.NewReader(resultLine), nil, false)
-
-	if st := a.GetState(); st != StatePaused {
-		t.Errorf("State = %q, want %q after result with empty queue", st, StatePaused)
-	}
-}
-
 // TestSendMessage_HeadlessQueuesWhenRunning verifies that SendMessage on a
 // live, steerable headless agent (stdin pipe attached, Mode "headless")
 // always queues — a headless run has no idle state to write into directly,

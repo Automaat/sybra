@@ -181,7 +181,7 @@ func (s *OrchestratorService) StartOrchestratorContext(ctx context.Context) erro
 	a, err := s.agents.RunContext(ctx, s.agents.ApplyABVariant(agent.RunConfig{
 		Name:                   orchestratorAgentName,
 		Role:                   agent.RoleOrchestrator,
-		Mode:                   "interactive",
+		Mode:                   "headless",
 		Dir:                    config.HomeDir(),
 		Prompt:                 orchestratorKickoffPrompt,
 		IgnoreConcurrencyLimit: true,
@@ -200,7 +200,7 @@ func (s *OrchestratorService) StartOrchestratorContext(ctx context.Context) erro
 }
 
 // StopOrchestrator cancels the orchestrator agent's context which unwinds
-// the conversational runner and closes the child claude process.
+// the steerable headless runner and closes the child claude process.
 func (s *OrchestratorService) StopOrchestrator() error {
 	s.mu.Lock()
 	id := s.reconcileOrchestratorsLocked()
