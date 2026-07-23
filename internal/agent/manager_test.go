@@ -662,6 +662,48 @@ func TestProviderHealthy_ConfigDisabledWithNilGate(t *testing.T) {
 	if m.ProviderHealthy("copilot") {
 		t.Error("config-disabled provider should report unhealthy even with nil health gate")
 	}
+}
+
+// TestProviderHealthy_HardQuotaExhaustion covers the busy-loop this fix
+// closes: a hard quota block (e.g. a real multi-day rate-limit-reached, not
+// the probe-based health gate's 15-minute cooldown) must also report
+// unhealthy, so A/B eligibility excludes it up front instead of re-selecting
+// it every retry only for resolveProviderDecision's own limitGate check to
+// reject it at dispatch — burning a full worktree rebuild per cycle.
+func TestProviderHealthy_HardQuotaExhaustion(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime: ManagerRuntimeConfig{
+			LimitGate: &fakeLimitGate{
+				available: map[string]bool{"codex": false},
+				reasons:   map[string]string{"codex": "provider reports rate limit reached"},
+			},
+		},
+	})
+
+	if m.ProviderHealthy("codex") {
+		t.Error("hard quota-exhausted provider should report unhealthy")
+	}
+}
+
+// TestProviderHealthy_SoftThresholdStillHealthy is the negative case: a soft
+// session/weekly threshold must not exclude a provider from A/B eligibility
+// entirely — resolveProviderDecision's softLimitLastResort already handles
+// redirecting to a healthier peer for soft thresholds. ProviderHealthy
+// treating it the same as a hard block would strand the provider out of
+// rotation even though it still has real budget.
+func TestProviderHealthy_SoftThresholdStillHealthy(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime: ManagerRuntimeConfig{
+			LimitGate: &fakeLimitGate{
+				available: map[string]bool{"codex": false},
+				reasons:   map[string]string{"codex": "session limit near threshold"},
+			},
+		},
+	})
+
+	if !m.ProviderHealthy("codex") {
+		t.Error("soft-threshold provider should still report healthy for A/B eligibility")
+	}
 	if !m.ProviderHealthy("claude") {
 		t.Error("config-enabled provider should report healthy with nil health gate")
 	}

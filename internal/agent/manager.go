@@ -706,17 +706,29 @@ func (m *Manager) ProviderRateLimited(name string) bool {
 }
 
 // ProviderHealthy reports whether the named provider is currently usable —
-// false for a probe-detected outage (health gate) or a config-disabled
-// provider (providers.<name>.enabled=false, via limitPolicy.ProviderEnabled).
-// The config-disabled check is independent of the health gate so it still
-// holds when providers.health_check.enabled=false and the gate is nil (checks
-// disabled, tests) — otherwise ProviderHealthy would report true for a
-// provider the admin explicitly disabled. Empty name resolves to the default
-// provider. A/B variant selection consults this so a disabled or unhealthy
-// provider is never picked as an eligible weighted variant.
+// false for a probe-detected outage (health gate), a config-disabled
+// provider (providers.<name>.enabled=false, via limitPolicy.ProviderEnabled),
+// or a hard quota exhaustion (limitGate, e.g. a real "resets Jul 28" usage
+// cap, not a soft threshold). The limitGate check matters here specifically
+// because it's a different signal than the probe-based health gate: g's
+// rate-limit cooldown defaults to 15 minutes (nowhere near a real multi-day
+// quota reset), so without also consulting limitGate, A/B selection kept
+// treating a hard-exhausted provider as eligible, re-picking it every retry
+// only for resolveProviderDecision's own limitGate check to reject it at
+// dispatch — burning a full worktree rebuild per cycle with
+// DisableProviderFailover set (A/B-attributed runs) preventing the
+// in-dispatch fallback that would otherwise mask it. The config-disabled and
+// quota checks are independent of the health gate so they still hold when
+// providers.health_check.enabled=false and g is nil (checks disabled,
+// tests) — otherwise ProviderHealthy would report true for a provider the
+// admin explicitly disabled or that is verifiably out of quota. Empty name
+// resolves to the default provider. A/B variant selection consults this so a
+// disabled, quota-exhausted, or unhealthy provider is never picked as an
+// eligible weighted variant.
 func (m *Manager) ProviderHealthy(name string) bool {
 	m.mu.RLock()
 	g := m.gate
+	lg := m.limitGate
 	lp := m.limitPolicy
 	if name == "" {
 		name = m.defaultProv
@@ -724,6 +736,20 @@ func (m *Manager) ProviderHealthy(name string) bool {
 	m.mu.RUnlock()
 	if enabled, ok := lp.ProviderEnabled[name]; ok && !enabled {
 		return false
+	}
+	if lg != nil {
+		if ok, reason := lg.ProviderAvailable(name, lp); !ok && !limits.IsSoftThresholdReason(reason) {
+			// ProviderAvailable reports unavailable for soft session/weekly
+			// thresholds too, not just a hard block — deliberately, so
+			// resolveProviderDecision's softLimitLastResort can redirect to a
+			// healthier peer without stranding a task on a provider that
+			// still has real budget when no peer exists. ProviderHealthy
+			// must only exclude on the hard reasons (rate-limit-reached,
+			// provider-disabled), or a soft-thresholded provider would be
+			// wrongly removed from A/B eligibility entirely instead of just
+			// de-prioritized at dispatch time.
+			return false
+		}
 	}
 	if g == nil {
 		return true
