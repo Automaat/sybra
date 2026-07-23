@@ -2,6 +2,7 @@ package github
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -148,4 +149,53 @@ func containsArg(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestGHRequestGateExecute_SuppressesCallsWhileAuthCircuitOpen asserts the
+// gate's chokepoint (shared by every gh invocation in this package) skips
+// shelling out entirely while the centralized auth circuit is open, instead
+// of repeating a doomed request every ghRequestSpacing tick.
+func TestGHRequestGateExecute_SuppressesCallsWhileAuthCircuitOpen(t *testing.T) {
+	t.Cleanup(resetAuthHealthForTest)
+	resetAuthHealthForTest()
+	authHealth.setState(AuthUnavailable, "test")
+
+	g := newGHRequestGate()
+	calls := 0
+	out, err := g.execute(func() ([]byte, error) {
+		calls++
+		return []byte("should not run"), nil
+	})
+	if calls != 0 {
+		t.Fatalf("run() invoked %d times, want 0 while circuit is open", calls)
+	}
+	if out != nil {
+		t.Fatalf("out = %q, want nil", out)
+	}
+	if !IsAuthError(err) {
+		t.Fatalf("err = %v, want an auth-classified circuit-open error", err)
+	}
+	if got := AuthHealthSnapshot().SuppressedCalls; got != 1 {
+		t.Fatalf("SuppressedCalls = %d, want 1", got)
+	}
+}
+
+// TestGHRequestGateExecute_ObservesCallResult asserts a real (non-suppressed)
+// call result flows into the shared auth-health tracker, so a caller that
+// never explicitly wires ObserveCallResult still gets auth-failure detection
+// for free by going through the gate.
+func TestGHRequestGateExecute_ObservesCallResult(t *testing.T) {
+	t.Cleanup(resetAuthHealthForTest)
+	t.Cleanup(DisableAppAuth)
+	resetAuthHealthForTest()
+	DisableAppAuth()
+
+	g := newGHRequestGate()
+	_, _ = g.execute(func() ([]byte, error) {
+		return []byte("gh: HTTP 401: Bad credentials"), fmt.Errorf("exit status 1")
+	})
+
+	if got := AuthHealthSnapshot().State; got != AuthUnavailable {
+		t.Fatalf("State after a 401 through execute() = %q, want unavailable", got)
+	}
 }
