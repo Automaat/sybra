@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
@@ -190,6 +191,40 @@ func TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates(t *testing.T) {
 	}
 	if got := mustStatus(t, m, dependent.ID); got != task.StatusBlocked {
 		t.Fatalf("dependent child = %q, want to stay held (dep never reached done)", got)
+	}
+}
+
+// TestReleaseUnblockedChildren_WatchdogBlockedChildWithImplementationHistoryNotReleased
+// is the regression guard for sybra#2538: a child that already ran an
+// implementation agent and later hit `blocked` via watchdog exhaustion must
+// never be re-released as though it were still awaiting its dependencies,
+// even if it still (or once again) carries the gating tag.
+func TestReleaseUnblockedChildren_WatchdogBlockedChildWithImplementationHistoryNotReleased(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	mkTracker(t, m, umb, 5)
+
+	started := mkChild(t, m, "started", "Automaat/sybra#1", umb, nil, task.StatusBlocked)
+	if err := m.AddRun(started.ID, task.AgentRun{
+		AgentID: "a1",
+		Role:    string(agent.RoleImplementation),
+	}); err != nil {
+		t.Fatalf("add implementation run: %v", err)
+	}
+	neverStarted := mkChild(t, m, "never-started", "Automaat/sybra#2", umb, nil, task.StatusBlocked)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	startedTask := mustTask(t, m, started.ID)
+	if startedTask.Status != task.StatusBlocked || !slices.Contains(startedTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("started child = %q tags=%v, want to stay blocked+gated (already implemented, not dependency-gated)",
+			startedTask.Status, startedTask.Tags)
+	}
+	neverStartedTask := mustTask(t, m, neverStarted.ID)
+	if neverStartedTask.Status != task.StatusTodo || slices.Contains(neverStartedTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("never-started child = %q tags=%v, want released to todo (dependency-gated with no history)",
+			neverStartedTask.Status, neverStartedTask.Tags)
 	}
 }
 
