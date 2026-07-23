@@ -55,8 +55,13 @@ func DispatchPrompt(a Anomaly, issueRepo, pushRemote string) string {
 func prGapPrompt(a Anomaly, pushRemote string) string {
 	taskID, _ := a.Evidence["task_id"].(string)
 	title, _ := a.Evidence["title"].(string)
+	projectID, _ := a.Evidence["project_id"].(string)
 	if pushRemote == "" {
 		pushRemote = "origin"
+	}
+	repoFlag := ""
+	if projectID != "" {
+		repoFlag = " --repo " + projectID
 	}
 	return fmt.Sprintf(
 		`You are the sybra monitor PR-gap remediator.
@@ -73,13 +78,13 @@ Run, in order:
    then exit.
 3. Otherwise:
    `+"`git push -u %s HEAD`"+`
-   `+"`gh pr create --base main --title %q --body \"<two-sentence summary from the latest commits>\"`"+`
-   When pushing to a fork remote, gh detects the cross-repo head automatically; no extra flags needed.
+   `+"`gh pr create%s --base main --title %q --body \"<two-sentence summary from the latest commits>\"`"+`
+   ALWAYS pass `+"`--repo %s`"+` explicitly — do NOT rely on gh to auto-detect the base repo. When %s is a fork remote, a bare `+"`gh pr create`"+` run from this worktree can silently open the PR against the fork's own default branch instead of upstream (the worktree's origin push is intentionally disabled for fork-based projects), which leaves the task looking done while no real PR exists upstream. Before recording a PR number, verify with `+"`gh pr view <n> --repo %s`"+` that it actually resolves in this repo.
 4. On success, run `+"`sybra-cli update %s --pr <number> --status-reason \"monitor: created missing PR\"`"+`.
 
 Output exactly one final JSON line:
 {"action":"created"|"escalated"|"failed","prNumber":N,"reason":"..."}`,
-		taskID, title, taskID, pushRemote, title, taskID,
+		taskID, title, taskID, pushRemote, repoFlag, title, projectID, pushRemote, projectID, taskID,
 	)
 }
 

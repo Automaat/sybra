@@ -56,9 +56,19 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 	}
 
-	// Path 1: PR already linked on task.
+	// Path 1: PR already linked on task — but only trust it once confirmed to
+	// exist in the project's own repo. A stale/misrouted pr_number (e.g. an
+	// agent that ran a bare `gh pr create` inside a fork-remote worktree and
+	// got a PR opened against the fork's own default branch instead of
+	// upstream) must not silently flip the task to in-review against a PR
+	// nobody but the agent will ever look at.
 	if t.PRNumber > 0 {
-		return setInReview(t.PRNumber, "task.pr_number")
+		if t.ProjectID == "" || e.prNumberExistsInRepo(t.ProjectID, t.PRNumber) {
+			return setInReview(t.PRNumber, "task.pr_number")
+		}
+		e.logger.Warn("workflow.link-pr.pr-number-not-in-repo", "task_id", taskID, "pr", t.PRNumber, "repo", t.ProjectID)
+		// Fall through to the discovery paths below instead of trusting a
+		// pr_number that doesn't resolve against the project's repo.
 	}
 
 	// Path 2: Scan step history for a GitHub PR URL or owner/repo#N in agent output.
@@ -106,6 +116,21 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 
 	e.logger.Info("workflow.link-pr.no-pr", "task_id", taskID)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "no pr found: falling through to eval"}, nil
+}
+
+// prNumberExistsInRepo reports whether PR #number resolves against repo. A PR
+// created in the wrong repo (e.g. an agent's fork instead of upstream) simply
+// won't be found here, since `gh pr view --repo` looks it up by number
+// against that exact repo, not by URL/global ID.
+// Best-effort: a gh/network failure returns false so the caller falls through
+// to its other discovery paths rather than trusting an unverifiable number.
+func (e *Engine) prNumberExistsInRepo(repo string, number int) bool {
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c",
+		`gh pr view "$_NUM" --repo "$_REPO" --json number >/dev/null 2>&1`)
+	cmd.Env = append(cmd.Environ(), "_REPO="+repo, "_NUM="+strconv.Itoa(number))
+	return cmd.Run() == nil
 }
 
 // execEvaluate is a non-LLM mechanical step that decides the terminal status

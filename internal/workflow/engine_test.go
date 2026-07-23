@@ -9590,6 +9590,73 @@ func TestExecLinkPRAndReview_PRAlreadyLinked(t *testing.T) {
 	}
 }
 
+// withFakeGh puts a fake `gh` binary at the front of PATH that runs script
+// (a shell script body receiving `gh`'s own argv as "$@") instead of the real
+// CLI, mirroring withFakeGit's pattern for pinning gh CLI behavior in tests.
+func withFakeGh(t *testing.T, script string) {
+	t.Helper()
+	binDir := t.TempDir()
+	fakeGh := filepath.Join(binDir, "gh")
+	body := "#!/bin/sh\n" + script + "\n"
+	if err := os.WriteFile(fakeGh, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestExecLinkPRAndReview_PRNumberWrongRepoFallsThrough(t *testing.T) {
+	// A pr_number that doesn't resolve against the project's own repo (e.g.
+	// an agent that ran a bare `gh pr create` inside a fork worktree and got
+	// a PR opened in the fork itself) must not be trusted blindly — it
+	// should fall through to the other discovery paths instead of flipping
+	// straight to in-review against a PR nobody upstream will ever see.
+	withFakeGh(t, `if [ "$1" = "pr" ] && [ "$2" = "view" ]; then exit 1; fi; exit 1`)
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "completed", AgentID: "a1", Output: "changes pushed"},
+		},
+	}
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), wfExec, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress (must not trust the wrong-repo pr_number)", ti.Status)
+	}
+}
+
+func TestExecLinkPRAndReview_PRNumberVerifiedInRepoTrusted(t *testing.T) {
+	withFakeGh(t, `if [ "$1" = "pr" ] && [ "$2" = "view" ]; then echo '{"number":8}'; exit 0; fi; exit 1`)
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), &Execution{}, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review", ti.Status)
+	}
+	if ti.PRNumber != 8 {
+		t.Errorf("pr_number = %d, want 8", ti.PRNumber)
+	}
+}
+
 func TestExecLinkPRAndReview_FullURLInAgentOutput(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
