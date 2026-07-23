@@ -202,26 +202,47 @@ func checkGHPushAuthFailure(events []audit.Event, now time.Time) []Finding {
 	}}
 }
 
+// ghAuthStateMisconfigured mirrors github.AuthMisconfigured
+// (internal/github/authhealth.go) by value. This package intentionally
+// doesn't import internal/github — health analyzes state handed to it, it
+// doesn't couple to service internals — so the string is duplicated here
+// rather than referencing the typed constant.
+const ghAuthStateMisconfigured = "misconfigured"
+
 // checkGHAuthUnavailable turns a proactive gh-auth probe result into a
 // finding — the periodic counterpart to checkGHPushAuthFailure/
 // checkGHIssueAuthFailure, which only fire after a real push or issue-filing
 // attempt has already failed. authenticated is the live result of
-// github.Authenticated(), sampled once per health tick (see Checker.ghAuthProbe);
-// a nil probe (the default) means this check never runs.
-func checkGHAuthUnavailable(authenticated bool, now time.Time) []Finding {
+// github.Authenticated(), sampled once per health tick (see
+// Checker.ghAuthProbe); a nil probe (the default) means this check never
+// runs. state is the paired github.AuthHealthSnapshot().State, used to tell
+// a permanent credential misconfiguration — which needs a human to rotate
+// credentials and gets a single actionable critical finding — apart from a
+// transient mint/network failure that the circuit breaker and force-refresh
+// are already retrying on their own, which is downgraded to a warning so it
+// doesn't page for something expected to self-heal. See #2453.
+func checkGHAuthUnavailable(authenticated bool, state string, now time.Time) []Finding {
 	if authenticated {
 		return nil
 	}
-	return []Finding{{
-		Category:    CatGHAuthUnavailable,
-		Severity:    SeverityCritical,
-		Title:       "GitHub credentials are unavailable",
-		Description: "Periodic gh auth probe failed — every push, PR, and issue operation against GitHub is blocked. Configure github.app or run `gh auth login` on the host.",
+	f := Finding{
+		Category: CatGHAuthUnavailable,
 		Evidence: map[string]any{
 			"probe": "gh api rate_limit",
+			"state": state,
 		},
 		DetectedAt: now,
-	}}
+	}
+	if state == ghAuthStateMisconfigured {
+		f.Severity = SeverityCritical
+		f.Title = "GitHub credentials are misconfigured"
+		f.Description = "Periodic gh auth probe failed with a permanent credential problem (revoked key, suspended App, removed installation) that will not resolve by retrying. Rotate credentials: reconfigure github.app or run `gh auth login` on the host."
+	} else {
+		f.Severity = SeverityWarning
+		f.Title = "GitHub credentials are temporarily unavailable"
+		f.Description = "Periodic gh auth probe failed with a transient error (network blip, GitHub outage, or a force-refresh in flight) — the circuit breaker is suppressing repeat calls and will retry on its own backoff. No action needed unless this persists."
+	}
+	return []Finding{f}
 }
 
 func isExpectedHumanRequired(e audit.Event) bool {

@@ -97,7 +97,16 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 		// already failed): samples live gh-auth health every health tick so
 		// credential loss (an expired interactive `gh auth login` session,
 		// see #2315) is caught before it blocks the next push, not after.
-		hcheck.SetGHAuthProbe(github.Authenticated)
+		// The paired state comes from AuthHealthSnapshot, which every real gh
+		// invocation (ghGate.execute, internal/monitor's issue-filing execer)
+		// already keeps fresh via ObserveCallResult — it's what lets
+		// checkGHAuthUnavailable tell a permanent misconfiguration (needs a
+		// human) apart from a transient blip the circuit breaker is already
+		// retrying (see #2453).
+		hcheck.SetGHAuthProbe(func() (bool, string) {
+			ok := github.Authenticated()
+			return ok, string(github.AuthHealthSnapshot().State)
+		})
 	}
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
@@ -547,7 +556,7 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 		// so calling back into a gh invocation here directly would deadlock.
 		// See #2453.
 		github.OnAuthRecovered(func() {
-			a.wg.Go(func() { durableSink.ReplayPending(context.Background()) })
+			a.wg.Go(func() { durableSink.ReplayPending(ctx) })
 		})
 		metrics.RegisterGHIssueOutboxPending(func() map[string]int64 {
 			return map[string]int64{"monitor": durableSink.Depth()}
