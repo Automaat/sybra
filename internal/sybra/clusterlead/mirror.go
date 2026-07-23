@@ -2,7 +2,9 @@ package clusterlead
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"slices"
 	"sync"
 	"time"
@@ -36,6 +38,23 @@ const DefaultReconcileInterval = 30 * time.Second
 // still exceeds the response cap, network loss) becomes impossible to miss.
 const reconcileFailureEscalateThreshold = 5
 
+// missingConfirmThreshold is how many consecutive reconcile ticks a task must
+// 404 on its assigned node before reconcileMissing trusts that as "the
+// follower confirms this task is gone" and trashes the leader's canonical
+// copy. Assigner.Reassign stamps canonical.AssignedNode to the new node
+// *before* pushing the task there (reassign.go's stampNode doc comment: this
+// ordering is deliberate, so a revived dead follower cannot clobber a task
+// that has moved) — so a single 404 on a freshly assigned node is exactly as
+// consistent with "not pushed yet" as with "genuinely deleted," and a
+// follower client call can legitimately take up to defaultCallTimeout (30s)
+// before even failing. Requiring the same node to 404 across
+// missingConfirmThreshold ticks (each spaced by the reconcile interval)
+// gives a slow AssignTask/attachment-transfer push comfortably longer than
+// one RPC timeout to land before the leader trusts the absence and trashes
+// its own copy — while a genuinely deleted task, which will 404 forever,
+// still gets cleaned up in bounded time instead of staying a ghost.
+const missingConfirmThreshold = 3
+
 // Mirror keeps the leader's canonical store in sync with follower execution
 // state via a reconcile ticker, applying every update through one authority
 // merge: execution fields are follower-authoritative, identity/assignment
@@ -51,6 +70,11 @@ type Mirror struct {
 
 	attachments *attachment.Store
 	anomalySink monitor.IssueSink
+
+	// missingMu guards missingStreak, written from each node's independent
+	// reconcileLoop goroutine.
+	missingMu     sync.Mutex
+	missingStreak map[string]int // "node|taskID" -> consecutive confirmed-404 ticks
 }
 
 // NewMirror constructs a Mirror. A nil logger falls back to slog.Default(); a
@@ -62,7 +86,10 @@ func NewMirror(cfg *config.Config, tasks *task.Manager, roster *cluster.Roster, 
 	if interval <= 0 {
 		interval = DefaultReconcileInterval
 	}
-	return &Mirror{cfg: cfg, tasks: tasks, roster: roster, logger: logger, interval: interval}
+	return &Mirror{
+		cfg: cfg, tasks: tasks, roster: roster, logger: logger, interval: interval,
+		missingStreak: make(map[string]int),
+	}
 }
 
 // SetAttachments supplies the leader-local blob store used to mirror follower
@@ -132,20 +159,38 @@ func (m *Mirror) reconcileNode(ctx context.Context, node string, consecutiveFail
 	m.reconcileMissing(ctx, node, client, tasks)
 }
 
-// reconcileMissing closes the gap ListTasksForNode's staleness filter opens:
-// a task the leader still considers live and assigned to node, but that this
-// node's response omitted. That only happens when the follower closed it
-// more than mirrorStaleTerminalWindow ago while the leader could not reach
-// this node at all (an outage or restart spanning the entire window) -- the
-// closing update never got a chance to apply, and the follower will never
-// offer that task again, so without this the canonical copy would stay stuck
-// at its last non-terminal state permanently. Fetches only the handful of
-// affected tasks directly (GetTask) instead of falling back to a full list.
+// reconcileMissing closes the gap ListTasksForNode's staleness filter opens: a
+// non-terminal task the leader still considers live and assigned to node, but
+// that this node's response omitted. Fetches only the handful of affected
+// tasks directly (GetTask) instead of falling back to a full list, and
+// branches on the result:
+//   - The follower 404s (os.ErrNotExist surfaced as http.StatusNotFound — see
+//     httpapi.stripErrorResult) on missingConfirmThreshold consecutive ticks:
+//     the follower closed the task more than mirrorStaleTerminalWindow ago
+//     while unreachable (an outage or restart spanning the whole window, so
+//     the closing update never applied), or it was trashed outright (e.g. a
+//     duplicate cleanup, #2294's post-mortem). Either way the follower will
+//     never offer it again, so the leader trashes its own stale copy instead
+//     of leaving it stuck at its last non-terminal state permanently — which
+//     would otherwise keep poisoning downstream rollup logic that scans all
+//     children, like trackerRollup's cancelled-child check, forever. A
+//     single 404 is not enough on its own — see missingConfirmThreshold's
+//     doc comment for why a freshly reassigned task looks identical for one
+//     tick.
+//   - Any other error (network failure, follower down): leave the canonical
+//     copy untouched and retry next tick — the follower may still have it.
 func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *cluster.Client, tasks []task.Task) {
 	seen := make(map[string]struct{}, len(tasks))
 	for i := range tasks {
 		seen[tasks[i].ID] = struct{}{}
 	}
+	// A task the follower's snapshot accounts for is not missing this tick,
+	// whatever it was on a prior tick — drop any confirmed-404 streak so a
+	// task that legitimately reappeared (e.g. a slow Reassign push that
+	// finally landed) starts from zero if it ever goes missing again, rather
+	// than resuming a stale count left over from an unrelated earlier gap.
+	m.clearMissingStreaks(node, tasks)
+
 	canonical, err := m.tasks.List()
 	if err != nil {
 		m.logger.Warn("cluster.mirror.reconcile_missing.list_failed", "node", node, "err", err)
@@ -161,10 +206,70 @@ func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *clus
 		}
 		follower, gerr := client.GetTask(ctx, t.ID)
 		if gerr != nil {
+			var apiErr *cluster.APIError
+			if errors.As(gerr, &apiErr) && apiErr.Status == http.StatusNotFound {
+				streak := m.bumpMissingStreak(node, t.ID)
+				if streak < missingConfirmThreshold {
+					m.logger.Info("cluster.mirror.reconcile_missing.confirming",
+						"node", node, "task", t.ID, "streak", streak, "threshold", missingConfirmThreshold)
+					continue
+				}
+				// The follower has confirmed this task gone across
+				// missingConfirmThreshold consecutive ticks (e.g. trashed as
+				// a duplicate cleanup, see #2294's post-mortem) — long enough
+				// to rule out a task freshly reassigned to node whose push
+				// just hasn't landed yet (Assigner.Reassign stamps
+				// AssignedNode before pushing; see missingConfirmThreshold's
+				// doc comment). Trash the leader's stale mirror so it stops
+				// permanently gating downstream rollup logic (like
+				// trackerRollup's cancelled-child check) on a ghost task the
+				// follower will never offer again.
+				if derr := m.tasks.Delete(t.ID); derr != nil {
+					m.logger.Warn("cluster.mirror.reconcile_missing.trash_failed", "node", node, "task", t.ID, "err", derr)
+					continue
+				}
+				m.clearMissingStreak(node, t.ID)
+				m.logger.Info("cluster.mirror.reconcile_missing.trashed", "node", node, "task", t.ID, "confirmations", streak)
+				continue
+			}
 			m.logger.Debug("cluster.mirror.reconcile_missing.failed", "node", node, "task", t.ID, "err", gerr)
 			continue
 		}
+		// Found despite this tick's snapshot omitting it — a later absence
+		// is unrelated and must not inherit a stale streak.
+		m.clearMissingStreak(node, t.ID)
 		m.applyFollowerTaskWithContext(ctx, node, follower)
+	}
+}
+
+func missingStreakKey(node, taskID string) string { return node + "|" + taskID }
+
+// bumpMissingStreak increments and returns node/taskID's consecutive
+// confirmed-404 count.
+func (m *Mirror) bumpMissingStreak(node, taskID string) int {
+	m.missingMu.Lock()
+	defer m.missingMu.Unlock()
+	key := missingStreakKey(node, taskID)
+	m.missingStreak[key]++
+	return m.missingStreak[key]
+}
+
+func (m *Mirror) clearMissingStreak(node, taskID string) {
+	m.missingMu.Lock()
+	defer m.missingMu.Unlock()
+	delete(m.missingStreak, missingStreakKey(node, taskID))
+}
+
+// clearMissingStreaks drops the confirmed-404 streak for every task node's
+// fresh ListTasks snapshot accounts for.
+func (m *Mirror) clearMissingStreaks(node string, tasks []task.Task) {
+	if len(tasks) == 0 {
+		return
+	}
+	m.missingMu.Lock()
+	defer m.missingMu.Unlock()
+	for i := range tasks {
+		delete(m.missingStreak, missingStreakKey(node, tasks[i].ID))
 	}
 }
 

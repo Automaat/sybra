@@ -3,10 +3,12 @@ package httpapi_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -24,6 +26,13 @@ func (s *testSvc) Multi() (msg string, ok bool, err error) {
 func (s *testSvc) Void()           {}
 func (s *testSvc) Fail() error     { return nil }
 func (s *testSvc) FailWith() error { return &testError{"boom"} }
+
+// FailWithNotExist mirrors how internal/task.Store.read wraps a missing-file
+// read: fmt.Errorf("...: %w", os.ErrNotExist), so errors.Is finds it through
+// the same %w chain stripErrorResult walks in production.
+func (s *testSvc) FailWithNotExist() error {
+	return fmt.Errorf("task nope not found: %w", os.ErrNotExist)
+}
 func (s *testSvc) ReturnAndFail(v string) (string, error) {
 	return "", &testError{v}
 }
@@ -62,7 +71,7 @@ func setup(t *testing.T) (*http.ServeMux, *httptest.Server, *bytes.Buffer) {
 	mux := http.NewServeMux()
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TestSvc": httpapi.NewService(&testSvc{},
-			"Echo", "Add", "Multi", "Void", "Fail", "FailWith", "ReturnAndFail", "ObjIn",
+			"Echo", "Add", "Multi", "Void", "Fail", "FailWith", "FailWithNotExist", "ReturnAndFail", "ObjIn",
 			"ClientFail400", "ClientFail409",
 			// AdminOnly is intentionally absent from the allowlist.
 		),
@@ -209,6 +218,37 @@ func TestHandler_ErrorReturn(t *testing.T) {
 	}
 	if !strings.Contains(logs, "boom") {
 		t.Fatalf("expected raw error 'boom' in logs; got: %s", logs)
+	}
+}
+
+func TestHandler_NotExistMapsTo404(t *testing.T) {
+	_, srv, logBuf := setup(t)
+	resp := post(t, srv, "TestSvc", "FailWithNotExist")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+	msg, code := decodeErr(t, resp)
+	if code != string(httpapi.ErrCodeNotFound) {
+		t.Fatalf("expected code %q, got %q", httpapi.ErrCodeNotFound, code)
+	}
+	// Callers like the cluster mirror's reconcileMissing branch purely on the
+	// HTTP status (404), never the message, so the client-visible message
+	// must be sanitized the same way the generic 500 path is — the raw error
+	// wraps an *fs.PathError carrying the store's absolute filesystem path,
+	// which must never reach an HTTP client.
+	if msg != "not found" {
+		t.Fatalf("expected a sanitized not-found message, got %q", msg)
+	}
+	if strings.Contains(msg, "os.ErrNotExist") || strings.Contains(msg, "/") {
+		t.Fatalf("client-visible message must not leak the raw error or a filesystem path, got %q", msg)
+	}
+	if strings.Contains(logBuf.String(), "httpapi.call.error") {
+		t.Fatal("a confirmed not-found must not be logged as an internal error")
+	}
+	if !strings.Contains(logBuf.String(), "task nope not found") {
+		t.Fatal("the raw error must still be logged server-side for debugging")
 	}
 }
 
