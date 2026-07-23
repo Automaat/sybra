@@ -15,4 +15,8 @@ type AutoUpdateConfig struct {
 	PollSeconds    int      `yaml:"poll_seconds" json:"pollSeconds"`
 	// Deprecated: ignored. Kept so existing config files continue to load.
 	RestartDelaySeconds int `yaml:"restart_delay_seconds" json:"restartDelaySeconds"`
+	// CoalesceSeconds is the minimum time between graceful restarts in auto
+	// mode, separate from PollSeconds (which only controls how often the
+	// remote is polled for a new candidate).
+	CoalesceSeconds int `yaml:"coalesce_seconds" json:"coalesceSeconds"`
 }

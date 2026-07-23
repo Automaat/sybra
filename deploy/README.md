@@ -73,12 +73,17 @@ Layout on the box:
 same directory `auto_update.repo_dir` builds and ff-merges from (#1925) —
 see the config section below.
 
-autoupdate also persists state under `~/.sybra/autoupdate-state.json` so the
-next restart-coalescing step can see the latest approved/applied SHA. The
-manual emergency bypass is a one-shot marker file at
-`~/.sybra/autoupdate-override`: create it to let the next poll deploy the
-current remote SHA even if CI is red/pending, and autoupdate deletes it after a
-successful apply.
+autoupdate also persists state under `~/.sybra/autoupdate-state.json`,
+including the last restart time, so **restart coalescing** survives a process
+restart: in `mode: auto`, a newly-approved candidate only triggers a merge +
+restart once `auto_update.coalesce` (default 1h) has elapsed since the last
+restart. Polls inside that window keep resolving the newest CI-green
+candidate and hold it — a burst of merges to `main` produces at most one
+restart per interval instead of one per merge. The manual emergency bypass is
+a one-shot marker file at `~/.sybra/autoupdate-override`: create it to let the
+next poll deploy the current remote SHA immediately, bypassing both the CI
+gate and the coalescing window, and autoupdate deletes it after a successful
+apply.
 
 ## Build-safety contract
 
@@ -162,6 +167,7 @@ auto_update:
       - build / build
     mode: notify               # start here; flip to auto once validated
     poll_seconds: 300
+    coalesce_seconds: 3600     # min gap between restarts in auto mode
 ```
 
 `required_checks` must list the exact GitHub check/status names that gate a
@@ -280,9 +286,12 @@ leader, `sybra-cli cluster nodes` lists the roster with its resolved
 ## How a deploy happens
 
 - **Automatic:** merge to `main` → within `poll_seconds` autoupdate resolves the
-  exact remote SHA, waits for the configured required checks on that SHA to turn
-  green, then ff-merges + requests restart → exit 42 → systemd reruns
-  `ExecStartPre` (rebuild) → new binary starts → agents reattach.
+  exact remote SHA and waits for the configured required checks on that SHA to
+  turn green. Once approved, the merge + restart itself is deferred until at
+  least `coalesce_seconds` has passed since the last restart — so a burst of
+  merges within that window still produces exactly one ff-merge + restart, for
+  the newest approved SHA at the time the window elapses → exit 42 → systemd
+  reruns `ExecStartPre` (rebuild) → new binary starts → agents reattach.
 - **Manual:** `systemctl restart sybra` (rebuilds current `/opt/sybra/src` HEAD).
 - **Pin/rollback:** `git -C /opt/sybra/src checkout <good-sha>` then
   `systemctl restart sybra`. (While pinned to a non-HEAD SHA, autoupdate's
@@ -290,8 +299,9 @@ leader, `sybra-cli cluster nodes` lists the roster with its resolved
   refuses to update a diverged/ahead checkout.)
 - **Emergency bypass:** `sudo -u sybra touch /data/sybra/home/autoupdate-override`
   to let the next poll apply the current remote SHA once even if CI is still
-  red/pending. The marker is deleted after a successful apply; this is for
-  operator intervention only, never normal automation.
+  red/pending, skipping the coalescing window too. The marker is deleted after
+  a successful apply; this is for operator intervention only, never normal
+  automation.
 
 ## Validation checklist (do this before trusting it)
 
@@ -314,6 +324,11 @@ leader, `sybra-cli cluster nodes` lists the roster with its resolved
 5. **Exit-42 loop:** with `mode: auto`, land a trivial green `main` change and
    confirm `autoupdate.restart.requested` → rebuild → `Started sybra` in the
    journal.
+6. **Coalescing:** with `mode: auto`, land two green `main` changes a few
+   minutes apart, both inside `coalesce_seconds`. The log should show
+   `autoupdate.check status=coalesced ... coalesced_count=1` for the second one
+   instead of a second restart; only one `autoupdate.restart.requested` fires,
+   for the newer SHA, once the window elapses.
 
 ## Caveats / decisions to make
 
@@ -324,6 +339,11 @@ leader, `sybra-cli cluster nodes` lists the roster with its resolved
   required check leaves the candidate unapplied. The emergency bypass marker is
   the explicit operator escape hatch when you intentionally want to deploy a red
   SHA.
+- **A green merge can wait up to `coalesce_seconds` (default 1h) for its
+  restart.** This is the point of coalescing — restart churn was the reported
+  incident — but it means a legitimate hotfix landed just after a restart sits
+  approved-but-unapplied until the window elapses, unless you use the
+  emergency bypass marker.
 - **On-box build time** (~1–2 min Go + frontend) is the restart window. Agents
   survive it; the HTTP endpoint is down for it. Fine for a home deployment.
 - **No `restart: unless-stopped` auto-heal** — replaced by systemd
