@@ -1168,6 +1168,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRCloser(prCloserAdapter{})
 	a.workflowEngine.SetPRFinder(prFinderAdapter{})
 	a.workflowEngine.SetPRAnyStateFinder(prFinderAdapter{})
+	a.workflowEngine.SetPRExistenceChecker(prExistenceCheckerAdapter{})
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
 	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
