@@ -11,9 +11,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -39,6 +41,16 @@ type appTokenSource struct {
 	token   string
 	expires time.Time
 	slug    string
+
+	// refreshMu/refreshing/refreshErr collapse concurrent mint attempts into
+	// one HTTP call. Without this, N goroutines that each observe a 401 at
+	// roughly the same time (e.g. N concurrent `git push` credential
+	// preflights across worktrees) would each mint their own installation
+	// token — wasteful, and it defeats "force-refresh once" as a signal of
+	// what actually happened. See #2453.
+	refreshMu  sync.Mutex
+	refreshing chan struct{}
+	refreshErr error
 }
 
 const appTokenRenewBefore = 5 * time.Minute
@@ -134,6 +146,23 @@ func ForceRefreshAppToken(ctx context.Context) error {
 	return src.refresh(ctx, true)
 }
 
+// ForceRefreshAppTokenEnv force-refreshes the installation token and
+// re-exports it for gh subprocesses spawned outside this package, mirroring
+// RefreshAppTokenEnv but always minting. Used when a live 401/403 already
+// proved the cached token is dead, so the corrected token reaches provider
+// subprocess env in the same step as this package's own cache — not only on
+// the next 30-minute ticker pass.
+func ForceRefreshAppTokenEnv(ctx context.Context) error {
+	if err := ForceRefreshAppToken(ctx); err != nil {
+		return err
+	}
+	if tok := CurrentAppToken(); tok != "" {
+		_ = os.Setenv("GH_TOKEN", tok)
+		_ = os.Setenv("GITHUB_TOKEN", tok)
+	}
+	return nil
+}
+
 // cachedAppToken returns the current installation token, or "" when App auth is
 // disabled or no token has been minted yet. Non-blocking — never performs I/O —
 // so the request gate is never stalled on a token mint.
@@ -169,6 +198,33 @@ func (s *appTokenSource) refresh(ctx context.Context, force bool) error {
 		}
 	}
 
+	s.refreshMu.Lock()
+	if ch := s.refreshing; ch != nil {
+		// A mint is already in flight — wait for it instead of starting a
+		// second, redundant one.
+		s.refreshMu.Unlock()
+		<-ch
+		s.refreshMu.Lock()
+		err := s.refreshErr
+		s.refreshMu.Unlock()
+		return err
+	}
+	ch := make(chan struct{})
+	s.refreshing = ch
+	s.refreshMu.Unlock()
+
+	err := s.doRefresh(ctx)
+
+	s.refreshMu.Lock()
+	s.refreshErr = err
+	s.refreshing = nil
+	s.refreshMu.Unlock()
+	close(ch)
+
+	return err
+}
+
+func (s *appTokenSource) doRefresh(ctx context.Context) error {
 	jwt, err := s.signJWT(time.Now())
 	if err != nil {
 		return err
@@ -214,7 +270,7 @@ func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string) 
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("mint installation token: %w", err)
+		return "", time.Time{}, &mintError{cause: fmt.Errorf("mint installation token: %w", err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -224,10 +280,14 @@ func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string) 
 		Message   string `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", time.Time{}, fmt.Errorf("decode installation token: %w", err)
+		return "", time.Time{}, &mintError{cause: fmt.Errorf("decode installation token: %w", err)}
 	}
 	if resp.StatusCode != http.StatusCreated || body.Token == "" {
-		return "", time.Time{}, fmt.Errorf("mint installation token: HTTP %d: %s", resp.StatusCode, body.Message)
+		return "", time.Time{}, &mintError{
+			statusCode: resp.StatusCode,
+			message:    body.Message,
+			cause:      fmt.Errorf("mint installation token: HTTP %d: %s", resp.StatusCode, body.Message),
+		}
 	}
 	expires, err := time.Parse(time.RFC3339, body.ExpiresAt)
 	if err != nil {
@@ -317,6 +377,44 @@ func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
 		return nil, fmt.Errorf("app private key: %s is not an RSA key", path)
 	}
 	return rsaKey, nil
+}
+
+// mintError carries enough of a failed installation-token mint to classify
+// it as a permanent misconfiguration versus a transient blip, without every
+// caller re-parsing "HTTP %d" out of an error string. cause is non-nil
+// whenever the failure happened before an HTTP response was available (a
+// network error, a JSON decode failure) — those are transient by
+// construction, since there was no server-issued verdict to classify.
+type mintError struct {
+	statusCode int
+	message    string
+	cause      error
+}
+
+func (e *mintError) Error() string { return e.cause.Error() }
+func (e *mintError) Unwrap() error { return e.cause }
+
+// classifyMintError maps a failed token mint to an AuthState. Only a
+// well-understood, permanent-credential-shaped HTTP status is classified as
+// misconfigured — everything else (network errors, 5xx, an unrecognized 4xx)
+// defaults to unavailable so a self-healing transient blip never pages an
+// operator as if it needed a credential rotation.
+func classifyMintError(err error) AuthState {
+	var me *mintError
+	if !errors.As(err, &me) || me.statusCode == 0 {
+		return AuthUnavailable
+	}
+	switch me.statusCode {
+	case http.StatusUnauthorized, http.StatusNotFound, http.StatusUnprocessableEntity:
+		return AuthMisconfigured
+	case http.StatusForbidden:
+		if strings.Contains(strings.ToLower(me.message), "rate limit") {
+			return AuthRateLimited
+		}
+		return AuthMisconfigured
+	default:
+		return AuthUnavailable
+	}
 }
 
 func base64URL(b []byte) string {

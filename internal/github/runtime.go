@@ -218,6 +218,16 @@ func (g *ghRequestGate) execute(run func() ([]byte, error)) ([]byte, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	// Circuit breaker: while GitHub auth is misconfigured or unavailable,
+	// skip shelling out entirely rather than repeat a doomed request every
+	// ghRequestSpacing tick. AuthCircuitOpen re-opens the gate on its own
+	// backoff schedule, so ambient poll/task traffic naturally re-probes for
+	// recovery without a dedicated prober goroutine.
+	if open, retryAfter := AuthCircuitOpen(); open {
+		RecordSuppressedCall()
+		return nil, NewAuthCircuitOpenError(retryAfter)
+	}
+
 	waitUntil := g.notBefore
 	if next := g.lastRun.Add(ghRequestSpacing); next.After(waitUntil) {
 		waitUntil = next
@@ -231,6 +241,7 @@ func (g *ghRequestGate) execute(run func() ([]byte, error)) ([]byte, error) {
 	if err != nil && isRateLimitedMessage(string(out)) {
 		g.bumpLocked(g.lastRun.Add(ghFallbackRateBackoff))
 	}
+	ObserveCallResult(out, err)
 	return out, err
 }
 

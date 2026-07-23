@@ -34,9 +34,25 @@ type ghExecer interface {
 
 type defaultGHExecer struct{}
 
-var ghEnv = github.GHEnv
+var (
+	ghEnv = github.GHEnv
+	// authCircuitOpen/observeGHResult mirror the centralized GitHub
+	// auth-health circuit breaker (internal/github/authhealth.go) the same
+	// way ghEnv already mirrors credential injection — this sink shells out
+	// directly instead of going through internal/github's request gate, so
+	// without this it would keep hammering `gh` during an auth outage the
+	// rest of the process has already backed off from, and would never
+	// report its own failures into the shared state for other callers (or
+	// the health/metrics surfaces) to see. See #2453.
+	authCircuitOpen = github.AuthCircuitOpen
+	observeGHResult = github.ObserveCallResult
+)
 
 func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) {
+	if open, retryAfter := authCircuitOpen(); open {
+		github.RecordSuppressedCall()
+		return nil, github.NewAuthCircuitOpenError(retryAfter)
+	}
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	// Share the same credential source as every other gh call in the
 	// process (internal/github's ghExecer/ghRunCtx): inject the cached
@@ -46,7 +62,9 @@ func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) 
 	if env := ghEnv(); env != nil {
 		cmd.Env = env
 	}
-	return cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	observeGHResult(out, err)
+	return out, err
 }
 
 // GHIssueSink is the production IssueSink: searches by title, comments on hit,
