@@ -133,6 +133,15 @@ const mirrorStaleTerminalWindow = 10 * time.Minute
 // follower's mirror: tasks assigned to that node, excluding terminal tasks
 // closed longer than mirrorStaleTerminalWindow ago. Unlike ListTasks, this is
 // sized for repeated polling rather than a one-off full board read.
+//
+// Also includes tasks with no AssignedNode at all. This service call always
+// runs against this instance's own store (the leader polls each follower's
+// HTTP API individually), so an unassigned task here unambiguously lives on
+// this node — e.g. created by this follower's own local umbrella expansion
+// or triage, never routed by a leader. AssignedNode is leader-only metadata
+// (see Assigner.route/stampNode); a follower has no way to stamp its own
+// name onto a task it created itself, so without this, such a task is
+// permanently invisible to the leader's mirror — see cluster.mirror.adopted.
 func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
 	all, err := s.tasks.List()
 	if err != nil {
@@ -141,7 +150,7 @@ func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
 	out := all[:0]
 	for i := range all {
 		t := all[i]
-		if t.AssignedNode != node {
+		if t.AssignedNode != node && t.AssignedNode != "" {
 			continue
 		}
 		if task.IsTerminalStatus(t.Status) && t.ClosedAt != nil && time.Since(*t.ClosedAt) > mirrorStaleTerminalWindow {

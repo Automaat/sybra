@@ -8,9 +8,14 @@ import (
 )
 
 // TestListTasksForNodeFiltersByAssignedNode verifies the cluster-mirror-only
-// listing (see internal/cluster.Client.ListTasks and #2258) only returns
-// tasks assigned to the requested node, never tasks assigned elsewhere or
-// unassigned to this node's own board.
+// listing (see internal/cluster.Client.ListTasks and #2258) returns tasks
+// assigned to the requested node, never tasks assigned elsewhere — but does
+// include unassigned tasks, since this call always runs against the local
+// instance's own store: an unassigned task here can only be one this node
+// created itself (e.g. its own local umbrella expansion or triage), and
+// AssignedNode is leader-only metadata a follower has no way to stamp on
+// its own work. See ListTasksForNode's doc comment and
+// Mirror.adoptFollowerTask.
 func TestListTasksForNodeFiltersByAssignedNode(t *testing.T) {
 	svc, a := setupTaskService(t)
 
@@ -29,8 +34,21 @@ func TestListTasksForNodeFiltersByAssignedNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].ID != "mine" {
-		t.Fatalf("ListTasksForNode(home-nas) = %+v, want only [mine]", got)
+	ids := make(map[string]bool, len(got))
+	for _, tk := range got {
+		ids[tk.ID] = true
+	}
+	if !ids["mine"] {
+		t.Error("ListTasksForNode dropped a task explicitly assigned to this node")
+	}
+	if ids["elsewhere"] {
+		t.Error("ListTasksForNode returned a task assigned to a different node")
+	}
+	if !ids["unassigned"] {
+		t.Error("ListTasksForNode dropped an unassigned task — self-originated follower work would be permanently invisible to the leader's mirror")
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListTasksForNode(home-nas) = %+v, want [mine, unassigned]", got)
 	}
 }
 

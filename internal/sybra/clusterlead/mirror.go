@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -283,9 +284,24 @@ func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, 
 
 	canonical, err := m.tasks.Get(follower.ID)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return m.adoptFollowerTask(ctx, node, follower)
+		}
+		// A genuine local-store fault (I/O, corrupt frontmatter), not
+		// "doesn't exist yet" — the discarded bool at the call site leaves
+		// this as the only trace convergence stalled for this task.
+		m.logger.Warn("cluster.mirror.apply.get_failed", "node", node, "task", follower.ID, "err", err)
 		return false
 	}
 	if canonical.AssignedNode != node {
+		// Silent before this diff too, but now reachable by a new class of
+		// cause: adoptFollowerTask assigns a never-seen ID to the first node
+		// whose reconcile tick claims it, so a same-ID collision between two
+		// followers' independently self-originated tasks (task IDs are only
+		// 32 bits of randomness, internal/task/store.go) would permanently
+		// strand the loser here with no prior trace at all. Whatever the
+		// cause, a canonical/reporting-node mismatch deserves a log line.
+		m.logger.Warn("cluster.mirror.apply.assigned_elsewhere", "node", node, "task", follower.ID, "assigned_node", canonical.AssignedNode)
 		return false
 	}
 	m.detectAndRepairDrift(ctx, node, canonical, follower)
@@ -306,6 +322,37 @@ func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, 
 		return false
 	}
 	m.logger.Debug("cluster.mirror.applied", "node", node, "task", follower.ID, "status", string(merged.Status), "rev", merged.MirrorRev)
+	return true
+}
+
+// adoptFollowerTask creates the leader's first canonical record for a task
+// that exists only on node — e.g. a follower's own local umbrella expansion
+// or triage, created without leader involvement and so never assigned a
+// node (ListTasksForNode returns these to the node that actually holds
+// them; see its doc comment). There is no existing canonical copy to merge
+// against, so unlike applyFollowerTaskWithContext's steady-state path, this
+// takes follower's own fields as the whole record rather than preserving
+// leader-authoritative identity fields from a prior version — there is no
+// prior version.
+func (m *Mirror) adoptFollowerTask(ctx context.Context, node string, follower task.Task) bool {
+	adopted, ok := m.localizeFollowerAttachments(ctx, node, task.Task{}, follower)
+	if !ok {
+		return false
+	}
+	adopted.AssignedNode = node
+	adopted.MirrorRev = 1
+	followerUpdated := adopted.UpdatedAt
+	adopted.MirrorUpdatedAt = &followerUpdated
+	adopted.UpdatedAt = time.Now().UTC()
+	if err := m.writeSidecars(adopted); err != nil {
+		m.logger.Warn("cluster.mirror.adopt.sidecar_failed", "node", node, "task", adopted.ID, "err", err)
+		return false
+	}
+	if _, _, err := m.tasks.Put(adopted); err != nil {
+		m.logger.Warn("cluster.mirror.adopt.failed", "node", node, "task", adopted.ID, "err", err)
+		return false
+	}
+	m.logger.Info("cluster.mirror.adopted", "node", node, "task", adopted.ID, "status", string(adopted.Status))
 	return true
 }
 

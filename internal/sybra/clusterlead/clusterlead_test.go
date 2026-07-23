@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -621,7 +623,7 @@ func TestMirrorNoAlertOnOrdinaryStatusDisagreement(t *testing.T) {
 	}
 }
 
-func TestMirrorIgnoresUnownedTask(t *testing.T) {
+func TestMirrorIgnoresTaskOwnedByAnotherNode(t *testing.T) {
 	cfg := leaderConfig("http://unused", []string{"owner/pet"})
 	roster, _ := NewRoster(cfg, nil)
 	mgr := newManager(t)
@@ -632,11 +634,72 @@ func TestMirrorIgnoresUnownedTask(t *testing.T) {
 	}
 	follower := task.Task{ID: "task-x", Status: task.StatusDone, UpdatedAt: time.Unix(100, 0)}
 	if mirror.applyFollowerTask("pet-box", follower) {
-		t.Error("a task not assigned to this node must not be mirrored from it")
+		t.Error("a task the leader already has assigned to a different node must not be mirrored from this one")
+	}
+}
+
+// TestMirrorAdoptsUnknownFollowerTask covers the mirror gap behind
+// c01cafd6's local-board investigation: a task with no prior canonical copy
+// (the leader has never heard of it) is not necessarily a stray to ignore —
+// it may be a follower's own self-originated work (umbrella expansion or
+// triage run directly on that node, with no leader routing involved, so
+// never assigned a node). Since ListTasksForNode only ever returns tasks
+// that genuinely live on the node being asked, the leader can safely adopt
+// any task it sees there for the first time.
+func TestMirrorAdoptsUnknownFollowerTask(t *testing.T) {
+	cfg := leaderConfig("http://unused", []string{"owner/pet"})
+	roster, _ := NewRoster(cfg, nil)
+	mgr := newManager(t)
+	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
+
+	follower := task.Task{
+		ID: "self-originated", Title: "made on pet-box", ProjectID: "owner/pet",
+		Status: task.StatusTodo, UpdatedAt: time.Unix(100, 0),
+	}
+	if !mirror.applyFollowerTask("pet-box", follower) {
+		t.Fatal("expected the leader to adopt a task it has never seen before")
+	}
+	got, err := mgr.Get("self-originated")
+	if err != nil {
+		t.Fatalf("adopted task not found in canonical store: %v", err)
+	}
+	if got.AssignedNode != "pet-box" {
+		t.Errorf("AssignedNode = %q, want pet-box", got.AssignedNode)
+	}
+	if got.Title != "made on pet-box" || got.ProjectID != "owner/pet" {
+		t.Errorf("adopted task lost identity fields: %+v", got)
+	}
+	if got.MirrorRev != 1 {
+		t.Errorf("MirrorRev = %d, want 1 on first adoption", got.MirrorRev)
+	}
+}
+
+// TestMirrorApplyLogsGenuineLocalStoreFailure covers a Copilot-review finding
+// on this PR: a m.tasks.Get failure that is NOT "doesn't exist yet" (I/O
+// fault, corrupt frontmatter, ...) took the same silent `return false` as
+// every other case, and the caller discards the bool — so a real local-store
+// fault left zero trace anywhere that mirror convergence had stalled for
+// that task.
+func TestMirrorApplyLogsGenuineLocalStoreFailure(t *testing.T) {
+	cfg := leaderConfig("http://unused", []string{"owner/pet"})
+	roster, _ := NewRoster(cfg, nil)
+	mgr := newManager(t)
+
+	corrupt := filepath.Join(mgr.Store().Dir(), "broken.md")
+	if err := os.WriteFile(corrupt, []byte("---\nstatus: [not, a, string]\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	if mirror.applyFollowerTask("pet-box", task.Task{ID: "ghost", UpdatedAt: time.Unix(100, 0)}) {
-		t.Error("a task the leader does not own must be ignored")
+	var buf syncBuffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	mirror := NewMirror(cfg, mgr, roster, logger, time.Second)
+
+	follower := task.Task{ID: "broken", Status: task.StatusDone, UpdatedAt: time.Unix(100, 0)}
+	if mirror.applyFollowerTask("pet-box", follower) {
+		t.Error("apply must not report success over an unreadable canonical file")
+	}
+	if !strings.Contains(buf.String(), "cluster.mirror.apply.get_failed") {
+		t.Errorf("expected a get_failed warn log for the genuine store fault, got:\n%s", buf.String())
 	}
 }
 
