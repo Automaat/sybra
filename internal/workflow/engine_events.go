@@ -1670,8 +1670,27 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 			e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
 		}
-		if err := e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason); err != nil {
-			e.logger.Error("workflow.watchdog-rate-limit.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+		var escalateErr error
+		if targetStatus == "blocked" {
+			// Zero-output startup exhaustion parks the task in the same
+			// `blocked` status the umbrella dependency gate uses for a
+			// gate-held child. Stamp a workflow-owned Blocker (mirrors
+			// canRetryWorktreeRepair's KindWorktreeRepair) so
+			// app_umbrella_gate.go's Awaiting check has an authoritative,
+			// non-tag signal that this hold is not a dependency gate — a
+			// child deep into implementation must never be mistaken for a
+			// fresh, never-released one and re-released into a brand-new
+			// triage cycle that discards its in-flight workflow (#2538).
+			escalateErr = e.tasks.UpdateTaskBlocker(t.ID, targetStatus, reason, blocker.State{
+				Kind:      blocker.KindWatchdogRateLimitExhausted,
+				Actor:     blocker.ActorWorkflow,
+				Exhausted: true,
+			})
+		} else {
+			escalateErr = e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason)
+		}
+		if escalateErr != nil {
+			e.logger.Error("workflow.watchdog-rate-limit.escalate", "task_id", t.ID, "step", step.ID, "err", escalateErr)
 		} else {
 			e.logger.Warn("workflow.watchdog-rate-limit.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts, "status", targetStatus)
 		}

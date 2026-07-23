@@ -33,6 +33,7 @@ export enum Kind {
     KindWorktreeRepair = "worktree_repair",
     KindReviewFixExhausted = "review_fix_exhausted",
     KindTriageRetryExhausted = "triage_retry_exhausted",
+    KindWatchdogRateLimitExhausted = "watchdog_rate_limit_exhausted",
 };
 
 /**

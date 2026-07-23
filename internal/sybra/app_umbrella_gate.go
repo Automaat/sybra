@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -115,19 +116,23 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 			// Gate-marked todo children (current model) and legacy
 			// blocked+gated children (tasks created before this change)
 			// are both eligible for release. Never release a task that is
-			// blocked without the gating tag (contained Sybra bug), or one
-			// that already ran an implementation agent — a watchdog-exhausted
-			// blocked status must never be mistaken for dependency-gating
-			// (sybra#2538). A child whose umbrella is currently mid-recovery
-			// is held regardless —
-			// RecoverDegraded may be mutating this same umbrella's children
-			// concurrently, so this tick must not release from a partial graph.
+			// blocked without the gating tag (contained Sybra bug), one the
+			// workflow engine itself parked blocked (e.g. a watchdog-exhausted
+			// retry, see isWorkflowOwnedBlock), or one that already ran an
+			// implementation agent — none of these holds is the umbrella
+			// gate's own, and releasing one would discard the child's
+			// in-flight workflow (#2538), even if it still carries the gating
+			// tag. A child whose umbrella is currently mid-recovery is held
+			// regardless — RecoverDegraded may be mutating this same
+			// umbrella's children concurrently, so this tick must not
+			// release from a partial graph.
 			Awaiting: t.UmbrellaIssue != "" &&
 				!inFlight[umbrella.NormalizeIssueRef(t.UmbrellaIssue)] &&
 				!expanding &&
 				(t.Status == task.StatusTodo || t.Status == task.StatusBlocked) &&
-				slices.Contains(t.Tags, umbrellaGatedTag) &&
-				!hasStartedImplementation(t),
+				!isWorkflowOwnedBlock(t) &&
+				!hasStartedImplementation(t) &&
+				slices.Contains(t.Tags, umbrellaGatedTag),
 		}
 	}
 
@@ -201,6 +206,14 @@ func accumulateChild(st *umbrellaState, t *task.Task) {
 		}
 		st.anyHR = true
 	case task.StatusBlocked:
+		if isWorkflowOwnedBlock(t) {
+			// The workflow engine parked this itself (e.g. a watchdog-exhausted
+			// retry) — never the umbrella gate's own hold, even if it still
+			// carries the gating tag. Surface it like any other stuck child
+			// below rather than silently treating it as dependency-awaiting.
+			st.anyBlocked = true
+			return
+		}
 		if slices.Contains(t.Tags, umbrellaGatedTag) {
 			// Gate-blocked, awaiting its dependencies — not stuck, handled by
 			// ReadyToRelease/depsSatisfied.
@@ -219,6 +232,21 @@ func accumulateChild(st *umbrellaState, t *task.Task) {
 			st.active++
 		}
 	}
+}
+
+// isWorkflowOwnedBlock reports whether t's `blocked` status is held by the
+// workflow engine itself — e.g. handleWatchdogRateLimitRetry's zero-output
+// exhaustion path, or canRetryWorktreeRepair's disk/rebase repair hold —
+// rather than the umbrella dependency gate. The gate never sets Blocker on a
+// child it releases or holds, so a non-zero blocker.ActorWorkflow is an
+// authoritative, structured signal that this `blocked` predates (and is
+// unrelated to) any umbrella-gated tag the task happens to still carry.
+// Checked ahead of the tag in both Awaiting and accumulateChild so a tag that
+// reappears through any means (stale client round-trip, future bug) can never
+// again cause the gate to mistake a workflow-owned hold for its own and
+// re-release a child mid-implementation into a fresh triage cycle (#2538).
+func isWorkflowOwnedBlock(t *task.Task) bool {
+	return t.Blocker.Actor == blocker.ActorWorkflow
 }
 
 // isRunningChild reports whether a child status occupies a parallelism slot —

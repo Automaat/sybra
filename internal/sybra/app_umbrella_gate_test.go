@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
@@ -191,6 +192,59 @@ func TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates(t *testing.T) {
 	}
 	if got := mustStatus(t, m, dependent.ID); got != task.StatusBlocked {
 		t.Fatalf("dependent child = %q, want to stay held (dep never reached done)", got)
+	}
+}
+
+// TestReleaseUnblockedChildren_WatchdogExhaustedBlockedChildNotReleased covers
+// #2538: a child deep into implementation that watchdog rate-limit retries
+// exhaust is parked `blocked` by handleWatchdogRateLimitRetry with a
+// workflow-owned Blocker (blocker.KindWatchdogRateLimitExhausted,
+// ActorWorkflow). Even though it still carries the umbrella-gated tag and has
+// no dependencies to wait on, the gate must never treat this as its own
+// dependency hold and release it — doing so discards the child's in-flight
+// implementation workflow and re-triages it from scratch.
+func TestReleaseUnblockedChildren_WatchdogExhaustedBlockedChildNotReleased(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+
+	// CreateFull's initial-field application does not carry Blocker (only
+	// Update does — mirroring the real handleWatchdogRateLimitRetry escalation,
+	// which always flips an already-running child from in-progress via a
+	// single UpdateTaskBlocker call, never at creation).
+	stalled, err := m.CreateFull("stalled", "", task.AgentModeHeadless, task.Update{
+		Issue:         task.Ptr("Automaat/sybra#1"),
+		UmbrellaIssue: task.Ptr(umb),
+		Status:        task.Ptr(task.StatusInProgress),
+		Tags:          task.Ptr([]string{umbrellaGatedTag}),
+	})
+	if err != nil {
+		t.Fatalf("create stalled child: %v", err)
+	}
+	if _, err := m.Update(stalled.ID, task.Update{
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr("watchdog: zero-output startup retry budget exhausted after 2 identical attempts"),
+		Blocker: task.Ptr(blocker.State{
+			Kind:      blocker.KindWatchdogRateLimitExhausted,
+			Actor:     blocker.ActorWorkflow,
+			Exhausted: true,
+		}),
+	}); err != nil {
+		t.Fatalf("escalate stalled child to blocked: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	stalledTask := mustTask(t, m, stalled.ID)
+	if stalledTask.Status != task.StatusBlocked {
+		t.Fatalf("stalled child = %q, want to stay blocked (workflow-owned hold, not the gate's)", stalledTask.Status)
+	}
+	if !slices.Contains(stalledTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("stalled child tags = %v, want the gating tag left untouched since the gate never released it", stalledTask.Tags)
+	}
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
+		t.Fatalf("tracker = %q, want human-required to surface the stalled child", got)
 	}
 }
 
