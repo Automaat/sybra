@@ -241,20 +241,29 @@ func (e *authCircuitOpenError) Error() string {
 }
 
 // ObserveCallResult updates the shared GitHub auth-health state from the
-// outcome of a completed gh invocation. Call sites are the package's own
-// request gate (ghGate.execute) and internal/monitor's issue-filing execer,
-// which mirrors credential handling here the same way it already mirrors
-// ghEnv() — see GHEnv(). Non-auth errors (rate limiting, network blips, 4xx
-// unrelated to credentials) are left to their own handling and never change
-// auth state.
+// outcome of a completed gh invocation, for callers with no caller context to
+// propagate. Equivalent to ObserveCallResultCtx(context.Background(), ...).
+func ObserveCallResult(out []byte, err error) {
+	ObserveCallResultCtx(context.Background(), out, err)
+}
+
+// ObserveCallResultCtx is ObserveCallResult's context-aware form. Call sites
+// are the package's own request gate (ghGate.execute) and internal/monitor's
+// issue-filing execer, which mirrors credential handling here the same way it
+// already mirrors ghEnv() — see GHEnv(). Non-auth errors (rate limiting,
+// network blips, 4xx unrelated to credentials) are left to their own handling
+// and never change auth state.
 //
 // On a token-specific auth failure this triggers exactly one force-refresh
 // attempt when App auth is configured (appTokenSource.refresh's own
 // singleflight collapses any concurrent callers into that one mint call —
 // see appauth.go). A refresh success clears the circuit; a refresh failure
 // (or no App auth to refresh at all) classifies the state as misconfigured
-// or unavailable, which is what AuthCircuitOpen then suppresses on.
-func ObserveCallResult(out []byte, err error) {
+// or unavailable, which is what AuthCircuitOpen then suppresses on. The mint
+// itself is detached from ctx's cancellation (see onAuthFailureObserved) so a
+// caller's own short-lived deadline never aborts a refresh other concurrent
+// callers are waiting on.
+func ObserveCallResultCtx(ctx context.Context, out []byte, err error) {
 	if err == nil {
 		authHealth.setState(AuthHealthy, "")
 		return
@@ -263,10 +272,10 @@ func ObserveCallResult(out []byte, err error) {
 	if !isAuthErrorMsg(msg) {
 		return
 	}
-	onAuthFailureObserved(msg)
+	onAuthFailureObserved(ctx, msg)
 }
 
-func onAuthFailureObserved(reason string) {
+func onAuthFailureObserved(ctx context.Context, reason string) {
 	src := currentAppSource()
 	if src == nil {
 		// No App auth configured — nothing we can force-refresh. An ambient
@@ -276,7 +285,12 @@ func onAuthFailureObserved(reason string) {
 		return
 	}
 	authHealth.setState(AuthRefreshing, reason)
-	if err := ForceRefreshAppTokenEnv(context.Background()); err != nil {
+	// context.WithoutCancel: this refresh runs synchronously on the
+	// goroutine that observed the failure and must not inherit that
+	// specific call's cancellation/deadline — a short-lived poll context
+	// timing out mid-mint must not abort a refresh other concurrent 401s are
+	// singleflight-waiting on (see appauth.go's refreshMu).
+	if err := ForceRefreshAppTokenEnv(context.WithoutCancel(ctx)); err != nil {
 		authHealth.setState(classifyMintError(err), err.Error())
 		return
 	}

@@ -214,7 +214,11 @@ func newGHRequestGate() *ghRequestGate {
 	}
 }
 
-func (g *ghRequestGate) execute(run func() ([]byte, error)) ([]byte, error) {
+// ctx is used only to scope the auth-health observation's own recovery work
+// (a force-refresh mint triggered by a failure seen here, see
+// ObserveCallResultCtx) — it is never passed to run, whose closure already
+// carries whatever context its own exec.CommandContext needs.
+func (g *ghRequestGate) execute(ctx context.Context, run func() ([]byte, error)) ([]byte, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -241,7 +245,7 @@ func (g *ghRequestGate) execute(run func() ([]byte, error)) ([]byte, error) {
 	if err != nil && isRateLimitedMessage(string(out)) {
 		g.bumpLocked(g.lastRun.Add(ghFallbackRateBackoff))
 	}
-	ObserveCallResult(out, err)
+	ObserveCallResultCtx(ctx, out, err)
 	return out, err
 }
 

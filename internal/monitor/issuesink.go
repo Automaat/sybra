@@ -45,7 +45,7 @@ var (
 	// report its own failures into the shared state for other callers (or
 	// the health/metrics surfaces) to see. See #2453.
 	authCircuitOpen = github.AuthCircuitOpen
-	observeGHResult = github.ObserveCallResult
+	observeGHResult = github.ObserveCallResultCtx
 )
 
 func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) {
@@ -63,7 +63,7 @@ func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) 
 		cmd.Env = env
 	}
 	out, err := cmd.CombinedOutput()
-	observeGHResult(out, err)
+	observeGHResult(ctx, out, err)
 	return out, err
 }
 
