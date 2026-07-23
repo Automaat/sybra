@@ -165,7 +165,7 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 // status on a child that already ran implementation means a watchdog
 // exhaustion, not an unmet dependency (sybra#2538).
 func hasStartedImplementation(t *task.Task) bool {
-	for i := range t.AgentRuns {
+	for i := range slices.Backward(t.AgentRuns) {
 		role := t.AgentRuns[i].Role
 		if role == "" || role == string(agent.RoleImplementation) {
 			return true
