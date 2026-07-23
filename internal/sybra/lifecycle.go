@@ -450,6 +450,24 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 		}
 		return out
 	})
+	metrics.RegisterGHAuthState(func() map[string]int64 {
+		state := github.AuthHealthSnapshot().State
+		out := map[string]int64{
+			string(github.AuthHealthy):       0,
+			string(github.AuthRefreshing):    0,
+			string(github.AuthRateLimited):   0,
+			string(github.AuthMisconfigured): 0,
+			string(github.AuthUnavailable):   0,
+		}
+		out[string(state)] = 1
+		return out
+	})
+	metrics.RegisterGHAuthTransitions(func() int64 {
+		return github.AuthHealthSnapshot().Transitions
+	})
+	metrics.RegisterGHAuthSuppressedCalls(func() int64 {
+		return github.AuthHealthSnapshot().SuppressedCalls
+	})
 }
 
 func providerHealthMetrics(
@@ -520,6 +538,26 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 	var sink monitor.IssueSink = innerSink
 	if durableSink != nil {
 		sink = durableSink
+		// Drain the outbox as soon as GitHub auth health reports recovery,
+		// instead of waiting for this sink's next natural SubmitIssue call
+		// (which for a rare anomaly kind could be hours away). Handed off to
+		// its own goroutine because OnAuthRecovered callbacks run
+		// synchronously on the goroutine that observed the recovery — often
+		// while internal/github's request gate still holds its own mutex —
+		// so calling back into a gh invocation here directly would deadlock.
+		// See #2453.
+		github.OnAuthRecovered(func() {
+			a.wg.Go(func() { durableSink.ReplayPending(context.Background()) })
+		})
+		metrics.RegisterGHIssueOutboxPending(func() map[string]int64 {
+			return map[string]int64{"monitor": durableSink.Depth()}
+		})
+		metrics.RegisterGHIssueOutboxReplayed(func() map[string]int64 {
+			return map[string]int64{"monitor": durableSink.ReplayedTotal()}
+		})
+		metrics.RegisterGHIssueOutboxOldestAgeSeconds(func() map[string]int64 {
+			return map[string]int64{"monitor": int64(durableSink.OldestPendingAge(time.Now()).Seconds())}
+		})
 	}
 	// This callback's DispatchEvent -> execShell eventually derives its
 	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
