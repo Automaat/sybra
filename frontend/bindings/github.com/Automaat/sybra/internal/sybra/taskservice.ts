@@ -159,8 +159,7 @@ export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0
 }
 
 /**
- * ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
- * Chat tasks are surfaced exclusively through the Chats view.
+ * ListTasks returns all tasks from the store.
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
@@ -170,10 +169,9 @@ export function ListTasks(): $CancellablePromise<task$0.Task[]> {
 
 /**
  * ListTasksForNode returns the subset of the board relevant to a cluster
- * follower's mirror: tasks assigned to that node, excluding chat tasks and
- * terminal tasks closed longer than mirrorStaleTerminalWindow ago. Unlike
- * ListTasks, this is sized for repeated polling rather than a one-off full
- * board read.
+ * follower's mirror: tasks assigned to that node, excluding terminal tasks
+ * closed longer than mirrorStaleTerminalWindow ago. Unlike ListTasks, this is
+ * sized for repeated polling rather than a one-off full board read.
  */
 export function ListTasksForNode(node: string): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(844621143, node).then(($result: any) => {
