@@ -3,8 +3,6 @@ import {
   ListAgents,
   DiscoverAgents,
   StartAgent,
-  StartChat,
-  StopChat,
   AgentQueueSnapshot as FetchAgentQueueSnapshot,
 } from '$lib/api'
 import { stopAgentForTask, listRemoteAgents, getAgentOutputForNode } from '$lib/api-cluster'
@@ -159,13 +157,6 @@ class AgentStore extends EntityStore<Agent> {
     return result
   }
 
-  async startChat(projectID: string, provider: string, prompt: string): Promise<Agent> {
-    const result = await StartChat(projectID, provider, prompt)
-    this.set(result.id, result)
-    this.outputs.set(result.id, [])
-    return result
-  }
-
   nodeOf(agentID: string): string | undefined {
     const a = this.items.get(agentID)
     if (a?.node) return a.node
@@ -179,12 +170,6 @@ class AgentStore extends EntityStore<Agent> {
       a.state = 'stopped'
       this.set(agentID, a)
     }
-  }
-
-  async stopChat(agentID: string): Promise<void> {
-    await StopChat(agentID)
-    this.items.delete(agentID)
-    this.outputs.delete(agentID)
   }
 
   async getOutput(agentID: string): Promise<TimestampedStreamEvent[]> {

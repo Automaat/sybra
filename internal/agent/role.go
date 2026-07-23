@@ -9,7 +9,6 @@ import (
 type Role string
 
 const (
-	RoleChat           Role = "chat"
 	RoleTriage         Role = "triage"
 	RolePlan           Role = "plan"
 	RolePlanCritic     Role = "plan-critic"
@@ -32,7 +31,7 @@ const (
 
 func (r Role) IsKnown() bool {
 	switch r {
-	case RoleChat, RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor, RoleOrchestrator,
+	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor, RoleOrchestrator,
 		RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation,
 		RoleHumanReview, RoleTestFix:
 		return true

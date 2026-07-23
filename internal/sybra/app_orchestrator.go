@@ -185,7 +185,7 @@ func (a *App) reconcileRunnableBoardTasks(ctx context.Context) {
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
+		if t.TaskType == task.TaskTypeUmbrella {
 			continue
 		}
 		if !a.runsTaskLocally(t) {
@@ -572,9 +572,6 @@ func (a *App) maybeStartOrchestrator(ctx context.Context) {
 
 	hasActive := false
 	for i := range tasks {
-		if task.IsChatTask(tasks[i]) {
-			continue
-		}
 		switch tasks[i].Status {
 		case task.StatusPlanning, task.StatusPlanReview, task.StatusInProgress, task.StatusInReview:
 			hasActive = true

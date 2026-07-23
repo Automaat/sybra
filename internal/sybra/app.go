@@ -727,34 +727,6 @@ func (a *App) AgentQueueSnapshot() AgentQueueSnapshot {
 	return a.queueSvc.AgentQueueSnapshot()
 }
 
-// StartChat creates a new interactive chat bound to projectID using the
-// requested provider ("claude" or "codex"). Each chat gets a dedicated
-// local-only worktree that is cleaned up when StopChat is called.
-func (a *App) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
-	return a.agentOrch.StartChat(projectID, providerName, prompt)
-}
-
-// StopChat stops a chat agent, deletes its synthetic task, and removes its
-// worktree. Refuses to operate on agents that are not bound to a chat task
-// so the UI cannot accidentally delete a real task.
-func (a *App) StopChat(agentID string) error {
-	ag, err := a.agents.GetAgent(agentID)
-	if err != nil {
-		return err
-	}
-	if ag.TaskID == "" {
-		return fmt.Errorf("agent %s is not bound to a task", agentID)
-	}
-	t, err := a.tasks.Get(ag.TaskID)
-	if err != nil {
-		return fmt.Errorf("lookup chat task: %w", err)
-	}
-	if !task.IsChatTask(t) {
-		return fmt.Errorf("agent %s is not a chat", agentID)
-	}
-	return a.taskSvc.DeleteTask(t.ID)
-}
-
 // ListBackgroundOps returns active and recently-completed background operations.
 func (a *App) ListBackgroundOps() []bgop.Operation {
 	if a.bgops == nil {

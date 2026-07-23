@@ -1,7 +1,6 @@
 package task
 
 import (
-	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
@@ -155,9 +154,6 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		MirrorUpdatedAt:        fm.MirrorUpdatedAt,
 		Body:                   body,
 	}
-	if fm.TaskType == TaskType("chat") && !containsString(t.Tags, ChatTag) {
-		t.Tags = append(t.Tags, ChatTag)
-	}
 	t.AgentRuns = agentRunsFromRecords(fm.AgentRuns)
 	if t.AgentRuns == nil {
 		t.AgentRuns = []AgentRun{}
@@ -174,10 +170,6 @@ func normalizeTaskType(tt TaskType) TaskType {
 		return TaskTypeUmbrella
 	}
 	return ""
-}
-
-func containsString(values []string, want string) bool {
-	return slices.Contains(values, want)
 }
 
 func frontmatterFromTask(t Task) taskFrontmatter {

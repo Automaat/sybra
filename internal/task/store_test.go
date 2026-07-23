@@ -3120,34 +3120,6 @@ func TestStoreDelete_RenameFailureLeavesTaskIntact(t *testing.T) {
 	}
 }
 
-func TestStoreGcOrphanChatInteraction_TrashesInsteadOfUnlinking(t *testing.T) {
-	t.Parallel()
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	chat, err := store.CreateChat("owner/repo")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// gcOrphanChats (internal/recovery) deletes orphaned chat tasks through
-	// Manager.Delete → Store.Delete; assert that path now trashes the chat
-	// task rather than unlinking it outright, so a wrongly-GC'd chat is
-	// still recoverable.
-	if err := store.Delete(chat.ID); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := store.ListTrash()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].ID != chat.ID {
-		t.Fatalf("ListTrash() = %+v, want the trashed chat task", entries)
-	}
-}
-
 func TestTrashGenerationID_ReadError(t *testing.T) {
 	t.Parallel()
 	genDir := filepath.Join(t.TempDir(), "missing")

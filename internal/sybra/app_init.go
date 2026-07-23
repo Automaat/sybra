@@ -644,7 +644,7 @@ func (a *App) initStatusHook() {
 		runsNoAgent := false
 		if t, err := a.tasks.Get(taskID); err == nil {
 			local = a.runsTaskLocally(t)
-			runsNoAgent = task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella
+			runsNoAgent = t.TaskType == task.TaskTypeUmbrella
 		}
 
 		// Wake the dispatch pass immediately so a task that just became ready
@@ -893,13 +893,13 @@ func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
 		if !a.runsTaskLocally(t) {
 			return
 		}
-		// Umbrella/chat tasks run no agent (agentorch.startAgent refuses
-		// them at the dispatch choke point). Every status-triggered
-		// workflow here ends in a run_agent step, so dispatching one onto
-		// a tracker is a guaranteed 3-attempt circuit-breaker trip that
-		// flips the tracker to human-required — and umbrella.rollup then
-		// flips it back to in-progress on the next tick, looping forever.
-		if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
+		// Umbrella tasks run no agent (agentorch.startAgent refuses them at
+		// the dispatch choke point). Every status-triggered workflow here
+		// ends in a run_agent step, so dispatching one onto a tracker is a
+		// guaranteed 3-attempt circuit-breaker trip that flips the tracker
+		// to human-required — and umbrella.rollup then flips it back to
+		// in-progress on the next tick, looping forever.
+		if t.TaskType == task.TaskTypeUmbrella {
 			return
 		}
 	}

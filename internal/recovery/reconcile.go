@@ -80,7 +80,7 @@ func reconcileLostPREligible(t *task.Task) bool {
 	if t.PRNumber != 0 || t.Branch == "" || t.ProjectID == "" {
 		return false
 	}
-	if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
+	if t.TaskType == task.TaskTypeUmbrella {
 		return false
 	}
 	return !slices.Contains(t.Tags, "review")

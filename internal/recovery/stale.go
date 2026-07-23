@@ -49,7 +49,7 @@ func (r *Recovery) RestartTaskIfStale(ctx context.Context, taskID string) error 
 }
 
 func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
-	if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
+	if t.TaskType == task.TaskTypeUmbrella {
 		return
 	}
 	if r.DispatchGate != nil && !r.DispatchGate(t) {

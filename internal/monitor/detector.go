@@ -101,9 +101,6 @@ func detectPerTask(in DetectInput) []Anomaly {
 	tracked := openLostAgentInvestigations(in.Tasks)
 	for i := range in.Tasks {
 		t := &in.Tasks[i]
-		if task.IsChatTask(t) {
-			continue
-		}
 		if !projectAllowed(in.AllowsProject, t.ProjectID) {
 			continue
 		}
@@ -351,12 +348,11 @@ func detectLostAgents(in DetectInput) []Anomaly {
 		if t.Status != task.StatusInProgress {
 			continue
 		}
-		// Chat sessions and umbrella trackers run no agent of their own: a
-		// chat is synthetic and an umbrella's in-progress is a rollup of its
-		// children (app_umbrella_gate.go). Flagging either as a lost agent would
-		// produce noisy recovery handoff reports every cycle. Mirrors recovery's
-		// RestartStaleInProgress.
-		if task.IsChatTask(t) || t.TaskType == task.TaskTypeUmbrella {
+		// Umbrella trackers run no agent of their own: their in-progress is a
+		// rollup of their children (app_umbrella_gate.go). Flagging one as a
+		// lost agent would produce noisy recovery handoff reports every
+		// cycle. Mirrors recovery's RestartStaleInProgress.
+		if t.TaskType == task.TaskTypeUmbrella {
 			continue
 		}
 		if !projectAllowed(in.AllowsProject, t.ProjectID) {

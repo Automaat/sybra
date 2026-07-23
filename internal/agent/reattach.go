@@ -292,7 +292,7 @@ func convoResumeState(evs []ConvoEvent) State {
 func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 	// Per-turn recreate is unconditional (no live process to gate on), so guard
 	// against resurrecting an agent for a task that was deleted while the app
-	// was down — that would leak a zombie agent gcOrphanChats can't reap.
+	// was down — that would leak a zombie agent nothing else can reap.
 	if r.TaskID != "" {
 		if exists := m.taskExistsFn(); exists != nil && !exists(r.TaskID) {
 			_ = reg.Delete(r.ID)

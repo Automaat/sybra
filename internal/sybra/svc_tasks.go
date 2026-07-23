@@ -116,21 +116,9 @@ type TaskAuditEventDTO struct {
 
 const taskDiagnosticReadLimit = 256 * 1024
 
-// ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
-// Chat tasks are surfaced exclusively through the Chats view.
+// ListTasks returns all tasks from the store.
 func (s *TaskService) ListTasks() ([]task.Task, error) {
-	all, err := s.tasks.List()
-	if err != nil {
-		return nil, err
-	}
-	out := all[:0]
-	for i := range all {
-		if task.IsChatTask(all[i]) {
-			continue
-		}
-		out = append(out, all[i])
-	}
-	return out, nil
+	return s.tasks.List()
 }
 
 // mirrorStaleTerminalWindow bounds how long a terminal (done/cancelled) task
@@ -142,10 +130,9 @@ func (s *TaskService) ListTasks() ([]task.Task, error) {
 const mirrorStaleTerminalWindow = 10 * time.Minute
 
 // ListTasksForNode returns the subset of the board relevant to a cluster
-// follower's mirror: tasks assigned to that node, excluding chat tasks and
-// terminal tasks closed longer than mirrorStaleTerminalWindow ago. Unlike
-// ListTasks, this is sized for repeated polling rather than a one-off full
-// board read.
+// follower's mirror: tasks assigned to that node, excluding terminal tasks
+// closed longer than mirrorStaleTerminalWindow ago. Unlike ListTasks, this is
+// sized for repeated polling rather than a one-off full board read.
 func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
 	all, err := s.tasks.List()
 	if err != nil {
@@ -154,9 +141,6 @@ func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
 	out := all[:0]
 	for i := range all {
 		t := all[i]
-		if task.IsChatTask(t) {
-			continue
-		}
 		if t.AssignedNode != node {
 			continue
 		}

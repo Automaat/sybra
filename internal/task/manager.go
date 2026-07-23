@@ -259,17 +259,6 @@ func (m *Manager) Put(t Task) (Task, bool, error) {
 	return saved, !existed, nil
 }
 
-// CreateChat persists a synthetic chat task and emits task:created.
-func (m *Manager) CreateChat(projectID string) (Task, error) {
-	t, err := m.store.CreateChat(projectID)
-	if err != nil {
-		return t, err
-	}
-	metrics.TaskCreated()
-	m.emitter.Emit(events.TaskCreated, t.FilePath)
-	return t, nil
-}
-
 // Update applies field updates to a task and emits task:updated.
 // Serializes with other Update/AddRun/UpdateRun/Delete calls for the same id.
 //
