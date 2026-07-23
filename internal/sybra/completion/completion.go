@@ -484,7 +484,8 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	// constant. Comparing directly against it (not via
 	// watchdogreason.IsZeroOutputRateLimit, which checks the wrapped form)
 	// is intentional.
-	if ag.GetErrorKind() == "rate_limit" && ag.GetErrorMsg() == watchdogreason.ZeroOutputBeforeStartup {
+	errKind, errMsg := ag.GetError()
+	if errKind == "rate_limit" && errMsg == watchdogreason.ZeroOutputBeforeStartup {
 		runUpdates.ResumeZeroOutputStall = task.Ptr(true)
 	}
 	return runUpdates
