@@ -1205,6 +1205,18 @@ func remoteTrackingRef(ctx context.Context, worktreePath, remote, branch string)
 	return sha, err == nil
 }
 
+// BranchPushed reports whether branch exists on the worktree's push remote —
+// i.e. it has been pushed at least once (an open PR). Reads the remote-tracking
+// ref, so callers must ReconcileWithRemote (or otherwise fetch the branch)
+// first; a first-push branch has no tracking ref and reports false. A pushed
+// branch must never be rebased: rewriting its SHAs diverges it from the remote,
+// and Sybra never force-pushes, so the divergence loops through conflict
+// recovery forever.
+func BranchPushed(ctx context.Context, worktreePath, branch string) bool {
+	_, ok := remoteTrackingRef(ctx, worktreePath, PushRemote(ctx, worktreePath), branch)
+	return ok
+}
+
 func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string) error {
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
 	fetchErr := withNetworkRetry(ctx, func() error {
