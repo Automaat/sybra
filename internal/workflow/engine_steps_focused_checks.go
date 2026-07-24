@@ -389,18 +389,20 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 		reason += " for " + surfaces
 	}
 	reason += ": " + trimDiffLine(failedCmd)
-	if wfExec == nil {
+	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
 		return e.flagFocusedChecks(taskID, step, reason, failedCmd)
 	}
 	key := "step." + step.ID + ".auto_fix"
 	attempts := parseWorkflowInt(wfExec.Variables[key])
-	if attempts >= verifyChecksAutoFixCap || wfExec.CountStep(verifyChecksImplStepID) == 0 {
-		return e.flagFocusedChecks(taskID, step, reason, failedCmd)
+	if attempts >= verifyChecksAutoFixCeiling {
+		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
+			reason, verifyChecksAutoFixCeiling)
+		return e.flagFocusedChecks(taskID, step, exhausted, "auto-fix-exhausted")
 	}
 
 	wfExec.SetVar(key, strconv.Itoa(attempts+1))
 	wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
+	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(autoFixBackoff(attempts)).Format(time.RFC3339))
 	wfExec.ClearStepRecords(verifyChecksImplStepID)
 	wfExec.CurrentStep = verifyChecksImplStepID
 	wfExec.State = ExecWaiting
@@ -411,14 +413,16 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 		return StepOutput{}, err
 	}
 	e.logger.Info("workflow.focused-checks.reask",
-		"task_id", taskID, "attempt", attempts+1, "cap", verifyChecksAutoFixCap, "cmd", trimDiffLine(failedCmd))
+		"task_id", taskID, "attempt", attempts+1, "cmd", trimDiffLine(failedCmd))
 	return StepOutput{}, errStepParked
 }
 
 func buildFocusedChecksReaskNote(selected []selectedFocusedCheck, changedFiles []string, failedCmd, output string) string {
 	var b strings.Builder
 	b.WriteString("A prior implementation FAILED Sybra's focused checks. Fix the ROOT CAUSE so the failing command passes on a clean run")
-	b.WriteString(" — do NOT weaken, skip, or edit the check to make it pass.\n\n")
+	b.WriteString(" — do NOT weaken, skip, or edit the check to make it pass. Then COMMIT and push your fix: the check runs against your")
+	b.WriteString(" branch HEAD in a freshly prepared worktree, so an uncommitted change is not picked up and the same failure recurs;")
+	b.WriteString(" some projects also enforce a clean working tree (e.g. a `git diff --exit-code` / generated-file gate) that fails outright on uncommitted changes.\n\n")
 	if surfaces := focusedSurfaceSummary(selected); surfaces != "" {
 		b.WriteString("## Focused surface\n\n")
 		b.WriteString(surfaces)
