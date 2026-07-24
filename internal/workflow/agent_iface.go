@@ -78,8 +78,9 @@ type AgentLauncher interface {
 	IsDispatching(taskID string) bool
 	// AdmitDispatch consults the local resource-pressure gate (internal/pressure)
 	// before a run_agent/best_of_n/parallel step spawns a new agent process.
-	// Interactive mode always admits (a human is waiting on it) and an
-	// implementation with no gate wired always admits — this is a Layer-1 peek
+	// Every dispatch mode — headless is the only one left, interactive is
+	// coerced away before this call — is subject to the same gate; an
+	// implementation with no gate wired always admits. This is a Layer-1 peek
 	// called BEFORE the (potentially expensive) worktree-prep/StartAgent path,
 	// so a saturated host defers new work without ever touching the worktree.
 	// admit=false carries a human-readable reason for the caller to park with.
