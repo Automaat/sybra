@@ -47,6 +47,12 @@ type boundedRetryPolicy struct {
 	// completion signal. boundedRetry neither persists nor logs on its
 	// behalf — policies disagree too much on shape to force a shared tail.
 	onExhausted func(e *Engine, t *TaskInfo, step *Step, attempts int)
+	// onPersistError overrides the default "workflow.<name>.persist" error
+	// log when a policy's failure contract needs more than a log line (e.g.
+	// checkpoint-reschedule also calls surfaceStartFailure to stay
+	// consistent with its other dispatch-failure paths). Optional; nil uses
+	// the standard log line.
+	onPersistError func(e *Engine, t *TaskInfo, step *Step, err error)
 }
 
 // boundedRetry applies policy's counter/cap/escalate shape and reports
@@ -74,7 +80,11 @@ func (e *Engine) boundedRetry(t *TaskInfo, step *Step, p boundedRetryPolicy) boo
 		p.onArm(e, t, step, attempt)
 	}
 	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-		e.logger.Error("workflow."+p.name+".persist", "task_id", t.ID, "step", step.ID, "err", err)
+		if p.onPersistError != nil {
+			p.onPersistError(e, t, step, err)
+		} else {
+			e.logger.Error("workflow."+p.name+".persist", "task_id", t.ID, "step", step.ID, "err", err)
+		}
 		return true
 	}
 	if p.onArmed != nil {

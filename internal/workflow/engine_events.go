@@ -942,23 +942,22 @@ func (e *Engine) handleCheckpointReschedule(taskID string, t *TaskInfo, step *St
 	if t.Workflow == nil {
 		return true
 	}
-	key := e.checkpointRescheduleKey(step.ID)
-	count := parseWorkflowInt(t.Workflow.Variables[key])
-	maxCheckpoints := e.effectiveMaxCheckpoints()
-	if count >= maxCheckpoints {
-		reason := fmt.Sprintf("checkpoint retry budget exhausted after %d handoffs", maxCheckpoints)
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-			e.resumeError.Log(e.logger, "workflow.checkpoint-reschedule.human-required", taskID, err, "task_id", taskID)
-		}
-		return true
-	}
-	t.Workflow.SetVar(key, strconv.Itoa(count+1))
-	if err := e.tasks.SetWorkflow(taskID, t.Workflow); err != nil {
-		e.resumeError.Log(e.logger, "workflow.checkpoint-reschedule.persist", taskID, err, "task_id", taskID)
-		e.surfaceStartFailure(taskID, t.Status, err, t.Workflow, step.ID)
-		return true
-	}
-	return false
+	return e.boundedRetry(t, step, boundedRetryPolicy{
+		name:       "checkpoint-reschedule",
+		applies:    func(*Engine, *TaskInfo, *Step) bool { return true },
+		counterKey: e.checkpointRescheduleKey,
+		max:        e.effectiveMaxCheckpoints(),
+		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
+			reason := fmt.Sprintf("checkpoint retry budget exhausted after %d handoffs", e.effectiveMaxCheckpoints())
+			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+				e.resumeError.Log(e.logger, "workflow.checkpoint-reschedule.human-required", taskID, err, "task_id", taskID)
+			}
+		},
+		onPersistError: func(e *Engine, t *TaskInfo, step *Step, err error) {
+			e.resumeError.Log(e.logger, "workflow.checkpoint-reschedule.persist", taskID, err, "task_id", taskID)
+			e.surfaceStartFailure(taskID, t.Status, err, t.Workflow, step.ID)
+		},
+	})
 }
 
 func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, parent, child *Step, t TaskInfo) {
@@ -2165,6 +2164,15 @@ func circuitBreakerFirstKey(stepID string) string   { return circuitBreakerFirst
 // failure for the same (task, step), regardless of cause. Once the count
 // crosses maxCircuitBreakerFailures within circuitBreakerWindow, the caller
 // trips the breaker.
+//
+// Deliberately not built on boundedRetry/rewindRetry: both cap a *count*
+// against a max, but the breaker's cap is a sliding time window (a failure
+// outside circuitBreakerWindow resets the counter instead of accumulating
+// toward it), and it's invoked inline from surfaceStartFailureClassified
+// with a *Execution/stepID/taskID rather than the TaskInfo+Step the other
+// two helpers key off. Forcing it into either shape would mean threading the
+// window-reset branch through a policy hook for one caller — more
+// indirection than the four lines it shares with them are worth.
 func recordCircuitBreakerFailure(wf *Execution, stepID string, now time.Time) (attempts int, trip bool) {
 	firstKey := circuitBreakerFirstKey(stepID)
 	failKey := circuitBreakerFailureKey(stepID)

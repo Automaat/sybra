@@ -152,6 +152,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 // err immediately (either a fresh dispatch or a retry-exhausted block);
 // handled=false means the step isn't retryable (or retries are exhausted
 // without blocking) and AdvanceStep should keep resolving the next edge.
+//
+// Deliberately not built on boundedRetry/rewindRetry: its attempt count
+// isn't a persisted workflow-variable counter at all — wfExec.CountStep
+// reads it off the step's own execution history — and exhaustion falls
+// through to blockRetryExhaustedTriageIfNeeded's triage instead of an
+// onExhausted callback owning the escalation outright.
 func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, currentStep *Step, wfExec *Execution, task TaskInfo, output StepOutput, release func()) (handled bool, err error) {
 	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == "human-required" {
 		return false, nil

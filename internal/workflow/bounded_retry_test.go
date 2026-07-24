@@ -146,6 +146,31 @@ func TestBoundedRetry_PolicyMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("persist error uses onPersistError override instead of the default log", func(t *testing.T) {
+		tasks := newMemTasks()
+		tasks.failSetWorkflow = true
+		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		ti, step := newTaskStep("")
+		tasks.Put(*ti)
+
+		var gotErr error
+		handled := engine.boundedRetry(ti, step, boundedRetryPolicy{
+			name:       "test-policy",
+			applies:    func(*Engine, *TaskInfo, *Step) bool { return true },
+			counterKey: func(string) string { return "retry.count" },
+			max:        2,
+			onPersistError: func(_ *Engine, _ *TaskInfo, _ *Step, err error) {
+				gotErr = err
+			},
+		})
+		if !handled {
+			t.Fatal("persist failure must be reported as handled")
+		}
+		if gotErr == nil {
+			t.Fatal("onPersistError override was not invoked")
+		}
+	})
+
 	t.Run("onArmed error is reported as handled without a retry log", func(t *testing.T) {
 		tasks := newMemTasks()
 		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
