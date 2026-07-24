@@ -60,6 +60,9 @@ type boundedRetryPolicy struct {
 // was exhausted and the task escalated — as opposed to left untouched for
 // the caller to try some other handler or fall through to a fresh dispatch.
 func (e *Engine) boundedRetry(t *TaskInfo, step *Step, p boundedRetryPolicy) bool {
+	if t == nil || step == nil {
+		return false
+	}
 	if !p.applies(e, t, step) {
 		return false
 	}
