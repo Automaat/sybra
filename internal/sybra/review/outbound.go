@@ -194,29 +194,35 @@ func (r *Handler) hasRunningAgentForTask(ctx context.Context, taskID string) boo
 }
 
 func (r *Handler) hasBlockingAgentForTask(ctx context.Context, taskID string) bool {
-	if r == nil || r.agents == nil {
-		return false
-	}
-	if !r.agents.HasRunningAgentForTask(taskID) {
-		return false
-	}
-	releasedAgents := r.agents.ReleaseStaleStoppedAgentsForTask(ctx, taskID, stalePRDispatchGateAge)
-	releasedClaim := r.agents.ReleaseStaleTaskDispatch(taskID, stalePRDispatchGateAge)
-	if releasedAgents > 0 || releasedClaim {
-		if r.logger != nil {
-			r.logger.Warn("reviews.dispatch.gate.stale-released",
-				"task_id", taskID, "agents", releasedAgents, "dispatch_claim", releasedClaim)
-		}
-		return r.agents.HasRunningAgentForTask(taskID)
-	}
-	return true
+	return r.canDispatch(ctx, taskID, "")
 }
 
 func (r *Handler) hasBlockingAgentForTaskAllowingAgent(ctx context.Context, taskID, exceptAgentID string) bool {
+	return r.canDispatch(ctx, taskID, exceptAgentID)
+}
+
+// canDispatch is the single dispatch gate every PR-driven dispatcher (review
+// dispatch, PR-fix dispatch, phase reconciliation) checks before starting or
+// counting a blocking agent for taskID: is another agent already running (or
+// mid-dispatch) for this task? exceptAgentID excludes one specific agent from
+// the check — used when the caller IS that agent and only cares about
+// siblings — pass "" to check unconditionally.
+//
+// A stale registration (an agent whose process exited without the manager
+// observing it, or a dispatch claim held past its staleness window) is
+// released before the final check, so a genuinely idle task is never wedged
+// behind bookkeeping that never got cleaned up.
+func (r *Handler) canDispatch(ctx context.Context, taskID, exceptAgentID string) bool {
 	if r == nil || r.agents == nil {
 		return false
 	}
-	if !r.agents.HasOtherRunningAgentForTask(taskID, exceptAgentID) {
+	blocked := func() bool {
+		if exceptAgentID == "" {
+			return r.agents.HasRunningAgentForTask(taskID)
+		}
+		return r.agents.HasOtherRunningAgentForTask(taskID, exceptAgentID)
+	}
+	if !blocked() {
 		return false
 	}
 	releasedAgents := r.agents.ReleaseStaleStoppedAgentsForTask(ctx, taskID, stalePRDispatchGateAge)
@@ -226,7 +232,7 @@ func (r *Handler) hasBlockingAgentForTaskAllowingAgent(ctx context.Context, task
 			r.logger.Warn("reviews.dispatch.gate.stale-released",
 				"task_id", taskID, "agents", releasedAgents, "dispatch_claim", releasedClaim)
 		}
-		return r.agents.HasOtherRunningAgentForTask(taskID, exceptAgentID)
+		return blocked()
 	}
 	return true
 }
