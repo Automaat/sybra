@@ -825,14 +825,15 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		DisableProviderFailover: assignment.ExperimentID != "",
 		Dir:                     dir,
 		OneShot:                 oneShot,
-		IgnoreConcurrencyLimit:  mode == "interactive",
-		RequestedSkill:          workflowRequestedSkill(prompt),
-		ForceInjectedSkill:      assignment.ForceInjectedSkill,
-		SkillRecoveryAttempt:    assignment.SkillRecoveryAttempt,
-		MaxTurns:                t.MaxTurns,
-		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
-		HeadlessPermissionMode:  posture,
-		ReasoningEffort:         agentorch.FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort, agentorch.ResolveRoleEffort(r, a.agentOrch.Cfg())),
+		// mode is coerced to headless above, so legacy interactive tasks get
+		// no concurrency bypass — they are treated as ordinary headless runs.
+		RequestedSkill:         workflowRequestedSkill(prompt),
+		ForceInjectedSkill:     assignment.ForceInjectedSkill,
+		SkillRecoveryAttempt:   assignment.SkillRecoveryAttempt,
+		MaxTurns:               t.MaxTurns,
+		RequirePermissions:     agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
+		HeadlessPermissionMode: posture,
+		ReasoningEffort:        agentorch.FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort, agentorch.ResolveRoleEffort(r, a.agentOrch.Cfg())),
 		// Code-author roles (implementation/fix-review/pr-fix) are primed with
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
