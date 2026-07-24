@@ -455,6 +455,8 @@ focused headless agent for anomalies that need LLM judgment.
 | `supervision.monitor.bottleneck_hours` | `map[string]float64` |  |  |  | `monitor.bottleneck_hours` | `false` | `restart` |  |  |
 | `supervision.monitor.issue_label` | `string` | `"monitor"` |  |  | `monitor.issue_label` | `false` | `restart` |  |  |
 | `supervision.monitor.issue_repo` | `string` | `"Automaat/sybra"` |  |  | `monitor.issue_repo` | `false` | `restart` |  |  |
+| `supervision.monitor.lost_agent_issue_after_occurrences` | `int` | `2` |  |  | `monitor.lost_agent_issue_after_occurrences` | `false` | `restart` |  | LostAgentIssueAfterOccurrences is how many consecutive ticks a lost_agent anomaly must be detected for the same task before an issue is filed. The deterministic remediation (resetLostAgent) runs every tick regardless; a single recurrence just means recovery hasn't taken effect yet, not that it failed. |
+| `supervision.monitor.lost_agent_auto_close_after_clears` | `int` | `3` |  |  | `monitor.lost_agent_auto_close_after_clears` | `false` | `restart` |  | LostAgentAutoCloseAfterClears is how many consecutive ticks a previously-filed lost_agent issue's task must stay clear (no longer detected as lost) before the issue is auto-closed. |
 
 ### WatchdogConfig (`supervision.watchdog`)
 

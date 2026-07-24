@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,9 @@ type fakeTasks struct {
 	tasks      []task.Task
 	updates    []taskUpdate
 	runUpdates []runUpdate
+	// updateErr, when non-nil, is returned by Update for this id instead of
+	// applying the update — simulates a task-store write conflict.
+	updateErr map[string]error
 }
 
 type taskUpdate struct {
@@ -54,6 +58,9 @@ func (f *fakeTasks) Get(id string) (task.Task, error) {
 func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.updateErr[id]; err != nil {
+		return task.Task{}, err
+	}
 	f.updates = append(f.updates, taskUpdate{id: id, u: u})
 	for i := range f.tasks {
 		if f.tasks[i].ID != id {
@@ -150,14 +157,54 @@ func (f *fakeDispatcher) Dispatch(_ context.Context, a Anomaly) (string, error) 
 type fakeSink struct {
 	mu          sync.Mutex
 	submissions []Anomaly
+	bodies      []string
 	createNext  bool
+	closed      []Anomaly
+	closeNext   bool
 }
 
-func (f *fakeSink) Submit(_ context.Context, a Anomaly, _ string) (bool, error) {
+func (f *fakeSink) Submit(_ context.Context, a Anomaly, body string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.submissions = append(f.submissions, a)
+	f.bodies = append(f.bodies, body)
 	return f.createNext, nil
+}
+
+// CloseIfOpen implements IssueCloser so tests can exercise the auto-close
+// path without a real gh binary.
+func (f *fakeSink) CloseIfOpen(_ context.Context, a Anomaly, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = append(f.closed, a)
+	return f.closeNext, nil
+}
+
+// toggleAgentLister is a mutable agentLister: tests flip which task ids are
+// "live" between tick() calls to simulate an agent recovering mid-run,
+// something a fixed liveAgentLister can't express since it's wired once at
+// NewService time.
+type toggleAgentLister struct {
+	mu      sync.Mutex
+	taskIDs []string
+}
+
+func (l *toggleAgentLister) Set(taskIDs []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.taskIDs = taskIDs
+}
+
+func (l *toggleAgentLister) ListAgents() []*agent.Agent {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]*agent.Agent, 0, len(l.taskIDs))
+	for _, id := range l.taskIDs {
+		a := &agent.Agent{TaskID: id}
+		a.SetState(agent.StateRunning)
+		out = append(out, a)
+	}
+	return out
 }
 
 var errNotFound = strError("not found")
@@ -336,6 +383,174 @@ func TestServiceTick_LostAgentRecoverySuppressesIssue(t *testing.T) {
 	}
 	if report.IssuesOpened != 0 || report.IssuesUpdated != 0 {
 		t.Fatalf("want issuesOpened=0 issuesUpdated=0, got %d/%d", report.IssuesOpened, report.IssuesUpdated)
+	}
+}
+
+// TestServiceTick_LostAgentDedupeThenAutoClose is the scenario from #2497's
+// test approach: repeated lost-agent detection on one task must reuse a
+// single open issue (comment with an occurrence count, not a fresh filing
+// every tick), and once the task's agent recovers and stays clear for
+// LostAgentAutoCloseAfterClears consecutive ticks, the issue auto-closes.
+func TestServiceTick_LostAgentDedupeThenAutoClose(t *testing.T) {
+	base := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	cfg.IssueCooldownMinutes = 0 // isolate the occurrence gate from the cooldown gate
+	cfg.LostAgentIssueAfterOccurrences = 2
+	cfg.LostAgentAutoCloseAfterClears = 2
+
+	tasks := &fakeTasks{tasks: []task.Task{mkTask("flaky", task.StatusInProgress)}}
+	sink := &fakeSink{createNext: true}
+	agents := &toggleAgentLister{}
+	now := base
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: agents,
+		Sink:   sink,
+		Logger: slog.Default(),
+		Now:    func() time.Time { return now },
+	})
+
+	tick := func(step time.Duration) Report {
+		now = now.Add(step)
+		r, err := svc.tick(context.Background())
+		if err != nil {
+			t.Fatalf("tick: %v", err)
+		}
+		return r
+	}
+
+	// Occurrence 1: first detection, remediation hasn't had a chance yet —
+	// no issue filed.
+	r := tick(0)
+	if len(sink.submissions) != 0 {
+		t.Fatalf("occurrence 1: want 0 submissions, got %d", len(sink.submissions))
+	}
+	if r.IssuesOpened != 0 || r.IssuesUpdated != 0 {
+		t.Fatalf("occurrence 1: want 0 opened/updated, got %d/%d", r.IssuesOpened, r.IssuesUpdated)
+	}
+
+	// Occurrence 2: recurred despite remediation — files the one issue.
+	r = tick(15 * time.Minute)
+	if len(sink.submissions) != 1 {
+		t.Fatalf("occurrence 2: want 1 submission, got %d", len(sink.submissions))
+	}
+	if r.IssuesOpened != 1 || r.IssuesUpdated != 0 {
+		t.Fatalf("occurrence 2: want 1 opened, 0 updated, got %d/%d", r.IssuesOpened, r.IssuesUpdated)
+	}
+	sink.createNext = false // simulate: the issue now exists, further hits are comments
+
+	// Occurrence 3: still stuck — reuses the same issue via an occurrence
+	// comment, not a fresh filing.
+	r = tick(15 * time.Minute)
+	if len(sink.submissions) != 2 {
+		t.Fatalf("occurrence 3: want 2 submissions total, got %d", len(sink.submissions))
+	}
+	if r.IssuesOpened != 0 || r.IssuesUpdated != 1 {
+		t.Fatalf("occurrence 3: want 0 opened, 1 updated, got %d/%d", r.IssuesOpened, r.IssuesUpdated)
+	}
+	lastBody := sink.bodies[len(sink.bodies)-1]
+	if !strings.Contains(lastBody, "occurrence #3") {
+		t.Fatalf("occurrence 3: want comment body to reference occurrence #3, got %q", lastBody)
+	}
+	if strings.Contains(lastBody, "## Suggested investigation") {
+		t.Fatalf("occurrence 3: want a terse recurrence comment, not the full deterministic body: %q", lastBody)
+	}
+
+	// Recovery: the agent is now live, so lost_agent stops being detected.
+	agents.Set([]string{"flaky"})
+
+	// Clear 1 of 2 — not enough to auto-close yet.
+	r = tick(15 * time.Minute)
+	if len(sink.closed) != 0 {
+		t.Fatalf("clear 1: want 0 close attempts, got %d", len(sink.closed))
+	}
+	if r.IssuesClosed != 0 {
+		t.Fatalf("clear 1: want 0 issues closed, got %d", r.IssuesClosed)
+	}
+
+	// Clear 2 of 2 — condition has stayed clear long enough, auto-close.
+	sink.closeNext = true
+	r = tick(15 * time.Minute)
+	if len(sink.closed) != 1 {
+		t.Fatalf("clear 2: want 1 close attempt, got %d", len(sink.closed))
+	}
+	if r.IssuesClosed != 1 {
+		t.Fatalf("clear 2: want 1 issue closed, got %d", r.IssuesClosed)
+	}
+
+	// A later, brand-new occurrence must start a clean streak rather than
+	// instantly refiling against the now-closed issue.
+	sink.submissions = nil
+	agents.Set(nil)
+	r = tick(15 * time.Minute)
+	if len(sink.submissions) != 0 {
+		t.Fatalf("post-close occurrence 1: want 0 submissions, got %d", len(sink.submissions))
+	}
+	if r.IssuesOpened != 0 {
+		t.Fatalf("post-close occurrence 1: want 0 opened, got %d", r.IssuesOpened)
+	}
+}
+
+// TestServiceTick_LostAgentRemediationFailureFilesImmediately covers the
+// other half of "file only after remediation has failed at least once": an
+// outright remediation error (e.g. a task-store write conflict) must file on
+// the very first tick, not wait for the occurrence-streak gate. It also
+// checks that once the underlying resetLostAgent update starts succeeding
+// again on a later tick (the write conflict clears) but the task is still
+// stuck, the SAME already-open issue keeps getting a recurrence comment
+// rather than a second, differently-fingerprinted one.
+func TestServiceTick_LostAgentRemediationFailureFilesImmediately(t *testing.T) {
+	base := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	cfg.IssueCooldownMinutes = 0
+
+	tasks := &fakeTasks{
+		tasks:     []task.Task{mkTask("conflict", task.StatusInProgress)},
+		updateErr: map[string]error{"conflict": errNotFound},
+	}
+	sink := &fakeSink{createNext: true}
+	now := base
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		Sink:   sink,
+		Logger: slog.Default(),
+		Now:    func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick1: %v", err)
+	}
+	if len(sink.submissions) != 1 {
+		t.Fatalf("tick1: want 1 submission on the very first tick, got %d", len(sink.submissions))
+	}
+	if report.IssuesOpened != 1 {
+		t.Fatalf("tick1: want 1 issue opened, got %d", report.IssuesOpened)
+	}
+	filedFP := sink.submissions[0].Fingerprint
+	if filedFP == Fingerprint(KindLostAgent, "conflict", nil) {
+		t.Fatalf("tick1: want a cause-qualified fingerprint, got the bare base one %q", filedFP)
+	}
+
+	// The write conflict clears, but the task is still stuck — resetLostAgent
+	// now "succeeds" every tick without actually fixing anything.
+	tasks.updateErr = nil
+	sink.createNext = false
+
+	now = now.Add(15 * time.Minute)
+	if _, err := svc.tick(context.Background()); err != nil {
+		t.Fatalf("tick2: %v", err)
+	}
+	if len(sink.submissions) != 2 {
+		t.Fatalf("tick2: want 2 submissions total, got %d", len(sink.submissions))
+	}
+	if got := sink.submissions[1].Fingerprint; got != filedFP {
+		t.Fatalf("tick2: want the already-filed fingerprint %q reused, got %q", filedFP, got)
 	}
 }
 

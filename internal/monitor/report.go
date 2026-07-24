@@ -86,4 +86,5 @@ type Report struct {
 	Dispatched    []string  `json:"dispatched"`
 	IssuesOpened  int       `json:"issuesOpened"`
 	IssuesUpdated int       `json:"issuesUpdated"`
+	IssuesClosed  int       `json:"issuesClosed"`
 }

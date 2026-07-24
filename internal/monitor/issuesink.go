@@ -26,6 +26,15 @@ type IssueSink interface {
 	Submit(ctx context.Context, a Anomaly, body string) (created bool, err error)
 }
 
+// IssueCloser is an optional IssueSink capability: closes whatever open
+// issue (or local task, for monitorRoutingSink's work-project path) matches
+// an anomaly's fingerprint, once its condition has cleared. Not every sink
+// implements it (NoopSink and test fakes don't); callers type-assert and
+// skip closing when it's absent.
+type IssueCloser interface {
+	CloseIfOpen(ctx context.Context, a Anomaly, comment string) (closed bool, err error)
+}
+
 // ghExecer abstracts gh invocation for tests. The default impl shells out via
 // exec.CommandContext. Mirrors the pattern in internal/github/client.go.
 type ghExecer interface {
@@ -138,6 +147,27 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		return false, "", classifyGHError("gh issue create", out, err)
 	}
 	return true, parseIssueCreateURL(out), nil
+}
+
+// CloseIfOpen implements IssueCloser: closes the open issue matching the
+// anomaly's fingerprint title, if one exists. Used to auto-resolve a
+// deterministic-kind issue (e.g. lost_agent) once its condition has stayed
+// clear for the configured number of consecutive scans — the same intent as
+// the #2433 merged-PR task auto-close, applied to monitor-filed issues.
+func (s *GHIssueSink) CloseIfOpen(ctx context.Context, a Anomaly, comment string) (bool, error) {
+	num, _, err := s.findOpenIssue(ctx, IssueTitle(a.Kind, a.Fingerprint))
+	if err != nil {
+		return false, err
+	}
+	if num == 0 {
+		return false, nil
+	}
+	args := append(s.repoArgs(), "issue", "close", strconv.Itoa(num), "--reason", "completed", "--comment", attribution.Append(comment))
+	out, err := s.exec.run(ctx, args...)
+	if err != nil {
+		return false, classifyGHError("gh issue close", out, err)
+	}
+	return true, nil
 }
 
 // parseIssueCreateURL pulls the first line of `gh issue create` stdout that
