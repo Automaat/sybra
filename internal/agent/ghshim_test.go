@@ -118,6 +118,22 @@ func TestGhShim_AllowsPendingDraftReviews(t *testing.T) {
 		{"pending review with inline comment", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "body=needs work", "-f", "comments[][path]=main.go", "-f", "comments[][line]=12", "-f", "comments[][side]=RIGHT", "-f", "comments[][body]=fix this"}},
 		{"pending review path contains event comment", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "body=summary", "-f", "comments[][path]=internal/event/comment.go", "-f", "comments[][line]=12", "-f", "comments[][side]=RIGHT", "-f", "comments[][body]=fix this"}},
 		{"body mentions approve event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "body=event: APPROVED is banned"}},
+		{
+			// A multi-paragraph markdown body with a footer is impractical to
+			// pass inline (quoting), so gh api's own docs recommend @file for it.
+			// gh api scopes a file value to exactly the named field, so this
+			// cannot smuggle a sibling "event" key the way --input/query=@ can.
+			name: "pending review with file-sourced body",
+			args: []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "commit_id=abc123", "-F", "body=@review_body.txt"},
+		},
+		{
+			name: "pending review with file-sourced inline comment bodies",
+			args: []string{
+				"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews",
+				"-f", "commit_id=abc123", "-F", "body=@review_body.txt",
+				"-f", "comments[][path]=main.go", "-F", "comments[][line]=12", "-f", "comments[][side]=RIGHT", "-F", "comments[][body]=@c1.txt",
+			},
+		},
 		{"reading reviews", []string{"pr", "view", "1", "--json", "reviews"}},
 		{"listing approved reviews", []string{"api", "graphql", "-f", `query=query { reviews(states: APPROVED) { id } }`}},
 		{"merge is gated elsewhere", []string{"pr", "merge", "1", "--squash"}},
