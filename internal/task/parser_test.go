@@ -101,6 +101,25 @@ agent_mode: supervised
 			wantErr: true,
 		},
 		{
+			// Legacy task files predating the interactive-runner removal
+			// (#2561) still carry agent_mode: interactive on disk. No code
+			// assigns this value anymore, but validAgentModes must keep
+			// accepting it so these pre-existing files still load.
+			name: "legacy interactive agent_mode still parses",
+			input: `---
+id: legacy1
+title: Legacy interactive task
+status: todo
+agent_mode: interactive
+---`,
+			want: Task{
+				ID:        "legacy1",
+				Title:     "Legacy interactive task",
+				Status:    StatusTodo,
+				AgentMode: "interactive",
+			},
+		},
+		{
 			name: "path traversal slug rejected",
 			input: `---
 id: bad2
