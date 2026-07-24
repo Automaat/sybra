@@ -321,7 +321,6 @@
         {a}
         {linkedTask}
         {streamOutputs}
-        {convoEvents}
         {timelineEntries}
         {planSteps}
         {selectedIndex}

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fly } from 'svelte/transition'
   import { FileEdit, Terminal, GitBranch, GitPullRequest, Clock, DollarSign, ChevronDown, ChevronUp } from '@lucide/svelte'
-  import type { Agent, ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import { summarizeAgent } from '$lib/agent-summary.js'
@@ -12,14 +12,13 @@
     a: Agent
     linkedTask?: Task | null
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: ConvoEvent[]
   }
 
-  const { a, linkedTask, streamOutputs, convoEvents }: Props = $props()
+  const { a, linkedTask, streamOutputs }: Props = $props()
 
   let activityOpen = $state(false)
 
-  const summary = $derived(summarizeAgent(streamOutputs, convoEvents))
+  const summary = $derived(summarizeAgent(streamOutputs))
 
   function formatDuration(start: any, end: any): string {
     if (!start) return '—'

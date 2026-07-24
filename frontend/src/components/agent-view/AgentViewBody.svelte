@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fade } from 'svelte/transition'
-  import type { Agent, ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import type { AgentPhase } from '$lib/agent-phases.js'
   import type { TimestampedStreamEvent, TimelineEntry } from '$lib/timeline.js'
@@ -19,7 +19,6 @@
     a: Agent
     linkedTask?: Task | null
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: ConvoEvent[]
     timelineEntries: TimelineEntry[]
     planSteps: PlanStep[]
     selectedIndex: number | null
@@ -35,7 +34,6 @@
     a,
     linkedTask,
     streamOutputs,
-    convoEvents,
     timelineEntries,
     planSteps,
     selectedIndex,
@@ -61,7 +59,6 @@
           {selectedIndex}
           {onselect}
           {streamOutputs}
-          {convoEvents}
           {allAgents}
           {latestToolUse}
           {onnavigate}
@@ -74,7 +71,6 @@
           {selectedIndex}
           {onselect}
           {streamOutputs}
-          {convoEvents}
           {allAgents}
           {latestToolUse}
           {onnavigate}
@@ -88,15 +84,14 @@
           {selectedIndex}
           {onselect}
           {streamOutputs}
-          {convoEvents}
           {allAgents}
           {latestToolUse}
           {onnavigate}
         />
       {:else if phase === 'reviewing'}
-        <ReviewingLayout {a} {linkedTask} {streamOutputs} {convoEvents} />
+        <ReviewingLayout {a} {linkedTask} {streamOutputs} />
       {:else}
-        <DoneLayout {a} {linkedTask} {streamOutputs} {convoEvents} />
+        <DoneLayout {a} {linkedTask} {streamOutputs} />
       {/if}
     </div>
   {/key}
