@@ -14,8 +14,10 @@ import (
 )
 
 type fakeInnerSink struct {
-	mu    sync.Mutex
-	calls int
+	mu         sync.Mutex
+	calls      int
+	closeCalls int
+	closeNext  bool
 }
 
 func (f *fakeInnerSink) Submit(_ context.Context, _ monitor.Anomaly, _ string) (bool, error) {
@@ -23,6 +25,13 @@ func (f *fakeInnerSink) Submit(_ context.Context, _ monitor.Anomaly, _ string) (
 	defer f.mu.Unlock()
 	f.calls++
 	return true, nil
+}
+
+func (f *fakeInnerSink) CloseIfOpen(_ context.Context, _ monitor.Anomaly, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closeCalls++
+	return f.closeNext, nil
 }
 
 func newSinkTestEnv(t *testing.T) (*monitorRoutingSink, *task.Manager, *fakeInnerSink) {
@@ -297,6 +306,85 @@ func TestMonitorRoutingSink_TerminalTaskReopensNew(t *testing.T) {
 	}
 	if open != 1 {
 		t.Fatalf("want exactly 1 open routed task, got %d", open)
+	}
+}
+
+func TestMonitorRoutingSink_CloseIfOpen_WorkAnomalyMarksLocalTaskDone(t *testing.T) {
+	t.Parallel()
+	sink, tasks, inner := newSinkTestEnv(t)
+	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	pid := "kumahq/kuma"
+	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	a := monitor.Anomaly{
+		Kind:        monitor.KindLostAgent,
+		TaskID:      src.ID,
+		Fingerprint: "lost_agent:" + src.ID,
+	}
+	if _, err := sink.Submit(context.Background(), a, "first evidence"); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	closed, err := sink.CloseIfOpen(context.Background(), a, "monitor: condition cleared")
+	if err != nil {
+		t.Fatalf("CloseIfOpen: %v", err)
+	}
+	if !closed {
+		t.Fatal("want closed=true for a matching open local task")
+	}
+	if inner.closeCalls != 0 {
+		t.Fatalf("inner sink should not be closed for a work anomaly, got %d calls", inner.closeCalls)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var routed *task.Task
+	for i := range all {
+		if strings.HasPrefix(all[i].Title, "[monitor] lost_agent") {
+			routed = &all[i]
+			break
+		}
+	}
+	if routed == nil {
+		t.Fatalf("routed task not found; tasks=%+v", all)
+		return
+	}
+	if routed.Status != task.StatusDone {
+		t.Errorf("status = %q, want done", routed.Status)
+	}
+	if strings.Contains(routed.Body, "kumahq/kuma") {
+		t.Errorf("close comment leaked work identifier: %q", routed.Body)
+	}
+}
+
+func TestMonitorRoutingSink_CloseIfOpen_NonWorkPassesThroughToInner(t *testing.T) {
+	t.Parallel()
+	sink, tasks, inner := newSinkTestEnv(t)
+	src, err := tasks.Create("source", "body", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	a := monitor.Anomaly{
+		Kind:        monitor.KindLostAgent,
+		TaskID:      src.ID,
+		Fingerprint: "lost_agent:" + src.ID,
+	}
+	inner.closeNext = true
+	closed, err := sink.CloseIfOpen(context.Background(), a, "monitor: condition cleared")
+	if err != nil {
+		t.Fatalf("CloseIfOpen: %v", err)
+	}
+	if !closed {
+		t.Fatal("want the inner sink's close result surfaced")
+	}
+	if inner.closeCalls != 1 {
+		t.Fatalf("inner.closeCalls = %d, want 1", inner.closeCalls)
 	}
 }
 

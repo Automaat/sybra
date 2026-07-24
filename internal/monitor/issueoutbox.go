@@ -196,6 +196,18 @@ func (d *DurableGHIssueSink) SubmitIssue(ctx context.Context, title, body string
 	return created, url, err
 }
 
+// CloseIfOpen implements IssueCloser when the wrapped sink supports it (the
+// production *GHIssueSink always does); a no-op otherwise. Closing is
+// best-effort and does not go through the outbox — a transient failure here
+// just means the issue stays open for the next tick's retry.
+func (d *DurableGHIssueSink) CloseIfOpen(ctx context.Context, a Anomaly, comment string) (bool, error) {
+	closer, ok := d.inner.(IssueCloser)
+	if !ok {
+		return false, nil
+	}
+	return closer.CloseIfOpen(ctx, a, comment)
+}
+
 // ReplayPending immediately retries every queued filing. Wired to
 // github.OnAuthRecovered (see internal/sybra's lifecycle wiring) so a
 // credential recovery drains the outbox right away instead of waiting for

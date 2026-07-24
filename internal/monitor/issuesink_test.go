@@ -26,6 +26,8 @@ type fakeExecer struct {
 	commentResp []byte
 	commentErr  error
 	labelErr    error
+	closeResp   []byte
+	closeErr    error
 }
 
 func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
@@ -49,6 +51,8 @@ func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
 			return f.commentResp, f.commentErr
 		case "create":
 			return f.createResp, f.createErr
+		case "close":
+			return f.closeResp, f.closeErr
 		}
 	}
 	return nil, nil
@@ -378,6 +382,63 @@ func TestGHIssueSink_FingerprintTitleExactMatch(t *testing.T) {
 	}
 	if comments[0][2] != "42" {
 		t.Errorf("wrong issue number commented: got %s want 42", comments[0][2])
+	}
+}
+
+func TestGHIssueSink_CloseIfOpen_FoundCloses(t *testing.T) {
+	fe := &fakeExecer{
+		listResp: []byte(`[{"number":55,"title":"[monitor] lost_agent: task1"}]`),
+	}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindLostAgent, Fingerprint: "lost_agent:task1"}
+	closed, err := s.CloseIfOpen(context.Background(), a, "monitor: condition cleared")
+	if err != nil {
+		t.Fatalf("CloseIfOpen: %v", err)
+	}
+	if !closed {
+		t.Fatal("want closed=true when a matching open issue exists")
+	}
+	closes := fe.callsMatching("issue", "close")
+	if len(closes) != 1 {
+		t.Fatalf("want 1 issue close call, got %d", len(closes))
+	}
+	got := closes[0]
+	if got[2] != "55" {
+		t.Errorf("closed wrong issue number: %v", got)
+	}
+	if !containsPair(got, "--reason", "completed") {
+		t.Errorf("missing --reason completed: %v", got)
+	}
+	if !containsPair(got, "--comment", attribution.Append("monitor: condition cleared")) {
+		t.Errorf("missing comment: %v", got)
+	}
+}
+
+func TestGHIssueSink_CloseIfOpen_NotFoundIsNoop(t *testing.T) {
+	fe := &fakeExecer{listResp: []byte(`[]`)}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindLostAgent, Fingerprint: "lost_agent:task1"}
+	closed, err := s.CloseIfOpen(context.Background(), a, "monitor: condition cleared")
+	if err != nil {
+		t.Fatalf("CloseIfOpen: %v", err)
+	}
+	if closed {
+		t.Fatal("want closed=false when no open issue matches")
+	}
+	if len(fe.callsMatching("issue", "close")) != 0 {
+		t.Error("should not attempt to close when nothing was found")
+	}
+}
+
+func TestGHIssueSink_CloseIfOpen_ListErrorPropagates(t *testing.T) {
+	fe := &fakeExecer{listErr: errors.New("boom")}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindLostAgent, Fingerprint: "lost_agent:task1"}
+	if _, err := s.CloseIfOpen(context.Background(), a, "comment"); err == nil {
+		t.Fatal("want error propagated from the dedup search")
 	}
 }
 

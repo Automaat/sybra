@@ -1078,6 +1078,22 @@ export class MonitorConfig {
     "issueLabel": string;
     "issueRepo": string;
 
+    /**
+     * LostAgentIssueAfterOccurrences is how many consecutive ticks a
+     * lost_agent anomaly must be detected for the same task before an issue
+     * is filed. The deterministic remediation (resetLostAgent) runs every
+     * tick regardless; a single recurrence just means recovery hasn't taken
+     * effect yet, not that it failed.
+     */
+    "lostAgentIssueAfterOccurrences": number;
+
+    /**
+     * LostAgentAutoCloseAfterClears is how many consecutive ticks a
+     * previously-filed lost_agent issue's task must stay clear (no longer
+     * detected as lost) before the issue is auto-closed.
+     */
+    "lostAgentAutoCloseAfterClears": number;
+
     /** Creates a new MonitorConfig instance. */
     constructor($$source: Partial<MonitorConfig> = {}) {
         if (!("enabled" in $$source)) {
@@ -1115,6 +1131,12 @@ export class MonitorConfig {
         }
         if (!("issueRepo" in $$source)) {
             this["issueRepo"] = "";
+        }
+        if (!("lostAgentIssueAfterOccurrences" in $$source)) {
+            this["lostAgentIssueAfterOccurrences"] = 0;
+        }
+        if (!("lostAgentAutoCloseAfterClears" in $$source)) {
+            this["lostAgentAutoCloseAfterClears"] = 0;
         }
 
         Object.assign(this, $$source);
