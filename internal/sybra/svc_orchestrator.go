@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
@@ -29,27 +30,47 @@ func orchestratorABKey() string {
 }
 
 // orchestratorKickoffPrompt is the first user message delivered to the
-// orchestrator brain so it actually takes a turn. The conversational runner
-// only sends an initial message when RunConfig.Prompt is non-empty; without it
-// the agent is parked in StatePaused, idle on stdin, and never bootstraps its
-// monitor loop or dispatches work (it just sits silent forever).
+// orchestrator brain so it actually takes a turn. The steerable headless
+// runner only sends an initial message when RunConfig.Prompt is non-empty;
+// without it the agent's claude process comes up but never receives a turn,
+// so it never bootstraps its monitor loop or dispatches work (it just sits
+// silent forever, holding the process alive on its stdin FIFO).
 const orchestratorKickoffPrompt = "Start your orchestrator session now. Follow your " +
 	"operating instructions in CLAUDE.md: check current board health with " +
 	"`sybra-cli --json board`, then triage and dispatch ready work."
 
+// orchestratorWedgeGrace bounds how long a StateRunning orchestrator agent
+// with no established session and no stream output is given before it is
+// judged wedged rather than merely mid-handshake. Well under the 1-minute
+// auto-start loop cadence, so a genuine wedge self-heals within one or two
+// reconciliation ticks; comfortably above normal claude CLI startup latency
+// so a healthy agent that just hasn't emitted its init event yet is never
+// mistaken for one.
+const orchestratorWedgeGrace = 20 * time.Second
+
 // orchestratorReplaceable reports whether an existing orchestrator agent should
 // be reaped and replaced rather than treated as "already running". A crashed
-// agent is StateStopped. A conversational agent that was started without a
-// kickoff prompt parks in StatePaused with no session id and idles on stdin
-// forever — that is the wedged-brain failure mode, so it is replaceable. A
-// paused-between-turns agent that already established a session is healthy and
-// must be left alone (otherwise the 1-minute auto-start loop would churn it).
+// agent is StateStopped, always replaceable.
+//
+// A steerable headless run stays StateRunning for its entire life — there is
+// no idle-between-turns state to key off the way the old conversational
+// runner's StatePaused was (see sendHeadlessSteerMessage). A wedged brain
+// (started with no kickoff prompt, or whose claude process never produced an
+// init event) shows the same signature the watchdog's zero-output-stall path
+// keys off for ordinary headless agents: no session ever established and no
+// stream event ever emitted. Unlike the old StatePaused check, StateRunning
+// with no session is also the normal shape of every agent for the first
+// moment after spawn, so this needs a grace window — orchestratorWedgeGrace —
+// to avoid churning a healthy agent still mid-handshake.
 func orchestratorReplaceable(a *agent.Agent) bool {
 	switch a.GetState() {
 	case agent.StateStopped:
 		return true
 	case agent.StatePaused:
 		return a.GetSessionID() == ""
+	case agent.StateRunning:
+		return a.GetSessionID() == "" && a.OutputLen() == 0 &&
+			time.Since(a.GetStartedAt()) > orchestratorWedgeGrace
 	default:
 		return false
 	}

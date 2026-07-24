@@ -17,7 +17,15 @@ func newOrchSvcForTest(t *testing.T, cfgs ...agent.ManagerConfig) (*Orchestrator
 	logger := slog.New(slog.DiscardHandler)
 	emitted := make(chan struct{}, 16)
 	emit := func(string, any) { emitted <- struct{}{} }
-	mgr := newTestAgentManager(t, ctx, emit, logger, t.TempDir(), cfgs...)
+	cfg := agent.ManagerConfig{}
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+	}
+	// The orchestrator brain is the one system role a human steers via
+	// SendMessage (Role.SupportsHeadlessSteer), which only takes effect when
+	// the manager's own steerable default is also on.
+	cfg.Runtime.HeadlessSteerable = true
+	mgr := newTestAgentManager(t, ctx, emit, logger, t.TempDir(), cfg)
 	svc := &OrchestratorService{
 		agents: mgr,
 		logger: logger,
@@ -55,8 +63,8 @@ func TestOrchestratorService_StartStopLifecycle(t *testing.T) {
 	if a.Name != orchestratorAgentName {
 		t.Errorf("agent name = %q, want %q", a.Name, orchestratorAgentName)
 	}
-	if a.Mode != "interactive" {
-		t.Errorf("agent mode = %q, want interactive", a.Mode)
+	if a.Mode != "headless" {
+		t.Errorf("agent mode = %q, want headless", a.Mode)
 	}
 	if a.Provider != "claude" {
 		t.Errorf("agent provider = %q, want claude (orchestrator must pin claude even when cfg=codex)", a.Provider)
@@ -95,42 +103,48 @@ func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
 	svc, mgr := newOrchSvcForTest(t)
 	t.Cleanup(func() { _ = svc.StopOrchestrator() })
 
-	// Seed the exact production wedge: a conversational agent started with no
-	// kickoff prompt parks in StatePaused, and the block_silent fake emits
-	// nothing so it never gets a session id. Before the fix this paused-no-
-	// session state was treated as "running" and never replaced. Pin the
-	// scenario via ExtraEnv (appended to the subprocess env, overriding the
+	// Seed the exact production wedge: a steerable headless run started with
+	// no kickoff prompt comes up but never takes a turn, and the
+	// block_silent fake emits nothing so it never gets a session id or a
+	// single stream event either. It stays StateRunning forever (see
+	// orchestratorReplaceable) rather than parking in an idle state the way
+	// the old conversational runner's StatePaused did. Pin the scenario via
+	// ExtraEnv (appended to the subprocess env, overriding the
 	// process-global FAKE_CLAUDE_SCENARIO) so a sibling e2e test cannot race
 	// the seed's async subprocess exec and hand it a session-emitting scenario.
 	wedged, err := mgr.Run(agent.RunConfig{
-		TaskID: "wedged", Name: "wedged", Mode: "interactive", Dir: t.TempDir(),
+		TaskID: "wedged", Name: "wedged", Mode: "headless", Dir: t.TempDir(),
 		ExtraEnv: []string{"FAKE_CLAUDE_SCENARIO=block_silent"},
 	})
 	if err != nil {
 		t.Fatalf("seed wedged agent: %v", err)
 	}
-	// The seed agent reaches StatePaused asynchronously once its runner
-	// spawns the (silent) process, so poll rather than assume. The ceiling is
-	// generous for loaded CI; the loop exits as soon as the state settles.
+	// The seed agent's process comes up asynchronously, so poll rather than
+	// assume. The ceiling is generous for loaded CI; the loop exits as soon
+	// as the state settles.
 	var lastState agent.State
 	var lastSession string
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if a, gerr := mgr.GetAgent(wedged.ID); gerr == nil {
 			lastState, lastSession = a.GetState(), a.GetSessionID()
-			if lastState == agent.StatePaused && lastSession == "" {
+			if lastState == agent.StateRunning && lastSession == "" && a.OutputLen() == 0 {
 				break
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("wedged agent never parked in paused-no-session (last state=%q session=%q)", lastState, lastSession)
+			t.Fatalf("wedged agent never settled into running-no-session (last state=%q session=%q)", lastState, lastSession)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	svc.agentID = wedged.ID
 
-	// orchestratorReplaceable must treat paused-no-session as replaceable, so
-	// StartOrchestrator reaps the wedged brain and swaps in a fresh one.
+	// orchestratorReplaceable only treats running-no-session-no-output as
+	// replaceable past orchestratorWedgeGrace, to avoid churning a healthy
+	// agent still mid-handshake — wait it out.
+	time.Sleep(orchestratorWedgeGrace)
+
+	// StartOrchestrator must reap the wedged brain and swap in a fresh one.
 	if err := svc.StartOrchestrator(); err != nil {
 		t.Fatalf("StartOrchestrator over a wedged brain should succeed: %v", err)
 	}
@@ -152,7 +166,7 @@ func TestOrchestratorService_IgnoreConcurrencyLimit(t *testing.T) {
 	blocker, err := mgr.Run(agent.RunConfig{
 		TaskID: "blocker",
 		Name:   "blocker",
-		Mode:   "interactive",
+		Mode:   "headless",
 		Prompt: "hi",
 		Dir:    t.TempDir(),
 	})

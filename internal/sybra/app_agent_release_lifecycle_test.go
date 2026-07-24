@@ -44,7 +44,7 @@ func newFakeInteractiveClaudeApp(t *testing.T) *App {
 
 	logger := discardLogger()
 	mgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir(), agent.ManagerConfig{
-		Runtime:           agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
+		Runtime:           agent.ManagerRuntimeConfig{DefaultProvider: "claude", HeadlessSteerable: true},
 		SurviveRestartDir: t.TempDir(),
 		SandboxHome:       func(string) (string, error) { return t.TempDir(), nil },
 	})

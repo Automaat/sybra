@@ -34,7 +34,18 @@ import (
 // ResolveExecution derives the effective mode, directory, permission mode, and
 // whether project worktree setup should be skipped. Task mode is explicit; task
 // type does not affect execution.
+//
+// "interactive" is coerced to "headless": it is no longer a dispatchable
+// agent.RunConfig.Mode, but task.AgentModeInteractive is still a valid,
+// load-only value on old task files (see task.validAgentModes), and
+// simple-task-implement's `implement` step templates its mode straight off
+// {{.Task.AgentMode}}. Without this, a legacy interactive task would dispatch
+// RunConfig{Mode: "interactive"} and fail outright instead of running like
+// every other task.
 func ResolveExecution(t task.Task, hintMode, researchMachineDir string, cfg *config.Config) (mode, dir string, requirePerm, skipWorktree bool) {
+	if hintMode == "interactive" {
+		hintMode = "headless"
+	}
 	return hintMode, "", ResolvePermission(t, cfg), false
 }
 

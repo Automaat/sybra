@@ -744,6 +744,16 @@ func translatePoolBusy(err error) error {
 }
 
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+	// "interactive" is no longer a dispatchable agent.RunConfig.Mode, but a
+	// run_agent step whose mode templates off {{.Task.AgentMode}} (e.g.
+	// simple-task-implement's implement step) echoes whatever legacy value
+	// is on disk — task.AgentModeInteractive is still a valid, load-only
+	// value on old task files (see task.validAgentModes). Coerce here, the
+	// single entry point both branches below share, rather than stalling
+	// the workflow on "unknown mode" for a pre-existing interactive task.
+	if mode == "interactive" {
+		mode = "headless"
+	}
 	// For implementation agents without a pre-staged dir, use the full
 	// orchestrator (handles worktree, project assignment). A workflow that
 	// seeds WorkflowVarDir (e.g. tests or flows that pre-stage via
