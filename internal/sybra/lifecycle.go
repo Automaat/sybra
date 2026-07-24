@@ -33,7 +33,9 @@ import (
 //
 // Phase order (called from App.Startup after all init* methods complete):
 //
-//	lm.StartManagers(ctx, emit)  — GitHub auth, watchdog, health, monitors, maintenance
+//	lm.mintAppTokenBeforeRecovery(ctx)          — synchronous, bounded-timeout GitHub App token mint
+//	a.recovery.RunStartupCleanup(ctx)           — recovery pushes, now token-carrying when App auth is configured
+//	lm.StartManagers(ctx, emit)  — GitHub auth ticker, watchdog, health, monitors, maintenance
 //	lm.StartPollers(ctx, emit, issuesFetcher)  — pollers, orchestrator loop
 //	lm.StartWatchers(ctx)  — config-file watcher
 type LifecycleManager struct {
@@ -139,11 +141,19 @@ func (lm *LifecycleManager) StartPollers(ctx context.Context, emit func(string, 
 // renewed. Tokens last ~1h; refreshing well inside that keeps gh authenticated.
 const appTokenRefreshInterval = 30 * time.Minute
 
-// startAppAuthLoop enables GitHub App installation-token auth (when configured)
-// and keeps the token fresh. With App auth on, every gh call runs against the
-// installation token (15k/hr REST) instead of the personal token. A
-// misconfiguration is logged and leaves gh on its own auth — never fatal.
-func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
+// appAuthMintTimeout bounds the synchronous startup mint attempt
+// (mintAppTokenBeforeRecovery) so a mint outage degrades to ambient gh
+// credentials instead of blocking Startup indefinitely.
+const appAuthMintTimeout = 10 * time.Second
+
+// mintAppTokenBeforeRecovery enables GitHub App installation-token auth (when
+// configured) and performs the first mint synchronously, bounded by
+// appAuthMintTimeout. Called from App.startLifecycle before the goroutine that
+// runs RunStartupCleanup, so the first recovery push and the monitor's
+// Authenticated() preflight see a live installation token instead of racing an
+// empty one — see #2494. A misconfiguration or mint outage is logged and
+// leaves gh on its own (ambient) auth; never fatal to startup.
+func (lm *LifecycleManager) mintAppTokenBeforeRecovery(ctx context.Context) {
 	a := lm.app
 	app := a.cfg.GitHub.App
 	if !app.Enabled {
@@ -158,16 +168,29 @@ func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
 		return
 	}
 	a.logger.Info("github.app.enabled", "app_id", app.AppID, "installation_id", app.InstallationID)
-	lm.refreshAppToken(ctx)
+	mintCtx, cancel := context.WithTimeout(ctx, appAuthMintTimeout)
+	defer cancel()
+	lm.refreshAppToken(mintCtx)
+}
+
+// startAppAuthLoop keeps the GitHub App installation token fresh on a timer.
+// The first mint already happened synchronously in mintAppTokenBeforeRecovery
+// before RunStartupCleanup; this only launches the periodic renewal — a no-op
+// when App auth was never enabled (misconfigured or disabled).
+func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
+	a := lm.app
+	if !github.AppAuthEnabled() {
+		return
+	}
 	a.wg.Go(func() {
 		ticker := time.NewTicker(appTokenRefreshInterval)
 		defer ticker.Stop()
 		for {
-			lm.refreshAppToken(ctx)
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				lm.refreshAppToken(ctx)
 			}
 		}
 	})
@@ -175,7 +198,7 @@ func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
 
 func (lm *LifecycleManager) refreshAppToken(ctx context.Context) {
 	a := lm.app
-	if err := github.RefreshAppTokenEnv(ctx); err != nil {
+	if err := github.RefreshAppToken(ctx); err != nil {
 		a.logger.Warn("github.app.token.refresh", "err", err)
 	}
 }
