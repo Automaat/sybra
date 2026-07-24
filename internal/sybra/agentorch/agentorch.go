@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -18,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
@@ -207,6 +209,19 @@ type Orchestrator struct {
 	// the ordering is easy to regress silently.
 	conflictRecovery func(taskID string) bool
 	ctx              context.Context
+	// sloReport is the latest autonomy SLO compliance verdict, late-bound via
+	// SetSLOReport (wired from evaluation.Service.Deps.OnSLOReport). nil
+	// until the first evaluation tick — handleSaturatedDispatch's throttle
+	// treats nil the same as a non-exhausted budget, so a config with
+	// SLO.ThrottleOnBudgetExhausted enabled but no evaluation service running
+	// never throttles.
+	sloReport atomic.Pointer[evaluation.SLOReport]
+}
+
+// SetSLOReport late-binds the most recent SLO compliance verdict. Called
+// from evaluation.Service's per-tick callback; safe for concurrent use.
+func (o *Orchestrator) SetSLOReport(r evaluation.SLOReport) {
+	o.sloReport.Store(&r)
 }
 
 // New constructs an Orchestrator. Sandboxes and Bgops are late-bound fields,
@@ -765,8 +780,16 @@ func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt
 	if ignoreConcurrencyLimit {
 		return nil, nil, "", nil, false
 	}
-	if reservation, ok := o.agents.TryHoldCapacity(); ok {
-		return reservation, nil, "", nil, false
+	// SLO throttle: only ever narrows opts.admissionGate dispatch (workflow
+	// implementation, StartAgentWithAssignment) — the one path that expands
+	// autonomous concurrency. StartAgent's manual/recovery entry point
+	// (App.StartAgent, recovery.RestartStaleInProgress) never sets
+	// admissionGate, so recovery and manual operator dispatch are exempt by
+	// construction, not by a special case here.
+	if !opts.admissionGate || !o.sloThrottled() {
+		if reservation, ok := o.agents.TryHoldCapacity(); ok {
+			return reservation, nil, "", nil, false
+		}
 	}
 	if o.queue == nil {
 		return nil, nil, "", nil, false
@@ -780,6 +803,43 @@ func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt
 		ag, baselineRef, err := o.enqueueManualStart(t, taskID, mode, prompt, includeTaskDescription, skipWT)
 		return nil, ag, baselineRef, err, true
 	}
+}
+
+// sloThrottled reports whether workflow-driven implementation dispatch
+// should be treated as saturated even though the raw agent pool has room,
+// because the autonomy SLO error budget is exhausted and the operator has
+// opted into agent.evaluation.slo.throttle_on_budget_exhausted. Default-off:
+// a nil sloReport (SLO service disabled, or no tick has run yet) or the flag
+// unset never throttles.
+func (o *Orchestrator) sloThrottled() bool {
+	if o.cfg == nil || !o.cfg.Evaluation.SLO.ThrottleOnBudgetExhausted {
+		return false
+	}
+	report := o.sloReport.Load()
+	if report == nil || report.ErrorBudgetRemaining > 0 {
+		return false
+	}
+	ceiling := effectiveMaxConcurrent(o.cfg.Agent.MaxConcurrent, true, true)
+	if ceiling <= 0 {
+		// Unlimited configured pool: nothing to narrow against.
+		return false
+	}
+	return o.agents.RunningCount() >= ceiling
+}
+
+// effectiveMaxConcurrent returns the concurrency ceiling workflow-driven
+// implementation dispatch may claim right now. configured is
+// agent.max_concurrent (<=0 means unlimited, returned unchanged — the
+// throttle only ever narrows a real cap, never invents one). When throttle is
+// enabled and the SLO error budget is exhausted, the ceiling is halved
+// (floor 1) so autonomous concurrency contracts instead of continuing to
+// expand into a regression. A pure function so the halving policy is
+// unit-testable without constructing an Orchestrator.
+func effectiveMaxConcurrent(configured int, throttle, budgetExhausted bool) int {
+	if configured <= 0 || !throttle || !budgetExhausted {
+		return configured
+	}
+	return max(configured/2, 1)
 }
 
 func (o *Orchestrator) handleCapacityRace(runErr error, t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.Agent, string, error, bool) {

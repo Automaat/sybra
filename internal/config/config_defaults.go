@@ -1287,6 +1287,30 @@ func applyEvaluationDefaults(cfg *Config) {
 	if e.Offline.UnavailablePolicy == "" {
 		e.Offline.UnavailablePolicy = "fail"
 	}
+	applySLOTargetDefaults(&e.SLO)
+}
+
+// applySLOTargetDefaults fills zero-value SLO target fields individually
+// (rather than replacing the whole struct) so an operator who overrides only
+// one target in config.yaml keeps that override and still gets defaults for
+// the rest, instead of a partial config silently zeroing the others.
+func applySLOTargetDefaults(slo *SLOTargets) {
+	d := DefaultSLOTargets()
+	if slo.MinAutonomyRate <= 0 {
+		slo.MinAutonomyRate = d.MinAutonomyRate
+	}
+	if slo.MinCIFirstPassRate <= 0 {
+		slo.MinCIFirstPassRate = d.MinCIFirstPassRate
+	}
+	if slo.MaxReworkRate <= 0 {
+		slo.MaxReworkRate = d.MaxReworkRate
+	}
+	if slo.MaxIdenticalRetryCap <= 0 {
+		slo.MaxIdenticalRetryCap = d.MaxIdenticalRetryCap
+	}
+	if slo.MaxRestartsPerHour <= 0 {
+		slo.MaxRestartsPerHour = d.MaxRestartsPerHour
+	}
 }
 
 // applyLearningDigestDefaults fills zero values for the LearningDigest block.
