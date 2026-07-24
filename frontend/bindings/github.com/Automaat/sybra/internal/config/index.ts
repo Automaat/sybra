@@ -32,6 +32,7 @@ export {
     RenovateConfig,
     RoutingEligibleVariant,
     RoutingSummary,
+    SLOTargets,
     SelfMonitorConfig,
     TestingConfig,
     TriageConfig,

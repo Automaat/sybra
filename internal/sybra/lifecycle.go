@@ -705,6 +705,15 @@ func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit fun
 		Emit:       emit,
 		Logger:     a.logger,
 		ReportPath: config.EvaluationReportPath(),
+		// OnSLOReport feeds agentorch's default-off concurrency throttle
+		// (agent.evaluation.slo.throttle_on_budget_exhausted). Nil-guarded:
+		// this service starts before app.go finishes wiring a.agentOrch, and
+		// the ticker's first tick can in principle race that assignment.
+		OnSLOReport: func(r evaluation.SLOReport) {
+			if a.agentOrch != nil {
+				a.agentOrch.SetSLOReport(r)
+			}
+		},
 	}
 	if a.stats != nil {
 		deps.Stats = a.stats

@@ -518,6 +518,7 @@ it needs no project-type routing — each machine scores its own local data.
 | `supervision.evaluation.interval` | `float64` | `24` | `hours` |  | `evaluation.interval_hours`, `evaluation.interval` | `false` | `restart` |  |  |
 | `supervision.evaluation.window_days` | `int` | `30` |  |  | `evaluation.window_days` | `false` | `restart` |  |  |
 | `supervision.evaluation.offline` | `OfflineEvalConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `supervision.evaluation.slo` | `SLOTargets` | _(see below)_ |  |  |  | `false` |  |  | SLO is the rolling autonomy/reliability target set the evaluation scorecard is graded against — see internal/evaluation.EvaluateSLOs. Zero-value fields are filled by applyEvaluationDefaults so existing configs need no migration. |
 
 ### OfflineEvalConfig (`supervision.evaluation.offline`)
 
@@ -533,6 +534,23 @@ eligible for online A/B enrollment.
 | `supervision.evaluation.offline.min_score` | `float64` | `1` |  |  | `evaluation.offline.min_score` | `false` | `restart` |  | MinScore is the minimum Result.Score (0..1) required for a verdict to be scored StatusPass. |
 | `supervision.evaluation.offline.unavailable_policy` | `string` | `"fail"` |  |  | `evaluation.offline.unavailable_policy` | `false` | `restart` |  | UnavailablePolicy is "fail" (default, fail-closed) or "pass" — what AllowEnrollment returns when no verdict is recorded or the runner could not measure a result. |
 | `supervision.evaluation.offline.mode` | `string` | `""` |  |  | `evaluation.offline.mode` | `false` | `restart` |  | Mode is reserved for future dry-run/enforce distinctions; currently informational only. |
+
+### SLOTargets (`supervision.evaluation.slo`)
+
+SLOTargets are the rolling autonomy/reliability targets Sybra holds
+itself to (see #2441). Defined here rather than in internal/evaluation
+because config cannot import evaluation (evaluation already imports
+config); internal/evaluation/slo.go aliases this type so evaluation code
+reads naturally as evaluation.SLOTargets.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.evaluation.slo.min_autonomy_rate` | `float64` | `0.8` |  |  | `evaluation.slo.min_autonomy_rate` | `false` | `restart` |  | MinAutonomyRate is the minimum fraction of landed tasks that must reach done without a human in the loop. |
+| `supervision.evaluation.slo.min_ci_first_pass_rate` | `float64` | `0.8` |  |  | `evaluation.slo.min_ci_first_pass_rate` | `false` | `restart` |  | MinCIFirstPassRate is the minimum fraction of landed tasks that must pass CI on the first push (no CI-fix agent needed). |
+| `supervision.evaluation.slo.max_rework_rate` | `float64` | `0.4` |  |  | `evaluation.slo.max_rework_rate` | `false` | `restart` |  | MaxReworkRate is the maximum fraction of landed tasks allowed to bounce between statuses (a repeated status transition). |
+| `supervision.evaluation.slo.max_identical_retry_cap` | `int` | `3` |  |  | `evaluation.slo.max_identical_retry_cap` | `false` | `restart` |  | MaxIdenticalRetryCap is the maximum number of failed agent runs a single task may accumulate in-window before it counts as a breach. |
+| `supervision.evaluation.slo.max_restarts_per_hour` | `float64` | `1` |  |  | `evaluation.slo.max_restarts_per_hour` | `false` | `restart` |  | MaxRestartsPerHour is the maximum rate of automatic human-required recovery restarts (monitor auto-retry, PR-monitor blocker reconciliation) the fleet may sustain. |
+| `supervision.evaluation.slo.throttle_on_budget_exhausted` | `bool` | `false` |  |  | `evaluation.slo.throttle_on_budget_exhausted` | `false` | `restart` |  | ThrottleOnBudgetExhausted enables a default-off dispatch clamp (internal/sybra/agentorch.effectiveMaxConcurrent) that narrows the concurrency ceiling for new workflow-driven implementation dispatch while the SLO error budget is exhausted. Recovery and interactive/operator dispatch are never throttled by this flag. |
 
 ### LearningDigestConfig (`supervision.learning_digest`)
 

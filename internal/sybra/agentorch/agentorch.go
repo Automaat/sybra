@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -18,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
@@ -218,6 +220,19 @@ type Orchestrator struct {
 	// the ordering is easy to regress silently.
 	conflictRecovery func(taskID string) bool
 	ctx              context.Context
+	// sloReport is the latest autonomy SLO compliance verdict, late-bound via
+	// SetSLOReport (wired from evaluation.Service.Deps.OnSLOReport). nil
+	// until the first evaluation tick — handleSaturatedDispatch's throttle
+	// treats nil the same as a non-exhausted budget, so a config with
+	// SLO.ThrottleOnBudgetExhausted enabled but no evaluation service running
+	// never throttles.
+	sloReport atomic.Pointer[evaluation.SLOReport]
+}
+
+// SetSLOReport late-binds the most recent SLO compliance verdict. Called
+// from evaluation.Service's per-tick callback; safe for concurrent use.
+func (o *Orchestrator) SetSLOReport(r evaluation.SLOReport) {
+	o.sloReport.Store(&r)
 }
 
 // New constructs an Orchestrator. Sandboxes and Bgops are late-bound fields,
@@ -773,10 +788,34 @@ func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt
 	// the workflow-owned queue, while saturated manual headless starts persist
 	// their replay intent in the manual queue and return a synthetic queued
 	// agent.
-	if reservation, ok := o.agents.TryHoldCapacity(); ok {
+	// SLO throttle: only ever narrows opts.admissionGate dispatch (workflow
+	// implementation, StartAgentWithAssignment) — the one path that expands
+	// autonomous concurrency. StartAgent's manual/recovery entry point
+	// (App.StartAgent, recovery.RestartStaleInProgress) never sets
+	// admissionGate, so recovery and manual operator dispatch are exempt by
+	// construction, not by a special case here.
+	// Reserve capacity against the SLO-throttled ceiling (0 = no extra
+	// ceiling) so the reservation is reservation-aware and atomic: a burst of
+	// concurrent admission-gated dispatches can no longer each observe a stale
+	// live-only count and collectively overshoot the halved ceiling.
+	sloLimit := 0
+	if opts.admissionGate {
+		sloLimit = o.sloConcurrencyLimit()
+	}
+	if reservation, ok := o.agents.TryHoldCapacityWithLimit(sloLimit); ok {
 		return reservation, nil, "", nil, false
 	}
 	if o.queue == nil {
+		// The SLO throttle actively narrowed admission (sloLimit > 0) and the
+		// hold failed against the halved ceiling, but the raw pool may still
+		// have room. Without a queue to park in, falling through to unthrottled
+		// dispatch would let admission-gated work overshoot the halved ceiling
+		// straight up to the raw cap — defeating the throttle in exactly the
+		// degraded-startup mode (nil queue) where the system is already
+		// unhealthy. Reject instead of bypassing.
+		if opts.admissionGate && sloLimit > 0 {
+			return nil, nil, "", workflow.ErrAgentPoolBusy, true
+		}
 		return nil, nil, "", nil, false
 	}
 	switch {
@@ -788,6 +827,46 @@ func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt
 		ag, baselineRef, err := o.enqueueManualStart(t, taskID, mode, prompt, includeTaskDescription, skipWT)
 		return nil, ag, baselineRef, err, true
 	}
+}
+
+// sloConcurrencyLimit returns the concurrency ceiling workflow-driven
+// implementation dispatch must be held to right now, or 0 when the SLO
+// throttle imposes no extra ceiling. The throttle engages only when the
+// operator has opted into agent.evaluation.slo.throttle_on_budget_exhausted
+// AND the autonomy SLO error budget is exhausted. Default-off: a nil
+// sloReport (SLO service disabled, or no tick has run yet) or the flag unset
+// returns 0. A caller passes the result to TryHoldCapacityWithLimit so the
+// halved ceiling is enforced reservation-aware and atomically, closing the
+// TOCTOU gap between a live-only precheck and the reservation-counting hold.
+func (o *Orchestrator) sloConcurrencyLimit() int {
+	if o.cfg == nil || !o.cfg.Evaluation.SLO.ThrottleOnBudgetExhausted {
+		return 0
+	}
+	report := o.sloReport.Load()
+	if report == nil || report.ErrorBudgetRemaining > 0 {
+		return 0
+	}
+	ceiling := effectiveMaxConcurrent(o.cfg.Agent.MaxConcurrent, true, true)
+	if ceiling <= 0 {
+		// Unlimited configured pool: nothing to narrow against.
+		return 0
+	}
+	return ceiling
+}
+
+// effectiveMaxConcurrent returns the concurrency ceiling workflow-driven
+// implementation dispatch may claim right now. configured is
+// agent.max_concurrent (<=0 means unlimited, returned unchanged — the
+// throttle only ever narrows a real cap, never invents one). When throttle is
+// enabled and the SLO error budget is exhausted, the ceiling is halved
+// (floor 1) so autonomous concurrency contracts instead of continuing to
+// expand into a regression. A pure function so the halving policy is
+// unit-testable without constructing an Orchestrator.
+func effectiveMaxConcurrent(configured int, throttle, budgetExhausted bool) int {
+	if configured <= 0 || !throttle || !budgetExhausted {
+		return configured
+	}
+	return max(configured/2, 1)
 }
 
 func (o *Orchestrator) handleCapacityRace(runErr error, t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT bool, opts startOptions) (*agent.Agent, string, error, bool) {

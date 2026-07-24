@@ -185,6 +185,34 @@ func validateEvaluationConfig(cfg *ResolvedConfig, add func(format string, a ...
 		cfg.Evaluation.Offline.UnavailablePolicy != "pass" {
 		add("evaluation.offline.unavailable_policy must be \"fail\" or \"pass\", got %q", cfg.Evaluation.Offline.UnavailablePolicy)
 	}
+	validateSLOTargets(&cfg.Evaluation.SLO, add)
+}
+
+// validateSLOTargets rejects out-of-range SLO targets at load time. A negative
+// count-based target (max_identical_retry_cap, max_restarts_per_hour) can never
+// be met by a real non-negative measurement, so it would permanently pin the
+// SLO status to breached — and, with throttle_on_budget_exhausted enabled,
+// silently and permanently halve dispatch concurrency. Fraction targets must
+// stay within [0,1] to be meaningful ratios.
+func validateSLOTargets(slo *SLOTargets, add func(format string, a ...any)) {
+	if slo.MaxIdenticalRetryCap < 0 {
+		add("evaluation.slo.max_identical_retry_cap must be 0 or greater, got %d", slo.MaxIdenticalRetryCap)
+	}
+	if slo.MaxRestartsPerHour < 0 {
+		add("evaluation.slo.max_restarts_per_hour must be 0 or greater, got %g", slo.MaxRestartsPerHour)
+	}
+	for _, f := range []struct {
+		key string
+		val float64
+	}{
+		{"evaluation.slo.min_autonomy_rate", slo.MinAutonomyRate},
+		{"evaluation.slo.min_ci_first_pass_rate", slo.MinCIFirstPassRate},
+		{"evaluation.slo.max_rework_rate", slo.MaxReworkRate},
+	} {
+		if f.val < 0 || f.val > 1 {
+			add("%s must be between 0 and 1, got %g", f.key, f.val)
+		}
+	}
 }
 
 func validateMonitorConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
