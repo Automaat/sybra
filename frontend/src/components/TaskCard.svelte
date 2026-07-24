@@ -48,7 +48,7 @@
     [StepType.StepVerifyChecks]: 'Verify checks',
   }
   const checkStepLabel = $derived(
-    !agentRunning && t.workflow?.state === ExecState.ExecRunning
+    !triaging && !evaluating && !planning && !agentRunning && t.workflow?.state === ExecState.ExecRunning
       ? DETERMINISTIC_CHECK_LABELS[t.workflow.currentStep as StepType]
       : undefined,
   )
