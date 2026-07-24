@@ -60,8 +60,21 @@ var ErrRemoteAdvanced = errors.New("remote branch advanced past tracking ref")
 // the remote) so a later push can fast-forward.
 var ErrDivergedNeedsResolve = errors.New("branch diverged from remote; needs agent-driven resolution, not a force push")
 
+// fetchEnv is indirected so tests can stub the environment fetch/clone/
+// ls-remote subprocesses run with, without needing a real minted GitHub App
+// installation token — mirrors pushEnv's seam (see TestPushUpstream_UsesPushEnv).
+// Derives fresh from github.GHEnv() (in turn from cachedAppToken()) on every
+// call rather than relying on this process's ambient env, so a concurrent
+// token rotation is always reflected. Returns nil (inherit unchanged) when App
+// auth isn't configured, matching the prior ambient-only behavior exactly.
+var fetchEnv = github.GHEnv
+
+// runBare is used by both local-only bare-repo ops (git config, branch -f,
+// ...) and the network-touching fetches in this file (FetchOrigin,
+// FetchRemoteBranch, FetchPRHead). Injecting fetchEnv() unconditionally is
+// harmless for the local ops — it only ever appends GH_TOKEN/GITHUB_TOKEN.
 func runBare(ctx context.Context, barePath string, args ...string) error {
-	return executil.Run(ctx, barePath, "git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
+	return executil.RunEnv(ctx, barePath, fetchEnv(), "git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
 }
 
 func outputBare(ctx context.Context, barePath string, args ...string) (string, error) {
@@ -313,7 +326,7 @@ func splitOwnerRepo(path string) (owner, repo string, err error) {
 // `git fetch origin` calls actually update refs/remotes/origin/* (a bare
 // clone otherwise leaves it empty).
 func CloneBare(ctx context.Context, repoURL, destPath string) error {
-	if err := executil.Run(ctx, "", "git", "clone", "--bare", repoURL, destPath); err != nil {
+	if err := executil.RunEnv(ctx, "", fetchEnv(), "git", "clone", "--bare", repoURL, destPath); err != nil {
 		return err
 	}
 	if err := InstallSignoffHook(ctx, destPath); err != nil {
@@ -1183,6 +1196,7 @@ func remoteBranchHead(ctx context.Context, worktreePath, remote, branch string) 
 	err := withNetworkRetry(ctx, func() error {
 		cmd := exec.CommandContext(ctx, "git", "ls-remote", remote, "refs/heads/"+branch)
 		cmd.Dir = worktreePath
+		cmd.Env = fetchEnv()
 		raw, runErr := cmd.CombinedOutput()
 		if runErr != nil {
 			return fmt.Errorf("git ls-remote %s refs/heads/%s: %w: %s", remote, branch, runErr, strings.TrimSpace(string(raw)))
@@ -1221,7 +1235,7 @@ func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
 	fetchErr := withNetworkRetry(ctx, func() error {
 		return withLockRetry(func() error {
-			return executil.Run(ctx, worktreePath, "git", "fetch", remote, refspec)
+			return executil.RunEnv(ctx, worktreePath, fetchEnv(), "git", "fetch", remote, refspec)
 		})
 	})
 	if fetchErr != nil && !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
