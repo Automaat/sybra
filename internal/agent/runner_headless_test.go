@@ -2644,17 +2644,17 @@ func TestHeadlessSteerableInvocation(t *testing.T) {
 		}
 	})
 
-	t.Run("claude_unsteerable_keeps_legacy_shape", func(t *testing.T) {
+	t.Run("claude_unsteerable_also_drops_positional_prompt", func(t *testing.T) {
 		a := &Agent{ID: "a", Provider: "claude"}
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff", HeadlessSteerable: false})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
 		}
-		if !slices.Contains(args, "do stuff") {
-			t.Errorf("unsteerable invocation must still pass the prompt positionally; got %v", args)
+		if slices.Contains(args, "do stuff") {
+			t.Errorf("unsteerable invocation must not pass the prompt positionally either (#2575); got %v", args)
 		}
 		if slices.Contains(args, "--input-format") {
-			t.Errorf("unsteerable invocation must not add --input-format; got %v", args)
+			t.Errorf("unsteerable invocation must not add --input-format (plain text, not the steer protocol); got %v", args)
 		}
 	})
 
@@ -2703,6 +2703,63 @@ func TestHeadlessInitialPromptOverStdin(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no data written to stdin within 2s")
+	}
+}
+
+// TestStdinPromptHeadlessInvocation pins which headless invocations get a
+// prompt written to stdin rather than argv (#2575): every claude run,
+// steerable or not, but never codex/copilot.
+func TestStdinPromptHeadlessInvocation(t *testing.T) {
+	cases := []struct {
+		name       string
+		steerable  bool
+		providerID string
+		want       bool
+	}{
+		{"claude_steerable", true, "claude", false},
+		{"claude_unsteerable", false, "claude", true},
+		{"codex", false, "codex", false},
+		{"copilot", false, "copilot", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := stdinPromptHeadlessInvocation(c.steerable, c.providerID); got != c.want {
+				t.Errorf("stdinPromptHeadlessInvocation(%v, %q) = %v, want %v", c.steerable, c.providerID, got, c.want)
+			}
+		})
+	}
+}
+
+// TestWriteAndCloseHeadlessPrompt verifies the one-shot stdin write: the raw
+// prompt text lands on the pipe with no stream-json envelope, and the pipe
+// closes so the reader observes EOF right after — the plain-text-mode
+// contract claude's default --input-format expects, distinct from the
+// steerable NDJSON path.
+func TestWriteAndCloseHeadlessPrompt(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude"}
+
+	r, w := io.Pipe()
+	done := make(chan struct{})
+	var got []byte
+	var readErr error
+	go func() {
+		got, readErr = io.ReadAll(r)
+		close(done)
+	}()
+
+	m.writeAndCloseHeadlessPrompt(a, w, "do the thing")
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader did not observe EOF within 2s")
+	}
+	if readErr != nil {
+		t.Fatalf("ReadAll: %v", readErr)
+	}
+	if string(got) != "do the thing" {
+		t.Errorf("stdin payload = %q, want raw prompt with no envelope", got)
 	}
 }
 

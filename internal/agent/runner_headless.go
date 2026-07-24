@@ -234,6 +234,27 @@ func steerableHeadlessInvocation(cfg RunConfig, providerName string) bool {
 	return cfg.HeadlessSteerable && providerName == "claude"
 }
 
+// stdinPromptHeadlessInvocation reports whether this attempt's prompt was
+// omitted from argv and must be written to stdin as a plain one-shot blob
+// (see claudeProvider.BuildHeadlessInvocation's non-steerable branch) — true
+// for every claude headless run, steerable or not; codex/copilot still
+// receive the prompt positionally.
+func stdinPromptHeadlessInvocation(steerable bool, providerName string) bool {
+	return !steerable && providerName == "claude"
+}
+
+// writeAndCloseHeadlessPrompt sends the one-shot stdin prompt then closes the
+// pipe so the child (default --input-format text) sees EOF immediately,
+// matching a plain `claude -p <text>` run's stdin behavior. Never returns an
+// error to the caller: a write failure here should not abort an otherwise
+// healthy attempt, only be logged for diagnosis.
+func (m *Manager) writeAndCloseHeadlessPrompt(a *Agent, stdin io.WriteCloser, prompt string) {
+	if _, err := io.WriteString(stdin, prompt); err != nil {
+		m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", err)
+	}
+	_ = stdin.Close()
+}
+
 func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, inv headlessInvocation) (retry bool, err error) {
 	cmd := newProviderCmd(ctx, &cfg, false, inv.name, inv.args...)
 	if a.sessionCWD != "" {
@@ -251,6 +272,8 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	}
 
 	steerable := steerableHeadlessInvocation(cfg, inv.name)
+	stdinPrompt := stdinPromptHeadlessInvocation(steerable, inv.name) && cfg.Prompt != ""
+	var promptStdin io.WriteCloser
 	if steerable {
 		stdinPipe, stdinErr := cmd.StdinPipe()
 		if stdinErr != nil {
@@ -261,6 +284,12 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		// setFinalizing refreshed CanSteer; emit so the UI shows steer controls
 		// as soon as the stdin transport is live, not only on a later event.
 		m.emit(events.AgentState(a.ID), a)
+	} else if stdinPrompt {
+		stdinPipe, stdinErr := cmd.StdinPipe()
+		if stdinErr != nil {
+			return false, fmt.Errorf("stdin pipe: %w", stdinErr)
+		}
+		promptStdin = stdinPipe
 	}
 
 	var stderrBuf bytes.Buffer
@@ -269,6 +298,8 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	if startErr := cmd.Start(); startErr != nil {
 		if steerable {
 			a.convo.closeStdinPipe()
+		} else if promptStdin != nil {
+			_ = promptStdin.Close()
 		}
 		return false, fmt.Errorf("start %s: %w", inv.name, startErr)
 	}
@@ -282,6 +313,8 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
 		}
+	} else if promptStdin != nil {
+		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
 	}
 
 	// Open log file on first successful start; subsequent retries append to same file.
@@ -405,13 +438,21 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	// Only claude honors HeadlessSteerable (see steerableHeadlessInvocation);
 	// codex/copilot keep the plain no-stdin invocation unchanged.
 	steerable := steerableHeadlessInvocation(cfg, name)
+	stdinPrompt := stdinPromptHeadlessInvocation(steerable, name) && cfg.Prompt != ""
 	var childStdin *os.File
+	var promptStdin io.WriteCloser
 	if steerable {
 		cs, err := m.startHeadlessProcessSurviveStdin(a, cmd)
 		if err != nil {
 			return nil, err
 		}
 		childStdin = cs
+	} else if stdinPrompt {
+		stdinPipe, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, fmt.Errorf("stdin pipe: %w", err)
+		}
+		promptStdin = stdinPipe
 	}
 
 	stderrPath := outFile.Name() + ".stderr"
@@ -426,6 +467,8 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 				_ = childStdin.Close()
 			}
 			a.convo.closeStdinPipe()
+		} else if promptStdin != nil {
+			_ = promptStdin.Close()
 		}
 		return nil, fmt.Errorf("start %s: %w", name, startErr)
 	}
@@ -453,6 +496,8 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
 		}
+	} else if promptStdin != nil {
+		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
 	}
 	return cmd, nil
 }
