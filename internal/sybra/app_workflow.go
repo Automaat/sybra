@@ -1291,7 +1291,10 @@ func (a *agentAdapter) IsDispatching(taskID string) bool {
 }
 
 func (a *agentAdapter) AdmitDispatch(taskID, role, mode string) (admit bool, reason string) {
-	if mode == "interactive" || a.pressure == nil {
+	// mode is coerced to headless before every AdmitDispatch call site
+	// (resolveRunAgentMode, spawnParallelChild, spawnBestOfNAttempt) — there
+	// is no dispatchable "interactive" mode left to bypass the gate for.
+	if a.pressure == nil {
 		return true, ""
 	}
 	admit, reason = a.pressure.Admit()
