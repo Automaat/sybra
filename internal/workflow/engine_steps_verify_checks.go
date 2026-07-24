@@ -39,12 +39,7 @@ const (
 	verifyReaskNoteVar     = "verify_reask_note"
 	// verifyChecksAutoFixBackoff is the base re-dispatch delay before the next
 	// auto-fix attempt; autoFixBackoff grows it with the attempt count up to
-	// autoFixBackoffMax. The auto-fix loop never gives up on a code-fixable
-	// failure of its own accord — it re-asks the implementation agent to fix
-	// the root cause until the suite passes, so a broken implementation can
-	// never reach review by exhausting a retry budget. The per-task cost
-	// ceiling (agent.max_task_cost_usd, checked before every dispatch) is the
-	// backstop that ultimately bounds a genuinely unfixable loop.
+	// autoFixBackoffMax.
 	verifyChecksAutoFixBackoff = 90 * time.Second
 	autoFixBackoffMax          = 15 * time.Minute
 	// verifyChecksAutoFixCeiling bounds auto-fix re-asks so a deterministic

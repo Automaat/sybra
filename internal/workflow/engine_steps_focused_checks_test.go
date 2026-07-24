@@ -290,7 +290,7 @@ func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
 	}
 }
 
-func TestExecFocusedChecks_FailureKeepsReaskingNeverEscalates(t *testing.T) {
+func TestExecFocusedChecks_FailureReasksPastOldCap(t *testing.T) {
 	t.Parallel()
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -305,8 +305,8 @@ func TestExecFocusedChecks_FailureKeepsReaskingNeverEscalates(t *testing.T) {
 	}}, nil)
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	// A code-fixable focused-check failure is re-asked until it passes, never
-	// exhausted into human-required.
+	// Past the old cap of 2, a code-fixable focused-check failure keeps being
+	// re-asked; it escalates only at verifyChecksAutoFixCeiling.
 	wf := implementedExec()
 	wf.Variables["step.focused_checks.auto_fix"] = "9"
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})

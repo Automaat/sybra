@@ -137,15 +137,14 @@ func TestExecVerifyChecks_AutoFixRewindsToImplement(t *testing.T) {
 	}
 }
 
-func TestExecVerifyChecks_AutoFixKeepsReaskingNeverEscalates(t *testing.T) {
+func TestExecVerifyChecks_AutoFixReasksPastOldCap(t *testing.T) {
 	t.Parallel()
 	wt := makeLintVerifyRepo(t)
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{lintVerifyCommand("internal/foo/foo.go")})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	// Many prior attempts must not exhaust into human-required — a code-fixable
-	// lint failure is re-asked until it passes, bounded only by the per-task
-	// cost ceiling, not a retry cap.
+	// Past the old cap of 2, a code-fixable lint failure keeps being re-asked
+	// rather than escalating; it escalates only at verifyChecksAutoFixCeiling.
 	wf := implementedExec()
 	wf.Variables["step.verify_checks.auto_fix"] = "9"
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
