@@ -107,11 +107,14 @@ func TestUpdateTaskPushesTagEditToFollowerAtWriteTime(t *testing.T) {
 		t.Fatalf("seed leader task: %v", err)
 	}
 
-	svc := &TaskService{tasks: leaderTasks, cfg: cfg, assigner: assigner, logger: discardLogger()}
+	svc := &TaskService{tasks: leaderTasks, cfg: cfg, assigner: assigner, logger: discardLogger(), wg: &sync.WaitGroup{}}
 
 	if _, err := svc.UpdateTask("task-pet", map[string]any{"tags": []string{"backend", "release-blocked"}}); err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
+	// The follower push runs detached (s.wg.Go) so UpdateTask never blocks the
+	// Wails caller; wait for it to land before asserting on the follower.
+	svc.wg.Wait()
 
 	got, ok := stub.lastAssigned()
 	if !ok {
@@ -146,10 +149,11 @@ func TestUpdateTaskSkipsFollowerPushForLocalTask(t *testing.T) {
 		t.Fatalf("seed task: %v", err)
 	}
 
-	svc := &TaskService{tasks: leaderTasks, cfg: cfg, assigner: assigner, logger: discardLogger()}
+	svc := &TaskService{tasks: leaderTasks, cfg: cfg, assigner: assigner, logger: discardLogger(), wg: &sync.WaitGroup{}}
 	if _, err := svc.UpdateTask("task-local", map[string]any{"tags": []string{"backend", "extra"}}); err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
+	svc.wg.Wait()
 	got, err := leaderTasks.Get("task-local")
 	if err != nil {
 		t.Fatal(err)

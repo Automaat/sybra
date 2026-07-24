@@ -873,7 +873,13 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	if err != nil {
 		return t, err
 	}
-	s.pushFieldEditToFollower(id, updates, t)
+	s.wg.Go(func() {
+		// UpdateTask is a Wails-bound method the frontend awaits synchronously;
+		// the follower push carries a bounded remote round trip, so run it
+		// detached to avoid blocking the IPC caller. It's best-effort anyway —
+		// the Mirror drift backstop catches a missed push on the next tick.
+		s.pushFieldEditToFollower(id, updates, t)
+	})
 	if task.IsTerminalStatus(t.Status) {
 		s.wg.Go(func() {
 			// context.Background(): UpdateTask is a Wails-bound method; this
@@ -920,7 +926,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 }
 
 // fieldPushTimeout bounds pushFieldEditToFollower's remote round trip so an
-// unreachable follower can't hold up the UpdateTask caller.
+// unreachable follower can't leave the detached push goroutine hanging.
 const fieldPushTimeout = 5 * time.Second
 
 // pushFieldEditToFollower forwards a Tags/DependsOn edit on an already
