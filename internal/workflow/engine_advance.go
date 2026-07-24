@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/reviewbudget"
 )
 
 const triageRetryableStatusReasonPrefix = "triage retryable: "
@@ -697,7 +698,7 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 	// follows the documented default instead of silently shipping
 	// single-pass review.
 	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled)
-	fields["task.review_round_limit_reached"] = strconv.FormatBool(e.reviewRoundLimitReached(t))
+	fields["task.review_budget_exceeded"] = strconv.FormatBool(e.reviewBudgetExceeded(t))
 
 	nextID, tErr := ResolveTransition(current.Next, fields)
 	if tErr != nil {
@@ -736,30 +737,25 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 	return nextStep, nil, nil
 }
 
-func (e *Engine) reviewRoundLimitReached(t TaskInfo) bool {
-	if e.reviewLoopDisabled || e.allowUnboundedReviewRounds {
+// reviewBudgetExceeded reports whether t has spent its review budget for
+// the current rolling hour — the same reviewbudget.Budget the inbound
+// PR-review dispatcher (internal/sybra's app_orchestrator.go) enforces, so a
+// runaway review→fix→review cycle inside simple-task-review trips the same
+// single cap rather than a separate per-workflow-execution counter.
+func (e *Engine) reviewBudgetExceeded(t TaskInfo) bool {
+	if e.reviewLoopDisabled {
 		return false
 	}
-	limit := e.maxReviewRounds
-	if limit <= 0 {
-		limit = config.DefaultMaxReviewRounds
+	limit := e.reviewRoundsPerHour
+	if limit == 0 {
+		limit = config.DefaultReviewRoundsPerHour
 	}
-	startedAt := time.Time{}
-	if t.Workflow != nil {
-		startedAt = t.Workflow.StartedAt
-	}
-	rounds := 0
+	budget := reviewbudget.Budget{PerHour: limit}
+	runs := make([]reviewbudget.Run, len(t.AgentRuns))
 	for i := range t.AgentRuns {
-		run := t.AgentRuns[i]
-		if run.Role != "review" {
-			continue
-		}
-		if !startedAt.IsZero() && run.StartedAt.Before(startedAt) {
-			continue
-		}
-		rounds++
+		runs[i] = reviewbudget.Run{Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt}
 	}
-	return rounds >= limit
+	return budget.HourlyExceeded(runs, time.Now())
 }
 
 // maxCascadeDepth bounds how many workflows may chain synchronously off a

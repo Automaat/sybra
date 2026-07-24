@@ -394,7 +394,6 @@ func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
 		"    checkpoint_on_assistant_event_ceiling: false",
 		"    assistant_event_cost_fraction: 0.6",
 		"    assistant_event_multiplier: 3",
-		"    max_review_rounds: 4",
 		"",
 	}, "\n")))
 	if err != nil {
@@ -415,9 +414,6 @@ func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
 	}
 	if got := resolved.Config.Agent.TurnMultiplier; got != 3 {
 		t.Fatalf("Agent.TurnMultiplier = %v, want 3", got)
-	}
-	if got := resolved.Config.MaxReviewRounds(); got != 4 {
-		t.Fatalf("MaxReviewRounds() = %d, want 4", got)
 	}
 	if resolved.Config.CheckpointOnTurnCeilingEnabled() {
 		t.Fatal("CheckpointOnTurnCeilingEnabled() = true, want false")
@@ -469,8 +465,8 @@ func TestResolveV2GuardrailAliasesWarnAndKeepBoundedReviewLoop(t *testing.T) {
 	if !resolved.Config.ReviewUntilClean() {
 		t.Fatal("ReviewUntilClean() = false, want true")
 	}
-	if resolved.Config.AllowUnboundedReviewRounds() {
-		t.Fatal("AllowUnboundedReviewRounds() = true, want false for schema-v2 review_until_clean=true")
+	if got := resolved.Config.GitHub.ReviewRoundsPerHourLimit(); got <= 0 {
+		t.Fatalf("ReviewRoundsPerHourLimit() = %d, want the positive default for schema-v2 review_until_clean=true", got)
 	}
 }
 
@@ -487,8 +483,8 @@ func TestResolveLegacyReviewUntilCleanPreservesUnboundedLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resolved.Config.AllowUnboundedReviewRounds() {
-		t.Fatal("AllowUnboundedReviewRounds() = false, want true for schema-v1 review_until_clean=true")
+	if got := resolved.Config.GitHub.ReviewRoundsPerHourLimit(); got > 0 {
+		t.Fatalf("ReviewRoundsPerHourLimit() = %d, want disabled (<=0) for schema-v1 review_until_clean=true", got)
 	}
 }
 
@@ -510,7 +506,7 @@ func TestMigrateRawConfigRewritesGuardrailAliasesAndPreservesExplicitReviewLoop(
 		"post_result_cost_usd: 9",
 		"max_assistant_events: 60",
 		"review_until_clean: true",
-		"allow_unbounded_review_rounds: true",
+		"review_rounds_per_hour: -1",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("migrated config missing %q:\n%s", want, text)
@@ -537,7 +533,7 @@ func TestMigrateRawConfigKeepsV2ReviewUntilCleanBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(result.MigratedRaw)
-	if strings.Contains(text, "allow_unbounded_review_rounds") {
+	if strings.Contains(text, "review_rounds_per_hour") {
 		t.Fatalf("migration opted v2 config into unbounded review rounds:\n%s", text)
 	}
 	if result.Changed {
@@ -546,7 +542,7 @@ func TestMigrateRawConfigKeepsV2ReviewUntilCleanBounded(t *testing.T) {
 }
 
 func TestMigrateNodeToCanonicalPreservesNilAsYAMLNull(t *testing.T) {
-	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil, false)
+	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
