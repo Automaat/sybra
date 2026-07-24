@@ -85,7 +85,7 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 		s.logger.Error("monitor.routing.local.create", "src_task_id", a.TaskID, "kind", a.Kind, "err", err)
 		return false, err
 	}
-	tags := []string{"sybra-bug", "scrubbed", "monitor:" + string(a.Kind)}
+	tags := []string{string(task.FlagSybraBug), string(task.FlagScrubbed), "monitor:" + string(a.Kind)}
 	update := task.Update{Tags: &tags}
 	if s.projectID != "" {
 		pid := s.projectID

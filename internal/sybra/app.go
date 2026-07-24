@@ -391,6 +391,13 @@ func (a *App) Startup(ctx context.Context) error {
 		a.logger.Error("task.store.init", "err", err)
 		return fmt.Errorf("task store: %w", err)
 	}
+	// Eagerly run the legacy-field backfill (see task.Store.Migrate) so
+	// startup pays that cost once instead of leaving it to the first List()
+	// caller. List() still self-heals on read regardless, so a failure here
+	// is logged rather than fatal.
+	if err := store.Migrate(); err != nil {
+		a.logger.Warn("task.store.migrate", "err", err)
+	}
 
 	projStore, err := project.NewStore(
 		filepath.Join(config.HomeDir(), "projects"),
