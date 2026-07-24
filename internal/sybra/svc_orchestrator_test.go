@@ -103,6 +103,12 @@ func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
 	svc, mgr := newOrchSvcForTest(t)
 	t.Cleanup(func() { _ = svc.StopOrchestrator() })
 
+	// Shorten the wedge grace window for this test so it doesn't have to
+	// sleep the real 20s production value to exercise the post-grace path.
+	origGrace := orchestratorWedgeGrace
+	orchestratorWedgeGrace = 50 * time.Millisecond
+	t.Cleanup(func() { orchestratorWedgeGrace = origGrace })
+
 	// Seed the exact production wedge: a steerable headless run started with
 	// no kickoff prompt comes up but never takes a turn, and the
 	// block_silent fake emits nothing so it never gets a session id or a
@@ -143,7 +149,7 @@ func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
 	// replaceable past orchestratorWedgeGrace (strict '>'), to avoid churning
 	// a healthy agent still mid-handshake — wait it out plus a small epsilon
 	// so clock granularity can't leave time.Since(startedAt) exactly equal to
-	// the grace window.
+	// the (now-shortened) grace window.
 	time.Sleep(orchestratorWedgeGrace + 50*time.Millisecond)
 
 	// StartOrchestrator must reap the wedged brain and swap in a fresh one.

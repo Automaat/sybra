@@ -46,7 +46,7 @@ const orchestratorKickoffPrompt = "Start your orchestrator session now. Follow y
 // reconciliation ticks; comfortably above normal claude CLI startup latency
 // so a healthy agent that just hasn't emitted its init event yet is never
 // mistaken for one.
-const orchestratorWedgeGrace = 20 * time.Second
+var orchestratorWedgeGrace = 20 * time.Second
 
 // orchestratorReplaceable reports whether an existing orchestrator agent should
 // be reaped and replaced rather than treated as "already running". A crashed
