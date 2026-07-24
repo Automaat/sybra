@@ -2906,6 +2906,41 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 	}
 }
 
+// TestMaybeSpawn_SkipsUmbrellaTracker reproduces the production incident
+// where an umbrella tracker's rollup flips its own status to human-required
+// (e.g. reason "umbrella child needs attention") and the status hook spawns
+// a real human-review agent onto it — the tracker has no product code to
+// analyze, so the agent falls into a repetitive info-gathering loop until
+// the watchdog kills it and re-parks the task in human-required (#2610).
+func TestMaybeSpawn_SkipsUmbrellaTracker(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Umbrella tracker", "queued", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		TaskType:  task.Ptr(task.TaskTypeUmbrella),
+		ProjectID: task.Ptr("Automaat/sybra"),
+		Status:    task.Ptr(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+
+	if spawned := h.maybeSpawn(tk.ID, string(task.StatusInProgress)); spawned {
+		t.Error("expected maybeSpawn to report no spawn for an umbrella tracker")
+	}
+
+	h.mu.Lock()
+	_, busy := h.inflight[tk.ID]
+	h.mu.Unlock()
+	if busy {
+		t.Error("expected no inflight entry — an umbrella tracker must not spawn a review agent")
+	}
+}
+
 func TestMaybeSpawn_SkipsProjectlessTask(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
