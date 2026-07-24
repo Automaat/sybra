@@ -148,5 +148,5 @@ description = "Long-running soak scenario with heap/goroutine profiles for leak 
 # the 12 CI jobs that never use it.
 [tasks."smoke:k3d"]
 description = "k3d smoke for the Kubernetes agent-Job runner (fake provider, no API keys)"
-tools = { k3d = "5.9.0", kubectl = "1.36.2" }
+tools = { k3d = "5.9.0", kubectl = "1.36.3" }
 run = "scripts/smoke-k3d.sh"
