@@ -166,8 +166,8 @@ func (s *PlanningService) reject(id, feedback string) (task.Task, error) {
 	return s.tasks.Get(id)
 }
 
-// sendMessage delivers a follow-up message to a live interactive agent of
-// the given role. Unresolved inline comments are merged into the message
+// sendMessage delivers a follow-up message to a live steerable-headless
+// agent of the given role. Unresolved inline comments are merged into the message
 // so the two review-page buttons (Reject / Send Message) behave
 // consistently — the UI placeholder promises "comments are included
 // automatically" and that promise applies to both.
@@ -177,8 +177,11 @@ func (s *PlanningService) sendMessage(id, message string, role agent.Role) error
 		return fmt.Errorf("message is empty")
 	}
 	ag := s.agents.FindRunningAgentForTask(id, role)
-	if ag == nil || ag.Mode != "interactive" {
-		return fmt.Errorf("no live interactive %s agent for task %s", role, id)
+	if ag == nil {
+		return fmt.Errorf("no live %s agent for task %s", role, id)
+	}
+	if !ag.View().CanSteer {
+		return fmt.Errorf("no steerable %s agent for task %s", role, id)
 	}
 	return s.agents.SendPromptToAgent(ag.ID, combined)
 }

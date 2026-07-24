@@ -1407,89 +1407,6 @@ func TestE2E_ProviderMatrix_ModelAliasMapping(t *testing.T) {
 	})
 }
 
-// TestE2E_CodexInteractiveAgent_RunsAsConversational verifies that Codex
-// interactive agents use the goroutine-based conversational runner (like
-// Claude) via stdin/stdout. The agent should produce ConvoEvents,
-// have a done channel, and reach StatePaused after the first turn.
-func TestE2E_CodexInteractiveAgent_RunsAsConversational(t *testing.T) {
-	env := setupE2EProvider(t, "codex", "interactive_implement")
-
-	ag, err := env.agents.Run(agent.RunConfig{
-		TaskID:   "task-codex-int",
-		Name:     "codex interactive",
-		Mode:     "interactive",
-		Provider: "codex",
-		Model:    "gpt-5.4-mini",
-		Prompt:   "Inspect repo",
-		OneShot:  true,
-		Dir:      t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// One-shot: agent exits after turn.completed → StateStopped.
-	waitFor(t, 10*time.Second, "codex interactive agent stops", func() bool {
-		return ag.GetState() == agent.StateStopped
-	})
-
-	out, err := env.agents.GetConvoOutput(ag.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hasResult := false
-	for _, ev := range out {
-		if ev.Type == "result" {
-			hasResult = true
-		}
-	}
-	if !hasResult {
-		t.Error("expected result ConvoEvent from codex conversational runner")
-	}
-}
-
-// TestE2E_CodexInteractiveAgent_StopTransitionsToStopped verifies that
-// StopAgent correctly terminates a running Codex conversational agent.
-func TestE2E_CodexInteractiveAgent_StopTransitionsToStopped(t *testing.T) {
-	env := setupE2EProvider(t, "codex", "interactive_implement")
-
-	ag, err := env.agents.Run(agent.RunConfig{
-		TaskID:   "task-codex-stop",
-		Name:     "codex interactive stop",
-		Mode:     "interactive",
-		Provider: "codex",
-		Model:    "gpt-5.4-mini",
-		Prompt:   "Inspect repo",
-		Dir:      t.TempDir(),
-		// No OneShot: agent stays paused after first turn, waiting for prompt.
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Wait until the agent is live (running or paused after first turn).
-	waitFor(t, 10*time.Second, "codex agent becomes live", func() bool {
-		s := ag.GetState()
-		return s == agent.StateRunning || s == agent.StatePaused
-	})
-
-	if err := env.agents.StopAgent(ag.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	waitFor(t, 5*time.Second, "codex agent stopped", func() bool {
-		return ag.GetState() == agent.StateStopped
-	})
-
-	got, err := env.agents.GetAgent(ag.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.GetState() != agent.StateStopped {
-		t.Fatalf("state = %q, want stopped", got.GetState())
-	}
-}
-
 // TestE2E_Codex_HeadlessRetry_Overloaded verifies that a Codex headless agent
 // retries when the provider emits an overloaded error (substring match on the
 // message). The first invocation returns "overloaded_error" (exits 1 with an
@@ -1620,29 +1537,23 @@ func TestE2E_ProviderMatrix_NoResult_DoesNotStall(t *testing.T) {
 	})
 }
 
-// TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate locks in the fix
-// for interactive implement steps stalling the workflow. Before the fix, a
-// conversational claude agent would emit its result event, flip to
-// StatePaused, and sit forever waiting for more stdin — cmd.Wait() never
-// returned, onComplete never fired, and the workflow was stranded on
-// `implement` with the task pinned at in-progress. Tasks never reached
-// the evaluator, so in-review was unreachable.
-//
-// The fix makes interactive run_agent steps (no reuse_agent, no
-// wait_for_status) one-shot: the runner closes stdin after the first
-// `result` event so the claude process exits naturally, onComplete fires,
-// and the workflow advances to evaluate. The `interactive_implement`
-// scenario in fake-claude blocks on stdin until EOF, faithfully
-// reproducing real conversational behavior.
-func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
-	// triage (sets status=todo) → interactive_implement (conversational,
-	// blocks on stdin for Claude / exits naturally for Codex) → evaluate
-	// (mechanical, flips to human-required since test-simple.yaml has no
-	// link_pr_and_review chain).
+// TestE2E_LegacyInteractiveTask_ImplementDispatchesHeadless locks in
+// backward compatibility for a task file carrying the legacy
+// agent_mode: interactive value (task.AgentModeInteractive stays a valid,
+// load-only value — see task.validAgentModes). simple-task-implement's
+// `implement` step templates its mode off {{.Task.AgentMode}}, so without
+// normalization such a task would try to dispatch RunConfig{Mode:
+// "interactive"} and fail outright now that mode no longer exists
+// (resolveRunAgentMode coerces it to headless instead, the same as every
+// other task).
+func TestE2E_LegacyInteractiveTask_ImplementDispatchesHeadless(t *testing.T) {
+	// triage (sets status=todo) → implement (headless, coerced from the
+	// task's legacy interactive AgentMode) → evaluate (mechanical, flips to
+	// human-required since test-simple.yaml has no link_pr_and_review chain).
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
-		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "interactive_implement"})
+		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "success"})
 
-		created, err := env.tasks.Create("interactive one-shot task", "", "interactive")
+		created, err := env.tasks.Create("legacy interactive task", "", "interactive")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1651,10 +1562,7 @@ func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Without the one-shot fix this wait would time out — the implement
-		// agent would sit paused forever and the workflow would never reach
-		// evaluate. 30s is plenty; the full path is < 1s when healthy.
-		waitFor(t, 30*time.Second, "workflow completes after interactive implement", func() bool {
+		waitFor(t, 30*time.Second, "workflow completes after legacy interactive implement", func() bool {
 			tk, err := env.tasks.Get(created.ID)
 			if err != nil {
 				return false
@@ -1668,15 +1576,13 @@ func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
 				tk.Workflow.State, tk.Workflow.CurrentStep)
 		}
 		// Mechanical evaluate flips to human-required ("commits pushed but no
-		// PR created"); the original assertion was in-review when the LLM
-		// eval set the status itself. The point of this test is that
-		// interactive tasks now advance past implement at all — the exact
-		// terminal status is now decided by the mechanical eval.
+		// PR created"); the point of this test is that a legacy interactive
+		// task advances past implement at all — the exact terminal status is
+		// decided by the mechanical eval.
 		if tk.Status != task.StatusHumanRequired {
 			t.Errorf("task status = %q, want human-required", tk.Status)
 		}
 
-		// Verify both the interactive implement and the headless evaluate ran.
 		seen := map[string]bool{}
 		for _, r := range tk.Workflow.StepHistory {
 			seen[r.StepID] = true
@@ -1801,7 +1707,18 @@ func TestE2E_ResumeStalled(t *testing.T) {
 // TestE2E_ResumeStalled_SkipsTaskWithRunningAgent verifies ResumeStalled does
 // not spawn duplicate work when a live agent is already attached to the task.
 func TestE2E_ResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
-	env := setupE2EProvider(t, "claude", "interactive_implement")
+	// block_silent (not interactive_implement): a steerable headless run
+	// closes its stdin and finalizes as soon as it completes a turn with no
+	// steer message already queued (drainOrCloseHeadlessSteer), so only a
+	// scenario that never completes a turn stays observably live for this
+	// test's duration.
+	env := setupE2EProvider(t, "claude", "block_silent")
+	if err := env.agents.ReplaceRuntimeConfig(agent.ManagerRuntimeConfig{
+		DefaultProvider:   "claude",
+		HeadlessSteerable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	created, err := env.tasks.Create("stalled but live agent task", "", "interactive")
 	if err != nil {
@@ -1824,7 +1741,7 @@ func TestE2E_ResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 	_, err = env.agents.Run(agent.RunConfig{
 		TaskID:   created.ID,
 		Name:     "implementation",
-		Mode:     "interactive",
+		Mode:     "headless",
 		Provider: "claude",
 		Model:    "sonnet",
 		Prompt:   "Implement task",
@@ -4747,46 +4664,6 @@ func TestE2E_WaitForStatus_ExactAdvancesOnce(t *testing.T) {
 	}
 }
 
-func TestE2E_ReuseAgent_ContinuesWithSameAgent(t *testing.T) {
-	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
-	writeWorkflowFixture(t, env, "test-reuse-agent", testReuseAgentWorkflowYAML)
-
-	created, err := env.tasks.Create("reuse agent same", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := env.startWorkflow(created.ID, "test-reuse-agent"); err != nil {
-		t.Fatal(err)
-	}
-
-	waitFor(t, 10*time.Second, "phase1 waiting", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "phase1" && tk.Workflow.State == workflow.ExecWaiting && len(tk.AgentRuns) == 1
-	})
-	tk1, _ := env.tasks.Get(created.ID)
-	firstAgentID := tk1.AgentRuns[0].AgentID
-
-	env.engine.HandleStatusChange(created.ID, "phase1")
-	waitFor(t, 10*time.Second, "phase2 waiting", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "phase2" && tk.Workflow.State == workflow.ExecWaiting
-	})
-
-	tk2, _ := env.tasks.Get(created.ID)
-	if len(tk2.AgentRuns) != 1 {
-		t.Fatalf("agent runs = %d, want 1 (reuse)", len(tk2.AgentRuns))
-	}
-	if tk2.AgentRuns[0].AgentID != firstAgentID {
-		t.Fatalf("agent id changed: %s -> %s", firstAgentID, tk2.AgentRuns[0].AgentID)
-	}
-
-	env.engine.HandleStatusChange(created.ID, "phase2")
-	waitFor(t, 10*time.Second, "workflow completes", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
-	})
-}
-
 func TestE2E_ReuseAgent_FallbackStartsNewWhenDead(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement", "interactive_implement"})
 	writeWorkflowFixture(t, env, "test-reuse-agent", testReuseAgentWorkflowYAML)
@@ -5110,7 +4987,17 @@ func TestE2E_LinkPRAndReview_PrefersExistingTaskPRNumber(t *testing.T) {
 }
 
 func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
-	env := setupE2EProvider(t, "claude", "interactive_implement")
+	// block_silent (not interactive_implement): the run must still be live
+	// when the completion callback fires below, and a steerable headless run
+	// finalizes at its first completed turn (drainOrCloseHeadlessSteer), so
+	// only a scenario that never completes a turn stays live long enough.
+	env := setupE2EProvider(t, "claude", "block_silent")
+	if err := env.agents.ReplaceRuntimeConfig(agent.ManagerRuntimeConfig{
+		DefaultProvider:   "claude",
+		HeadlessSteerable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	created, err := env.tasks.Create("delete during run", "", "interactive")
 	if err != nil {
 		t.Fatal(err)
@@ -5119,7 +5006,7 @@ func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
 	ag, err := env.agents.Run(agent.RunConfig{
 		TaskID:   created.ID,
 		Name:     "manual-agent",
-		Mode:     "interactive",
+		Mode:     "headless",
 		Provider: "claude",
 		Model:    "sonnet",
 		Prompt:   "run",
@@ -6389,11 +6276,22 @@ func TestE2E_LinkPRAndReview_GHAmbiguous_NoAutoLink(t *testing.T) {
 }
 
 func TestE2E_InteractivePromptQueuePressure_NoDropOrCrash(t *testing.T) {
-	env := setupE2EProvider(t, "claude", "interactive_implement")
+	// block_silent (not interactive_implement): the agent must stay live
+	// (non-finalizing) across all 50 concurrent SendPromptToAgent calls, and
+	// a steerable headless run finalizes at its first completed turn
+	// (drainOrCloseHeadlessSteer), so only a scenario that never completes a
+	// turn stays available to queue against for the whole test.
+	env := setupE2EProvider(t, "claude", "block_silent")
+	if err := env.agents.ReplaceRuntimeConfig(agent.ManagerRuntimeConfig{
+		DefaultProvider:   "claude",
+		HeadlessSteerable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	ag, err := env.agents.Run(agent.RunConfig{
 		TaskID:   "prompt-pressure",
 		Name:     "prompt pressure",
-		Mode:     "interactive",
+		Mode:     "headless",
 		Provider: "claude",
 		Model:    "sonnet",
 		Prompt:   "start",
