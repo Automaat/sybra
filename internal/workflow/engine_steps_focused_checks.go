@@ -397,7 +397,7 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 	if attempts >= verifyChecksAutoFixCeiling {
 		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
 			reason, verifyChecksAutoFixCeiling)
-		return e.flagFocusedChecks(taskID, step, exhausted, "auto-fix-exhausted")
+		return e.flagFocusedChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
 
 	wfExec.SetVar(key, strconv.Itoa(attempts+1))

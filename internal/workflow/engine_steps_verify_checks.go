@@ -857,7 +857,7 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 	if attempts >= verifyChecksAutoFixCeiling {
 		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
 			reason, verifyChecksAutoFixCeiling)
-		return e.flagVerifyChecks(taskID, step, exhausted, "auto-fix-exhausted")
+		return e.flagVerifyChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
 
 	wfExec.SetVar(key, strconv.Itoa(attempts+1))
