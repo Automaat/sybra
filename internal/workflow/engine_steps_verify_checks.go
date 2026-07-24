@@ -35,10 +35,16 @@ const verifyChecksOutputTail = 8000
 const verifyBlessedTag = "verify-blessed"
 
 const (
-	verifyChecksImplStepID     = "implement"
-	verifyReaskNoteVar         = "verify_reask_note"
-	verifyChecksAutoFixCap     = 2
+	verifyChecksImplStepID = "implement"
+	verifyReaskNoteVar     = "verify_reask_note"
+	// verifyChecksAutoFixBackoff is the base re-dispatch delay before the next
+	// auto-fix attempt; autoFixBackoff grows it with the attempt count up to
+	// autoFixBackoffMax.
 	verifyChecksAutoFixBackoff = 90 * time.Second
+	autoFixBackoffMax          = 15 * time.Minute
+	// verifyChecksAutoFixCeiling bounds auto-fix re-asks so a deterministic
+	// failure no agent can fix reaches a human instead of looping forever.
+	verifyChecksAutoFixCeiling = 20
 	// Full verify suites are CPU-heavy and already serialized by workflow
 	// retries; a single local slot prevents one saturated host from piling
 	// multiple suites on top of each other and timing them all out.
@@ -823,18 +829,39 @@ func goPackageAffectedByChanges(
 	return false, nil
 }
 
+// autoFixBackoff is the re-dispatch delay before the next verify/focused
+// auto-fix attempt. It grows linearly with the attempt count so a genuinely
+// stuck fix loop paces itself down instead of hammering the fleet, capped at
+// autoFixBackoffMax so a long-running loop still makes steady progress.
+func autoFixBackoff(attempts int) time.Duration {
+	backoff := verifyChecksAutoFixBackoff * time.Duration(attempts+1)
+	if backoff > autoFixBackoffMax {
+		return autoFixBackoffMax
+	}
+	return backoff
+}
+
+// autoFixOrFlagVerifyChecks rewinds the workflow to the implementation step and
+// re-asks the agent to fix a code-fixable verify failure at its root cause,
+// looping instead of escalating an ordinary lint/test failure the agent can fix
+// itself. It stays in that loop up to verifyChecksAutoFixCeiling re-asks; only a
+// deterministic failure that survives that many attempts, or the structural case
+// with no implementation step to rewind into (wfExec nil, or the step never
+// ran), escalates to human-required.
 func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo, reason, failedCmd, output string) (StepOutput, error) {
-	if wfExec == nil {
+	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
 		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
 	}
 	key := "step." + step.ID + ".auto_fix"
 	attempts := parseWorkflowInt(wfExec.Variables[key])
-	if attempts >= verifyChecksAutoFixCap || wfExec.CountStep(verifyChecksImplStepID) == 0 {
-		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
+	if attempts >= verifyChecksAutoFixCeiling {
+		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
+			reason, verifyChecksAutoFixCeiling)
+		return e.flagVerifyChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
 
 	wfExec.SetVar(key, strconv.Itoa(attempts+1))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
+	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(autoFixBackoff(attempts)).Format(time.RFC3339))
 	wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
 	wfExec.ClearStepRecords(verifyChecksImplStepID)
 	wfExec.CurrentStep = verifyChecksImplStepID
@@ -842,13 +869,13 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: rewind to implement: %w", err)
 	}
-	retryReason := fmt.Sprintf("auto-fixing failed verify check (attempt %d/%d): %s",
-		attempts+1, verifyChecksAutoFixCap, trimDiffLine(failedCmd))
+	retryReason := fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s",
+		attempts+1, trimDiffLine(failedCmd))
 	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, retryReason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Info("workflow.verify-checks.auto-fix",
-		"task_id", taskID, "attempt", attempts+1, "cap", verifyChecksAutoFixCap, "cmd", trimDiffLine(failedCmd))
+		"task_id", taskID, "attempt", attempts+1, "cmd", trimDiffLine(failedCmd))
 	return StepOutput{}, errStepParked
 }
 
@@ -857,7 +884,11 @@ func buildVerifyReaskNote(failedCmd, output string) string {
 	excerpt := highestSignalVerifyFailureExcerpt(failedCmd, output)
 	b.WriteString("A prior implementation FAILED the project verify suite. Fix the ROOT CAUSE ")
 	b.WriteString("so the failing command passes on a clean run — do NOT weaken, skip, or edit ")
-	b.WriteString("the check to make it pass.\n\n## Failing verify command\n\n`")
+	b.WriteString("the check to make it pass. Then COMMIT and push your fix: the suite runs ")
+	b.WriteString("against your branch HEAD in a freshly prepared worktree, so an uncommitted ")
+	b.WriteString("change is not picked up and the same failure recurs; some projects also ")
+	b.WriteString("enforce a clean working tree (e.g. a `git diff --exit-code` / generated-file ")
+	b.WriteString("gate) that fails outright on uncommitted changes.\n\n## Failing verify command\n\n`")
 	b.WriteString(failedCmd)
 	b.WriteString("`")
 	if excerpt != "" {
