@@ -332,6 +332,58 @@ func TestMigrateRawConfigKeepsCanonicalGitHubReviewHoldConfig(t *testing.T) {
 	}
 }
 
+// TestResolveSLOTargetExplicitZeroSurvives pins that an operator who sets a
+// zero-tolerance count/rate SLO cap keeps it: `max_identical_retry_cap: 0`
+// ("no repeated failures tolerated") and `max_restarts_per_hour: 0` ("any
+// automatic restart is a breach") must not be clobbered back to the shipped
+// defaults (3 / 1) on load.
+func TestResolveSLOTargetExplicitZeroSurvives(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"evaluation:",
+		"  slo:",
+		"    max_identical_retry_cap: 0",
+		"    max_restarts_per_hour: 0",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Evaluation.SLO.MaxIdenticalRetryCap; got != 0 {
+		t.Fatalf("MaxIdenticalRetryCap = %d, want 0 (explicit zero must survive)", got)
+	}
+	if got := resolved.Config.Evaluation.SLO.MaxRestartsPerHour; got != 0 {
+		t.Fatalf("MaxRestartsPerHour = %v, want 0 (explicit zero must survive)", got)
+	}
+	// Fraction targets left unset still default (0 is degenerate for those).
+	if got := resolved.Config.Evaluation.SLO.MinAutonomyRate; got != 0.80 {
+		t.Fatalf("MinAutonomyRate = %v, want 0.80 (unset fraction still defaults)", got)
+	}
+}
+
+// TestResolveSLOTargetUnsetGetsDefaults pins that a config that omits the SLO
+// count/rate caps entirely still receives the shipped defaults from the seed.
+func TestResolveSLOTargetUnsetGetsDefaults(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte("{}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DefaultSLOTargets()
+	if got := resolved.Config.Evaluation.SLO.MaxIdenticalRetryCap; got != want.MaxIdenticalRetryCap {
+		t.Fatalf("MaxIdenticalRetryCap = %d, want %d (unset must default)", got, want.MaxIdenticalRetryCap)
+	}
+	if got := resolved.Config.Evaluation.SLO.MaxRestartsPerHour; got != want.MaxRestartsPerHour {
+		t.Fatalf("MaxRestartsPerHour = %v, want %v (unset must default)", got, want.MaxRestartsPerHour)
+	}
+}
+
 func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
 	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
 		"schema_version: 2",

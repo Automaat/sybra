@@ -275,6 +275,11 @@ type Report struct {
 	ByExperimentKind         []ExperimentKindBreakdown `json:"byExperimentKind,omitempty"`
 	Weaknesses               []Weakness                `json:"weaknesses,omitempty"`
 	Notes                    []string                  `json:"notes,omitempty"`
+	// SLO is the rolling autonomy/reliability compliance verdict for this
+	// window — see EvaluateSLOs. Populated by Service.Scan; a Report built
+	// by hand (e.g. in weakness_test.go fixtures) leaves this as the zero
+	// value, which is not a meaningful verdict either way.
+	SLO SLOReport `json:"slo"`
 }
 
 // ExperimentKindBreakdown groups A/B comparison rows by experiment kind
