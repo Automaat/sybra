@@ -295,6 +295,37 @@ func TestObserveCallResult_ConcurrentFailuresCountAsOneBackoffStep(t *testing.T)
 	}
 }
 
+func TestObserveCallResult_NoAppAuth_ConcurrentFailuresCountAsOneBackoffStep(t *testing.T) {
+	t.Cleanup(resetAuthHealthForTest)
+	resetAuthHealthForTest()
+	t.Cleanup(DisableAppAuth)
+	DisableAppAuth()
+
+	// No App auth configured means there is no refresh singleflight to collapse
+	// concurrent observers — the collapse must come from observeFailure itself.
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for range n {
+		go func() {
+			defer wg.Done()
+			ObserveCallResult(nil, fmt.Errorf("gh: authentication required, run `gh auth login`"))
+		}()
+	}
+	wg.Wait()
+
+	snap := AuthHealthSnapshot()
+	if snap.State != AuthUnavailable {
+		t.Fatalf("State = %q, want unavailable", snap.State)
+	}
+	// N concurrent observers share one incident, so the circuit breaker must
+	// advance exactly one backoff step — not N (which would jump straight to
+	// the cap on the first blip).
+	if snap.ConsecutiveFailures != 1 {
+		t.Fatalf("ConsecutiveFailures = %d, want 1 for %d observers of one shared failure", snap.ConsecutiveFailures, n)
+	}
+}
+
 func TestForceRefreshAppToken_ConcurrentCallsCollapseToOneMint(t *testing.T) {
 	t.Cleanup(DisableAppAuth)
 	path, _ := writeTestKey(t, false)

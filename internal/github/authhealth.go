@@ -139,9 +139,7 @@ func AuthHealthSnapshot() AuthSnapshot {
 func AuthCircuitOpen() (open bool, retryAfter time.Time) {
 	authHealth.mu.Lock()
 	defer authHealth.mu.Unlock()
-	if authHealth.state != AuthMisconfigured &&
-		authHealth.state != AuthUnavailable &&
-		authHealth.state != AuthRateLimited {
+	if !isFailureState(authHealth.state) {
 		return false, time.Time{}
 	}
 	if time.Now().Before(authHealth.nextAttempt) {
@@ -199,6 +197,44 @@ func (t *authHealthTracker) setState(state AuthState, reason string) {
 	for _, cb := range fireRecovery {
 		cb()
 	}
+}
+
+// isFailureState reports whether a state trips the circuit breaker (i.e. has a
+// live backoff window). Kept in sync with AuthCircuitOpen's state check.
+func isFailureState(s AuthState) bool {
+	return s == AuthMisconfigured || s == AuthUnavailable || s == AuthRateLimited
+}
+
+// observeFailure records a circuit-tripping failure like setState does, but
+// collapses observations that arrive while the circuit is already open within
+// its current backoff window into a single backoff step. This gives the
+// no-App-auth path (which has no token to force-refresh, so no
+// appTokenSource.refresh singleflight to ride on) the same "N concurrent
+// failures = one backoff step" guarantee the App-auth refresh path gets for
+// free — without it, N concurrent worktree preflights all observing one 401
+// would each advance consecutiveFailures, jumping straight toward the cap on
+// the very first incident (see onAuthFailureObserved). The whole check-and-set
+// runs under one lock hold so the first observer of a fresh incident parks the
+// circuit before any concurrent observer reads nextAttempt. A genuine
+// sequential retry only reaches here after nextAttempt has elapsed (earlier gh
+// calls are suppressed by AuthCircuitOpen), so real repeated failures still
+// ramp the backoff.
+func (t *authHealthTracker) observeFailure(state AuthState, reason string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if isFailureState(t.state) && time.Now().Before(t.nextAttempt) {
+		// Concurrent/duplicate observation of an already-open incident: refresh
+		// the reason but leave the backoff step the first observer set.
+		t.reason = reason
+		return
+	}
+	if state != t.state {
+		t.state = state
+		t.since = time.Now()
+		t.transitions++
+	}
+	t.reason = reason
+	t.applyFailureBackoffLocked()
 }
 
 // applyFailureBackoffLocked records a failure and advances nextAttempt on the
@@ -294,8 +330,10 @@ func onAuthFailureObserved(ctx context.Context, reason string) {
 	if src == nil {
 		// No App auth configured — nothing we can force-refresh. An ambient
 		// `gh auth login` credential going stale/missing needs a human, not
-		// a retry.
-		authHealth.setState(AuthUnavailable, reason)
+		// a retry. observeFailure (not setState) collapses concurrent observers
+		// of one incident into a single backoff step, since there is no refresh
+		// singleflight here to do it for us.
+		authHealth.observeFailure(AuthUnavailable, reason)
 		return
 	}
 	authHealth.setState(AuthRefreshing, reason)
