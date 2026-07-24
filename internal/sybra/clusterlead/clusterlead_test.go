@@ -29,6 +29,9 @@ type followerStub struct {
 	// live overrides GetTask, letting a test make it disagree with tasks
 	// (the ListTasks snapshot) to simulate a follower that moved on.
 	live map[string]task.Task
+	// failAssign, when set, makes every AssignTask call fail — simulating an
+	// unreachable follower so a test can assert on repair/push failure.
+	failAssign bool
 }
 
 func (f *followerStub) server(t *testing.T) *httptest.Server {
@@ -41,6 +44,14 @@ func (f *followerStub) server(t *testing.T) *httptest.Server {
 		body, _ := io.ReadAll(r.Body)
 		switch r.URL.Path {
 		case "/api/TaskService/AssignTask":
+			f.mu.Lock()
+			fail := f.failAssign
+			f.mu.Unlock()
+			if fail {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = io.WriteString(w, `{"error":"boom","code":"internal_error"}`)
+				return
+			}
 			var args []task.Task
 			_ = json.Unmarshal(body, &args)
 			if len(args) == 1 {
@@ -427,10 +438,11 @@ func (s *fakeAnomalySink) submitted() []monitor.Anomaly {
 // follower-authoritative). If a leader-side write to either one never
 // reached the follower, nothing in the ordinary reconcile loop would ever
 // notice. This seeds a follower report that disagrees with the canonical
-// copy on both fields and asserts the sweep detects it, alerts through the
-// anomaly sink, and repairs the follower within the same reconcile pass —
-// without touching the follower's own Status/PR fields (never a stale
-// full-task overwrite).
+// copy on both fields and asserts the sweep detects it and repairs the
+// follower within the same reconcile pass — without touching the follower's
+// own Status/PR fields (never a stale full-task overwrite) — and, per #2495,
+// does NOT alert: a single drift that repairs cleanly is the backstop
+// working as designed, not something a human needs to see.
 func TestMirrorDetectsAndRepairsTagsAndDependsOnDrift(t *testing.T) {
 	stub := &followerStub{}
 	srv := stub.server(t)
@@ -476,13 +488,10 @@ func TestMirrorDetectsAndRepairsTagsAndDependsOnDrift(t *testing.T) {
 		t.Fatal("apply follower report")
 	}
 
-	// Detected + alerted.
-	calls := sink.submitted()
-	if len(calls) != 1 {
-		t.Fatalf("anomaly sink got %d submissions, want 1: %+v", len(calls), calls)
-	}
-	if calls[0].Kind != monitor.KindClusterDrift || calls[0].TaskID != "task-pet" {
-		t.Fatalf("submitted anomaly = %+v, want KindClusterDrift for task-pet", calls[0])
+	// Detected and repaired, but not alerted — a lone drift that repairs
+	// cleanly on the first try is exactly the case #2495 stopped alerting on.
+	if calls := sink.submitted(); len(calls) != 0 {
+		t.Fatalf("anomaly sink got %d submissions, want 0 (a single clean repair must not alert): %+v", len(calls), calls)
 	}
 
 	// Repaired: the follower stub received an AssignTask carrying the
@@ -578,6 +587,121 @@ func TestMirrorDriftRepairUsesLiveFollowerStateNotStaleSnapshot(t *testing.T) {
 	}
 	if len(got.AgentRuns) != 1 || got.AgentRuns[0].AgentID != "started-after-the-snapshot" {
 		t.Errorf("repair dropped the follower's live AgentRuns, got %+v — rolled back follower progress", got.AgentRuns)
+	}
+}
+
+// TestMirrorAlertsWhenDriftRepairFails covers #2495's other alert-worthy
+// case: the backstop detects drift but the repair push itself never reaches
+// the follower (e.g. the follower is down). Unlike a drift that repairs
+// cleanly (TestMirrorDetectsAndRepairsTagsAndDependsOnDrift, which must NOT
+// alert), a repair failure means the backstop couldn't self-heal — that is
+// exactly when a human needs to know.
+func TestMirrorAlertsWhenDriftRepairFails(t *testing.T) {
+	stub := &followerStub{failAssign: true}
+	srv := stub.server(t)
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
+	sink := &fakeAnomalySink{}
+	mirror.SetAnomalySink(sink)
+
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	canonical := task.Task{
+		ID:           "task-pet",
+		Status:       task.StatusTodo,
+		AssignedNode: "pet-box",
+		Tags:         []string{"backend", "umbrella-gated"},
+		UpdatedAt:    t0,
+	}
+	if _, _, err := mgr.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := task.Task{
+		ID:           "task-pet",
+		Status:       task.StatusInProgress,
+		AssignedNode: "pet-box",
+		Tags:         []string{"backend"},
+		UpdatedAt:    t0.Add(time.Hour),
+	}
+	stub.tasks = []task.Task{stale}
+	if !mirror.applyFollowerTask("pet-box", stale) {
+		t.Fatal("apply follower report")
+	}
+
+	calls := sink.submitted()
+	if len(calls) != 1 {
+		t.Fatalf("anomaly sink got %d submissions, want 1 (repair failed, backstop couldn't self-heal): %+v", len(calls), calls)
+	}
+	if calls[0].Kind != monitor.KindClusterDrift || calls[0].TaskID != "task-pet" {
+		t.Fatalf("submitted anomaly = %+v, want KindClusterDrift for task-pet", calls[0])
+	}
+}
+
+// TestMirrorAlertsOnRepeatedDriftWithinWindow covers #2495's third
+// alert-worthy case: even when each individual repair succeeds, the same
+// task drifting again shortly after signals the write-time push isn't
+// sticking for it — worth a human's attention even though the backstop keeps
+// self-healing it.
+func TestMirrorAlertsOnRepeatedDriftWithinWindow(t *testing.T) {
+	stub := &followerStub{}
+	srv := stub.server(t)
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
+	sink := &fakeAnomalySink{}
+	mirror.SetAnomalySink(sink)
+
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	canonical := task.Task{
+		ID:           "task-pet",
+		Status:       task.StatusTodo,
+		AssignedNode: "pet-box",
+		Tags:         []string{"backend", "umbrella-gated"},
+		UpdatedAt:    t0,
+	}
+	if _, _, err := mgr.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+
+	firstDrift := task.Task{
+		ID: "task-pet", Status: task.StatusInProgress, AssignedNode: "pet-box",
+		Tags: []string{"backend"}, UpdatedAt: t0.Add(time.Hour),
+	}
+	stub.tasks = []task.Task{firstDrift}
+	if !mirror.applyFollowerTask("pet-box", firstDrift) {
+		t.Fatal("apply first follower report")
+	}
+	if calls := sink.submitted(); len(calls) != 0 {
+		t.Fatalf("first (clean) repair alerted, want 0 submissions: %+v", calls)
+	}
+
+	// The follower re-reports the same stale Tags shortly after the first
+	// repair — as if whatever originally broke the write-time push for this
+	// task is still broken.
+	secondDrift := task.Task{
+		ID: "task-pet", Status: task.StatusInProgress, AssignedNode: "pet-box",
+		Tags: []string{"backend"}, UpdatedAt: t0.Add(2 * time.Hour),
+	}
+	stub.tasks = []task.Task{secondDrift}
+	if !mirror.applyFollowerTask("pet-box", secondDrift) {
+		t.Fatal("apply second follower report")
+	}
+
+	calls := sink.submitted()
+	if len(calls) != 1 {
+		t.Fatalf("anomaly sink got %d submissions, want 1 (re-drift within window must alert): %+v", len(calls), calls)
+	}
+	if calls[0].Kind != monitor.KindClusterDrift || calls[0].TaskID != "task-pet" {
+		t.Fatalf("submitted anomaly = %+v, want KindClusterDrift for task-pet", calls[0])
 	}
 }
 

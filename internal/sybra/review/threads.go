@@ -46,7 +46,7 @@ func (r *Handler) resolveAddressedCopilotThreads(ctx context.Context, tasks []ta
 
 	for i := range prs {
 		pr := &prs[i]
-		if !blockedOnlyByThreads(*pr) {
+		if !NewMergeGate(*pr).BlockedOnlyByThreads() {
 			continue
 		}
 		taskID := byNumber[pr.Number]
@@ -58,7 +58,7 @@ func (r *Handler) resolveAddressedCopilotThreads(ctx context.Context, tasks []ta
 		}
 		// Don't fight an in-flight fix agent / workflow that may still be
 		// pushing commits or replying on threads.
-		if r.agents.HasRunningAgentForTask(taskID) {
+		if r.hasBlockingAgentForTask(ctx, taskID) {
 			continue
 		}
 		if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(taskID) {
@@ -66,18 +66,6 @@ func (r *Handler) resolveAddressedCopilotThreads(ctx context.Context, tasks []ta
 		}
 		r.resolveCopilotThreadsForPR(taskID, *pr, r.agentLogin(ctx))
 	}
-}
-
-// blockedOnlyByThreads reports whether a PR meets every auto-merge condition
-// except the unresolved-threads check — the precise state in which resolving
-// addressed Copilot threads can unblock a merge.
-func blockedOnlyByThreads(pr github.PullRequest) bool {
-	return !pr.IsDraft &&
-		pr.Mergeable == "MERGEABLE" &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
-		pr.CopilotReviewed &&
-		pr.ReviewDecision != "CHANGES_REQUESTED" &&
-		pr.UnresolvedCount > 0
 }
 
 func (r *Handler) resolveCopilotThreadsForPR(taskID string, pr github.PullRequest, agentLogin string) {

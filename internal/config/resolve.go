@@ -91,6 +91,13 @@ func Resolve(file *FileConfig, env Environment, opts ResolveOptions) (*ResolveRe
 	return &ResolveResult{Config: cfg}, nil
 }
 
+// applyLegacyReviewLoopCompat preserves a pre-schema-v2 config's intent: back
+// when review_until_clean was the only knob, setting it true meant an
+// uncapped review→fix→review loop. That posture is now expressed through the
+// single review-rate-limit knob (github.review_rounds_per_hour) rather than a
+// second allow-unbounded flag, so a legacy config that opted in keeps that
+// behavior by disabling the rate limit instead of losing it silently once the
+// old key is gone.
 func applyLegacyReviewLoopCompat(file *FileConfig, cfg *ResolvedConfig) {
 	if file == nil || cfg == nil {
 		return
@@ -98,7 +105,7 @@ func applyLegacyReviewLoopCompat(file *FileConfig, cfg *ResolvedConfig) {
 	if file.SchemaVersion() >= CurrentSchemaVersion {
 		return
 	}
-	if file.Has("agent", "allow_unbounded_review_rounds") || file.Has("agent", "max_review_rounds") {
+	if file.Has("github", "review_rounds_per_hour") {
 		return
 	}
 	node, ok := file.nodeAt("agent", "review_until_clean")
@@ -109,7 +116,7 @@ func applyLegacyReviewLoopCompat(file *FileConfig, cfg *ResolvedConfig) {
 	if err := node.Decode(&enabled); err != nil || !enabled {
 		return
 	}
-	cfg.Agent.AllowUnboundedReviewRounds = &enabled
+	cfg.GitHub.ReviewRoundsPerHour = -1
 }
 
 func applyEnvironmentOverrides(cfg *ResolvedConfig, env Environment) {

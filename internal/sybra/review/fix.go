@@ -94,51 +94,130 @@ const PRFixResultContract = "\n\nBefore your final response, decide the outcome:
 	"test-name>` line per failing test, so the next agent to pick this up " +
 	"gets exact repro info instead of having to rediscover it."
 
-// readyForCopilotAutoMerge reports whether a pet PR satisfies the Copilot
-// auto-merge policy: mechanically mergeable, CI green (or no checks), GitHub
-// Copilot has submitted a review, no unresolved review threads, and no
-// outstanding change request. Human approval is intentionally NOT required —
-// pet PRs never get one; Copilot's review is one acceptable gate.
-//
-// A SourcedViaREST PR always returns false here — REST fetches leave
-// CopilotReviewed/UnresolvedCount/ReviewDecision zero (thread and review data
-// are GraphQL-only), so this gate can never be honestly satisfied over REST;
-// readyForRESTAutoMerge is the REST-sourced equivalent.
-func readyForCopilotAutoMerge(pr github.PullRequest) bool {
-	return !pr.SourcedViaREST &&
-		!pr.IsDraft &&
-		pr.Mergeable == "MERGEABLE" &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
-		pr.CopilotReviewed &&
-		pr.UnresolvedCount == 0 &&
-		pr.ReviewDecision != "CHANGES_REQUESTED"
+// MergePolicy selects which review signal MergeGate.ReadyForMerge accepts as
+// having satisfied the PR's review cycle.
+type MergePolicy int
+
+const (
+	// MergePolicyCopilot requires GitHub Copilot to have reviewed the PR. It
+	// also doubles as the REST-sourced default policy: REST never populates
+	// CopilotReviewed/UnresolvedCount/ReviewDecision, so every REST-sourced
+	// merge (other than Renovate's bypass) is gated on RESTApproved instead,
+	// regardless of which of these four values is passed.
+	MergePolicyCopilot MergePolicy = iota
+	// MergePolicySybraReviewed requires the owning task to have completed
+	// Sybra's own review stage. GraphQL-sourced only.
+	MergePolicySybraReviewed
+	// MergePolicyOwnBot requires the PR to be authored by Sybra's own bot
+	// identity. GraphQL-sourced only.
+	MergePolicyOwnBot
+	// MergePolicyRenovate waives the review-signal requirement entirely
+	// (Renovate PRs are never reviewed) and merges on green CI + mergeable +
+	// !draft alone.
+	MergePolicyRenovate
+)
+
+// MergeGate is the single owner of "is this PR ready to merge" and "is this
+// PR ready to have native auto-merge armed" — the six near-identical
+// predicates this consolidates (readyForCopilotAutoMerge,
+// readyForSybraReviewedAutoMerge, readyForOwnBotAutoMerge,
+// readyForRESTAutoMerge, restRenovateGreen, readyToArmNativeAutoMerge) each
+// differed only in which source populated the PR (GraphQL vs REST) and which
+// review signal the policy accepts.
+type MergeGate struct {
+	pr github.PullRequest
 }
 
-// readyForSybraReviewedAutoMerge reports whether a pet PR can merge without an
-// external reviewer because the owning task has completed Sybra's review stage.
-// This keeps externally opened or unreviewed PRs parked, but avoids stranding
-// Sybra-authored pet work forever when Copilot does not produce a review.
-func readyForSybraReviewedAutoMerge(t task.Task, pr github.PullRequest) bool {
-	return t.Reviewed &&
-		!pr.SourcedViaREST &&
-		!pr.IsDraft &&
-		pr.Mergeable == "MERGEABLE" &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
-		pr.UnresolvedCount == 0 &&
-		pr.ReviewDecision != "CHANGES_REQUESTED"
+// NewMergeGate builds a MergeGate over a single PR snapshot.
+func NewMergeGate(pr github.PullRequest) MergeGate {
+	return MergeGate{pr: pr}
 }
 
-func readyForOwnBotAutoMerge(pr github.PullRequest) bool {
-	return pr.SelfAuthoredBot &&
-		!pr.SourcedViaREST &&
-		!pr.IsDraft &&
-		pr.Mergeable == "MERGEABLE" &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
-		pr.UnresolvedCount == 0 &&
-		pr.ReviewDecision != "CHANGES_REQUESTED"
+// ciGreen reports CI green-or-absent, shared by every policy.
+func (g MergeGate) ciGreen() bool {
+	return g.pr.CIStatus == "SUCCESS" || g.pr.CIStatus == ""
 }
 
-func autoMergeStateSignature(pr github.PullRequest) string {
+// baseReady is the source-appropriate mechanical-mergeability gate: not
+// draft, and mergeable per whichever fetch populated the PR. A REST-sourced
+// PR requires GitHub's raw mergeable_state to be exactly "clean" (blocked/
+// behind/unstable/unknown do NOT authorize it) and both REST CI legs to have
+// been fetched (an unfetched CI status must never read as green).
+func (g MergeGate) baseReady() bool {
+	if g.pr.IsDraft {
+		return false
+	}
+	if g.pr.SourcedViaREST {
+		return g.pr.RESTMergeableState == "clean" && g.pr.RESTCIFetched
+	}
+	return g.pr.Mergeable == "MERGEABLE"
+}
+
+// threadsClear reports no unresolved review threads and no outstanding
+// change request — the GraphQL-only review-cycle signal REST never
+// populates.
+func (g MergeGate) threadsClear() bool {
+	return g.pr.UnresolvedCount == 0 && g.pr.ReviewDecision != "CHANGES_REQUESTED"
+}
+
+// ReadyForMerge reports whether the PR satisfies policy's merge gate.
+// sybraReviewed carries the owning task's Reviewed field; it is only
+// consulted for MergePolicySybraReviewed.
+func (g MergeGate) ReadyForMerge(policy MergePolicy, sybraReviewed bool) bool {
+	if !g.baseReady() || !g.ciGreen() {
+		return false
+	}
+	if g.pr.SourcedViaREST {
+		if policy == MergePolicyRenovate {
+			return true
+		}
+		return g.pr.RESTApproved
+	}
+	switch policy {
+	case MergePolicyCopilot:
+		return g.pr.CopilotReviewed && g.threadsClear()
+	case MergePolicySybraReviewed:
+		return sybraReviewed && g.threadsClear()
+	case MergePolicyOwnBot:
+		return g.pr.SelfAuthoredBot && g.threadsClear()
+	case MergePolicyRenovate:
+		return true
+	default:
+		return false
+	}
+}
+
+// BlockedOnlyByThreads reports whether the PR meets every Copilot auto-merge
+// condition except the unresolved-threads check — the precise state in which
+// resolving addressed Copilot threads can unblock a merge.
+func (g MergeGate) BlockedOnlyByThreads() bool {
+	if g.pr.IsDraft || g.pr.Mergeable != "MERGEABLE" || !g.ciGreen() {
+		return false
+	}
+	return g.pr.CopilotReviewed && g.pr.ReviewDecision != "CHANGES_REQUESTED" && g.pr.UnresolvedCount > 0
+}
+
+// ReadyToArm reports whether a PR is ready to have GitHub's native
+// auto-merge armed: the same review-cycle gate as
+// ReadyForMerge(MergePolicyCopilot) MINUS the CI-green requirement (native
+// auto-merge itself waits for CI to go green) PLUS excluding a PR whose CI is
+// already FAILURE — native auto-merge won't retry a hard failure, so arming
+// on red CI would just strand it — and PRs already armed or bot-authored by
+// Renovate (its own bypass path already merges without this gate).
+func (g MergeGate) ReadyToArm() bool {
+	if g.pr.IsDraft || g.pr.Mergeable != "MERGEABLE" {
+		return false
+	}
+	if g.pr.CIStatus == "FAILURE" || g.pr.AutoMergeEnabled || g.pr.Author == "renovate[bot]" {
+		return false
+	}
+	return g.pr.CopilotReviewed && g.threadsClear()
+}
+
+// StateSignature fingerprints the PR fields every merge/arm policy reads, so
+// callers can detect "nothing relevant changed" between polls.
+func (g MergeGate) StateSignature() string {
+	pr := g.pr
 	return fmt.Sprintf("%s|%t|%s|%s|%s|%d|%t|%t|%s|%t|%t",
 		pr.UpdatedAt,
 		pr.IsDraft,
@@ -160,53 +239,6 @@ type nativeAutoMergeAttemptResult struct {
 	err       error
 }
 
-// readyToArmNativeAutoMerge reports whether a PR is ready to have GitHub's
-// native auto-merge armed: the same review-cycle gate as
-// readyForCopilotAutoMerge MINUS the CI-green requirement (native auto-merge
-// itself waits for CI to go green) PLUS excluding a PR whose CI is already
-// FAILURE — native auto-merge won't retry a hard failure, so arming on red CI
-// would just strand it — and PRs already armed or bot-authored by Renovate
-// (its own bypass path already merges without this gate).
-func readyToArmNativeAutoMerge(pr github.PullRequest) bool {
-	return !pr.IsDraft &&
-		pr.Mergeable == "MERGEABLE" &&
-		pr.CIStatus != "FAILURE" &&
-		pr.CopilotReviewed &&
-		pr.UnresolvedCount == 0 &&
-		pr.ReviewDecision != "CHANGES_REQUESTED" &&
-		!pr.AutoMergeEnabled &&
-		pr.Author != "renovate[bot]"
-}
-
-// readyForRESTAutoMerge reports whether a REST-sourced PR satisfies the
-// REST auto-merge policy: not draft, GitHub's raw mergeable_state is exactly
-// "clean" (blocked/behind/unstable/unknown do NOT authorize it), both REST CI
-// legs were fetched successfully (an unfetched CI status must never read as
-// green), CI is green or genuinely absent, and RESTApproved — an explicit,
-// current-head approval computed over REST review data. Uses only
-// RESTApproved/RESTMergeableState/RESTCIFetched, never the thread-derived
-// UnresolvedCount/CopilotReviewed which REST never populates.
-func readyForRESTAutoMerge(pr github.PullRequest) bool {
-	return !pr.IsDraft &&
-		pr.RESTMergeableState == "clean" &&
-		pr.RESTCIFetched &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
-		pr.RESTApproved
-}
-
-// restRenovateGreen reports whether a REST-sourced renovate-fix PR is
-// verified green over REST: strictly clean mergeable state and both CI legs
-// fetched successfully and passing. Mirrors the GraphQL renovate-fix bypass
-// (ReadyToMerge already implies green + mergeable + !draft) but re-derives it
-// from REST-only fields since a REST-sourced PR carries none of the
-// GraphQL-only review/thread data the Copilot gate would otherwise check.
-func restRenovateGreen(pr github.PullRequest) bool {
-	return !pr.IsDraft &&
-		pr.RESTMergeableState == "clean" &&
-		pr.RESTCIFetched &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "")
-}
-
 // preflightArmNativeAutoMerge prefers arming GitHub's native auto-merge over
 // Sybra's own squash merge when it's available and the PR is otherwise ready
 // — it's cheaper (REST poll on GitHub's side) than Sybra's GraphQL merge-gate
@@ -219,7 +251,7 @@ func restRenovateGreen(pr github.PullRequest) bool {
 // itself keeps failing (bad credentials, a transient API error) must not be
 // retried every poll tick either (#2450).
 func (r *Handler) preflightArmNativeAutoMerge(ctx context.Context, t task.Task, issue github.PRIssue, backoff *github.AutoMergeBackoff, stateSig string) bool {
-	if !r.nativeAutoMergeEnabled() || !readyToArmNativeAutoMerge(issue.PR) {
+	if !r.nativeAutoMergeEnabled() || !NewMergeGate(issue.PR).ReadyToArm() {
 		return false
 	}
 	if !backoff.ShouldAttempt(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig) {
@@ -265,7 +297,8 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 	}
 
 	backoff := r.mergeBackoff()
-	stateSig := autoMergeStateSignature(issue.PR)
+	gate := NewMergeGate(issue.PR)
+	stateSig := gate.StateSignature()
 
 	if r.preflightArmNativeAutoMerge(ctx, t, issue, backoff, stateSig) {
 		return
@@ -277,10 +310,10 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 	var gateEvidence string
 	if issue.PR.SourcedViaREST {
 		if renovateFix {
-			ready = restRenovateGreen(issue.PR)
+			ready = gate.ReadyForMerge(MergePolicyRenovate, false)
 			gateEvidence = "renovate_green"
 		} else {
-			ready = readyForRESTAutoMerge(issue.PR)
+			ready = gate.ReadyForMerge(MergePolicyCopilot, false)
 			gateEvidence = "approved"
 		}
 	} else {
@@ -296,9 +329,9 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 		// can also proceed after the owning task has completed Sybra's own review
 		// stage, even when Copilot never comments.
 		ready = renovateFix ||
-			readyForOwnBotAutoMerge(issue.PR) ||
-			readyForCopilotAutoMerge(issue.PR) ||
-			readyForSybraReviewedAutoMerge(t, issue.PR)
+			gate.ReadyForMerge(MergePolicyOwnBot, false) ||
+			gate.ReadyForMerge(MergePolicyCopilot, false) ||
+			gate.ReadyForMerge(MergePolicySybraReviewed, t.Reviewed)
 	}
 	if !ready {
 		return
@@ -363,8 +396,8 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 }
 
 // mergeBackoff lazily initializes the handler's auto-merge backoff tracker.
-// Mirrors readyPRCache/prPollState's lazy-init pattern so tests that
-// construct a bare Handler{} literal work without a dedicated constructor.
+// Mirrors prSnapshots's lazy-init pattern so tests that construct a bare
+// Handler{} literal work without a dedicated constructor.
 func (r *Handler) mergeBackoff() *github.AutoMergeBackoff {
 	if r.autoMergeBackoff == nil {
 		r.autoMergeBackoff = github.NewAutoMergeBackoff()

@@ -32,8 +32,8 @@ func TestReadyForOwnBotAutoMerge(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := readyForOwnBotAutoMerge(tc.pr); got != tc.want {
-				t.Errorf("readyForOwnBotAutoMerge = %v, want %v", got, tc.want)
+			if got := NewMergeGate(tc.pr).ReadyForMerge(MergePolicyOwnBot, false); got != tc.want {
+				t.Errorf("ReadyForMerge(OwnBot) = %v, want %v", got, tc.want)
 			}
 		})
 	}

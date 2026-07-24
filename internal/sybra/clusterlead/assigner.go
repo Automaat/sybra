@@ -115,6 +115,46 @@ func (a *Assigner) PushUpdate(ctx context.Context, t task.Task) (pushed bool, er
 	return a.route(ctx, t, true)
 }
 
+// PushFieldUpdate forwards a leader-side Tags/DependsOn edit to a task's home
+// follower without touching any other field — the write-time counterpart to
+// mirror.Mirror's detect-and-repair backstop, called on every leader-side
+// Tags/DependsOn edit (see TaskService.UpdateTask) so that backstop mostly
+// has nothing left to do.
+//
+// Unlike PushUpdate/Route, which push the leader's whole task snapshot and
+// are documented safe only for a task that hasn't started executing anywhere
+// (AssignTask writes verbatim, and the leader's snapshot can already be
+// stale), this re-fetches the follower's own current live state via GetTask
+// and patches only Tags/DependsOn onto it before pushing back — identical to
+// mirror.Mirror's repairDrift repair pattern. That makes it safe to call
+// regardless of the task's execution state: it can never roll back the
+// follower's own Status/Workflow/AgentRuns progress.
+//
+// Returns pushed=false, err=nil when the task doesn't home on a follower, or
+// isn't assigned to one yet — Route/Tick's own first push already carries
+// the task's current Tags/DependsOn, so there is nothing to forward.
+func (a *Assigner) PushFieldUpdate(ctx context.Context, t task.Task) (pushed bool, err error) {
+	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
+	if home.Local || t.AssignedNode != home.Name {
+		return false, nil
+	}
+	client, ok := a.roster.Client(home.Name)
+	if !ok || client == nil {
+		return false, fmt.Errorf("clusterlead: no follower client for node %q", home.Name)
+	}
+	live, err := client.GetTask(ctx, t.ID)
+	if err != nil {
+		return false, fmt.Errorf("clusterlead: refetch %s from %s: %w", t.ID, home.Name, err)
+	}
+	live.Tags = t.Tags
+	live.DependsOn = t.DependsOn
+	live.AssignedNode = home.Name
+	if err := client.AssignTask(ctx, live); err != nil {
+		return false, fmt.Errorf("clusterlead: push field update for %s to %s: %w", t.ID, home.Name, err)
+	}
+	return true, nil
+}
+
 func (a *Assigner) route(ctx context.Context, t task.Task, force bool) (routed bool, err error) {
 	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
 	if home.Local {
