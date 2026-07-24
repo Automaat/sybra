@@ -1069,7 +1069,7 @@ func requestCopilotReviewCtxWith(ctx context.Context, e execer, repo string, num
 	}
 	prID := idParsed.Data.Repository.PullRequest.ID
 	if prID == "" {
-		return fmt.Errorf("graphql pr id %s#%d: empty node id", repo, number)
+		return fmt.Errorf("graphql pr id %s#%d: pull request not found (no top-level error, but repository.pullRequest resolved empty — check the repo/number and app installation access)", repo, number)
 	}
 
 	mutResp, err := runGHAPICtxWith(ctx, e, "", "graphql",
