@@ -410,6 +410,14 @@ export class Task {
     "reviewedHeadAttempts"?: number;
 
     /**
+     * ReconcileFailures counts consecutive non-transient review-phase reconcile
+     * failures (#2199); recordReconcileFailure escalates to human-required once
+     * it reaches reconcileFailureLimit. Durable so a process restart never
+     * hands a permanently-failing task a fresh free budget.
+     */
+    "reconcileFailures"?: number;
+
+    /**
      * PRPhase tracks where an outbound own-PR task (status in-review/ready-review,
      * not tag `review`) sits in its lifecycle: draft → building → fixing →
      * changes-requested → awaiting-approval → approved. Computed by the PR poller;
@@ -624,10 +632,10 @@ export class Task {
         const $$createField7_0 = $$createType0;
         const $$createField14_0 = $$createType1;
         const $$createField19_0 = $$createType0;
-        const $$createField39_0 = $$createType3;
-        const $$createField40_0 = $$createType5;
-        const $$createField41_0 = $$createType7;
-        const $$createField57_0 = $$createType8;
+        const $$createField40_0 = $$createType3;
+        const $$createField41_0 = $$createType5;
+        const $$createField42_0 = $$createType7;
+        const $$createField58_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -642,16 +650,16 @@ export class Task {
             $$parsedSource["dependsOn"] = $$createField19_0($$parsedSource["dependsOn"]);
         }
         if ("attachments" in $$parsedSource) {
-            $$parsedSource["attachments"] = $$createField39_0($$parsedSource["attachments"]);
+            $$parsedSource["attachments"] = $$createField40_0($$parsedSource["attachments"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField40_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField41_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField41_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField42_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField57_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField58_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -705,6 +713,7 @@ export class Update {
     "ReviewPhase": string | null;
     "ReviewedHeadSHA": string | null;
     "ReviewedHeadAttempts": number | null;
+    "ReconcileFailures": number | null;
     "PRPhase": string | null;
     "Priority": Priority | null;
     "DueDate": string | null;
@@ -802,6 +811,9 @@ export class Update {
         if (!("ReviewedHeadAttempts" in $$source)) {
             this["ReviewedHeadAttempts"] = null;
         }
+        if (!("ReconcileFailures" in $$source)) {
+            this["ReconcileFailures"] = null;
+        }
         if (!("PRPhase" in $$source)) {
             this["PRPhase"] = null;
         }
@@ -870,8 +882,8 @@ export class Update {
         const $$createField4_0 = $$createType9;
         const $$createField7_0 = $$createType10;
         const $$createField11_0 = $$createType10;
-        const $$createField28_0 = $$createType11;
-        const $$createField43_0 = $$createType12;
+        const $$createField29_0 = $$createType11;
+        const $$createField44_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Blocker" in $$parsedSource) {
             $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
@@ -883,10 +895,10 @@ export class Update {
             $$parsedSource["Tags"] = $$createField11_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField28_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField29_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField43_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField44_0($$parsedSource["Attachments"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }

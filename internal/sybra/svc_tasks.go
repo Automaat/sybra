@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -45,6 +46,11 @@ type TaskService struct {
 	audit          *audit.Logger
 	cfg            *config.Config
 	abTesting      func() abtest.Config
+	// assigner forwards a Tags/DependsOn edit to a follower-homed task's home
+	// node at write time (see UpdateTask) — the write-time counterpart to
+	// clusterlead.Mirror's detect-and-repair drift backstop. nil on a
+	// non-leader node or in tests that don't exercise clustering.
+	assigner *clusterlead.Assigner
 	// ctx is the app's root context (wireTaskService sets it from a.ctx), used
 	// only where a Wails-bound method has no request-scoped context of its own
 	// to thread through — see RecoverLostAgent. nil in tests that construct
@@ -867,6 +873,13 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	if err != nil {
 		return t, err
 	}
+	s.wg.Go(func() {
+		// UpdateTask is a Wails-bound method the frontend awaits synchronously;
+		// the follower push carries a bounded remote round trip, so run it
+		// detached to avoid blocking the IPC caller. It's best-effort anyway —
+		// the Mirror drift backstop catches a missed push on the next tick.
+		s.pushFieldEditToFollower(id, updates, t)
+	})
 	if task.IsTerminalStatus(t.Status) {
 		s.wg.Go(func() {
 			// context.Background(): UpdateTask is a Wails-bound method; this
@@ -910,6 +923,35 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 
 	return t, nil
+}
+
+// fieldPushTimeout bounds pushFieldEditToFollower's remote round trip so an
+// unreachable follower can't leave the detached push goroutine hanging.
+const fieldPushTimeout = 5 * time.Second
+
+// pushFieldEditToFollower forwards a Tags/DependsOn edit on an already
+// follower-assigned task to its home node at write time
+// (clusterlead.Assigner.PushFieldUpdate) — the write-time counterpart to
+// clusterlead.Mirror's detect-and-repair drift backstop (Merge never carries
+// either field, so without this a leader-side edit — e.g. a manual
+// `sybra-cli update --tags` — would otherwise only reach the follower via
+// that backstop, one reconcile interval later and after filing a drift
+// alert). Best-effort: a failed push here just leaves the backstop to catch
+// it on the next tick, same as any other transient cluster hiccup.
+func (s *TaskService) pushFieldEditToFollower(id string, updates map[string]any, t task.Task) {
+	if s.assigner == nil {
+		return
+	}
+	_, tagsEdited := updates["tags"]
+	_, depsEdited := updates["depends_on"]
+	if !tagsEdited && !depsEdited {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), fieldPushTimeout)
+	defer cancel()
+	if _, err := s.assigner.PushFieldUpdate(ctx, t); err != nil {
+		s.logger.Warn("task.update.field_push_failed", "task_id", id, "err", err)
+	}
 }
 
 // redispatchStatusChanged dispatches task.status_changed for the given task
