@@ -20,9 +20,21 @@ import (
 // stdout/stderr is streamed to a per-task log file so agents (and operators)
 // can inspect bootstrap failures without digging through the global log.
 //
+// Before running anything, it compares a content hash of commands + the
+// worktree's lockfiles (see setupCacheKey) against the hash recorded by the
+// last setup run that completed successfully in this worktree
+// (setupCacheMarkerName). A match skips the run entirely — restart churn and
+// fix/review/conflict worktree reuse otherwise re-run the full
+// setup-command list on every reuse regardless of whether anything
+// toolchain-relevant changed (issue #2505). The skip/run decision and the
+// key involved are always recorded in the setup log so a stale-cache
+// suspicion is diagnosable from that one file.
+//
 // Returns an error on the first non-zero exit or on timeout. Callers must
 // treat setup failure as blocking: an agent started on a worktree with a
-// broken toolchain will burn tokens hitting missing-tool errors.
+// broken toolchain will burn tokens hitting missing-tool errors. A failed
+// run never records a cache key, so the next attempt always re-runs
+// regardless of whether commands/lockfiles changed in between.
 func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, commands []string) error {
 	if len(commands) == 0 {
 		return nil
@@ -53,14 +65,42 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 		_, _ = logFile.WriteString(s)
 	}
 
+	cacheKey := setupCacheKey(wtPath, commands)
+	if prev, ok := readSetupCacheKey(wtPath); ok && prev == cacheKey {
+		writeLog(fmt.Sprintf(
+			"=== worktree setup: task=%s path=%s skipped_at=%s reason=cache-hit key=%s commands=%d ===\n",
+			taskID, wtPath, time.Now().UTC().Format(time.RFC3339), cacheKey, len(commands),
+		))
+		m.logger.Info("worktree.setup-skip",
+			"task_id", taskID, "path", wtPath, "reason", "cache-hit", "key", cacheKey,
+			"commands", len(commands), "log", logPath)
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(parent, m.setupTimeout)
 	defer cancel()
 
 	writeLog(fmt.Sprintf(
-		"=== worktree setup: task=%s path=%s started_at=%s timeout=%s commands=%d ===\n",
-		taskID, wtPath, time.Now().UTC().Format(time.RFC3339), m.setupTimeout, len(commands),
+		"=== worktree setup: task=%s path=%s started_at=%s timeout=%s commands=%d key=%s ===\n",
+		taskID, wtPath, time.Now().UTC().Format(time.RFC3339), m.setupTimeout, len(commands), cacheKey,
 	))
 
+	if err := m.runSetupCommands(ctx, taskID, wtPath, logPath, logFile, writeLog, commands); err != nil {
+		return err
+	}
+
+	writeLog(fmt.Sprintf("\n=== worktree setup: task=%s completed_at=%s ===\n",
+		taskID, time.Now().UTC().Format(time.RFC3339)))
+	m.writeSetupCacheKey(ctx, taskID, wtPath, cacheKey)
+	m.logger.Info("worktree.setup-complete",
+		"task_id", taskID, "path", wtPath, "commands", len(commands), "log", logPath)
+	return nil
+}
+
+// runSetupCommands runs the mise-trust preflight then each setup command in
+// order inside wtPath, streaming output to logFile/writeLog. Split out of
+// runSetup to keep the cache-check/bookkeeping wrapper around it readable.
+func (m *Manager) runSetupCommands(ctx context.Context, taskID, wtPath, logPath string, logFile *os.File, writeLog func(string), commands []string) error {
 	cmdEnv, err := setupCommandEnv(taskID)
 	if err != nil {
 		return fmt.Errorf("setup env: %w", err)
@@ -110,11 +150,6 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 			"task_id", taskID, "path", wtPath, "cmd", raw,
 			"index", i+1, "total", len(commands), "duration", dur)
 	}
-
-	writeLog(fmt.Sprintf("\n=== worktree setup: task=%s completed_at=%s ===\n",
-		taskID, time.Now().UTC().Format(time.RFC3339)))
-	m.logger.Info("worktree.setup-complete",
-		"task_id", taskID, "path", wtPath, "commands", len(commands), "log", logPath)
 	return nil
 }
 
