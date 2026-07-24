@@ -181,8 +181,9 @@ sybra-cli create --title "..." --project "owner/repo"
 
 **Headless** (`claude -p`):
 ```bash
-claude -p "prompt" --output-format stream-json [--resume <id>] [--allowedTools "..."]
+claude -p --output-format stream-json [--resume <id>] [--allowedTools "..."]
 ```
+- The prompt is piped over stdin (plain text, default `--input-format`), not a positional argument — argv is world-readable via `ps aux`/`/proc/PID/cmdline`, and a headless agent's own unscoped `pkill -f <pattern>` could otherwise self-match its own prompt text and kill itself. `runHeadlessAttemptPipe`/`startHeadlessSurviveProcess` write it and close stdin immediately (no steering).
 - Go spawns process, reads stdout NDJSON line-by-line
 - StreamEvent types: `init`, `assistant`, `tool_use`, `tool_result`, `result`
 - Permission flags are a 4-case precedence (`claudePermissionArgs`, `internal/agent/provider_claude.go:117-135`):
