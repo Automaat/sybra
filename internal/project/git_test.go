@@ -1953,6 +1953,41 @@ func TestPushUpstream_PushEnvNilInheritsAmbient(t *testing.T) {
 	}
 }
 
+// TestFetchAndCloneUseFetchEnv proves CloneBare and FetchOrigin (via runBare)
+// derive their subprocess environment from fetchEnv() on every call, rather
+// than depending on this process's ambient env (see #2494's "derive
+// everywhere from cachedAppToken()" — fetchEnv() is in turn github.GHEnv(),
+// which reads cachedAppToken()). A cheap call-count spy is used instead of
+// observing subprocess env directly: unlike git push, git fetch/clone have no
+// client-side hook to inspect the subprocess's env from within the test.
+func TestFetchAndCloneUseFetchEnv(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+
+	orig := fetchEnv
+	var calls int
+	fetchEnv = func() []string {
+		calls++
+		return orig() // delegate so the real clone/fetch still succeeds (nil == ambient)
+	}
+	t.Cleanup(func() { fetchEnv = orig })
+
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("CloneBare: %v", err)
+	}
+	if calls == 0 {
+		t.Fatal("CloneBare did not derive its subprocess env from fetchEnv()")
+	}
+
+	calls = 0
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("FetchOrigin: %v", err)
+	}
+	if calls == 0 {
+		t.Fatal("FetchOrigin did not derive its subprocess env from fetchEnv()")
+	}
+}
+
 func TestDeleteUpstreamBranchSkipsPrePushHook(t *testing.T) {
 	t.Parallel()
 	bare, wtPath := initWorktree(t)
