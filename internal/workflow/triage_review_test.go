@@ -974,11 +974,11 @@ func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
 	}
 }
 
-func TestBuiltinSimpleTask_ReviewLoopBlocksRoundLimitBeforeTesting(t *testing.T) {
+func TestBuiltinSimpleTask_ReviewLoopBlocksBudgetExceededBeforeTesting(t *testing.T) {
 	t.Parallel()
 
-	if !KnownTriggerFields["task.review_round_limit_reached"] {
-		t.Fatal("task.review_round_limit_reached missing from KnownTriggerFields")
+	if !KnownTriggerFields["task.review_budget_exceeded"] {
+		t.Fatal("task.review_budget_exceeded missing from KnownTriggerFields")
 	}
 
 	defs, err := BuiltinDefinitions()
@@ -1007,26 +1007,26 @@ func TestBuiltinSimpleTask_ReviewLoopBlocksRoundLimitBeforeTesting(t *testing.T)
 	}
 
 	got, err := ResolveTransition(tamper.Next, map[string]string{
-		"task.status":                     "testing",
-		"config.review_until_clean":       "true",
-		"task.review_round_limit_reached": "true",
+		"task.status":                 "testing",
+		"config.review_until_clean":   "true",
+		"task.review_budget_exceeded": "true",
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
 	}
-	if got != "review_round_limit_hit" {
-		t.Fatalf("limit-reached goto = %q, want review_round_limit_hit", got)
+	if got != "review_budget_exhausted" {
+		t.Fatalf("budget-exceeded goto = %q, want review_budget_exhausted", got)
 	}
 
-	limit := simple.StepByID("review_round_limit_hit")
+	limit := simple.StepByID("review_budget_exhausted")
 	if limit == nil {
-		t.Fatal("review_round_limit_hit step not found")
+		t.Fatal("review_budget_exhausted step not found")
 	}
 	if limit.Type != StepSetStatus || limit.Config.Status != "blocked" {
-		t.Fatalf("review_round_limit_hit = type %q status %q, want set_status blocked", limit.Type, limit.Config.Status)
+		t.Fatalf("review_budget_exhausted = type %q status %q, want set_status blocked", limit.Type, limit.Config.Status)
 	}
 	if !strings.Contains(limit.Config.StatusReason, "not eligible for testing or PR creation") {
-		t.Fatalf("review_round_limit_hit status_reason = %q, want no-testing-or-PR guidance", limit.Config.StatusReason)
+		t.Fatalf("review_budget_exhausted status_reason = %q, want no-testing-or-PR guidance", limit.Config.StatusReason)
 	}
 
 	var testingTask, prTask *Definition
@@ -1145,18 +1145,22 @@ func TestEngineReviewUntilCleanDefaultsToLooping(t *testing.T) {
 	}
 }
 
-func TestEngineReviewRoundLimitReachesTransition(t *testing.T) {
+// TestEngineReviewBudgetExceededTransition locks in that simple-task-review's
+// detect_tampering condition is bounded by the same rolling-hour
+// reviewbudget.Budget the inbound PR-review dispatcher uses (#2499) — not a
+// separate per-workflow-execution round counter — so AgentRuns are stamped
+// relative to time.Now(), not a fixed Workflow.StartedAt.
+func TestEngineReviewBudgetExceededTransition(t *testing.T) {
 	t.Parallel()
 
-	started := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
 	def := &Definition{
-		ID: "test-review-limit",
+		ID: "test-review-budget",
 		Steps: []Step{
 			{
 				ID:   "gate",
 				Type: StepCondition,
 				Next: []Transition{
-					{When: &Condition{Field: "task.review_round_limit_reached", Operator: "equals", Value: "true"}, GoTo: "park"},
+					{When: &Condition{Field: "task.review_budget_exceeded", Operator: "equals", Value: "true"}, GoTo: "park"},
 					{GoTo: "loop"},
 				},
 			},
@@ -1169,17 +1173,15 @@ func TestEngineReviewRoundLimitReachesTransition(t *testing.T) {
 	mt.tasks["t1"] = &TaskInfo{ID: "t1", Status: "testing"}
 	e := &Engine{logger: slog.New(slog.DiscardHandler), tasks: mt}
 	e.SetReviewUntilClean(true)
-	e.SetMaxReviewRounds(2)
+	e.SetReviewRoundsPerHour(2)
 
+	now := time.Now()
 	task := TaskInfo{
 		ID:     "t1",
 		Status: "testing",
-		Workflow: &Execution{
-			StartedAt: started,
-		},
 		AgentRuns: []AgentRunInfo{
-			{Role: "review", StartedAt: started.Add(time.Minute)},
-			{Role: "review", StartedAt: started.Add(2 * time.Minute)},
+			{Role: "review", StartedAt: now.Add(-50 * time.Minute)},
+			{Role: "review", StartedAt: now.Add(-10 * time.Minute)},
 		},
 	}
 	next, _, err := e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, task)

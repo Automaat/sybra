@@ -1211,6 +1211,9 @@ func applyReviewFields(t *Task, u Update) {
 	if u.ReviewedHeadAttempts != nil {
 		t.ReviewedHeadAttempts = *u.ReviewedHeadAttempts
 	}
+	if u.ReconcileFailures != nil {
+		t.ReconcileFailures = *u.ReconcileFailures
+	}
 	if u.PRPhase != nil {
 		t.PRPhase = *u.PRPhase
 	}

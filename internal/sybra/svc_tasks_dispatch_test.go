@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/reviewbudget"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -1083,12 +1084,12 @@ func TestReviewCoversHead(t *testing.T) {
 		{"unknown head fails closed", "abc", 0, "", true},
 		{"unknown head with no prior review fails closed", "", 0, "", true},
 	}
+	budget := reviewbudget.Budget{PerHead: maxReviewAttemptsPerHead}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tk := task.Task{ReviewedHeadSHA: tt.reviewed, ReviewedHeadAttempts: tt.attempts}
-			if got := reviewCoversHead(tk, tt.head); got != tt.want {
-				t.Errorf("reviewCoversHead(sha=%q attempts=%d, head=%q) = %v, want %v",
+			if got := budget.HeadCovered(tt.reviewed, tt.attempts, tt.head); got != tt.want {
+				t.Errorf("HeadCovered(sha=%q attempts=%d, head=%q) = %v, want %v",
 					tt.reviewed, tt.attempts, tt.head, got, tt.want)
 			}
 		})
@@ -1108,12 +1109,12 @@ func TestNextReviewAttempt(t *testing.T) {
 		{"retry on the same head", "abc", 1, "abc", 2},
 		{"a new push restarts the budget", "abc", 9, "def", 1},
 	}
+	budget := reviewbudget.Budget{PerHead: maxReviewAttemptsPerHead}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tk := task.Task{ReviewedHeadSHA: tt.reviewed, ReviewedHeadAttempts: tt.attempts}
-			if got := nextReviewAttempt(tk, tt.head); got != tt.want {
-				t.Errorf("nextReviewAttempt = %d, want %d", got, tt.want)
+			if got := budget.NextAttempt(tt.reviewed, tt.attempts, tt.head); got != tt.want {
+				t.Errorf("NextAttempt = %d, want %d", got, tt.want)
 			}
 		})
 	}
@@ -1262,9 +1263,10 @@ func TestReviewRateLimitExceeded(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := reviewRateLimitExceeded(task.Task{AgentRuns: tt.runs}, now, tt.limit)
+			budget := reviewbudget.Budget{PerHour: tt.limit}
+			got := budget.HourlyExceeded(taskReviewRuns(task.Task{AgentRuns: tt.runs}), now)
 			if got != tt.want {
-				t.Errorf("reviewRateLimitExceeded(%d runs, limit=%d) = %v, want %v",
+				t.Errorf("HourlyExceeded(%d runs, limit=%d) = %v, want %v",
 					len(tt.runs), tt.limit, got, tt.want)
 			}
 		})
@@ -1385,9 +1387,9 @@ func TestDispatchInboundReview_ParkedTaskIsNotReParked(t *testing.T) {
 }
 
 // Every other dispatch test runs with a nil cfg, which takes the one branch of
-// reviewRoundsPerHourLimit that never executes in production (App always sets
-// cfg). Without this, a resolver that ignores config entirely — or that reads
-// an omitted key as 0 and disables the cap fleet-wide — passes the whole suite.
+// reviewBudget that never executes in production (App always sets cfg).
+// Without this, a resolver that ignores config entirely — or that reads an
+// omitted key as 0 and disables the cap fleet-wide — passes the whole suite.
 func TestDispatchInboundReview_RateLimitReadsRealConfig(t *testing.T) {
 	launcher := &fakeAgentLauncher{}
 	svc, a := setupDispatchTestService(t, launcher)
