@@ -1347,22 +1347,6 @@ func lastHeadlessResultEvent(events []StreamEvent) (found, isError bool) {
 	return true, resultSubtypeIsError(last.Subtype) || last.ErrorType != "" || last.ErrorStatus != 0
 }
 
-// lastConvoResult reports whether a terminal result event was observed in
-// the conversational buffer and whether that result was an error, scanning
-// newest-first. Used by reattach completion to tell a clean finish from an
-// error completion from a process that vanished mid-turn.
-func (a *Agent) lastConvoResult() (found, isError bool) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	for i := range slices.Backward(a.convoBuffer) {
-		if a.convoBuffer[i].Type == "result" {
-			e := a.convoBuffer[i]
-			return true, resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0
-		}
-	}
-	return false, false
-}
-
 // CompletedSuccessfully reports whether the headless agent's stream buffer
 // contains a non-error terminal result. The watchdog uses it to skip
 // inspecting (and never escalate) an agent that has already produced its

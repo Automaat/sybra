@@ -180,6 +180,9 @@ func (s *PlanningService) sendMessage(id, message string, role agent.Role) error
 	if ag == nil {
 		return fmt.Errorf("no live %s agent for task %s", role, id)
 	}
+	if !ag.View().CanSteer {
+		return fmt.Errorf("no steerable %s agent for task %s", role, id)
+	}
 	return s.agents.SendPromptToAgent(ag.ID, combined)
 }
 
