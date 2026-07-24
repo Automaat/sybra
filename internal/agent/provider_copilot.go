@@ -83,20 +83,6 @@ func (copilotProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 	return copilotEventToStreamEvent(ce), nil
 }
 
-func (copilotProvider) UsesPerTurnConvo() bool { return true }
-
-func (copilotProvider) BuildPerTurnConvoInvocation(a *Agent, _ RunConfig, prompt string) perTurnConvoInvocation {
-	return perTurnConvoInvocation{bin: "copilot", args: buildCopilotConvoArgs(a, prompt)}
-}
-
-func (copilotProvider) ParseConvoLine(line []byte) (ConvoEvent, error) {
-	ce, err := ParseCopilotLine(line)
-	if err != nil {
-		return ConvoEvent{}, err
-	}
-	return copilotEventToConvoEvent(ce), nil
-}
-
 func (copilotProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {
 	return providerpkg.ClassifyCopilotError(sample)
 }

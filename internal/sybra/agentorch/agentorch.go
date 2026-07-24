@@ -36,7 +36,18 @@ import (
 // ResolveExecution derives the effective mode, directory, permission mode, and
 // whether project worktree setup should be skipped. Task mode is explicit; task
 // type does not affect execution.
+//
+// "interactive" is coerced to "headless": it is no longer a dispatchable
+// agent.RunConfig.Mode, but task.AgentModeInteractive is still a valid,
+// load-only value on old task files (see task.validAgentModes), and
+// simple-task-implement's `implement` step templates its mode straight off
+// {{.Task.AgentMode}}. Without this, a legacy interactive task would dispatch
+// RunConfig{Mode: "interactive"} and fail outright instead of running like
+// every other task.
 func ResolveExecution(t task.Task, hintMode, researchMachineDir string, cfg *config.Config) (mode, dir string, requirePerm, skipWorktree bool) {
+	if hintMode == "interactive" {
+		hintMode = "headless"
+	}
 	return hintMode, "", ResolvePermission(t, cfg), false
 }
 
@@ -615,15 +626,18 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
-	ignoreConcurrencyLimit := effMode == "interactive"
-	if !ignoreConcurrencyLimit && o.pressureGate != nil {
+	// effMode is always headless (interactive is coerced away in
+	// ResolveExecution), so implementation dispatches never bypass the
+	// concurrency/pressure gate — legacy interactive tasks are treated as
+	// ordinary headless runs.
+	if o.pressureGate != nil {
 		if admit, reason := o.pressureGate.Admit(); !admit {
 			o.LogAudit(audit.EventAgentDeferredPressure, taskID, "", map[string]any{"reason": reason})
 			return nil, "", fmt.Errorf("%w: %s", workflow.ErrResourcePressure, reason)
 		}
 	}
 
-	reservation, ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts)
+	reservation, ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, effMode, prompt, includeTaskDescription, skipWT, opts)
 	if handled {
 		if ag != nil {
 			return ag, baselineRef, nil
@@ -667,14 +681,13 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 // capacity-race / provider-gate handling startAgent used inline before this
 // was split out to satisfy funlen.
 func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions, reservation *agent.CapacityReservation) (*agent.Agent, string, error) {
-	ignoreConcurrencyLimit := effMode == "interactive"
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	o.logSandboxEscapeHatch(taskID, t)
 	runCfg := o.implementationRunConfig(implementationRunParams{
 		taskID: taskID, t: t, effMode: effMode, prompt: prompt, fullPrompt: fullPrompt, dir: dir,
 		assignment: assignment, model: model, requirePerm: requirePerm, posture: posture,
-		oneShot: oneShot, ignoreConcurrencyLimit: ignoreConcurrencyLimit,
+		oneShot:         oneShot,
 		resumeSessionID: resumeSessionID, extraEnv: extraEnv, opts: opts,
 	})
 	var (
@@ -688,7 +701,7 @@ func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTask
 	}
 	if err != nil {
 		o.handleProviderGateStartError(taskID, err)
-		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts); handled {
+		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, opts); handled {
 			if ag != nil {
 				return ag, baselineRef, nil
 			}
@@ -708,21 +721,20 @@ func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTask
 // implementation-role dispatch. Kept as one struct rather than a long
 // positional parameter list — mirrors the shape of the RunConfig it feeds.
 type implementationRunParams struct {
-	taskID                 string
-	t                      task.Task
-	effMode                string
-	prompt                 string
-	fullPrompt             string
-	dir                    string
-	assignment             workflow.AgentAssignment
-	model                  string
-	requirePerm            bool
-	posture                string
-	oneShot                bool
-	ignoreConcurrencyLimit bool
-	resumeSessionID        string
-	extraEnv               []string
-	opts                   startOptions
+	taskID          string
+	t               task.Task
+	effMode         string
+	prompt          string
+	fullPrompt      string
+	dir             string
+	assignment      workflow.AgentAssignment
+	model           string
+	requirePerm     bool
+	posture         string
+	oneShot         bool
+	resumeSessionID string
+	extraEnv        []string
+	opts            startOptions
 }
 
 func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.RunConfig {
@@ -747,7 +759,6 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 		RequirePermissions:      p.requirePerm,
 		HeadlessPermissionMode:  p.posture,
 		OneShot:                 p.oneShot,
-		IgnoreConcurrencyLimit:  p.ignoreConcurrencyLimit,
 		ResumeSessionID:         p.resumeSessionID,
 		ExtraEnv:                p.extraEnv,
 		MaxTurns:                p.t.MaxTurns,
@@ -772,14 +783,11 @@ func requestedWorkflowSkill(prompt string) string {
 	return names[0]
 }
 
-func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.CapacityReservation, *agent.Agent, string, error, bool) {
+func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT bool, opts startOptions) (*agent.CapacityReservation, *agent.Agent, string, error, bool) {
 	// Admission gate: workflow implementation dispatches park their token in
 	// the workflow-owned queue, while saturated manual headless starts persist
 	// their replay intent in the manual queue and return a synthetic queued
-	// agent. Interactive/chat starts bypass the cap entirely.
-	if ignoreConcurrencyLimit {
-		return nil, nil, "", nil, false
-	}
+	// agent.
 	// SLO throttle: only ever narrows opts.admissionGate dispatch (workflow
 	// implementation, StartAgentWithAssignment) — the one path that expands
 	// autonomous concurrency. StartAgent's manual/recovery entry point
@@ -861,7 +869,7 @@ func effectiveMaxConcurrent(configured int, throttle, budgetExhausted bool) int 
 	return max(configured/2, 1)
 }
 
-func (o *Orchestrator) handleCapacityRace(runErr error, t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.Agent, string, error, bool) {
+func (o *Orchestrator) handleCapacityRace(runErr error, t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT bool, opts startOptions) (*agent.Agent, string, error, bool) {
 	// Queue-nil degraded mode still relies on registerRunningAgent's final cap
 	// check, so a concurrent dispatch can steal the last slot after startAgent's
 	// earlier preflight. Re-enqueue the same way as the normal saturation path
@@ -869,7 +877,7 @@ func (o *Orchestrator) handleCapacityRace(runErr error, t task.Task, taskID, mod
 	if o.queue == nil || !errors.Is(runErr, agent.ErrMaxConcurrentReached) {
 		return nil, "", nil, false
 	}
-	_, ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, mode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts)
+	_, ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, mode, prompt, includeTaskDescription, skipWT, opts)
 	return ag, baselineRef, err, handled
 }
 

@@ -7,6 +7,50 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 )
 
+// claudeEventToConvoEvent converts a shared ClaudeEvent into a ConvoEvent for
+// conversational mode. Tool result content is truncated to 2000 chars.
+func claudeEventToConvoEvent(e ClaudeEvent) ConvoEvent {
+	ev := ConvoEvent{
+		Type:      e.Type,
+		Subtype:   e.Subtype,
+		SessionID: e.SessionID,
+		Timestamp: time.Now().UTC(),
+		Raw:       e.Raw,
+	}
+	switch e.Type {
+	case "system":
+		ev.BackgroundTaskIDs = e.BackgroundTaskIDs
+	case "assistant":
+		if e.Message != nil {
+			ev.Text = e.Message.Text
+			ev.ToolUses = e.Message.ToolUses
+		}
+	case "user":
+		if e.Message != nil {
+			results := make([]ToolResultBlock, len(e.Message.ToolResults))
+			copy(results, e.Message.ToolResults)
+			for i := range results {
+				if len(results[i].Content) > 2000 {
+					results[i].Content = results[i].Content[:2000] + "..."
+				}
+			}
+			ev.ToolResults = results
+		}
+	case "result":
+		if e.Result != nil {
+			ev.Text = e.Result.Text
+			ev.SessionID = e.Result.SessionID
+			ev.CostUSD = e.Result.CostUSD
+			ev.InputTokens = e.Result.InputTokens
+			ev.OutputTokens = e.Result.OutputTokens
+			ev.CacheCreationInputTokens = e.Result.CacheCreationInputTokens
+			ev.CacheReadInputTokens = e.Result.CacheReadInputTokens
+			ev.ReasoningTokens = e.Result.ReasoningTokens
+		}
+	}
+	return ev
+}
+
 // ConvoEvent is a rich event for conversational mode, preserving full tool
 // call structure for the chat UI.
 type ConvoEvent struct {

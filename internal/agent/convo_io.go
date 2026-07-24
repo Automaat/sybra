@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
@@ -23,11 +24,6 @@ type convoIO struct {
 	// mid-flight. Drained after each "result" event so the next turn fires
 	// without waiting on the user. Guarded by Agent.mu.
 	pendingPrompts []string
-
-	// promptCh delivers follow-up prompts to Codex conversational agents. Each
-	// turn spawns a new codex exec process; promptCh signals the next prompt
-	// without a stdin pipe. Guarded by Agent.mu.
-	promptCh chan string
 }
 
 func (c *convoIO) installStdinPipe(pipe io.WriteCloser) error {
@@ -79,4 +75,31 @@ func (c *convoIO) closeStdinPipe() {
 
 func (c *convoIO) hasStdinPipe() bool {
 	return c.hasPipe.Load()
+}
+
+// encodeUserMessage renders a user message as a newline-terminated
+// stream-json line for claude's stdin.
+func encodeUserMessage(text string) ([]byte, error) {
+	msg := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role":    "user",
+			"content": text,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal message: %w", err)
+	}
+	return append(data, '\n'), nil
+}
+
+// writeUserMessage writes a user message to the agent's stdin in stream-json format.
+func (m *Manager) writeUserMessage(a *Agent, text string) error {
+	data, err := encodeUserMessage(text)
+	if err != nil {
+		return err
+	}
+
+	return a.convo.writeStdin(data)
 }

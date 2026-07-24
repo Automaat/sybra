@@ -258,12 +258,10 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// retry budget. The agent spawned just below becomes the only tracked one.
 	e.clearAgentStepsForTask(taskID)
 
-	// Interactive agents that aren't meant to persist across turns (no
-	// reuse_agent, no wait_for_status) must signal completion via process
-	// exit. OneShot tells the runner to close stdin after the first result
-	// event so claude exits and onComplete fires, unblocking the next step
-	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
-	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
+	// mode is coerced to headless in resolveRunAgentMode, so no run_agent step
+	// dispatches an interactive one-shot anymore — a steerable headless run
+	// finalizes on its first completed turn on its own (drainOrCloseHeadlessSteer).
+	oneShot := false
 
 	// The step-starting marker below brackets the (potentially multi-second,
 	// worktree-prep-bound) StartAgent call, so a stale/untracked agent
@@ -324,7 +322,12 @@ func resolveRunAgentMode(mode string, ctx TemplateContext) string {
 			mode = rendered
 		}
 	}
-	if mode == "" {
+	// A legacy task file can still carry agent_mode: interactive (kept as a
+	// load-only value), which the implement step templates straight through
+	// {{.Task.AgentMode}}. Interactive dispatch no longer exists — coerce it
+	// to headless here so AdmitDispatch and StartAgent both see the real mode,
+	// matching spawnBestOfNAttempt/spawnParallelChild.
+	if mode == "" || mode == "interactive" {
 		return "headless"
 	}
 	return mode

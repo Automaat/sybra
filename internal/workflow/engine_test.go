@@ -789,18 +789,19 @@ func TestFullLifecycle_DirectImplement(t *testing.T) {
 	}
 }
 
-// TestOneShot_ComputedFromStepConfig verifies that the engine asks the launcher
-// for a one-shot run exactly when an interactive step has no reuse_agent and
-// no wait_for_status. Without this flag interactive conversational agents sit
-// in StatePaused forever and the workflow can never reach the evaluator.
+// TestOneShot_ComputedFromStepConfig verifies that a legacy interactive step
+// mode is coerced to headless by the engine and that no run_agent step is ever
+// dispatched one-shot: interactive dispatch no longer exists, so a steerable
+// headless run self-finalizes on its first completed turn (drainOrCloseHeadlessSteer)
+// rather than needing OneShot to close stdin.
 func TestOneShot_ComputedFromStepConfig(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
-	// Interactive-mode task forces the templated implement step into
-	// interactive mode via {{.Task.AgentMode}}.
+	// Legacy interactive-mode task forces the templated implement step into
+	// interactive mode via {{.Task.AgentMode}}, exercising the coercion path.
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "interactive"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
 		t.Fatal(err)
@@ -822,22 +823,23 @@ func TestOneShot_ComputedFromStepConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Plan step is interactive + reuse_agent=true → must NOT be one-shot,
-	// otherwise the agent dies between turns and plan-review replanning breaks.
+	// Plan step's legacy interactive mode is coerced to headless; reuse_agent=true
+	// keeps the steerable agent alive across turns, so it must NOT be one-shot.
 	planCall := agents.LastCall()
 	if planCall.Role != "plan" {
 		t.Fatalf("expected plan, got %q", planCall.Role)
 	}
-	if planCall.Mode != "interactive" {
-		t.Fatalf("plan mode = %q, want interactive", planCall.Mode)
+	if planCall.Mode != "headless" {
+		t.Fatalf("plan mode = %q, want headless", planCall.Mode)
 	}
 	if planCall.OneShot {
 		t.Errorf("plan step has reuse_agent=true — must not be one-shot")
 	}
 
 	// Approve plan → set_in_progress → implement. The implement step resolves
-	// to interactive via the task's AgentMode. No reuse_agent, no
-	// wait_for_status → this is the case that needs OneShot=true.
+	// its mode from the task's legacy interactive AgentMode, which is coerced
+	// to headless. A headless run without reuse_agent / wait_for_status is not
+	// one-shot — it self-finalizes on its first completed turn.
 	tasks.SetStatus("t1", "plan-review")
 	agents.SimulateComplete("t1")
 	if err := engine.AdvanceStep("t1", StepOutput{StepID: "plan", Status: "completed", Output: "plan ready"}); err != nil {
@@ -851,11 +853,11 @@ func TestOneShot_ComputedFromStepConfig(t *testing.T) {
 	if implCall.Role != "implementation" {
 		t.Fatalf("expected implementation, got %q", implCall.Role)
 	}
-	if implCall.Mode != "interactive" {
-		t.Fatalf("impl mode = %q, want interactive", implCall.Mode)
+	if implCall.Mode != "headless" {
+		t.Fatalf("impl mode = %q, want headless", implCall.Mode)
 	}
-	if !implCall.OneShot {
-		t.Errorf("interactive implement without reuse_agent / wait_for_status must be one-shot so the agent exits and evaluate can run")
+	if implCall.OneShot {
+		t.Errorf("coerced-headless implement must not be one-shot — a steerable headless run self-finalizes")
 	}
 }
 
@@ -878,12 +880,13 @@ func TestFullLifecycle_PlanPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Plan agent started.
+	// Plan agent started. The plan step's legacy mode: interactive is coerced
+	// to headless by resolveRunAgentMode — interactive dispatch no longer exists.
 	if agents.LastCall().Role != "plan" {
 		t.Fatalf("expected plan, got %q", agents.LastCall().Role)
 	}
-	if agents.LastCall().Mode != "interactive" {
-		t.Fatalf("expected interactive, got %q", agents.LastCall().Mode)
+	if agents.LastCall().Mode != "headless" {
+		t.Fatalf("expected headless, got %q", agents.LastCall().Mode)
 	}
 
 	// Plan agent completes → review_plan (wait_human).

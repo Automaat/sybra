@@ -323,26 +323,6 @@ func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
 	}
 }
 
-// TestRun_JitterSkippedForInteractiveMode verifies jitter is applied only to
-// headless dispatch — interactive/chat must never be delayed.
-func TestRun_JitterSkippedForInteractiveMode(t *testing.T) {
-	m, _ := newTestManager(t)
-	m.mu.Lock()
-	m.dispatchJitterMs = 5_000
-	m.mu.Unlock()
-
-	dir := t.TempDir()
-	start := time.Now()
-	a, err := m.Run(RunConfig{TaskID: "t1", Mode: "interactive", Dir: dir, OneShot: true})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	t.Cleanup(func() { _ = m.StopAgent(a.ID) })
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("interactive Run must skip jitter, took %s", elapsed)
-	}
-}
-
 func TestNewProviderUnhealthy_RateLimitedFlag(t *testing.T) {
 	cases := []struct {
 		reason string

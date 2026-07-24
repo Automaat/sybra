@@ -839,7 +839,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 	if cfg.ResumeSessionID != "" {
 		a.SetSessionID(cfg.ResumeSessionID)
 	}
-	if cfg.Mode == "headless" || cfg.Mode == "interactive" {
+	if cfg.Mode == "headless" {
 		a.done = make(chan struct{})
 	}
 	if cfg.Mode == "headless" {
@@ -882,17 +882,6 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 			return nil
 		}
 		go m.runHeadless(ctx, a, cfg)
-	case "interactive":
-		// codex, copilot, and opencode use the per-turn conversational runner (each turn
-		// spawns a fresh process); claude uses the persistent approval-hook
-		// runner. Copilot/OpenCode permission models are CLI-flag based (no HTTP
-		// approval hook), so the per-turn shape fits it like codex.
-		if prov.UsesPerTurnConvo() {
-			a.setPromptChannel(make(chan string, 1))
-			go m.runPerTurnConversational(ctx, a, cfg, false)
-		} else {
-			go m.runConversational(ctx, a, cfg)
-		}
 	default:
 		cancel()
 		return fmt.Errorf("unknown mode: %s", cfg.Mode)

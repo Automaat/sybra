@@ -272,14 +272,6 @@ type Agent struct {
 	// malformedToolCorrectionAttempts bounds in-session recovery prompts.
 	malformedToolCorrectionAttempts int
 
-	// handoff is set by SendMessage/regateBeforeClaudeTurn when a persistent
-	// Claude interactive agent's provider is switched at a turn boundary. The
-	// still-idle Claude process is torn down (closeStdinPipe/signalKill); once
-	// runConversational's goroutine observes the process actually exit, it
-	// consumes this instead of finalizing, and hands the same *Agent off to
-	// runPerTurnConversational on the new provider.
-	handoff *pendingConvoHandoff
-
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
@@ -419,34 +411,6 @@ func (a *Agent) viewLocked(hasStdinPipe bool) View {
 // without having to be rewritten to call View() explicitly.
 func (a *Agent) MarshalJSON() ([]byte, error) {
 	return json.Marshal(a.View())
-}
-
-// pendingConvoHandoff carries the RunConfig and next prompt for a mid-run
-// persistent-Claude -> per-turn provider switch. See Agent.handoff.
-type pendingConvoHandoff struct {
-	cfg    RunConfig
-	prompt string
-}
-
-// SetPendingHandoff records a same-agent provider switch to be picked up by
-// runConversational's finalize path once its (now-doomed) process exits.
-func (a *Agent) SetPendingHandoff(cfg RunConfig, prompt string) {
-	a.mu.Lock()
-	a.handoff = &pendingConvoHandoff{cfg: cfg, prompt: prompt}
-	a.mu.Unlock()
-}
-
-// ConsumePendingHandoff returns and clears any pending handoff recorded by
-// SetPendingHandoff.
-func (a *Agent) ConsumePendingHandoff() (RunConfig, string, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.handoff == nil {
-		return RunConfig{}, "", false
-	}
-	h := a.handoff
-	a.handoff = nil
-	return h.cfg, h.prompt, true
 }
 
 // toRecord snapshots only the fields persisted for restart survival.
@@ -1295,24 +1259,6 @@ func (a *Agent) GetStdinPath() string {
 	return a.convo.stdinPath
 }
 
-func (a *Agent) setPromptChannel(ch chan string) {
-	a.mu.Lock()
-	a.convo.promptCh = ch
-	a.mu.Unlock()
-}
-
-func (a *Agent) promptChannel() chan string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.convo.promptCh
-}
-
-func (a *Agent) hasPromptChannel() bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.convo.promptCh != nil
-}
-
 // setFinalizing marks a steerable headless run as closing its stdin down for
 // good (no further steer message can be delivered).
 func (a *Agent) setFinalizing(v bool) {
@@ -1331,8 +1277,8 @@ func (a *Agent) isFinalizing() bool {
 
 // computeCanSteer reports whether SendMessage would currently be accepted for
 // this agent: a live stdin transport, not finalizing, and a steerable
-// mode/provider (interactive, or headless claude). Mirrors the SendMessage
-// gate so the UI capability never disagrees with the backend.
+// mode/provider (headless claude). Mirrors the SendMessage gate so the UI
+// capability never disagrees with the backend.
 func (a *Agent) computeCanSteer() bool {
 	hasStdinPipe := a.convo.hasStdinPipe()
 	a.mu.RLock()
@@ -1345,8 +1291,6 @@ func (a *Agent) computeCanSteerLocked(hasStdinPipe bool) bool {
 		return false
 	}
 	switch a.Mode {
-	case "interactive":
-		return true
 	case "headless":
 		return a.Provider == "claude"
 	default:
@@ -1401,22 +1345,6 @@ func lastHeadlessResultEvent(events []StreamEvent) (found, isError bool) {
 		return false, false
 	}
 	return true, resultSubtypeIsError(last.Subtype) || last.ErrorType != "" || last.ErrorStatus != 0
-}
-
-// lastConvoResult reports whether a terminal result event was observed in
-// the conversational buffer and whether that result was an error, scanning
-// newest-first. Used by reattach completion to tell a clean finish from an
-// error completion from a process that vanished mid-turn.
-func (a *Agent) lastConvoResult() (found, isError bool) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	for i := range slices.Backward(a.convoBuffer) {
-		if a.convoBuffer[i].Type == "result" {
-			e := a.convoBuffer[i]
-			return true, resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0
-		}
-	}
-	return false, false
 }
 
 // CompletedSuccessfully reports whether the headless agent's stream buffer

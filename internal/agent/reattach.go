@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -61,32 +60,14 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 	var out []*Agent
 	for i := range recs {
 		r := recs[i]
-		if r.Mode == "interactive" {
-			// codex and copilot are per-turn conversational agents recreated
-			// on restart; claude interactive reattaches to its live process.
-			if strings.TrimSpace(r.TaskID) != "" {
-				if reason := m.reattachStaleReason(r, time.Now().UTC()); reason != "" {
-					m.reapStaleSurvivor(r, reg, reason)
-					continue
-				}
-			}
-			prov, providerErr := lookupProvider(r.Provider)
-			if providerErr != nil {
-				m.logger.Warn("agent.reattach.provider", "id", r.ID, "provider", r.Provider, "err", providerErr)
-				continue
-			}
-			if prov.UsesPerTurnConvo() {
-				if a := m.reattachPerTurnConvo(r, reg); a != nil { //nolint:contextcheck // reattach helpers rebuild from persisted manager state, not caller ctx
-					out = append(out, a)
-				}
-				continue
-			}
-			if a := m.reattachInteractive(r, reg); a != nil { //nolint:contextcheck // reattach helpers rebuild from persisted manager state, not caller ctx
-				out = append(out, a)
-			}
-			continue
-		}
 		if r.Mode != "headless" {
+			// Legacy interactive/per-turn-convo records can only exist for an
+			// agent that was mid-flight when this steerable-headless-only binary
+			// was deployed. Their runner no longer exists, so the record can
+			// never be reattached — reap the orphaned process (which still holds
+			// the worktree lock/FIFO) and drop the record instead of skipping it
+			// silently and leaking it forever.
+			m.reapStaleSurvivor(r, reg, "legacy_mode_"+r.Mode)
 			continue
 		}
 		if !reattachAlive(r) { //nolint:contextcheck // liveness probe is context-free process inspection
@@ -206,183 +187,12 @@ func (m *Manager) persistDeadSession(r Record) (done bool) {
 	return true
 }
 
-// reattachInteractive rebuilds a live detached conversational agent: it
-// rehydrates the convo buffer from the log, registers the agent, reopens its
-// stdin FIFO, and resumes tailing. A dead record is deleted (interactive
-// recovery is handled by the workflow's recoverStaleInteractive / chat gc).
-// Returns the reattached agent, or nil when the process is gone or a
-// duplicate already exists.
-func (m *Manager) reattachInteractive(r Record, reg survivalRegistry) *Agent {
-	if !reattachAlive(r) {
-		_ = reg.Delete(r.ID)
-		m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID, "mode", "interactive")
-		return nil
-	}
-
-	// Older records did not persist OneShot; retain the no-FIFO inference for
-	// compatibility, but prefer the explicit flag for current records.
-	oneShot := r.OneShot || r.StdinPath == ""
-
-	a := fromRecord(r)
-	a.oneShot = oneShot
-	var startOffset int64
-	if r.LogPath != "" {
-		startOffset = rehydrateConvoFromLog(a, r.LogPath)
-	}
-	// Resume in the right state: Paused if the last turn finished (idle,
-	// waiting for the user), Running if the agent was mid-generation at
-	// restart — so a follow-up is queued, not injected mid-turn.
-	a.SetState(convoResumeState(a.ConvoOutput()))
-
-	ctx, cancel := context.WithCancel(m.ctx)
-	a.cancel = cancel
-	a.done = make(chan struct{})
-
-	m.mu.Lock()
-	if _, exists := m.agents[a.ID]; exists {
-		m.mu.Unlock()
-		cancel()
-		return nil
-	}
-	m.agents[a.ID] = a
-	m.liveCount++
-	if a.Provider != "" {
-		m.liveByProvider[a.Provider]++
-	}
-	m.mu.Unlock()
-
-	m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "mode", "interactive", "oneshot", oneShot, "events", len(a.ConvoOutput()))
-	go m.reattachConvo(ctx, a, startOffset, r.ProcStartedAt, oneShot)
-	m.emit(events.AgentState(a.ID), a)
-	return a
-}
-
-// convoResumeState infers a reattached conversational agent's state from
-// its rehydrated buffer: Running when the most recent turn-shaping event is
-// an assistant event (mid-generation), Paused when it is a result (idle
-// between turns) or there is nothing yet.
-func convoResumeState(evs []ConvoEvent) State {
-	for i := range slices.Backward(evs) {
-		switch evs[i].Type {
-		case "result":
-			return StatePaused
-		case "assistant":
-			return StateRunning
-		}
-	}
-	return StatePaused
-}
-
-// reattachPerTurnConvo recreates a per-turn (codex/copilot/opencode) conversational
-// agent after a restart.
-// Codex convo has no persistent process between its independent per-turn
-// invocations, so there is nothing to reattach to: rebuild the idle agent,
-// rehydrate its chat from the log, and restart the loop in resume-wait mode
-// (waiting for the next prompt). Liveness is not checked — the agent is
-// recreated regardless. Returns nil only on a duplicate.
-//
-// r.Provider is authoritative even when a mid-run regateForTurn switch
-// happened before the restart: regateForTurn persists the switched provider
-// (and clears the old session id) via saveRegistry, so the record already
-// reflects the peer the agent moved to, not the one it started on. The next
-// prompt is dispatched via runPerTurnConversational(..., RunConfig{Dir:...},
-// true), whose regate call reads the live current provider from a.Provider —
-// not from this (mostly empty) RunConfig — so a stale/zero-value cfg.Provider
-// here can never resurrect the pre-switch provider.
-func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
-	// Per-turn recreate is unconditional (no live process to gate on), so guard
-	// against resurrecting an agent for a task that was deleted while the app
-	// was down — that would leak a zombie agent nothing else can reap.
-	if r.TaskID != "" {
-		if exists := m.taskExistsFn(); exists != nil && !exists(r.TaskID) {
-			_ = reg.Delete(r.ID)
-			m.logger.Info("agent.reattach.skip", "id", r.ID, "task", r.TaskID, "reason", "task_gone")
-			return nil
-		}
-	}
-
-	a := fromRecord(r)
-	if r.LogPath != "" {
-		rehydratePerTurnConvoFromLog(a, r.LogPath)
-	}
-	if r.OneShot {
-		if mt, ok := logActivityTime(r.LogPath); ok {
-			a.SetLastEventAt(mt)
-		}
-		m.finalizePerTurnOneShot(r, a, reg)
-		return nil
-	}
-	a.SetState(StatePaused)
-
-	ctx, cancel := context.WithCancel(m.ctx)
-	a.cancel = cancel
-	a.done = make(chan struct{})
-	a.setPromptChannel(make(chan string, 1))
-
-	m.mu.Lock()
-	if _, exists := m.agents[a.ID]; exists {
-		m.mu.Unlock()
-		cancel()
-		return nil
-	}
-	m.agents[a.ID] = a
-	m.liveCount++
-	if a.Provider != "" {
-		m.liveByProvider[a.Provider]++
-	}
-	m.mu.Unlock()
-
-	m.logger.Info("agent.reattach", "id", a.ID, "task", a.TaskID, "mode", "interactive", "provider", a.Provider, "events", len(a.ConvoOutput()))
-	// Resume idle: skip the first turn, wait for the next prompt. CWD/model
-	// come from the rebuilt agent; the sandbox/approval choices are restored
-	// from the record so a sandboxed chat stays sandboxed across restart.
-	go m.runPerTurnConversational(ctx, a, perTurnReattachConfig(a), true)
-	m.emit(events.AgentState(a.ID), a)
-	return a
-}
-
-func perTurnReattachConfig(a *Agent) RunConfig {
-	return RunConfig{
-		Dir:                a.sessionCWD,
-		RequirePermissions: a.requirePermissions,
-		SandboxMode:        a.sandboxMode,
-	}
-}
-
-func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg survivalRegistry) {
-	found, isError := a.lastConvoResult()
-	if !found {
-		// The turn was interrupted mid-run (e.g. a Sybra restart) and never
-		// produced a result — there is no completed outcome to report. Unlike
-		// the headless case there is no process or session to reattach/resume,
-		// so finalizing here as done or failed would either report false
-		// success or burn the workflow step's retry budget on a turn that
-		// never ran. Drop the stale record without firing completion and leave
-		// the task's workflow step untouched: RestartStaleInProgress's
-		// interactive-oneshot path re-dispatches a fresh turn instead.
-		m.logger.Warn("agent.reattach.per-turn-oneshot.interrupted", "id", a.ID, "task", a.TaskID, "provider", a.Provider)
-		_ = reg.Delete(r.ID)
-		return
-	}
-	if isError {
-		a.SetExitErr(errReattachedResultError)
-		m.reportProviderHealthSignalConvo(a, "", a.ConvoOutput())
-	} else if m.reportCleanProviderHealthSignalConvo(a, "", a.ConvoOutput()) == providerpkg.SignalRateLimit {
-		a.SetExitErr(errProviderRateLimited)
-	}
-	a.SetState(StateStopped)
-	m.logger.Info("agent.reattach.per-turn-oneshot.done", "id", a.ID, "task", a.TaskID, "provider", a.Provider)
-	m.emit(events.AgentState(a.ID), a)
-	m.fireComplete(m.ctx, a, a.GetExitErr() == nil)
-	_ = reg.Delete(r.ID)
-}
-
 // reattachHeadless tails a reattached subprocess's log file from
 // startOffset until the process exits (or the app shuts down), then
 // finalizes the agent through the same completion path as a freshly run
 // one. A steerable headless run's stdin FIFO (see runHeadlessAttemptSurvive)
 // is reopened first so a steer message sent after this reattach still
-// reaches the child, mirroring reattachConvo.
+// reaches the child.
 func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset int64, procStart string) {
 	if sp := a.GetStdinPath(); sp != "" {
 		if fifo, err := os.OpenFile(sp, os.O_RDWR, 0); err == nil {
@@ -545,11 +355,11 @@ func rehydrateFromLogWithArtifacts(a *Agent, path, taskID, producerRole string, 
 // logActivityTime returns the log file's mtime: the last time the (now-dead)
 // process actually wrote to it, and the only faithful proxy for "when did
 // this run actually finish" available on the dead-process recovery path.
-// Every event replayed by rehydrateFromLog/rehydratePerTurnConvoFromLog is
-// re-stamped at replay time, so without this a run finalized long after an
-// app-downtime gap would report the full idle time as its duration. Returns
-// false if the file cannot be statted (missing path, deleted log, etc.), in
-// which case the caller falls back to the pre-fix behavior.
+// Every event replayed by rehydrateFromLog is re-stamped at replay time, so
+// without this a run finalized long after an app-downtime gap would report
+// the full idle time as its duration. Returns false if the file cannot be
+// statted (missing path, deleted log, etc.), in which case the caller falls
+// back to the pre-fix behavior.
 func logActivityTime(path string) (time.Time, bool) {
 	if path == "" {
 		return time.Time{}, false
@@ -583,6 +393,12 @@ const reattachMaxAge = 6 * time.Hour
 
 func (m *Manager) reattachStaleReason(r Record, now time.Time) string {
 	if strings.TrimSpace(r.TaskID) == "" {
+		// The orchestrator brain is a deliberately taskless, long-lived
+		// headless agent (see svc_orchestrator.go) — it must survive a
+		// restart like any other live process, not be reaped as an orphan.
+		if r.Role == RoleOrchestrator {
+			return ""
+		}
 		return "no_task"
 	}
 	if existsFn := m.taskExistsFn(); existsFn != nil && !existsFn(r.TaskID) {

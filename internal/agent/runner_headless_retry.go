@@ -86,19 +86,6 @@ func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.Er
 	return sample
 }
 
-// reportProviderHealthSignalConvo mirrors reportProviderHealthSignal for the
-// ConvoEvent stream used by conversational runners.
-func (m *Manager) reportProviderHealthSignalConvo(a *Agent, stderrOut string, attemptEvents []ConvoEvent) provider.Signal {
-	sample := buildErrorSampleConvo(stderrOut, attemptEvents)
-	return m.reportProviderHealthSample(a, sample)
-}
-
-func (m *Manager) reportCleanProviderHealthSignalConvo(a *Agent, stderrOut string, attemptEvents []ConvoEvent) provider.Signal {
-	sample := buildErrorSampleConvo(stderrOut, attemptEvents)
-	sample.ContentIsCleanResult = true
-	return m.reportProviderHealthSample(a, sample)
-}
-
 // classifyProviderError routes an error sample to the provider-appropriate
 // classifier. Without a copilot branch a logged-out / quota-exhausted copilot
 // would never be flagged, leaving the health gate routing failover work to it.
@@ -108,22 +95,6 @@ func classifyProviderError(prov string, sample provider.ErrorSample) (provider.S
 		return provider.SignalNone, "", 0
 	}
 	return p.ClassifyError(sample)
-}
-
-func buildErrorSampleConvo(stderrOut string, attemptEvents []ConvoEvent) provider.ErrorSample {
-	sample := provider.ErrorSample{Stderr: stderrOut}
-	for i := range slices.Backward(attemptEvents) {
-		e := &attemptEvents[i]
-		if e.Type != "result" {
-			continue
-		}
-		// Capture the terminal result regardless of subtype (see buildErrorSample).
-		sample.ErrorType = e.ErrorType
-		sample.ErrorStatus = e.ErrorStatus
-		sample.Content = e.Text
-		break
-	}
-	return sample
 }
 
 // shouldRetry returns true when stderrOut or streamEvents indicate an Anthropic
@@ -150,37 +121,11 @@ func shouldRetry(stderrOut string, streamEvents []StreamEvent, logger *slog.Logg
 	return false
 }
 
-// shouldRetryConvo is the ConvoEvent variant of shouldRetry.
-func shouldRetryConvo(stderrOut string, convoEvents []ConvoEvent, logger *slog.Logger) bool {
-	if slices.ContainsFunc(convoEvents, retryableConvoResultEvent) {
-		return true
-	}
-	if substringMatch529(stderrOut) {
-		warnSubstringFallback(logger)
-		return true
-	}
-	if slices.ContainsFunc(convoEvents, func(e ConvoEvent) bool {
-		return convoResultEventCanCarryError(e) && substringMatch529(e.Text)
-	}) {
-		warnSubstringFallback(logger)
-		return true
-	}
-	return false
-}
-
 func retryableResultEvent(e StreamEvent) bool {
 	return e.Type == "result" && (e.ErrorType == "overloaded_error" || e.ErrorStatus == 529)
 }
 
 func resultEventCanCarryError(e StreamEvent) bool {
-	return e.Type == "result" && (resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0)
-}
-
-func retryableConvoResultEvent(e ConvoEvent) bool {
-	return e.Type == "result" && (e.ErrorType == "overloaded_error" || e.ErrorStatus == 529)
-}
-
-func convoResultEventCanCarryError(e ConvoEvent) bool {
 	return e.Type == "result" && (resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0)
 }
 
