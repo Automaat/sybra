@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -136,14 +137,44 @@ func TestExecVerifyChecks_AutoFixRewindsToImplement(t *testing.T) {
 	}
 }
 
-func TestExecVerifyChecks_AutoFixCapEscalates(t *testing.T) {
+func TestExecVerifyChecks_AutoFixReasksPastOldCap(t *testing.T) {
 	t.Parallel()
 	wt := makeLintVerifyRepo(t)
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{lintVerifyCommand("internal/foo/foo.go")})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
+	// Past the old cap of 2, a code-fixable lint failure keeps being re-asked
+	// rather than escalating; it escalates only at verifyChecksAutoFixCeiling.
 	wf := implementedExec()
-	wf.Variables["step.verify_checks.auto_fix"] = "2"
+	wf.Variables["step.verify_checks.auto_fix"] = "9"
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked (keep re-asking, never escalate)", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("parked output should be zero, got %+v", out)
+	}
+	if wf.CurrentStep != verifyChecksImplStepID || wf.State != ExecWaiting {
+		t.Fatalf("workflow after rewind = %+v, want implement/ExecWaiting", wf)
+	}
+	if got := wf.Variables["step.verify_checks.auto_fix"]; got != "10" {
+		t.Errorf("auto_fix counter = %q, want 10", got)
+	}
+	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want in-progress (never escalated to human)", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_AutoFixCeilingEscalates(t *testing.T) {
+	t.Parallel()
+	wt := makeLintVerifyRepo(t)
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{lintVerifyCommand("internal/foo/foo.go")})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	// A deterministic failure that survives the ceiling finally escalates so a
+	// human is paged instead of the loop running forever.
+	wf := implementedExec()
+	wf.Variables["step.verify_checks.auto_fix"] = strconv.Itoa(verifyChecksAutoFixCeiling)
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -151,8 +182,12 @@ func TestExecVerifyChecks_AutoFixCapEscalates(t *testing.T) {
 	if out.Output != "flagged" {
 		t.Errorf("Output = %q, want flagged", out.Output)
 	}
-	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "human-required" {
-		t.Errorf("status = %q, want human-required after cap", ti.Status)
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required at ceiling", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "escalating after") {
+		t.Errorf("reason = %q, want exhaustion note", ti.StatusReason)
 	}
 }
 
@@ -331,7 +366,7 @@ func TestExecVerifyChecks_DeterministicFrontendFailureRewindsToImplement(t *test
 	}
 }
 
-func TestExecVerifyChecks_DeterministicFrontendFailureCapEscalates(t *testing.T) {
+func TestExecVerifyChecks_DeterministicFrontendFailureKeepsReasking(t *testing.T) {
 	t.Parallel()
 	wt := makeFrontendVerifyRepo(t)
 	binDir := writeFrontendVerifyMise(t)
@@ -340,20 +375,20 @@ func TestExecVerifyChecks_DeterministicFrontendFailureCapEscalates(t *testing.T)
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
 	wf := implementedExec()
-	wf.Variables["step.verify_checks.auto_fix"] = "2"
+	wf.Variables["step.verify_checks.auto_fix"] = "9"
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked (keep re-asking, never escalate)", err)
 	}
-	if out.Output != "flagged" {
-		t.Fatalf("Output = %q, want flagged", out.Output)
+	if out != (StepOutput{}) {
+		t.Fatalf("parked output should be zero, got %+v", out)
+	}
+	if wf.CurrentStep != verifyChecksImplStepID || wf.State != ExecWaiting {
+		t.Fatalf("workflow after rewind = %+v, want implement/ExecWaiting", wf)
 	}
 	ti := mustGetTaskInfo(t, tasks, "t1")
-	if ti.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", ti.Status)
-	}
-	if !strings.Contains(ti.StatusReason, "deterministic frontend check") {
-		t.Fatalf("reason = %q, want deterministic frontend classification", ti.StatusReason)
+	if ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress (never escalated to human)", ti.Status)
 	}
 }
 

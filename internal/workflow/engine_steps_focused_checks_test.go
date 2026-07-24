@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -289,7 +290,7 @@ func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
 	}
 }
 
-func TestExecFocusedChecks_FailureCapEscalates(t *testing.T) {
+func TestExecFocusedChecks_FailureReasksPastOldCap(t *testing.T) {
 	t.Parallel()
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -304,8 +305,46 @@ func TestExecFocusedChecks_FailureCapEscalates(t *testing.T) {
 	}}, nil)
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
+	// Past the old cap of 2, a code-fixable focused-check failure keeps being
+	// re-asked; it escalates only at verifyChecksAutoFixCeiling.
 	wf := implementedExec()
-	wf.Variables["step.focused_checks.auto_fix"] = "2"
+	wf.Variables["step.focused_checks.auto_fix"] = "9"
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked (keep re-asking, never escalate)", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("parked output should be zero, got %+v", out)
+	}
+	if wf.CurrentStep != verifyChecksImplStepID || wf.State != ExecWaiting {
+		t.Fatalf("workflow after rewind = %+v, want implement/ExecWaiting", wf)
+	}
+	if got := wf.Variables["step.focused_checks.auto_fix"]; got != "10" {
+		t.Fatalf("auto_fix counter = %q, want 10", got)
+	}
+	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress (never escalated to human)", ti.Status)
+	}
+}
+
+func TestExecFocusedChecks_FailureCeilingEscalates(t *testing.T) {
+	t.Parallel()
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+
+	engine, tasks, _ := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"exit 1"},
+	}}, nil)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	// At the ceiling an unfixable focused-check failure escalates to a human.
+	wf := implementedExec()
+	wf.Variables["step.focused_checks.auto_fix"] = strconv.Itoa(verifyChecksAutoFixCeiling)
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -314,9 +353,9 @@ func TestExecFocusedChecks_FailureCapEscalates(t *testing.T) {
 		t.Fatalf("Output = %q, want flagged", out.Output)
 	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required after cap", ti.Status)
+		t.Fatalf("status = %q, want human-required at ceiling", ti.Status)
 	}
-	if reason := tasks.Reason("t1"); !strings.Contains(reason, "focused checks failed for workflow") {
-		t.Fatalf("reason = %q, want focused surface", reason)
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "escalating after") {
+		t.Fatalf("reason = %q, want exhaustion note", reason)
 	}
 }
