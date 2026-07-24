@@ -199,6 +199,7 @@ const prQuery = `query($q: String!) {
         title
         url
         headRefName
+        headRepositoryOwner { login }
         isDraft
         mergeable
         createdAt
@@ -338,11 +339,14 @@ type gqlResponse struct {
 }
 
 type gqlPR struct {
-	Number         int    `json:"number"`
-	Title          string `json:"title"`
-	URL            string `json:"url"`
-	State          string `json:"state"`
-	HeadRefName    string `json:"headRefName"`
+	Number              int    `json:"number"`
+	Title               string `json:"title"`
+	URL                 string `json:"url"`
+	State               string `json:"state"`
+	HeadRefName         string `json:"headRefName"`
+	HeadRepositoryOwner struct {
+		Login string `json:"login"`
+	} `json:"headRepositoryOwner"`
 	BaseRefName    string `json:"baseRefName"`
 	IsDraft        bool   `json:"isDraft"`
 	Mergeable      string `json:"mergeable"`
@@ -499,6 +503,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		Title:             n.Title,
 		URL:               n.URL,
 		HeadRefName:       n.HeadRefName,
+		HeadRepoOwner:     n.HeadRepositoryOwner.Login,
 		BaseRefName:       n.BaseRefName,
 		HeadSHA:           headSHA,
 		Repository:        n.Repository.NameWithOwner,

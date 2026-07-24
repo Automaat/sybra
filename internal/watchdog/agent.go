@@ -344,7 +344,7 @@ func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time,
 	stall := now.Sub(ag.GetLastEventAt())
 	total := now.Sub(ag.StartedAt)
 
-	role := agent.RoleFromName(ag.Name)
+	role := ag.EffectiveRole()
 	t, err := w.tasks.Get(ag.TaskID)
 	var budget, sl time.Duration
 	if err == nil {
@@ -492,7 +492,7 @@ func (w *Watchdog) reapTaskAgentForStatus(ag *agent.Agent) bool {
 	if err != nil {
 		return false
 	}
-	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+	if t.TaskType == task.TaskTypeUmbrella {
 		return false
 	}
 	if !shouldReleaseTaskAgentForStatus(t.Status) || isHumanReviewAgent(ag) {
@@ -514,7 +514,7 @@ func (w *Watchdog) reapIdleInteractive(ag *agent.Agent, now time.Time) {
 	if err != nil {
 		return
 	}
-	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+	if t.TaskType == task.TaskTypeUmbrella {
 		return
 	}
 	if shouldReleaseTaskAgentForStatus(t.Status) && !isHumanReviewAgent(ag) {
@@ -527,7 +527,7 @@ func (w *Watchdog) reapIdleInteractive(ag *agent.Agent, now time.Time) {
 	}
 	stall := now.Sub(ag.GetLastEventAt())
 	total := now.Sub(ag.StartedAt)
-	role := agent.RoleFromName(ag.Name)
+	role := ag.EffectiveRole()
 	if reason := hardDeadlineBreach(ag, stall, total, stallLimit(role, t.Tags), sizeBudget(role, t.Tags)); reason != "" {
 		w.hardStop(ag, reason, stall, total)
 	}
@@ -549,7 +549,7 @@ func shouldReleaseTaskAgentForStatus(status task.Status) bool {
 // change to spare an unrelated agent that raced onto an already-terminal
 // task, which is unconditionally an orphan under this reaper's contract.
 func isHumanReviewAgent(ag *agent.Agent) bool {
-	return agent.RoleFromName(ag.Name) == agent.RoleHumanReview
+	return ag.EffectiveRole() == agent.RoleHumanReview
 }
 
 func (w *Watchdog) stopForRelease(ag *agent.Agent) error {
@@ -904,10 +904,7 @@ func trimTail(failedCmd, output string, n int) string {
 // left in-progress — human-required is reserved for genuine reward-hacking
 // loops per #1310's scoping.
 func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
-	reason := "watchdog: rate limit"
-	if verdict.Reason != "" {
-		reason = "watchdog: rate limit: " + verdict.Reason
-	}
+	reason := watchdogreason.RateLimit(verdict.Reason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.rate_limit.untracked",
 			"id", ag.ID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
@@ -936,7 +933,7 @@ func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict age
 // other role, still escalates immediately: retrying blind would just burn
 // budget on a genuinely stuck loop.
 func (w *Watchdog) retriableRewardHackingFixReview(ag *agent.Agent) bool {
-	if agent.RoleFromName(ag.Name) != agent.RoleFixReview {
+	if ag.EffectiveRole() != agent.RoleFixReview {
 		return false
 	}
 	t, err := w.tasks.Get(ag.TaskID)
@@ -991,7 +988,7 @@ const rewardHackingRetryStatusReason = "watchdog: reward-hacking retry"
 // startup hang (see inspectHeadless). Kept distinct from the generic
 // "rate_limited" reason so provider health status/logs can tell the two
 // apart even though both share the SignalRateLimit health-gate bucket.
-const zeroOutputReason = "zero output before startup timeout"
+const zeroOutputReason = watchdogreason.ZeroOutputBeforeStartup
 
 // handleZeroOutputStall handles a "stall" trigger on a headless agent that
 // never produced any output at all. This reuses stopForRateLimit's recovery
@@ -1007,7 +1004,7 @@ func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Dura
 	w.logger.Warn("agent.watchdog.zero_output_stall",
 		"id", ag.ID, "task_id", ag.TaskID, "provider", ag.Provider,
 		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
-	reason := "watchdog: rate limit: " + zeroOutputReason
+	reason := watchdogreason.RateLimit(zeroOutputReason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.zero_output_stall.untracked", "id", ag.ID, "provider", ag.Provider)
 	} else if _, err := w.tasks.Update(ag.TaskID, task.Update{

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/worktreeerr"
@@ -274,7 +275,7 @@ func TestSurfaceStartFailure_PermanentFlipsToHumanRequired(t *testing.T) {
 	}
 }
 
-func TestSurfaceStartFailure_RebaseFailedFlipsToHumanRequired(t *testing.T) {
+func TestSurfaceStartFailure_RebaseFailedFlipsToBlocked(t *testing.T) {
 	// Engine.surfaceStartFailure must classify ErrRebaseFailed as permanent
 	// too, as defense in depth: the three Engine-routed callers already flip
 	// to human-required via markRebaseBlocked before the error reaches here,
@@ -292,8 +293,11 @@ func TestSurfaceStartFailure_RebaseFailedFlipsToHumanRequired(t *testing.T) {
 	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
 
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Errorf("rebase failure should flip to human-required, got %q", got.Status)
+	if got.Status != "blocked" {
+		t.Errorf("rebase failure should flip to blocked, got %q", got.Status)
+	}
+	if got.Blocker.Kind != blocker.KindWorktreeRepair {
+		t.Errorf("blocker kind = %q, want %q", got.Blocker.Kind, blocker.KindWorktreeRepair)
 	}
 	reason := tasks.Reason("t1")
 	if !strings.Contains(reason, "branch stale") {
@@ -324,8 +328,11 @@ func TestSurfaceStartFailure_DiskSpaceErrorSkipsConflictRecovery(t *testing.T) {
 		t.Error("conflict recovery was invoked for a disk-space failure — a full disk is not a content conflict it can resolve")
 	}
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Errorf("disk-space failure should flip to human-required, got %q", got.Status)
+	if got.Status != "blocked" {
+		t.Errorf("disk-space failure should flip to blocked, got %q", got.Status)
+	}
+	if got.Blocker.Code != "disk_space" {
+		t.Errorf("blocker code = %q, want disk_space", got.Blocker.Code)
 	}
 	reason := tasks.Reason("t1")
 	if !strings.Contains(reason, "disk space exhausted") {
@@ -368,12 +375,12 @@ func TestSurfaceStartFailure_RebaseFailedRecoversInsteadOfHumanRequired(t *testi
 	}
 }
 
-// TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToHumanRequired
+// TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToBlocked
 // verifies the fallback: when branch-conflict-fix recovery declines (e.g. no
 // linked PR to fix, or its retry budget is spent), the task still lands
 // human-required with the original rebase-blocked reason — recovery is a
 // first attempt, not a silent swallow of a genuinely unrecoverable divergence.
-func TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToHumanRequired(t *testing.T) {
+func TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToBlocked(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
@@ -383,8 +390,8 @@ func TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToHumanRequire
 	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
 
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Errorf("status = %q, want human-required", got.Status)
+	if got.Status != "blocked" {
+		t.Errorf("status = %q, want blocked", got.Status)
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "branch stale") {
 		t.Errorf("reason %q missing rebase-failed classification", reason)
@@ -467,8 +474,8 @@ func TestSurfaceStartFailure_RebaseFailedDeferredDeclineKeepsOriginalReason(t *t
 	engine.drainPendingConflictRecovery("t1")
 
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", got.Status)
+	if got.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", got.Status)
 	}
 	reason := tasks.Reason("t1")
 	if !strings.Contains(reason, "branch stale") {
@@ -517,8 +524,8 @@ func TestSurfaceStartFailure_CircuitBreakerTripsAfterRepeatedFailures(t *testing
 		t.Errorf("wf.State = %q, want ExecFailed after %d failures", wf.State, maxCircuitBreakerFailures)
 	}
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Errorf("status = %q, want human-required", got.Status)
+	if got.Status != "blocked" {
+		t.Errorf("status = %q, want blocked", got.Status)
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "circuit breaker") {
 		t.Errorf("reason %q missing circuit-breaker classification", reason)

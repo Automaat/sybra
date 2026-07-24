@@ -76,6 +76,12 @@ func TestLess_Matrix(t *testing.T) {
 			b:    Item{TaskID: "a", Priority: task.PriorityMedium, Enqueued: base},
 			want: false,
 		},
+		{
+			name: "real queued item beats zero enqueue placeholder",
+			a:    Item{TaskID: "queued", Priority: task.PriorityMedium, Enqueued: base},
+			b:    Item{TaskID: "stalled", Priority: task.PriorityMedium},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {

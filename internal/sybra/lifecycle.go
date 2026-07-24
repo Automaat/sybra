@@ -33,7 +33,7 @@ import (
 //
 // Phase order (called from App.Startup after all init* methods complete):
 //
-//	lm.StartManagers(ctx, emit)  — watchdog, health, monitors, maintenance
+//	lm.StartManagers(ctx, emit)  — GitHub auth, watchdog, health, monitors, maintenance
 //	lm.StartPollers(ctx, emit, issuesFetcher)  — pollers, orchestrator loop
 //	lm.StartWatchers(ctx)  — config-file watcher
 type LifecycleManager struct {
@@ -44,10 +44,12 @@ func newLifecycleManager(app *App) *LifecycleManager {
 	return &LifecycleManager{app: app}
 }
 
-// StartManagers launches watchdog, health-check, monitor/self-monitor services,
-// maintenance loops, and OTel metrics observers.
+// StartManagers launches GitHub auth, watchdog, health-check,
+// monitor/self-monitor services, maintenance loops, and OTel metrics observers.
 func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string, any)) {
 	a := lm.app
+
+	lm.startAppAuthLoop(ctx)
 
 	if a.cfg.Watchdog.Enabled {
 		verifyNow := func(vctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
@@ -120,7 +122,6 @@ func (lm *LifecycleManager) StartPollers(ctx context.Context, emit func(string, 
 	if a.clusterRoster != nil {
 		a.wg.Go(func() { a.clusterHealthLoop(ctx) })
 	}
-	lm.startAppAuthLoop(ctx)
 	lm.startRateBudgetLoop(ctx)
 	lm.startPollHub(ctx, issuesFetcher)
 }
@@ -148,16 +149,12 @@ func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
 		return
 	}
 	a.logger.Info("github.app.enabled", "app_id", app.AppID, "installation_id", app.InstallationID)
+	lm.refreshAppToken(ctx)
 	a.wg.Go(func() {
 		ticker := time.NewTicker(appTokenRefreshInterval)
 		defer ticker.Stop()
 		for {
-			if err := github.RefreshAppToken(ctx); err != nil {
-				a.logger.Warn("github.app.token.refresh", "err", err)
-			} else if tok := github.CurrentAppToken(); tok != "" {
-				_ = os.Setenv("GH_TOKEN", tok)
-				_ = os.Setenv("GITHUB_TOKEN", tok)
-			}
+			lm.refreshAppToken(ctx)
 			select {
 			case <-ctx.Done():
 				return
@@ -165,6 +162,13 @@ func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
 			}
 		}
 	})
+}
+
+func (lm *LifecycleManager) refreshAppToken(ctx context.Context) {
+	a := lm.app
+	if err := github.RefreshAppTokenEnv(ctx); err != nil {
+		a.logger.Warn("github.app.token.refresh", "err", err)
+	}
 }
 
 // rateBudgetRefreshInterval is how often the free GET /rate_limit endpoint is
@@ -282,13 +286,20 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 		return
 	}
 	runner := autoupdate.New(autoupdate.Config{
-		Enabled:        a.cfg.AutoUpdate.Enabled,
-		RepoDir:        repoDir,
-		Remote:         a.cfg.AutoUpdate.Remote,
-		Branch:         a.cfg.AutoUpdate.Branch,
-		Mode:           a.cfg.AutoUpdate.Mode,
-		PollInterval:   time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
-		RequestRestart: a.requestRestart,
+		Enabled:          a.cfg.AutoUpdate.Enabled,
+		RepoDir:          repoDir,
+		Remote:           a.cfg.AutoUpdate.Remote,
+		Branch:           a.cfg.AutoUpdate.Branch,
+		Mode:             a.cfg.AutoUpdate.Mode,
+		RequiredChecks:   a.cfg.AutoUpdate.RequiredChecks,
+		PollInterval:     time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
+		CoalesceInterval: time.Duration(a.cfg.AutoUpdate.CoalesceSeconds) * time.Second,
+		StateFile:        filepath.Join(config.HomeDir(), "autoupdate-state.json"),
+		OverrideFile:     filepath.Join(config.HomeDir(), "autoupdate-override"),
+		RequestRestart:   a.requestRestart,
+		AuditTransition: func(data map[string]any) {
+			a.logAudit(audit.EventAutoUpdateTransition, "", "", data)
+		},
 	}, a.logger)
 	if a.reviewer != nil {
 		a.reviewer.SetAutoMergeAppliedHook(runner.TriggerCheck)
@@ -569,6 +580,12 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			a.wg.Go(func() {
 				a.recoverLostAgentTask(ctx, taskID)
 			})
+		},
+		LandClosedPR: func(ctx context.Context, taskID string, prNumber int, state string) error {
+			if a.reviewer == nil {
+				return errors.New("review handler unavailable")
+			}
+			return a.reviewer.AdvanceClosedTaskPR(ctx, taskID, prNumber, state)
 		},
 	})
 	a.monitorSvc = svc

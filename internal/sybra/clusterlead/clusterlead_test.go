@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -621,7 +623,7 @@ func TestMirrorNoAlertOnOrdinaryStatusDisagreement(t *testing.T) {
 	}
 }
 
-func TestMirrorIgnoresUnownedTask(t *testing.T) {
+func TestMirrorIgnoresTaskOwnedByAnotherNode(t *testing.T) {
 	cfg := leaderConfig("http://unused", []string{"owner/pet"})
 	roster, _ := NewRoster(cfg, nil)
 	mgr := newManager(t)
@@ -632,11 +634,72 @@ func TestMirrorIgnoresUnownedTask(t *testing.T) {
 	}
 	follower := task.Task{ID: "task-x", Status: task.StatusDone, UpdatedAt: time.Unix(100, 0)}
 	if mirror.applyFollowerTask("pet-box", follower) {
-		t.Error("a task not assigned to this node must not be mirrored from it")
+		t.Error("a task the leader already has assigned to a different node must not be mirrored from this one")
+	}
+}
+
+// TestMirrorAdoptsUnknownFollowerTask covers the mirror gap behind
+// c01cafd6's local-board investigation: a task with no prior canonical copy
+// (the leader has never heard of it) is not necessarily a stray to ignore —
+// it may be a follower's own self-originated work (umbrella expansion or
+// triage run directly on that node, with no leader routing involved, so
+// never assigned a node). Since ListTasksForNode only ever returns tasks
+// that genuinely live on the node being asked, the leader can safely adopt
+// any task it sees there for the first time.
+func TestMirrorAdoptsUnknownFollowerTask(t *testing.T) {
+	cfg := leaderConfig("http://unused", []string{"owner/pet"})
+	roster, _ := NewRoster(cfg, nil)
+	mgr := newManager(t)
+	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
+
+	follower := task.Task{
+		ID: "self-originated", Title: "made on pet-box", ProjectID: "owner/pet",
+		Status: task.StatusTodo, UpdatedAt: time.Unix(100, 0),
+	}
+	if !mirror.applyFollowerTask("pet-box", follower) {
+		t.Fatal("expected the leader to adopt a task it has never seen before")
+	}
+	got, err := mgr.Get("self-originated")
+	if err != nil {
+		t.Fatalf("adopted task not found in canonical store: %v", err)
+	}
+	if got.AssignedNode != "pet-box" {
+		t.Errorf("AssignedNode = %q, want pet-box", got.AssignedNode)
+	}
+	if got.Title != "made on pet-box" || got.ProjectID != "owner/pet" {
+		t.Errorf("adopted task lost identity fields: %+v", got)
+	}
+	if got.MirrorRev != 1 {
+		t.Errorf("MirrorRev = %d, want 1 on first adoption", got.MirrorRev)
+	}
+}
+
+// TestMirrorApplyLogsGenuineLocalStoreFailure covers a Copilot-review finding
+// on this PR: a m.tasks.Get failure that is NOT "doesn't exist yet" (I/O
+// fault, corrupt frontmatter, ...) took the same silent `return false` as
+// every other case, and the caller discards the bool — so a real local-store
+// fault left zero trace anywhere that mirror convergence had stalled for
+// that task.
+func TestMirrorApplyLogsGenuineLocalStoreFailure(t *testing.T) {
+	cfg := leaderConfig("http://unused", []string{"owner/pet"})
+	roster, _ := NewRoster(cfg, nil)
+	mgr := newManager(t)
+
+	corrupt := filepath.Join(mgr.Store().Dir(), "broken.md")
+	if err := os.WriteFile(corrupt, []byte("---\nstatus: [not, a, string]\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	if mirror.applyFollowerTask("pet-box", task.Task{ID: "ghost", UpdatedAt: time.Unix(100, 0)}) {
-		t.Error("a task the leader does not own must be ignored")
+	var buf syncBuffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	mirror := NewMirror(cfg, mgr, roster, logger, time.Second)
+
+	follower := task.Task{ID: "broken", Status: task.StatusDone, UpdatedAt: time.Unix(100, 0)}
+	if mirror.applyFollowerTask("pet-box", follower) {
+		t.Error("apply must not report success over an unreadable canonical file")
+	}
+	if !strings.Contains(buf.String(), "cluster.mirror.apply.get_failed") {
+		t.Errorf("expected a get_failed warn log for the genuine store fault, got:\n%s", buf.String())
 	}
 }
 
@@ -745,6 +808,195 @@ func TestMirrorReconcileEscalatesLogLevelOnRepeatedFailure(t *testing.T) {
 	atThreshold := buf.String()
 	if !strings.Contains(atThreshold, "level=ERROR") {
 		t.Errorf("expected escalation to Error exactly at %d consecutive failures, got:\n%s", reconcileFailureEscalateThreshold, atThreshold)
+	}
+}
+
+// TestMirrorReconcileMissingTrashesConfirmedGoneTask covers the mirror gap
+// from #2294's umbrella-expansion-race post-mortem: a task the leader still
+// holds as non-terminal but the follower's ListTasks snapshot omits used to
+// stay stuck forever, because reconcileMissing treated every GetTask error —
+// including a 404 confirming the task is genuinely gone (e.g. trashed as a
+// duplicate cleanup) — the same as a transient failure and never touched the
+// canonical copy. That left a ghost task that kept poisoning rollup logic
+// scanning all of an umbrella's children, like trackerRollup's
+// cancelled-child check. Once the follower confirms the task is gone across
+// missingConfirmThreshold consecutive ticks, the leader must trash its own
+// stale copy instead.
+func TestMirrorReconcileMissingTrashesConfirmedGoneTask(t *testing.T) {
+	stub := &followerStub{} // empty tasks/live — GetTask 404s for anything
+	srv := stub.server(t)
+
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	if _, _, err := mgr.Put(task.Task{
+		ID: "ghost-dup", Status: task.StatusTodo, AssignedNode: "pet-box",
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mirror := NewMirror(cfg, mgr, roster, slog.New(slog.DiscardHandler), time.Second)
+	var consecutiveFailures int
+	for i := 1; i < missingConfirmThreshold; i++ {
+		mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+		if _, err := mgr.Get("ghost-dup"); err != nil {
+			t.Fatalf("trashed after only %d confirmation(s), before missingConfirmThreshold (%d)", i, missingConfirmThreshold)
+		}
+	}
+	mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+
+	if _, err := mgr.Get("ghost-dup"); err == nil {
+		t.Fatalf("expected the leader's stale copy to be trashed after %d confirmed-404 ticks", missingConfirmThreshold)
+	}
+}
+
+// TestMirrorReconcileMissingSurvivesReassignRace covers the exact scenario
+// missingConfirmThreshold exists for: Assigner.Reassign stamps
+// canonical.AssignedNode to the new node *before* pushing the task there
+// (reassign.go's stampNode doc comment — deliberate, so a revived dead
+// follower cannot clobber a task that moved), so for at least one reconcile
+// tick after a reassignment the new follower legitimately 404s on a task the
+// leader now considers assigned to it. A single (or double) 404 must not
+// trash the canonical copy; only sustained absence across the full threshold
+// may.
+func TestMirrorReconcileMissingSurvivesReassignRace(t *testing.T) {
+	stub := &followerStub{}
+	srv := stub.server(t)
+
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	if _, _, err := mgr.Put(task.Task{
+		ID: "just-reassigned", Status: task.StatusInProgress, AssignedNode: "pet-box",
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mirror := NewMirror(cfg, mgr, roster, slog.New(slog.DiscardHandler), time.Second)
+	var consecutiveFailures int
+	for range missingConfirmThreshold - 1 {
+		mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+	}
+	if _, err := mgr.Get("just-reassigned"); err != nil {
+		t.Fatalf("canonical copy trashed before the push had a chance to land: %v", err)
+	}
+
+	stub.mu.Lock()
+	stub.tasks = []task.Task{{
+		ID: "just-reassigned", Status: task.StatusInProgress, AssignedNode: "pet-box",
+		UpdatedAt: time.Now().Add(time.Minute),
+	}}
+	stub.mu.Unlock()
+	mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+
+	if _, err := mgr.Get("just-reassigned"); err != nil {
+		t.Fatalf("canonical copy must survive once the follower catches up: %v", err)
+	}
+}
+
+// TestMirrorReconcileMissingResetsStreakOnDirectHit covers a Copilot-review
+// finding on this PR: a direct GetTask hit (the follower has the task even
+// though this tick's ListTasksForNode snapshot omitted it) must clear any
+// in-progress confirmed-404 streak, or a later, unrelated absence inherits
+// the stale count and can trash the canonical copy before
+// missingConfirmThreshold truly fresh confirmations have accumulated.
+func TestMirrorReconcileMissingResetsStreakOnDirectHit(t *testing.T) {
+	stub := &followerStub{live: map[string]task.Task{}}
+	srv := stub.server(t)
+
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	if _, _, err := mgr.Put(task.Task{
+		ID: "flaky-listing", Status: task.StatusInProgress, AssignedNode: "pet-box",
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mirror := NewMirror(cfg, mgr, roster, slog.New(slog.DiscardHandler), time.Second)
+	var consecutiveFailures int
+	mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+
+	stub.mu.Lock()
+	stub.live["flaky-listing"] = task.Task{
+		ID: "flaky-listing", Status: task.StatusInProgress, AssignedNode: "pet-box",
+		UpdatedAt: time.Now().Add(time.Minute),
+	}
+	stub.mu.Unlock()
+	mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+
+	stub.mu.Lock()
+	delete(stub.live, "flaky-listing")
+	stub.mu.Unlock()
+	for range missingConfirmThreshold - 1 {
+		mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+	}
+
+	if _, err := mgr.Get("flaky-listing"); err != nil {
+		t.Fatalf("canonical copy trashed on a stale pre-reset streak: %v", err)
+	}
+}
+
+// TestMirrorReconcileMissingLeavesCanonicalOnTransientError is the negative
+// case for TestMirrorReconcileMissingTrashesConfirmedGoneTask: a GetTask
+// failure that is not a confirmed 404 (follower down, network blip) must
+// leave the canonical copy untouched so the next reconcile tick can retry —
+// trashing on an ambiguous error would be the #1576 board-wipe failure mode
+// recurring in the mirror instead of the local store.
+func TestMirrorReconcileMissingLeavesCanonicalOnTransientError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	})
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/TaskService/ListTasks":
+			_ = json.NewEncoder(w).Encode([]task.Task{})
+		case "/api/TaskService/GetTask":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":"boom","code":"internal_error"}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	if _, _, err := mgr.Put(task.Task{
+		ID: "maybe-still-there", Status: task.StatusTodo, AssignedNode: "pet-box",
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mirror := NewMirror(cfg, mgr, roster, slog.New(slog.DiscardHandler), time.Second)
+	var consecutiveFailures int
+	mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+
+	got, err := mgr.Get("maybe-still-there")
+	if err != nil {
+		t.Fatalf("canonical copy must survive a transient GetTask error: %v", err)
+	}
+	if got.Status != task.StatusTodo {
+		t.Errorf("status changed on a transient error: %v", got.Status)
 	}
 }
 

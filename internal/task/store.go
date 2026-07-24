@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/google/uuid"
@@ -471,7 +472,6 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
-		TaskType:        TaskTypeNormal,
 		AgentMode:       mode,
 		Attachments:     []Attachment{},
 		CreatedAt:       now,
@@ -514,7 +514,6 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
-		TaskType:        TaskTypeNormal,
 		AgentMode:       mode,
 		Attachments:     []Attachment{},
 		CreatedAt:       now,
@@ -659,9 +658,7 @@ func (s *Store) Put(t Task) (Task, error) {
 	if t.StatusChangedAt.IsZero() {
 		t.StatusChangedAt = t.UpdatedAt
 	}
-	if t.TaskType == "" {
-		t.TaskType = TaskTypeNormal
-	}
+	t.TaskType = normalizeTaskType(t.TaskType)
 	data, err := marshalTask(t, false)
 	if err != nil {
 		return Task{}, err
@@ -669,42 +666,6 @@ func (s *Store) Put(t Task) (Task, error) {
 	t.FilePath = filepath.Join(s.dir, t.ID+".md")
 	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
-	}
-	s.storeTaskCache(t)
-	return t, nil
-}
-
-// CreateChat creates a synthetic chat task bound to projectID. Chat tasks are
-// hidden from the task list UI and never restart on app reboot. The slug is
-// "chat-<8char>" so the worktree DirName is distinctive.
-func (s *Store) CreateChat(projectID string) (Task, error) {
-	if projectID == "" {
-		return Task{}, fmt.Errorf("project_id is required for chat")
-	}
-	now := time.Now().UTC()
-	id := uuid.NewString()[:8]
-	title := "chat " + now.Format("01-02 15:04")
-	t := Task{
-		ID:              id,
-		Slug:            "chat-" + id,
-		Title:           title,
-		Status:          StatusInProgress,
-		TaskType:        TaskTypeChat,
-		AgentMode:       AgentModeInteractive,
-		ProjectID:       projectID,
-		Attachments:     []Attachment{},
-		CreatedAt:       now,
-		UpdatedAt:       now,
-		StatusChangedAt: now,
-	}
-	data, err := Marshal(t)
-	if err != nil {
-		return Task{}, err
-	}
-	filename := fmt.Sprintf("%s.md", t.ID)
-	t.FilePath = filepath.Join(s.dir, filename)
-	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
-		return Task{}, fmt.Errorf("write chat task file: %w", err)
 	}
 	s.storeTaskCache(t)
 	return t, nil
@@ -1304,6 +1265,9 @@ func applyUpdateFields(t *Task, u Update) error {
 		if u.StatusReason == nil {
 			t.StatusReason = ""
 		}
+		if u.Blocker == nil {
+			t.Blocker = blocker.State{}
+		}
 		// Stamp ClosedAt on transition into a terminal status; clear on exit.
 		wasTerminal := IsTerminalStatus(oldStatus)
 		isTerminal := IsTerminalStatus(t.Status)
@@ -1317,6 +1281,15 @@ func applyUpdateFields(t *Task, u Update) error {
 	}
 	if u.StatusReason != nil {
 		t.StatusReason = *u.StatusReason
+		if *u.StatusReason == "" && u.Blocker == nil {
+			t.Blocker = blocker.State{}
+		}
+	}
+	if u.Blocker != nil {
+		if err := blocker.ValidateStatus(string(t.Status), *u.Blocker); err != nil {
+			return err
+		}
+		t.Blocker = *u.Blocker
 	}
 	if u.BlockedByIssue != nil {
 		t.BlockedByIssue = *u.BlockedByIssue
@@ -1858,17 +1831,19 @@ func statusChangedAtBackfill(t Task, fallback time.Time) time.Time {
 // pointer: nil means "leave unchanged". Fields that carried an implicit
 // non-empty/true guard in the old map[string]any path keep that guard here
 // (see applyRunLifecycle/applyRunVerdict/applyRunTestOutcome/applyRunIdentity):
-// HeadSHA, Outcome, EscalationReason, and string verdict/test/session values
-// ignore empty strings, and VerdictRendered is a latch that only ever flips
-// true.
+// HeadSHA, FinalCommitSource, Outcome, EscalationReason, and string verdict/
+// test/session values ignore empty strings, and VerdictRendered is a latch
+// that only ever flips true.
 type RunPatch struct {
 	// Lifecycle
-	State            *string
-	Outcome          *string
-	EscalationReason *string
-	Result           *string
-	LogFile          *string
-	HeadSHA          *string
+	State                 *string
+	Outcome               *string
+	EscalationReason      *string
+	Result                *string
+	LogFile               *string
+	HeadSHA               *string
+	FinalCommitSource     *string
+	ResumeZeroOutputStall *bool
 
 	// Cost/tokens
 	CostUSD         *float64
@@ -1917,6 +1892,12 @@ func applyRunLifecycle(run *AgentRun, p RunPatch) {
 	}
 	if p.HeadSHA != nil && *p.HeadSHA != "" {
 		run.HeadSHA = *p.HeadSHA
+	}
+	if p.FinalCommitSource != nil && *p.FinalCommitSource != "" {
+		run.FinalCommitSource = *p.FinalCommitSource
+	}
+	if p.ResumeZeroOutputStall != nil && *p.ResumeZeroOutputStall {
+		run.ResumeZeroOutputStall = true
 	}
 }
 

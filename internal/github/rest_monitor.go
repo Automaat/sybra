@@ -1,9 +1,11 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -31,8 +33,13 @@ type restPR struct {
 	Draft          bool   `json:"draft"`
 	MergeableState string `json:"mergeable_state"` // clean|dirty|blocked|unstable|behind|unknown
 	Head           struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo struct {
+			Owner struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -110,6 +117,7 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		Author:             pr.User.Login,
 		IsDraft:            pr.Draft,
 		HeadRefName:        pr.Head.Ref,
+		HeadRepoOwner:      pr.Head.Repo.Owner.Login,
 		HeadSHA:            pr.Head.SHA,
 		BaseRefName:        pr.Base.Ref,
 		Mergeable:          restMergeable(pr.MergeableState),
@@ -193,11 +201,15 @@ func restMergeable(state string) string {
 // latest-only rollup would otherwise hide. fetched reports whether the fetch
 // and parse both succeeded; false must never be read as "no check runs".
 func fetchCheckRunsWith(e execer, owner, name, sha, filter string) (runs restCheckRuns, fetched bool) {
-	path := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, name, sha)
+	return fetchCheckRunsCtxWith(context.Background(), e, owner, name, sha, filter)
+}
+
+func fetchCheckRunsCtxWith(ctx context.Context, e execer, owner, name, sha, filter string) (runs restCheckRuns, fetched bool) {
+	path := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs?per_page=100", owner, name, sha)
 	if filter != "" {
-		path += "?filter=" + filter
+		path += "&filter=" + url.QueryEscape(filter)
 	}
-	resp, err := runGHAPIWith(e, "30s", path)
+	resp, err := runGHAPICtxWith(ctx, e, "30s", path)
 	if err != nil {
 		return restCheckRuns{}, false
 	}

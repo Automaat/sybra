@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -22,7 +23,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		Slug:                   "task-slug",
 		Title:                  "Task title",
 		Status:                 StatusTesting,
-		TaskType:               TaskTypeResearch,
+		TaskType:               TaskTypeUmbrella,
 		AgentMode:              AgentModeHeadless,
 		AllowedTools:           []string{"Read", "Write"},
 		Tags:                   []string{"backend", "refactor"},
@@ -216,7 +217,7 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 	case "Status":
 		task.Status = StatusTesting
 	case "TaskType":
-		task.TaskType = TaskTypeResearch
+		task.TaskType = TaskTypeUmbrella
 	case "AgentMode":
 		task.AgentMode = AgentModeHeadless
 	case "AllowedTools":
@@ -237,6 +238,14 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.RefIssue = "owner/repo#999"
 	case "StatusReason":
 		task.StatusReason = "testing"
+	case "Blocker":
+		task.Blocker = blocker.State{
+			Kind:       blocker.KindWorktreeRepair,
+			Actor:      blocker.ActorWorkflow,
+			Code:       "rebase_failed",
+			NextAction: "repair_worktree",
+			Exhausted:  true,
+		}
 	case "HandoffSourceProvider":
 		task.HandoffSourceProvider = "codex"
 	case "BlockedByIssue":

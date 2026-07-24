@@ -61,7 +61,7 @@ const DefaultMaxCheckpoints = 3
 
 // DefaultMaxReviewRounds bounds how many automated review rounds one
 // simple-task-review execution may spend before Sybra parks the task
-// human-required.
+// blocked.
 const DefaultMaxReviewRounds = 3
 
 // MaxCheckpoints returns the configured checkpoint-handoff cap or
@@ -602,14 +602,14 @@ func (c *Config) HumanReviewRepo() string {
 }
 
 // HumanReviewModel returns the configured model name or alias, defaulting to
-// "claude-haiku-4-5-20251001". Same diagnosis shape as the watchdog
+// "haiku". Same diagnosis shape as the watchdog
 // inspector (applyWatchdogDefaults): classifying why a task stalled, not
 // authoring a fix.
 func (c *Config) HumanReviewModel() string {
 	if c != nil && c.HumanReview.Model != "" {
 		return c.HumanReview.Model
 	}
-	return "claude-haiku-4-5-20251001"
+	return "haiku"
 }
 
 // HumanReviewIssueLabel returns the legacy configured label or "sybra-bug".
@@ -721,6 +721,7 @@ func defaultSeedConfig() *Config {
 			Mode:                "notify",
 			PollSeconds:         300,
 			RestartDelaySeconds: 2,
+			CoalesceSeconds:     3600,
 		},
 		Providers: ProvidersConfig{
 			HealthCheck: ProviderHealthCheckConfig{
@@ -1118,6 +1119,9 @@ func applyAutoUpdateDefaults(cfg *Config) {
 	if cfg.AutoUpdate.RestartDelaySeconds <= 0 {
 		cfg.AutoUpdate.RestartDelaySeconds = 2
 	}
+	if cfg.AutoUpdate.CoalesceSeconds <= 0 {
+		cfg.AutoUpdate.CoalesceSeconds = 3600
+	}
 }
 
 // applyLegacyGitHubDefault keeps sparse configs created before GitHub became
@@ -1255,7 +1259,7 @@ func reconcileBuiltinExperiments(cfg *Config, def abtest.Config) {
 func applyWatchdogDefaults(cfg *Config) {
 	w := &cfg.Watchdog
 	if w.Model == "" {
-		w.Model = "claude-haiku-4-5-20251001"
+		w.Model = "haiku"
 	}
 	// MaxRunsPerWindow and RunWindowMinutes are deliberately NOT defaulted
 	// here, same as LoopThreshold above — both are seeded by DefaultConfig
@@ -1531,7 +1535,7 @@ func applyMonitorDefaults(cfg *Config, file *FileConfig) {
 	if cfg.Monitor.Model == "" {
 		// Same diagnosis shape as the watchdog inspector (applyWatchdogDefaults):
 		// classifying an anomaly, not authoring a fix.
-		cfg.Monitor.Model = "claude-haiku-4-5-20251001"
+		cfg.Monitor.Model = "haiku"
 	}
 	if cfg.Monitor.IssueCooldownMinutes <= 0 {
 		cfg.Monitor.IssueCooldownMinutes = 30

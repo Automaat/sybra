@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -14,8 +15,10 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // setupUnblockedRecoveryWorktree creates a clone checked out on branch, with
@@ -510,11 +513,20 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add run: %v", err)
 	}
+	var dispatchedTarget, dispatchedReason string
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		dispatchedReason = reason
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(reason),
+		})
+	}
 
 	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
 	ag.AppendOutput(agent.StreamEvent{
 		Type:    "assistant",
-		Content: `{"decision":"unblocked","reason":"opened the PR and the host should resume review","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+		Content: `{"decision":"unblocked","reason":"fixed the issue and the host should resume review","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
 	})
 	h.inflight[tk.ID] = agentID
 	h.onComplete(ag)
@@ -523,10 +535,13 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
 	}
-	if got.Status != task.StatusReadyPR {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyPR)
+	if dispatchedTarget != string(task.StatusReadyReview) {
+		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusReadyReview)
 	}
-	if !strings.Contains(got.StatusReason, "auto-review recovery") {
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+	if !strings.Contains(dispatchedReason, "auto-review recovery") || !strings.Contains(got.StatusReason, "auto-review recovery") {
 		t.Fatalf("status_reason = %q, want auto-review recovery note", got.StatusReason)
 	}
 	if !strings.Contains(got.Body, "Auto-review: unblocked") {
@@ -534,6 +549,1094 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	}
 	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
 		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestPrepareRecoveryDispatch_InReviewWithoutPRFallsBackToReadyReview(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Recover pre-PR review", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	got, err := h.prepareRecoveryDispatch(tk, task.StatusInReview)
+	if err != nil {
+		t.Fatalf("prepareRecoveryDispatch: %v", err)
+	}
+	if got != task.StatusReadyReview {
+		t.Fatalf("target = %q, want %q", got, task.StatusReadyReview)
+	}
+}
+
+func TestRecoverRenderedUnblockedTasks_DispatchesMissingWorktreeCircuitBreaker(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Recover old missing worktree park", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory (tripped after 3 dispatch failures for step "fix_review" within 15m0s)`
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         "hr-rendered",
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "success",
+		VerdictRendered: true,
+		Result:          `{"decision":"unblocked","reason":"worktree has been recreated; resume review","recoverable_action":"in-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	var dispatchedTarget string
+	h.dispatchFromHumanRequired = func(id, target, dispatchReason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(dispatchReason),
+		})
+	}
+
+	h.recoverRenderedUnblockedTasks()
+
+	if dispatchedTarget != string(task.StatusReadyReview) {
+		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusReadyReview)
+	}
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+}
+
+func TestRecoverRenderedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "hr-rendered-done"
+	tk, err := tasks.Create("Recover rendered merged PR", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         agentID,
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "success",
+		VerdictRendered: true,
+		Result:          `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for merged rendered recovery")
+		return task.Task{}, nil
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
+	}
+	h.landClosedPR = func(_ context.Context, id string, prNumber int, state, completingAgentID string) error {
+		if id != tk.ID {
+			t.Fatalf("taskID = %q, want %q", id, tk.ID)
+		}
+		if prNumber != 2417 {
+			t.Fatalf("prNumber = %d, want 2417", prNumber)
+		}
+		if state != "MERGED" {
+			t.Fatalf("state = %q, want MERGED", state)
+		}
+		if completingAgentID != agentID {
+			t.Fatalf("completingAgentID = %q, want %q", completingAgentID, agentID)
+		}
+		_, err := tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusDone),
+			Outcome:      task.Ptr("merged"),
+			StatusReason: task.Ptr(""),
+		})
+		return err
+	}
+
+	h.recoverRenderedUnblockedTasks()
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if got.PRNumber != 2417 {
+		t.Fatalf("prNumber = %d, want 2417", got.PRNumber)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared merged landing", got.StatusReason)
+	}
+}
+
+func TestRecoverRenderedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "hr-rendered-done-closed"
+	tk, err := tasks.Create("Recover rendered closed PR", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         agentID,
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "success",
+		VerdictRendered: true,
+		Result:          `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for unmerged rendered recovery")
+		return task.Task{}, nil
+	}
+	h.landClosedPR = func(context.Context, string, int, string, string) error {
+		t.Fatal("unexpected merged landing for unmerged rendered recovery")
+		return nil
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "CLOSED"}, nil
+	}
+
+	h.recoverRenderedUnblockedTasks()
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.Outcome != "" {
+		t.Fatalf("outcome = %q, want empty", got.Outcome)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked claim not verified") {
+		t.Fatalf("expected verification failure note in body; got:\n%s", got.Body)
+	}
+}
+
+func TestRecoverRenderedUnblockedTasks_IgnoresUnrenderedVerdict(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Recover old missing worktree park", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         "hr-unrendered",
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "success",
+		VerdictRendered: false,
+		Result:          `{"decision":"unblocked","reason":"worktree has been recreated; resume review","recoverable_action":"in-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(id, target, dispatchReason, agentID string) (task.Task, error) {
+		t.Fatalf("dispatchFromHumanRequired called unexpectedly with id=%q target=%q reason=%q agent=%q", id, target, dispatchReason, agentID)
+		return task.Task{}, nil
+	}
+
+	h.recoverRenderedUnblockedTasks()
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_ReadyReviewWithPRResumesInReview(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-pr-review"
+	tk, err := tasks.Create("Recover PR task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+		PRNumber:  task.Ptr(42),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	var dispatchedTarget string
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.Status(target)),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"fixed the issue and the host should resume review","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if dispatchedTarget != string(task.StatusInReview) {
+		t.Fatalf("dispatch target = %q, want %q for linked PR recovery", dispatchedTarget, task.StatusInReview)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_DispatchNoteFailureKeepsVerdictUnrendered(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-note-failure"
+	tk, err := tasks.Create("Recover task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	taskDir := filepath.Dir(tk.FilePath)
+	info, err := os.Stat(taskDir)
+	if err != nil {
+		t.Fatalf("stat task dir: %v", err)
+	}
+	restoreMode := info.Mode().Perm()
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		updated, uErr := tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(reason),
+		})
+		if uErr != nil {
+			return task.Task{}, uErr
+		}
+		if err := os.Chmod(taskDir, 0o555); err != nil {
+			t.Fatalf("chmod task dir read-only: %v", err)
+		}
+		return updated, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"fixed the issue and the host should resume review","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	if err := os.Chmod(taskDir, restoreMode); err != nil {
+		t.Fatalf("restore task dir mode: %v", err)
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+	if strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("unexpected unblocked note after append failure; got:\n%s", got.Body)
+	}
+	if len(got.AgentRuns) != 1 {
+		t.Fatalf("agent runs = %+v, want single run", got.AgentRuns)
+	}
+	if got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("expected verdict to remain unrendered after note write failure; agent runs = %+v", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_ReadyPRWithoutPRStaysReadyPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-ready-pr"
+	tk, err := tasks.Create("Recover PR fallback task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	var dispatchedTarget string
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.Status(target)),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"the final gate cannot run locally; use the PR fallback","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if dispatchedTarget != string(task.StatusReadyPR) {
+		t.Fatalf("dispatch target = %q, want %q for no-PR fallback recovery", dispatchedTarget, task.StatusReadyPR)
+	}
+	if got.Status != task.StatusReadyPR {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyPR)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done"
+	dir := setupUnblockedRecoveryWorktree(t, "feat/merged")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty local change"), 0o644); err != nil {
+		t.Fatalf("dirty file: %v", err)
+	}
+	tk, err := tasks.Create("Already merged task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("github push preflight failed: auth"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		WorktreeDir:  task.Ptr(dir),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for merged landing")
+		return task.Task{}, nil
+	}
+	h.landClosedPR = func(_ context.Context, id string, prNumber int, state, completingAgentID string) error {
+		if id != tk.ID {
+			t.Fatalf("taskID = %q, want %q", id, tk.ID)
+		}
+		if prNumber != 2417 {
+			t.Fatalf("prNumber = %d, want 2417", prNumber)
+		}
+		if state != "MERGED" {
+			t.Fatalf("state = %q, want MERGED", state)
+		}
+		if completingAgentID != agentID {
+			t.Fatalf("completingAgentID = %q, want %q", completingAgentID, agentID)
+		}
+		_, err := tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusDone),
+			Outcome:      task.Ptr("merged"),
+			StatusReason: task.Ptr(""),
+		})
+		return err
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if got.PRNumber != 2417 {
+		t.Fatalf("prNumber = %d, want 2417", got.PRNumber)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared merged landing", got.StatusReason)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("expected unblocked note in body; got:\n%s", got.Body)
+	}
+	if strings.Contains(got.Body, "claim not verified") {
+		t.Fatalf("unexpected verification failure note in body:\n%s", got.Body)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_DoneActionPrefersVerdictPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done-replacement-pr"
+	tk, err := tasks.Create("Merged replacement PR task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("waiting on review"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		PRNumber:     task.Ptr(100),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for merged landing")
+		return task.Task{}, nil
+	}
+	h.landClosedPR = func(_ context.Context, id string, prNumber int, state, completingAgentID string) error {
+		if id != tk.ID {
+			t.Fatalf("taskID = %q, want %q", id, tk.ID)
+		}
+		if prNumber != 101 {
+			t.Fatalf("prNumber = %d, want replacement PR 101", prNumber)
+		}
+		if state != "MERGED" {
+			t.Fatalf("state = %q, want MERGED", state)
+		}
+		if completingAgentID != agentID {
+			t.Fatalf("completingAgentID = %q, want %q", completingAgentID, agentID)
+		}
+		_, err := tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusDone),
+			Outcome:      task.Ptr("merged"),
+			StatusReason: task.Ptr(""),
+		})
+		return err
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 101 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#101", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #101","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.PRNumber != 101 {
+		t.Fatalf("prNumber = %d, want replacement PR 101", got.PRNumber)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if strings.Contains(got.Body, "claim not verified") {
+		t.Fatalf("unexpected verification failure note in body:\n%s", got.Body)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_DoneActionPreservesLandingOutcome(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done-edited"
+	tk, err := tasks.Create("Merged task with human edits", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("waiting on review"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		PRNumber:     task.Ptr(2417),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for merged landing")
+		return task.Task{}, nil
+	}
+	h.landClosedPR = func(_ context.Context, id string, prNumber int, state, completingAgentID string) error {
+		if id != tk.ID {
+			t.Fatalf("taskID = %q, want %q", id, tk.ID)
+		}
+		if prNumber != 2417 {
+			t.Fatalf("prNumber = %d, want 2417", prNumber)
+		}
+		if state != "MERGED" {
+			t.Fatalf("state = %q, want MERGED", state)
+		}
+		if completingAgentID != agentID {
+			t.Fatalf("completingAgentID = %q, want %q", completingAgentID, agentID)
+		}
+		_, err := tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusDone),
+			Outcome:      task.Ptr("merged_with_edits"),
+			StatusReason: task.Ptr(""),
+		})
+		return err
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.Outcome != "merged_with_edits" {
+		t.Fatalf("outcome = %q, want merged_with_edits", got.Outcome)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared merged landing", got.StatusReason)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_DoneActionRejectsUnmergedPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done-closed-pr"
+	tk, err := tasks.Create("Closed PR task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("waiting on review"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		PRNumber:     task.Ptr(2417),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.landClosedPR = func(context.Context, string, int, string, string) error {
+		t.Fatal("unexpected merged landing for closed PR")
+		return nil
+	}
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("unexpected terminal dispatch for closed PR")
+		return task.Task{}, nil
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "CLOSED"}, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.Outcome != "" {
+		t.Fatalf("outcome = %q, want empty", got.Outcome)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked claim not verified") {
+		t.Fatalf("expected verification failure note in body; got:\n%s", got.Body)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_DoneActionFallbackBackfillsPR(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done-fallback"
+	tk, err := tasks.Create("Merged task missing PR link", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("github push preflight failed: auth"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	var dispatchedTarget string
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		dispatchedTarget = target
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.Status(target)),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if dispatchedTarget != string(task.StatusDone) {
+		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusDone)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.PRNumber != 2417 {
+		t.Fatalf("prNumber = %d, want 2417", got.PRNumber)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared after terminal recovery", got.StatusReason)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Fatalf("expected unblocked note in body; got:\n%s", got.Body)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_DoneActionFallsBackWhenLandingFails(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-done-land-error"
+	tk, err := tasks.Create("Merged task with landing error", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("waiting on review"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		PRNumber:     task.Ptr(2417),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	var dispatchedTarget string
+	h.dispatchFromHumanRequired = func(id, target, reason, completingAgentID string) (task.Task, error) {
+		if id != tk.ID {
+			t.Fatalf("taskID = %q, want %q", id, tk.ID)
+		}
+		if completingAgentID != agentID {
+			t.Fatalf("completingAgentID = %q, want %q", completingAgentID, agentID)
+		}
+		dispatchedTarget = target
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.Status(target)),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+	h.landClosedPR = func(_ context.Context, id string, prNumber int, state, completingAgentID string) error {
+		if id != tk.ID {
+			t.Fatalf("taskID = %q, want %q", id, tk.ID)
+		}
+		if prNumber != 2417 {
+			t.Fatalf("prNumber = %d, want 2417", prNumber)
+		}
+		if state != "MERGED" {
+			t.Fatalf("state = %q, want MERGED", state)
+		}
+		if completingAgentID != agentID {
+			t.Fatalf("completingAgentID = %q, want %q", completingAgentID, agentID)
+		}
+		return errors.New("boom")
+	}
+	h.fetchPRState = func(repo string, number int) (github.PRState, error) {
+		if repo != "Automaat/sybra" || number != 2417 {
+			t.Fatalf("fetchPRState(%q, %d), want Automaat/sybra#2417", repo, number)
+		}
+		return github.PRState{State: "MERGED"}, nil
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"merged through PR #2417","recoverable_action":"done","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if dispatchedTarget != string(task.StatusDone) {
+		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusDone)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.PRNumber != 2417 {
+		t.Fatalf("prNumber = %d, want 2417", got.PRNumber)
+	}
+	if got.Outcome != "merged" {
+		t.Fatalf("outcome = %q, want merged", got.Outcome)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared after fallback", got.StatusReason)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("agent runs = %+v, want rendered verdict", got.AgentRuns)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_TamperRerouteAddsBlessTag(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-tamper"
+	tk, err := tasks.Create("Recover tamper task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		cur, gErr := tasks.Get(id)
+		if gErr != nil {
+			return task.Task{}, gErr
+		}
+		if !slices.Contains(cur.Tags, workflow.TamperBlessedTag) {
+			t.Fatalf("expected %q tag before dispatch, tags=%v", workflow.TamperBlessedTag, cur.Tags)
+		}
+		if target != string(task.StatusInProgress) {
+			t.Fatalf("dispatch target = %q, want %q", target, task.StatusInProgress)
+		}
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"resume verification after the false-positive tamper gate","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if !slices.Contains(got.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("tags = %v, want %q", got.Tags, workflow.TamperBlessedTag)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+}
+
+func TestOnComplete_UnblockedVerdict_TamperReadyReviewAddsBlessTag(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-tamper-ready-review"
+	tk, err := tasks.Create("Recover tamper review task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		cur, gErr := tasks.Get(id)
+		if gErr != nil {
+			return task.Task{}, gErr
+		}
+		if !slices.Contains(cur.Tags, workflow.TamperBlessedTag) {
+			t.Fatalf("expected %q tag before dispatch, tags=%v", workflow.TamperBlessedTag, cur.Tags)
+		}
+		if target != string(task.StatusReadyReview) {
+			t.Fatalf("dispatch target = %q, want %q", target, task.StatusReadyReview)
+		}
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(reason),
+		})
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"resume review after accepting the tamper finding","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if !slices.Contains(got.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("tags = %v, want %q", got.Tags, workflow.TamperBlessedTag)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
 	}
 }
 
@@ -716,6 +1819,8 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 	for _, want := range []string{
 		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
 		"never fabricate", "/data/worktrees/queue", "feat/queue",
+		"do NOT jump straight to `ready-pr`",
+		"Prefer the first safe downstream stage (`in-progress`/`testing`/`in-review`) over `ready-pr`",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q", want)

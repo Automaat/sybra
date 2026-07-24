@@ -86,12 +86,12 @@ func TestQueueDrainPassDrainsManualStartsForEveryRole(t *testing.T) {
 			a.cfg.Orchestrator.Role = tt.role
 			a.applyInstanceRole()
 
-			blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+			blocker := createTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
 			blockerAgent, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 			if err != nil {
 				t.Fatalf("StartAgent(blocker): %v", err)
 			}
-			queued := createResearchTaskWithPriority(t, a.tasks, "queued", task.PriorityMedium)
+			queued := createTaskWithPriority(t, a.tasks, "queued", task.PriorityMedium)
 			if _, err := a.StartAgent(queued.ID, "headless", "queued", false); err != nil {
 				t.Fatalf("StartAgent(queued): %v", err)
 			}

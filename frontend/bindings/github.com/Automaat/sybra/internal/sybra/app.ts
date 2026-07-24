@@ -19,6 +19,9 @@ import * as bgop$0 from "../bgop/models.js";
 import * as evaluation$0 from "../evaluation/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as httpapi$0 from "../httpapi/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as learning$0 from "../learning/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -38,6 +41,10 @@ export function AgentQueueSnapshot(): $CancellablePromise<$models.AgentQueueSnap
     return $Call.ByID(659722111).then(($result: any) => {
         return $$createType0($result);
     });
+}
+
+export function BeginDrain(): $CancellablePromise<boolean> {
+    return $Call.ByID(1387905190);
 }
 
 /**
@@ -89,6 +96,13 @@ export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBin
     return $Call.ByID(936556103).then(($result: any) => {
         return $$createType4($result);
     });
+}
+
+/**
+ * HTTPAdmission decides whether one HTTP API method may run.
+ */
+export function HTTPAdmission(service: string, method: string, meta: httpapi$0.MethodMeta): $CancellablePromise<void> {
+    return $Call.ByID(569549168, service, method, meta);
 }
 
 /**
@@ -149,15 +163,6 @@ export function StartAgent(taskID: string, mode: string, prompt: string, include
 }
 
 /**
- * StartChat creates a new interactive chat bound to projectID using the
- * requested provider ("claude" or "codex"). Each chat gets a dedicated
- * local-only worktree that is cleaned up when StopChat is called.
- */
-export function StartChat(projectID: string, providerName: string, prompt: string): $CancellablePromise<agent$0.Agent | null> {
-    return $Call.ByID(4013768999, projectID, providerName, prompt);
-}
-
-/**
  * StartK8sPocAgent starts a project-less headless run directly through
  * agent.Manager. It exists to smoke-test the experimental Kubernetes Job runner
  * without requiring a project/worktree. Normal production dispatch should keep
@@ -186,15 +191,6 @@ export function StartK8sPocAgent(prompt: string): $CancellablePromise<agent$0.Ag
  */
 export function Startup(): $CancellablePromise<void> {
     return $Call.ByID(2295615836);
-}
-
-/**
- * StopChat stops a chat agent, deletes its synthetic task, and removes its
- * worktree. Refuses to operate on agents that are not bound to a chat task
- * so the UI cannot accidentally delete a real task.
- */
-export function StopChat(agentID: string): $CancellablePromise<void> {
-    return $Call.ByID(2858183885, agentID);
 }
 
 /**

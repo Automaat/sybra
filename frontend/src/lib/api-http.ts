@@ -98,8 +98,6 @@ export function ListNotifications(): Promise<Array<Notification>> { return call(
 export function RegisterSpotlightHotkey(): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 export function SetDesktopNotifications(arg1: boolean): Promise<void> { return call('App', 'SetDesktopNotifications', arg1) }
 export function StartAgent(arg1: string, arg2: string, arg3: string, arg4: boolean): Promise<Agent> { return call('App', 'StartAgent', arg1, arg2, arg3, arg4) }
-export function StartChat(arg1: string, arg2: string, arg3: string): Promise<Agent> { return call('App', 'StartChat', arg1, arg2, arg3) }
-export function StopChat(arg1: string): Promise<void> { return call('App', 'StopChat', arg1) }
 export function AgentQueueSnapshot(): Promise<AgentQueueSnapshotData> { return call('App', 'AgentQueueSnapshot') }
 export function StartK8sPocAgent(arg1: string): Promise<Agent> { return call('App', 'StartK8sPocAgent', arg1) }
 

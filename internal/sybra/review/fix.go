@@ -13,8 +13,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/executil"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
@@ -24,8 +26,9 @@ import (
 )
 
 // branchConflictFixWorkflowID is the builtin workflow started directly (by
-// ID, via StartWorkflowWithVars) to recover a no-PR branch conflict. It is
-// never reached via DispatchEvent/trigger matching — see
+// ID, via StartWorkflowWithVars) to recover a task-branch conflict without
+// going through the ordinary PR-fix dispatch path. It is never reached via
+// DispatchEvent/trigger matching — see
 // internal/workflow/builtin/branch-conflict-fix.yaml.
 const branchConflictFixWorkflowID = "branch-conflict-fix"
 
@@ -37,6 +40,7 @@ const branchConflictFixWorkflowID = "branch-conflict-fix"
 const prFixWorkflowID = "pr-fix"
 
 const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
+const sameBranchConflictRetryKind = github.PRIssueTaskBranchConflict
 const branchRecreateKind = github.PRIssueBranchRecreate
 const ciInfraRerunKind = github.PRIssueKind("ci_infra_rerun")
 
@@ -59,6 +63,14 @@ type branchConflictResumeState struct {
 	workflowStep string
 	workflowVars string
 	prior        *workflow.Execution
+}
+
+type taskBranchConflictRecoverySpec struct {
+	retryKind      github.PRIssueKind
+	branchOverride string
+	remoteOverride string
+	allowRecreate  bool
+	prompt         func(context.Context, task.Task, string) string
 }
 
 type dispatchFixOptions struct {
@@ -126,6 +138,28 @@ func readyForOwnBotAutoMerge(pr github.PullRequest) bool {
 		pr.ReviewDecision != "CHANGES_REQUESTED"
 }
 
+func autoMergeStateSignature(pr github.PullRequest) string {
+	return fmt.Sprintf("%s|%t|%s|%s|%s|%d|%t|%t|%s|%t|%t",
+		pr.UpdatedAt,
+		pr.IsDraft,
+		pr.CIStatus,
+		pr.Mergeable,
+		pr.ReviewDecision,
+		pr.UnresolvedCount,
+		pr.CopilotReviewed,
+		pr.AutoMergeEnabled,
+		pr.RESTMergeableState,
+		pr.RESTCIFetched,
+		pr.RESTApproved,
+	)
+}
+
+type nativeAutoMergeAttemptResult struct {
+	armed     bool
+	attempted bool
+	err       error
+}
+
 // readyToArmNativeAutoMerge reports whether a PR is ready to have GitHub's
 // native auto-merge armed: the same review-cycle gate as
 // readyForCopilotAutoMerge MINUS the CI-green requirement (native auto-merge
@@ -173,7 +207,43 @@ func restRenovateGreen(pr github.PullRequest) bool {
 		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "")
 }
 
-func (r *Handler) handleAutoMerge(issue github.PRIssue) {
+// preflightArmNativeAutoMerge prefers arming GitHub's native auto-merge over
+// Sybra's own squash merge when it's available and the PR is otherwise ready
+// — it's cheaper (REST poll on GitHub's side) than Sybra's GraphQL merge-gate
+// polling. Only tried once the CI-green-gated legacy path in handleAutoMerge
+// would otherwise fire, so this never delays a merge; it just lets GitHub
+// finish the last mile. Returns true once armed, so the caller can stop
+// without falling through to the direct-merge path.
+//
+// Gated on the same backoff as the direct-merge path: an arm attempt that
+// itself keeps failing (bad credentials, a transient API error) must not be
+// retried every poll tick either (#2450).
+func (r *Handler) preflightArmNativeAutoMerge(ctx context.Context, t task.Task, issue github.PRIssue, backoff *github.AutoMergeBackoff, stateSig string) bool {
+	if !r.nativeAutoMergeEnabled() || !readyToArmNativeAutoMerge(issue.PR) {
+		return false
+	}
+	if !backoff.ShouldAttempt(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig) {
+		metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(issue.PR.Repository, issue.PR.Number)))
+		return false
+	}
+	res := r.tryArmNativeAutoMerge(t, issue, "")
+	if res.armed {
+		r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
+		metrics.AutoMergeAttempt(ctx, "armed", "")
+		r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
+		return true
+	}
+	if res.err != nil {
+		metrics.AutoMergeAttempt(ctx, "attempted", "")
+		class := github.ClassifyMergeError(res.err)
+		if backoff.RecordFailure(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig, class) {
+			metrics.AutoMergeAttempt(ctx, "terminal", string(class))
+		}
+	}
+	return false
+}
+
+func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 	t, err := r.tasks.Get(issue.TaskID)
 	if err != nil {
 		return
@@ -194,16 +264,11 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 		return
 	}
 
-	// Prefer arming GitHub's native auto-merge over Sybra's own squash merge
-	// when it's available and the PR is otherwise ready — it's cheaper (REST
-	// poll on GitHub's side) than Sybra's GraphQL merge-gate polling. Only
-	// tried once the CI-green-gated legacy path would otherwise fire, so this
-	// never delays a merge; it just lets GitHub finish the last mile.
-	if r.nativeAutoMergeEnabled() && readyToArmNativeAutoMerge(issue.PR) {
-		if r.tryArmNativeAutoMerge(t, issue, "") {
-			r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
-			return
-		}
+	backoff := r.mergeBackoff()
+	stateSig := autoMergeStateSignature(issue.PR)
+
+	if r.preflightArmNativeAutoMerge(ctx, t, issue, backoff, stateSig) {
+		return
 	}
 
 	renovateFix := slices.Contains(t.Tags, "renovate-fix")
@@ -239,6 +304,16 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 		return
 	}
 
+	// Reprobe before spending another attempt: hold off on a direct-merge
+	// retry against the same head SHA until this class's backoff window has
+	// elapsed, instead of hammering an unresolved failure every poll tick
+	// (#2450). A new push (different head SHA) always reprobes immediately.
+	if !backoff.ShouldAttempt(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig) {
+		metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(issue.PR.Repository, issue.PR.Number)))
+		return
+	}
+	metrics.AutoMergeAttempt(ctx, "attempted", "")
+
 	var mergeErr error
 	if issue.PR.SourcedViaREST {
 		merge := r.mergePRViaREST
@@ -256,14 +331,21 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
 	if mergeErr != nil {
 		if r.nativeAutoMergeEnabled() && !issue.PR.SourcedViaREST && requiresNativeAutoMerge(mergeErr) {
-			if r.tryArmNativeAutoMerge(t, issue, "direct_merge_rejected") {
+			if res := r.tryArmNativeAutoMerge(t, issue, "direct_merge_rejected"); res.armed {
+				r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
+				metrics.AutoMergeAttempt(ctx, "armed", "")
 				return
 			}
 		}
-		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", mergeErr)
+		class := github.ClassifyMergeError(mergeErr)
+		if backoff.RecordFailure(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig, class) {
+			metrics.AutoMergeAttempt(ctx, "terminal", string(class))
+		}
+		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", mergeErr, "class", string(class))
 		return
 	}
 
+	r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
 	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
 	auditData := map[string]any{
 		"pr": issue.PR.Number, "repo": issue.PR.Repository,
@@ -280,11 +362,35 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	}
 }
 
+// mergeBackoff lazily initializes the handler's auto-merge backoff tracker.
+// Mirrors readyPRCache/prPollState's lazy-init pattern so tests that
+// construct a bare Handler{} literal work without a dedicated constructor.
+func (r *Handler) mergeBackoff() *github.AutoMergeBackoff {
+	if r.autoMergeBackoff == nil {
+		r.autoMergeBackoff = github.NewAutoMergeBackoff()
+	}
+	return r.autoMergeBackoff
+}
+
+// clearMergeBackoff drops backoff state for repo#number and, when a prior
+// failure had been recorded there, records a "recovered" metric — a
+// suppressed/failing PR that just succeeded, not a routine first-attempt
+// merge.
+func (r *Handler) clearMergeBackoff(ctx context.Context, repo string, number int) {
+	if r.mergeBackoff().Clear(repo, number) {
+		metrics.AutoMergeAttempt(ctx, "recovered", "")
+	}
+}
+
 func (r *Handler) nativeAutoMergeEnabled() bool {
 	return r.cfg != nil && r.cfg.GitHub.NativeAutoMerge
 }
 
-func (r *Handler) tryArmNativeAutoMerge(t task.Task, issue github.PRIssue, fallback string) bool {
+// tryArmNativeAutoMerge attempts to arm GitHub's native auto-merge. attempted
+// reports whether a real GitHub call ran, while err carries the failure to
+// classify/back off. Unsupported repo/branch stays a nil error so callers do
+// not back it off like a genuine API failure.
+func (r *Handler) tryArmNativeAutoMerge(t task.Task, issue github.PRIssue, fallback string) nativeAutoMergeAttemptResult {
 	supportsFn := r.supportsAutoMergeFn
 	if supportsFn == nil {
 		supportsFn = github.SupportsNativeAutoMerge
@@ -292,10 +398,10 @@ func (r *Handler) tryArmNativeAutoMerge(t task.Task, issue github.PRIssue, fallb
 	ok, serr := supportsFn(issue.PR.Repository, issue.PR.BaseRefName)
 	if serr != nil {
 		r.logger.Error("auto-merge.native-support-check-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", serr)
-		return false
+		return nativeAutoMergeAttemptResult{attempted: true, err: serr}
 	}
 	if !ok {
-		return false
+		return nativeAutoMergeAttemptResult{}
 	}
 
 	enableFn := r.enableAutoMergeFn
@@ -304,7 +410,7 @@ func (r *Handler) tryArmNativeAutoMerge(t task.Task, issue github.PRIssue, fallb
 	}
 	if aerr := enableFn(issue.PR.Repository, issue.PR.Number); aerr != nil {
 		r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", aerr)
-		return false
+		return nativeAutoMergeAttemptResult{attempted: true, err: aerr}
 	}
 
 	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
@@ -318,7 +424,7 @@ func (r *Handler) tryArmNativeAutoMerge(t task.Task, issue github.PRIssue, fallb
 	} else {
 		r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", issue.PR.Number)
 	}
-	return true
+	return nativeAutoMergeAttemptResult{armed: true, attempted: true}
 }
 
 func requiresNativeAutoMerge(err error) bool {
@@ -354,7 +460,7 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 		return
 	}
 	t, err := r.tasks.Get(issue.TaskID)
-	if err != nil || t.Status == task.StatusHumanRequired {
+	if err != nil || t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked {
 		return
 	}
 	reason := exhaustedFixReason(github.MaxRetries, issue.Kind)
@@ -362,9 +468,16 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 		return tag == reconciledLatchTag
 	})
 	if _, err := r.tasks.Update(issue.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
+		Status:       task.Ptr(task.StatusBlocked),
 		StatusReason: task.Ptr(reason),
-		Tags:         task.Ptr(tags),
+		Blocker: &blocker.State{
+			Kind:       blocker.KindReviewFixExhausted,
+			Actor:      blocker.ActorReview,
+			Code:       string(issue.Kind),
+			NextAction: "reprobe_pr",
+			Exhausted:  true,
+		},
+		Tags: task.Ptr(tags),
 	}); err != nil {
 		r.logger.Error("pr-monitor.fix-exhausted.escalate", "task_id", issue.TaskID, "err", err)
 		return
@@ -553,6 +666,10 @@ const prFixTamperingRules = "Never weaken, skip, delete, or hardcode tests, " +
 // force-with-lease are safe because no external PR depends on the branch shape
 // yet.
 func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) string {
+	return prFixPushPromptWithRemote(branch, intro, fenced, allowHistoryRewrite, "")
+}
+
+func prFixPushPromptWithRemote(branch, intro string, fenced, allowHistoryRewrite bool, remote string) string {
 	var b strings.Builder
 	if fenced && intro != "" {
 		b.WriteString(intro)
@@ -561,10 +678,14 @@ func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) str
 	if fenced {
 		b.WriteString("```sh\n")
 	}
-	b.WriteString("PUSH_REMOTE=origin\n")
-	b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
-	b.WriteString("PUSH_URL=$(git remote get-url --push \"$PUSH_REMOTE\")\n")
-	b.WriteString("case \"$PUSH_URL\" in https://github.com/*|http://github.com/*|https://github.com:[0-9]*/*|http://github.com:[0-9]*/*) gh auth status --hostname github.com >/dev/null ;; esac\n")
+	if remote == "" {
+		b.WriteString("PUSH_REMOTE=origin\n")
+		b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
+	} else {
+		fmt.Fprintf(&b, "PUSH_REMOTE=%s\n", remote)
+	}
+	b.WriteString("PREFLIGHT_REF=HEAD:refs/heads/sybra-preflight/$(git rev-parse --verify HEAD)\n")
+	b.WriteString("git push --dry-run \"$PUSH_REMOTE\" \"$PREFLIGHT_REF\"\n")
 	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
 	if allowHistoryRewrite {
 		fmt.Fprintf(&b, "\n# If you rebased or otherwise rewrote this branch's history, use lease-protected force-push instead.\ngit push --force-with-lease \"$PUSH_REMOTE\" HEAD:%s", branch)
@@ -1208,15 +1329,65 @@ func (r *Handler) prFixParkedOnConflict(taskID string) bool {
 // synchronously start to finish) makes the re-entrant call bail out
 // immediately.
 func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
+	return r.recoverTaskBranchConflict(context.Background(), t, taskBranchConflictRecoverySpec{
+		retryKind:     branchConflictRetryKind,
+		allowRecreate: true,
+		prompt:        branchConflictPrompt,
+	})
+}
+
+func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, branch, remote string) bool {
+	if remote == "" {
+		remote = "origin"
+	}
+	return r.recoverTaskBranchConflict(ctx, t, taskBranchConflictRecoverySpec{
+		retryKind:      sameBranchConflictRetryKind,
+		branchOverride: branch,
+		remoteOverride: remote,
+		prompt: func(ctx context.Context, t task.Task, _ string) string {
+			return sameBranchConflictPrompt(ctx, t, remote)
+		},
+	})
+}
+
+func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task, pr github.PullRequest) string {
+	baseOwner := ""
+	if pr.Repository != "" {
+		baseOwner, _, _ = strings.Cut(pr.Repository, "/")
+	}
+	if baseOwner == "" && t.ProjectID != "" {
+		baseOwner, _, _ = strings.Cut(t.ProjectID, "/")
+	}
+	if pr.HeadRepoOwner == "" || strings.EqualFold(pr.HeadRepoOwner, baseOwner) {
+		return "origin"
+	}
+	if r.projects == nil || t.ProjectID == "" {
+		return "origin"
+	}
+	proj, err := r.projects.Get(t.ProjectID)
+	if err != nil || proj.ClonePath == "" {
+		return "origin"
+	}
+	return project.PushRemote(ctx, proj.ClonePath)
+}
+
+func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, spec taskBranchConflictRecoverySpec) bool {
 	taskID := t.ID
 	if r.worktreeSkip(taskID) {
 		return false
 	}
-	if r.prTracker.AtCap(taskID, branchConflictRetryKind) {
-		if r.recreateExhaustedNoPRBranch(t) {
+	if spec.branchOverride != "" && t.Branch != spec.branchOverride {
+		if _, err := r.tasks.Update(taskID, task.Update{Branch: task.Ptr(spec.branchOverride)}); err != nil {
+			r.logger.Warn("pr-monitor.branch-conflict.branch-override", "task_id", taskID, "branch", spec.branchOverride, "err", err)
+			return false
+		}
+		t.Branch = spec.branchOverride
+	}
+	if r.prTracker.AtCap(taskID, spec.retryKind) {
+		if spec.allowRecreate && r.recreateExhaustedNoPRBranch(ctx, t) {
 			return true
 		}
-		r.markConflictRecoveryExhausted(taskID, branchConflictRetryKind)
+		r.markConflictRecoveryExhausted(taskID, spec.retryKind)
 		return false
 	}
 
@@ -1241,7 +1412,6 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		r.logger.Warn("pr-monitor.branch-conflict.project", "task_id", taskID, "err", err)
 		return false
 	}
-	ctx := context.Background()
 	base, err := project.DefaultBranch(ctx, proj.ClonePath)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.base", "task_id", taskID, "err", err)
@@ -1253,7 +1423,7 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		return false
 	}
 
-	dir, err := r.worktrees.PrepareForBranchFix(ctx, t)
+	dir, err := r.worktrees.PrepareForBranchConflictFromRemote(ctx, t, spec.remoteOverride)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.prepare", "task_id", taskID, "err", err)
 		return r.parkOrEscalateBranchFixFailure(taskID, err)
@@ -1277,10 +1447,10 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	if shaErr != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
-	return r.dispatchBranchConflictRecovery(ctx, taskID, dir, base, t, headSHA, resume, hadActiveWorkflow)
+	return r.dispatchBranchConflictRecovery(ctx, taskID, dir, spec.prompt(ctx, t, base), t, headSHA, resume, hadActiveWorkflow, spec.retryKind)
 }
 
-func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
+func (r *Handler) recreateExhaustedNoPRBranch(ctx context.Context, t task.Task) bool {
 	taskID := t.ID
 	if r.worktrees == nil || r.WorkflowEngine == nil {
 		return false
@@ -1288,7 +1458,7 @@ func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
 	if r.prTracker.AtCap(taskID, branchRecreateKind) {
 		return false
 	}
-	if err := r.worktrees.RecreateFromBase(context.Background(), t); err != nil {
+	if err := r.worktrees.RecreateFromBase(ctx, t); err != nil {
 		r.logger.Warn("pr-monitor.branch-recreate.failed", "task_id", taskID, "err", err)
 		return false
 	}
@@ -1335,8 +1505,8 @@ func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictRe
 }
 
 func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) bool {
-	reason, permanent := workflow.ClassifyAgentStartError(startErr)
-	if permanent {
+	failure := workflow.ClassifyAgentStartFailure(startErr)
+	if failure.Permanent {
 		return false
 	}
 	fresh, err := r.tasks.Get(taskID)
@@ -1357,8 +1527,8 @@ func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) b
 	}
 
 	update := task.Update{Status: task.Ptr(task.StatusInReview)}
-	if reason != "" {
-		update.StatusReason = task.Ptr(reason)
+	if failure.Reason != "" {
+		update.StatusReason = task.Ptr(failure.Reason)
 	} else {
 		update.StatusReason = task.Ptr("")
 	}
@@ -1380,9 +1550,9 @@ func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) b
 // rather than a separate CancelWorkflow + StartWorkflowWithVars pair — is
 // what avoids a guaranteed reentrant "start in progress" failure there (see
 // workflow.Engine.ReplaceWorkflow's doc).
-func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool) bool {
+func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, dir, prompt string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool, retryKind github.PRIssueKind) bool {
 	vars := map[string]string{
-		"prompt":                branchConflictPrompt(ctx, t, base) + PRFixResultContract,
+		"prompt":                prompt + PRFixResultContract,
 		workflow.WorkflowVarDir: dir,
 		"resume_status":         resume.status,
 		"resume_status_reason":  resume.statusReason,
@@ -1444,7 +1614,7 @@ func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, di
 	}
 
 	r.clearDispatchFailure(taskID)
-	r.prTracker.MarkHandled(taskID, branchConflictRetryKind, headSHA)
+	r.prTracker.MarkHandled(taskID, retryKind, headSHA)
 	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{})
 	r.logger.Info("pr-monitor.branch-conflict.recovered", "task_id", taskID)
 	return true
@@ -1679,6 +1849,38 @@ func branchConflictPrompt(ctx context.Context, t task.Task, base string) string 
 	)
 }
 
+func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) string {
+	branch := t.Branch
+	if branch == "" {
+		branch = "the task's current branch"
+	}
+	if remote == "" {
+		remote = "origin"
+	}
+	prCtx := ""
+	if t.PRNumber > 0 {
+		prCtx = fmt.Sprintf(" backing PR #%d", t.PRNumber)
+	}
+	return fmt.Sprintf(
+		"Resolve the content conflict between the LOCAL copy of branch `%s` and the already-pushed REMOTE copy of that SAME branch%s.\n"+
+			"This is not a base-branch rebase conflict; preserve both lines of work with an additive merge.\n\n"+
+			"Steps:\n"+
+			"```bash\n"+
+			"git fetch %s +refs/heads/%s:refs/remotes/%s/%s\n"+
+			"git merge refs/remotes/%s/%s\n"+
+			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
+			"# both the local follow-up commits and the already-pushed remote commits,\n"+
+			"# then git add and git commit %s to finish the merge.\n"+
+			"# If the merge already completed on its own (clean/no-op), do not run git\n"+
+			"# commit again.\n"+
+			"# Do NOT rebase, amend, or force-push: this branch already backs a live PR.\n"+
+			"%s\n"+
+			"```\n\n"+
+			"After pushing, summarize what conflicted and how you resolved it.",
+		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx), prFixPushPromptWithRemote(branch, "", false, false, remote),
+	)
+}
+
 // prepareWorktree sets up the fix worktree for the given task and PR issue.
 // Returns ("", false) on error, with circuit-breaker escalation after wtFailureLimit
 // consecutive failures. Returns ("", true) when no worktree is needed.
@@ -1708,6 +1910,12 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		if errors.Is(wtErr, worktree.ErrAgentRunning) {
 			r.logger.Warn("pr-monitor.worktree.agent-running", "task_id", t.ID, "err", wtErr)
 			return "", false
+		}
+		if errors.Is(wtErr, project.ErrBranchDiverged) {
+			remote := r.sameBranchConflictRemote(ctx, t, issue.PR)
+			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName, remote) {
+				return "", false
+			}
 		}
 		// A conflict fix already operates on the non-rebasing PrepareForFix path,
 		// so a rebase failure here can only come from the CI-fix PrepareForTask

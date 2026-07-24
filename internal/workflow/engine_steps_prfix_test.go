@@ -913,6 +913,53 @@ func TestExecRoutePRFixResult_HumanRequiredWithoutFailingTestsNoNote(t *testing.
 	}
 }
 
+func TestExecRoutePRFixResult_NoPRRemoteOutageResumesRecovery(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "branch-conflict-fix",
+		CurrentStep: "route_result",
+		State:       ExecRunning,
+		Variables: map[string]string{
+			resumeStatusVar:       "in-progress",
+			resumeStatusReasonVar: "",
+			resumeWorkflowIDVar:   "simple-task-implement",
+			resumeWorkflowStepVar: "implement",
+		},
+		StepHistory: []StepRecord{{
+			StepID: "fix",
+			Status: "completed",
+			Output: "Focused regression tests passed.\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: GitHub remote unreachable from this environment; fetch/push blocked by HTTPS transport failure to github.com:443: Failed to connect to github.com port 443\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "Automaat/sybra", PRNumber: 0, Workflow: wf})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_result"}, wf, TaskInfo{ID: "t1", ProjectID: "Automaat/sybra"})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if !strings.Contains(out.Output, "retryable no-PR remote outage") {
+		t.Fatalf("output = %q, want retryable no-PR remote outage", out.Output)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == "human-required" {
+		t.Fatalf("status = %q, want recovery to continue toward resume_original", got.Status)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+}
+
 // A flake verdict must not park a human and must not reach verify_commits,
 // which would fail the task for the missing commit the honest answer implies.
 func TestExecRoutePRFixResult_FlakeRoutesToInReviewWithoutCommit(t *testing.T) {

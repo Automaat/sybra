@@ -105,6 +105,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	ag, err := r.agents.Run(agent.RunConfig{
 		TaskID:                 t.ID,
 		Name:                   agent.RoleFixReview.AgentName(t.Title),
+		Role:                   agent.RoleFixReview,
 		Mode:                   "headless",
 		Prompt:                 prompt,
 		Dir:                    dir,
@@ -217,6 +218,7 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 	return agent.RunConfig{
 		TaskID:                 t.ID,
 		Name:                   agent.RoleReview.AgentName(t.Title),
+		Role:                   agent.RoleReview,
 		Mode:                   "headless",
 		Prompt:                 prompt,
 		Dir:                    dir,
@@ -592,8 +594,7 @@ func indexPRsByKey(prs []github.PullRequest) map[string]github.PullRequest {
 }
 
 func reviewClosedPREligible(t *task.Task) bool {
-	return t.TaskType != task.TaskTypeChat &&
-		!task.IsTerminalStatus(t.Status) &&
+	return !task.IsTerminalStatus(t.Status) &&
 		slices.Contains(t.Tags, "review") &&
 		t.ProjectID != "" &&
 		t.PRNumber != 0

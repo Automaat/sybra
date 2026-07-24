@@ -64,6 +64,9 @@ type Finding struct {
 // Stats aggregates basic metrics for the check window.
 type Stats struct {
 	TotalAgentRuns  int                `json:"totalAgentRuns"`
+	ResolvedRuns    int                `json:"resolvedRuns"`
+	StalledRuns     int                `json:"stalledRuns"`
+	UnknownRuns     int                `json:"unknownRuns"`
 	FailedAgentRuns int                `json:"failedAgentRuns"`
 	FailureRate     float64            `json:"failureRate"`
 	CostByRole      map[string]float64 `json:"costByRole"`

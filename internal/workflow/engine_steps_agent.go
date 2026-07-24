@@ -194,8 +194,8 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		err := fmt.Errorf("%w: %s", ErrResourcePressure, reason)
-		classifiedReason, _ := ClassifyAgentStartError(err)
-		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, classifiedReason); err != nil {
+		failure := ClassifyAgentStartFailure(err)
+		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, failure.Reason); err != nil {
 			return err
 		}
 		wfExec.State = ExecWaiting
@@ -234,6 +234,16 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
+	if step.Config.Dir != "" {
+		renderedDir, dErr := RenderTemplate(step.Config.Dir, ctx)
+		if dErr != nil {
+			return fmt.Errorf("render dir: %w", dErr)
+		}
+		if strings.TrimSpace(renderedDir) == "" {
+			return errors.New("render dir: resolved to empty path")
+		}
+		dir = renderedDir
+	}
 	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
 	cleanRetryRef := wfExec.Variables[cleanRetryKey]
 	captureTamperDeletionAllowlist(wfExec, step.ID, step.Config.Role, ctx.Task)

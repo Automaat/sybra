@@ -135,6 +135,19 @@ func validateGitHubConfig(cfg *ResolvedConfig, add func(format string, a ...any)
 	if cfg.GitHub.App.Enabled && strings.TrimSpace(cfg.GitHub.App.PrivateKeyPath) == "" {
 		add("github.app.enabled requires github.app.private_key_path")
 	}
+	if cfg.AutoUpdate.Enabled && cfg.AutoUpdate.Mode == "auto" && countNonEmpty(cfg.AutoUpdate.RequiredChecks) == 0 {
+		add("auto_update.required_checks must be non-empty when auto_update.mode=auto")
+	}
+}
+
+func countNonEmpty(items []string) int {
+	n := 0
+	for _, item := range items {
+		if strings.TrimSpace(item) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 func validateClusterConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {

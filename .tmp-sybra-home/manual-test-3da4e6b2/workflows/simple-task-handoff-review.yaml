@@ -1,0 +1,23 @@
+id: simple-task-handoff-review
+name: Simple Task — Handoff (Review)
+description: A task handed off from an external tool (e.g. Orca) that is already implemented in its worktree and needs review + manual testing + PR creation. Skip triage/planning/implementation; flip straight to ready-review so simple-task-review reviews the adopted worktree, then it flows through the testing gate (testing-task) and the PR is opened by simple-task-pr once tests pass. The cascade in OnWorkflowComplete picks up each status_changed event.
+trigger:
+    "on": task.created
+    conditions:
+        - field: task.tags
+          operator: contains
+          value: handoff-review
+        - field: task.tags
+          operator: not_contains
+          value: review
+steps:
+    - id: set_ready_review
+      name: Hand Off to Review
+      type: set_status
+      config:
+        status: ready-review
+      next:
+        - goto: ""
+builtin: true
+created_at: 2026-07-20T19:57:16.114695554Z
+updated_at: 2026-07-20T19:57:16.114695554Z

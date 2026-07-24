@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -27,7 +28,7 @@ func TestLearningServiceHTTPAllowlist(t *testing.T) {
 	a := &App{learningSvc: &LearningService{store: store}}
 
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -59,7 +60,7 @@ func TestQueueServiceHTTPAllowlist(t *testing.T) {
 	a := &App{queueSvc: &QueueService{queue: queue}}
 
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -99,7 +100,7 @@ func TestAppHTTPAllowlist(t *testing.T) {
 	a := &App{queueSvc: &QueueService{queue: queue}}
 
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -127,6 +128,36 @@ func TestAppHTTPAllowlist(t *testing.T) {
 	}
 }
 
+func TestAgentServiceHTTPAdmissionRejectsDiscoverAgentsDuringDrain(t *testing.T) {
+	agentSvc, a := setupAgentService(t)
+	a.agentSvc = agentSvc
+	a.initLifecycle(context.Background())
+	a.BeginDrain()
+
+	mux := http.NewServeMux()
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), a.HTTPAdmission)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/api/AgentService/DiscoverAgents", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST DiscoverAgents: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("DiscoverAgents status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	readResp, err := http.Post(srv.URL+"/api/AgentService/ListAgents", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST ListAgents: %v", err)
+	}
+	defer readResp.Body.Close()
+	if readResp.StatusCode != http.StatusOK {
+		t.Fatalf("ListAgents status = %d, want %d", readResp.StatusCode, http.StatusOK)
+	}
+}
+
 // TestTaskServiceHTTPAllowlist_ListTaskProgress guards against the Progress
 // tab regressing to unreachable-over-HTTP: the method exists on TaskService
 // and works in-process (Wails desktop), but was never added to the
@@ -135,7 +166,7 @@ func TestTaskServiceHTTPAllowlist_ListTaskProgress(t *testing.T) {
 	a := &App{taskSvc: &TaskService{}}
 
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -171,7 +202,7 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 	a := &App{promptLabSvc: &PromptLabService{tasks: mgr, artifacts: artifacts}}
 
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 

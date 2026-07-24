@@ -916,7 +916,9 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		TestOutcome:             Ptr("product_bug"),
 		TestFailureFingerprint:  Ptr("fingerprint-123"),
 		HeadSHA:                 Ptr("0123456789abcdef0123456789abcdef01234567"),
+		FinalCommitSource:       Ptr("fallback"),
 		SubagentCallCount:       Ptr(3),
+		ResumeZeroOutputStall:   Ptr(true),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 
@@ -966,7 +968,9 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		TestOutcome:             "product_bug",
 		TestFailureFingerprint:  "fingerprint-123",
 		HeadSHA:                 "0123456789abcdef0123456789abcdef01234567",
+		FinalCommitSource:       "fallback",
 		SubagentCallCount:       3,
+		ResumeZeroOutputStall:   true,
 	})
 }
 
@@ -1068,8 +1072,14 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	if got.HeadSHA != want.HeadSHA {
 		t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, want.HeadSHA)
 	}
+	if got.FinalCommitSource != want.FinalCommitSource {
+		t.Errorf("FinalCommitSource = %q, want %q", got.FinalCommitSource, want.FinalCommitSource)
+	}
 	if got.SubagentCallCount != want.SubagentCallCount {
 		t.Errorf("SubagentCallCount = %d, want %d", got.SubagentCallCount, want.SubagentCallCount)
+	}
+	if got.ResumeZeroOutputStall != want.ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %t, want %t", got.ResumeZeroOutputStall, want.ResumeZeroOutputStall)
 	}
 }
 
@@ -1153,6 +1163,88 @@ func TestStoreUpdateRunSessionID(t *testing.T) {
 	}
 	if reloaded.AgentRuns[0].SessionID != "ses-abc123" {
 		t.Errorf("reloaded SessionID = %q, want %q", reloaded.AgentRuns[0].SessionID, "ses-abc123")
+	}
+}
+
+func TestStoreUpdateRunResumeZeroOutputStall(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Zero output stall task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-z", Mode: "headless", State: "running"}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun(created.ID, "agent-z", RunPatch{
+		State:                 Ptr("done"),
+		ResumeZeroOutputStall: Ptr(true),
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %v, want true", got.AgentRuns[0].ResumeZeroOutputStall)
+	}
+
+	// Verify YAML round-trip persists the marker.
+	reloaded, err := Parse(got.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("reloaded ResumeZeroOutputStall = %v, want true", reloaded.AgentRuns[0].ResumeZeroOutputStall)
+	}
+}
+
+// TestStoreUpdateRunResumeZeroOutputStallFalseNeverClears mirrors the
+// SessionID/HeadSHA "empty means unchanged" guard: RunPatch.ResumeZeroOutputStall
+// is a latch like VerdictRendered — a false pointer must never clear an
+// already-set marker, since applyRunLifecycle only ever sets it true.
+func TestStoreUpdateRunResumeZeroOutputStallFalseNeverClears(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Zero output stall latch task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{
+		AgentID:               "agent-latch",
+		Mode:                  "headless",
+		State:                 "running",
+		ResumeZeroOutputStall: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun(created.ID, "agent-latch", RunPatch{
+		State:                 Ptr("done"),
+		ResumeZeroOutputStall: Ptr(false),
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %v, want true (latch must not clear)", got.AgentRuns[0].ResumeZeroOutputStall)
 	}
 }
 
@@ -1671,7 +1763,6 @@ func TestStoreListCacheSkipsSnapshotWhenFilesChangedDuringBuild(t *testing.T) {
 		Slug:            "external",
 		Title:           "External",
 		Status:          StatusTodo,
-		TaskType:        TaskTypeNormal,
 		AgentMode:       AgentModeHeadless,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -1725,7 +1816,6 @@ func TestStoreCreateInvalidatesWarmCacheAfterExternalAddWithoutInvalidate(t *tes
 		Slug:            "external",
 		Title:           "External",
 		Status:          StatusTodo,
-		TaskType:        TaskTypeNormal,
 		AgentMode:       AgentModeHeadless,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -3114,34 +3204,6 @@ func TestStoreDelete_RenameFailureLeavesTaskIntact(t *testing.T) {
 	}
 	if _, err := store.Get(created.ID); err != nil {
 		t.Errorf("task should still be gettable after a failed delete: %v", err)
-	}
-}
-
-func TestStoreGcOrphanChatInteraction_TrashesInsteadOfUnlinking(t *testing.T) {
-	t.Parallel()
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	chat, err := store.CreateChat("owner/repo")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// gcOrphanChats (internal/recovery) deletes orphaned chat tasks through
-	// Manager.Delete → Store.Delete; assert that path now trashes the chat
-	// task rather than unlinking it outright, so a wrongly-GC'd chat is
-	// still recoverable.
-	if err := store.Delete(chat.ID); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := store.ListTrash()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].ID != chat.ID {
-		t.Fatalf("ListTrash() = %+v, want the trashed chat task", entries)
 	}
 }
 

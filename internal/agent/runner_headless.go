@@ -773,7 +773,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	if event.Type == "" {
 		return false
 	}
-	event = bindToolResultEvent(a.TaskID, string(RoleFromName(a.Name)), m.artifacts, event)
+	event = bindToolResultEvent(a.TaskID, string(a.EffectiveRole()), m.artifacts, event)
 
 	event.Timestamp = time.Now().UTC()
 	if event.LimitSnapshot != nil {

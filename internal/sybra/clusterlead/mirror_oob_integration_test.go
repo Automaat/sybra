@@ -46,9 +46,6 @@ func (s *managerTaskService) ListTasksForNode(node string) ([]task.Task, error) 
 	out := all[:0]
 	for i := range all {
 		t := all[i]
-		if t.TaskType == task.TaskTypeChat {
-			continue
-		}
 		if t.AssignedNode != node {
 			continue
 		}
@@ -128,7 +125,7 @@ func realFollowerServer(t *testing.T, mgr *task.Manager) *httptest.Server {
 	})
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(&managerTaskService{mgr: mgr}, "ListTasks", "ListTasksForNode", "GetTask", "AssignTask"),
-	}, slog.New(slog.DiscardHandler))
+	}, slog.New(slog.DiscardHandler), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv

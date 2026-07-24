@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/procstat"
+	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -247,24 +248,22 @@ func safeFloat(v float64) float64 {
 
 func buildStats(events []audit.Event) Stats {
 	s := Stats{CostByRole: make(map[string]float64)}
-	runs := audit.NormalizeAgentRuns(events)
-	for i := range runs {
-		run := &runs[i]
-		if !run.Terminal {
-			continue
-		}
-		s.TotalAgentRuns++
-		if run.Failed {
-			s.FailedAgentRuns++
-		}
-		cost, _ := run.TerminalEvent.Data["cost_usd"].(float64)
-		s.TotalCostUSD += cost
-		role, _ := run.TerminalEvent.Data["role"].(string)
-		s.CostByRole[roleLabel(role)] += cost
+	records := audit.RunRecords(events)
+	counts := runacct.Count(records, nil, runacct.CountConfig{
+		CountsTowardFailure: runacct.CountsTowardCodeAuthorFailureRate,
+	})
+	s.TotalAgentRuns = counts.Runs
+	s.ResolvedRuns = counts.Resolved
+	s.StalledRuns = counts.Stalled
+	s.UnknownRuns = counts.Unknown
+	s.FailedAgentRuns = counts.Failures
+	for i := range records {
+		s.TotalCostUSD += records[i].CostUSD
+		s.CostByRole[roleLabel(records[i].Role)] += records[i].CostUSD
 	}
 
-	if s.TotalAgentRuns > 0 {
-		s.FailureRate = round2(float64(s.FailedAgentRuns) / float64(s.TotalAgentRuns))
+	if s.ResolvedRuns > 0 {
+		s.FailureRate = round2(float64(s.FailedAgentRuns) / float64(s.ResolvedRuns))
 	}
 	s.TotalCostUSD = round2(s.TotalCostUSD)
 	for k, v := range s.CostByRole {

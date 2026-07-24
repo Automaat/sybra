@@ -24,11 +24,13 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/runoutcome"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -154,16 +156,27 @@ func runDurationSeconds(ag *agent.Agent) float64 {
 	return max(ag.GetLastEventAt().Sub(ag.StartedAt).Seconds(), 0)
 }
 
-func buildCompletionAuditData(ag *agent.Agent, state agent.State, role agent.Role, cost, duration, premiumRequests float64, input, output, cacheCreate, cacheRead, reasoning int) map[string]any {
+func buildCompletionAuditData(ag *agent.Agent, state agent.State, role agent.Role, outcome string, cost, duration, premiumRequests float64, input, output, cacheCreate, cacheRead, reasoning int) map[string]any {
 	auditData := map[string]any{
-		"mode":       ag.Mode,
-		"cost_usd":   cost,
-		"duration_s": duration,
-		"state":      string(state),
-		"role":       role,
-		"provider":   ag.Provider,
-		"name":       ag.Name,
-		"log_file":   ag.LogPath,
+		"mode":             ag.Mode,
+		"cost_usd":         cost,
+		"duration_s":       duration,
+		"state":            string(state),
+		"outcome":          outcome,
+		"role":             role,
+		"provider":         ag.Provider,
+		"model":            ag.Model,
+		"reasoning_effort": ag.ReasoningEffort,
+		"name":             ag.Name,
+		"log_file":         ag.LogPath,
+		"turn_count":       ag.GetTurnCount(),
+		"tool_calls":       ag.GetToolCalls(),
+	}
+	if ag.ExperimentID != "" {
+		auditData["experiment_id"] = ag.ExperimentID
+	}
+	if ag.VariantID != "" {
+		auditData["variant_id"] = ag.VariantID
 	}
 	if reasoning > 0 {
 		auditData["reasoning_tokens"] = reasoning
@@ -210,8 +223,9 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	// parent task and skip the storage paths below, but their lifecycle
 	// still belongs in the audit trail.
 	duration := runDurationSeconds(ag)
-	role := h.roleForAgentName(ag.Name)
-	auditData := buildCompletionAuditData(ag, state, role, cost, duration, premiumRequests, input, output, cacheCreate, cacheRead, reasoning)
+	role := h.roleForAgent(ag)
+	outcome := h.runOutcome(ag, role, exitErr, resultContent)
+	auditData := buildCompletionAuditData(ag, state, role, outcome, cost, duration, premiumRequests, input, output, cacheCreate, cacheRead, reasoning)
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
 	if reason := ag.GetEscalationReason(); agent.IsCheckpointEscalation(reason) {
 		h.logAudit(audit.EventAgentCheckpoint, ag.TaskID, ag.ID, map[string]any{
@@ -221,7 +235,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		})
 	}
 
-	h.recordRunStats(ag, role, cost, duration, exitErr, resultContent)
+	h.recordRunStats(ag, role, outcome, cost, duration)
 
 	// Loop agents run without a TaskID — let the scheduler record cost
 	// before the early return below kicks in.
@@ -251,14 +265,14 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	// feed into the workflow engine (which would advance the step that
 	// originally caused the human-required transition based on the
 	// diagnostic verdict).
-	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+	if ag.EffectiveRole() == agent.RoleHumanReview {
 		if h.humanReviewComplete != nil {
 			h.humanReviewComplete(ag)
 		}
 		return
 	}
 
-	if agent.RoleFromName(ag.Name) == agent.RoleFixReview && exitErr == nil {
+	if ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil {
 		h.handleFixReviewCompletion(ag)
 	}
 
@@ -266,7 +280,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		return
 	}
 
-	if agent.RoleFromName(ag.Name) == agent.RoleTestRunner {
+	if ag.EffectiveRole() == agent.RoleTestRunner {
 		h.importEvidenceForAgent(ag)
 	}
 
@@ -452,7 +466,7 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	// For human-review agents, parse the verdict from the live (untruncated)
 	// output and persist it in its own field so detector.go can read it even
 	// when the full result text is longer than maxResultLen.
-	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+	if ag.EffectiveRole() == agent.RoleHumanReview {
 		if v, _, err := verdict.Parse(finalAssistantText(ag)); err == nil {
 			runUpdates.Verdict = task.Ptr(v.Decision)
 		}
@@ -461,6 +475,18 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	// landing can later detect human edits after the agent (merged_with_edits).
 	if sha := h.captureHeadSHA(ag.TaskID); sha != "" {
 		runUpdates.HeadSHA = task.Ptr(sha)
+	}
+	// Watchdog.handleZeroOutputStall reports the signal with the bare
+	// zeroOutputReason constant (internal/watchdog/agent.go), not the
+	// "watchdog: rate limit: ..." string watchdogreason.RateLimit wraps it in
+	// for the task's StatusReason — RecordProviderSignal persists exactly the
+	// reason string it is handed, so ag.GetErrorMsg() here is the bare
+	// constant. Comparing directly against it (not via
+	// watchdogreason.IsZeroOutputRateLimit, which checks the wrapped form)
+	// is intentional.
+	errKind, errMsg := ag.GetError()
+	if errKind == "rate_limit" && errMsg == watchdogreason.ZeroOutputBeforeStartup {
+		runUpdates.ResumeZeroOutputStall = task.Ptr(true)
 	}
 	return runUpdates
 }
@@ -548,7 +574,7 @@ func runTerminalOutcome(ag *agent.Agent, exitErr error) string {
 }
 
 func (h *Handler) markCompletedReview(ag *agent.Agent, exitErr error) {
-	if agent.RoleFromName(ag.Name) != agent.RoleReview || exitErr != nil {
+	if ag.EffectiveRole() != agent.RoleReview || exitErr != nil {
 		return
 	}
 	reviewed := true
@@ -558,7 +584,7 @@ func (h *Handler) markCompletedReview(ag *agent.Agent, exitErr error) {
 }
 
 func (h *Handler) salvageInterruptedReview(ag *agent.Agent) {
-	if h.tasks == nil || agent.RoleFromName(ag.Name) != agent.RoleReview || ag.GetEscalationReason() != "cost" {
+	if h.tasks == nil || ag.EffectiveRole() != agent.RoleReview || ag.GetEscalationReason() != "cost" {
 		return
 	}
 	current, err := h.tasks.Get(ag.TaskID)
@@ -764,35 +790,62 @@ func (h *Handler) captureHeadSHA(taskID string) string {
 // benign post-result glitch (e.g. a trailing stream hiccup) left exitErr
 // non-nil, so it is recorded as completed rather than inflating the role's
 // failure_rate with a run that was never actually a failure.
-func runOutcome(ag *agent.Agent, role agent.Role, exitErr error, resultContent string) string {
-	if stalled, _, _, _, _ := classifyStall(ag, exitErr); stalled {
-		return stats.OutcomeStalled
+func (h *Handler) runOutcome(ag *agent.Agent, role agent.Role, exitErr error, resultContent string) string {
+	if stalled, _, _, stopStalled, checkpointStopped := classifyStall(ag, exitErr); stalled {
+		switch {
+		case h.isSupersededStop(ag.TaskID):
+			return runoutcome.Superseded
+		case checkpointStopped || stopStalled:
+			return runoutcome.Stalled
+		case isSignalKill(exitErr) && !ag.WasStopped():
+			return runoutcome.CancelledShutdown
+		default:
+			return runoutcome.Stalled
+		}
 	}
 	if exitErr == nil {
-		return stats.OutcomeCompleted
+		return runoutcome.Completed
 	}
 	if role == agent.RoleTestRunner {
 		if v := workflow.ExtractTestVerdict(resultContent); v == "PASS" || v == "FAIL" {
-			return stats.OutcomeCompleted
+			return runoutcome.Completed
 		}
 	}
-	return stats.OutcomeFailed
+	return runoutcome.Failed
 }
 
-func (h *Handler) roleForAgentName(name string) agent.Role {
-	role, ok := agent.ParseRoleFromName(name)
-	if ok || !strings.Contains(name, ":") {
+func (h *Handler) isSupersededStop(taskID string) bool {
+	if h.tasks == nil || taskID == "" {
+		return false
+	}
+	t, err := h.tasks.Get(taskID)
+	if err != nil {
+		return false
+	}
+	if strings.Contains(strings.ToLower(t.StatusReason), "superseded") {
+		return true
+	}
+	if t.Workflow == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(t.Workflow.Variables["cancel_reason"]), "superseded")
+}
+
+func (h *Handler) roleForAgent(ag *agent.Agent) agent.Role {
+	role := ag.EffectiveRole()
+	if ag.Role != "" || !strings.Contains(ag.Name, ":") {
 		return role
 	}
-	h.logger.Warn("agent.role.unknown-prefix", "name", name)
+	if _, ok := agent.ParseRoleFromName(ag.Name); ok {
+		return role
+	}
+	h.logger.Warn("agent.role.unknown-prefix", "name", ag.Name)
 	return role
 }
 
 // recordRunStats persists a stats.RunRecord for the completed agent.
-// No-op when the stats store failed to initialize at startup. resultContent
-// is the agent's final message text, forwarded to runOutcome for test-runner
-// verdict recovery.
-func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duration float64, exitErr error, resultContent string) {
+// No-op when the stats store failed to initialize at startup.
+func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, outcome string, cost, duration float64) {
 	if h.stats == nil {
 		return
 	}
@@ -802,7 +855,6 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := estimatedRunCost(ag, cost, ag.GetPremiumRequests())
-	outcome := runOutcome(ag, role, exitErr, resultContent)
 	var projectID string
 	if ag.TaskID != "" {
 		if t, err := h.tasks.Get(ag.TaskID); err == nil {
@@ -839,7 +891,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		TurnCount:                ag.GetTurnCount(),
 		ToolCalls:                ag.GetToolCalls(),
 		SubagentCallCount:        ag.GetSubagentCallCount(),
-		Outcome:                  outcome,
+		Outcome:                  runoutcome.Normalize(outcome),
 		Timestamp:                time.Now(),
 	})
 	if h.limits != nil {

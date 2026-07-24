@@ -22,8 +22,10 @@ import (
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
@@ -40,6 +42,11 @@ import (
 // hyphen, forward-slash. Shared allowlist keeps arg builder and hook receiver
 // in sync without an import cycle.
 var hookTaskIDRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
+
+var (
+	loadCLIConfig          = config.Load
+	loadCLIConfigNoPersist = config.LoadNoPersist
+)
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -124,14 +131,14 @@ func run(args []string) int {
 	}
 
 	if isReadOnlyConfigCommand(cmd) {
-		cfg, err := config.LoadNoPersist()
+		cfg, err := loadCLIConfigNoPersist()
 		if err != nil {
 			return fatal(jsonOut, "load config: %v", err)
 		}
 		return cmdConfig(cfg, rest, jsonOut)
 	}
 
-	cfg, err := config.Load()
+	cfg, err := loadCLIConfig()
 	if err != nil {
 		if isHook {
 			fmt.Fprintf(os.Stderr, "hook: load config: %v (continuing fail-open)\n", err)
@@ -358,11 +365,30 @@ func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr 
 	fmt.Fprintf(os.Stderr,
 		"warning: load config: %v; falling back to direct task store at %s for `%s`\n",
 		loadErr, tasksDir, cmd)
+	// Dispatched directly (not via dispatch()) so this path never carries a
+	// nil cfg/projStore into the shared switch — nilaway can't correlate
+	// supportsTaskStoreFallback's allowlist with dispatch()'s cases, so
+	// routing through it flags every cfg/projStore-using branch as a
+	// potential nil deref even though none of these commands touch them.
 	switch cmd {
+	case "list":
+		return cmdList(store, rest, jsonOut), true
 	case "get":
 		return cmdGet(store, rest, jsonOut), true
+	case "create":
+		return cmdCreate(store, nil, rest, jsonOut), true
 	case "update":
 		return cmdUpdate(store, nil, rest, jsonOut), true
+	case "delete":
+		return cmdDelete(store, nil, rest, jsonOut), true
+	case "reopen":
+		return cmdReopen(store, rest, jsonOut), true
+	case "link-pr":
+		return cmdLinkPR(store, nil, rest, jsonOut), true
+	case "board":
+		return cmdBoard(store, jsonOut), true
+	case "trash":
+		return cmdTrash(store, rest, jsonOut), true
 	default:
 		return 0, false
 	}
@@ -370,7 +396,7 @@ func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr 
 
 func supportsTaskStoreFallback(cmd string) bool {
 	switch cmd {
-	case "get", "update":
+	case "list", "get", "create", "update", "delete", "reopen", "link-pr", "board", "trash":
 		return true
 	default:
 		return false
@@ -460,9 +486,6 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	fmt.Printf("Title:  %s\n", t.Title)
 	fmt.Printf("Status: %s\n", t.Status)
 	fmt.Printf("Mode:   %s\n", t.AgentMode)
-	if t.TaskType != "" {
-		fmt.Printf("Type:   %s\n", t.TaskType)
-	}
 	if len(t.Tags) > 0 {
 		fmt.Printf("Tags:   %s\n", strings.Join(t.Tags, ", "))
 	}
@@ -539,7 +562,6 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	planDecisions := fs.String("plan-decisions", "", "plan decisions markdown")
 	planBrief := fs.String("plan-brief", "", "plan brief markdown")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
-	ttype := fs.String("type", "normal", "task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags")
 	proj := fs.String("project", "", "project id (owner/repo)")
 	branch := fs.String("branch", "", "Git branch name")
@@ -551,9 +573,6 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	}
 	if *title == "" {
 		return fatal(jsonOut, "title is required")
-	}
-	if _, err := task.ValidateTaskType(*ttype); err != nil {
-		return fatal(jsonOut, "%v", err)
 	}
 
 	if !*allowDup {
@@ -575,7 +594,7 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "%v", err)
 	}
 
-	updates := buildCreateUpdateMap(*ttype, *tags, *proj, *branch, *pr, *issue,
+	updates := buildCreateUpdateMap(*tags, *proj, *branch, *pr, *issue,
 		*plan, *planContract, *planCritique, *planResearch, *planDecisions, *planBrief)
 	if len(updates) > 0 {
 		t, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
@@ -591,12 +610,9 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	return 0
 }
 
-func buildCreateUpdateMap(ttype, tags, proj, branch string, pr int, issue,
+func buildCreateUpdateMap(tags, proj, branch string, pr int, issue,
 	plan, planContract, planCritique, planResearch, planDecisions, planBrief string) map[string]any {
 	updates := map[string]any{}
-	if ttype != "" && ttype != string(task.TaskTypeNormal) {
-		updates["task_type"] = ttype
-	}
 	if tags != "" {
 		tagList := strings.Split(tags, ",")
 		for i := range tagList {
@@ -1142,7 +1158,7 @@ func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "%v", err)
 	}
 
-	updates, uErr := buildUpdateMap(fs, flags)
+	updates, uErr := buildUpdateMap(s, id, fs, flags)
 	if uErr != nil {
 		return fatal(jsonOut, "%v", uErr)
 	}
@@ -1182,7 +1198,6 @@ type updateFlags struct {
 	codeReview        *string
 	codeReviewFile    *string
 	mode              *string
-	taskType          *string
 	tags              *string
 	project           *string
 	branch            *string
@@ -1192,6 +1207,12 @@ type updateFlags struct {
 	statusReason      *string
 	maxTurns          *int
 	reasoningEffort   *string
+	blockerKind       *string
+	blockerCode       *string
+	blockerNextAction *string
+	blockerRetryAfter *string
+	blockerExhausted  *bool
+	blockerClear      *bool
 }
 
 func newUpdateFlags(fs *flag.FlagSet) updateFlags {
@@ -1214,7 +1235,6 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		codeReview:        fs.String("code-review", "", "code review markdown (empty string clears review)"),
 		codeReviewFile:    fs.String("code-review-file", "", "path to file with code review content"),
 		mode:              fs.String("mode", "", "new agent mode"),
-		taskType:          fs.String("type", "", "new task type: normal|debug|research"),
 		tags:              fs.String("tags", "", "comma-separated tags (replaces existing)"),
 		project:           fs.String("project", "", "project id (owner/repo)"),
 		branch:            fs.String("branch", "", "Git branch name"),
@@ -1224,10 +1244,16 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		statusReason:      fs.String("status-reason", "", "reason for status change"),
 		maxTurns:          fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
 		reasoningEffort:   fs.String("reasoning-effort", "", "reasoning effort (all providers): low|medium|high|xhigh ('default' or 'none' clears the override)"),
+		blockerKind:       fs.String("blocker-kind", "", "blocker kind (e.g. operator_decision|credential_required|policy_approval|worktree_repair|review_fix_exhausted|triage_retry_exhausted)"),
+		blockerCode:       fs.String("blocker-code", "", "blocker code (short machine-readable subtype)"),
+		blockerNextAction: fs.String("blocker-next-action", "", "next automatic action for the blocker (e.g. repair_worktree)"),
+		blockerRetryAfter: fs.String("blocker-retry-after", "", "RFC3339 timestamp before which the blocker should not be retried"),
+		blockerExhausted:  fs.Bool("blocker-exhausted", false, "mark the blocker's automated retry budget as exhausted"),
+		blockerClear:      fs.Bool("blocker-clear", false, "clear any blocker state on this task"),
 	}
 }
 
-func buildUpdateMap(fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
+func buildUpdateMap(s *task.Manager, id string, fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
 	updates := map[string]any{}
 	applyBasicUpdateFlags(updates, f)
 	if err := applySidecarUpdateFlags(fs, updates, f); err != nil {
@@ -1236,7 +1262,69 @@ func buildUpdateMap(fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
 	if err := applyTypedUpdateFlags(fs, updates, f); err != nil {
 		return nil, err
 	}
+	if err := applyBlockerUpdateFlags(s, id, fs, updates, f); err != nil {
+		return nil, err
+	}
 	return updates, nil
+}
+
+// applyBlockerUpdateFlags builds a "blocker" entry in updates from the
+// --blocker-* flags. Task.Update.Blocker is a whole-value replacement (see
+// applyBlockerField), so when only some attributes are provided this seeds
+// the replacement from the task's current blocker state — an operator
+// running e.g. `--blocker-exhausted` alone must not blank out the kind/code
+// the workflow engine already recorded.
+func applyBlockerUpdateFlags(s *task.Manager, id string, fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
+	if *f.blockerClear {
+		updates["blocker"] = map[string]any{}
+		return nil
+	}
+	provided := flagWasProvided(fs, "blocker-kind") ||
+		flagWasProvided(fs, "blocker-code") ||
+		flagWasProvided(fs, "blocker-next-action") ||
+		flagWasProvided(fs, "blocker-retry-after") ||
+		flagWasProvided(fs, "blocker-exhausted")
+	if !provided {
+		return nil
+	}
+	m := map[string]any{}
+	if cur, err := s.Get(id); err == nil {
+		if cur.Blocker.Kind != "" {
+			m["kind"] = string(cur.Blocker.Kind)
+		}
+		if cur.Blocker.Actor != "" {
+			m["actor"] = string(cur.Blocker.Actor)
+		}
+		if cur.Blocker.Code != "" {
+			m["code"] = cur.Blocker.Code
+		}
+		if cur.Blocker.NextAction != "" {
+			m["next_action"] = cur.Blocker.NextAction
+		}
+		if cur.Blocker.RetryAfter != nil {
+			m["retry_after"] = cur.Blocker.RetryAfter.Format(time.RFC3339)
+		}
+		if cur.Blocker.Exhausted {
+			m["exhausted"] = true
+		}
+	}
+	if flagWasProvided(fs, "blocker-kind") {
+		m["kind"] = *f.blockerKind
+	}
+	if flagWasProvided(fs, "blocker-code") {
+		m["code"] = *f.blockerCode
+	}
+	if flagWasProvided(fs, "blocker-next-action") {
+		m["next_action"] = *f.blockerNextAction
+	}
+	if flagWasProvided(fs, "blocker-retry-after") {
+		m["retry_after"] = *f.blockerRetryAfter
+	}
+	if flagWasProvided(fs, "blocker-exhausted") {
+		m["exhausted"] = *f.blockerExhausted
+	}
+	updates["blocker"] = m
+	return nil
 }
 
 func applyBasicUpdateFlags(updates map[string]any, f updateFlags) {
@@ -1290,12 +1378,6 @@ func applySidecarUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateF
 }
 
 func applyTypedUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
-	if *f.taskType != "" {
-		if _, err := task.ValidateTaskType(*f.taskType); err != nil {
-			return err
-		}
-		updates["task_type"] = *f.taskType
-	}
 	if flagWasProvided(fs, "source-provider") {
 		v, err := normalizeHandoffSourceProvider(*f.sourceProvider)
 		if err != nil {
@@ -1652,13 +1734,14 @@ func cmdProjectDelete(ps *project.Store, args []string, jsonOut bool) int {
 }
 
 type boardTask struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	ProjectID    string    `json:"project_id,omitempty"`
-	AgentID      string    `json:"agent_id,omitempty"`
-	StartedAt    time.Time `json:"started_at"`
-	RunningForS  int64     `json:"running_for_s,omitempty"`
-	StatusReason string    `json:"status_reason,omitempty"`
+	ID           string        `json:"id"`
+	Title        string        `json:"title"`
+	ProjectID    string        `json:"project_id,omitempty"`
+	AgentID      string        `json:"agent_id,omitempty"`
+	StartedAt    time.Time     `json:"started_at"`
+	RunningForS  int64         `json:"running_for_s,omitempty"`
+	StatusReason string        `json:"status_reason,omitempty"`
+	Blocker      blocker.State `json:"blocker,omitzero"`
 }
 
 type boardSummary struct {
@@ -1666,6 +1749,7 @@ type boardSummary struct {
 	InProgress    []boardTask    `json:"in_progress"`
 	PlanReview    []boardTask    `json:"plan_review"`
 	HumanRequired []boardTask    `json:"human_required"`
+	Blocked       []boardTask    `json:"blocked"`
 }
 
 func cmdBoard(s *task.Manager, jsonOut bool) int {
@@ -1689,6 +1773,7 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 			Title:        t.Title,
 			ProjectID:    t.ProjectID,
 			StatusReason: t.StatusReason,
+			Blocker:      t.Blocker,
 		}
 		// Find the latest running agent run.
 		for i := range slices.Backward(t.AgentRuns) {
@@ -1708,6 +1793,7 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		InProgress:    []boardTask{},
 		PlanReview:    []boardTask{},
 		HumanRequired: []boardTask{},
+		Blocked:       []boardTask{},
 	}
 
 	for i := range tasks {
@@ -1718,6 +1804,8 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 			summary.PlanReview = append(summary.PlanReview, toBoardTask(tasks[i]))
 		case task.StatusHumanRequired:
 			summary.HumanRequired = append(summary.HumanRequired, toBoardTask(tasks[i]))
+		case task.StatusBlocked:
+			summary.Blocked = append(summary.Blocked, toBoardTask(tasks[i]))
 		default:
 		}
 	}
@@ -1726,6 +1814,11 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		return printJSON(summary)
 	}
 
+	printBoardText(counts, summary)
+	return 0
+}
+
+func printBoardText(counts map[string]int, summary boardSummary) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "STATUS\tCOUNT")
 	for _, st := range task.AllStatuses() {
@@ -1737,7 +1830,8 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		fmt.Println("\nIN PROGRESS:")
 		w2 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		_, _ = fmt.Fprintln(w2, "ID\tAGENT\tRUNNING_FOR\tTITLE")
-		for _, t := range summary.InProgress {
+		for i := range summary.InProgress {
+			t := &summary.InProgress[i]
 			_, _ = fmt.Fprintf(w2, "%s\t%s\t%ds\t%s\n", t.ID, t.AgentID, t.RunningForS, t.Title)
 		}
 		_ = w2.Flush()
@@ -1747,13 +1841,28 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		fmt.Println("\nHUMAN REQUIRED:")
 		w3 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		_, _ = fmt.Fprintln(w3, "ID\tTITLE\tREASON")
-		for _, t := range summary.HumanRequired {
+		for i := range summary.HumanRequired {
+			t := &summary.HumanRequired[i]
 			_, _ = fmt.Fprintf(w3, "%s\t%s\t%s\n", t.ID, t.Title, t.StatusReason)
 		}
 		_ = w3.Flush()
 	}
 
-	return 0
+	if len(summary.Blocked) > 0 {
+		fmt.Println("\nBLOCKED:")
+		w4 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(w4, "ID\tTITLE\tKIND\tNEXT_ACTION\tRETRY_AFTER\tEXHAUSTED\tREASON")
+		for i := range summary.Blocked {
+			t := &summary.Blocked[i]
+			retryAfter := ""
+			if t.Blocker.RetryAfter != nil {
+				retryAfter = t.Blocker.RetryAfter.Format(time.RFC3339)
+			}
+			_, _ = fmt.Fprintf(w4, "%s\t%s\t%s\t%s\t%s\t%t\t%s\n",
+				t.ID, t.Title, t.Blocker.Kind, t.Blocker.NextAction, retryAfter, t.Blocker.Exhausted, t.StatusReason)
+		}
+		_ = w4.Flush()
+	}
 }
 
 func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {
@@ -2219,8 +2328,7 @@ Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
            STATUS: %s
   get      [--compact] <id>
-  create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
-           TYPE: normal|debug|research
+  create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
   handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--source-provider claude|codex|copilot|opencode] [--pr N] [--mode MODE] [--tags t1,t2]
            Hand a task to Sybra at a workflow entry point, reusing the given git worktree
            (default: cwd). Project is derived from the worktree's origin remote
@@ -2234,7 +2342,8 @@ Commands:
            Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker
            plus one blocked child per sub-issue, with dependency edges extracted by an
            LLM planner. Re-running only materializes sub-issues without an existing task.
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E] [--blocker-kind K] [--blocker-code C] [--blocker-next-action A] [--blocker-retry-after RFC3339] [--blocker-exhausted] [--blocker-clear]
+           --blocker-* flags seed from the task's current blocker state and override only the given fields; --blocker-clear removes it entirely.
            --issue sets ref_issue, an ad-hoc reference annotation — it never
            overwrites the task's canonical (auto-close) issue set at creation
   link-pr  <id> <pr-number>
@@ -2931,6 +3040,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		}
 	}
 	addGitHubPollingFindings(cfg, add)
+	addProviderModelCompatibilityFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
 	for _, warning := range routing.Warnings {
@@ -3023,6 +3133,26 @@ func addK8sFailedTTLFindings(cfg *config.Config, add func(severity, format strin
 	if ttl > 0 && ttl < 30 && failedTTL != ttl {
 		add("warning", "agent.k8s_jobs.ttl_seconds_after_finished is %ds — Kubernetes does not guarantee honoring the failed_ttl_seconds_after_finished extension once such a short window has already elapsed", ttl)
 	}
+}
+
+func addProviderModelCompatibilityFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil || !cfg.Providers.AutoFailover {
+		return
+	}
+	check := func(path, provider, model string) {
+		trimmed := strings.TrimSpace(model)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := modeltier.InferTier(trimmed); ok {
+			return
+		}
+		add("warning", "%s=%q targets provider %q, but failover cannot remap that concrete model on provider switch", path, trimmed, provider)
+	}
+	check("agent.model", cfg.Agent.Provider, cfg.Agent.Model)
+	check("monitor.model", cfg.Agent.Provider, cfg.Monitor.Model)
+	check("watchdog.model", cfg.Agent.Provider, cfg.Watchdog.Model)
+	check("human_review.model", cfg.Agent.Provider, cfg.HumanReviewModel())
 }
 
 func addConfigPermFindings(add func(severity, format string, a ...any)) {

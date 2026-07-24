@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 )
 
@@ -855,7 +856,13 @@ func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wf
 	if reason == "" {
 		return false, nil
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "blocked", reason); err != nil {
+	if err := e.tasks.UpdateTaskBlocker(taskID, "blocked", reason, blocker.State{
+		Kind:       blocker.KindTriageRetryExhausted,
+		Actor:      blocker.ActorWorkflow,
+		Code:       "triage_retryable",
+		NextAction: "wait_for_operator_reclassify",
+		Exhausted:  true,
+	}); err != nil {
 		return true, err
 	}
 	now := time.Now().UTC()

@@ -1,0 +1,14 @@
+id: 48d38bcf
+name: sybra-self-monitor
+prompt: /sybra-self-monitor
+interval_sec: 21600
+allowed_tools:
+    - Bash
+    - Read
+    - Grep
+    - Glob
+provider: claude
+model: sonnet
+enabled: false
+created_at: 2026-07-20T19:57:16.11914327Z
+updated_at: 2026-07-20T19:57:16.11914327Z

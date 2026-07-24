@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"log/slog"
 	"path/filepath"
 	"testing"
@@ -300,7 +301,7 @@ func TestHandleAutoMerge_EvictsReadyCache(t *testing.T) {
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 
 	if _, ok := r.readyPRCache["pet-owner/pet-repo#50"]; ok {
 		t.Fatal("readyPRCache entry must be evicted after a merge attempt")

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+sleep 3
+exec /home/sybra/.local/share/mise/installs/node/24/bin/claude "$@"

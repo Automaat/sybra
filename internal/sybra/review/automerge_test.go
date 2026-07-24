@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -260,7 +261,7 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 				},
 			}
 
-			r.handleAutoMerge(github.PRIssue{
+			r.handleAutoMerge(context.Background(), github.PRIssue{
 				Kind:   github.PRIssueReadyToMerge,
 				TaskID: created.ID,
 				PR:     tt.pr,
@@ -433,7 +434,7 @@ func TestHandleAutoMerge_ArmsNative(t *testing.T) {
 				},
 			}
 
-			r.handleAutoMerge(github.PRIssue{
+			r.handleAutoMerge(context.Background(), github.PRIssue{
 				Kind:   github.PRIssueReadyToMerge,
 				TaskID: created.ID,
 				PR:     pr,
@@ -503,7 +504,7 @@ func TestHandleAutoMerge_FallsBackToNativeWhenDirectMergeBlockedByPolicy(t *test
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{
+	r.handleAutoMerge(context.Background(), github.PRIssue{
 		Kind:   github.PRIssueReadyToMerge,
 		TaskID: created.ID,
 		PR: github.PullRequest{
@@ -577,7 +578,7 @@ func TestHandleAutoMerge_DirectMergePolicyBlockedHonorsNativeKillSwitch(t *testi
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{
+	r.handleAutoMerge(context.Background(), github.PRIssue{
 		Kind:   github.PRIssueReadyToMerge,
 		TaskID: created.ID,
 		PR: github.PullRequest{
@@ -649,7 +650,7 @@ func TestHandleAutoMerge_DirectMergeOrdinaryFailureDoesNotArmNative(t *testing.T
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{
+	r.handleAutoMerge(context.Background(), github.PRIssue{
 		Kind:   github.PRIssueReadyToMerge,
 		TaskID: created.ID,
 		PR: github.PullRequest{
@@ -759,7 +760,7 @@ func TestHandleAutoMerge_REST(t *testing.T) {
 				},
 			}
 
-			r.handleAutoMerge(github.PRIssue{
+			r.handleAutoMerge(context.Background(), github.PRIssue{
 				Kind:   github.PRIssueReadyToMerge,
 				TaskID: created.ID,
 				PR:     tt.pr,
@@ -826,7 +827,7 @@ func TestHandleAutoMerge_REST_AuditPayload(t *testing.T) {
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{
+	r.handleAutoMerge(context.Background(), github.PRIssue{
 		Kind:   github.PRIssueReadyToMerge,
 		TaskID: created.ID,
 		PR: github.PullRequest{
@@ -897,7 +898,7 @@ func TestHandleAutoMerge_FiresAppliedHook(t *testing.T) {
 		},
 	}
 
-	r.handleAutoMerge(github.PRIssue{
+	r.handleAutoMerge(context.Background(), github.PRIssue{
 		Kind:   github.PRIssueReadyToMerge,
 		TaskID: created.ID,
 		PR: github.PullRequest{
@@ -911,6 +912,365 @@ func TestHandleAutoMerge_FiresAppliedHook(t *testing.T) {
 
 	if hookCalls != 1 {
 		t.Fatalf("hookCalls = %d, want 1", hookCalls)
+	}
+}
+
+// TestHandleAutoMerge_BacksOffRepeatedDirectMergeFailures locks in the
+// #2450 fix: a direct-merge failure against an unchanged PR (same head SHA)
+// must not be retried on every poll tick. Polling the same blocked PR
+// repeatedly should attempt the merge exactly once and suppress every
+// subsequent call, while a genuinely new push (head SHA change) reprobes
+// immediately.
+func TestHandleAutoMerge_BacksOffRepeatedDirectMergeFailures(t *testing.T) {
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(77),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var mergeCalls int
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: github.NewIssueTracker(time.Minute),
+		mergePR: func(repo string, number int) error {
+			mergeCalls++
+			return fmt.Errorf("gh pr merge %d: required status check \"ci\" is expected: exit status 1", number)
+		},
+	}
+
+	pr := github.PullRequest{
+		Repository:      "pet-owner/pet-repo",
+		Number:          77,
+		Mergeable:       "MERGEABLE",
+		CIStatus:        "SUCCESS",
+		CopilotReviewed: true,
+		HeadSHA:         "sha-a",
+	}
+
+	for i := range 5 {
+		r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+		if mergeCalls != 1 {
+			t.Fatalf("after poll %d: mergeCalls = %d, want 1 (repeated polls against unchanged state must be suppressed)", i+1, mergeCalls)
+		}
+	}
+
+	// A new push (head SHA change) must reprobe immediately, not wait out the
+	// backoff window computed for the old SHA.
+	pr.HeadSHA = "sha-b"
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	if mergeCalls != 2 {
+		t.Fatalf("after head SHA change: mergeCalls = %d, want 2 (new push must reprobe immediately)", mergeCalls)
+	}
+}
+
+// TestHandleAutoMerge_BackoffClearsOnSuccess verifies a merge that succeeds
+// after prior failures against the same head SHA is not left backed off —
+// Clear must run on the success path too, not only on arm.
+func TestHandleAutoMerge_BackoffClearsOnSuccess(t *testing.T) {
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(78),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	failNext := true
+	var mergeCalls int
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: github.NewIssueTracker(time.Minute),
+		mergePR: func(repo string, number int) error {
+			mergeCalls++
+			if failNext {
+				return errors.New("gh pr merge: unexpected server error")
+			}
+			return nil
+		},
+	}
+
+	pr := github.PullRequest{
+		Repository:      "pet-owner/pet-repo",
+		Number:          78,
+		Mergeable:       "MERGEABLE",
+		CIStatus:        "SUCCESS",
+		CopilotReviewed: true,
+		HeadSHA:         "sha-x",
+	}
+
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	if mergeCalls != 1 {
+		t.Fatalf("mergeCalls after first failure = %d, want 1", mergeCalls)
+	}
+	if got := r.mergeBackoff().Attempts(pr.Repository, pr.Number); got != 1 {
+		t.Fatalf("backoff attempts after failure = %d, want 1", got)
+	}
+
+	// Same head SHA, still within the backoff window: a retry must not merge.
+	failNext = false
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	if mergeCalls != 1 {
+		t.Fatalf("mergeCalls while suppressed = %d, want 1", mergeCalls)
+	}
+
+	// A new push clears the suppression; the (now-succeeding) merge clears
+	// the backoff entry entirely.
+	pr.HeadSHA = "sha-y"
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	if mergeCalls != 2 {
+		t.Fatalf("mergeCalls after new push = %d, want 2", mergeCalls)
+	}
+	if got := r.mergeBackoff().Attempts(pr.Repository, pr.Number); got != 0 {
+		t.Fatalf("backoff attempts after success = %d, want 0 (cleared)", got)
+	}
+}
+
+// TestHandleAutoMerge_ArmNotSupportedFallsThroughToDirectMerge locks in that
+// a benign "native auto-merge unsupported" result (no error, just a
+// repo/branch that doesn't offer it) must never be treated as a
+// backoff-worthy failure — it would otherwise wrongly suppress the very same
+// cycle's direct-merge fallback attempt.
+func TestHandleAutoMerge_ArmNotSupportedFallsThroughToDirectMerge(t *testing.T) {
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(79),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var mergedNum int
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: github.NewIssueTracker(time.Minute),
+		cfg:       &config.Config{GitHub: config.GitHubConfig{NativeAutoMerge: true}},
+		mergePR: func(repo string, number int) error {
+			mergedNum = number
+			return nil
+		},
+		supportsAutoMergeFn: func(repo, baseBranch string) (bool, error) {
+			return false, nil // repo/branch doesn't support native auto-merge
+		},
+	}
+
+	pr := github.PullRequest{
+		Repository:      "pet-owner/pet-repo",
+		Number:          79,
+		BaseRefName:     "main",
+		Mergeable:       "MERGEABLE",
+		CIStatus:        "SUCCESS",
+		CopilotReviewed: true,
+		HeadSHA:         "sha-z",
+	}
+
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	if mergedNum != 79 {
+		t.Fatalf("mergedNum = %d, want 79 (arm-unsupported must fall through to direct merge in the same cycle)", mergedNum)
+	}
+	if got := r.mergeBackoff().Attempts(pr.Repository, pr.Number); got != 0 {
+		t.Fatalf("backoff attempts = %d, want 0 (unsupported is not a failure)", got)
+	}
+}
+
+// TestHandleAutoMerge_ArmFailureBacksOff verifies a genuine arm error
+// (EnableAutoMerge itself failing, not just an unsupported repo/branch) is
+// backed off the same way a direct-merge failure is: repeated polls against
+// the same head SHA attempt to arm exactly once, and a new push reprobes
+// immediately.
+func TestHandleAutoMerge_ArmFailureBacksOff(t *testing.T) {
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(80),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var armCalls int
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: github.NewIssueTracker(time.Minute),
+		cfg:       &config.Config{GitHub: config.GitHubConfig{NativeAutoMerge: true}},
+		mergePR: func(repo string, number int) error {
+			t.Fatal("direct merge must not be attempted while CI is still pending (arm-only eligible)")
+			return nil
+		},
+		supportsAutoMergeFn: func(repo, baseBranch string) (bool, error) {
+			return true, nil
+		},
+		enableAutoMergeFn: func(repo string, number int) error {
+			armCalls++
+			return errors.New("gh pr merge --auto: unexpected server error")
+		},
+	}
+
+	// CI still pending: eligible to arm, not eligible for the direct-merge
+	// gate (readyForCopilotAutoMerge requires CI green).
+	pr := github.PullRequest{
+		Repository:      "pet-owner/pet-repo",
+		Number:          80,
+		BaseRefName:     "main",
+		Mergeable:       "MERGEABLE",
+		CIStatus:        "PENDING",
+		CopilotReviewed: true,
+		HeadSHA:         "sha-arm-a",
+	}
+
+	for i := range 5 {
+		r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+		if armCalls != 1 {
+			t.Fatalf("after poll %d: armCalls = %d, want 1 (repeated polls against unchanged state must be suppressed)", i+1, armCalls)
+		}
+	}
+
+	pr.HeadSHA = "sha-arm-b"
+	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
+	if armCalls != 2 {
+		t.Fatalf("after head SHA change: armCalls = %d, want 2 (new push must reprobe immediately)", armCalls)
+	}
+}
+
+func TestMaybeArmNativeAutoMerge_BacksOffRepeatedFailuresUntilStateChanges(t *testing.T) {
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(81),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	taskList, err := tasks.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	var armCalls int
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: github.NewIssueTracker(time.Minute),
+		cfg:       &config.Config{GitHub: config.GitHubConfig{NativeAutoMerge: true}},
+		supportsAutoMergeFn: func(repo, baseBranch string) (bool, error) {
+			return true, nil
+		},
+		enableAutoMergeFn: func(repo string, number int) error {
+			armCalls++
+			return errors.New("gh pr merge --auto: API rate limit exceeded for user")
+		},
+	}
+
+	pr := github.PullRequest{
+		Repository:      "pet-owner/pet-repo",
+		Number:          81,
+		BaseRefName:     "main",
+		Mergeable:       "MERGEABLE",
+		CIStatus:        "PENDING",
+		CopilotReviewed: true,
+		HeadSHA:         "sha-arm-a",
+	}
+
+	for i := range 5 {
+		r.maybeArmNativeAutoMerge(context.Background(), taskList, []github.PullRequest{pr}, nil)
+		if armCalls != 1 {
+			t.Fatalf("after poll %d: armCalls = %d, want 1 (repeated polls against unchanged state must be suppressed)", i+1, armCalls)
+		}
+	}
+
+	pr.CIStatus = "SUCCESS"
+	r.maybeArmNativeAutoMerge(context.Background(), taskList, []github.PullRequest{pr}, nil)
+	if armCalls != 2 {
+		t.Fatalf("after CI state change: armCalls = %d, want 2 (same-SHA state change must reprobe immediately)", armCalls)
 	}
 }
 
@@ -1406,21 +1766,24 @@ func TestEscalateExhaustedFix(t *testing.T) {
 		return r, tasks, created.ID
 	}
 
-	t.Run("conflict exhaustion parks to human-required", func(t *testing.T) {
+	t.Run("conflict exhaustion parks to blocked", func(t *testing.T) {
 		r, tasks, id := newHandler(t)
 		r.escalateExhaustedFix(github.PRIssue{Kind: github.PRIssueConflict, TaskID: id, PR: github.PullRequest{Number: 9}})
 		got, _ := tasks.Get(id)
-		if got.Status != task.StatusHumanRequired {
-			t.Fatalf("conflict: status = %q, want human-required", got.Status)
+		if got.Status != task.StatusBlocked {
+			t.Fatalf("conflict: status = %q, want blocked", got.Status)
+		}
+		if got.Blocker.Code != string(github.PRIssueConflict) {
+			t.Fatalf("conflict: blocker code = %q, want %q", got.Blocker.Code, github.PRIssueConflict)
 		}
 	})
 
-	t.Run("ci_failure exhaustion parks to human-required", func(t *testing.T) {
+	t.Run("ci_failure exhaustion parks to blocked", func(t *testing.T) {
 		r, tasks, id := newHandler(t)
 		r.escalateExhaustedFix(github.PRIssue{Kind: github.PRIssueCIFailure, TaskID: id, PR: github.PullRequest{Number: 9}})
 		got, _ := tasks.Get(id)
-		if got.Status != task.StatusHumanRequired {
-			t.Fatalf("ci_failure: status = %q, want human-required", got.Status)
+		if got.Status != task.StatusBlocked {
+			t.Fatalf("ci_failure: status = %q, want blocked", got.Status)
 		}
 	})
 
@@ -1452,7 +1815,7 @@ func TestEscalateExhaustedFix(t *testing.T) {
 		}
 	})
 
-	t.Run("comments exhaustion parks to human-required and clears tracker", func(t *testing.T) {
+	t.Run("comments exhaustion parks to blocked and clears tracker", func(t *testing.T) {
 		r, tasks, id := newHandler(t)
 		// Spend the budget so the tracker has a non-zero retry count to clear.
 		for range github.MaxRetries {
@@ -1460,8 +1823,8 @@ func TestEscalateExhaustedFix(t *testing.T) {
 		}
 		r.escalateExhaustedFix(github.PRIssue{Kind: github.PRIssueComments, TaskID: id, PR: github.PullRequest{Number: 9}})
 		got, _ := tasks.Get(id)
-		if got.Status != task.StatusHumanRequired {
-			t.Fatalf("comments: status = %q, want human-required", got.Status)
+		if got.Status != task.StatusBlocked {
+			t.Fatalf("comments: status = %q, want blocked", got.Status)
 		}
 		if got.StatusReason == "" {
 			t.Error("comments: want a status reason explaining the escalation")

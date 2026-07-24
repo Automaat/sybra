@@ -54,8 +54,8 @@ func TestCheckRunRate_EscalatesBurstOfSameRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "run_rate") || !strings.Contains(got.StatusReason, "implementation") {
 		t.Fatalf("status reason = %q, want it to mention run_rate and the role", got.StatusReason)
@@ -174,8 +174,8 @@ func TestCheckRunRate_EscalatesBurstOnInReviewTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "run_rate") || !strings.Contains(got.StatusReason, "pr-fix") {
 		t.Fatalf("status reason = %q, want it to mention run_rate and pr-fix", got.StatusReason)
@@ -315,7 +315,7 @@ func TestCheckRunRate_EscalatesMixedLegacyAndCurrentRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", got.Status)
 	}
 }

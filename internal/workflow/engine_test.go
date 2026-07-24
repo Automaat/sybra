@@ -18,10 +18,12 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/attribution"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
@@ -239,6 +241,20 @@ func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
 	return nil
 }
 
+func (m *memTasks) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Status = status
+	t.StatusReason = reason
+	t.Blocker = state
+	m.reasons[id] = reason
+	return nil
+}
+
 // Reason returns the last status reason recorded for a task.
 func (m *memTasks) Reason(id string) string {
 	m.mu.Lock()
@@ -296,6 +312,23 @@ func (m *memTasks) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint
 		if t.AgentRuns[i].AgentID == agentID {
 			t.AgentRuns[i].TestOutcome = outcome
 			t.AgentRuns[i].TestFailureFingerprint = fingerprint
+			return nil
+		}
+	}
+	return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
+}
+
+func (m *memTasks) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[taskID]
+	if !ok {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].AgentID == agentID {
+			t.AgentRuns[i].HeadSHA = headSHA
+			t.AgentRuns[i].FinalCommitSource = source
 			return nil
 		}
 	}
@@ -1197,6 +1230,85 @@ func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing
 				if got.Workflow.Variables[watchdogHangCleanRetryKey("implement")] != "" {
 					t.Fatalf("clean retry marker = %q, want cleared after dispatch", got.Workflow.Variables[watchdogHangCleanRetryKey("implement")])
 				}
+			}
+		})
+	}
+}
+
+func TestResumeStalled_WorktreeRepairRetriesThenExhausts(t *testing.T) {
+	tests := []struct {
+		name       string
+		attempts   string
+		wantStarts int
+		wantStatus string
+		wantRetry  string
+		wantExh    bool
+	}{
+		{
+			name:       "first attempt retries in place",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantRetry:  "1",
+		},
+		{
+			name:       "budget exhausted stays blocked and marks exhausted",
+			attempts:   "2",
+			wantStarts: 0,
+			wantStatus: "blocked",
+			wantRetry:  "2",
+			wantExh:    true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+			vars := map[string]string{}
+			if tc.attempts != "" {
+				vars[worktreeRepairRetryKey("implement")] = tc.attempts
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "blocked",
+				StatusReason: worktreeerr.RebaseBlockedReason,
+				AgentMode:    "headless",
+				Blocker: blocker.State{
+					Kind:       blocker.KindWorktreeRepair,
+					Actor:      blocker.ActorWorkflow,
+					Code:       "rebase_failed",
+					NextAction: "repair_worktree",
+				},
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   vars,
+					StartedAt:   time.Now().UTC(),
+				},
+			})
+
+			engine.ResumeStalled()
+
+			if got := agents.CallCount(); got != tc.wantStarts {
+				t.Fatalf("StartAgent calls = %d, want %d", got, tc.wantStarts)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.Workflow.Variables[worktreeRepairRetryKey("implement")] != tc.wantRetry {
+				t.Fatalf("retry var = %q, want %q", got.Workflow.Variables[worktreeRepairRetryKey("implement")], tc.wantRetry)
+			}
+			if got.Blocker.Exhausted != tc.wantExh {
+				t.Fatalf("blocker.Exhausted = %v, want %v", got.Blocker.Exhausted, tc.wantExh)
+			}
+			if !tc.wantExh && !got.Blocker.IsZero() {
+				t.Fatalf("blocker state should be cleared on successful retry, got %+v", got.Blocker)
 			}
 		})
 	}
@@ -3116,6 +3228,93 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
+	oldStartedAt := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name             string
+		retries          string
+		wantStarts       int
+		wantStatus       string
+		wantReason       string
+		wantRetry        string
+		wantSessionFence bool
+	}{
+		{
+			name:       "resume consumes persisted retry and reruns",
+			retries:    "1",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantReason: watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+			wantRetry:  "2",
+		},
+		{
+			name:             "third identical zero-output attempt blocks and fences off the poisoned session",
+			retries:          strconv.Itoa(maxWatchdogRateLimitRetries),
+			wantStarts:       0,
+			wantStatus:       "blocked",
+			wantReason:       "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
+			wantRetry:        strconv.Itoa(maxWatchdogRateLimitRetries),
+			wantSessionFence: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+
+			vars := map[string]string{}
+			if tc.retries != "" {
+				vars[watchdogRateLimitRetryKey("implement")] = tc.retries
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "in-progress",
+				StatusReason: watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+				AgentMode:    "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   vars,
+					StartedAt:   oldStartedAt,
+				},
+			})
+
+			engine.ResumeStalled()
+
+			if got := agents.CallCount(); got != tc.wantStarts {
+				t.Fatalf("replacement agent starts = %d, want %d", got, tc.wantStarts)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.StatusReason != tc.wantReason {
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
+			}
+			if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != tc.wantRetry {
+				t.Fatalf("rate-limit retry var = %q, want %q", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")], tc.wantRetry)
+			}
+			// sybra#2542: exhausting the zero-output-stall budget must bump
+			// Workflow.StartedAt past every prior agent run, so
+			// PickImplementationResumeSession's StartedAt fence rejects the
+			// poisoned session and the next dispatch starts fresh instead of
+			// resuming the same session that just hung.
+			if tc.wantSessionFence && !got.Workflow.StartedAt.After(oldStartedAt) {
+				t.Fatalf("workflow.started_at = %v, want it bumped past %v to fence off the poisoned resume session", got.Workflow.StartedAt, oldStartedAt)
+			}
+			if !tc.wantSessionFence && !got.Workflow.StartedAt.Equal(oldStartedAt) {
+				t.Fatalf("workflow.started_at = %v, want unchanged %v", got.Workflow.StartedAt, oldStartedAt)
+			}
+		})
+	}
+}
+
 // TestRescheduleRateLimitedAgent_ParksWhileProviderRateLimitedNoFailover is the
 // regression guard for sybra#1585: a reschedule that fires while the step's
 // provider is still inside its rate-limit cooldown (and no healthy peer exists
@@ -3286,6 +3485,51 @@ func TestRescheduleRateLimitedAgent_SkippedSharedClaimDoesNotConsumeWatchdogRetr
 	}
 	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != "1" {
 		t.Fatalf("rate-limit retry var = %q, want 1", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")])
+	}
+}
+
+func TestRescheduleRateLimitedAgent_SkipsBlockedStatus(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "blocked",
+		StatusReason: "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecFailed,
+			Variables: map[string]string{
+				watchdogRateLimitRetryKey("implement"): strconv.Itoa(maxWatchdogRateLimitRetries),
+			},
+		},
+	})
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+
+	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("unexpected replacement agent starts = %d, want 0", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", got.Status)
+	}
+	if got.StatusReason != "watchdog: zero-output startup retry budget exhausted after 3 identical attempts" {
+		t.Fatalf("status_reason = %q", got.StatusReason)
+	}
+	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != strconv.Itoa(maxWatchdogRateLimitRetries) {
+		t.Fatalf("rate-limit retry var = %q, want %d", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")], maxWatchdogRateLimitRetries)
+	}
+	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+		t.Fatal("rate-limited agent step mapping was not cleared")
 	}
 }
 
@@ -3914,6 +4158,34 @@ func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_SkipsBlockedStatus(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "blocked",
+		StatusReason: "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecFailed,
+			Variables: map[string]string{
+				watchdogRateLimitRetryKey("implement"): strconv.Itoa(maxWatchdogRateLimitRetries),
+			},
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if agents.CallCount() != 0 {
+		t.Fatalf("expected 0 agent starts for blocked task, got %d", agents.CallCount())
+	}
+}
+
 func TestResumeStalled_SkipsDoneStatus(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -4498,6 +4770,53 @@ func TestExecRunAgent_PersistsPreparedWorktreeDir(t *testing.T) {
 	wantDir := filepath.Join(os.TempDir(), "sybra-test-t1")
 	if got.Workflow.Variables[WorkflowVarDir] != wantDir {
 		t.Fatalf("%s = %q, want %q", WorkflowVarDir, got.Workflow.Variables[WorkflowVarDir], wantDir)
+	}
+}
+
+func TestExecRunAgent_UsesConfiguredScratchDirForPlan(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	scratchDir := t.TempDir()
+	tasks.Put(TaskInfo{ID: "t1", Status: "plan-needed", AgentMode: "headless"})
+	step := &Step{
+		ID:   "plan",
+		Type: StepRunAgent,
+		Config: StepConfig{
+			Role:          "plan",
+			Prompt:        "plan",
+			NeedsWorktree: true,
+			Dir:           scratchDir,
+		},
+	}
+	wfExec := &Execution{
+		WorkflowID: "plan-scratch",
+		State:      ExecRunning,
+		Variables: map[string]string{
+			WorkflowVarDir: filepath.Join(os.TempDir(), "sybra-test-t1"),
+		},
+	}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(agents.calls) != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1", len(agents.calls))
+	}
+	if agents.calls[0].Dir != scratchDir {
+		t.Fatalf("StartAgent dir = %q, want configured scratch dir %q", agents.calls[0].Dir, scratchDir)
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow.Variables[WorkflowVarDir] != scratchDir {
+		t.Fatalf("%s = %q, want configured scratch dir %q", WorkflowVarDir, got.Workflow.Variables[WorkflowVarDir], scratchDir)
 	}
 }
 
@@ -6193,11 +6512,15 @@ func newEnsurePRStep() *Step {
 }
 
 type fakePRReviewRequester struct {
-	reviewers []string
-	err       error
-	calls     int
-	repo      string
-	prNumber  int
+	reviewers       []string
+	err             error
+	copilotErr      error
+	calls           int
+	copilotCalls    int
+	repo            string
+	prNumber        int
+	copilotRepo     string
+	copilotPRNumber int
 }
 
 func (f *fakePRReviewRequester) RerequestReview(repo string, prNumber int) ([]string, error) {
@@ -6205,6 +6528,13 @@ func (f *fakePRReviewRequester) RerequestReview(repo string, prNumber int) ([]st
 	f.repo = repo
 	f.prNumber = prNumber
 	return f.reviewers, f.err
+}
+
+func (f *fakePRReviewRequester) RequestCopilotReview(_ context.Context, repo string, prNumber int) error {
+	f.copilotCalls++
+	f.copilotRepo = repo
+	f.copilotPRNumber = prNumber
+	return f.copilotErr
 }
 
 func newRerequestReviewStep() *Step {
@@ -8140,6 +8470,177 @@ func TestExecVerifyCommits_AutoCommitsUncommittedWork(t *testing.T) {
 	}
 }
 
+func TestExecVerifyCommits_AutoCommitRemoteReconcileGitErrorEscalates(t *testing.T) {
+	countFile := filepath.Join(t.TempDir(), "read-tree-count")
+	withFakeGit(t, `#!/bin/sh
+if [ "$1" = "read-tree" ] && [ "$2" = "HEAD" ]; then
+  count=0
+  if [ -f "`+countFile+`" ]; then
+    count=$(cat "`+countFile+`")
+  fi
+  count=$((count + 1))
+  printf "%s" "$count" > "`+countFile+`"
+  if [ "$count" = "2" ]; then
+    echo "fatal: synthetic read-tree failure" >&2
+    exit 128
+  fi
+fi
+exec "{{REAL_GIT}}" "$@"
+`)
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit */)
+	if err := os.WriteFile(filepath.Join(wtDir, "uncommitted.txt"), []byte("finished work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "git error") {
+		t.Fatalf("Output = %q, want git error after remote reconcile failure", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Fatalf("task status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "after auto-commit remote reconcile") {
+		t.Fatalf("status reason = %q, want auto-commit remote reconcile context", reason)
+	}
+	if got := strings.TrimSpace(readFile(t, countFile)); got != "2" {
+		t.Fatalf("read-tree calls = %q, want 2 (pre- and post-auto-commit probes)", got)
+	}
+}
+
+func TestExecVerifyCommits_AutoCommitAdoptsEquivalentRemoteCommitAfterRetry(t *testing.T) {
+	prevSleep := verifyCommitsRetrySleep
+	prevBackoffs := verifyCommitsRetryBackoffs
+	t.Cleanup(func() {
+		verifyCommitsRetrySleep = prevSleep
+		verifyCommitsRetryBackoffs = prevBackoffs
+	})
+
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+
+	wtDir := t.TempDir()
+	runGitAt(t, wtDir, "init", "-b", "main")
+	runGitAt(t, wtDir, "config", "user.email", "test@test.com")
+	runGitAt(t, wtDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtDir, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtDir, "add", "README.md")
+	runGitAt(t, wtDir, "commit", "-m", "init")
+	runGitAt(t, wtDir, "remote", "add", "origin", remote)
+	runGitAt(t, wtDir, "push", "-u", "origin", "main")
+
+	const branch = "feat/verify-commits-race"
+	runGitAt(t, wtDir, "checkout", "-b", branch)
+	runGitAt(t, wtDir, "push", "-u", "origin", branch)
+
+	const (
+		fileName = "verify-commits-race.txt"
+		content  = "verify_commits race\n"
+	)
+	if err := os.WriteFile(filepath.Join(wtDir, fileName), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stageDir := t.TempDir()
+	var pushed sync.Once
+	verifyCommitsRetryBackoffs = []time.Duration{time.Nanosecond}
+	verifyCommitsRetrySleep = func(time.Duration) {
+		pushed.Do(func() {
+			repoDir := filepath.Join(stageDir, "repo")
+			runGitAt(t, "", "clone", remote, repoDir)
+			runGitAt(t, repoDir, "checkout", "-B", branch, "origin/"+branch)
+			if err := os.WriteFile(filepath.Join(repoDir, fileName), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGitAt(t, repoDir, "add", fileName)
+			runGitAt(t, repoDir, "-c", "user.email=fake-claude@test.local", "-c", "user.name=Fake Claude", "commit", "-m", "feat: remote race")
+			runGitAt(t, repoDir, "push", "origin", "HEAD:refs/heads/"+branch)
+		})
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Fatalf("Output = %q, want commits verified", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Fatalf("task status = %q, want in-progress", ti.Status)
+	}
+
+	runGitAt(t, wtDir, "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
+	localHead := strings.TrimSpace(runGitAt(t, wtDir, "rev-parse", "HEAD"))
+	remoteHead := strings.TrimSpace(runGitAt(t, wtDir, "rev-parse", "refs/remotes/origin/"+branch))
+	if localHead != remoteHead {
+		t.Fatalf("local HEAD %q != remote HEAD %q; want verify_commits to adopt the equivalent remote commit", localHead, remoteHead)
+	}
+	if got := strings.TrimSpace(runGitAt(t, wtDir, "rev-list", "--count", "origin/main..HEAD")); got != "1" {
+		t.Fatalf("origin/main..HEAD commit count = %q, want 1 implementation lineage", got)
+	}
+	if status := strings.TrimSpace(runGitAt(t, wtDir, "status", "--porcelain")); status != "" {
+		t.Fatalf("worktree dirty after reconcile: %q", status)
+	}
+}
+
+func TestRecordFinalCommitState_ContextCancelDoesNotHang(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1"}},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, true /* withExtraCommit */)
+	withFakeGit(t, `#!/bin/sh
+if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "HEAD^{commit}" ]; then
+  sleep 30
+fi
+exec "{{REAL_GIT}}" "$@"
+`)
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	engine.SetContext(parentCtx)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	wfExec := &Execution{StepHistory: []StepRecord{{StepID: "implement", Status: "completed", AgentID: "a1"}}}
+
+	start := time.Now()
+	engine.recordFinalCommitState("t1", wfExec, wtDir, finalCommitSourceAgent)
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("recordFinalCommitState took %v after ctx cancel; want prompt return", elapsed)
+	}
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.AgentRuns[0].HeadSHA != "" {
+		t.Fatalf("head_sha = %q, want empty when rev-parse is canceled", ti.AgentRuns[0].HeadSHA)
+	}
+}
+
 // makeGitRepoBehindOrigin builds a worktree where HEAD is an ancestor of
 // origin/main: origin/main points at commit B, HEAD is reset to commit A
 // (a parent of B). `git log origin/main..HEAD` is empty AND HEAD != base.tip.
@@ -8552,6 +9053,7 @@ func TestLooksLikeAuthFailure(t *testing.T) {
 		{"auth failed", "authentication failed for repository", true},
 		{"github app token invalid", "X Failed to log in to github.com using token (GH_TOKEN)\n- The token in GH_TOKEN is invalid.", true},
 		{"expired token", "fatal: token has expired", true},
+		{"git https username prompt", "fatal: could not read Username for 'https://github.com': No such device or address", true},
 		{"gh auth hint", "run gh auth login to authenticate", true},
 		{"401", "401 Unauthorized", true},
 		{"unrelated failure", "PR title does not follow conventional commit format", false},
@@ -9100,6 +9602,109 @@ func TestExecLinkPRAndReview_PRAlreadyLinked(t *testing.T) {
 	}
 	if ti.PRNumber != 42 {
 		t.Errorf("pr_number = %d, want 42", ti.PRNumber)
+	}
+}
+
+// fakePRExistenceChecker is a canned workflow.PRExistenceChecker for tests
+// that need to control whether link_pr_and_review trusts task.pr_number.
+type fakePRExistenceChecker struct {
+	exists bool
+	err    error
+}
+
+func (f fakePRExistenceChecker) PRExists(context.Context, string, int) (bool, error) {
+	return f.exists, f.err
+}
+
+func TestExecLinkPRAndReview_PRNumberNotInRepoFallsThrough(t *testing.T) {
+	// A pr_number that doesn't resolve against the project's own repo (e.g.
+	// an agent that ran a bare `gh pr create` inside a fork worktree and got
+	// a PR opened in the fork itself) must not be trusted blindly — it
+	// should fall through to the other discovery paths instead of flipping
+	// straight to in-review against a PR nobody upstream will ever see.
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	engine := newEngineForEval(t, tasks)
+	engine.SetPRExistenceChecker(fakePRExistenceChecker{exists: false})
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "completed", AgentID: "a1", Output: "changes pushed"},
+		},
+	}
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), wfExec, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress (must not trust the wrong-repo pr_number)", ti.Status)
+	}
+}
+
+func TestExecLinkPRAndReview_PRNumberUnverifiedFallsThrough(t *testing.T) {
+	// A checker that fails to confirm (gh unavailable/unauthenticated,
+	// network) must be treated the same as "not confirmed" — never as proof
+	// the PR is absent, but also never trusted outright.
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	engine := newEngineForEval(t, tasks)
+	engine.SetPRExistenceChecker(fakePRExistenceChecker{err: errors.New("gh: authentication failed")})
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), &Execution{}, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress (must not trust an unverifiable pr_number)", ti.Status)
+	}
+}
+
+func TestExecLinkPRAndReview_PRNumberVerifiedInRepoTrusted(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	engine := newEngineForEval(t, tasks)
+	engine.SetPRExistenceChecker(fakePRExistenceChecker{exists: true})
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), &Execution{}, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review", ti.Status)
+	}
+	if ti.PRNumber != 8 {
+		t.Errorf("pr_number = %d, want 8", ti.PRNumber)
+	}
+}
+
+func TestExecLinkPRAndReview_NoCheckerTrustsPRNumber(t *testing.T) {
+	// Guards the documented "operates with a nil checker" fallback contract.
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), &Execution{}, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review", ti.Status)
 	}
 }
 

@@ -23,3 +23,31 @@ func TestNormalizeAliasMapsKnownProvider(t *testing.T) {
 		t.Fatalf("NormalizeAlias(opencode, opus) = %q", got)
 	}
 }
+
+func TestInferTier(t *testing.T) {
+	tests := []struct {
+		model string
+		want  Tier
+		ok    bool
+	}{
+		{model: "", want: Cheap, ok: true},
+		{model: "sonnet", want: Cheap, ok: true},
+		{model: "haiku", want: SuperCheap, ok: true},
+		{model: "opus", want: Expensive, ok: true},
+		{model: "gpt-5.5", want: Expensive, ok: true},
+		{model: "claude-sonnet-4.6", want: Cheap, ok: true},
+		{model: "claude-haiku-4.5", want: SuperCheap, ok: true},
+		{model: "custom-model", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got, ok := InferTier(tt.model)
+			if ok != tt.ok {
+				t.Fatalf("InferTier(%q) ok=%v, want %v (tier=%q)", tt.model, ok, tt.ok, got)
+			}
+			if ok && got != tt.want {
+				t.Fatalf("InferTier(%q) = %q, want %q", tt.model, got, tt.want)
+			}
+		})
+	}
+}

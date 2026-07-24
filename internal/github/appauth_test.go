@@ -153,6 +153,36 @@ func TestRefreshAppToken_MintsAndInjectsEnv(t *testing.T) {
 	}
 }
 
+func TestRefreshAppTokenEnv_MintsAndExportsProcessEnv(t *testing.T) {
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	path, _ := writeTestKey(t, false)
+	t.Cleanup(DisableAppAuth)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"token":"ghs_exportedtoken","expires_at":"` +
+			time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}`))
+	}))
+	defer srv.Close()
+	origBase := appAPIBaseURL
+	appAPIBaseURL = srv.URL
+	t.Cleanup(func() { appAPIBaseURL = origBase })
+
+	if err := EnableAppAuth(AppCredentials{AppID: 42, InstallationID: 7, PrivateKeyPath: path}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if err := RefreshAppTokenEnv(context.Background()); err != nil {
+		t.Fatalf("refresh env: %v", err)
+	}
+	if got := os.Getenv("GH_TOKEN"); got != "ghs_exportedtoken" {
+		t.Fatalf("GH_TOKEN = %q, want minted token", got)
+	}
+	if got := os.Getenv("GITHUB_TOKEN"); got != "ghs_exportedtoken" {
+		t.Fatalf("GITHUB_TOKEN = %q, want minted token", got)
+	}
+}
+
 func TestForceRefreshAppToken_AlwaysRemintsEvenWhenFresh(t *testing.T) {
 	path, _ := writeTestKey(t, false)
 	t.Cleanup(DisableAppAuth)

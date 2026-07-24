@@ -93,13 +93,10 @@ describe('TaskHeaderBar', () => {
     expect(mockUpdate).toHaveBeenCalledWith('t1', { status: 'in-progress' })
   })
 
-  it('updates task type via the select in the overflow menu', async () => {
+  it('does not expose task type in the overflow menu', async () => {
     render(TaskHeaderBar, { props: { task: baseTask as never, ondelete: vi.fn() } })
-    // Task type is demoted out of the action cluster into the overflow menu.
     await fireEvent.click(screen.getByLabelText('More actions'))
-    const select = screen.getByTestId('task-type-select') as HTMLSelectElement
-    await fireEvent.change(select, { target: { value: 'debug' } })
-    expect(mockUpdate).toHaveBeenCalledWith('t1', { task_type: 'debug' })
+    expect(screen.queryByTestId('task-type-select')).toBeNull()
   })
 
   it('shows Fix Review button on in-review status with prNumber', () => {

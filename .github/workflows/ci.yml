@@ -91,7 +91,7 @@ jobs:
 
       - name: Install nilaway
         # renovate: datasource=go depName=go.uber.org/nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260717202641-aacdd5a364bf
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260723163314-0c9f43cc407d
 
       - name: Run nilaway
         run: |
@@ -151,7 +151,10 @@ jobs:
           # empty ref and use the default checkout — a fork branch name would
           # not resolve in this repo, and a fork cannot be pushed to.
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || '' }}
-          persist-credentials: true
+          # The push step supplies BINDINGS_SYNC_PAT explicitly. If checkout
+          # persists its GITHUB_TOKEN extraheader, Git uses that instead and
+          # the follow-up PR checks are left action_required by anti-recursion.
+          persist-credentials: false
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 

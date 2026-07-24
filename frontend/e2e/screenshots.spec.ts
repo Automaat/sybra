@@ -167,37 +167,6 @@ for (const theme of ['light', 'dark'] as const) {
       await shot(page, theme, 'reviews-plan-with-comment')
     })
 
-    // ─── Chats ────────────────────────────────────────────────────────────────
-
-    test('chats', async ({ page }) => {
-      await page.goto('/')
-      await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-      await page.locator('h2', { hasText: 'Chats' }).waitFor()
-      await shot(page, theme, 'chats')
-    })
-
-    test('chats-new-chat-dialog', async ({ page }) => {
-      await page.goto('/')
-      await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-      await page.locator('h2', { hasText: 'Chats' }).waitFor()
-      await page.getByRole('main').getByRole('button', { name: /New Chat/ }).first().click()
-      await page.getByRole('dialog').waitFor()
-      await shot(page, theme, 'chats-new-chat-dialog')
-    })
-
-    test('chat-detail', async ({ page }) => {
-      await page.goto('/')
-      await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-      await page.locator('h2', { hasText: 'Chats' }).waitFor()
-      // Open the first existing chat session if present
-      const firstChat = page.getByRole('main').getByRole('listitem').first()
-      if (await firstChat.count() > 0 && await firstChat.isVisible()) {
-        await firstChat.click()
-        await page.waitForTimeout(800)
-      }
-      await shot(page, theme, 'chat-detail')
-    })
-
     // ─── Agents ───────────────────────────────────────────────────────────────
 
     test('agents', async ({ page }) => {

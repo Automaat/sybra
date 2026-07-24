@@ -292,7 +292,7 @@ func convoResumeState(evs []ConvoEvent) State {
 func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 	// Per-turn recreate is unconditional (no live process to gate on), so guard
 	// against resurrecting an agent for a task that was deleted while the app
-	// was down — that would leak a zombie agent gcOrphanChats can't reap.
+	// was down — that would leak a zombie agent nothing else can reap.
 	if r.TaskID != "" {
 		if exists := m.taskExistsFn(); exists != nil && !exists(r.TaskID) {
 			_ = reg.Delete(r.ID)
@@ -479,7 +479,7 @@ func watchPID(ctx context.Context, pid int, procStart string, done chan struct{}
 // and returns the byte offset just past the last complete line — the point
 // from which live tailing should resume.
 func (m *Manager) rehydrateFromLog(a *Agent, path string) int64 {
-	return rehydrateFromLogWithArtifacts(a, path, a.TaskID, string(RoleFromName(a.Name)), m.artifacts)
+	return rehydrateFromLogWithArtifacts(a, path, a.TaskID, string(a.EffectiveRole()), m.artifacts)
 }
 
 func rehydrateFromLog(a *Agent, path string) int64 {
@@ -601,7 +601,7 @@ func (m *Manager) reattachStaleReason(r Record, now time.Time) string {
 
 func staleForLiveAgent(status string) bool {
 	switch status {
-	case "todo", "new", "human-required", "done", "cancelled":
+	case "todo", "new", "human-required", "blocked", "done", "cancelled":
 		return true
 	default:
 		return false

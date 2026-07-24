@@ -84,12 +84,12 @@ export function DeleteTask(id: string): $CancellablePromise<void> {
 
 /**
  * DispatchFromHumanRequired flips a task parked in human-required to target
- * (one of in-progress/testing/ready-pr/in-review), recording reason as the
- * audit-visible status_reason. For dispatching targets it synchronously
- * re-enters the workflow via task.status_changed; on any failure to do so it
- * fails closed, reverting the task to human-required with an explanatory
- * status_reason so the operator is never left with a task silently stuck in
- * a target status with no workflow driving it.
+ * (one of in-progress/ready-review/testing/ready-pr/in-review), recording
+ * reason as the audit-visible status_reason. For dispatching targets it
+ * synchronously re-enters the workflow via task.status_changed; on any failure
+ * to do so it fails closed, reverting the task to human-required with an
+ * explanatory status_reason so the operator is never left with a task silently
+ * stuck in a target status with no workflow driving it.
  * 
  * The whole check-then-write sequence runs under the workflow engine's
  * per-task human-action lock (shared with plan-review's
@@ -159,8 +159,7 @@ export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0
 }
 
 /**
- * ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
- * Chat tasks are surfaced exclusively through the Chats view.
+ * ListTasks returns all tasks from the store.
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
@@ -170,10 +169,18 @@ export function ListTasks(): $CancellablePromise<task$0.Task[]> {
 
 /**
  * ListTasksForNode returns the subset of the board relevant to a cluster
- * follower's mirror: tasks assigned to that node, excluding chat tasks and
- * terminal tasks closed longer than mirrorStaleTerminalWindow ago. Unlike
- * ListTasks, this is sized for repeated polling rather than a one-off full
- * board read.
+ * follower's mirror: tasks assigned to that node, excluding terminal tasks
+ * closed longer than mirrorStaleTerminalWindow ago. Unlike ListTasks, this is
+ * sized for repeated polling rather than a one-off full board read.
+ * 
+ * Also includes tasks with no AssignedNode at all. This service call always
+ * runs against this instance's own store (the leader polls each follower's
+ * HTTP API individually), so an unassigned task here unambiguously lives on
+ * this node — e.g. created by this follower's own local umbrella expansion
+ * or triage, never routed by a leader. AssignedNode is leader-only metadata
+ * (see Assigner.route/stampNode); a follower has no way to stamp its own
+ * name onto a task it created itself, so without this, such a task is
+ * permanently invisible to the leader's mirror — see cluster.mirror.adopted.
  */
 export function ListTasksForNode(node: string): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(844621143, node).then(($result: any) => {

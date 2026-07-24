@@ -28,6 +28,13 @@ func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt, dir string, allowe
 	return m.Run(RunConfig{TaskID: taskID, Name: taskTitle, Mode: mode, Prompt: prompt, AllowedTools: allowedTools, Dir: dir})
 }
 
+// RunWithCapacityReservation consumes reservation if the run reaches
+// registerRunningAgent; otherwise the caller still owns it and must release it.
+func (m *Manager) RunWithCapacityReservation(cfg RunConfig, reservation *CapacityReservation) (*Agent, error) {
+	cfg.capacityReservation = reservation
+	return m.Run(cfg)
+}
+
 func (a *Agent) setAssignment(cfg RunConfig) {
 	a.ExperimentID = cfg.ExperimentID
 	a.VariantID = cfg.VariantID
@@ -134,6 +141,16 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := validateRunDir(cfg.Dir); err != nil {
 		return cfg, nil, err
 	}
+	role, roleErr := ResolveRunRole(cfg.Role, cfg.Name)
+	if roleErr != nil {
+		return cfg, nil, roleErr
+	}
+	cfg.Role = role
+	m.mu.RLock()
+	if cfg.Model == "" {
+		cfg.Model = m.defaultModel
+	}
+	m.mu.RUnlock()
 	if cfg.SeedWorkingMemory {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
@@ -149,6 +166,23 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if providerErr != nil {
 		return cfg, nil, providerErr
 	}
+	requestedProvider, requestedErr := m.providerForRun(cfg.Provider)
+	if requestedErr != nil {
+		return cfg, nil, requestedErr
+	}
+	resolvedModel, nextRequestedModel, modelErr := resolveRunModel(requestedProvider, prov.Name(), cfg.Model)
+	if modelErr != nil {
+		m.logger.Warn("agent.run.provider_model_incompatible",
+			"task_id", cfg.TaskID,
+			"requested_provider", requestedProvider,
+			"selected_provider", prov.Name(),
+			"model", cfg.Model,
+			"err", modelErr,
+		)
+		return cfg, nil, modelErr
+	}
+	cfg.Model = nextRequestedModel
+	cfg.resolvedModel = resolvedModel
 	if err := m.resolveWorkflowSkillPrompt(&cfg, prov); err != nil {
 		return cfg, nil, err
 	}
@@ -161,7 +195,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		m.mu.RUnlock()
 		// Verifier/system roles and fix-review dispatch unattended (no caller
 		// ever writes a steer message) — see Role.SupportsHeadlessSteer.
-		cfg.HeadlessSteerable = steerable && RoleFromName(cfg.Name).SupportsHeadlessSteer()
+		cfg.HeadlessSteerable = steerable && cfg.Role.SupportsHeadlessSteer()
 	}
 	cfg.approvalAddr = m.approvalAddr
 	// Headless Claude runs with require_permissions:true rely on Sybra's
@@ -206,9 +240,6 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	m.preparePlaywrightMCP(&cfg)
 
 	m.mu.RLock()
-	if cfg.Model == "" {
-		cfg.Model = m.defaultModel
-	}
 	if cfg.BashTimeoutMs == 0 {
 		cfg.BashTimeoutMs = m.bashTimeoutMs
 	}
@@ -767,9 +798,11 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		ID:                      id,
 		TaskID:                  cfg.TaskID,
 		Name:                    cfg.Name,
+		Role:                    cfg.Role,
 		Mode:                    cfg.Mode,
 		Provider:                prov.Name(),
-		Model:                   prov.NormalizeModel(cfg.Model),
+		Model:                   cfg.resolvedModel,
+		RequestedModel:          cfg.Model,
 		ReasoningEffort:         cfg.ReasoningEffort,
 		RequestedSkill:          cfg.RequestedSkill,
 		SkillExecutionMode:      cfg.SkillExecutionMode,
@@ -818,7 +851,11 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 
 func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.CancelFunc) error {
 	m.mu.Lock()
-	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.liveCount >= m.maxConcurrent {
+	reserved := false
+	if !cfg.IgnoreConcurrencyLimit && cfg.capacityReservation != nil && cfg.capacityReservation.manager == m {
+		reserved = cfg.capacityReservation.consumeLocked()
+	}
+	if !cfg.IgnoreConcurrencyLimit && !reserved && m.maxConcurrent > 0 && m.liveCount+m.reservedCount >= m.maxConcurrent {
 		m.mu.Unlock()
 		cancel()
 		return fmt.Errorf("%w (%d)", ErrMaxConcurrentReached, m.maxConcurrent)
@@ -938,7 +975,10 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	model := prov.NormalizeModel(cfg.Model)
+	model, err := resolvedModelForRun(cfg, prov)
+	if err != nil {
+		return "", err
+	}
 	if model != "" && !safeArgRe.MatchString(model) {
 		return "", fmt.Errorf("invalid model %q: must match %s", cfg.Model, safeArgRe)
 	}

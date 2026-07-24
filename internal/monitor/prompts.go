@@ -55,8 +55,13 @@ func DispatchPrompt(a Anomaly, issueRepo, pushRemote string) string {
 func prGapPrompt(a Anomaly, pushRemote string) string {
 	taskID, _ := a.Evidence["task_id"].(string)
 	title, _ := a.Evidence["title"].(string)
+	projectID, _ := a.Evidence["project_id"].(string)
 	if pushRemote == "" {
 		pushRemote = "origin"
+	}
+	repoFlag := ""
+	if projectID != "" {
+		repoFlag = " --repo " + projectID
 	}
 	return fmt.Sprintf(
 		`You are the sybra monitor PR-gap remediator.
@@ -73,13 +78,13 @@ Run, in order:
    then exit.
 3. Otherwise:
    `+"`git push -u %s HEAD`"+`
-   `+"`gh pr create --base main --title %q --body \"<two-sentence summary from the latest commits>\"`"+`
-   When pushing to a fork remote, gh detects the cross-repo head automatically; no extra flags needed.
+   `+"`gh pr create%s --base main --title %q --body \"<two-sentence summary from the latest commits>\"`"+`
+   ALWAYS pass `+"`--repo %s`"+` explicitly — do NOT rely on gh to auto-detect the base repo. When %s is a fork remote, a bare `+"`gh pr create`"+` run from this worktree can silently open the PR against the fork's own default branch instead of upstream (the worktree's origin push is intentionally disabled for fork-based projects), which leaves the task looking done while no real PR exists upstream. Before recording a PR number, verify with `+"`gh pr view <n> --repo %s`"+` that it actually resolves in this repo.
 4. On success, run `+"`sybra-cli update %s --pr <number> --status-reason \"monitor: created missing PR\"`"+`.
 
 Output exactly one final JSON line:
 {"action":"created"|"escalated"|"failed","prNumber":N,"reason":"..."}`,
-		taskID, title, taskID, pushRemote, title, taskID,
+		taskID, title, taskID, pushRemote, repoFlag, title, projectID, pushRemote, projectID, taskID,
 	)
 }
 
@@ -122,14 +127,10 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 		}
 		doneCmd := ""
 		if taskID != "" {
-			doneCmd = "\n- Once " + prRef + " merges, mark task done: `sybra-cli update " + taskID + " --status done`."
-		}
-		mergedCmd := ""
-		if taskID != "" {
-			mergedCmd = "`sybra-cli update " + taskID + " --status done`"
+			doneCmd = "\n- Once " + prRef + " merges, wait for the PR monitor landing pass; do not mark the task done manually."
 		}
 		investigationHint = "- A fix-review agent already ran — skip the agent log and check " + prRef + " state with `gh pr view --json state,reviewDecision,statusCheckRollup`.\n" +
-			"- If state=MERGED: the PR has already been merged. Run " + mergedCmd + ". Skip issue filing and output: {\"issueNumber\":null,\"action\":\"remediated\",\"blocker\":\"PR already merged\",\"nextStep\":\"none\"}.\n" +
+			"- If state=MERGED: the PR has already been merged. Do not mark the task done manually; let the PR monitor landing pass record telemetry. Skip issue filing and output: {\"issueNumber\":null,\"action\":\"remediated\",\"blocker\":\"PR already merged\",\"nextStep\":\"none\"}.\n" +
 			"- If CHANGES_REQUESTED: new review comments arrived — report that as the blocker with \"run another fix-review agent\" as the next step.\n" +
 			"- If REVIEW_REQUIRED: fixes were pushed but review was not re-requested — report \"awaiting re-review\" with \"re-request review\" as the next step.\n" +
 			"- If APPROVED and CI passes: report \"ready to merge\" with \"merge the PR\" as the next step." +
@@ -282,12 +283,12 @@ func suggestedInvestigation(a Anomaly) string {
 		} else if lastRole == "fix-review" && lastState == "stopped" {
 			hint += "- Fix-review agent finished — check the PR and agent log for the outcome.\n"
 			if prNum > 0 {
-				hint += fmt.Sprintf("- Check PR #%d state: if MERGED mark task done immediately (`sybra-cli update %s --status done`); if CHANGES_REQUESTED run another fix-review agent; if REVIEW_REQUIRED re-request review; if APPROVED and CI passes merge.\n", prNum, taskID)
+				hint += fmt.Sprintf("- Check PR #%d state: if MERGED wait for the PR monitor landing pass; if CHANGES_REQUESTED run another fix-review agent; if REVIEW_REQUIRED re-request review; if APPROVED and CI passes merge.\n", prNum)
 			} else {
-				hint += "- Check the PR state: if already merged mark task done; address remaining comments, re-request review, or merge if approved.\n"
+				hint += "- Check the PR state: if already merged wait for the PR monitor landing pass; address remaining comments, re-request review, or merge if approved.\n"
 			}
 			if taskID != "" {
-				hint += "- Once PR merges, mark task done: `sybra-cli update " + taskID + " --status done`.\n"
+				hint += "- Once PR merges, wait for the PR monitor landing pass; do not mark the task done manually.\n"
 			}
 		}
 		return hint

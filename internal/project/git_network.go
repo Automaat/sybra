@@ -17,6 +17,8 @@ var transientNetworkMarkers = []string{
 	"connection refused",
 	"connection reset",
 	"connection timed out",
+	"failed to connect",
+	"couldn't connect to server",
 	"could not resolve host",
 	"couldn't resolve host",
 	"network is unreachable",

@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
@@ -193,6 +195,93 @@ func TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates(t *testing.T) {
 	}
 }
 
+// TestReleaseUnblockedChildren_WatchdogExhaustedBlockedChildNotReleased covers
+// #2538: a child deep into implementation that watchdog rate-limit retries
+// exhaust is parked `blocked` by handleWatchdogRateLimitRetry with a
+// workflow-owned Blocker (blocker.KindWatchdogRateLimitExhausted,
+// ActorWorkflow). Even though it still carries the umbrella-gated tag and has
+// no dependencies to wait on, the gate must never treat this as its own
+// dependency hold and release it — doing so discards the child's in-flight
+// implementation workflow and re-triages it from scratch.
+func TestReleaseUnblockedChildren_WatchdogExhaustedBlockedChildNotReleased(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+
+	// CreateFull's initial-field application does not carry Blocker (only
+	// Update does — mirroring the real handleWatchdogRateLimitRetry escalation,
+	// which always flips an already-running child from in-progress via a
+	// single UpdateTaskBlocker call, never at creation).
+	stalled, err := m.CreateFull("stalled", "", task.AgentModeHeadless, task.Update{
+		Issue:         task.Ptr("Automaat/sybra#1"),
+		UmbrellaIssue: task.Ptr(umb),
+		Status:        task.Ptr(task.StatusInProgress),
+		Tags:          task.Ptr([]string{umbrellaGatedTag}),
+	})
+	if err != nil {
+		t.Fatalf("create stalled child: %v", err)
+	}
+	if _, err := m.Update(stalled.ID, task.Update{
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr("watchdog: zero-output startup retry budget exhausted after 2 identical attempts"),
+		Blocker: task.Ptr(blocker.State{
+			Kind:      blocker.KindWatchdogRateLimitExhausted,
+			Actor:     blocker.ActorWorkflow,
+			Exhausted: true,
+		}),
+	}); err != nil {
+		t.Fatalf("escalate stalled child to blocked: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	stalledTask := mustTask(t, m, stalled.ID)
+	if stalledTask.Status != task.StatusBlocked {
+		t.Fatalf("stalled child = %q, want to stay blocked (workflow-owned hold, not the gate's)", stalledTask.Status)
+	}
+	if !slices.Contains(stalledTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("stalled child tags = %v, want the gating tag left untouched since the gate never released it", stalledTask.Tags)
+	}
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
+		t.Fatalf("tracker = %q, want human-required to surface the stalled child", got)
+	}
+}
+
+// TestReleaseUnblockedChildren_WatchdogBlockedChildWithImplementationHistoryNotReleased
+// is the regression guard for sybra#2538: a child that already ran an
+// implementation agent and later hit `blocked` via watchdog exhaustion must
+// never be re-released as though it were still awaiting its dependencies,
+// even if it still (or once again) carries the gating tag.
+func TestReleaseUnblockedChildren_WatchdogBlockedChildWithImplementationHistoryNotReleased(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	mkTracker(t, m, umb, 5)
+
+	started := mkChild(t, m, "started", "Automaat/sybra#1", umb, nil, task.StatusBlocked)
+	if err := m.AddRun(started.ID, task.AgentRun{
+		AgentID: "a1",
+		Role:    string(agent.RoleImplementation),
+	}); err != nil {
+		t.Fatalf("add implementation run: %v", err)
+	}
+	neverStarted := mkChild(t, m, "never-started", "Automaat/sybra#2", umb, nil, task.StatusBlocked)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	startedTask := mustTask(t, m, started.ID)
+	if startedTask.Status != task.StatusBlocked || !slices.Contains(startedTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("started child = %q tags=%v, want to stay blocked+gated (already implemented, not dependency-gated)",
+			startedTask.Status, startedTask.Tags)
+	}
+	neverStartedTask := mustTask(t, m, neverStarted.ID)
+	if neverStartedTask.Status != task.StatusTodo || slices.Contains(neverStartedTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("never-started child = %q tags=%v, want released to todo (dependency-gated with no history)",
+			neverStartedTask.Status, neverStartedTask.Tags)
+	}
+}
+
 func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)
@@ -338,7 +427,36 @@ func TestTrackerRollup(t *testing.T) {
 		{"cycle", umbrellaState{total: 2}, true, true, task.StatusHumanRequired, false},
 		{"stuck child", umbrellaState{total: 2, anyHR: true}, false, true, task.StatusHumanRequired, false},
 		{"blocked child", umbrellaState{total: 2, anyBlocked: true}, false, true, task.StatusHumanRequired, false},
-		{"cancelled child", umbrellaState{total: 2, anyCancelled: true}, false, true, task.StatusHumanRequired, false},
+		{
+			"cancelled child with no live sibling",
+			umbrellaState{total: 2, children: []umbrellaProgressChild{
+				{id: "a", issue: "Automaat/sybra#1", status: task.StatusCancelled},
+				{id: "b", issue: "Automaat/sybra#2", status: task.StatusDone},
+			}},
+			false, true, task.StatusHumanRequired, false,
+		},
+		{
+			// A cancelled task can never reach Done, so it must not count
+			// against total — otherwise doneCount == total is impossible
+			// forever, and the umbrella sits at in-progress with no signal.
+			"cancelled duplicate with a live sibling on the same issue completes",
+			umbrellaState{total: 2, doneCount: 1, children: []umbrellaProgressChild{
+				{id: "a", issue: "Automaat/sybra#1", status: task.StatusCancelled},
+				{id: "b", issue: "Automaat/sybra#1", status: task.StatusDone},
+			}},
+			false, true, task.StatusDone, true,
+		},
+		{
+			// Excluding the resolved duplicate from total must not mask a
+			// genuinely unfinished sibling under the same umbrella.
+			"cancelled duplicate does not mask other still-running work",
+			umbrellaState{total: 3, doneCount: 1, children: []umbrellaProgressChild{
+				{id: "a", issue: "Automaat/sybra#1", status: task.StatusCancelled},
+				{id: "b", issue: "Automaat/sybra#1", status: task.StatusDone},
+				{id: "c", issue: "Automaat/sybra#2", status: task.StatusInProgress},
+			}},
+			false, true, task.StatusInProgress, false,
+		},
 		{"all done", umbrellaState{total: 2, doneCount: 2}, false, true, task.StatusDone, true},
 		{"in progress", umbrellaState{total: 2, doneCount: 1}, false, true, task.StatusInProgress, false},
 		{"zero children settled completes", umbrellaState{total: 0}, false, true, task.StatusDone, true},
@@ -631,6 +749,30 @@ func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
 	// retrigger a release.
 	if slices.Contains(released.Tags, umbrellaGatedTag) {
 		t.Fatalf("gating tag not stripped on release: tags=%v", released.Tags)
+	}
+}
+
+func TestReleaseUnblockedChildren_HoldsWhileUmbrellaExpanding(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+
+	tracker := mkTracker(t, m, umb, 5)
+	if _, err := m.Update(tracker.ID, task.Update{
+		Tags: task.Ptr(append(slices.Clone(tracker.Tags), umbrella.ExpandingTag)),
+	}); err != nil {
+		t.Fatalf("mark tracker expanding: %v", err)
+	}
+	root := mkChild(t, m, "root", "Automaat/sybra#1", umb, nil, task.StatusTodo)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	held := mustTask(t, m, root.ID)
+	if held.Status != task.StatusTodo || !slices.Contains(held.Tags, umbrellaGatedTag) {
+		t.Fatalf("root released while umbrella is expanding: status=%q tags=%v", held.Status, held.Tags)
+	}
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusInProgress {
+		t.Fatalf("tracker status = %q, want unchanged while expanding", got)
 	}
 }
 

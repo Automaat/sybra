@@ -348,6 +348,124 @@ func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
 	}
 }
 
+func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
+	dir := setupStore(t)
+	t.Setenv("SYBRA_TASKS_DIR", "")
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	seeded, err := manager.Create("seed task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	toDelete, err := manager.Create("delete me", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed delete task: %v", err)
+	}
+
+	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	assertFallback := func(t *testing.T, stderr string) {
+		t.Helper()
+		if !strings.Contains(stderr, "falling back to direct task store") {
+			t.Fatalf("stderr missing fallback warning:\n%s", stderr)
+		}
+	}
+
+	code, stdout, stderr := runCLIWithStderr(t, "--json", "list")
+	if code != 0 {
+		t.Fatalf("list exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var listed []task.Task
+	mustUnmarshal(t, stdout, &listed)
+	if len(listed) != 2 {
+		t.Fatalf("list returned %d tasks, want 2", len(listed))
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "create", "--title", "fallback created")
+	if code != 0 {
+		t.Fatalf("create exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var created task.Task
+	mustUnmarshal(t, stdout, &created)
+	if created.Title != "fallback created" {
+		t.Fatalf("created title = %q, want %q", created.Title, "fallback created")
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "link-pr", seeded.ID, "42")
+	if code != 0 {
+		t.Fatalf("link-pr exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var linked task.Task
+	mustUnmarshal(t, stdout, &linked)
+	if linked.PRNumber != 42 {
+		t.Fatalf("pr number = %d, want 42", linked.PRNumber)
+	}
+	if linked.Status != task.StatusInReview {
+		t.Fatalf("status after link-pr = %q, want %q", linked.Status, task.StatusInReview)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "reopen", seeded.ID)
+	if code != 0 {
+		t.Fatalf("reopen exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	reopened, err := store.Get(seeded.ID)
+	if err != nil {
+		t.Fatalf("get after reopen: %v", err)
+	}
+	if reopened.Status != task.StatusTodo {
+		t.Fatalf("status after reopen = %q, want %q", reopened.Status, task.StatusTodo)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "board")
+	if code != 0 {
+		t.Fatalf("board exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var board struct {
+		Counts map[string]int `json:"counts"`
+	}
+	mustUnmarshal(t, stdout, &board)
+	if board.Counts[string(task.StatusTodo)] < 1 {
+		t.Fatalf("board counts missing todo task: %+v", board.Counts)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "delete", toDelete.ID)
+	if code != 0 {
+		t.Fatalf("delete exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	if _, err := store.Get(toDelete.ID); err == nil {
+		t.Fatalf("task %s still present after delete", toDelete.ID)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "trash", "list")
+	if code != 0 {
+		t.Fatalf("trash list exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var trashed []task.TrashEntry
+	mustUnmarshal(t, stdout, &trashed)
+	found := false
+	for _, entry := range trashed {
+		if entry.ID == toDelete.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("trash list missing deleted task %s: %+v", toDelete.ID, trashed)
+	}
+}
+
 func TestDelete(t *testing.T) {
 	setupStore(t)
 
@@ -1075,6 +1193,36 @@ func TestConfigDoctorJSONReportsRoutingSummaryAndWarnings(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Providers.AutoFailover = true
+	cfg.Agent.Provider = "claude"
+	cfg.Agent.Model = "claude-fable-5"
+	cfg.Monitor.Model = "claude-fable-5"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, want := range []string{
+		`agent.model="claude-fable-5" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
+		`monitor.model="claude-fable-5" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "warning" && f.Message == want
+		}) {
+			t.Fatalf("expected warning %q in %+v", want, report.Findings)
+		}
+	}
+}
+
 func TestConfigDumpRedactsTaggedSecrets(t *testing.T) {
 	setupStore(t)
 
@@ -1497,6 +1645,131 @@ func TestUpdateMultipleFields(t *testing.T) {
 	}
 	if len(updated.Tags) != 3 {
 		t.Fatalf("Tags len = %d, want 3", len(updated.Tags))
+	}
+}
+
+func TestUpdateBlockerFlags(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "create", "--title", "blocker flags test")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, out = runCLI(t, "--json", "update", created.ID,
+		"--status", "blocked",
+		"--blocker-kind", "worktree_repair",
+		"--blocker-code", "disk_space",
+		"--blocker-next-action", "repair_worktree",
+		"--blocker-retry-after", "2026-01-01T00:00:00Z",
+	)
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	var updated task.Task
+	mustUnmarshal(t, out, &updated)
+	if updated.Blocker.Kind != "worktree_repair" {
+		t.Errorf("Blocker.Kind = %q, want %q", updated.Blocker.Kind, "worktree_repair")
+	}
+	if updated.Blocker.Code != "disk_space" {
+		t.Errorf("Blocker.Code = %q, want %q", updated.Blocker.Code, "disk_space")
+	}
+	if updated.Blocker.NextAction != "repair_worktree" {
+		t.Errorf("Blocker.NextAction = %q, want %q", updated.Blocker.NextAction, "repair_worktree")
+	}
+	if updated.Blocker.RetryAfter == nil || updated.Blocker.RetryAfter.Format("2006-01-02") != "2026-01-01" {
+		t.Errorf("Blocker.RetryAfter = %v, want 2026-01-01", updated.Blocker.RetryAfter)
+	}
+	if updated.Blocker.Exhausted {
+		t.Error("Blocker.Exhausted = true, want false")
+	}
+
+	// Setting only --blocker-exhausted must preserve the previously recorded
+	// kind/code/next_action rather than blanking them out.
+	code, out = runCLI(t, "--json", "update", created.ID, "--blocker-exhausted")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	mustUnmarshal(t, out, &updated)
+	if !updated.Blocker.Exhausted {
+		t.Error("Blocker.Exhausted = false, want true")
+	}
+	if updated.Blocker.Kind != "worktree_repair" {
+		t.Errorf("Blocker.Kind after exhausted-only update = %q, want preserved %q", updated.Blocker.Kind, "worktree_repair")
+	}
+
+	code, out = runCLI(t, "--json", "update", created.ID, "--blocker-clear")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	// json.Unmarshal only overwrites fields present in the payload, so start
+	// from a zero value — omitzero means an absent "blocker" key would
+	// otherwise silently leave the previous iteration's Blocker in place.
+	updated = task.Task{}
+	mustUnmarshal(t, out, &updated)
+	if !updated.Blocker.IsZero() {
+		t.Errorf("Blocker after --blocker-clear = %+v, want zero value", updated.Blocker)
+	}
+}
+
+func TestUpdateBlockerKindRejectsMachineKindAtHumanRequired(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "create", "--title", "blocker validation test")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "update", created.ID,
+		"--status", "human-required",
+		"--blocker-kind", "worktree_repair",
+	)
+	if code == 0 {
+		t.Error("expected non-zero exit: worktree_repair must never reach human-required")
+	}
+}
+
+func TestCmdBoardExposesBlockedBucket(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "create", "--title", "board blocked test")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, out = runCLI(t, "--json", "update", created.ID,
+		"--status", "blocked",
+		"--blocker-kind", "worktree_repair",
+		"--blocker-next-action", "repair_worktree",
+	)
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+
+	code, out = runCLI(t, "--json", "board")
+	if code != 0 {
+		t.Fatalf("board exit %d: %s", code, out)
+	}
+	var summary boardSummary
+	mustUnmarshal(t, out, &summary)
+	if summary.Counts["blocked"] != 1 {
+		t.Errorf("Counts[blocked] = %d, want 1", summary.Counts["blocked"])
+	}
+	if len(summary.Blocked) != 1 {
+		t.Fatalf("Blocked len = %d, want 1", len(summary.Blocked))
+	}
+	bt := summary.Blocked[0]
+	if bt.ID != created.ID {
+		t.Errorf("Blocked[0].ID = %q, want %q", bt.ID, created.ID)
+	}
+	if bt.Blocker.Kind != "worktree_repair" {
+		t.Errorf("Blocked[0].Blocker.Kind = %q, want %q", bt.Blocker.Kind, "worktree_repair")
+	}
+	if bt.Blocker.NextAction != "repair_worktree" {
+		t.Errorf("Blocked[0].Blocker.NextAction = %q, want %q", bt.Blocker.NextAction, "repair_worktree")
 	}
 }
 

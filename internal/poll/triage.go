@@ -33,6 +33,7 @@ type TriageHandler struct {
 	gate       provider.HealthGate
 	factory    classifierFactory
 	perTaskTTL time.Duration
+	applyOpts  triage.ApplyOptions
 }
 
 // NewTriageHandler constructs a TriageHandler.
@@ -60,6 +61,12 @@ func (h *TriageHandler) Name() string { return "triage" }
 // to be rate-limited or logged out.
 func (h *TriageHandler) SetProviderGate(g provider.HealthGate) {
 	h.gate = g
+}
+
+// SetSybraBugProjectID configures the local tracking project used when
+// re-routing sybra-bug tasks during triage.
+func (h *TriageHandler) SetSybraBugProjectID(id string) {
+	h.applyOpts.SybraBugProjectID = id
 }
 
 // Poll implements poll.Fetcher. Returns the next poll interval.
@@ -121,7 +128,7 @@ func (h *TriageHandler) classifyOne(
 	ctx, cancel := context.WithTimeout(parent, h.perTaskTTL)
 	defer cancel()
 
-	if _, _, err := triage.ClassifyAndApply(ctx, classifier, h.tasks, h.audit, t, projects); err != nil {
+	if _, _, err := triage.ClassifyAndApplyWithOptions(ctx, classifier, h.tasks, h.audit, t, projects, h.applyOpts); err != nil {
 		h.logger.Warn("triage.classify", "task", t.ID, "err", err)
 	}
 }
