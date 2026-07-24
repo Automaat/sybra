@@ -509,6 +509,49 @@ func TestRunSetup_LockfileChangeForcesRerun(t *testing.T) {
 	}
 }
 
+// TestRunSetup_SubdirLockfileChangeForcesRerun proves a lockfile living in a
+// subdirectory a setup command `cd`s into (e.g. `frontend/package-lock.json`,
+// this repo's own frontend bootstrap) invalidates the cache — the root-only
+// hash would miss it and wrongly report a cache hit after a dependency bump
+// lands on that subdirectory lockfile.
+func TestRunSetup_SubdirLockfileChangeForcesRerun(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	if err := os.MkdirAll(filepath.Join(wtDir, "frontend"), 0o755); err != nil {
+		t.Fatalf("mkdir frontend: %v", err)
+	}
+	lockfile := filepath.Join(wtDir, "frontend", "package-lock.json")
+	if err := os.WriteFile(lockfile, []byte(`{"v":1}`), 0o644); err != nil {
+		t.Fatalf("seed package-lock.json: %v", err)
+	}
+	marker := filepath.Join(wtDir, "ran-count")
+	cmds := []string{"(cd frontend && printf x >> ../ran-count)"}
+
+	if err := m.runSetup(context.Background(), "task-subdir-lock", wtDir, cmds); err != nil {
+		t.Fatalf("first runSetup: %v", err)
+	}
+
+	if err := os.WriteFile(lockfile, []byte(`{"v":2}`), 0o644); err != nil {
+		t.Fatalf("edit package-lock.json: %v", err)
+	}
+
+	if err := m.runSetup(context.Background(), "task-subdir-lock", wtDir, cmds); err != nil {
+		t.Fatalf("second runSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if got := string(data); got != "xx" {
+		t.Errorf("subdir lockfile edit did not force a rerun; marker=%q, want \"xx\"", got)
+	}
+}
+
 // TestRunSetup_FailedRunNeverRecordsCacheKey proves a failed setup run never
 // writes a cache marker, so the identical (still-failing) command set is
 // retried on the next attempt rather than being treated as a cache hit.

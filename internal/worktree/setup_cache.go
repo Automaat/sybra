@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -30,27 +32,65 @@ var setupCacheLockfiles = []string{
 	"mise.toml", ".mise.toml", "mise.local.toml", ".mise.local.toml", "mise.lock",
 }
 
-// setupCacheKey hashes the resolved setup commands together with the
-// content of any lockfiles present at the worktree root, so a cache hit
-// means "the exact bootstrap this worktree would run is unchanged" — it
-// catches both a `.sybra.yaml` setup-block edit (which changes commands)
-// and a dependency bump (which changes a lockfile's content without the
-// command list itself changing at all).
+// setupCacheCdPattern extracts `cd <dir>` targets from a setup command so a
+// lockfile living in a subdirectory a command operates in (e.g.
+// `(cd frontend && npm ci)` → `frontend/package-lock.json`) is hashed too —
+// not just lockfiles at the worktree root.
+var setupCacheCdPattern = regexp.MustCompile(`(?:^|[\s(;&|])cd\s+([^\s;&|)]+)`)
+
+// setupCacheDirs returns the worktree-relative directories whose lockfiles are
+// hashed into the cache key: always the root, plus every `cd`-target found in
+// the setup commands. Absolute paths and `~`/parent-escaping targets are
+// dropped so hashing stays scoped to the worktree. Returned sorted for a
+// deterministic hash.
+func setupCacheDirs(commands []string) []string {
+	dirs := map[string]struct{}{".": {}}
+	for _, c := range commands {
+		for _, match := range setupCacheCdPattern.FindAllStringSubmatch(c, -1) {
+			d := strings.Trim(match[1], `"'`)
+			if d == "" || strings.HasPrefix(d, "/") || strings.HasPrefix(d, "~") {
+				continue
+			}
+			d = filepath.Clean(d)
+			if d == ".." || strings.HasPrefix(d, ".."+string(filepath.Separator)) {
+				continue
+			}
+			dirs[d] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(dirs))
+	for d := range dirs {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// setupCacheKey hashes the resolved setup commands together with the content
+// of any lockfiles present at the worktree root and in each subdirectory a
+// setup command `cd`s into, so a cache hit means "the exact bootstrap this
+// worktree would run is unchanged" — it catches both a `.sybra.yaml`
+// setup-block edit (which changes commands) and a dependency bump (which
+// changes a lockfile's content without the command list itself changing at
+// all), including a bump to a subdirectory lockfile such as
+// `frontend/package-lock.json`.
 func setupCacheKey(wtPath string, commands []string) string {
 	h := sha256.New()
 	for _, c := range commands {
 		h.Write([]byte(c))
 		h.Write([]byte{0})
 	}
-	for _, name := range setupCacheLockfiles {
-		data, err := os.ReadFile(filepath.Join(wtPath, name))
-		if err != nil {
-			continue
+	for _, dir := range setupCacheDirs(commands) {
+		for _, name := range setupCacheLockfiles {
+			data, err := os.ReadFile(filepath.Join(wtPath, dir, name))
+			if err != nil {
+				continue
+			}
+			h.Write([]byte(filepath.ToSlash(filepath.Join(dir, name))))
+			h.Write([]byte{0})
+			h.Write(data)
+			h.Write([]byte{0})
 		}
-		h.Write([]byte(name))
-		h.Write([]byte{0})
-		h.Write(data)
-		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
