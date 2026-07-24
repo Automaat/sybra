@@ -116,7 +116,8 @@ func RefreshAppToken(ctx context.Context) error {
 	if src == nil {
 		return nil
 	}
-	return src.refresh(ctx, false)
+	_, err := src.refresh(ctx, false)
+	return err
 }
 
 // RefreshAppTokenEnv mints or renews the installation token, then exports it
@@ -139,9 +140,20 @@ func RefreshAppTokenEnv(ctx context.Context) error {
 // this process still believes is fresh; a plain RefreshAppToken would no-op
 // and repeat the same failure. A no-op when App auth is disabled.
 func ForceRefreshAppToken(ctx context.Context) error {
+	_, err := forceRefreshAppTokenLeader(ctx)
+	return err
+}
+
+// forceRefreshAppTokenLeader is ForceRefreshAppToken's core, additionally
+// reporting whether this call performed the mint (leader) or was collapsed by
+// singleflight into another caller's in-flight mint. The auth-health observer
+// uses leader so N concurrent 401s that share one mint drive one backoff step,
+// not N (see onAuthFailureObserved). A no-op (leader=false) when App auth is
+// disabled.
+func forceRefreshAppTokenLeader(ctx context.Context) (leader bool, err error) {
 	src := currentAppSource()
 	if src == nil {
-		return nil
+		return false, nil
 	}
 	return src.refresh(ctx, true)
 }
@@ -153,14 +165,23 @@ func ForceRefreshAppToken(ctx context.Context) error {
 // subprocess env in the same step as this package's own cache — not only on
 // the next 30-minute ticker pass.
 func ForceRefreshAppTokenEnv(ctx context.Context) error {
-	if err := ForceRefreshAppToken(ctx); err != nil {
-		return err
+	_, err := forceRefreshAppTokenEnvLeader(ctx)
+	return err
+}
+
+// forceRefreshAppTokenEnvLeader is ForceRefreshAppTokenEnv's core, propagating
+// the mint-leader signal (see forceRefreshAppTokenLeader) so the auth-health
+// observer counts a shared, singleflight-collapsed failure once.
+func forceRefreshAppTokenEnvLeader(ctx context.Context) (leader bool, err error) {
+	leader, err = forceRefreshAppTokenLeader(ctx)
+	if err != nil {
+		return leader, err
 	}
 	if tok := CurrentAppToken(); tok != "" {
 		_ = os.Setenv("GH_TOKEN", tok)
 		_ = os.Setenv("GITHUB_TOKEN", tok)
 	}
-	return nil
+	return leader, nil
 }
 
 // cachedAppToken returns the current installation token, or "" when App auth is
@@ -188,13 +209,18 @@ func cachedAppToken() string {
 	return src.token
 }
 
-func (s *appTokenSource) refresh(ctx context.Context, force bool) error {
+// refresh mints or renews the token. leader reports whether this call actually
+// performed the mint (true) versus being singleflight-collapsed into another
+// in-flight mint or short-circuited by a still-fresh cache (false). Callers
+// that drive failure accounting off the result use leader to attribute one
+// shared mint outcome to a single step — see onAuthFailureObserved.
+func (s *appTokenSource) refresh(ctx context.Context, force bool) (leader bool, err error) {
 	if !force {
 		s.mu.RLock()
 		fresh := s.token != "" && time.Until(s.expires) > appTokenRenewBefore
 		s.mu.RUnlock()
 		if fresh {
-			return nil
+			return false, nil
 		}
 	}
 
@@ -205,23 +231,32 @@ func (s *appTokenSource) refresh(ctx context.Context, force bool) error {
 		s.refreshMu.Unlock()
 		<-ch
 		s.refreshMu.Lock()
-		err := s.refreshErr
+		waitErr := s.refreshErr
 		s.refreshMu.Unlock()
-		return err
+		return false, waitErr
 	}
 	ch := make(chan struct{})
 	s.refreshing = ch
 	s.refreshMu.Unlock()
+	leader = true
 
-	err := s.doRefresh(ctx)
+	// Always publish the result and close the channel, even if doRefresh
+	// panics — otherwise s.refreshing stays non-nil and every subsequent
+	// refresh() blocks forever on <-ch. Convert a panic into an error so
+	// singleflight-waiting callers observe a failure instead of a deadlock.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("app token mint panicked: %v", r)
+		}
+		s.refreshMu.Lock()
+		s.refreshErr = err
+		s.refreshing = nil
+		s.refreshMu.Unlock()
+		close(ch)
+	}()
 
-	s.refreshMu.Lock()
-	s.refreshErr = err
-	s.refreshing = nil
-	s.refreshMu.Unlock()
-	close(ch)
-
-	return err
+	err = s.doRefresh(ctx)
+	return leader, err
 }
 
 func (s *appTokenSource) doRefresh(ctx context.Context) error {

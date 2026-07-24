@@ -244,6 +244,57 @@ func TestRecordSuppressedCall_IncrementsSnapshot(t *testing.T) {
 	}
 }
 
+func TestObserveCallResult_ConcurrentFailuresCountAsOneBackoffStep(t *testing.T) {
+	t.Cleanup(resetAuthHealthForTest)
+	resetAuthHealthForTest()
+	t.Cleanup(DisableAppAuth)
+
+	path, _ := writeTestKey(t, false)
+	var mints atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Hold the mint open so the concurrent observers pile up as
+		// singleflight waiters on the one in-flight mint rather than each
+		// starting its own.
+		time.Sleep(50 * time.Millisecond)
+		mints.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	defer srv.Close()
+	origBase := appAPIBaseURL
+	appAPIBaseURL = srv.URL
+	t.Cleanup(func() { appAPIBaseURL = origBase })
+
+	if err := EnableAppAuth(AppCredentials{AppID: 1, InstallationID: 2, PrivateKeyPath: path}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	resetAuthHealthForTest()
+
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for range n {
+		go func() {
+			defer wg.Done()
+			ObserveCallResult(nil, fmt.Errorf("gh: HTTP 401: Bad credentials"))
+		}()
+	}
+	wg.Wait()
+
+	if got := mints.Load(); got != 1 {
+		t.Fatalf("mints = %d, want exactly 1 (concurrent 401s must singleflight into one mint)", got)
+	}
+	snap := AuthHealthSnapshot()
+	if snap.State != AuthMisconfigured {
+		t.Fatalf("State = %q, want misconfigured", snap.State)
+	}
+	// The N concurrent observers share one deduplicated mint failure, so the
+	// circuit breaker must advance exactly one backoff step — not N.
+	if snap.ConsecutiveFailures != 1 {
+		t.Fatalf("ConsecutiveFailures = %d, want 1 for %d observers of one shared failure", snap.ConsecutiveFailures, n)
+	}
+}
+
 func TestForceRefreshAppToken_ConcurrentCallsCollapseToOneMint(t *testing.T) {
 	t.Cleanup(DisableAppAuth)
 	path, _ := writeTestKey(t, false)

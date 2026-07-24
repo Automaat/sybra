@@ -304,8 +304,18 @@ func onAuthFailureObserved(ctx context.Context, reason string) {
 	// specific call's cancellation/deadline — a short-lived poll context
 	// timing out mid-mint must not abort a refresh other concurrent 401s are
 	// singleflight-waiting on (see appauth.go's refreshMu).
-	if err := ForceRefreshAppTokenEnv(context.WithoutCancel(ctx)); err != nil {
-		authHealth.setState(classifyMintError(err), err.Error())
+	leader, err := forceRefreshAppTokenEnvLeader(context.WithoutCancel(ctx))
+	if err != nil {
+		// Only the goroutine that actually performed the mint records the
+		// failure. Concurrent 401s are singleflight-collapsed into that one
+		// mint (see appauth.go); if each waiter also drove setState the shared
+		// failure would advance consecutiveFailures/backoff N times, escalating
+		// a single incident toward the cap after one round. The leader's
+		// setState already parked the circuit at the failure state, so waiters
+		// need do nothing.
+		if leader {
+			authHealth.setState(classifyMintError(err), err.Error())
+		}
 		return
 	}
 	authHealth.setState(AuthHealthy, "")
