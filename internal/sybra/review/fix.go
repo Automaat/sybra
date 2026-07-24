@@ -1628,6 +1628,19 @@ func isTransientBranchConflictDispatchFailure(err error) bool {
 	return ue.RateLimited || ue.Reason == provider.RateLimitReason || !ue.Until.IsZero()
 }
 
+// dispatchFailureIsRateLimited reports whether a branch-conflict dispatch
+// failure is specifically a provider rate limit (as opposed to an ambiguous
+// cooldown). A rate limit always recovers, so this class parks indefinitely
+// instead of consuming the escalation budget — see
+// parkOrEscalateBranchConflictDispatchFailure.
+func dispatchFailureIsRateLimited(err error) bool {
+	var ue *provider.UnhealthyError
+	if !errors.As(err, &ue) {
+		return false
+	}
+	return ue.RateLimited || ue.Reason == provider.RateLimitReason
+}
+
 // parkOrEscalateBranchConflictDispatchFailure handles a transient
 // provider-unhealthy/rate-limit error starting the branch-conflict-fix
 // workflow — distinct from a genuine unresolved rebase conflict, which the
@@ -1641,6 +1654,17 @@ func isTransientBranchConflictDispatchFailure(err error) bool {
 // convention MarkRebaseBlocked relies on to avoid overwriting a specific
 // reason with its generic one.
 func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dispatchErr error) bool {
+	if dispatchFailureIsRateLimited(dispatchErr) {
+		// A rate limit always recovers on its own, so park and retry each poll
+		// until a provider is healthy rather than consuming the escalation
+		// budget: a human cannot un-rate-limit a provider, and 5 rapid retries
+		// inside a multi-minute cooldown otherwise exhaust the budget before
+		// recovery (2026-07-24 kuma 5be87222). Mirrors sybra#1585's reschedule
+		// park-don't-burn policy.
+		r.logger.Info("pr-monitor.branch-conflict.dispatch-parked-cooldown",
+			"task_id", taskID, "err", dispatchErr)
+		return true
+	}
 	attempts := r.recordDispatchFailure(taskID)
 	if attempts < branchConflictDispatchFailureLimit {
 		r.logger.Info("pr-monitor.branch-conflict.dispatch-parked-retry",
