@@ -515,15 +515,17 @@ func (s *Service) gateLostAgentIssue(a Anomaly, causes map[string]string) (Anoma
 		a.Fingerprint = Fingerprint(a.Kind, a.TaskID, map[string]any{"cause": cause})
 		return a, DeterministicIssueBody(a), true
 	}
-	switch {
-	case streak < s.cfg.LostAgentIssueAfterOccurrences:
+	if streak < s.cfg.LostAgentIssueAfterOccurrences {
 		s.logger.Debug("monitor.lost_agent.remediation_pending", "task_id", a.TaskID, "fingerprint", baseFP, "streak", streak)
 		return a, "", false
-	case streak == s.cfg.LostAgentIssueAfterOccurrences:
-		return a, DeterministicIssueBody(a), true
-	default:
-		return a, RecurrenceComment(a, streak), true
 	}
+	// At or past threshold and not yet successfully filed: always emit the full
+	// diagnostic body. The alreadyFiled check above owns the "issue exists, just
+	// comment" case, so a streak that has overshot the threshold (e.g. because a
+	// prior submit on the qualifying tick failed transiently) must still produce
+	// the full body — not a terse recurrence comment that would become the entire
+	// body of the brand-new issue this create actually opens.
+	return a, DeterministicIssueBody(a), true
 }
 
 // closeRecoveredLostAgents auto-closes any previously-filed lost_agent
