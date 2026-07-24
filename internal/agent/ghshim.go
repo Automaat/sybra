@@ -20,7 +20,7 @@ if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
 	exit 1
 fi
 if [ "$1" = "api" ]; then
-	sawinput=0
+	sawhidden=0
 	sawreviews=0
 	for arg in "$@"; do
 		case "$arg" in
@@ -38,13 +38,17 @@ if [ "$1" = "api" ]; then
 			exit 1
 			;;
 		esac
-		# A payload read from stdin or a file is invisible to argv, so an approval
-		# can be posted with no matching arg at all. --input carries a whole
-		# body; -F/--field key=@path pulls a single value the same way, which is
-		# enough to hide a whole GraphQL mutation.
+		# --input (or --input=path) swaps the whole request body for a file/stdin
+		# stream gh never parses, so an event field could ride along with nothing
+		# in argv to catch it. event=@path and, for graphql, query=@path are the
+		# same hole one field wide: gh api scopes a file value to exactly the
+		# named field, so body=@path or comments[][body]=@path can only ever
+		# become that field's string content — it cannot inject a sibling "event"
+		# key — but event=@path hides the submission verb itself, and query=@path
+		# hides a mutation that might embed one.
 		case "$arg" in
-		--input | --input=* | *=@*)
-			sawinput=1
+		--input | --input=* | [Ee][Vv][Ee][Nn][Tt]=@* | [Qq][Uu][Ee][Rr][Yy]=@*)
+			sawhidden=1
 			;;
 		esac
 		# graphql counts as review-capable: addPullRequestReview reaches the same
@@ -56,7 +60,7 @@ if [ "$1" = "api" ]; then
 		esac
 	done
 	# Refuse a review payload we cannot inspect rather than assume it is benign.
-	[ "$sawinput$sawreviews" = "11" ] && printf '%%s\n' '%[1]s' >&2 && exit 1
+	[ "$sawhidden$sawreviews" = "11" ] && printf '%%s\n' '%[1]s' >&2 && exit 1
 fi
 exec '%[2]s' "$@"
 `
