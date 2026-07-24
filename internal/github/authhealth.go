@@ -129,14 +129,19 @@ func AuthHealthSnapshot() AuthSnapshot {
 }
 
 // AuthCircuitOpen reports whether callers should skip issuing a gh call
-// rather than repeat one doomed to fail the same way. Only misconfigured and
-// unavailable trip the circuit: rate limiting is handled by its own
-// mechanism (ghGate's notBefore wall honors retry-after directly) and
-// refreshing/healthy obviously never suppress calls.
+// rather than repeat one doomed to fail the same way. Misconfigured,
+// unavailable, and rate-limited all trip the circuit: REST/GraphQL rate
+// limiting is throttled separately by ghGate's notBefore wall, but the App
+// token-mint endpoint AuthRateLimited tracks is a distinct GitHub-side bucket
+// with no other throttle, so it backs off here too rather than let every gh
+// call re-mint against the already-limited endpoint (see #1516).
+// Refreshing/healthy obviously never suppress calls.
 func AuthCircuitOpen() (open bool, retryAfter time.Time) {
 	authHealth.mu.Lock()
 	defer authHealth.mu.Unlock()
-	if authHealth.state != AuthMisconfigured && authHealth.state != AuthUnavailable {
+	if authHealth.state != AuthMisconfigured &&
+		authHealth.state != AuthUnavailable &&
+		authHealth.state != AuthRateLimited {
 		return false, time.Time{}
 	}
 	if time.Now().Before(authHealth.nextAttempt) {
@@ -180,27 +185,36 @@ func (t *authHealthTracker) setState(state AuthState, reason string) {
 	case AuthRefreshing:
 		// In-between state: doesn't itself count as a failure or clear one.
 	case AuthMisconfigured, AuthUnavailable:
-		t.hadFailure = true
-		t.consecutiveFailures++
-		backoff := authCircuitBaseBackoff
-		for i := 1; i < t.consecutiveFailures && backoff < authCircuitMaxBackoff; i++ {
-			backoff *= 2
-		}
-		if backoff > authCircuitMaxBackoff {
-			backoff = authCircuitMaxBackoff
-		}
-		t.nextAttempt = time.Now().Add(backoff)
+		t.applyFailureBackoffLocked()
 	case AuthRateLimited:
-		t.hadFailure = true
-		t.consecutiveFailures++
-		// Not a circuit-breaker input (see AuthCircuitOpen) — GitHub's own
-		// rate-limit reset drives recovery, not a guessed backoff.
+		// The App token-mint endpoint is a distinct GitHub-side bucket that
+		// ghGate's notBefore wall does not throttle, so back off on the same
+		// bounded schedule as the other failure states — otherwise every
+		// subsequent gh call re-triggers a force-mint against the
+		// already-rate-limited endpoint (see onAuthFailureObserved, #1516).
+		t.applyFailureBackoffLocked()
 	}
 	t.mu.Unlock()
 
 	for _, cb := range fireRecovery {
 		cb()
 	}
+}
+
+// applyFailureBackoffLocked records a failure and advances nextAttempt on the
+// bounded exponential schedule shared by every circuit-tripping state. Caller
+// must hold t.mu.
+func (t *authHealthTracker) applyFailureBackoffLocked() {
+	t.hadFailure = true
+	t.consecutiveFailures++
+	backoff := authCircuitBaseBackoff
+	for i := 1; i < t.consecutiveFailures && backoff < authCircuitMaxBackoff; i++ {
+		backoff *= 2
+	}
+	if backoff > authCircuitMaxBackoff {
+		backoff = authCircuitMaxBackoff
+	}
+	t.nextAttempt = time.Now().Add(backoff)
 }
 
 // isAuthErrorMsg is IsAuthError's message-matching core, factored out so

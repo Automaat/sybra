@@ -182,13 +182,26 @@ func TestAuthCircuitOpen_BackoffGrowsAndCaps(t *testing.T) {
 	}
 }
 
-func TestAuthCircuitOpen_RateLimitedDoesNotTripCircuit(t *testing.T) {
+func TestAuthCircuitOpen_RateLimitedTripsCircuitWithBackoff(t *testing.T) {
 	t.Cleanup(resetAuthHealthForTest)
 	resetAuthHealthForTest()
 
+	// The App token-mint endpoint is a distinct GitHub bucket with no other
+	// throttle, so a rate-limited mint must trip the circuit and back off —
+	// otherwise every gh call re-mints against the already-limited endpoint.
 	authHealth.setState(AuthRateLimited, "app api rate limited")
-	if open, _ := AuthCircuitOpen(); open {
-		t.Fatal("rate_limited must not trip the misconfigured/unavailable circuit")
+	open, retry1 := AuthCircuitOpen()
+	if !open {
+		t.Fatal("rate_limited must trip the circuit to stop hammering the mint endpoint")
+	}
+	if retry1.IsZero() || !retry1.After(time.Now()) {
+		t.Fatalf("rate_limited must set a future retryAfter, got %v", retry1)
+	}
+
+	authHealth.setState(AuthRateLimited, "still rate limited")
+	_, retry2 := AuthCircuitOpen()
+	if !retry2.After(retry1) {
+		t.Fatalf("backoff did not grow: retry1=%v retry2=%v", retry1, retry2)
 	}
 }
 
