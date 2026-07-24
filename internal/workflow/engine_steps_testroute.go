@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
 const (
@@ -51,12 +53,16 @@ const (
 	// already-superseded reports for the current blocking failure.
 	resolvedTestFailuresHeading = "## Resolved Test Failures (historical)"
 
-	testOutcomePass                 = "pass"
-	testOutcomeProductBug           = "product_bug"
-	testOutcomeAmbiguousRequirement = "ambiguous_requirement"
-	testOutcomeInfraFailure         = "infra_failure"
-	testOutcomeMissingEvidence      = "missing_evidence"
-	testOutcomeProtocolViolation    = "protocol_violation"
+	// testOutcome* mirror the failureclassify vocabulary so route_test_result
+	// and verify_checks classify the same underlying signal (infra vs. code
+	// vs. evidence/protocol issues) against one shared source of truth
+	// instead of independently-defined strings that could drift (#2500).
+	testOutcomePass                 = string(failureclassify.Pass)
+	testOutcomeProductBug           = string(failureclassify.ProductBug)
+	testOutcomeAmbiguousRequirement = string(failureclassify.AmbiguousRequirement)
+	testOutcomeInfraFailure         = string(failureclassify.InfraFailure)
+	testOutcomeMissingEvidence      = string(failureclassify.MissingEvidence)
+	testOutcomeProtocolViolation    = string(failureclassify.ProtocolViolation)
 
 	testProtocolFixSuggestions  = "fix-suggestions"
 	testProtocolMissingEvidence = "missing-evidence"
