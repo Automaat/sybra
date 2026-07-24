@@ -283,22 +283,18 @@ func (e *Engine) gitTriageDiff(wtPath string) (files []string, insertions, delet
 	base := resolveOriginBase(ctx, wtPath)
 	rangeSpec := base + "...HEAD"
 
-	nameCmd := exec.CommandContext(ctx, "git", "diff", "--name-only", rangeSpec)
-	nameCmd.Dir = wtPath
-	nameOut, err := nameCmd.Output()
+	nameOut, err := gitStdout(ctx, wtPath, "diff", "--name-only", rangeSpec)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("git diff --name-only: %w", err)
 	}
 
-	statCmd := exec.CommandContext(ctx, "git", "diff", "--shortstat", rangeSpec)
-	statCmd.Dir = wtPath
-	statOut, err := statCmd.Output()
+	statOut, err := gitStdout(ctx, wtPath, "diff", "--shortstat", rangeSpec)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("git diff --shortstat: %w", err)
 	}
 
-	files = splitNonEmptyLines(string(nameOut))
-	insertions, deletions = parseShortStat(string(statOut))
+	files = splitNonEmptyLines(nameOut)
+	insertions, deletions = parseShortStat(statOut)
 	return files, insertions, deletions, nil
 }
 

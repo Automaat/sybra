@@ -518,20 +518,16 @@ func (e *Engine) handleExistingAnyStatePRForBranch(taskID string, step *Step, wt
 
 func branchPatchAlreadyAppliedToBase(ctx context.Context, wtPath string) (bool, error) {
 	baseRef := resolveOriginBase(ctx, wtPath)
-	mergeBaseCmd := exec.CommandContext(ctx, "git", "merge-base", baseRef, "HEAD")
-	mergeBaseCmd.Dir = wtPath
-	mergeBaseOut, err := mergeBaseCmd.Output()
+	mergeBase, err := gitStdout(ctx, wtPath, "merge-base", baseRef, "HEAD")
 	if err != nil {
 		return false, fmt.Errorf("git merge-base %s HEAD: %w", baseRef, err)
 	}
-	mergeBase := strings.TrimSpace(string(mergeBaseOut))
 	if mergeBase == "" {
 		return false, fmt.Errorf("git merge-base %s HEAD: empty output", baseRef)
 	}
 
-	diffCmd := exec.CommandContext(ctx, "git", "diff", "--binary", mergeBase+"..HEAD", "--")
-	diffCmd.Dir = wtPath
-	patch, err := diffCmd.Output()
+	// Raw (untrimmed) patch bytes — fed verbatim into `git apply` stdin below.
+	patch, err := gitCmd(ctx, wtPath, "diff", "--binary", mergeBase+"..HEAD", "--").Output()
 	if err != nil {
 		return false, fmt.Errorf("git diff %s..HEAD: %w", mergeBase, err)
 	}
@@ -546,22 +542,16 @@ func branchPatchAlreadyAppliedToBase(ctx context.Context, wtPath string) (bool, 
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 	baseTreeDir := filepath.Join(tmpDir, "base")
 
-	addCmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", baseTreeDir, baseRef)
-	addCmd.Dir = wtPath
-	addOut, err := addCmd.CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("git worktree add %s: %w: %s", baseRef, err, strings.TrimSpace(string(addOut)))
+	if _, err := gitCombinedOutput(ctx, wtPath, "worktree", "add", "--detach", baseTreeDir, baseRef); err != nil {
+		return false, err
 	}
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), shellTimeout)
 		defer cleanupCancel()
-		rmCmd := exec.CommandContext(cleanupCtx, "git", "worktree", "remove", "--force", baseTreeDir)
-		rmCmd.Dir = wtPath
-		_ = rmCmd.Run()
+		_ = gitDo(cleanupCtx, wtPath, "worktree", "remove", "--force", baseTreeDir)
 	}()
 
-	cmd := exec.CommandContext(ctx, "git", "apply", "--check", "--reverse", "--whitespace=nowarn", "-")
-	cmd.Dir = baseTreeDir
+	cmd := gitCmd(ctx, baseTreeDir, "apply", "--check", "--reverse", "--whitespace=nowarn", "-")
 	cmd.Stdin = bytes.NewReader(patch)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -633,14 +623,12 @@ func (e *Engine) generatePRContent(taskID, wtPath string, t TaskInfo) (title, bo
 // content prompt just has less context to work with.
 func commitSubjects(ctx context.Context, wtPath string) []string {
 	base := resolveOriginBase(ctx, wtPath)
-	cmd := exec.CommandContext(ctx, "git", "log", "--format=%s", "--reverse", base+"..HEAD")
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
+	out, err := gitStdout(ctx, wtPath, "log", "--format=%s", "--reverse", base+"..HEAD")
 	if err != nil {
 		return nil
 	}
 	var subjects []string
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			subjects = append(subjects, line)
 		}

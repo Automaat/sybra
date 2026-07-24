@@ -3,6 +3,8 @@ package workflow
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -225,6 +227,51 @@ func TestExecFocusedChecks_HeadBaseExcludesLocalDefaultBranchChanges(t *testing.
 	}
 	if !strings.Contains(rec.puts[0].content, `"project"`) || strings.Contains(rec.puts[0].content, `"frontend"`) {
 		t.Fatalf("artifact content selected wrong focused surface:\n%s", rec.puts[0].content)
+	}
+}
+
+// TestExecFocusedChecks_HealsCorruptNodeModules proves the same toolchain
+// self-heal verify_checks relies on (ensureNodeToolchain, reused via
+// runVerifyCommands) also covers focused_checks — both gates route their
+// commands through the shared runner, so a corrupt node_modules left by an
+// interrupted install must not misattribute a broken toolchain to the diff
+// under a focused (not full-suite) check either.
+func TestExecFocusedChecks_HealsCorruptNodeModules(t *testing.T) {
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":         "init\n",
+		"package.json":      "{}",
+		"package-lock.json": "{}",
+	})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+
+	// Corrupt node_modules/.bin: present but zero-byte, the exact shape a
+	// killed `npm ci` in a concurrent worktree leaves behind (see
+	// ensureNodeToolchain / repairCorruptToolchain).
+	binDir := filepath.Join(wt, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(binDir, "vite"), "")
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	engine, tasks, _ := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"test -f marker-npm-ci-ran"},
+	}}, nil)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (focused_checks should repair node_modules before running the check)", out.Output)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "marker-npm-ci-ran")); err != nil {
+		t.Errorf("expected npm ci repair marker in worktree root, got: %v", err)
 	}
 }
 

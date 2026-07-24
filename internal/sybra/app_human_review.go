@@ -206,6 +206,16 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.logger.Error("human-review.task.get", "task_id", taskID, "err", err)
 		return false
 	}
+	// An umbrella tracker runs no agent — it only rolls up its children (see
+	// task.TaskTypeUmbrella) — so a child's escalation or a dependency cycle
+	// parking the tracker itself at human-required must never spawn a review
+	// agent onto it: there is no product code for it to analyze, and it falls
+	// into a repetitive info-gathering loop until the watchdog kills it and
+	// re-parks the task in human-required (see #2610).
+	if t.TaskType == task.TaskTypeUmbrella {
+		h.skip(taskID, "task_type_umbrella")
+		return false
+	}
 	// Status guard: the status hook launches maybeSpawn asynchronously
 	// (go a.humanReview.maybeSpawn), so a fast recovery path
 	// (human-required -> ready-pr / in-review) can flip the task out of
