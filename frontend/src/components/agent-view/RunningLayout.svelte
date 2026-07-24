@@ -1,6 +1,6 @@
 <script lang="ts">
   import { PanelLeft } from '@lucide/svelte'
-  import type { Agent, ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { TimelineEntry } from '$lib/timeline.js'
   import type { PlanStep } from '$lib/plan-steps.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
@@ -20,7 +20,6 @@
     selectedIndex: number | null
     onselect: (i: number) => void
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: ConvoEvent[]
     allAgents: Agent[]
     latestToolUse: ToolUseSignal | undefined
     onnavigate: (id: string) => void
@@ -33,7 +32,6 @@
     selectedIndex,
     onselect,
     streamOutputs,
-    convoEvents,
     allAgents,
     latestToolUse,
     onnavigate,
@@ -136,7 +134,6 @@
       agentId={a.id}
       taskId={a.taskId}
       {streamOutputs}
-      {convoEvents}
       {planSteps}
       {latestToolUse}
     />

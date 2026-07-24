@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fly } from 'svelte/transition'
   import { FolderOpen, GitBranch, GitPullRequest, ChevronDown, ChevronUp } from '@lucide/svelte'
-  import type { Agent, ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import { OpenWorktree } from '$lib/api.js'
@@ -13,15 +13,14 @@
     a: Agent
     linkedTask?: Task | null
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: ConvoEvent[]
   }
 
-  const { a, linkedTask, streamOutputs, convoEvents }: Props = $props()
+  const { a, linkedTask, streamOutputs }: Props = $props()
 
   let activityOpen = $state(false)
   let openError = $state('')
 
-  const summary = $derived(summarizeAgent(streamOutputs, convoEvents))
+  const summary = $derived(summarizeAgent(streamOutputs))
 
   async function handleOpenWorktree() {
     if (!linkedTask?.id) return
