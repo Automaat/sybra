@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
 type codegenGateReport struct {
@@ -53,7 +54,7 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 		failedCmd, output, runErr := e.runVerifyCommands(ctx, taskID, wtPath, []string{raw})
 		_, _ = io.WriteString(tail, output)
 
-		if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {
+		if failedCmd != "" && failureclassify.IsMissingToolchain(output) {
 			reason := "codegen gate could not run " + trimDiffLine(failedCmd) +
 				" because the configured toolchain is missing from PATH — rerun setup or install the missing tool, then retry"
 			return e.flagCodegenGate(taskID, step, reason, tailString(output, 400))
