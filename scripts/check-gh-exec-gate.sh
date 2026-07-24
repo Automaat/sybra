@@ -58,7 +58,7 @@ done < <(git ls-files -z --cached --others --exclude-standard)
 
 # Matches exec.Command(...) / exec.CommandContext(...) where "gh" is the
 # literal command name — the first argument after an optional leading ctx.
-PATTERN='exec\.Command(Context)?\((context\.[A-Za-z]+\(\)|[A-Za-z0-9_]+, *)?"gh"'
+PATTERN='exec\.Command(Context)?\(([A-Za-z0-9_.]+(\(\))?, *)?"gh"'
 
 if ((${#files[@]} > 0)); then
   while IFS= read -r hit; do
