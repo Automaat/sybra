@@ -42,7 +42,10 @@ func TestSandboxEnforce_UnsharePidHidesHostProcesses(t *testing.T) {
 	if err := victim.Start(); err != nil {
 		t.Fatalf("start victim: %v", err)
 	}
-	t.Cleanup(func() { _ = victim.Process.Kill() })
+	t.Cleanup(func() {
+		_ = victim.Process.Kill()
+		_ = victim.Wait()
+	})
 
 	script := "kill -0 " + strconv.Itoa(victim.Process.Pid) + " 2>&1 && echo CAN_SIGNAL_HOST || echo CANNOT_SIGNAL_HOST"
 	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
