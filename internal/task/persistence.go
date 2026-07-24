@@ -42,6 +42,7 @@ type taskFrontmatter struct {
 	ReviewPhase            string              `yaml:"review_phase,omitempty"`
 	ReviewedHeadSHA        string              `yaml:"reviewed_head_sha,omitempty"`
 	ReviewedHeadAttempts   int                 `yaml:"reviewed_head_attempts,omitempty"`
+	ReconcileFailures      int                 `yaml:"reconcile_failures,omitempty"`
 	PRPhase                string              `yaml:"pr_phase,omitempty"`
 	Priority               Priority            `yaml:"priority,omitempty"`
 	DueDate                *time.Time          `yaml:"due_date,omitempty"`
@@ -136,6 +137,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		ReviewPhase:            fm.ReviewPhase,
 		ReviewedHeadSHA:        fm.ReviewedHeadSHA,
 		ReviewedHeadAttempts:   fm.ReviewedHeadAttempts,
+		ReconcileFailures:      fm.ReconcileFailures,
 		PRPhase:                fm.PRPhase,
 		Priority:               fm.Priority,
 		DueDate:                fm.DueDate,
@@ -206,6 +208,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		ReviewPhase:            t.ReviewPhase,
 		ReviewedHeadSHA:        t.ReviewedHeadSHA,
 		ReviewedHeadAttempts:   t.ReviewedHeadAttempts,
+		ReconcileFailures:      t.ReconcileFailures,
 		PRPhase:                t.PRPhase,
 		Priority:               t.Priority,
 		DueDate:                t.DueDate,
