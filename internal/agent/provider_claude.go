@@ -62,7 +62,16 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		// running turn can accept further steer messages the same way.
 		args = []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
 	} else {
-		args = []string{"-p", cfg.Prompt, "--output-format", "stream-json", "--verbose"}
+		// The prompt is delivered over stdin (runHeadlessAttemptPipe /
+		// startHeadlessSurviveProcess write it and close, unlike the steerable
+		// path which keeps stdin open) rather than as a positional argv
+		// element: argv is visible to any local user via /proc/PID/cmdline or
+		// `ps aux`, and a headless agent's own unscoped `pkill -f <pattern>`
+		// can match its own argv and self-kill (task 0871ec54). `-p` with no
+		// following value reads the prompt from stdin in the default
+		// --input-format text mode — the stream-json envelope used by the
+		// steerable path above is neither needed nor set here.
+		args = []string{"-p", "--output-format", "stream-json", "--verbose"}
 	}
 	if sid := a.GetSessionID(); sid != "" {
 		args = append(args, "--resume", sid)

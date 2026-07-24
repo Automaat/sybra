@@ -234,6 +234,32 @@ func steerableHeadlessInvocation(cfg RunConfig, providerName string) bool {
 	return cfg.HeadlessSteerable && providerName == "claude"
 }
 
+// promptOverStdin reports whether BuildHeadlessInvocation omitted the prompt
+// from argv and expects it delivered on stdin instead: only the non-steerable
+// claude path does this (see provider_claude.go), to keep the rendered
+// prompt out of /proc/PID/cmdline and `ps aux`. The steerable claude path
+// already delivers its prompt over stdin via writeUserMessage/the FIFO
+// transport (see steerableHeadlessInvocation); codex/copilot still embed the
+// prompt as a positional argv element and are unaffected.
+func promptOverStdin(cfg RunConfig, providerName string) bool {
+	return providerName == "claude" && !steerableHeadlessInvocation(cfg, providerName)
+}
+
+// writeAndCloseStdinPrompt writes prompt as raw text to stdin and closes it,
+// so the child sees EOF exactly as it would right after reading a one-shot
+// invocation's positional prompt argument. Unlike the steerable transport,
+// this pipe is never kept open for further steer messages — see the
+// stdin-deadlock history in steerableHeadlessInvocation's callers (#1825),
+// which is exactly why a non-steerable run must not linger on an open stdin.
+func writeAndCloseStdinPrompt(stdin io.WriteCloser, prompt string) error {
+	_, writeErr := io.WriteString(stdin, prompt)
+	closeErr := stdin.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
+}
+
 func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, inv headlessInvocation) (retry bool, err error) {
 	cmd := newProviderCmd(ctx, &cfg, false, inv.name, inv.args...)
 	if a.sessionCWD != "" {
@@ -251,7 +277,10 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	}
 
 	steerable := steerableHeadlessInvocation(cfg, inv.name)
-	if steerable {
+	promptStdin := promptOverStdin(cfg, inv.name)
+	var directStdin io.WriteCloser
+	switch {
+	case steerable:
 		stdinPipe, stdinErr := cmd.StdinPipe()
 		if stdinErr != nil {
 			return false, fmt.Errorf("stdin pipe: %w", stdinErr)
@@ -261,6 +290,12 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		// setFinalizing refreshed CanSteer; emit so the UI shows steer controls
 		// as soon as the stdin transport is live, not only on a later event.
 		m.emit(events.AgentState(a.ID), a)
+	case promptStdin:
+		stdinPipe, stdinErr := cmd.StdinPipe()
+		if stdinErr != nil {
+			return false, fmt.Errorf("stdin pipe: %w", stdinErr)
+		}
+		directStdin = stdinPipe
 	}
 
 	var stderrBuf bytes.Buffer
@@ -269,6 +304,9 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	if startErr := cmd.Start(); startErr != nil {
 		if steerable {
 			a.convo.closeStdinPipe()
+		}
+		if directStdin != nil {
+			_ = directStdin.Close()
 		}
 		return false, fmt.Errorf("start %s: %w", inv.name, startErr)
 	}
@@ -280,6 +318,15 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	// (session already set) must not resend it.
 	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
 		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
+			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+		}
+	}
+	// The non-steerable claude path also omits the prompt from argv (see
+	// provider_claude.go), but — unlike the steerable branch above — always
+	// resends it here even on a resumed run, mirroring the exact behavior the
+	// old positional `-p <prompt>` argument had regardless of --resume.
+	if directStdin != nil {
+		if writeErr := writeAndCloseStdinPrompt(directStdin, cfg.Prompt); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
 		}
 	}
@@ -382,8 +429,10 @@ func (m *Manager) startHeadlessProcessSurviveStdin(a *Agent, cmd *exec.Cmd) (*os
 // startHeadlessSurviveProcess builds and starts the detached subprocess for a
 // survive-mode headless attempt: wires stdout to the shared log file, wires
 // stderr to a sibling ".stderr" file, attaches a steerable claude run's FIFO
-// stdin (see startHeadlessProcessSurviveStdin), and delivers the initial
-// prompt over that FIFO for a fresh (non-resumed) session. Split out of
+// stdin (see startHeadlessProcessSurviveStdin) and delivers the initial
+// prompt over that FIFO for a fresh (non-resumed) session, or — for a
+// non-steerable claude run — writes the prompt over a plain stdin pipe and
+// closes it immediately (see promptOverStdin). Split out of
 // runHeadlessAttemptSurvive to keep it under the package's function-length
 // lint budget.
 func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg RunConfig, outFile *os.File, name string, args, invokeEnv []string, command string) (*exec.Cmd, error) {
@@ -405,13 +454,24 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	// Only claude honors HeadlessSteerable (see steerableHeadlessInvocation);
 	// codex/copilot keep the plain no-stdin invocation unchanged.
 	steerable := steerableHeadlessInvocation(cfg, name)
+	promptStdin := promptOverStdin(cfg, name)
 	var childStdin *os.File
+	var directStdin io.WriteCloser
 	if steerable {
 		cs, err := m.startHeadlessProcessSurviveStdin(a, cmd)
 		if err != nil {
 			return nil, err
 		}
 		childStdin = cs
+	} else if promptStdin {
+		// No FIFO/reopen needed here: the prompt is written and stdin closed
+		// synchronously below, before this call returns, so a plain pipe
+		// suffices — nothing needs to reopen it across a restart/reattach.
+		stdinPipe, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, fmt.Errorf("stdin pipe: %w", err)
+		}
+		directStdin = stdinPipe
 	}
 
 	stderrPath := outFile.Name() + ".stderr"
@@ -427,12 +487,20 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 			}
 			a.convo.closeStdinPipe()
 		}
+		if directStdin != nil {
+			_ = directStdin.Close()
+		}
 		return nil, fmt.Errorf("start %s: %w", name, startErr)
 	}
 	// The child holds its own dup of the read end; drop the parent's copy so
 	// closing the parent's writer (closeStdinPipe) is enough to EOF the child.
 	if childStdin != nil {
 		_ = childStdin.Close()
+	}
+	if directStdin != nil {
+		if writeErr := writeAndCloseStdinPrompt(directStdin, cfg.Prompt); writeErr != nil {
+			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+		}
 	}
 	a.SetCmd(cmd)
 	a.setDetached(true)

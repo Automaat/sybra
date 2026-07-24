@@ -508,6 +508,72 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","t
 	}
 }
 
+// TestManagerRunNonSteerableClaudeDeliversPromptOverStdin exercises the
+// detached/survive dispatch path — the one production headless runs actually
+// take (see Manager.survives) — for a non-steerable claude agent, proving the
+// argv-leak fix (#2575) holds there too, not just in the foreground pipe path
+// covered by TestHeadlessNonSteerablePromptDeliveredOverStdin. The fake
+// "claude" binary fails if the prompt ever shows up in its argv and otherwise
+// echoes back whatever it read from stdin.
+func TestManagerRunNonSteerableClaudeDeliversPromptOverStdin(t *testing.T) {
+	const secretPrompt = "leaked-prompt-marker-content"
+	binDir := t.TempDir()
+	fakeClaude := filepath.Join(binDir, "claude")
+	script := `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    *"` + secretPrompt + `"*)
+      echo "prompt leaked into argv: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
+text=$(cat)
+printf '%s\n' "{\"type\":\"result\",\"result\":\"$text\",\"session_id\":\"sess-stdin\",\"total_cost_usd\":0}"
+`
+	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	logDir := t.TempDir()
+	regDir := t.TempDir()
+	runDir := t.TempDir()
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		Runtime:           ManagerRuntimeConfig{DefaultProvider: "claude"},
+		SurviveRestartDir: regDir,
+	})
+	ag, err := m.Run(RunConfig{
+		TaskID:             "task-stdin-prompt",
+		Name:               "implementation: stdin prompt",
+		Mode:               "headless",
+		Prompt:             secretPrompt,
+		Dir:                runDir,
+		RequirePermissions: false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	waitForAgentDone(t, ag, 5*time.Second)
+	if ag.GetExitErr() != nil {
+		t.Fatalf("agent exited with an error (prompt may have leaked into argv): %v", ag.GetExitErr())
+	}
+	if strings.Contains(ag.Command, secretPrompt) {
+		t.Fatalf("agent.Command must not embed the raw prompt text; got %q", ag.Command)
+	}
+	var sawPrompt bool
+	for _, ev := range ag.Output() {
+		if strings.Contains(ev.Content, secretPrompt) {
+			sawPrompt = true
+		}
+	}
+	if !sawPrompt {
+		t.Fatalf("expected the prompt delivered over stdin to be echoed back; got %+v", ag.Output())
+	}
+}
+
 // TestReattachAll_DropsDeadRecords verifies a record whose process is gone
 // is deleted and not reattached.
 func TestReattachAll_DropsDeadRecords(t *testing.T) {

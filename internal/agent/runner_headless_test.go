@@ -2644,17 +2644,17 @@ func TestHeadlessSteerableInvocation(t *testing.T) {
 		}
 	})
 
-	t.Run("claude_unsteerable_keeps_legacy_shape", func(t *testing.T) {
+	t.Run("claude_unsteerable_drops_positional_prompt", func(t *testing.T) {
 		a := &Agent{ID: "a", Provider: "claude"}
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff", HeadlessSteerable: false})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
 		}
-		if !slices.Contains(args, "do stuff") {
-			t.Errorf("unsteerable invocation must still pass the prompt positionally; got %v", args)
+		if slices.Contains(args, "do stuff") {
+			t.Errorf("unsteerable invocation must not pass the prompt positionally (argv leaks via /proc/PID/cmdline and ps); got %v", args)
 		}
 		if slices.Contains(args, "--input-format") {
-			t.Errorf("unsteerable invocation must not add --input-format; got %v", args)
+			t.Errorf("unsteerable invocation must not add --input-format; the prompt is read from stdin in the default text mode, got %v", args)
 		}
 	})
 
@@ -2968,6 +2968,75 @@ while IFS= read -r line; do
   text=$(echo "$line" | sed -n 's/.*"content":"\([^"]*\)".*/\1/p')
   echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-1\",\"total_cost_usd\":0.01,\"result\":\"$text\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}"
 done
+`
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude binary: %v", err)
+	}
+	return dir
+}
+
+// TestHeadlessNonSteerablePromptDeliveredOverStdin drives runHeadlessAttemptPipe
+// end to end for a non-steerable claude invocation against a fake binary that
+// fails if it sees the prompt text anywhere in argv, and otherwise echoes back
+// whatever it reads from stdin. This proves the fix for the argv leak (#2575):
+// the rendered prompt reaches the process over stdin, not as a positional
+// `-p <prompt>` argument visible via /proc/PID/cmdline or `ps aux`.
+func TestHeadlessNonSteerablePromptDeliveredOverStdin(t *testing.T) {
+	const secretPrompt = "leaked-prompt-marker-content"
+	binDir := makeFakeStdinEchoingArgvGuardClaude(t, secretPrompt)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+
+	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: secretPrompt, HeadlessSteerable: false})
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+	if slices.Contains(args, secretPrompt) {
+		t.Fatalf("prompt must not appear in argv; got %v", args)
+	}
+	inv := headlessInvocation{name: "claude", args: args, command: "claude " + strings.Join(args, " ")}
+	cfg := RunConfig{Prompt: secretPrompt, HeadlessSteerable: false}
+
+	var outFile *os.File
+	t.Cleanup(func() {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := m.runHeadlessAttemptPipe(ctx, a, cfg, &outFile, inv); err != nil {
+		t.Fatalf("runHeadlessAttemptPipe: %v", err)
+	}
+
+	res := lastResult(a)
+	if res == nil {
+		t.Fatalf("expected a result event; got %+v", a.Output())
+	}
+	if !strings.Contains(res.Content, secretPrompt) {
+		t.Errorf("result content = %q, want it to echo the stdin-delivered prompt %q", res.Content, secretPrompt)
+	}
+}
+
+// makeFakeStdinEchoingArgvGuardClaude writes a fake "claude" binary that exits
+// non-zero if any argv element contains marker, and otherwise reads all of
+// stdin and emits a single stream-json result event echoing it back.
+func makeFakeStdinEchoingArgvGuardClaude(t *testing.T, marker string) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/bash
+for arg in "$@"; do
+  case "$arg" in
+    *"` + marker + `"*)
+      echo "prompt leaked into argv: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
+text=$(cat)
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-1\",\"total_cost_usd\":0.01,\"result\":\"$text\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}"
 `
 	path := filepath.Join(dir, "claude")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
