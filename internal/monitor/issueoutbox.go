@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
@@ -142,6 +144,16 @@ type DurableGHIssueSink struct {
 	logger   *slog.Logger
 	name     string        // sink identity for logs, e.g. "monitor" or "human-review"
 	auditLog *audit.Logger // optional; nil in tests that construct the struct directly
+
+	// mu serializes outbox mutation (flushPending/persist) so a
+	// recovery-triggered ReplayPending racing with a normal SubmitIssue's own
+	// opportunistic flush never both retry the same pending item and file it
+	// twice.
+	mu sync.Mutex
+	// replayed counts filings that succeeded after being queued — the
+	// "replay" metric surfaced by internal/metrics. Read without mu since
+	// atomic.Int64 is self-synchronizing.
+	replayed atomic.Int64
 }
 
 // NewDurableGHIssueSink wraps inner with a bounded on-disk retry outbox
@@ -184,10 +196,48 @@ func (d *DurableGHIssueSink) SubmitIssue(ctx context.Context, title, body string
 	return created, url, err
 }
 
+// ReplayPending immediately retries every queued filing. Wired to
+// github.OnAuthRecovered (see internal/sybra's lifecycle wiring) so a
+// credential recovery drains the outbox right away instead of waiting for
+// this sink's next natural SubmitIssue call, which for a rare anomaly kind
+// could be hours away — see #2453. Safe to call concurrently with
+// SubmitIssue's own opportunistic flush; both funnel through the same lock.
+func (d *DurableGHIssueSink) ReplayPending(ctx context.Context) {
+	d.flushPending(ctx)
+}
+
+// ReplayedTotal returns the cumulative count of queued filings that
+// succeeded after being retried from the outbox, without any request/task
+// content — the "replay" metric in #2453's fix list.
+func (d *DurableGHIssueSink) ReplayedTotal() int64 { return d.replayed.Load() }
+
+// Depth returns the current number of filings queued in the outbox.
+func (d *DurableGHIssueSink) Depth() int64 { return int64(d.store.depth()) }
+
+// OldestPendingAge returns how long the oldest queued filing has been
+// pending relative to now, or 0 when the outbox is empty.
+func (d *DurableGHIssueSink) OldestPendingAge(now time.Time) time.Duration {
+	d.mu.Lock()
+	pending := d.store.load(d.logger)
+	d.mu.Unlock()
+	var oldest time.Time
+	for i := range pending {
+		if oldest.IsZero() || pending[i].FirstFailedAt.Before(oldest) {
+			oldest = pending[i].FirstFailedAt
+		}
+	}
+	if oldest.IsZero() {
+		return 0
+	}
+	return now.Sub(oldest)
+}
+
 // flushPending retries every currently-pending outbox item once. Items that
 // succeed are removed; items that fail again are re-persisted with a bumped
 // attempt count, or dropped once issueOutboxMaxAttempts is exceeded.
 func (d *DurableGHIssueSink) flushPending(ctx context.Context) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	pending := d.store.load(d.logger)
 	for i := range pending {
 		it := &pending[i]
@@ -197,6 +247,7 @@ func (d *DurableGHIssueSink) flushPending(ctx context.Context) {
 				d.logger.Warn("monitor.issue_outbox.retry.cleanup-failed", "sink", d.name, "fingerprint", it.Fingerprint, "err", delErr)
 				continue
 			}
+			d.replayed.Add(1)
 			d.logger.Info("monitor.issue_outbox.retry.succeeded", "sink", d.name, "fingerprint", it.Fingerprint, "created", created, "attempts", it.Attempts+1)
 			continue
 		}
@@ -221,6 +272,8 @@ func (d *DurableGHIssueSink) flushPending(ctx context.Context) {
 // failing filing produces one actionable log line per outage, not one per
 // attempt.
 func (d *DurableGHIssueSink) persist(title, body string, extraLabels []string, submitErr error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	fp := fingerprintTitle(title)
 	now := time.Now().UTC()
 	existing, hadExisting := d.lookup(fp)

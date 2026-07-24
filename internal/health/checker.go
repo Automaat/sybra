@@ -39,11 +39,15 @@ type Checker struct {
 	sandboxQuarantine func() []sandbox.QuarantineEntry
 	pressure          func() *PressureStatus
 	// ghAuthProbe, when set, is called once per tick with a live
-	// github.Authenticated() result so credential loss is caught proactively
-	// (checkGHAuthUnavailable) instead of only after a push/issue-filing
-	// attempt has already failed. nil disables the check — set only when
-	// GitHub integration is enabled (see SetGHAuthProbe).
-	ghAuthProbe func() bool
+	// github.Authenticated() result plus the shared auth-health state
+	// (github.AuthHealthSnapshot().State, passed as a plain string so this
+	// package doesn't need to import internal/github) so credential loss is
+	// caught proactively (checkGHAuthUnavailable) instead of only after a
+	// push/issue-filing attempt has already failed, and a permanent
+	// misconfiguration can be told apart from a transient blip. nil disables
+	// the check — set only when GitHub integration is enabled (see
+	// SetGHAuthProbe).
+	ghAuthProbe func() (authenticated bool, state string)
 
 	mu     sync.RWMutex
 	report *Report
@@ -83,10 +87,11 @@ func (c *Checker) SetPressureStatus(f func() *PressureStatus) {
 }
 
 // SetGHAuthProbe wires in a live GitHub-auth probe (typically
-// github.Authenticated), enabling checkGHAuthUnavailable. Optional — omit
-// when GitHub integration is disabled, so an install with no gh CLI/token
-// configured at all doesn't get a spurious critical finding every tick.
-func (c *Checker) SetGHAuthProbe(f func() bool) {
+// github.Authenticated paired with github.AuthHealthSnapshot().State),
+// enabling checkGHAuthUnavailable. Optional — omit when GitHub integration is
+// disabled, so an install with no gh CLI/token configured at all doesn't get
+// a spurious critical finding every tick.
+func (c *Checker) SetGHAuthProbe(f func() (authenticated bool, state string)) {
 	c.ghAuthProbe = f
 }
 
@@ -165,7 +170,8 @@ func (c *Checker) check(ctx context.Context) {
 	findings = append(findings, checkGHIssueAuthFailure(dayEvents, now)...)
 	findings = append(findings, checkGHPushAuthFailure(dayEvents, now)...)
 	if c.ghAuthProbe != nil {
-		findings = append(findings, checkGHAuthUnavailable(c.ghAuthProbe(), now)...)
+		authenticated, state := c.ghAuthProbe()
+		findings = append(findings, checkGHAuthUnavailable(authenticated, state, now)...)
 	}
 	docker := sampleDockerDisk(ctx, c.docker, now)
 	findings = append(findings, checkDockerReclaimable(docker, now)...)

@@ -23,10 +23,11 @@ type execer interface {
 type ghExecer struct{}
 
 func (ghExecer) run(args ...string) ([]byte, error) {
-	return ghGate.execute(func() ([]byte, error) {
-		// context.Background(): this is the plain, uncancellable fallback path
-		// (see runE below) — callers that want cancellation use runCtx/ghRunCtx.
-		cmd := exec.CommandContext(context.Background(), "gh", args...)
+	// context.Background(): this is the plain, uncancellable fallback path
+	// (see runE below) — callers that want cancellation use runCtx/ghRunCtx.
+	ctx := context.Background()
+	return ghGate.execute(ctx, func() ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "gh", args...)
 		if env := ghEnv(); env != nil {
 			cmd.Env = env
 		}
@@ -38,7 +39,7 @@ func (ghExecer) run(args ...string) ([]byte, error) {
 // expires — releasing the global request gate instead of holding it for the
 // kernel TCP timeout. Used by latency-sensitive callers (the PR poll loop).
 func ghRunCtx(ctx context.Context, args ...string) ([]byte, error) {
-	return ghGate.execute(func() ([]byte, error) {
+	return ghGate.execute(ctx, func() ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "gh", args...)
 		if env := ghEnv(); env != nil {
 			cmd.Env = env
@@ -668,20 +669,17 @@ func IsTransientError(err error) bool {
 }
 
 // IsAuthError reports whether err is a GitHub authentication failure — an
-// invalid/expired/revoked token (HTTP 401 / "Bad credentials") or gh having
-// no credentials configured at all (its local preflight fails before any
+// invalid/expired/revoked token (HTTP 401 / "Bad credentials"), gh having no
+// credentials configured at all (its local preflight fails before any
 // request with a "please run gh auth login" guidance message rather than an
-// API error). Neither resolves on its own: an invalid token needs a human to
-// rotate it, and a missing token needs App auth or `gh auth login`
-// configured — so pollers should circuit-break on this instead of retrying
-// at their normal cadence.
+// API error), or the shared auth circuit breaker suppressing the call
+// outright (see AuthCircuitOpen). All three resolve the same way from a
+// caller's perspective — not by retrying immediately, but by backing off and
+// letting the centralized auth-health state machine self-heal — so pollers
+// should circuit-break on this instead of retrying at their normal cadence.
 func IsAuthError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 401") ||
-		strings.Contains(msg, "bad credentials") ||
-		strings.Contains(msg, "gh auth login") ||
-		strings.Contains(msg, "gh_token environment variable")
+	return isAuthErrorMsg(err.Error())
 }

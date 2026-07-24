@@ -97,7 +97,16 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 		// already failed): samples live gh-auth health every health tick so
 		// credential loss (an expired interactive `gh auth login` session,
 		// see #2315) is caught before it blocks the next push, not after.
-		hcheck.SetGHAuthProbe(github.Authenticated)
+		// The paired state comes from AuthHealthSnapshot, which every real gh
+		// invocation (ghGate.execute, internal/monitor's issue-filing execer)
+		// already keeps fresh via ObserveCallResult — it's what lets
+		// checkGHAuthUnavailable tell a permanent misconfiguration (needs a
+		// human) apart from a transient blip the circuit breaker is already
+		// retrying (see #2453).
+		hcheck.SetGHAuthProbe(func() (bool, string) {
+			ok := github.Authenticated()
+			return ok, string(github.AuthHealthSnapshot().State)
+		})
 	}
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
@@ -450,6 +459,24 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 		}
 		return out
 	})
+	metrics.RegisterGHAuthState(func() map[string]int64 {
+		state := github.AuthHealthSnapshot().State
+		out := map[string]int64{
+			string(github.AuthHealthy):       0,
+			string(github.AuthRefreshing):    0,
+			string(github.AuthRateLimited):   0,
+			string(github.AuthMisconfigured): 0,
+			string(github.AuthUnavailable):   0,
+		}
+		out[string(state)] = 1
+		return out
+	})
+	metrics.RegisterGHAuthTransitions(func() int64 {
+		return github.AuthHealthSnapshot().Transitions
+	})
+	metrics.RegisterGHAuthSuppressedCalls(func() int64 {
+		return github.AuthHealthSnapshot().SuppressedCalls
+	})
 }
 
 func providerHealthMetrics(
@@ -472,6 +499,42 @@ func providerHealthMetrics(
 		}
 	}
 	return alertHealth, rawHealth
+}
+
+// buildMonitorIssueSink builds the monitor's GH issue sink, wrapped in a
+// durable on-disk outbox when it can be constructed. The durable sink is
+// wired to replay pending filings on GitHub auth recovery and to report its
+// depth/replay/age metrics — split out of startMonitorService to keep that
+// function under the linter's length ceiling.
+func (lm *LifecycleManager) buildMonitorIssueSink(ctx context.Context) monitor.IssueSink {
+	a := lm.app
+	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
+	durableSink, err := monitor.NewDurableGHIssueSink(innerSink, filepath.Join(config.GHIssueOutboxDir(), "monitor"), "monitor", a.logger, a.audit)
+	if err != nil {
+		a.logger.Error("monitor.issue_outbox.init_failed", "err", err)
+		return innerSink
+	}
+	// Drain the outbox as soon as GitHub auth health reports recovery,
+	// instead of waiting for this sink's next natural SubmitIssue call
+	// (which for a rare anomaly kind could be hours away). Handed off to
+	// its own goroutine because OnAuthRecovered callbacks run
+	// synchronously on the goroutine that observed the recovery — often
+	// while internal/github's request gate still holds its own mutex —
+	// so calling back into a gh invocation here directly would deadlock.
+	// See #2453.
+	github.OnAuthRecovered(func() {
+		a.wg.Go(func() { durableSink.ReplayPending(ctx) })
+	})
+	metrics.RegisterGHIssueOutboxPending(func() map[string]int64 {
+		return map[string]int64{"monitor": durableSink.Depth()}
+	})
+	metrics.RegisterGHIssueOutboxReplayed(func() map[string]int64 {
+		return map[string]int64{"monitor": durableSink.ReplayedTotal()}
+	})
+	metrics.RegisterGHIssueOutboxOldestAgeSeconds(func() map[string]int64 {
+		return map[string]int64{"monitor": int64(durableSink.OldestPendingAge(time.Now()).Seconds())}
+	})
+	return durableSink
 }
 
 // startMonitorService wires the in-process monitor loop when enabled.
@@ -511,16 +574,7 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 	// DowngradeLLMForTask closure forces work-typed LLM anomalies through the
 	// deterministic path so they hit this sink (and get scrubbed) rather than
 	// being dispatched to an agent that would file an issue itself.
-	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
-	durableSink, err := monitor.NewDurableGHIssueSink(innerSink, filepath.Join(config.GHIssueOutboxDir(), "monitor"), "monitor", a.logger, a.audit)
-	if err != nil {
-		a.logger.Error("monitor.issue_outbox.init_failed", "err", err)
-		durableSink = nil
-	}
-	var sink monitor.IssueSink = innerSink
-	if durableSink != nil {
-		sink = durableSink
-	}
+	sink := lm.buildMonitorIssueSink(ctx)
 	// This callback's DispatchEvent -> execShell eventually derives its
 	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
 	// not an explicit parameter threaded through the closure. contextcheck no
