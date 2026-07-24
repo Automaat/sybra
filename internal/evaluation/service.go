@@ -20,6 +20,12 @@ import (
 // EmitFunc emits a Wails event to the frontend.
 type EmitFunc func(event string, data any)
 
+// SLOReportFunc receives the freshly computed SLOReport at the end of every
+// tick — wired to internal/sybra/agentorch.Orchestrator.SetSLOReport so the
+// default-off concurrency throttle sees the current error budget without the
+// orchestrator needing its own audit/stats readers.
+type SLOReportFunc func(SLOReport)
+
 type statsReader interface{ All() []stats.RunRecord }
 
 type auditReader interface {
@@ -45,19 +51,23 @@ type Deps struct {
 	Logger     *slog.Logger
 	Now        func() time.Time
 	ReportPath string
+	// OnSLOReport, when set, is invoked at the end of every tick with the
+	// freshly computed SLOReport. Optional — nil is a no-op.
+	OnSLOReport SLOReportFunc
 }
 
 // Service periodically computes a fleet scorecard from stats + audit data.
 // Read-only: it never dispatches agents or files issues.
 type Service struct {
-	cfg        config.EvaluationConfig
-	abTesting  abtest.Config
-	stats      statsReader
-	audit      auditReader
-	emit       EmitFunc
-	logger     *slog.Logger
-	now        func() time.Time
-	reportPath string
+	cfg         config.EvaluationConfig
+	abTesting   abtest.Config
+	stats       statsReader
+	audit       auditReader
+	emit        EmitFunc
+	logger      *slog.Logger
+	now         func() time.Time
+	reportPath  string
+	onSLOReport SLOReportFunc
 
 	mu   sync.RWMutex
 	last *Report
@@ -75,14 +85,15 @@ func NewService(d Deps) *Service {
 		d.Emit = func(string, any) {}
 	}
 	return &Service{
-		cfg:        d.Cfg,
-		abTesting:  d.ABTesting,
-		stats:      d.Stats,
-		audit:      d.Audit,
-		emit:       d.Emit,
-		logger:     d.Logger,
-		now:        d.Now,
-		reportPath: d.ReportPath,
+		cfg:         d.Cfg,
+		abTesting:   d.ABTesting,
+		stats:       d.Stats,
+		audit:       d.Audit,
+		emit:        d.Emit,
+		logger:      d.Logger,
+		now:         d.Now,
+		reportPath:  d.ReportPath,
+		onSLOReport: d.OnSLOReport,
 	}
 }
 
@@ -125,7 +136,11 @@ func (s *Service) tickAndLog(ctx context.Context) {
 		s.logger.Warn("evaluation.persist", "err", err)
 	}
 	s.emit(events.EvaluationReport, rep)
-	s.logger.Info("evaluation.tick", "landed", rep.Overall.TasksLanded, "autonomy_rate", rep.Overall.AutonomyRate)
+	s.logger.Info("evaluation.tick", "landed", rep.Overall.TasksLanded, "autonomy_rate", rep.Overall.AutonomyRate,
+		"slo_compliant", rep.SLO.Compliant, "slo_error_budget", rep.SLO.ErrorBudgetRemaining)
+	if s.onSLOReport != nil {
+		s.onSLOReport(rep.SLO)
+	}
 }
 
 // Scan computes a fresh report over the configured window without side effects.
@@ -175,7 +190,12 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		ByExperimentKind:         GroupByKind(byVariant, byVariantContribution, abTesting.Experiments),
 		Notes:                    reportNotes(recs, since, now),
 	}
-	rep.Weaknesses = Weaknesses(rep)
+	sloTargets := s.cfg.SLO
+	if sloTargets == (config.SLOTargets{}) {
+		sloTargets = DefaultSLOTargets()
+	}
+	rep.SLO = EvaluateSLOs(rep.Overall, ComputeSLOSignals(evts, since, now), sloTargets)
+	rep.Weaknesses = Weaknesses(rep, sloTargets)
 	return rep, nil
 }
 

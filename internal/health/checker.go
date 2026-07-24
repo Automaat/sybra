@@ -252,6 +252,16 @@ func safeFloat(v float64) float64 {
 	return v
 }
 
+// BuildStats computes run/failure/cost stats from an audit event stream —
+// the same accounting internal/evaluation.Compute uses for its own run
+// totals (runacct.Count with CountsTowardCodeAuthorFailureRate), exported so
+// evaluation.ReconcileReports can prove the two agree over the same event
+// window instead of re-deriving an equivalent computation that could drift
+// from this one silently.
+func BuildStats(events []audit.Event) Stats {
+	return buildStats(events)
+}
+
 func buildStats(events []audit.Event) Stats {
 	s := Stats{CostByRole: make(map[string]float64)}
 	records := audit.RunRecords(events)

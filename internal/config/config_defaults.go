@@ -663,6 +663,22 @@ func DefaultConfig() *Config {
 
 const DefaultAttachmentMaxSizeMB = 10
 
+// defaultEvaluationSeed seeds the two count/rate SLO caps where an explicit 0
+// is a meaningful "zero tolerance" target, so a YAML `0` survives instead of
+// being clobbered back by applySLOTargetDefaults (same pattern as
+// Watchdog.LoopThreshold). The fraction targets are deliberately left unset:
+// for those 0 is a degenerate target, so applySLOTargetDefaults fills them via
+// its <= 0 check.
+func defaultEvaluationSeed() EvaluationConfig {
+	d := DefaultSLOTargets()
+	return EvaluationConfig{
+		SLO: SLOTargets{
+			MaxIdenticalRetryCap: d.MaxIdenticalRetryCap,
+			MaxRestartsPerHour:   d.MaxRestartsPerHour,
+		},
+	}
+}
+
 func defaultSeedConfig() *Config {
 	cfg := &Config{
 		SchemaVersion: CurrentSchemaVersion,
@@ -702,12 +718,9 @@ func defaultSeedConfig() *Config {
 				AssignedPRs: GitHubPRPollingConfig{Enabled: true},
 			},
 		},
-		Monitor: MonitorConfig{
-			Enabled: true,
-		},
-		HarnessEvolve: HarnessEvolveConfig{
-			Enabled: true,
-		},
+		Monitor:       MonitorConfig{Enabled: true},
+		HarnessEvolve: HarnessEvolveConfig{Enabled: true},
+		Evaluation:    defaultEvaluationSeed(),
 		Watchdog: WatchdogConfig{
 			Enabled:          true,
 			LoopThreshold:    6,
@@ -1286,6 +1299,32 @@ func applyEvaluationDefaults(cfg *Config) {
 	}
 	if e.Offline.UnavailablePolicy == "" {
 		e.Offline.UnavailablePolicy = "fail"
+	}
+	applySLOTargetDefaults(&e.SLO)
+}
+
+// applySLOTargetDefaults fills zero-value SLO target fields individually
+// (rather than replacing the whole struct) so an operator who overrides only
+// one target in config.yaml keeps that override and still gets defaults for
+// the rest, instead of a partial config silently zeroing the others.
+//
+// Only the fraction targets (MinAutonomyRate, MinCIFirstPassRate,
+// MaxReworkRate) are defaulted here — for those, 0 is a degenerate target so
+// treating it as "unset" is safe. MaxIdenticalRetryCap and MaxRestartsPerHour
+// are deliberately NOT defaulted here: they are seeded by defaultSeedConfig so
+// an explicit `max_identical_retry_cap: 0` ("no repeated failures tolerated")
+// or `max_restarts_per_hour: 0` ("any automatic restart is a breach") survives
+// instead of being clobbered back to the shipped default.
+func applySLOTargetDefaults(slo *SLOTargets) {
+	d := DefaultSLOTargets()
+	if slo.MinAutonomyRate <= 0 {
+		slo.MinAutonomyRate = d.MinAutonomyRate
+	}
+	if slo.MinCIFirstPassRate <= 0 {
+		slo.MinCIFirstPassRate = d.MinCIFirstPassRate
+	}
+	if slo.MaxReworkRate <= 0 {
+		slo.MaxReworkRate = d.MaxReworkRate
 	}
 }
 

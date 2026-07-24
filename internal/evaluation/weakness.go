@@ -28,13 +28,16 @@ const (
 
 // Weaknesses inspects a report and returns ranked systematic weaknesses, each
 // with a suggested action. Empty when there is too little data or nothing
-// stands out. Pure and deterministic.
-func Weaknesses(r Report) []Weakness {
+// stands out. targets gates the autonomy/CI-first-pass/rework thresholds —
+// pass config.DefaultSLOTargets() (or the operator's EvaluationConfig.SLO)
+// rather than a hardcoded value so a fleet-wide SLO change and a weakness
+// warning stay in lockstep. Pure and deterministic.
+func Weaknesses(r Report, targets SLOTargets) []Weakness {
 	var out []Weakness
 	o := r.Overall
 
 	if o.TasksLanded >= minLandedForSignal {
-		if o.AutonomyRate < 0.7 {
+		if o.AutonomyRate < targets.MinAutonomyRate {
 			out = append(out, Weakness{
 				Severity:   "warn",
 				Metric:     "autonomy",
@@ -42,7 +45,7 @@ func Weaknesses(r Report) []Weakness {
 				Suggestion: "review what escalated to human-required; tighten triage so more tasks run headless end-to-end",
 			})
 		}
-		if o.CIFirstPassRate < 0.6 {
+		if o.CIFirstPassRate < targets.MinCIFirstPassRate {
 			out = append(out, Weakness{
 				Severity:   "warn",
 				Metric:     "ci_first_pass",
@@ -50,7 +53,7 @@ func Weaknesses(r Report) []Weakness {
 				Suggestion: "have the implementation agent run the full test/lint suite before pushing",
 			})
 		}
-		if rework := float64(o.ReworkTasks) / float64(o.TasksLanded); rework > 0.3 {
+		if rework := float64(o.ReworkTasks) / float64(o.TasksLanded); rework > targets.MaxReworkRate {
 			out = append(out, Weakness{
 				Severity:   "info",
 				Metric:     "rework",

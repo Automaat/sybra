@@ -507,6 +507,40 @@ func TestTryHoldCapacity(t *testing.T) {
 	}
 }
 
+// TestTryHoldCapacityWithLimit proves the SLO throttle's admission hold is
+// reservation-aware: a burst of concurrent holds against a limit below the raw
+// pool cap cannot collectively overshoot the limit, because outstanding
+// reservations (not just live agents) are counted under the lock. This is the
+// TOCTOU gap the earlier live-only precheck left open.
+func TestTryHoldCapacityWithLimit(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 10
+	m.mu.Unlock()
+
+	// Halved ceiling of 5 against a raw cap of 10: exactly 5 holds succeed even
+	// though none has converted to a live agent yet (liveCount stays 0).
+	var held []*CapacityReservation
+	for i := range 5 {
+		res, ok := m.TryHoldCapacityWithLimit(5)
+		if !ok {
+			t.Fatalf("hold %d under limit 5 must succeed (reserved=%d)", i, len(held))
+		}
+		held = append(held, res)
+	}
+	if _, ok := m.TryHoldCapacityWithLimit(5); ok {
+		t.Fatal("6th hold must fail: reservations count toward the limit even with liveCount==0")
+	}
+	// Raw pool still has room (5 of 10 reserved), so a non-throttled hold (no
+	// extra limit) still admits.
+	if _, ok := m.TryHoldCapacityWithLimit(0); !ok {
+		t.Fatal("un-throttled hold must still claim the raw pool's free capacity")
+	}
+	for _, res := range held {
+		res.Release()
+	}
+}
+
 func TestAvailableQueueDrainSlots(t *testing.T) {
 	m, _ := newTestManager(t)
 
