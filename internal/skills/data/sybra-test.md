@@ -86,6 +86,7 @@ In `## Test Failures` record, per defect: what you did (exact steps/commands), w
    - Bind **only ephemeral/dynamic ports** (`:0` or a high random port). Never a fixed well-known port — other test agents run in parallel on this machine.
    - Namespace anything global by the task id.
    - **Tear down** every process/container/cluster you start before exiting (trap/defer). Leaks starve the next agent.
+   - **Never `pkill`/`pgrep` by command-line pattern to stop a server you started.** Your own invocation's full prompt text is part of your process's command line, so a pattern that matches the server you meant to kill (e.g. a path or command fragment quoted in the task/manual_test text) can also match your own ancestor process and kill your own run instead. Capture the PID when you start the process (`cmd & pid=$!`) and tear it down with that exact PID (`kill "$pid"`).
 
    **`SYBRA_HOME` is always set to your per-task sandbox** — every task-scoped agent gets one automatically now (sybra#1577), not just Sybra-testing-Sybra. Test servers, e2e suites, and scratch data all belong there by default; that's where `go run ./cmd/sybra-server`, ad-hoc scripts, and anything else you start will land unless told otherwise.
 
