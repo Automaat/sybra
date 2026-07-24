@@ -136,10 +136,7 @@ func TestRecordReconcileFailure_TransientNeverEscalates(t *testing.T) {
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want %q — a transient blip must not escalate", got.Status, task.StatusInReview)
 	}
-	r.failureMu.Lock()
-	n := r.reconcileFailures[tk.ID]
-	r.failureMu.Unlock()
-	if n != 0 {
+	if n := got.ReconcileFailures; n != 0 {
 		t.Errorf("transient failures counted %d toward the limit, want 0", n)
 	}
 }
@@ -157,7 +154,8 @@ func TestClearReconcileFailure_ResetsTheCount(t *testing.T) {
 		}
 		r.recordReconcileFailure(&got, err)
 	}
-	r.clearReconcileFailure(tk.ID)
+	cleared := mustGet(t, tasks, tk.ID)
+	r.clearReconcileFailure(&cleared)
 
 	// A further failure starts from scratch, so this must not escalate.
 	got, gerr := tasks.Get(tk.ID)
@@ -239,10 +237,7 @@ func TestReconcileReviewTask_SuccessClearsTheCircuit(t *testing.T) {
 	got := mustGet(t, tasks, tk.ID)
 	r.reconcileReviewTask(&got, requested, map[string]github.PullRequest{})
 
-	r.failureMu.Lock()
-	n := r.reconcileFailures[tk.ID]
-	r.failureMu.Unlock()
-	if n != 0 {
+	if n := mustGet(t, tasks, tk.ID).ReconcileFailures; n != 0 {
 		t.Errorf("failure count = %d after a successful read, want 0", n)
 	}
 
@@ -326,10 +321,7 @@ func TestReconcileReviewTask_HealthyCycleClearsStaleFailures(t *testing.T) {
 	got := mustGet(t, tasks, tk.ID)
 	r.reconcileReviewTask(&got, conflicting, map[string]github.PullRequest{})
 
-	r.failureMu.Lock()
-	n := r.reconcileFailures[tk.ID]
-	r.failureMu.Unlock()
-	if n != 0 {
+	if n := mustGet(t, tasks, tk.ID).ReconcileFailures; n != 0 {
 		t.Fatalf("failure count = %d after a healthy cycle, want 0 — one later blip would escalate a healthy task", n)
 	}
 }
@@ -355,11 +347,8 @@ func TestRecordReconcileFailure_ParkedTaskLeavesNoStaleCounter(t *testing.T) {
 		r.recordReconcileFailure(&got, err)
 	}
 
-	r.failureMu.Lock()
-	n, present := r.reconcileFailures[tk.ID]
-	r.failureMu.Unlock()
-	if present {
-		t.Errorf("parked task still holds a counter entry (%d); it leaks for the life of the process", n)
+	if n := mustGet(t, tasks, tk.ID).ReconcileFailures; n != 0 {
+		t.Errorf("parked task still holds a nonzero counter (%d); it leaks for the life of the process", n)
 	}
 }
 
