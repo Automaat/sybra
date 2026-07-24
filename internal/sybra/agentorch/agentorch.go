@@ -798,6 +798,16 @@ func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt
 		return reservation, nil, "", nil, false
 	}
 	if o.queue == nil {
+		// The SLO throttle actively narrowed admission (sloLimit > 0) and the
+		// hold failed against the halved ceiling, but the raw pool may still
+		// have room. Without a queue to park in, falling through to unthrottled
+		// dispatch would let admission-gated work overshoot the halved ceiling
+		// straight up to the raw cap — defeating the throttle in exactly the
+		// degraded-startup mode (nil queue) where the system is already
+		// unhealthy. Reject instead of bypassing.
+		if opts.admissionGate && sloLimit > 0 {
+			return nil, nil, "", workflow.ErrAgentPoolBusy, true
+		}
 		return nil, nil, "", nil, false
 	}
 	switch {

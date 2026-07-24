@@ -110,6 +110,54 @@ func TestStartAgentWithAssignment_SLOThrottleNarrowsAdmissionOnly(t *testing.T) 
 	t.Cleanup(func() { am.KillAgentsForTask(fourth.ID, 5*time.Second) })
 }
 
+// TestStartAgentWithAssignment_SLOThrottleRejectsWhenQueueNil proves the SLO
+// throttle is NOT silently bypassed in the degraded-startup mode where the
+// admission queue failed to initialize (o.queue == nil). Once the halved
+// ceiling is saturated, an admission-gated dispatch must be rejected with
+// ErrAgentPoolBusy rather than falling through to unthrottled dispatch that
+// overshoots the halved ceiling up to the raw pool cap.
+func TestStartAgentWithAssignment_SLOThrottleRejectsWhenQueueNil(t *testing.T) {
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+	am := newFakeClaudeManager(t, 4) // raw pool has plenty of room
+
+	noPermissions := false
+	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+		Agent: config.AgentDefaults{
+			ResearchMachineDir: t.TempDir(),
+			RequirePermissions: &noPermissions,
+			MaxConcurrent:      4,
+		},
+		Evaluation: config.EvaluationConfig{
+			SLO: config.SLOTargets{ThrottleOnBudgetExhausted: true},
+		},
+	})
+	// Deliberately do NOT call o.SetQueue — this is the nil-queue degraded mode.
+	o.SetSLOReport(evaluation.SLOReport{ErrorBudgetRemaining: 0})
+
+	// effectiveMaxConcurrent(4, true, true) == 2: two admission-gated dispatches
+	// fill the halved ceiling.
+	for _, title := range []string{"first", "second"} {
+		tk := newAgentTask(t, tm, title)
+		if _, _, err := o.StartAgentWithAssignment(tk.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); err != nil {
+			t.Fatalf("dispatch %q: %v", title, err)
+		}
+		t.Cleanup(func() { am.KillAgentsForTask(tk.ID, 5*time.Second) })
+	}
+
+	third := newAgentTask(t, tm, "third throttled with nil queue")
+	_, _, err = o.StartAgentWithAssignment(third.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{})
+	if !errors.Is(err, workflow.ErrAgentPoolBusy) {
+		t.Fatalf("third dispatch err = %v, want wrapping workflow.ErrAgentPoolBusy (SLO-throttled, nil queue)", err)
+	}
+	if got := am.RunningCount(); got != 2 {
+		t.Fatalf("RunningCount after throttled third = %d, want 2 (nil queue must not let dispatch overshoot the halved ceiling)", got)
+	}
+}
+
 // TestStartAgentWithAssignment_SLOThrottleDisabledByDefault proves the
 // throttle is fully inert unless explicitly enabled: an exhausted SLO report
 // with ThrottleOnBudgetExhausted left at its shipped default (false) must
