@@ -16,14 +16,14 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 		return err
 	}
 	if a.GetState() == StateStopped {
-		return fmt.Errorf("agent %s is stopped", agentID)
+		return conflictError(fmt.Sprintf("agent %s is stopped", agentID))
 	}
 
 	if a.convo.hasStdinPipe() {
 		return m.SendMessage(agentID, text)
 	}
 
-	return fmt.Errorf("agent %s has no active transport (no stdin pipe)", agentID)
+	return conflictError(fmt.Sprintf("agent %s has no active transport (no stdin pipe)", agentID))
 }
 
 // SendMessage sends a follow-up user message to a live steerable headless

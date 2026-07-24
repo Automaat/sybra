@@ -375,6 +375,26 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 
+	// A run_agent step declaring wait_for_status only completes on a matching
+	// HandleStatusChange (see the wait_for_status branch below and
+	// advanceSatisfiedWaitForStatus) — the step's own agent finishing a turn
+	// must never independently satisfy it. Interactive agents used to
+	// guarantee this for free by never exiting mid-conversation, so this
+	// callback simply never fired while a status match was pending; a
+	// steerable headless run finalizes on its first completed turn
+	// (drainOrCloseHeadlessSteer), so the equivalent guard has to be explicit
+	// here now.
+	if c.Success {
+		if def, ok := defs.get(); ok {
+			if s := def.StepByID(spawnedStep); s != nil && s.Config.WaitForStatus != "" {
+				e.logger.Info("workflow.agent-complete.wait-for-status",
+					"task_id", taskID, "agent_id", c.AgentID, "step", spawnedStep, "wait_for_status", s.Config.WaitForStatus)
+				e.clearAgentStep(c.AgentID)
+				return
+			}
+		}
+	}
+
 	status := "completed"
 	if !c.Success {
 		status = "failed"

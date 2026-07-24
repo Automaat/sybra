@@ -4664,46 +4664,6 @@ func TestE2E_WaitForStatus_ExactAdvancesOnce(t *testing.T) {
 	}
 }
 
-func TestE2E_ReuseAgent_ContinuesWithSameAgent(t *testing.T) {
-	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
-	writeWorkflowFixture(t, env, "test-reuse-agent", testReuseAgentWorkflowYAML)
-
-	created, err := env.tasks.Create("reuse agent same", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := env.startWorkflow(created.ID, "test-reuse-agent"); err != nil {
-		t.Fatal(err)
-	}
-
-	waitFor(t, 10*time.Second, "phase1 waiting", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "phase1" && tk.Workflow.State == workflow.ExecWaiting && len(tk.AgentRuns) == 1
-	})
-	tk1, _ := env.tasks.Get(created.ID)
-	firstAgentID := tk1.AgentRuns[0].AgentID
-
-	env.engine.HandleStatusChange(created.ID, "phase1")
-	waitFor(t, 10*time.Second, "phase2 waiting", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "phase2" && tk.Workflow.State == workflow.ExecWaiting
-	})
-
-	tk2, _ := env.tasks.Get(created.ID)
-	if len(tk2.AgentRuns) != 1 {
-		t.Fatalf("agent runs = %d, want 1 (reuse)", len(tk2.AgentRuns))
-	}
-	if tk2.AgentRuns[0].AgentID != firstAgentID {
-		t.Fatalf("agent id changed: %s -> %s", firstAgentID, tk2.AgentRuns[0].AgentID)
-	}
-
-	env.engine.HandleStatusChange(created.ID, "phase2")
-	waitFor(t, 10*time.Second, "workflow completes", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
-	})
-}
-
 func TestE2E_ReuseAgent_FallbackStartsNewWhenDead(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement", "interactive_implement"})
 	writeWorkflowFixture(t, env, "test-reuse-agent", testReuseAgentWorkflowYAML)

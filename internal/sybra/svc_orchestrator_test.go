@@ -140,9 +140,11 @@ func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
 	svc.agentID = wedged.ID
 
 	// orchestratorReplaceable only treats running-no-session-no-output as
-	// replaceable past orchestratorWedgeGrace, to avoid churning a healthy
-	// agent still mid-handshake — wait it out.
-	time.Sleep(orchestratorWedgeGrace)
+	// replaceable past orchestratorWedgeGrace (strict '>'), to avoid churning
+	// a healthy agent still mid-handshake — wait it out plus a small epsilon
+	// so clock granularity can't leave time.Since(startedAt) exactly equal to
+	// the grace window.
+	time.Sleep(orchestratorWedgeGrace + 50*time.Millisecond)
 
 	// StartOrchestrator must reap the wedged brain and swap in a fresh one.
 	if err := svc.StartOrchestrator(); err != nil {
