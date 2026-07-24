@@ -150,6 +150,7 @@ export class Report {
     "dispatched": string[];
     "issuesOpened": number;
     "issuesUpdated": number;
+    "issuesClosed": number;
 
     /** Creates a new Report instance. */
     constructor($$source: Partial<Report> = {}) {
@@ -173,6 +174,9 @@ export class Report {
         }
         if (!("issuesUpdated" in $$source)) {
             this["issuesUpdated"] = 0;
+        }
+        if (!("issuesClosed" in $$source)) {
+            this["issuesClosed"] = 0;
         }
 
         Object.assign(this, $$source);
