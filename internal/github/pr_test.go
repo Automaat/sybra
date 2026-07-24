@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -448,25 +449,97 @@ func TestRequestReviewersWith_passesArgs(t *testing.T) {
 
 func TestRequestCopilotReview_RequestsCopilotBot(t *testing.T) {
 	orig := defaultExecer
-	fe := &recordingExecer{output: []byte("HTTP/2.0 201 Created\n\n{}")}
+	fe := &recordingSequenceExecer{
+		results: []scriptedResult{
+			{output: []byte(`{"data":{"repository":{"pullRequest":{"id":"PR_kwDOtest42"}}}}`)},
+			{output: []byte(`{"data":{"requestReviews":{"pullRequest":{"id":"PR_kwDOtest42"}}}}`)},
+		},
+	}
 	defaultExecer = fe
 	t.Cleanup(func() { defaultExecer = orig })
 
 	if err := RequestCopilotReview("owner/repo", 42); err != nil {
 		t.Fatalf("RequestCopilotReview: %v", err)
 	}
-	want := []string{
-		"api", "--include", "--method", "POST",
-		"repos/owner/repo/pulls/42/requested_reviewers",
-		"-f", "reviewers[]=copilot-pull-request-reviewer[bot]",
+	if len(fe.calls) != 2 {
+		t.Fatalf("calls = %d, want 2: %v", len(fe.calls), fe.calls)
 	}
-	if len(fe.lastArgs) != len(want) {
-		t.Fatalf("args = %v, want %v", fe.lastArgs, want)
+
+	// First call resolves the PR's GraphQL node id.
+	idCall := fe.calls[0]
+	if !containsArg(idCall, "graphql") {
+		t.Errorf("id call args = %v, want graphql", idCall)
 	}
-	for i, a := range fe.lastArgs {
-		if a != want[i] {
-			t.Errorf("arg[%d] = %q, want %q", i, a, want[i])
-		}
+	if !containsArg(idCall, "owner=owner") || !containsArg(idCall, "name=repo") || !containsArg(idCall, "number=42") {
+		t.Errorf("id call args = %v, missing owner/name/number", idCall)
+	}
+
+	// Second call must be the requestReviews mutation targeting Copilot's
+	// bot node id — this is the only GitHub operation that actually
+	// enqueues a Copilot review (the REST requested_reviewers endpoint
+	// silently no-ops for the bot).
+	mutCall := fe.calls[1]
+	if !containsArg(mutCall, "graphql") {
+		t.Errorf("mutation call args = %v, want graphql", mutCall)
+	}
+	if !containsArg(mutCall, "prId=PR_kwDOtest42") || !containsArg(mutCall, "botId="+copilotReviewerBotID) {
+		t.Errorf("mutation call args = %v, missing prId/botId", mutCall)
+	}
+}
+
+func TestRequestCopilotReview_InvalidRepo(t *testing.T) {
+	t.Parallel()
+	fe := &recordingSequenceExecer{}
+	if err := requestCopilotReviewCtxWith(context.Background(), fe, "not-a-repo", 42); err == nil {
+		t.Fatal("expected error for repo without owner/name")
+	}
+	if fe.callIdx != 0 {
+		t.Errorf("calls = %d, want 0 (should fail before any API call)", fe.callIdx)
+	}
+}
+
+func TestRequestCopilotReview_IDQueryGraphQLError(t *testing.T) {
+	t.Parallel()
+	fe := &recordingSequenceExecer{
+		results: []scriptedResult{
+			{output: []byte(`{"errors":[{"message":"Could not resolve to a PullRequest"}]}`)},
+		},
+	}
+	err := requestCopilotReviewCtxWith(context.Background(), fe, "owner/repo", 42)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if fe.callIdx != 1 {
+		t.Errorf("calls = %d, want 1 (should not attempt the mutation after id lookup fails)", fe.callIdx)
+	}
+}
+
+func TestRequestCopilotReview_EmptyNodeID(t *testing.T) {
+	t.Parallel()
+	fe := &recordingSequenceExecer{
+		results: []scriptedResult{
+			{output: []byte(`{"data":{"repository":{"pullRequest":{"id":""}}}}`)},
+		},
+	}
+	err := requestCopilotReviewCtxWith(context.Background(), fe, "owner/repo", 42)
+	if err == nil {
+		t.Fatal("expected error for empty node id")
+	}
+	if fe.callIdx != 1 {
+		t.Errorf("calls = %d, want 1 (should not attempt the mutation with an empty prId)", fe.callIdx)
+	}
+}
+
+func TestRequestCopilotReview_MutationGraphQLError(t *testing.T) {
+	t.Parallel()
+	fe := &recordingSequenceExecer{
+		results: []scriptedResult{
+			{output: []byte(`{"data":{"repository":{"pullRequest":{"id":"PR_kwDOtest42"}}}}`)},
+			{output: []byte(`{"errors":[{"message":"BOT_kgDOCnlnWA is not a valid reviewer"}]}`)},
+		},
+	}
+	if err := requestCopilotReviewCtxWith(context.Background(), fe, "owner/repo", 42); err == nil {
+		t.Fatal("expected error")
 	}
 }
 
