@@ -547,6 +547,12 @@ func (s *Service) closeRecoveredLostAgents(ctx context.Context, anoms []Anomaly)
 	}
 	closer, ok := s.sink.(IssueCloser)
 	if !ok {
+		// No closer wired: nothing can ever close these, so drop them now
+		// rather than re-returning them (with an ever-climbing clearStreak)
+		// on every future tick.
+		for _, c := range cleared {
+			s.state.lostAgentForget(c.fp)
+		}
 		return 0
 	}
 	closed := 0
@@ -555,9 +561,15 @@ func (s *Service) closeRecoveredLostAgents(ctx context.Context, anoms []Anomaly)
 		comment := fmt.Sprintf("monitor: condition cleared for %d consecutive scans; auto-closing.", s.cfg.LostAgentAutoCloseAfterClears)
 		didClose, err := closer.CloseIfOpen(ctx, a, comment)
 		if err != nil {
+			// Keep the tracking entry alive (lostAgentSweepClears did not
+			// delete it) so the next tick retries this close instead of
+			// permanently orphaning the open issue/task.
 			s.logger.Warn("monitor.lost_agent.autoclose_failed", "task_id", c.taskID, "fingerprint", c.filedFP, "err", err)
 			continue
 		}
+		// Close succeeded or the issue was already gone: forget the entry so
+		// a future recurrence starts a clean streak.
+		s.state.lostAgentForget(c.fp)
 		if didClose {
 			closed++
 			s.logger.Info("monitor.lost_agent.autoclosed", "task_id", c.taskID, "fingerprint", c.filedFP)

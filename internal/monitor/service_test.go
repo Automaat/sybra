@@ -161,6 +161,7 @@ type fakeSink struct {
 	createNext  bool
 	closed      []Anomaly
 	closeNext   bool
+	closeErr    error
 }
 
 func (f *fakeSink) Submit(_ context.Context, a Anomaly, body string) (bool, error) {
@@ -177,6 +178,9 @@ func (f *fakeSink) CloseIfOpen(_ context.Context, a Anomaly, _ string) (bool, er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closed = append(f.closed, a)
+	if f.closeErr != nil {
+		return false, f.closeErr
+	}
 	return f.closeNext, nil
 }
 
@@ -490,6 +494,82 @@ func TestServiceTick_LostAgentDedupeThenAutoClose(t *testing.T) {
 	}
 	if r.IssuesOpened != 0 {
 		t.Fatalf("post-close occurrence 1: want 0 opened, got %d", r.IssuesOpened)
+	}
+}
+
+// TestServiceTick_LostAgentAutoCloseRetriesAfterTransientFailure guards the
+// #2497 fix: a transient CloseIfOpen error on the exact tick that crosses
+// LostAgentAutoCloseAfterClears must NOT orphan the open issue. The tracking
+// entry has to survive so a subsequent tick retries the close, since a
+// stayed-clear condition never re-triggers a fresh detection.
+func TestServiceTick_LostAgentAutoCloseRetriesAfterTransientFailure(t *testing.T) {
+	base := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	cfg.IssueCooldownMinutes = 0
+	cfg.LostAgentIssueAfterOccurrences = 1
+	cfg.LostAgentAutoCloseAfterClears = 1
+
+	tasks := &fakeTasks{tasks: []task.Task{mkTask("flaky", task.StatusInProgress)}}
+	sink := &fakeSink{createNext: true}
+	agents := &toggleAgentLister{}
+	now := base
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: agents,
+		Sink:   sink,
+		Logger: slog.New(slog.DiscardHandler),
+		Now:    func() time.Time { return now },
+	})
+
+	tick := func(step time.Duration) Report {
+		now = now.Add(step)
+		r, err := svc.tick(context.Background())
+		if err != nil {
+			t.Fatalf("tick: %v", err)
+		}
+		return r
+	}
+
+	// File the issue for the stuck task.
+	tick(0)
+	if len(sink.submissions) != 1 {
+		t.Fatalf("want 1 submission after file, got %d", len(sink.submissions))
+	}
+	sink.createNext = false
+
+	// Agent recovers; the first clear tick crosses the auto-close threshold
+	// but CloseIfOpen fails transiently.
+	agents.Set([]string{"flaky"})
+	sink.closeErr = errNotFound
+	r := tick(15 * time.Minute)
+	if len(sink.closed) != 1 {
+		t.Fatalf("transient tick: want 1 close attempt, got %d", len(sink.closed))
+	}
+	if r.IssuesClosed != 0 {
+		t.Fatalf("transient tick: want 0 issues closed, got %d", r.IssuesClosed)
+	}
+
+	// The transient error cleared; the very next tick (still clear) must retry
+	// the close instead of leaving the issue orphaned.
+	sink.closeErr = nil
+	sink.closeNext = true
+	r = tick(15 * time.Minute)
+	if len(sink.closed) != 2 {
+		t.Fatalf("retry tick: want 2 close attempts total, got %d", len(sink.closed))
+	}
+	if r.IssuesClosed != 1 {
+		t.Fatalf("retry tick: want 1 issue closed on retry, got %d", r.IssuesClosed)
+	}
+
+	// Once closed, the entry is forgotten: further clear ticks don't re-attempt.
+	r = tick(15 * time.Minute)
+	if len(sink.closed) != 2 {
+		t.Fatalf("post-close tick: want no further close attempts, got %d", len(sink.closed))
+	}
+	if r.IssuesClosed != 0 {
+		t.Fatalf("post-close tick: want 0 issues closed, got %d", r.IssuesClosed)
 	}
 }
 

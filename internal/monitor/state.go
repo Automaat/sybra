@@ -86,19 +86,26 @@ func (s *runState) lostAgentFiledFP(fp string) (string, bool) {
 
 // lostAgentClear is one fingerprint whose tracked issue/task just qualified
 // for auto-close: its condition has stayed clear for closeAfterClears
-// consecutive ticks.
+// consecutive ticks. fp is the base runState.lostAgent key, retained so the
+// caller can drop the entry via lostAgentForget once the close actually
+// succeeds.
 type lostAgentClear struct {
+	fp      string
 	taskID  string
 	filedFP string
 }
 
 // lostAgentSweepClears advances the clear streak for every previously-hit
 // lost_agent fingerprint absent from seenThisTick, and returns the ones whose
-// filed issue/task just crossed closeAfterClears — those are forgotten
-// afterward so a future recurrence starts a clean streak. Fingerprints that
-// were never actually filed (fully self-healed before the occurrence
-// threshold) are dropped on their first clear tick so tracking doesn't grow
-// without bound for every transient blip.
+// filed issue/task just crossed closeAfterClears. Filed candidates are NOT
+// forgotten here: the tracking entry is kept alive so a transient
+// CloseIfOpen failure is retried on a future tick — the caller
+// (closeRecoveredLostAgents) drops it via lostAgentForget only after the
+// close succeeds (or is confirmed unnecessary). Because the entry survives,
+// its clearStreak keeps climbing and it is re-returned every subsequent tick
+// until then. Fingerprints that were never actually filed (fully self-healed
+// before the occurrence threshold) are dropped on their first clear tick so
+// tracking doesn't grow without bound for every transient blip.
 func (s *runState) lostAgentSweepClears(seenThisTick map[string]bool, closeAfterClears int) []lostAgentClear {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,11 +121,19 @@ func (s *runState) lostAgentSweepClears(seenThisTick map[string]bool, closeAfter
 			continue
 		}
 		if closeAfterClears > 0 && t.clearStreak >= closeAfterClears {
-			closed = append(closed, lostAgentClear{taskID: t.taskID, filedFP: t.filedFP})
-			delete(s.lostAgent, fp)
+			closed = append(closed, lostAgentClear{fp: fp, taskID: t.taskID, filedFP: t.filedFP})
 		}
 	}
 	return closed
+}
+
+// lostAgentForget drops the tracking entry for the base fingerprint fp once
+// its issue/task has been successfully auto-closed (or confirmed already
+// gone), so a future recurrence starts a clean streak.
+func (s *runState) lostAgentForget(fp string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.lostAgent, fp)
 }
 
 // canIssue reports whether the fingerprint has cleared the cooldown window.
