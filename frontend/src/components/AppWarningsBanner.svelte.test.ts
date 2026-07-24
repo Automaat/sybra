@@ -69,13 +69,13 @@ describe('AppWarningsBanner', () => {
         ...baseProps,
         degradedWarnings: [
           { subsystem: 'github', reason: 'rate-limited' },
-          { subsystem: 'todoist', reason: 'auth-failed' },
+          { subsystem: 'renovate', reason: 'auth-failed' },
         ],
         ondismissDegraded,
       } as never,
     })
     expect(screen.getByText('github')).toBeDefined()
-    expect(screen.getByText('todoist')).toBeDefined()
+    expect(screen.getByText('renovate')).toBeDefined()
     const buttons = screen.getAllByLabelText('Dismiss')
     await fireEvent.click(buttons[1])
     expect(ondismissDegraded).toHaveBeenCalledWith(1)

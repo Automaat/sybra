@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/metrics"
-	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -49,7 +49,7 @@ func (r *Recovery) RestartTaskIfStale(ctx context.Context, taskID string) error 
 }
 
 func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
-	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+	if t.TaskType == task.TaskTypeUmbrella {
 		return
 	}
 	if r.DispatchGate != nil && !r.DispatchGate(t) {
@@ -64,6 +64,18 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	if r.Agents.IsDispatching(t.ID) {
 		return
 	}
+	// Claim sole ownership of this task's recovery decision for the rest of
+	// this call, then re-fetch under the claim: the periodic
+	// RestartStaleInProgress sweep and a targeted RestartTaskIfStale call
+	// (cluster monitor's lost-agent recovery) run on independent goroutines
+	// and can both reach this point for the same task from the same stale
+	// snapshot. See claimAndRefetch and TryClaimRecovery.
+	fresh, claim, ok := r.claimAndRefetch(t.ID)
+	if !ok {
+		return
+	}
+	t = fresh
+	defer claim.Release()
 	// Don't re-dispatch to the same provider while it is rate-limited; do
 	// continue when failover can route this run to a healthy peer. (A
 	// rate-limited run is stalled in-progress by the completion handler, not
@@ -74,11 +86,11 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			"task_id", t.ID, "reason", "provider_rate_limited", "provider", lr.Provider)
 		return
 	}
-	if slices.Contains(t.Tags, "review") && r.recoverCompletedHeadlessRun(&t) {
+	if r.recoverCompletedHeadlessRun(&t) {
 		// recoverCompletedHeadlessRun handled this task (last headless run
 		// completed but workflow step was never recorded). Skip the generic
 		// stale-restart path only when it actually fired HandleAgentComplete;
-		// unmatched review tasks (running agent, empty result, missing workflow,
+		// unmatched tasks (running agent, empty result, missing workflow,
 		// etc.) fall through so they can still be restarted.
 		return
 	}
@@ -106,12 +118,13 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			"last_run_age_s", time.Since(lr.StartedAt).Seconds())
 		return
 	}
-	// Tasks whose last agent was a pr-fix should not be re-implemented.
-	// Move them back to in-review so the reviews poller can re-detect
-	// and fix. handlePRIssue spawns pr-fix agents directly without
-	// registering a workflow, so onAgentComplete can't advance the task
-	// back to in-review itself.
-	if lastRun := lastAgentRun(&t); lastRun != nil && lastRun.Role == "pr-fix" {
+	// Tasks whose last agent was a pr-fix (or its scoped test-fix follow-up,
+	// see pr-fix.yaml's test_fix step) should not be re-implemented. Move
+	// them back to in-review so the reviews poller can re-detect and fix.
+	// handlePRIssue spawns pr-fix agents directly without registering a
+	// workflow, so onAgentComplete can't advance the task back to in-review
+	// itself.
+	if lastRun := lastAgentRun(&t); lastRun != nil && (lastRun.Role == "pr-fix" || lastRun.Role == "test-fix") {
 		r.Logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
 		if _, updErr := r.Tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); updErr != nil {
 			r.Logger.Error("restart-stale.revert", "task_id", t.ID, "err", updErr)
@@ -137,7 +150,7 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 		// file-backed Tasks.Update never blocks the fleet-wide sweep.
 		taskID, currentStatus := t.ID, t.Status
 		r.WG.Go(func() {
-			r.surfaceStartFailure(taskID, currentStatus, err)
+			r.surfaceStartFailure(ctx, taskID, currentStatus, err)
 		})
 		return
 	}
@@ -151,31 +164,60 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			metrics.OrchestratorStaleRestart(ctx, err == nil)
 			r.Throttle.Log(r.Logger, "restart.pr-fix.failed", "pr-fix:"+taskID, err, "task_id", taskID)
 			if err != nil {
-				r.surfaceStartFailure(taskID, currentStatus, err)
+				r.surfaceStartFailure(ctx, taskID, currentStatus, err)
 			}
 		})
 		return
 	}
 	mode := t.AgentMode
-	prFlag := " --draft"
-	if proj, pErr := r.Projects.Get(t.ProjectID); pErr == nil && proj.Type == project.ProjectTypePet {
-		prFlag = ""
-	}
 	// A pending supervisor steer (set by the watchdog's headless nudge) is
 	// consumed and prepended to the prompt inside agentorch.Orchestrator.StartAgent,
 	// the single dispatch choke point this path and the workflow resume path
 	// both funnel through — so it is delivered exactly once regardless of
 	// which loop re-dispatches the task.
-	prompt := "Continue implementing this task. When done, create a PR with `gh pr create" + prFlag + "`."
+	prompt := "Continue implementing this task. When done, commit your work and push the branch to origin. Do NOT create a PR; Sybra's workflow will create, link, and stamp the PR after review and testing have passed."
 	currentStatus := t.Status
 	r.WG.Go(func() {
 		_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false, oneShot)
 		metrics.OrchestratorStaleRestart(ctx, err == nil)
 		r.Throttle.Log(r.Logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
 		if err != nil {
-			r.surfaceStartFailure(taskID, currentStatus, err)
+			r.surfaceStartFailure(ctx, taskID, currentStatus, err)
 		}
 	})
+}
+
+// claimAndRefetch acquires the sole recovery claim for taskID and re-fetches
+// the task under it. ok=false means the caller must not proceed: the claim is
+// held by another in-flight recovery pass, the re-fetch failed, or the fresh
+// state no longer qualifies (status moved off in-progress, an agent is now
+// running or dispatching) — every case is already logged here.
+//
+// The re-fetch matters because taskID's caller (restartTaskIfStale) is always
+// handed a task snapshot read before the claim was even attempted
+// (RestartStaleInProgress's List(), or RestartTaskIfStale's Get()). Winning
+// the claim only serializes *entry* into the decision logic; without
+// re-reading, a recovery pass that wins the claim only after another pass has
+// already applied its decision and released would still act on the same
+// stale facts and double-apply it (e.g. both calling
+// WorkflowEngine.HandleAgentComplete for one completed run).
+func (r *Recovery) claimAndRefetch(taskID string) (fresh task.Task, claim *RecoveryClaim, ok bool) {
+	claim, claimed := r.TryClaimRecovery(taskID)
+	if !claimed {
+		r.Logger.Info("restart-stale.skip", "task_id", taskID, "reason", "recovery_in_progress")
+		return task.Task{}, nil, false
+	}
+	fresh, err := r.Tasks.Get(taskID)
+	if err != nil {
+		r.Logger.Error("restart-stale.reget-after-claim.failed", "task_id", taskID, "err", err)
+		claim.Release()
+		return task.Task{}, nil, false
+	}
+	if fresh.Status != task.StatusInProgress || r.Agents.HasRunningAgentForTask(taskID) || r.Agents.IsDispatching(taskID) {
+		claim.Release()
+		return task.Task{}, nil, false
+	}
+	return fresh, claim, true
 }
 
 // handleTerminalWorkflow handles a task whose workflow reached a terminal state
@@ -380,21 +422,40 @@ func (r *Recovery) recoverCancelledPRFix(t *task.Task) bool {
 
 // surfaceStartFailure mirrors workflow.Engine.surfaceStartFailure for the
 // recovery path: write a UI-visible reason on every retry, and flip to
-// human-required when the error is permanent (e.g. project not registered)
-// so the periodic resume loop stops hammering it.
-func (r *Recovery) surfaceStartFailure(taskID string, currentStatus task.Status, err error) {
-	reason, permanent := workflow.ClassifyAgentStartError(err)
-	if reason == "" {
+// the classified parked status when the error is permanent so the periodic
+// resume loop stops hammering it.
+//
+// ctx is the same context RestartStaleInProgress/RestartTaskIfStale received
+// (ultimately the app's root context) — checked via
+// workflow.IsShutdownCancellation before writing anything, so a graceful
+// restart's mass context.Canceled burst across every stale in-progress task
+// (sybra#2291's own "restart-stale.failed" log line) never overwrites
+// StatusReason with a misleading "agent start failed: ...context canceled..."
+// message during the shutdown window.
+func (r *Recovery) surfaceStartFailure(ctx context.Context, taskID string, currentStatus task.Status, err error) {
+	if workflow.IsShutdownCancellation(ctx, err) {
+		r.Logger.Info("restart-stale.shutdown-cancellation.suppress", "task_id", taskID)
+		return
+	}
+	failure := workflow.ClassifyAgentStartFailure(err)
+	if failure.Reason == "" {
 		return
 	}
 	target := currentStatus
-	if permanent {
+	if failure.Permanent {
 		target = task.StatusHumanRequired
+		if !failure.Blocker.IsZero() && !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+			target = task.StatusBlocked
+		}
 	}
-	if _, uErr := r.Tasks.Update(taskID, task.Update{
+	update := task.Update{
 		Status:       task.Ptr(target),
-		StatusReason: task.Ptr(reason),
-	}); uErr != nil {
+		StatusReason: task.Ptr(failure.Reason),
+	}
+	if !failure.Blocker.IsZero() {
+		update.Blocker = &failure.Blocker
+	}
+	if _, uErr := r.Tasks.Update(taskID, update); uErr != nil {
 		r.Logger.Error("restart-stale.surface", "task_id", taskID, "err", uErr)
 	}
 }

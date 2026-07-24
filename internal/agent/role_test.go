@@ -9,11 +9,14 @@ func TestRole_AgentName(t *testing.T) {
 		title string
 		want  string
 	}{
+		{RoleMonitor, "Investigate", "monitor:Investigate"},
 		{RoleTriage, "My Task", "triage:My Task"},
+		{RoleOrchestrator, "Brain", "orchestrator:Brain"},
 		{RolePlan, "Plan Something", "plan:Plan Something"},
 		{RolePlanCritic, "Critique Plan", "plan-critic:Critique Plan"},
 		{RoleEval, "Evaluate", "eval:Evaluate"},
 		{RolePRFix, "Fix PR", "pr-fix:Fix PR"},
+		{RoleTestFix, "Fix Test", "test-fix:Fix Test"},
 		{RoleReview, "Review Code", "review:Review Code"},
 		{RoleFixReview, "Fix Review", "fix-review:Fix Review"},
 		{RoleTestRunner, "Run Tests", "test-runner:Run Tests"},
@@ -40,11 +43,13 @@ func TestRole_DefaultReasoningEffort(t *testing.T) {
 	}{
 		{RoleTriage, "low"},
 		{RoleEval, "low"},
+		{RoleMonitor, "low"},
 		{RolePlanCritic, "low"},
 		{RoleHumanReview, "low"},
 		{RoleImplementation, "high"},
 		{RoleFixReview, "high"},
 		{RolePRFix, "high"},
+		{RoleTestFix, "high"},
 		{RolePlan, ""},
 		{RoleReview, ""},
 		{RoleTestRunner, ""},
@@ -70,9 +75,13 @@ func TestRole_IsSystem(t *testing.T) {
 	}{
 		{RoleTriage, true},
 		{RoleEval, true},
+		{RoleLoop, true},
+		{RoleMonitor, true},
+		{RoleOrchestrator, true},
 		{RolePlanCritic, true},
 		{RolePlan, false},
 		{RolePRFix, false},
+		{RoleTestFix, false},
 		{RoleReview, false},
 		{RoleFixReview, false},
 		{RoleTestRunner, false},
@@ -103,11 +112,14 @@ func TestRole_SupportsHeadlessSteer(t *testing.T) {
 		{RoleTriage, false},
 		{RolePlanCritic, false},
 		{RoleHumanReview, false},
+		{RoleLoop, false},
+		{RoleMonitor, false},
 		{RoleFixReview, false},
 		// Roles a human may actively watch and steer from the GUI.
 		{RoleImplementation, true},
 		{RolePlan, true},
 		{RolePRFix, true},
+		{RoleTestFix, true},
 		{Role(""), true}, // empty maps to implementation
 	}
 
@@ -131,6 +143,7 @@ func TestRole_AuthorsCode(t *testing.T) {
 		{RoleImplementation, true},
 		{RoleFixReview, true},
 		{RolePRFix, true},
+		{RoleTestFix, true},
 		{Role(""), true}, // empty maps to implementation
 		// Independent verifiers — must NOT inherit the implementer's scratchpad,
 		// or the reward-hacking defense is silently weakened.
@@ -141,6 +154,8 @@ func TestRole_AuthorsCode(t *testing.T) {
 		{RolePlanCritic, false},
 		{RoleTriage, false},
 		{RoleHumanReview, false},
+		{RoleLoop, false},
+		{RoleMonitor, false},
 	}
 
 	for _, tt := range tests {
@@ -163,7 +178,11 @@ func TestRoleFromName(t *testing.T) {
 		{"plan:Plan Task", RolePlan},
 		{"plan-critic:Critique Plan", RolePlanCritic},
 		{"eval:Evaluate", RoleEval},
+		{"monitor:lost_agent", RoleMonitor},
+		{"loop:self-monitor", RoleLoop},
+		{"orchestrator:brain", RoleOrchestrator},
 		{"pr-fix:Fix PR", RolePRFix},
+		{"test-fix:Fix Test", RoleTestFix},
 		{"review:Code Review", RoleReview},
 		{"fix-review:Fix Review", RoleFixReview},
 		{"test-runner:Run Tests", RoleTestRunner},
@@ -193,6 +212,10 @@ func TestParseRoleFromName(t *testing.T) {
 		wantOK bool
 	}{
 		{"test-runner:Run Tests", RoleTestRunner, true},
+		{"monitor:lost_agent", RoleMonitor, true},
+		{"loop:self-monitor", RoleLoop, true},
+		{"pr-fix:Fix PR", RolePRFix, true},
+		{"test-fix:Fix Test", RoleTestFix, true},
 		{"implementation:Impl", RoleImplementation, true},
 		{"unknown:something", RoleImplementation, false},
 		{"no-colon", RoleImplementation, false},
@@ -204,6 +227,44 @@ func TestParseRoleFromName(t *testing.T) {
 			got, ok := ParseRoleFromName(tt.name)
 			if got != tt.want || ok != tt.wantOK {
 				t.Errorf("ParseRoleFromName(%q) = (%q, %v), want (%q, %v)", tt.name, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestResolveRunRole(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		role    Role
+		agent   string
+		want    Role
+		wantErr bool
+	}{
+		{name: "explicit role wins", role: RoleMonitor, agent: "monitor:lost_agent", want: RoleMonitor},
+		{name: "plain name defaults to implementation", agent: "Task title", want: RoleImplementation},
+		{name: "known prefix is accepted", agent: "monitor:lost_agent", want: RoleMonitor},
+		{name: "human title with colon defaults to implementation", agent: "refactor(agent): classify monitor runs", want: RoleImplementation},
+		{name: "unknown prefixed name fails", agent: "future:thing", wantErr: true},
+		{name: "unknown explicit role fails", role: Role("future"), agent: "Task title", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ResolveRunRole(tt.role, tt.agent)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("ResolveRunRole error = nil, want non-nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveRunRole error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("ResolveRunRole(%q, %q) = %q, want %q", tt.role, tt.agent, got, tt.want)
 			}
 		})
 	}

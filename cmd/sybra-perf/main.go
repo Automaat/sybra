@@ -240,7 +240,7 @@ func prepareHome(o options) (home string, cleanup func(), err error) {
 
 	// Write a minimal config that:
 	// - enables metrics (for /metrics scraping)
-	// - disables all pollers (todoist, github, renovate) so the server has
+	// - disables all pollers (github, renovate) so the server has
 	//   no background noise competing with the scenario
 	// - lifts the concurrency cap to at least 2× the requested concurrency
 	// - opts agents out of require_permissions so fake-claude runs with
@@ -257,8 +257,6 @@ agent:
   max_turns: 0
   research_machine_dir: %s
   require_permissions: false
-todoist:
-  enabled: false
 github:
   enabled: false
 renovate:
@@ -535,9 +533,7 @@ type taskPayload struct {
 	Title string `json:"title"`
 }
 
-// createResearchTask creates a task then flips its task_type to "research"
-// so StartAgent takes the skipWorktree path and runs against the configured
-// research_machine_dir. Avoids the cost of real git-worktree setup.
+// createResearchTask creates a task for the perf harness.
 func (c *apiClient) createResearchTask(ctx context.Context, i int) (string, error) {
 	var t taskPayload
 	if err := c.call(ctx, "TaskService", "CreateTask", []any{
@@ -549,9 +545,6 @@ func (c *apiClient) createResearchTask(ctx context.Context, i int) (string, erro
 	}
 	if t.ID == "" {
 		return "", errors.New("CreateTask returned empty id")
-	}
-	if err := c.call(ctx, "TaskService", "UpdateTask", []any{t.ID, map[string]any{"task_type": "research"}}, nil); err != nil {
-		return "", fmt.Errorf("UpdateTask task_type=research: %w", err)
 	}
 	return t.ID, nil
 }

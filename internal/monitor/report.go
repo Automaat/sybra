@@ -27,6 +27,12 @@ const (
 	KindLostAgent         AnomalyKind = "lost_agent"
 	KindFailureSpike      AnomalyKind = "failure_spike"
 	KindBottleneck        AnomalyKind = "bottleneck"
+	// KindClusterDrift is filed by clusterlead.Mirror, not Detect — a leader
+	// canonical task's Tags/DependsOn disagree with what its home follower
+	// reports, meaning a leader-side write never reached the node that
+	// actually owns the task. Always RequiresLLM: false; Mirror repairs it
+	// deterministically and files this purely as an audit trail.
+	KindClusterDrift AnomalyKind = "cluster_drift"
 )
 
 // AllAnomalyKinds returns every kind in declaration order. Useful for tests
@@ -40,6 +46,7 @@ func AllAnomalyKinds() []AnomalyKind {
 		KindLostAgent,
 		KindFailureSpike,
 		KindBottleneck,
+		KindClusterDrift,
 	}
 }
 

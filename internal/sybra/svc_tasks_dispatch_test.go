@@ -210,7 +210,7 @@ func newReadyPRHumanRequiredTask(t *testing.T, a *App, engine *workflow.Engine) 
 }
 
 func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
-	for _, target := range []string{"in-progress", "testing"} {
+	for _, target := range []string{"in-progress", "ready-review", "testing"} {
 		t.Run(target, func(t *testing.T) {
 			launcher := &fakeAgentLauncher{}
 			svc, a := setupDispatchTestService(t, launcher)
@@ -262,14 +262,14 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 
 // TestDispatchFromHumanRequired_WithStatusHook reproduces the production wiring
 // the other tests miss: App.initStatusHook fires synchronously inside UpdateMap
-// and, for testing/ready-pr, already dispatches the workflow via
+// and, for ready-review/testing/ready-pr, already dispatches the workflow via
 // dispatchStatusWorkflow before DispatchFromHumanRequired issues its own
 // dispatch. Without treating the resulting ErrWorkflowAlreadyActive as success,
 // the method reverts the task to human-required while the hook-started agent
 // keeps running orphaned. Here the dispatch must succeed and leave the task in
 // the target status.
 func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
-	for _, target := range []string{"testing", "in-progress"} {
+	for _, target := range []string{"testing", "ready-review", "in-progress"} {
 		t.Run(target, func(t *testing.T) {
 			launcher := &fakeAgentLauncher{}
 			svc, a := setupDispatchTestService(t, launcher)
@@ -328,6 +328,78 @@ func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
 			t.Fatalf("startCalls = %d, want 0 (create_pr/push_branch are deterministic Go, not agents)", launcher.startCalls)
 		}
 	})
+}
+
+func TestDispatchFromHumanRequired_ReadyPRAllowsNoMatchForReviewOnlyRoles(t *testing.T) {
+	for _, role := range []string{
+		string(agent.RoleHumanReview),
+		string(agent.RoleReview),
+		string(agent.RoleTestRunner),
+	} {
+		t.Run(role, func(t *testing.T) {
+			launcher := &fakeAgentLauncher{}
+			svc, a := setupDispatchTestService(t, launcher)
+			a.workflowEngine = svc.workflowEngine
+			a.initStatusHook()
+
+			tk := newHumanRequiredTask(t, a, 42)
+			_, err := a.tasks.Update(tk.ID, task.Update{RunRole: task.Ptr(role)})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := svc.DispatchFromHumanRequired(tk.ID, "ready-pr", "resume after review")
+			if err != nil {
+				t.Fatalf("DispatchFromHumanRequired: %v", err)
+			}
+			if got.Status != task.StatusReadyPR {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyPR)
+			}
+			if got.StatusReason != "resume after review" {
+				t.Fatalf("status_reason = %q, want operator reason preserved", got.StatusReason)
+			}
+			if got.Workflow != nil {
+				t.Fatalf("workflow = %+v, want nil because review-only roles skip simple-task-pr", got.Workflow)
+			}
+			if launcher.startCalls != 0 {
+				t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
+			}
+		})
+	}
+}
+
+func TestDispatchFromHumanRequired_DoneClosesWithoutWorkflow(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.initStatusHook()
+	tk := newHumanRequiredTask(t, a, 2417)
+	stale := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       workflow.ExecFailed,
+		Variables:   map[string]string{},
+	}
+	if _, err := a.tasks.Update(tk.ID, task.Update{Workflow: &stale}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.DispatchFromHumanRequired(tk.ID, "done", "already merged")
+	if err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
+	}
+	if got.StatusReason != "already merged" {
+		t.Fatalf("status_reason = %q, want operator reason preserved", got.StatusReason)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("workflow = %+v, want nil for terminal close-out", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 for terminal close-out", launcher.startCalls)
+	}
 }
 
 // TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker reproduces the
@@ -680,7 +752,7 @@ func TestDispatchFromHumanRequired_RejectsUnknownTarget(t *testing.T) {
 	svc, a := setupDispatchTestService(t, launcher)
 	tk := newHumanRequiredTask(t, a, 0)
 
-	if _, err := svc.DispatchFromHumanRequired(tk.ID, "done", "reason"); err == nil {
+	if _, err := svc.DispatchFromHumanRequired(tk.ID, "cancelled", "reason"); err == nil {
 		t.Fatal("expected error dispatching to an unsupported target")
 	}
 }
@@ -752,6 +824,38 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	_, err = svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
 	if err == nil {
 		t.Fatal("expected an error when no workflow matches")
+	}
+
+	got, getErr := a.tasks.Get(tk.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "retry please") {
+		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
+	}
+}
+
+func TestDispatchFromHumanRequired_ReadyPRAuthorStillFailsClosedOnNoMatch(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupTaskService(t)
+	ta := &taskAdapter{tasks: a.tasks}
+	emptyStore, err := workflow.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.workflowEngine = workflow.NewEngine(emptyStore, ta, launcher, a.logger)
+	tk := newHumanRequiredTask(t, a, 42)
+	_, err = a.tasks.Update(tk.ID, task.Update{RunRole: task.Ptr(string(agent.RoleImplementation))})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.DispatchFromHumanRequired(tk.ID, "ready-pr", "retry please")
+	if err == nil {
+		t.Fatal("expected an error when no ready-pr workflow matches for a code-author role")
 	}
 
 	got, getErr := a.tasks.Get(tk.ID)

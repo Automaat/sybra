@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
@@ -26,6 +28,7 @@ type Assigner struct {
 	isWorkProject func(projectID string) bool
 	auditBlock    func(taskID, node, reason string)
 	logger        *slog.Logger
+	attachments   *attachment.Store
 
 	stopLocalAgents func(taskID string)
 }
@@ -36,6 +39,12 @@ type Assigner struct {
 // second one on the same branch.
 func (a *Assigner) SetStopLocalAgents(stop func(taskID string)) {
 	a.stopLocalAgents = stop
+}
+
+// SetAttachments supplies the local blob store used to replicate attachments
+// before a task is assigned to a follower.
+func (a *Assigner) SetAttachments(store *attachment.Store) {
+	a.attachments = store
 }
 
 // NewAssigner constructs an Assigner. isWorkProject classifies a project as
@@ -66,7 +75,7 @@ func (a *Assigner) Tick(ctx context.Context) {
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if task.IsTerminalStatus(t.Status) || t.TaskType == task.TaskTypeChat || t.Status == task.StatusBlocked {
+		if task.IsTerminalStatus(t.Status) || t.Status == task.StatusBlocked {
 			continue
 		}
 		home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
@@ -87,11 +96,31 @@ func (a *Assigner) Tick(ctx context.Context) {
 // idempotent: the follower's AssignTask upserts by id, so a repeated push is
 // harmless.
 func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err error) {
+	return a.route(ctx, t, false)
+}
+
+// PushUpdate re-pushes a task that is already assigned to its home follower,
+// forwarding a leader-side canonical edit (e.g. the umbrella gate clearing a
+// dependency block) that would otherwise never reach the follower: Mirror
+// only pulls follower state up to the leader (internal/sybra/clusterlead/mirror.go),
+// it never pushes leader edits back down, and Route/Tick push only once, at
+// first assignment.
+//
+// Callers must only use this for a task that has not started executing
+// anywhere (e.g. still gated/todo) — AssignTask writes the pushed copy
+// verbatim on the follower, so pushing a stale leader-side snapshot over a
+// follower's own in-progress execution state (AgentRuns, Workflow, ...) would
+// roll it back.
+func (a *Assigner) PushUpdate(ctx context.Context, t task.Task) (pushed bool, err error) {
+	return a.route(ctx, t, true)
+}
+
+func (a *Assigner) route(ctx context.Context, t task.Task, force bool) (routed bool, err error) {
 	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
 	if home.Local {
 		return false, nil
 	}
-	if t.AssignedNode == home.Name {
+	if !force && t.AssignedNode == home.Name {
 		return false, nil
 	}
 	if a.isWorkProject(t.ProjectID) && (!home.Trusted || !home.Encrypted) {
@@ -103,6 +132,10 @@ func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err err
 	}
 	push := t
 	push.AssignedNode = home.Name
+	push, err = a.transferAttachments(ctx, client, push)
+	if err != nil {
+		return false, fmt.Errorf("clusterlead: transfer attachments for %s to %s: %w", t.ID, home.Name, err)
+	}
 	if err := client.AssignTask(ctx, push); err != nil {
 		return false, fmt.Errorf("clusterlead: assign %s to %s: %w", t.ID, home.Name, err)
 	}
@@ -115,6 +148,34 @@ func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err err
 		return true, fmt.Errorf("clusterlead: stamp assigned_node on %s: %w", t.ID, err)
 	}
 	return true, nil
+}
+
+func (a *Assigner) transferAttachments(ctx context.Context, client *cluster.Client, t task.Task) (task.Task, error) {
+	if len(t.Attachments) == 0 {
+		return t, nil
+	}
+	if a.attachments == nil {
+		return t, fmt.Errorf("attachment store unavailable")
+	}
+	next := t
+	next.Attachments = make([]task.Attachment, len(t.Attachments))
+	for i := range t.Attachments {
+		att := t.Attachments[i]
+		path, err := a.attachments.Path(t.ID, att.ID)
+		if err != nil {
+			return t, fmt.Errorf("read attachment %s metadata: %w", att.ID, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return t, fmt.Errorf("read attachment %s blob: %w", att.ID, err)
+		}
+		imported, err := client.ImportAttachment(ctx, t.ID, att, data)
+		if err != nil {
+			return t, fmt.Errorf("import attachment %s: %w", att.ID, err)
+		}
+		next.Attachments[i] = imported
+	}
+	return next, nil
 }
 
 func (a *Assigner) blockForConfidentiality(t task.Task, home config.HomeNode) error {

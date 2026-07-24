@@ -1,9 +1,11 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -31,8 +33,13 @@ type restPR struct {
 	Draft          bool   `json:"draft"`
 	MergeableState string `json:"mergeable_state"` // clean|dirty|blocked|unstable|behind|unknown
 	Head           struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo struct {
+			Owner struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -55,9 +62,11 @@ type restPR struct {
 
 type restCheckRuns struct {
 	CheckRuns []struct {
-		Name       string `json:"name"`
-		Status     string `json:"status"`     // queued | in_progress | completed
-		Conclusion string `json:"conclusion"` // success | failure | ...
+		Name        string `json:"name"`
+		Status      string `json:"status"`       // queued | in_progress | completed
+		Conclusion  string `json:"conclusion"`   // success | failure | ...
+		StartedAt   string `json:"started_at"`   // RFC3339
+		CompletedAt string `json:"completed_at"` // RFC3339
 	} `json:"check_runs"`
 }
 
@@ -97,7 +106,7 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		return PullRequest{}, false, nil
 	}
 
-	ci, pending, ciFetchOK := fetchCIStatusViaREST(e, owner, name, pr.Head.SHA)
+	ci, pending, flaky, ciFetchOK := fetchCIStatusViaREST(e, owner, name, pr.Head.SHA)
 
 	out := PullRequest{
 		Number:             pr.Number,
@@ -108,11 +117,13 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		Author:             pr.User.Login,
 		IsDraft:            pr.Draft,
 		HeadRefName:        pr.Head.Ref,
+		HeadRepoOwner:      pr.Head.Repo.Owner.Login,
 		HeadSHA:            pr.Head.SHA,
 		BaseRefName:        pr.Base.Ref,
 		Mergeable:          restMergeable(pr.MergeableState),
 		CIStatus:           ci,
 		HasPendingChecks:   pending,
+		CIFlaky:            flaky,
 		AutoMergeEnabled:   pr.AutoMerge != nil,
 		CreatedAt:          pr.CreatedAt,
 		UpdatedAt:          pr.UpdatedAt,
@@ -183,40 +194,63 @@ func restMergeable(state string) string {
 	}
 }
 
+// fetchCheckRunsWith fetches check-run attempts for a commit. filter selects
+// GitHub's check-runs history scope: "" requests GitHub's default (latest
+// attempt per check name), "all" requests every attempt including superseded
+// reruns — needed by ClassifyCIFlakiness to see prior failed attempts a
+// latest-only rollup would otherwise hide. fetched reports whether the fetch
+// and parse both succeeded; false must never be read as "no check runs".
+func fetchCheckRunsWith(e execer, owner, name, sha, filter string) (runs restCheckRuns, fetched bool) {
+	return fetchCheckRunsCtxWith(context.Background(), e, owner, name, sha, filter)
+}
+
+func fetchCheckRunsCtxWith(ctx context.Context, e execer, owner, name, sha, filter string) (runs restCheckRuns, fetched bool) {
+	path := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs?per_page=100", owner, name, sha)
+	if filter != "" {
+		path += "&filter=" + url.QueryEscape(filter)
+	}
+	resp, err := runGHAPICtxWith(ctx, e, "30s", path)
+	if err != nil {
+		return restCheckRuns{}, false
+	}
+	if jErr := json.Unmarshal(resp.body, &runs); jErr != nil {
+		return restCheckRuns{}, false
+	}
+	return runs, true
+}
+
 // fetchCIStatusViaREST aggregates check-runs and legacy commit statuses for a
 // commit into the monitor's CIStatus semantics. It converts REST payloads into
 // the same context shape used by GraphQL so informational-check filtering and
 // cancelled-check handling stay identical across both paths. ok reports
 // whether both legs were fetched and parsed successfully — false distinguishes
 // a failed fetch from a genuinely check-free commit, so callers never read an
-// empty CIStatus caused by a failed fetch as green.
-func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pending, ok bool) {
+// empty CIStatus caused by a failed fetch as green. flaky mirrors CIFlaky, but
+// the REST check-runs payload has no workflow-attempt discriminator, so mixed
+// same-name outcomes fail closed to deterministic CI failure.
+func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pending, flaky, ok bool) {
 	if sha == "" {
-		return "", false, false
+		return "", false, false, false
 	}
 	contexts := make([]gqlCheckContext, 0)
 	ok = true
 
-	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, name, sha))
-	if err != nil {
+	if runs, fetched := fetchCheckRunsWith(e, owner, name, sha, ""); !fetched {
 		ok = false
 	} else {
-		var runs restCheckRuns
-		if jErr := json.Unmarshal(resp.body, &runs); jErr != nil {
-			ok = false
-		} else {
-			for _, c := range runs.CheckRuns {
-				contexts = append(contexts, gqlCheckContext{
-					Typename:   "CheckRun",
-					Name:       c.Name,
-					Status:     strings.ToUpper(c.Status),
-					Conclusion: strings.ToUpper(c.Conclusion),
-				})
-			}
+		for _, c := range runs.CheckRuns {
+			contexts = append(contexts, gqlCheckContext{
+				Typename:    "CheckRun",
+				Name:        c.Name,
+				Status:      strings.ToUpper(c.Status),
+				Conclusion:  strings.ToUpper(c.Conclusion),
+				StartedAt:   c.StartedAt,
+				CompletedAt: c.CompletedAt,
+			})
 		}
 	}
 
-	resp, err = runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/%s/commits/%s/status", owner, name, sha))
+	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/%s/commits/%s/status", owner, name, sha))
 	if err != nil {
 		ok = false
 	} else {
@@ -235,5 +269,6 @@ func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pen
 	}
 
 	st, pend := rollupFromContexts(contexts)
-	return st, pend, ok
+	flaky = st == "FAILURE" && flakyOnlyFailure(contexts)
+	return st, pend, flaky, ok
 }

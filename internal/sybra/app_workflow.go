@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
@@ -39,7 +40,9 @@ var (
 	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
 	_ workflow.PRHeadFetcher          = (*prHeadFetcherAdapter)(nil)
 	_ workflow.PRCreator              = (*prCreatorAdapter)(nil)
+	_ workflow.PRCloser               = (*prCloserAdapter)(nil)
 	_ workflow.PRFinder               = (*prFinderAdapter)(nil)
+	_ workflow.PRExistenceChecker     = (*prExistenceCheckerAdapter)(nil)
 	_ workflow.PRContentGenerator     = (*prContentGeneratorAdapter)(nil)
 	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
@@ -148,9 +151,6 @@ func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
 	}
 	infos := make([]workflow.TaskInfo, 0, len(tasks))
 	for i := range tasks {
-		if tasks[i].TaskType == task.TaskTypeChat {
-			continue
-		}
 		infos = append(infos, taskToInfo(tasks[i]))
 	}
 	return infos, nil
@@ -162,6 +162,19 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 		return err
 	}
 	u := task.Update{Status: &st}
+	if reason != "" {
+		u.StatusReason = &reason
+	}
+	_, err = a.tasks.Update(id, u)
+	return err
+}
+
+func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	u := task.Update{Status: &st, Blocker: &state}
 	if reason != "" {
 		u.StatusReason = &reason
 	}
@@ -188,6 +201,17 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	patch := task.RunPatch{TestOutcome: task.Ptr(outcome)}
 	if fingerprint != "" {
 		patch.TestFailureFingerprint = task.Ptr(fingerprint)
+	}
+	return a.tasks.UpdateRun(taskID, agentID, patch)
+}
+
+func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
+	patch := task.RunPatch{}
+	if headSHA != "" {
+		patch.HeadSHA = task.Ptr(headSHA)
+	}
+	if source != "" {
+		patch.FinalCommitSource = task.Ptr(source)
 	}
 	return a.tasks.UpdateRun(taskID, agentID, patch)
 }
@@ -247,10 +271,21 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 // poll-based auto-triage handler (internal/poll.TriageHandler), so the
 // workflow step no longer needs a full agent session to reach it.
 type taskClassifierAdapter struct {
-	tasks      *task.Manager
-	projects   *project.Store
-	classifier triage.Classifier
-	audit      *audit.Logger
+	tasks             *task.Manager
+	projects          *project.Store
+	classifier        triage.Classifier
+	audit             *audit.Logger
+	sybraBugProjectID string
+}
+
+func (a *App) newTaskClassifierAdapter() *taskClassifierAdapter {
+	return &taskClassifierAdapter{
+		tasks:             a.tasks,
+		projects:          a.projects,
+		classifier:        &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
+		audit:             a.audit,
+		sybraBugProjectID: a.cfg.HumanReviewRepo(),
+	}
 }
 
 func (a *taskClassifierAdapter) ClassifyTask(ctx context.Context, taskID string) error {
@@ -265,7 +300,9 @@ func (a *taskClassifierAdapter) ClassifyTask(ctx context.Context, taskID string)
 			return err
 		}
 	}
-	_, _, err = triage.ClassifyAndApply(ctx, a.classifier, a.tasks, a.audit, t, projects)
+	_, _, err = triage.ClassifyAndApplyWithOptions(ctx, a.classifier, a.tasks, a.audit, t, projects, triage.ApplyOptions{
+		SybraBugProjectID: a.sybraBugProjectID,
+	})
 	return err
 }
 
@@ -275,6 +312,8 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Title:                 t.Title,
 		Status:                string(t.Status),
 		StatusReason:          t.StatusReason,
+		Blocker:               t.Blocker,
+		Role:                  t.RunRole,
 		Tags:                  t.Tags,
 		AgentMode:             t.AgentMode,
 		Priority:              string(t.Priority),
@@ -292,12 +331,30 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		PlanBrief:             t.PlanBrief,
 		CodeReview:            t.CodeReview,
 		PlanDrafts:            t.PlanDrafts,
+		Attachments:           toAttachmentInfos(t.Attachments),
 		Issue:                 t.Issue,
 		Reviewed:              t.Reviewed,
 		Workflow:              t.Workflow,
 		AgentRuns:             toRunInfos(t.AgentRuns),
 		TestingCycleStartedAt: t.TestingCycleStartedAt,
 	}
+}
+
+func toAttachmentInfos(attachments []task.Attachment) []workflow.AttachmentInfo {
+	if len(attachments) == 0 {
+		return nil
+	}
+	out := make([]workflow.AttachmentInfo, len(attachments))
+	for i := range attachments {
+		out[i] = workflow.AttachmentInfo{
+			ID:          attachments[i].ID,
+			FileName:    attachments[i].FileName,
+			ContentType: attachments[i].ContentType,
+			SizeBytes:   attachments[i].SizeBytes,
+			Path:        attachments[i].Path,
+		}
+	}
+	return out
 }
 
 // toRunInfos projects a task's agent runs onto the engine-visible subset used
@@ -320,6 +377,7 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			TestOutcome:            runs[i].TestOutcome,
 			TestFailureFingerprint: runs[i].TestFailureFingerprint,
 			HeadSHA:                runs[i].HeadSHA,
+			FinalCommitSource:      runs[i].FinalCommitSource,
 		}
 	}
 	return out
@@ -367,12 +425,33 @@ func (prCreatorAdapter) CreatePR(ctx context.Context, dir string, req workflow.P
 	})
 }
 
+// prCloserAdapter wires the workflow engine's best-effort superseded-PR
+// cleanup to the github package.
+type prCloserAdapter struct{}
+
+func (prCloserAdapter) ClosePR(ctx context.Context, repo string, number int, comment string) error {
+	return github.ClosePR(ctx, repo, number, comment)
+}
+
 // prFinderAdapter wires the workflow engine's PRFinder interface to the github
 // package. Stateless — all state lives in `gh` / GitHub.
 type prFinderAdapter struct{}
 
 func (prFinderAdapter) FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error) {
 	return github.FindPRForBranch(ctx, repo, head)
+}
+
+func (prFinderAdapter) FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error) {
+	return github.FindPRForBranchAnyState(ctx, repo, head)
+}
+
+// prExistenceCheckerAdapter wires the workflow engine's PRExistenceChecker
+// interface to the github package. Stateless — all state lives in `gh` /
+// GitHub.
+type prExistenceCheckerAdapter struct{}
+
+func (prExistenceCheckerAdapter) PRExists(ctx context.Context, repo string, number int) (bool, error) {
+	return github.PRExists(ctx, repo, number)
 }
 
 // prContentGeneratorAdapter wires the workflow engine's PRContentGenerator
@@ -424,6 +503,10 @@ func (prReviewRequesterAdapter) RerequestReview(repo string, prNumber int) ([]st
 		return nil, err
 	}
 	return reviewers, nil
+}
+
+func (prReviewRequesterAdapter) RequestCopilotReview(ctx context.Context, repo string, prNumber int) error {
+	return github.RequestCopilotReviewCtx(ctx, repo, prNumber)
 }
 
 func eligibleRerequestReviewer(login, viewer, prAuthor string) bool {
@@ -511,6 +594,26 @@ func (a *checkConfigGetterAdapter) VerifyCommands(ctx context.Context, taskID st
 	return merged.Verify
 }
 
+func (a *checkConfigGetterAdapter) FocusedChecks(ctx context.Context, taskID string) []project.FocusedCheck {
+	merged := a.mergedChecks(ctx, taskID)
+	if merged == nil {
+		return nil
+	}
+	return merged.Focused
+}
+
+func (a *checkConfigGetterAdapter) WorktreeBaseRef(ctx context.Context, taskID string) string {
+	t, err := a.tasks.Get(taskID)
+	if err != nil || t.ProjectID == "" || a.projects == nil {
+		return project.WorktreeBaseRefFresh
+	}
+	p, err := a.projects.Get(t.ProjectID)
+	if err != nil || p.WorktreeBaseRef != project.WorktreeBaseRefHead {
+		return project.WorktreeBaseRefFresh
+	}
+	return project.WorktreeBaseRefHead
+}
+
 func (a *checkConfigGetterAdapter) mergedChecks(ctx context.Context, taskID string) *project.ChecksConfig {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
@@ -525,7 +628,7 @@ func (a *checkConfigGetterAdapter) mergedChecks(ctx context.Context, taskID stri
 	if t.ProjectID != "" {
 		if p, pErr := a.projects.Get(t.ProjectID); pErr == nil {
 			appChecks = p.Checks
-			// Read checks.{codegen,verify} from the project's trusted default
+			// Read checks.{codegen,verify,focused} from the project's trusted default
 			// branch, never the checked-out worktree: the worktree's own
 			// .sybra.yaml may carry malicious commands planted by a
 			// compromised or prompt-injected agent, and these commands run
@@ -561,16 +664,41 @@ func (a *checkConfigGetterAdapter) SetupCommands(ctx context.Context, taskID str
 	return project.MergeSetup(repoSetup, p.SetupCommands)
 }
 
+func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktree.Manager, taskID string) (path string, ok bool, err error) {
+	if tasks == nil || mgr == nil {
+		return "", false, nil
+	}
+	t, err := tasks.Get(taskID)
+	if err != nil {
+		return "", false, err
+	}
+	path = mgr.PathFor(t)
+	if _, err := os.Stat(path); err == nil {
+		return path, true, nil
+	}
+	if t.Status != task.StatusReadyPR || strings.TrimSpace(t.ProjectID) == "" {
+		return "", false, nil
+	}
+
+	var prepared string
+	switch {
+	case strings.TrimSpace(t.Branch) == "" && t.PRNumber > 0:
+		prepared, err = mgr.PrepareForFix(ctx, t, t.PRNumber)
+	default:
+		prepared, err = mgr.PrepareForBranchFix(ctx, t)
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return prepared, true, nil
+}
+
 func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
-	t, err := a.tasks.Get(taskID)
+	path, ok, err := ensureReadyPRWorktree(context.Background(), a.tasks, a.mgr, taskID)
 	if err != nil {
 		return "", false
 	}
-	path := a.mgr.PathFor(t)
-	if _, err := os.Stat(path); err != nil {
-		return "", false
-	}
-	return path, true
+	return path, ok
 }
 
 func (*attemptNoteAppenderAdapter) AppendReimplementNote(ctx context.Context, _, wtPath, marker, note string) error {
@@ -584,6 +712,11 @@ type branchSyncerAdapter struct {
 }
 
 func (a *branchSyncerAdapter) SyncTaskBranch(ctx context.Context, taskID string) (string, error) {
+	if _, ok, err := ensureReadyPRWorktree(ctx, a.tasks, a.mgr, taskID); err != nil {
+		return worktree.SyncFailed.String(), fmt.Errorf("sync branch: ensure worktree: %w", err)
+	} else if !ok {
+		return worktree.SyncSkipped.String(), nil
+	}
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
 		return worktree.SyncFailed.String(), fmt.Errorf("sync branch: get task: %w", err)
@@ -611,6 +744,16 @@ func translatePoolBusy(err error) error {
 }
 
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+	// "interactive" is no longer a dispatchable agent.RunConfig.Mode, but a
+	// run_agent step whose mode templates off {{.Task.AgentMode}} (e.g.
+	// simple-task-implement's implement step) echoes whatever legacy value
+	// is on disk — task.AgentModeInteractive is still a valid, load-only
+	// value on old task files (see task.validAgentModes). Coerce here, the
+	// single entry point both branches below share, rather than stalling
+	// the workflow on "unknown mode" for a pre-existing interactive task.
+	if mode == "interactive" {
+		mode = "headless"
+	}
 	// For implementation agents without a pre-staged dir, use the full
 	// orchestrator (handles worktree, project assignment). A workflow that
 	// seeds WorkflowVarDir (e.g. tests or flows that pre-stage via
@@ -621,7 +764,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// agent.ErrMaxConcurrentReached into workflow.ErrAgentPoolBusy at the
 		// source, so every caller (this adapter, recovery.Recovery) sees the
 		// same benign sentinel without needing its own wrap here.
-		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, assignment)
+		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, outputSchema, assignment)
 		if err != nil {
 			return "", "", "", err
 		}
@@ -667,6 +810,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	cfg := agent.RunConfig{
 		TaskID:                  taskID,
 		Name:                    r.AgentName(t.Title),
+		Role:                    r,
 		Mode:                    mode,
 		Prompt:                  prompt,
 		AllowedTools:            allowedTools,
@@ -674,19 +818,22 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		Provider:                provider,
 		ExperimentID:            assignment.ExperimentID,
 		VariantID:               assignment.VariantID,
+		RoutingReason:           assignment.RoutingReason,
 		AssignmentUnit:          assignment.AssignmentUnit,
 		AssignmentKey:           assignment.AssignmentKey,
+		DecisionVersion:         assignment.DecisionVersion,
 		DisableProviderFailover: assignment.ExperimentID != "",
 		Dir:                     dir,
 		OneShot:                 oneShot,
-		IgnoreConcurrencyLimit:  mode == "interactive",
-		RequestedSkill:          workflowRequestedSkill(prompt),
-		ForceInjectedSkill:      assignment.ForceInjectedSkill,
-		SkillRecoveryAttempt:    assignment.SkillRecoveryAttempt,
-		MaxTurns:                t.MaxTurns,
-		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
-		HeadlessPermissionMode:  posture,
-		ReasoningEffort:         agentorch.FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort, agentorch.ResolveRoleEffort(r, a.agentOrch.Cfg())),
+		// mode is coerced to headless above, so legacy interactive tasks get
+		// no concurrency bypass — they are treated as ordinary headless runs.
+		RequestedSkill:         workflowRequestedSkill(prompt),
+		ForceInjectedSkill:     assignment.ForceInjectedSkill,
+		SkillRecoveryAttempt:   assignment.SkillRecoveryAttempt,
+		MaxTurns:               t.MaxTurns,
+		RequirePermissions:     agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
+		HeadlessPermissionMode: posture,
+		ReasoningEffort:        agentorch.FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort, agentorch.ResolveRoleEffort(r, a.agentOrch.Cfg())),
 		// Code-author roles (implementation/fix-review/pr-fix) are primed with
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
@@ -701,16 +848,14 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	a.withExperiencePrompt(&cfg, r, t)
 
 	cleanRetryReset := false
-	if cfg.Dir == "" && needsWorktree {
-		var dir string
-		t, dir, cleanRetryReset, err = a.resolveWorktreeDir(t, taskID, role, cleanRetryRef, claim)
+	if needsWorktree {
+		t, cfg.Dir, cleanRetryReset, err = a.ensureWorktreeDir(t, taskID, r, cfg.Dir, cleanRetryRef, claim)
 		if err != nil {
 			return "", "", "", err
 		}
-		cfg.Dir = dir
 	}
 	if cfg.Dir != "" && cleanRetryRef != "" && !cleanRetryReset {
-		if resetErr := a.resetWorktreeForRetry(t, cfg.Dir, cleanRetryRef); resetErr != nil {
+		if _, resetErr := a.resetWorktreeForRetry(t, cfg.Dir, cleanRetryRef); resetErr != nil {
 			return "", "", "", resetErr
 		}
 	}
@@ -734,6 +879,139 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
 
 	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+// ensureWorktreeDir resolves the cwd a direct-dispatch agent should run in.
+// A provided dir is usually already prepared, but if a workflow retry carries
+// a stale `_dir` pointing at a deleted Sybra-managed worktree, rebuild the
+// role's expected worktree instead of spawning into a dead path and feeding
+// the workflow's start-failure circuit breaker.
+func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.Role, dir, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, resolvedDir string, cleanRetryReset bool, err error) {
+	if dir == "" {
+		return a.resolveWorktreeDir(t, taskID, string(role), cleanRetryRef, claim)
+	}
+	if _, statErr := os.Stat(dir); statErr == nil {
+		repair, repairErr := a.providedWorktreeNeedsRepair(t, taskID, role, dir)
+		if repairErr != nil {
+			return t, "", false, repairErr
+		}
+		if !repair {
+			return t, dir, false, nil
+		}
+		updated, resolvedDir, cleanRetryReset, err := a.reprepareProvidedWorktreeDir(t, taskID, role, dir, cleanRetryRef, claim)
+		return updated, resolvedDir, cleanRetryReset, err
+	} else if !os.IsNotExist(statErr) {
+		return t, "", false, fmt.Errorf("stat provided worktree dir %s: %w", dir, statErr)
+	}
+	updated, resolvedDir, cleanRetryReset, err = a.reprepareProvidedWorktreeDir(t, taskID, role, dir, cleanRetryRef, claim)
+	return updated, resolvedDir, cleanRetryReset, err
+}
+
+func (a *agentAdapter) providedWorktreeNeedsRepair(t task.Task, taskID string, role agent.Role, dir string) (bool, error) {
+	if !role.AuthorsCode() || strings.TrimSpace(t.Branch) == "" {
+		return false, nil
+	}
+	currentBranch, err := project.CurrentBranch(context.Background(), dir)
+	if err != nil {
+		if t.WorktreeDir != "" {
+			return false, fmt.Errorf("resolve adopted worktree branch %s: %w", dir, err)
+		}
+		a.agentOrch.Logger().Warn("workflow.worktree.branch-unreadable",
+			"task_id", taskID, "role", role, "path", dir, "err", err)
+		return true, nil
+	}
+	if currentBranch == t.Branch {
+		return false, nil
+	}
+	if t.WorktreeDir != "" {
+		return false, fmt.Errorf("adopted worktree branch %q does not match task branch %q", currentBranch, t.Branch)
+	}
+	a.agentOrch.Logger().Warn("workflow.worktree.branch-mismatch",
+		"task_id", taskID, "role", role, "path", dir, "branch", currentBranch, "want_branch", t.Branch)
+	return true, nil
+}
+
+func (a *agentAdapter) reprepareProvidedWorktreeDir(t task.Task, taskID string, role agent.Role, dir, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, resolvedDir string, cleanRetryReset bool, err error) {
+	if _, statErr := os.Stat(dir); statErr == nil {
+		if t.WorktreeDir != "" {
+			return t, "", false, fmt.Errorf("provided adopted worktree dir %s is stale for task branch %q", dir, t.Branch)
+		}
+		resolvedDir, cleanRetryReset, err = a.reprepareExistingWorktreeDir(t, taskID, role, dir, cleanRetryRef, claim)
+		return t, resolvedDir, cleanRetryReset, err
+	} else if !os.IsNotExist(statErr) {
+		return t, "", false, fmt.Errorf("stat provided worktree dir %s: %w", dir, statErr)
+	}
+	t, err = a.agentOrch.AutoAssignProject(t)
+	if err != nil {
+		return t, "", false, err
+	}
+	if t.ProjectID == "" {
+		return t, "", false, fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
+	}
+	proj, err := a.projects.Get(t.ProjectID)
+	if err != nil {
+		return t, "", false, err
+	}
+	if rErr := project.RemoveWorktreeReconcile(context.Background(), proj.ClonePath, dir); rErr != nil {
+		return t, "", false, fmt.Errorf("reconcile missing worktree dir %s: %w", dir, rErr)
+	}
+	resolvedDir, cleanRetryReset, err = a.reprepareMissingWorktreeDir(t, taskID, role, dir, claim)
+	return t, resolvedDir, cleanRetryReset, err
+}
+
+func (a *agentAdapter) reprepareExistingWorktreeDir(t task.Task, taskID string, role agent.Role, dir, cleanRetryRef string, claim *agent.DispatchClaim) (resolvedDir string, cleanRetryReset bool, err error) {
+	resolvedDir, cleanRetryReset, err = a.reprepareProvidedWorktreeForRole(t, taskID, role, dir, claim)
+	if err != nil {
+		return "", false, err
+	}
+	if cleanRetryRef != "" {
+		if _, resetErr := a.resetWorktreeForRetry(t, resolvedDir, cleanRetryRef); resetErr != nil {
+			return "", false, resetErr
+		}
+		cleanRetryReset = true
+	}
+	return resolvedDir, cleanRetryReset, nil
+}
+
+func (a *agentAdapter) reprepareMissingWorktreeDir(t task.Task, taskID string, role agent.Role, missingDir string, claim *agent.DispatchClaim) (dir string, cleanRetryReset bool, err error) {
+	if t.WorktreeDir != "" {
+		return "", false, fmt.Errorf("provided adopted worktree dir %s missing: %w", missingDir, os.ErrNotExist)
+	}
+	a.agentOrch.Logger().Warn("workflow.worktree.dir-missing",
+		"task_id", taskID, "role", role, "path", missingDir)
+	return a.reprepareProvidedWorktreeForRole(t, taskID, role, missingDir, claim)
+}
+
+func (a *agentAdapter) reprepareProvidedWorktreeForRole(t task.Task, taskID string, role agent.Role, dir string, claim *agent.DispatchClaim) (resolvedDir string, cleanRetryReset bool, err error) {
+	switch role {
+	case agent.RolePRFix, agent.RoleTestFix:
+		if t.PRNumber == 0 {
+			return "", false, fmt.Errorf("prepare fix worktree: task has no pr_number")
+		}
+		d, wtErr := a.agentOrch.Worktrees().PrepareForFix(context.Background(), t, t.PRNumber)
+		if wtErr != nil {
+			claim.Release()
+			return "", false, fmt.Errorf("prepare fix worktree: %w", wtErr)
+		}
+		return d, false, nil
+	case agent.RoleReview:
+		if t.PRNumber != 0 {
+			d, wtErr := a.agentOrch.Worktrees().PrepareForReview(context.Background(), t)
+			if wtErr != nil {
+				claim.Release()
+				return "", false, fmt.Errorf("prepare review worktree: %w", wtErr)
+			}
+			return d, false, nil
+		}
+		fallthrough
+	default:
+		d, wtErr := a.agentOrch.Worktrees().PrepareForTask(context.Background(), t, nil)
+		if wtErr != nil {
+			claim.Release()
+			return "", false, a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
+		}
+		return d, false, nil
+	}
 }
 
 func workflowRequestedSkill(prompt string) string {
@@ -774,10 +1052,11 @@ func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryR
 		return t, "", false, fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
 	}
 	if cleanRetryRef != "" {
-		if resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef); resetErr != nil {
+		reset, resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef)
+		if resetErr != nil {
 			return t, "", false, resetErr
 		}
-		cleanRetryReset = true
+		cleanRetryReset = reset
 	}
 	// context.Background(): StartAgent implements workflow.AgentDispatcher,
 	// a fixed interface signature with no ctx parameter (invoked from many
@@ -830,7 +1109,7 @@ func (a *agentAdapter) classifyDirectDispatchWorktreeErr(taskID string, wtErr er
 	return wtErr
 }
 
-func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error {
+func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) (bool, error) {
 	target := dir
 	if target == "" {
 		if t.WorktreeDir != "" {
@@ -840,23 +1119,23 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error
 		}
 	}
 	if target == "" {
-		return nil
+		return false, nil
 	}
 	if _, err := os.Stat(target); err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("stat clean retry worktree: %w", err)
+		return false, fmt.Errorf("stat clean retry worktree: %w", err)
 	}
 	// context.Background(): StartAgent implements workflow.AgentDispatcher,
 	// a fixed interface signature with no ctx parameter (see the earlier
 	// comment on the PrepareForTask call in this file).
 	if err := project.ResetWorktreeForRetry(context.Background(), target, ref); err != nil {
 		a.agentOrch.Logger().Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
-		return err
+		return false, err
 	}
 	a.agentOrch.Logger().Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
-	return nil
+	return true, nil
 }
 
 func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg agent.RunConfig, ag *agent.Agent) {
@@ -872,8 +1151,10 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 		Model:                   ag.Model,
 		ExperimentID:            ag.ExperimentID,
 		VariantID:               ag.VariantID,
+		RoutingReason:           ag.RoutingReason,
 		AssignmentUnit:          ag.AssignmentUnit,
 		AssignmentKey:           ag.AssignmentKey,
+		DecisionVersion:         ag.DecisionVersion,
 		ReasoningEffort:         ag.ReasoningEffort,
 		RequestedSkill:          ag.RequestedSkill,
 		SkillExecutionMode:      ag.SkillExecutionMode,
@@ -1010,7 +1291,10 @@ func (a *agentAdapter) IsDispatching(taskID string) bool {
 }
 
 func (a *agentAdapter) AdmitDispatch(taskID, role, mode string) (admit bool, reason string) {
-	if mode == "interactive" || a.pressure == nil {
+	// mode is coerced to headless before every AdmitDispatch call site
+	// (resolveRunAgentMode, spawnParallelChild, spawnBestOfNAttempt) — there
+	// is no dispatchable "interactive" mode left to bypass the gate for.
+	if a.pressure == nil {
 		return true, ""
 	}
 	admit, reason = a.pressure.Admit()

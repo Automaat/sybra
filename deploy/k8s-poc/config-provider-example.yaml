@@ -20,6 +20,10 @@ data:
         namespace: sybra-poc
         image: sybra-server:poc
         ttl_seconds_after_finished: 300
+        # Longer TTL for a Failed Job, patched on by the runner once it
+        # observes the failure — see "Job cleanup and log retention" in
+        # README.md. Omit to fall back to the built-in 86400s default.
+        failed_ttl_seconds_after_finished: 86400
         secret_env:
           - name: OPENROUTER_API_KEY
             secret_name: sybra-provider-api-keys
@@ -31,6 +35,12 @@ data:
           - name: sybra-home
             claim_name: sybra-home
             mount_path: /home/sybra/.sybra
+          - name: sybra-clones
+            claim_name: sybra-clones
+            mount_path: /home/sybra/.sybra/clones
+          - name: sybra-worktrees
+            claim_name: sybra-worktrees
+            mount_path: /home/sybra/.sybra/worktrees
     ab_testing:
       enabled: false
     providers:
@@ -47,8 +57,6 @@ data:
     orchestrator:
       role: agent-only
     github:
-      enabled: false
-    todoist:
       enabled: false
     renovate:
       enabled: false

@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/skillattr"
 )
 
 // newParseTestManager returns a Manager suitable for unit-testing
@@ -1312,6 +1313,7 @@ func TestGuardrails_CostHardStopsStream(t *testing.T) {
 
 	var (
 		blocked int
+		last    EscalationEvent
 		mu      sync.Mutex
 	)
 	emit := func(event string, data any) {
@@ -1321,6 +1323,7 @@ func TestGuardrails_CostHardStopsStream(t *testing.T) {
 		if e, ok := data.(EscalationEvent); ok && e.Reason == "cost" {
 			mu.Lock()
 			blocked++
+			last = e
 			mu.Unlock()
 		}
 	}
@@ -1335,6 +1338,9 @@ func TestGuardrails_CostHardStopsStream(t *testing.T) {
 	defer mu.Unlock()
 	if blocked != 1 {
 		t.Errorf("got %d cost escalation events, want 1", blocked)
+	}
+	if last.Guardrail != "execution.agent.post_result_cost_usd" || last.CostSource != "reported" || last.Measurement != "post_result_usd" {
+		t.Fatalf("escalation metadata = %+v, want post-result reported-cost metadata", last)
 	}
 	// Only the result event should have been appended; the trailing
 	// assistant line must never reach the stream after the reject.
@@ -1352,6 +1358,7 @@ func TestGuardrails_CostHardStopMarksStopped(t *testing.T) {
 
 	var (
 		blocked int
+		last    EscalationEvent
 		mu      sync.Mutex
 	)
 	emit := func(event string, data any) {
@@ -1361,6 +1368,7 @@ func TestGuardrails_CostHardStopMarksStopped(t *testing.T) {
 		if e, ok := data.(EscalationEvent); ok && e.Reason == "cost" {
 			mu.Lock()
 			blocked++
+			last = e
 			mu.Unlock()
 		}
 	}
@@ -1375,6 +1383,9 @@ func TestGuardrails_CostHardStopMarksStopped(t *testing.T) {
 	defer mu.Unlock()
 	if blocked == 0 {
 		t.Error("expected cost escalation event, got none")
+	}
+	if last.MeasuredValue != 11.0 || last.Limit != 10.0 {
+		t.Fatalf("measured guardrail values = %+v, want measured=11 limit=10", last)
 	}
 	if !a.WasStopped() {
 		t.Error("WasStopped() = false, want true after cost hard-stop")
@@ -1862,6 +1873,42 @@ func TestPrepareRunConfig_DefaultsReasoningEffortForAllProviders(t *testing.T) {
 				t.Fatalf("expected --effort %s in %s args; got %v", DefaultReasoningEffort, provider, args)
 			}
 		})
+	}
+}
+
+// TestNewRunningAgent_StampsPromptHashForEveryRun proves the canonical dispatch
+// prompt hash is stamped centrally at construction — for every provider and for
+// non-implementation run names (review, fix-review) that never flow through
+// recordImplAgentStart. Without this the completion handler's prompt_rendered
+// audit is dropped for those runs (empty hash short-circuits emit).
+func TestNewRunningAgent_StampsPromptHashForEveryRun(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []string{"claude", "codex", "copilot"} {
+		for _, name := range []string{"impl", "review agent", "fix-review agent"} {
+			t.Run(provider+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				m := newParseTestManager(t)
+				cfg, prov, err := m.prepareRunConfig(RunConfig{
+					Provider: provider,
+					Name:     name,
+					Mode:     "headless",
+					Prompt:   "Run /staff-code-review now",
+					Dir:      t.TempDir(),
+				})
+				if err != nil {
+					t.Fatalf("prepareRunConfig: %v", err)
+				}
+				a := newRunningAgent("a", cfg, prov, func() {})
+				want := skillattr.HashSourceID(cfg.Prompt)
+				if want == "" {
+					t.Fatal("expected non-empty hash for non-empty prompt")
+				}
+				if got := a.GetPromptHash(); got != want {
+					t.Fatalf("prompt hash = %q, want %q", got, want)
+				}
+			})
+		}
 	}
 }
 
@@ -2947,7 +2994,7 @@ func TestCheckCostGuardrail_PreservesCheckpointEscalationReason(t *testing.T) {
 	ag := &Agent{ID: "a1", TaskID: "t1", done: make(chan struct{})}
 	ag.SetEscalationReason(EscalationReasonCheckpoint)
 
-	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0); keepGoing {
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated"); keepGoing {
 		t.Fatal("checkCostGuardrail = true, want false (a cost breach always stops the run)")
 	}
 	if got := ag.GetEscalationReason(); got != EscalationReasonCheckpoint {
@@ -2972,7 +3019,7 @@ func TestCheckCostGuardrail_PreservesCheckpointFailedEscalationReason(t *testing
 	ag := &Agent{ID: "a3", TaskID: "t3", done: make(chan struct{})}
 	ag.SetEscalationReason(EscalationReasonCheckpointFailed)
 
-	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0); keepGoing {
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated"); keepGoing {
 		t.Fatal("checkCostGuardrail = true, want false")
 	}
 	if got := ag.GetEscalationReason(); got != EscalationReasonCheckpointFailed {
@@ -2991,7 +3038,7 @@ func TestCheckCostGuardrail_StampsCostWhenNoCheckpoint(t *testing.T) {
 
 	ag := &Agent{ID: "a2", TaskID: "t2", done: make(chan struct{})}
 
-	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0); keepGoing {
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated"); keepGoing {
 		t.Fatal("checkCostGuardrail = true, want false")
 	}
 	if got := ag.GetEscalationReason(); got != EscalationReasonCost {

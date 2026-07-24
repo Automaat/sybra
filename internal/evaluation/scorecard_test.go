@@ -638,11 +638,11 @@ func TestCompareByVariantEstimatesAndExperimentStatus(t *testing.T) {
 	since := base.AddDate(0, 0, -7)
 	in := base.Add(-1 * time.Hour)
 	records := []stats.RunRecord{
-		{TaskID: "A1", Role: "implementation", Provider: "claude", Model: "opus", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
-		{TaskID: "A2", Role: "implementation", Provider: "claude", Model: "opus", ExperimentID: "exp", VariantID: "control", Outcome: "failed", Timestamp: in},
-		{TaskID: "B1", Role: "implementation", Provider: "codex", Model: "gpt-5.5", ExperimentID: "exp", VariantID: "treatment", Outcome: "completed", Timestamp: in},
-		{TaskID: "B2", Role: "implementation", Provider: "codex", Model: "gpt-5.5", ExperimentID: "exp", VariantID: "treatment", Outcome: "completed", Timestamp: in},
-		{TaskID: "C1", Role: "implementation", Provider: "other", Model: "model", ExperimentID: "exp", VariantID: "observed", Outcome: "completed", Timestamp: in},
+		{TaskID: "A1", Role: "implementation", Provider: "claude", Model: "opus", ExperimentID: "exp", VariantID: "control", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+		{TaskID: "A2", Role: "implementation", Provider: "claude", Model: "opus", ExperimentID: "exp", VariantID: "control", SkillConformance: skillattr.ConformanceNone, Outcome: "failed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", Provider: "codex", Model: "gpt-5.5", ExperimentID: "exp", VariantID: "treatment", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+		{TaskID: "B2", Role: "implementation", Provider: "codex", Model: "gpt-5.5", ExperimentID: "exp", VariantID: "treatment", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+		{TaskID: "C1", Role: "implementation", Provider: "other", Model: "model", ExperimentID: "exp", VariantID: "observed", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
 	}
 	events := []audit.Event{
 		{Type: audit.EventTaskLanded, TaskID: "A1", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
@@ -691,7 +691,7 @@ func TestCompareByVariantEstimatesAndExperimentStatus(t *testing.T) {
 		t.Fatalf("treatment secondary estimates = ci %+v edited %+v rework %+v revert %+v",
 			treatment.CIFirstPassEstimate, treatment.MergedWithEditsEstimate, treatment.ReworkEstimate, treatment.RevertEstimate)
 	}
-	if observed.SampleStatus != "low-sample" || observed.MinSamplesPerVariant != 2 {
+	if observed.SampleStatus != SampleStatusLowSample || observed.MinSamplesPerVariant != 2 {
 		t.Fatalf("observed sample status = %+v", *observed)
 	}
 	if len(res.Experiments) != 1 {
@@ -715,7 +715,7 @@ func TestCompareByVariantMissingBaselineLeavesDeltasUnset(t *testing.T) {
 	since := base.AddDate(0, 0, -7)
 	in := base.Add(-1 * time.Hour)
 	records := []stats.RunRecord{
-		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
 	}
 	res := CompareBy(records, nil, since, base, CompareOptions{
 		MinSamples: 1,
@@ -745,8 +745,8 @@ func TestCompareByVariantEmptyExperimentRolesUseObservedRoles(t *testing.T) {
 	since := base.AddDate(0, 0, -7)
 	in := base.Add(-1 * time.Hour)
 	records := []stats.RunRecord{
-		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
-		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "failed", Timestamp: in},
+		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", SkillConformance: skillattr.ConformanceNone, Outcome: "failed", Timestamp: in},
 	}
 	res := CompareBy(records, nil, since, base, CompareOptions{
 		MinSamples: 1,
@@ -784,8 +784,8 @@ func TestCompareByVariantZeroWeightFirstVariantDoesNotBecomeBaseline(t *testing.
 	since := base.AddDate(0, 0, -7)
 	in := base.Add(-1 * time.Hour)
 	records := []stats.RunRecord{
-		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
-		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "failed", Timestamp: in},
+		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", SkillConformance: skillattr.ConformanceNone, Outcome: "failed", Timestamp: in},
 	}
 	res := CompareBy(records, nil, since, base, CompareOptions{
 		MinSamples: 1,
@@ -824,9 +824,9 @@ func TestCompareByVariantZeroWeightNonBaselineDoesNotBlockReadiness(t *testing.T
 	since := base.AddDate(0, 0, -7)
 	in := base.Add(-1 * time.Hour)
 	records := []stats.RunRecord{
-		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
-		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "completed", Timestamp: in},
-		{TaskID: "C1", Role: "implementation", ExperimentID: "exp", VariantID: "disabled", Outcome: "failed", Timestamp: in},
+		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+		{TaskID: "C1", Role: "implementation", ExperimentID: "exp", VariantID: "disabled", SkillConformance: skillattr.ConformanceNone, Outcome: "failed", Timestamp: in},
 	}
 	res := CompareBy(records, nil, since, base, CompareOptions{
 		MinSamples: 1,
@@ -1233,5 +1233,285 @@ func TestPercentile(t *testing.T) {
 				t.Errorf("percentile(%v, %v) = %v, want %v", tt.xs, tt.p, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSkillConformanceBucket(t *testing.T) {
+	tests := []struct {
+		conformance string
+		want        string
+	}{
+		{skillattr.ConformanceExact, SkillCohortSkill},
+		{skillattr.ConformanceRecovered, SkillCohortSkill},
+		{skillattr.ConformanceFallback, SkillCohortDirect},
+		{skillattr.ConformanceUnavailable, SkillCohortDirect},
+		{skillattr.ConformanceNone, SkillCohortDirect},
+		{skillattr.ConformanceUnverified, SkillCohortIndeterminate},
+		{skillattr.ConformanceUnknown, SkillCohortIndeterminate},
+		{"", SkillCohortIndeterminate},
+		{"garbage", SkillCohortIndeterminate},
+	}
+	for _, tt := range tests {
+		t.Run(tt.conformance, func(t *testing.T) {
+			if got := skillConformanceBucket(tt.conformance); got != tt.want {
+				t.Errorf("skillConformanceBucket(%q) = %q, want %q", tt.conformance, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAgentModelCohortKeySplitsDirectFromConformantReview covers the issue's
+// own example: "A direct review cannot appear in the same cohort as a
+// conformant staff review."
+func TestAgentModelCohortKeySplitsDirectFromConformantReview(t *testing.T) {
+	conformant := stats.RunRecord{Provider: "claude", Model: "sonnet", Role: "review", SkillConformance: skillattr.ConformanceExact}
+	direct := stats.RunRecord{Provider: "claude", Model: "sonnet", Role: "review", SkillConformance: skillattr.ConformanceNone}
+	kc := agentModelCohortKey(conformant)
+	kd := agentModelCohortKey(direct)
+	if kc == kd {
+		t.Fatalf("conformant and direct review runs shared a cohort key %q", kc)
+	}
+	if !strings.HasSuffix(kc, ":"+SkillCohortSkill) {
+		t.Fatalf("conformant key = %q, want suffix :%s", kc, SkillCohortSkill)
+	}
+	if !strings.HasSuffix(kd, ":"+SkillCohortDirect) {
+		t.Fatalf("direct key = %q, want suffix :%s", kd, SkillCohortDirect)
+	}
+}
+
+func TestCompareByAgentModelSplitsDirectFromConformantReview(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "review", Provider: "claude", Model: "sonnet", SkillConformance: skillattr.ConformanceExact, Outcome: "completed", Timestamp: in},
+		{TaskID: "B", Role: "review", Provider: "claude", Model: "sonnet", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+		{TaskID: "C", Role: "review", Provider: "claude", Model: "sonnet", SkillConformance: skillattr.ConformanceNone, Outcome: "failed", Timestamp: in},
+	}
+	got := CompareByLatestAuthor(records, nil, since, base, 0, agentModelCohortKey)
+	if len(got) != 2 {
+		t.Fatalf("rows = %d, want 2 (skill, direct): %+v", len(got), got)
+	}
+	var skillRow, directRow *ComparisonBreakdown
+	for i := range got {
+		switch got[i].SkillConformance {
+		case SkillCohortSkill:
+			skillRow = &got[i]
+		case SkillCohortDirect:
+			directRow = &got[i]
+		}
+	}
+	if skillRow == nil || directRow == nil {
+		t.Fatalf("rows = %+v, want one skill row and one direct row", got)
+	}
+	if skillRow.Runs != 1 {
+		t.Fatalf("skill row = %+v, want 1 run", *skillRow)
+	}
+	if directRow.Runs != 2 || directRow.ResolvedRuns != 0 || directRow.Failures != 0 {
+		t.Fatalf("direct row = %+v, want 2 runs / 0 resolved / 0 failures for a non-code-author review cohort", *directRow)
+	}
+}
+
+func TestComparisonRowsHomogeneousDirectConformanceNotInsufficient(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", ExperimentID: "exp", VariantID: "v", SkillConformance: skillattr.ConformanceFallback, Outcome: "completed", Timestamp: in},
+		{TaskID: "B", ExperimentID: "exp", VariantID: "v", SkillConformance: skillattr.ConformanceUnavailable, Outcome: "completed", Timestamp: in},
+	}
+	got := CompareByLatestAuthor(records, nil, since, base, 2, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID
+	})
+	if len(got) != 1 {
+		t.Fatalf("rows = %+v, want 1", got)
+	}
+	row := got[0]
+	if row.SkillConformance != SkillCohortDirect {
+		t.Fatalf("row skill conformance = %q, want %q (fallback + unavailable both bucket to direct, not dropped)", row.SkillConformance, SkillCohortDirect)
+	}
+	if row.SkillParityUnknown {
+		t.Fatalf("row = %+v, homogeneous direct cohort should not be parity-unknown", row)
+	}
+	if row.InsufficientData {
+		t.Fatalf("row = %+v, sample size meets minSamples so should not be insufficient", row)
+	}
+}
+
+func TestComparisonRowsIndeterminateSkillConformanceForcesInsufficient(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	// Legacy/pre-instrumentation records: SkillConformance never set.
+	records := make([]stats.RunRecord, 0, 20)
+	for range 20 {
+		records = append(records, stats.RunRecord{TaskID: "A", ExperimentID: "exp", VariantID: "v", Outcome: "completed", Timestamp: in})
+	}
+	got := CompareByLatestAuthor(records, nil, since, base, 2, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID
+	})
+	if len(got) != 1 {
+		t.Fatalf("rows = %+v, want 1", got)
+	}
+	row := got[0]
+	if row.Runs != 20 {
+		t.Fatalf("row runs = %d, want 20 (data is not dropped, just marked untrustworthy)", row.Runs)
+	}
+	if row.SkillConformance != SkillCohortIndeterminate {
+		t.Fatalf("row skill conformance = %q, want %q", row.SkillConformance, SkillCohortIndeterminate)
+	}
+	if !row.SkillParityUnknown {
+		t.Fatalf("row = %+v, want SkillParityUnknown", row)
+	}
+	if !row.InsufficientData {
+		t.Fatalf("row = %+v, want InsufficientData despite a 20-run sample — history with unknown skill parity is never sufficient", row)
+	}
+	if row.SampleStatus != SampleStatusParityUnknown {
+		t.Fatalf("row sample status = %q, want %q", row.SampleStatus, SampleStatusParityUnknown)
+	}
+}
+
+func TestComparisonRowsMixedSkillConformanceForcesInsufficient(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", ExperimentID: "exp", VariantID: "v", SkillConformance: skillattr.ConformanceExact, Outcome: "completed", Timestamp: in},
+		{TaskID: "B", ExperimentID: "exp", VariantID: "v", SkillConformance: skillattr.ConformanceFallback, Outcome: "completed", Timestamp: in},
+	}
+	// variantKey does not fold the skill bucket into the key (unlike
+	// agentModelCohortKey), so a variant that actually delivered both skill
+	// and direct-fallback executions still lands in one row here.
+	got := CompareByLatestAuthor(records, nil, since, base, 2, variantKey)
+	if len(got) != 1 {
+		t.Fatalf("rows = %+v, want 1", got)
+	}
+	row := got[0]
+	if row.SkillConformance != "" {
+		t.Fatalf("row skill conformance = %q, want \"\" (mixed)", row.SkillConformance)
+	}
+	if !row.SkillParityUnknown || !row.InsufficientData {
+		t.Fatalf("row = %+v, a mixed-delivery cohort must never read as a sufficient parity comparison", row)
+	}
+	if row.SampleStatus != SampleStatusParityUnknown {
+		t.Fatalf("row sample status = %q, want %q", row.SampleStatus, SampleStatusParityUnknown)
+	}
+}
+
+func TestExperimentSampleStatusBlocksReadinessOnSkillParityUnknown(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", SkillConformance: skillattr.ConformanceExact, Outcome: "completed", Timestamp: in},
+		{TaskID: "A2", Role: "implementation", ExperimentID: "exp", VariantID: "control", SkillConformance: skillattr.ConformanceFallback, Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+		{TaskID: "B2", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", SkillConformance: skillattr.ConformanceNone, Outcome: "completed", Timestamp: in},
+	}
+	res := CompareBy(records, nil, since, base, CompareOptions{
+		MinSamples: 2,
+		Experiments: []abtest.Experiment{{
+			ID:       "exp",
+			Roles:    []string{"implementation"},
+			Variants: []abtest.Variant{{ID: "control", Weight: 1}, {ID: "treatment", Weight: 1}},
+		}},
+	}, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+	})
+	rows := rowsByVariant(res.Rows)
+	if rows["control"] == nil || !rows["control"].SkillParityUnknown {
+		t.Fatalf("control row = %+v, want SkillParityUnknown (mixes skill + direct)", rows["control"])
+	}
+	if rows["treatment"] == nil || rows["treatment"].SkillParityUnknown {
+		t.Fatalf("treatment row = %+v, want a clean direct cohort (uniform none)", rows["treatment"])
+	}
+	if len(res.Experiments) != 1 {
+		t.Fatalf("experiment statuses = %+v", res.Experiments)
+	}
+	status := res.Experiments[0]
+	// treatment meets MinSamples with a clean cohort, control has the same
+	// sample size but unknown parity — the experiment is directional, not
+	// fully actionable, and the routing consumer (internal/learning) must
+	// not treat it as a clean win either way.
+	if status.Status != "directional" || status.ReadyVariants != 1 {
+		t.Fatalf("experiment status = %+v, want directional with exactly 1 ready variant", status)
+	}
+	for _, v := range status.Variants {
+		if v.VariantID == "control" && v.Ready {
+			t.Fatalf("control variant = %+v, must not be ready with unknown skill parity", v)
+		}
+		if v.VariantID == "treatment" && !v.Ready {
+			t.Fatalf("treatment variant = %+v, want ready", v)
+		}
+	}
+	byVariant := map[string]VariantSampleStatus{}
+	for _, v := range status.Variants {
+		byVariant[v.VariantID] = v
+	}
+	if byVariant["control"].SampleStatus != SampleStatusParityUnknown {
+		t.Fatalf("control variant sample status = %q, want %q", byVariant["control"].SampleStatus, SampleStatusParityUnknown)
+	}
+	if byVariant["treatment"].SampleStatus != SampleStatusActionable {
+		t.Fatalf("treatment variant sample status = %q, want %q", byVariant["treatment"].SampleStatus, SampleStatusActionable)
+	}
+	// A parity-unknown baseline is not a trustworthy comparison basis: no variant
+	// (including the baseline itself) may report a delta measured against it.
+	if rows["control"].FailureEstimate.HasDelta {
+		t.Fatalf("control (parity-unknown baseline) failure delta = %+v, want suppressed", rows["control"].FailureEstimate)
+	}
+	if rows["treatment"].FailureEstimate.HasDelta {
+		t.Fatalf("treatment failure delta = %+v, want suppressed against a parity-unknown baseline", rows["treatment"].FailureEstimate)
+	}
+	if !rows["control"].Baseline {
+		t.Fatalf("control row = %+v, want Baseline flag retained (configured baseline)", rows["control"])
+	}
+}
+
+func TestReportNotesFlagsIndeterminateSkillConformance(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{Outcome: "completed", Timestamp: in},                                               // indeterminate: unset
+		{Outcome: "completed", SkillConformance: skillattr.ConformanceExact, Timestamp: in}, // known
+	}
+	notes := reportNotes(records, since, base)
+	found := false
+	for _, n := range notes {
+		if strings.Contains(n, "indeterminate skill conformance") {
+			found = true
+			if !strings.Contains(n, "1 of 2") {
+				t.Fatalf("note = %q, want counts 1 of 2", n)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("notes = %v, want a skill-parity note", notes)
+	}
+}
+
+func TestReportNotesOmitsSkillParityNoteWhenAllConformanceKnown(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{Outcome: "completed", SkillConformance: skillattr.ConformanceExact, Timestamp: in},
+		{Outcome: "completed", SkillConformance: skillattr.ConformanceNone, Timestamp: in},
+	}
+	notes := reportNotes(records, since, base)
+	for _, n := range notes {
+		if strings.Contains(n, "indeterminate skill conformance") {
+			t.Fatalf("notes = %v, unexpected skill-parity note when conformance is fully known", notes)
+		}
+	}
+}
+
+// test-fix is pr-fix's scoped code-authoring follow-up (pr-fix.yaml's
+// test_fix step) — it must count as an author role for revert-tracking and
+// A/B credit, same as pr-fix itself, or a task whose last authoring run was
+// test_fix silently loses credit as if no author touched it.
+func TestIsAuthorRole_IncludesTestFix(t *testing.T) {
+	if !isAuthorRole("test-fix") {
+		t.Error("isAuthorRole(\"test-fix\") = false, want true")
 	}
 }

@@ -1,0 +1,11 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+	worktree = /data/sybra/home/worktrees/https-github-com-automaat-sybra-issues-3da4e6b2/.tmp-sybra-home/manual-test-3da4e6b2/tasks
+[user]
+	name = Sybra Snapshotter
+	email = sybra-snapshotter@localhost
+[gc]
+	auto = 0

@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,13 +22,16 @@ import (
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
+	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -39,8 +43,19 @@ import (
 // in sync without an import cycle.
 var hookTaskIDRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 
+var (
+	loadCLIConfig          = config.Load
+	loadCLIConfigNoPersist = config.LoadNoPersist
+)
+
 func main() {
 	os.Exit(run(os.Args[1:]))
+}
+
+type homeResolution struct {
+	effectiveHome   string
+	fromControlHome bool
+	fromSybraHome   bool
 }
 
 func run(args []string) int {
@@ -90,6 +105,7 @@ func run(args []string) int {
 		usage()
 		return 1
 	}
+	cmd, rest := filtered[0], filtered[1:]
 
 	// Home precedence: --home > SYBRA_CONTROL_HOME (the real operator store,
 	// injected into task-scoped agent subprocesses) > SYBRA_HOME (ambient,
@@ -98,39 +114,38 @@ func run(args []string) int {
 	// task CRUD reaches the real board even though the agent's own SYBRA_HOME
 	// points at its sandbox; `--home` lets an agent explicitly inspect the
 	// sandbox/app-under-test store instead (see docs/manual-testing.md).
-	effectiveHome := homeOverride
-	if effectiveHome == "" {
-		effectiveHome = os.Getenv("SYBRA_CONTROL_HOME")
-	}
-	if effectiveHome == "" {
-		effectiveHome = os.Getenv("SYBRA_HOME")
-	}
+	home := resolveHome(homeOverride)
 
-	restoreHome := func() {}
-	if effectiveHome != "" {
-		prevHome, hadHome := os.LookupEnv("SYBRA_HOME")
-		if err := os.Setenv("SYBRA_HOME", effectiveHome); err != nil {
-			if isHook {
-				fmt.Fprintf(os.Stderr, "hook: apply --home: %v (continuing fail-open)\n", err)
-				return 0
-			}
-			return fatal(jsonOut, "apply --home: %v", err)
+	restoreHome, err := applyCLIHome(home.effectiveHome)
+	if err != nil {
+		if isHook {
+			fmt.Fprintf(os.Stderr, "hook: apply --home: %v (continuing fail-open)\n", err)
+			return 0
 		}
-		restoreHome = func() {
-			if hadHome {
-				_ = os.Setenv("SYBRA_HOME", prevHome)
-			} else {
-				_ = os.Unsetenv("SYBRA_HOME")
-			}
-		}
+		return fatal(jsonOut, "apply --home: %v", err)
 	}
 	defer restoreHome()
 
-	cfg, err := config.Load()
+	if !isHook {
+		warnBinaryWorktreeDrift()
+	}
+
+	if isReadOnlyConfigCommand(cmd) {
+		cfg, err := loadCLIConfigNoPersist()
+		if err != nil {
+			return fatal(jsonOut, "load config: %v", err)
+		}
+		return cmdConfig(cfg, rest, jsonOut)
+	}
+
+	cfg, err := loadCLIConfig()
 	if err != nil {
 		if isHook {
 			fmt.Fprintf(os.Stderr, "hook: load config: %v (continuing fail-open)\n", err)
 			return 0
+		}
+		if code, handled := dispatchTaskStoreFallback(cmd, rest, jsonOut, err); handled {
+			return code
 		}
 		return fatal(jsonOut, "load config: %v", err)
 	}
@@ -147,8 +162,108 @@ func run(args []string) int {
 		return fatal(jsonOut, "%v", err)
 	}
 
-	cmd, rest := filtered[0], filtered[1:]
-	return dispatch(cmd, rest, cfg, store, projStore, homeOverride == "", jsonOut)
+	// HTTP auto-detect is only safe on the untouched default path. Any resolved
+	// home override — --home, SYBRA_CONTROL_HOME, or SYBRA_HOME — means the
+	// caller explicitly targeted an on-disk store, so reaching some unrelated
+	// reachable server would violate that contract.
+	allowHTTP := homeOverride == "" && !home.fromControlHome && !home.fromSybraHome
+	return dispatch(cmd, rest, cfg, store, projStore, allowHTTP, jsonOut)
+}
+
+func isReadOnlyConfigCommand(cmd string) bool {
+	return cmd == "config"
+}
+
+func resolveHome(homeOverride string) homeResolution {
+	if homeOverride != "" {
+		return homeResolution{effectiveHome: homeOverride}
+	}
+	if controlHome := os.Getenv("SYBRA_CONTROL_HOME"); controlHome != "" {
+		return homeResolution{
+			effectiveHome:   controlHome,
+			fromControlHome: true,
+		}
+	}
+	if sybraHome := os.Getenv("SYBRA_HOME"); sybraHome != "" {
+		return homeResolution{
+			effectiveHome: sybraHome,
+			fromSybraHome: true,
+		}
+	}
+	return homeResolution{}
+}
+
+func applyCLIHome(home string) (func(), error) {
+	if home == "" {
+		return func() {}, nil
+	}
+	prevHome, hadHome := os.LookupEnv("SYBRA_HOME")
+	if err := os.Setenv("SYBRA_HOME", home); err != nil {
+		return nil, err
+	}
+	return func() {
+		if hadHome {
+			_ = os.Setenv("SYBRA_HOME", prevHome)
+			return
+		}
+		_ = os.Unsetenv("SYBRA_HOME")
+	}, nil
+}
+
+func warnBinaryWorktreeDrift() {
+	msg := binaryWorktreeDriftWarning(currentBuildRevision(), currentWorktreeRevision())
+	if msg == "" {
+		return
+	}
+	fmt.Fprintln(os.Stderr, msg)
+}
+
+func binaryWorktreeDriftWarning(buildRev, worktreeRev string) string {
+	buildRev = strings.TrimSpace(buildRev)
+	worktreeRev = strings.TrimSpace(worktreeRev)
+	if buildRev == "" || worktreeRev == "" || buildRev == worktreeRev {
+		return ""
+	}
+	return fmt.Sprintf(
+		"warning: sybra-cli binary built from %s, current worktree at %s; use `go run ./cmd/sybra-cli` or reinstall with `go install ./cmd/sybra-cli`",
+		shortRevision(buildRev),
+		shortRevision(worktreeRev),
+	)
+}
+
+func currentBuildRevision() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" {
+			return setting.Value
+		}
+	}
+	return ""
+}
+
+func currentWorktreeRevision() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", wd, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+func shortRevision(rev string) string {
+	rev = strings.TrimSpace(rev)
+	if len(rev) <= 12 {
+		return rev
+	}
+	return rev[:12]
 }
 
 // dispatch routes a parsed subcommand (with its own args and the global
@@ -239,6 +354,67 @@ func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
 	return task.NewManager(rawStore, nil), projStore, nil
 }
 
+func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr error) (code int, handled bool) {
+	if !supportsTaskStoreFallback(cmd) {
+		return 0, false
+	}
+	store, tasksDir, err := openFallbackTaskStore()
+	if err != nil {
+		return fatal(jsonOut, "load config: %v (fallback task store: %v)", loadErr, err), true
+	}
+	fmt.Fprintf(os.Stderr,
+		"warning: load config: %v; falling back to direct task store at %s for `%s`\n",
+		loadErr, tasksDir, cmd)
+	// Dispatched directly (not via dispatch()) so this path never carries a
+	// nil cfg/projStore into the shared switch — nilaway can't correlate
+	// supportsTaskStoreFallback's allowlist with dispatch()'s cases, so
+	// routing through it flags every cfg/projStore-using branch as a
+	// potential nil deref even though none of these commands touch them.
+	switch cmd {
+	case "list":
+		return cmdList(store, rest, jsonOut), true
+	case "get":
+		return cmdGet(store, rest, jsonOut), true
+	case "create":
+		return cmdCreate(store, nil, rest, jsonOut), true
+	case "update":
+		return cmdUpdate(store, nil, rest, jsonOut), true
+	case "delete":
+		return cmdDelete(store, nil, rest, jsonOut), true
+	case "reopen":
+		return cmdReopen(store, rest, jsonOut), true
+	case "link-pr":
+		return cmdLinkPR(store, nil, rest, jsonOut), true
+	case "board":
+		return cmdBoard(store, jsonOut), true
+	case "trash":
+		return cmdTrash(store, rest, jsonOut), true
+	default:
+		return 0, false
+	}
+}
+
+func supportsTaskStoreFallback(cmd string) bool {
+	switch cmd {
+	case "list", "get", "create", "update", "delete", "reopen", "link-pr", "board", "trash":
+		return true
+	default:
+		return false
+	}
+}
+
+func openFallbackTaskStore() (manager *task.Manager, tasksDir string, err error) {
+	tasksDir = strings.TrimSpace(os.Getenv("SYBRA_TASKS_DIR"))
+	if tasksDir == "" {
+		tasksDir = filepath.Join(config.HomeDir(), "tasks")
+	}
+	rawStore, err := task.NewStore(tasksDir)
+	if err != nil {
+		return nil, "", fmt.Errorf("open store %q: %w", tasksDir, err)
+	}
+	return task.NewManager(rawStore, nil), tasksDir, nil
+}
+
 func cmdList(s *task.Manager, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	status := fs.String("status", "", "filter by status")
@@ -310,9 +486,6 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	fmt.Printf("Title:  %s\n", t.Title)
 	fmt.Printf("Status: %s\n", t.Status)
 	fmt.Printf("Mode:   %s\n", t.AgentMode)
-	if t.TaskType != "" {
-		fmt.Printf("Type:   %s\n", t.TaskType)
-	}
 	if len(t.Tags) > 0 {
 		fmt.Printf("Tags:   %s\n", strings.Join(t.Tags, ", "))
 	}
@@ -389,7 +562,6 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	planDecisions := fs.String("plan-decisions", "", "plan decisions markdown")
 	planBrief := fs.String("plan-brief", "", "plan brief markdown")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
-	ttype := fs.String("type", "normal", "task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags")
 	proj := fs.String("project", "", "project id (owner/repo)")
 	branch := fs.String("branch", "", "Git branch name")
@@ -401,9 +573,6 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	}
 	if *title == "" {
 		return fatal(jsonOut, "title is required")
-	}
-	if _, err := task.ValidateTaskType(*ttype); err != nil {
-		return fatal(jsonOut, "%v", err)
 	}
 
 	if !*allowDup {
@@ -425,7 +594,7 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "%v", err)
 	}
 
-	updates := buildCreateUpdateMap(*ttype, *tags, *proj, *branch, *pr, *issue,
+	updates := buildCreateUpdateMap(*tags, *proj, *branch, *pr, *issue,
 		*plan, *planContract, *planCritique, *planResearch, *planDecisions, *planBrief)
 	if len(updates) > 0 {
 		t, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
@@ -441,12 +610,9 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	return 0
 }
 
-func buildCreateUpdateMap(ttype, tags, proj, branch string, pr int, issue,
+func buildCreateUpdateMap(tags, proj, branch string, pr int, issue,
 	plan, planContract, planCritique, planResearch, planDecisions, planBrief string) map[string]any {
 	updates := map[string]any{}
-	if ttype != "" && ttype != string(task.TaskTypeNormal) {
-		updates["task_type"] = ttype
-	}
 	if tags != "" {
 		tagList := strings.Split(tags, ",")
 		for i := range tagList {
@@ -992,7 +1158,7 @@ func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "%v", err)
 	}
 
-	updates, uErr := buildUpdateMap(fs, flags)
+	updates, uErr := buildUpdateMap(s, id, fs, flags)
 	if uErr != nil {
 		return fatal(jsonOut, "%v", uErr)
 	}
@@ -1032,7 +1198,6 @@ type updateFlags struct {
 	codeReview        *string
 	codeReviewFile    *string
 	mode              *string
-	taskType          *string
 	tags              *string
 	project           *string
 	branch            *string
@@ -1042,6 +1207,12 @@ type updateFlags struct {
 	statusReason      *string
 	maxTurns          *int
 	reasoningEffort   *string
+	blockerKind       *string
+	blockerCode       *string
+	blockerNextAction *string
+	blockerRetryAfter *string
+	blockerExhausted  *bool
+	blockerClear      *bool
 }
 
 func newUpdateFlags(fs *flag.FlagSet) updateFlags {
@@ -1064,7 +1235,6 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		codeReview:        fs.String("code-review", "", "code review markdown (empty string clears review)"),
 		codeReviewFile:    fs.String("code-review-file", "", "path to file with code review content"),
 		mode:              fs.String("mode", "", "new agent mode"),
-		taskType:          fs.String("type", "", "new task type: normal|debug|research"),
 		tags:              fs.String("tags", "", "comma-separated tags (replaces existing)"),
 		project:           fs.String("project", "", "project id (owner/repo)"),
 		branch:            fs.String("branch", "", "Git branch name"),
@@ -1074,10 +1244,16 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		statusReason:      fs.String("status-reason", "", "reason for status change"),
 		maxTurns:          fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
 		reasoningEffort:   fs.String("reasoning-effort", "", "reasoning effort (all providers): low|medium|high|xhigh ('default' or 'none' clears the override)"),
+		blockerKind:       fs.String("blocker-kind", "", "blocker kind (e.g. operator_decision|credential_required|policy_approval|worktree_repair|review_fix_exhausted|triage_retry_exhausted)"),
+		blockerCode:       fs.String("blocker-code", "", "blocker code (short machine-readable subtype)"),
+		blockerNextAction: fs.String("blocker-next-action", "", "next automatic action for the blocker (e.g. repair_worktree)"),
+		blockerRetryAfter: fs.String("blocker-retry-after", "", "RFC3339 timestamp before which the blocker should not be retried"),
+		blockerExhausted:  fs.Bool("blocker-exhausted", false, "mark the blocker's automated retry budget as exhausted"),
+		blockerClear:      fs.Bool("blocker-clear", false, "clear any blocker state on this task"),
 	}
 }
 
-func buildUpdateMap(fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
+func buildUpdateMap(s *task.Manager, id string, fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
 	updates := map[string]any{}
 	applyBasicUpdateFlags(updates, f)
 	if err := applySidecarUpdateFlags(fs, updates, f); err != nil {
@@ -1086,7 +1262,69 @@ func buildUpdateMap(fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
 	if err := applyTypedUpdateFlags(fs, updates, f); err != nil {
 		return nil, err
 	}
+	if err := applyBlockerUpdateFlags(s, id, fs, updates, f); err != nil {
+		return nil, err
+	}
 	return updates, nil
+}
+
+// applyBlockerUpdateFlags builds a "blocker" entry in updates from the
+// --blocker-* flags. Task.Update.Blocker is a whole-value replacement (see
+// applyBlockerField), so when only some attributes are provided this seeds
+// the replacement from the task's current blocker state — an operator
+// running e.g. `--blocker-exhausted` alone must not blank out the kind/code
+// the workflow engine already recorded.
+func applyBlockerUpdateFlags(s *task.Manager, id string, fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
+	if *f.blockerClear {
+		updates["blocker"] = map[string]any{}
+		return nil
+	}
+	provided := flagWasProvided(fs, "blocker-kind") ||
+		flagWasProvided(fs, "blocker-code") ||
+		flagWasProvided(fs, "blocker-next-action") ||
+		flagWasProvided(fs, "blocker-retry-after") ||
+		flagWasProvided(fs, "blocker-exhausted")
+	if !provided {
+		return nil
+	}
+	m := map[string]any{}
+	if cur, err := s.Get(id); err == nil {
+		if cur.Blocker.Kind != "" {
+			m["kind"] = string(cur.Blocker.Kind)
+		}
+		if cur.Blocker.Actor != "" {
+			m["actor"] = string(cur.Blocker.Actor)
+		}
+		if cur.Blocker.Code != "" {
+			m["code"] = cur.Blocker.Code
+		}
+		if cur.Blocker.NextAction != "" {
+			m["next_action"] = cur.Blocker.NextAction
+		}
+		if cur.Blocker.RetryAfter != nil {
+			m["retry_after"] = cur.Blocker.RetryAfter.Format(time.RFC3339)
+		}
+		if cur.Blocker.Exhausted {
+			m["exhausted"] = true
+		}
+	}
+	if flagWasProvided(fs, "blocker-kind") {
+		m["kind"] = *f.blockerKind
+	}
+	if flagWasProvided(fs, "blocker-code") {
+		m["code"] = *f.blockerCode
+	}
+	if flagWasProvided(fs, "blocker-next-action") {
+		m["next_action"] = *f.blockerNextAction
+	}
+	if flagWasProvided(fs, "blocker-retry-after") {
+		m["retry_after"] = *f.blockerRetryAfter
+	}
+	if flagWasProvided(fs, "blocker-exhausted") {
+		m["exhausted"] = *f.blockerExhausted
+	}
+	updates["blocker"] = m
+	return nil
 }
 
 func applyBasicUpdateFlags(updates map[string]any, f updateFlags) {
@@ -1140,12 +1378,6 @@ func applySidecarUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateF
 }
 
 func applyTypedUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
-	if *f.taskType != "" {
-		if _, err := task.ValidateTaskType(*f.taskType); err != nil {
-			return err
-		}
-		updates["task_type"] = *f.taskType
-	}
 	if flagWasProvided(fs, "source-provider") {
 		v, err := normalizeHandoffSourceProvider(*f.sourceProvider)
 		if err != nil {
@@ -1502,13 +1734,14 @@ func cmdProjectDelete(ps *project.Store, args []string, jsonOut bool) int {
 }
 
 type boardTask struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	ProjectID    string    `json:"project_id,omitempty"`
-	AgentID      string    `json:"agent_id,omitempty"`
-	StartedAt    time.Time `json:"started_at"`
-	RunningForS  int64     `json:"running_for_s,omitempty"`
-	StatusReason string    `json:"status_reason,omitempty"`
+	ID           string        `json:"id"`
+	Title        string        `json:"title"`
+	ProjectID    string        `json:"project_id,omitempty"`
+	AgentID      string        `json:"agent_id,omitempty"`
+	StartedAt    time.Time     `json:"started_at"`
+	RunningForS  int64         `json:"running_for_s,omitempty"`
+	StatusReason string        `json:"status_reason,omitempty"`
+	Blocker      blocker.State `json:"blocker,omitzero"`
 }
 
 type boardSummary struct {
@@ -1516,6 +1749,7 @@ type boardSummary struct {
 	InProgress    []boardTask    `json:"in_progress"`
 	PlanReview    []boardTask    `json:"plan_review"`
 	HumanRequired []boardTask    `json:"human_required"`
+	Blocked       []boardTask    `json:"blocked"`
 }
 
 func cmdBoard(s *task.Manager, jsonOut bool) int {
@@ -1539,6 +1773,7 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 			Title:        t.Title,
 			ProjectID:    t.ProjectID,
 			StatusReason: t.StatusReason,
+			Blocker:      t.Blocker,
 		}
 		// Find the latest running agent run.
 		for i := range slices.Backward(t.AgentRuns) {
@@ -1558,6 +1793,7 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		InProgress:    []boardTask{},
 		PlanReview:    []boardTask{},
 		HumanRequired: []boardTask{},
+		Blocked:       []boardTask{},
 	}
 
 	for i := range tasks {
@@ -1568,6 +1804,8 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 			summary.PlanReview = append(summary.PlanReview, toBoardTask(tasks[i]))
 		case task.StatusHumanRequired:
 			summary.HumanRequired = append(summary.HumanRequired, toBoardTask(tasks[i]))
+		case task.StatusBlocked:
+			summary.Blocked = append(summary.Blocked, toBoardTask(tasks[i]))
 		default:
 		}
 	}
@@ -1576,6 +1814,11 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		return printJSON(summary)
 	}
 
+	printBoardText(counts, summary)
+	return 0
+}
+
+func printBoardText(counts map[string]int, summary boardSummary) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "STATUS\tCOUNT")
 	for _, st := range task.AllStatuses() {
@@ -1587,7 +1830,8 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		fmt.Println("\nIN PROGRESS:")
 		w2 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		_, _ = fmt.Fprintln(w2, "ID\tAGENT\tRUNNING_FOR\tTITLE")
-		for _, t := range summary.InProgress {
+		for i := range summary.InProgress {
+			t := &summary.InProgress[i]
 			_, _ = fmt.Fprintf(w2, "%s\t%s\t%ds\t%s\n", t.ID, t.AgentID, t.RunningForS, t.Title)
 		}
 		_ = w2.Flush()
@@ -1597,13 +1841,28 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 		fmt.Println("\nHUMAN REQUIRED:")
 		w3 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		_, _ = fmt.Fprintln(w3, "ID\tTITLE\tREASON")
-		for _, t := range summary.HumanRequired {
+		for i := range summary.HumanRequired {
+			t := &summary.HumanRequired[i]
 			_, _ = fmt.Fprintf(w3, "%s\t%s\t%s\n", t.ID, t.Title, t.StatusReason)
 		}
 		_ = w3.Flush()
 	}
 
-	return 0
+	if len(summary.Blocked) > 0 {
+		fmt.Println("\nBLOCKED:")
+		w4 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(w4, "ID\tTITLE\tKIND\tNEXT_ACTION\tRETRY_AFTER\tEXHAUSTED\tREASON")
+		for i := range summary.Blocked {
+			t := &summary.Blocked[i]
+			retryAfter := ""
+			if t.Blocker.RetryAfter != nil {
+				retryAfter = t.Blocker.RetryAfter.Format(time.RFC3339)
+			}
+			_, _ = fmt.Fprintf(w4, "%s\t%s\t%s\t%s\t%s\t%t\t%s\n",
+				t.ID, t.Title, t.Blocker.Kind, t.Blocker.NextAction, retryAfter, t.Blocker.Exhausted, t.StatusReason)
+		}
+		_ = w4.Flush()
+	}
 }
 
 func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {
@@ -1675,6 +1934,10 @@ func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {
 		fmt.Println()
 		printDockerBlock(*report.Docker)
 	}
+	if report.Pressure != nil {
+		fmt.Println()
+		printPressureBlock(*report.Pressure)
+	}
 	if report.Processes == nil {
 		return 0
 	}
@@ -1698,6 +1961,7 @@ type healthReport struct {
 	Findings    []json.RawMessage      `json:"findings"`
 	Stats       json.RawMessage        `json:"stats"`
 	Docker      *healthDockerDiskUsage `json:"docker,omitempty"`
+	Pressure    *healthPressureStatus  `json:"pressure,omitempty"`
 	Processes   *healthProcessSummary  `json:"processes,omitempty"`
 }
 
@@ -1722,6 +1986,22 @@ type healthProcess struct {
 	CPUPercent float64 `json:"cpuPercent"`
 	MemPercent float64 `json:"memPercent"`
 	Owned      bool    `json:"owned"`
+}
+
+type healthPressureStatus struct {
+	DiskFreePct         float64              `json:"diskFreePct"`
+	MemAvailablePct     float64              `json:"memAvailablePct"`
+	LoadPerCPU          float64              `json:"loadPerCpu"`
+	WarningDiskFreePct  float64              `json:"warningDiskFreePct"`
+	CriticalDiskFreePct float64              `json:"criticalDiskFreePct"`
+	LastReclaim         *healthReclaimStatus `json:"lastReclaim,omitempty"`
+}
+
+type healthReclaimStatus struct {
+	RanAt              string `json:"ranAt"`
+	ReclaimedBytes     int64  `json:"reclaimedBytes"`
+	UnreclaimableBytes int64  `json:"unreclaimableBytes"`
+	Errors             int    `json:"errors"`
 }
 
 func printProcessBlock(title string, processes []healthProcess) {
@@ -1751,6 +2031,45 @@ func printDockerBlock(docker healthDockerDiskUsage) {
 	if docker.ManualCommand != "" {
 		fmt.Printf("  Manual cleanup: %s\n", docker.ManualCommand)
 	}
+}
+
+func printPressureBlock(pressure healthPressureStatus) {
+	fmt.Println("Pressure:")
+	fmt.Printf("  Disk free: %s", formatHealthPercent(pressure.DiskFreePct, 1))
+	if pressure.WarningDiskFreePct > 0 || pressure.CriticalDiskFreePct > 0 {
+		fmt.Printf(" (warning %.1f%%, critical %.1f%%)", pressure.WarningDiskFreePct, pressure.CriticalDiskFreePct)
+	}
+	fmt.Println()
+	fmt.Printf("  Memory available: %s\n", formatHealthPercent(pressure.MemAvailablePct, 1))
+	fmt.Printf("  Load per CPU: %s\n", formatHealthNumber(pressure.LoadPerCPU, 2))
+	if pressure.LastReclaim != nil {
+		fmt.Printf("  Last reclaim: %s reclaimed, %s unreclaimable, errors %d",
+			humanBytes(pressure.LastReclaim.ReclaimedBytes),
+			humanBytes(pressure.LastReclaim.UnreclaimableBytes),
+			pressure.LastReclaim.Errors)
+		if pressure.LastReclaim.RanAt != "" {
+			fmt.Printf(" at %s", pressure.LastReclaim.RanAt)
+		}
+		fmt.Println()
+	}
+}
+
+// -1 is the persisted sentinel for "signal unreadable" (see
+// health.PressureStatus) — encoding/json can't round-trip the source NaN, so
+// the Checker sanitizes it to -1 before writing health-report.json. The
+// math.IsNaN check stays as defense in depth for any other in-process caller.
+func formatHealthPercent(v float64, digits int) string {
+	if math.IsNaN(v) || v < 0 {
+		return "unavailable"
+	}
+	return fmt.Sprintf("%.*f%%", digits, v)
+}
+
+func formatHealthNumber(v float64, digits int) string {
+	if math.IsNaN(v) || v < 0 {
+		return "unavailable"
+	}
+	return fmt.Sprintf("%.*f", digits, v)
 }
 
 func cmdMonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
@@ -2009,8 +2328,7 @@ Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
            STATUS: %s
   get      [--compact] <id>
-  create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
-           TYPE: normal|debug|research
+  create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
   handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--source-provider claude|codex|copilot|opencode] [--pr N] [--mode MODE] [--tags t1,t2]
            Hand a task to Sybra at a workflow entry point, reusing the given git worktree
            (default: cwd). Project is derived from the worktree's origin remote
@@ -2024,7 +2342,8 @@ Commands:
            Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker
            plus one blocked child per sub-issue, with dependency edges extracted by an
            LLM planner. Re-running only materializes sub-issues without an existing task.
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E] [--blocker-kind K] [--blocker-code C] [--blocker-next-action A] [--blocker-retry-after RFC3339] [--blocker-exhausted] [--blocker-clear]
+           --blocker-* flags seed from the task's current blocker state and override only the given fields; --blocker-clear removes it entirely.
            --issue sets ref_issue, an ad-hoc reference annotation — it never
            overwrites the task's canonical (auto-close) issue set at creation
   link-pr  <id> <pr-number>
@@ -2101,10 +2420,17 @@ func usageProjectAndOps() {
 
   config dump                  Print the resolved ~/.sybra/config.yaml (env
                                overrides applied, secrets redacted).
+  config explain <path>        Explain a public config path: effective value,
+                               operator intent, overrides, aliases, and reload
+                               policy. Secrets stay redacted.
   config doctor                Sanity-check config: data dirs, agent.provider,
                                agent.headless_permission_mode,
                                agent.sandbox_mode, and enabled integrations
                                missing required credentials.%s
+  config migrate --to 2 [--dry-run]
+                               Rewrite config.yaml into the canonical schema v2
+                               namespace layout. Dry-run prints semantic moves
+                               only; apply creates a timestamped backup first.
 
 Global flags:
   --json   Output as JSON
@@ -2493,31 +2819,24 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 
 func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: config <dump|doctor>")
+		return fatal(jsonOut, "usage: config <dump|explain|doctor|migrate>")
 	}
 	switch sub := args[0]; sub {
 	case "dump":
 		return cmdConfigDump(cfg, jsonOut)
+	case "explain":
+		return cmdConfigExplain(cfg, args[1:], jsonOut)
 	case "doctor":
 		return cmdConfigDoctor(cfg, jsonOut)
+	case "migrate":
+		return cmdConfigMigrate(args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown config command: %s", sub)
 	}
 }
 
-// redactedConfig returns a shallow copy of cfg with credential fields
-// blanked out. Keep in sync with cmd/gen-config-docs's redactedYAMLPaths —
-// both exist because the doc generator redacts a default value that's
-// always empty anyway, while this redacts a live, possibly populated value.
 func redactedConfig(cfg *config.Config) config.Config {
-	out := *cfg
-	if out.Todoist.APIToken != "" {
-		out.Todoist.APIToken = "[redacted]"
-	}
-	if out.Server.AuthToken != "" {
-		out.Server.AuthToken = "[redacted]"
-	}
-	return out
+	return config.RedactedCopy(cfg)
 }
 
 func cmdConfigDump(cfg *config.Config, jsonOut bool) int {
@@ -2533,6 +2852,58 @@ func cmdConfigDump(cfg *config.Config, jsonOut bool) int {
 	return 0
 }
 
+func cmdConfigExplain(cfg *config.Config, args []string, jsonOut bool) int {
+	if len(args) != 1 {
+		return fatal(jsonOut, "usage: config explain <path>")
+	}
+	explanation, err := sybra.LoadConfigPathExplanation(args[0], cfg, cfg)
+	if err != nil {
+		return fatal(jsonOut, "config explain: %v", err)
+	}
+	if jsonOut {
+		return printJSON(explanation)
+	}
+	fmt.Printf("path:\t%s\n", explanation.Descriptor.Path)
+	if explanation.Descriptor.RuntimePath != explanation.Descriptor.Path {
+		fmt.Printf("runtime path:\t%s\n", explanation.Descriptor.RuntimePath)
+	}
+	fmt.Printf("effective:\t%s\n", renderPathValue(explanation.Effective))
+	fmt.Printf("intent:\t%s\n", renderPathValue(explanation.Intent))
+	fmt.Printf("default:\t%s\n", renderPathValue(explanation.Default))
+	fmt.Printf("reload:\t%s\n", explanation.ReloadPolicy)
+	fmt.Printf("visibility:\t%s\n", explanation.Visibility)
+	if explanation.Override != nil {
+		fmt.Printf("override:\t%s\n", renderPathValue(*explanation.Override))
+	}
+	if len(explanation.Descriptor.EnvVars) > 0 {
+		fmt.Printf("env vars:\t%s\n", strings.Join(explanation.Descriptor.EnvVars, ", "))
+	}
+	if len(explanation.Descriptor.LegacyPaths) > 0 {
+		fmt.Printf("aliases:\t%s\n", strings.Join(explanation.Descriptor.LegacyPaths, ", "))
+	}
+	if explanation.Descriptor.Unit != "" {
+		fmt.Printf("unit:\t%s\n", explanation.Descriptor.Unit)
+	}
+	if len(explanation.Descriptor.Constraints) > 0 {
+		fmt.Printf("constraints:\t%s\n", strings.Join(explanation.Descriptor.Constraints, "; "))
+	}
+	return 0
+}
+
+func renderPathValue(v config.PathValue) string {
+	if !v.Declared {
+		return "(none)"
+	}
+	value := fmt.Sprintf("%v", v.Value)
+	if !v.Present && !v.Redacted {
+		value = fmt.Sprintf("%v", v.Value)
+	}
+	if v.Path != "" {
+		return fmt.Sprintf("%s [%s via %s]", value, v.Source, v.Path)
+	}
+	return fmt.Sprintf("%s [%s]", value, v.Source)
+}
+
 type configDoctorFinding struct {
 	Severity string `json:"severity"` // "error", "warning", or "ok" (no findings)
 	Message  string `json:"message"`
@@ -2540,6 +2911,94 @@ type configDoctorFinding struct {
 
 type configDoctorReport struct {
 	Findings []configDoctorFinding `json:"findings"`
+	Routing  config.RoutingSummary `json:"routing"`
+}
+
+type configMigrateReport struct {
+	ToVersion  int                    `json:"toVersion"`
+	DryRun     bool                   `json:"dryRun"`
+	Changed    bool                   `json:"changed"`
+	BackupPath string                 `json:"backupPath,omitempty"`
+	Moves      []config.MigrationMove `json:"moves,omitempty"`
+	Warnings   []string               `json:"warnings,omitempty"`
+}
+
+func cmdConfigMigrate(args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("config migrate", flag.ContinueOnError)
+	to := fs.Int("to", 0, "target schema version")
+	dryRun := fs.Bool("dry-run", false, "show the migration plan without writing config.yaml")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "usage: config migrate --to %d [--dry-run]", config.CurrentSchemaVersion)
+	}
+	if *to != config.CurrentSchemaVersion {
+		return fatal(jsonOut, "config migrate: only --to %d is supported", config.CurrentSchemaVersion)
+	}
+	if extra := fs.Args(); len(extra) > 0 {
+		return fatal(jsonOut, "config migrate: unexpected args: %s", strings.Join(extra, " "))
+	}
+
+	path := config.ConfigPath()
+	raw, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+		raw = []byte{}
+	case err != nil:
+		return fatal(jsonOut, "config migrate: read %s: %v", path, err)
+	}
+
+	result, err := config.MigrateRawConfig(raw, *to)
+	if err != nil {
+		return fatal(jsonOut, "config migrate: %v", err)
+	}
+
+	report := configMigrateReport{
+		ToVersion: result.ToVersion,
+		DryRun:    *dryRun,
+		Changed:   result.Changed,
+		Moves:     result.Moves,
+		Warnings:  result.Warnings,
+	}
+	if !*dryRun && result.Changed {
+		backupPath := filepath.Join(filepath.Dir(path), config.TimestampedMigrationBackupName(time.Now()))
+		if err := os.WriteFile(backupPath, raw, 0o600); err != nil {
+			return fatal(jsonOut, "config migrate: write backup %s: %v", backupPath, err)
+		}
+		if err := config.WriteRawConfig(result.MigratedRaw); err != nil {
+			return fatal(jsonOut, "config migrate: write migrated config: %v", err)
+		}
+		report.BackupPath = backupPath
+	}
+
+	if jsonOut {
+		return printJSON(report)
+	}
+	if !report.Changed {
+		fmt.Printf("config already at schema_version %d; no changes\n", report.ToVersion)
+		if len(report.Warnings) > 0 {
+			for _, warning := range report.Warnings {
+				fmt.Printf("warning: %s\n", warning)
+			}
+		}
+		return 0
+	}
+	if report.DryRun {
+		fmt.Printf("would migrate %s to schema_version %d\n", path, report.ToVersion)
+	} else {
+		fmt.Printf("migrated %s to schema_version %d\n", path, report.ToVersion)
+		fmt.Printf("backup: %s\n", report.BackupPath)
+	}
+	for _, move := range report.Moves {
+		if move.ValueFrom != "" || move.ValueTo != "" {
+			fmt.Printf("%s -> %s (%s -> %s)\n", move.From, move.To, move.ValueFrom, move.ValueTo)
+			continue
+		}
+		fmt.Printf("%s -> %s\n", move.From, move.To)
+	}
+	for _, warning := range report.Warnings {
+		fmt.Printf("warning: %s\n", warning)
+	}
+	return 0
 }
 
 func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
@@ -2547,6 +3006,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	add := func(severity, format string, a ...any) {
 		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
 	}
+	routing := config.BuildRoutingSummary(cfg)
 
 	addConfigPermFindings(add)
 
@@ -2574,36 +3034,18 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		}
 	}
 
-	if cfg.Agent.Provider != "" {
-		if _, err := task.ValidateAgentProvider(cfg.Agent.Provider); err != nil {
-			add("error", "agent.provider: %v", err)
+	if err := config.ValidateResolvedConfig(cfg); err != nil {
+		for _, msg := range config.ValidationMessages(err) {
+			add("error", "%s", msg)
 		}
 	}
-	if cfg.Agent.HeadlessPermissionMode != "" {
-		if _, err := config.NormalizeHeadlessPermissionMode(cfg.Agent.HeadlessPermissionMode); err != nil {
-			add("error", "agent.headless_permission_mode: %v", err)
-		}
-	}
-	if cfg.Agent.SandboxMode != "" {
-		mode, err := config.NormalizeSandboxMode(cfg.Agent.SandboxMode)
-		if err != nil {
-			add("error", "agent.sandbox_mode: %v", err)
-		} else if mode == "enforce" && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-			add("error", "agent.sandbox_mode=enforce requires darwin or linux; current host is %s", runtime.GOOS)
-		}
-	}
+	addGitHubPollingFindings(cfg, add)
+	addProviderModelCompatibilityFindings(cfg, add)
 
-	if cfg.Todoist.Enabled && cfg.Todoist.APIToken == "" {
-		add("error", "todoist.enabled is true but no API token is set (todoist.api_token or SYBRA_TODOIST_TOKEN)")
+	addK8sFailedTTLFindings(cfg, add)
+	for _, warning := range routing.Warnings {
+		add("warning", "routing: %s", warning)
 	}
-	if cfg.GitHub.PollerRole != "" && cfg.GitHub.PollerRole != "primary" && cfg.GitHub.PollerRole != "secondary" {
-		add("error", "github.poller_role must be \"primary\", \"secondary\", or empty, got %q", cfg.GitHub.PollerRole)
-	}
-	if cfg.GitHub.App.Enabled && cfg.GitHub.App.PrivateKeyPath == "" {
-		add("error", "github.app.enabled is true but github.app.private_key_path is empty")
-	}
-
-	addK8sSecretEnvFindings(cfg, add)
 
 	if len(findings) == 0 {
 		add("ok", "no issues found")
@@ -2616,7 +3058,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		}
 	}
 
-	report := configDoctorReport{Findings: findings}
+	report := configDoctorReport{Findings: findings, Routing: routing}
 	if jsonOut {
 		if code := printJSON(report); code != 0 {
 			return code
@@ -2627,6 +3069,22 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		return 0
 	}
 
+	fmt.Printf("routing provider preference: %s\n", report.Routing.ProviderPreference)
+	fmt.Printf("routing ab_testing: %t", report.Routing.ABTestingEnabled)
+	if report.Routing.ABTestingExplicit {
+		fmt.Print(" (explicit)")
+	}
+	fmt.Print("\n")
+	fmt.Printf("routing adaptive routing: %t\n", report.Routing.AdaptiveRoutingEnabled)
+	if len(report.Routing.Precedence) > 0 {
+		fmt.Printf("routing precedence: %s\n", strings.Join(report.Routing.Precedence, " -> "))
+	}
+	if len(report.Routing.EligibleVariants) > 0 {
+		fmt.Println("routing eligible variants:")
+		for _, variant := range report.Routing.EligibleVariants {
+			fmt.Printf("  - %s/%s %s %s (%s)\n", variant.ExperimentID, variant.VariantID, variant.Provider, variant.Model, variant.Reason)
+		}
+	}
 	for _, f := range findings {
 		fmt.Printf("[%s] %s\n", f.Severity, f.Message)
 	}
@@ -2636,29 +3094,65 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	return 0
 }
 
-// addK8sSecretEnvFindings validates agent.k8s_jobs.secret_env whenever k8s_jobs
-// is enabled at all: baseEnv (internal/agent/k8s_job_runner.go) injects these
-// entries into the Job container regardless of agent.k8s_jobs.mode, and an
-// incomplete entry is silently dropped there rather than erroring.
-func addK8sSecretEnvFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+func addGitHubPollingFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil {
+		return
+	}
+	add("ok", "github issues polling: %s", githubPollingStatus(cfg.GitHub.Enabled, cfg.GitHub.Polling.Issues.Enabled, cfg.GitHub.RunsSearchPollers(), false))
+	add("ok", "github sybra prs polling: %s", githubPollingStatus(cfg.GitHub.Enabled, cfg.GitHub.Polling.SybraPRs.Enabled, cfg.GitHub.RunsSearchPollers(), true))
+	add("ok", "github assigned prs polling: %s", githubPollingStatus(cfg.GitHub.Enabled, cfg.GitHub.Polling.AssignedPRs.Enabled, cfg.GitHub.RunsSearchPollers(), false))
+}
+
+func githubPollingStatus(githubEnabled, streamEnabled, ownsSearches, localMonitorOnly bool) string {
+	switch {
+	case !githubEnabled:
+		return "disabled by github.enabled=false"
+	case !streamEnabled:
+		return "disabled by stream toggle"
+	case localMonitorOnly && !ownsSearches:
+		return "active (known linked PR monitor only; poller_role=secondary)"
+	case !ownsSearches:
+		return "inactive on this machine (poller_role=secondary)"
+	default:
+		return "active"
+	}
+}
+
+// addK8sFailedTTLFindings warns when ttl_seconds_after_finished is set low
+// enough to undermine failed_ttl_seconds_after_finished: the runner extends a
+// failed Job's TTL by PATCHing it after the fact
+// (internal/agent/k8s_job_runner.go), but per Kubernetes' own
+// ttlSecondsAfterFinished docs a late-extended TTL is not guaranteed to be
+// honored once the original, shorter window has elapsed.
+func addK8sFailedTTLFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
 	if !cfg.Agent.K8sJobs.Enabled {
 		return
 	}
-	for i, e := range cfg.Agent.K8sJobs.SecretEnv {
-		var missing []string
-		if strings.TrimSpace(e.Name) == "" {
-			missing = append(missing, "name")
-		}
-		if strings.TrimSpace(e.SecretName) == "" {
-			missing = append(missing, "secret_name")
-		}
-		if strings.TrimSpace(e.SecretKey) == "" {
-			missing = append(missing, "secret_key")
-		}
-		if len(missing) > 0 {
-			add("error", "agent.k8s_jobs.secret_env[%d]: missing %s", i, strings.Join(missing, ", "))
-		}
+	ttl := cfg.Agent.K8sJobs.TTL
+	failedTTL := cfg.Agent.K8sJobs.FailedTTL
+	if ttl > 0 && ttl < 30 && failedTTL != ttl {
+		add("warning", "agent.k8s_jobs.ttl_seconds_after_finished is %ds — Kubernetes does not guarantee honoring the failed_ttl_seconds_after_finished extension once such a short window has already elapsed", ttl)
 	}
+}
+
+func addProviderModelCompatibilityFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil || !cfg.Providers.AutoFailover {
+		return
+	}
+	check := func(path, provider, model string) {
+		trimmed := strings.TrimSpace(model)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := modeltier.InferTier(trimmed); ok {
+			return
+		}
+		add("warning", "%s=%q targets provider %q, but failover cannot remap that concrete model on provider switch", path, trimmed, provider)
+	}
+	check("agent.model", cfg.Agent.Provider, cfg.Agent.Model)
+	check("monitor.model", cfg.Agent.Provider, cfg.Monitor.Model)
+	check("watchdog.model", cfg.Agent.Provider, cfg.Watchdog.Model)
+	check("human_review.model", cfg.Agent.Provider, cfg.HumanReviewModel())
 }
 
 func addConfigPermFindings(add func(severity, format string, a ...any)) {

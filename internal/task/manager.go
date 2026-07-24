@@ -41,7 +41,7 @@ type Manager struct {
 	emitter      EventEmitter
 	locks        sync.Map // string -> *sync.Mutex
 	onStatusHook StatusChangeHook
-	onDeleteHook DeleteHook
+	onDeleteHook []DeleteHook
 
 	// firedMu/firedStatus tracks the most recent status value that has
 	// triggered onStatusHook. OnExternalUpdate uses it to dedupe repeated
@@ -56,8 +56,14 @@ type Manager struct {
 func (m *Manager) SetStatusChangeHook(h StatusChangeHook) { m.onStatusHook = h }
 
 // SetDeleteHook registers a callback fired after a task is successfully deleted.
-// Passing nil disables the hook.
-func (m *Manager) SetDeleteHook(h DeleteHook) { m.onDeleteHook = h }
+// Passing nil clears every registered delete hook.
+func (m *Manager) SetDeleteHook(h DeleteHook) {
+	if h == nil {
+		m.onDeleteHook = nil
+		return
+	}
+	m.onDeleteHook = append(m.onDeleteHook, h)
+}
 
 // NewManager constructs a Manager over the given Store. If emitter is nil,
 // events are discarded.
@@ -253,17 +259,6 @@ func (m *Manager) Put(t Task) (Task, bool, error) {
 	return saved, !existed, nil
 }
 
-// CreateChat persists a synthetic chat task and emits task:created.
-func (m *Manager) CreateChat(projectID string) (Task, error) {
-	t, err := m.store.CreateChat(projectID)
-	if err != nil {
-		return t, err
-	}
-	metrics.TaskCreated()
-	m.emitter.Emit(events.TaskCreated, t.FilePath)
-	return t, nil
-}
-
 // Update applies field updates to a task and emits task:updated.
 // Serializes with other Update/AddRun/UpdateRun/Delete calls for the same id.
 //
@@ -398,8 +393,8 @@ func (m *Manager) Delete(id string) error {
 	// the lock self-deadlocks the goroutine on its own non-reentrant mutex.
 	metrics.TaskDeleted()
 	m.emitter.Emit(events.TaskDeleted, t.FilePath)
-	if m.onDeleteHook != nil {
-		m.onDeleteHook(id)
+	for _, hook := range m.onDeleteHook {
+		hook(id)
 	}
 	return nil
 }

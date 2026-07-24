@@ -169,6 +169,10 @@ func (e *Engine) retryOrOpenPRForUnrunnableGate(taskID, stepID string, wfExec *E
 	if parked {
 		return StepOutput{}, errStepParked
 	}
+	return e.openPRForUnrunnableTestingGate(taskID, stepID)
+}
+
+func (e *Engine) openPRForUnrunnableTestingGate(taskID, stepID string) (StepOutput, error) {
 	reason := "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review"
 	if err := e.tasks.UpdateTaskStatus(taskID, "ready-pr", reason); err != nil {
 		return StepOutput{}, err
@@ -2803,7 +2807,7 @@ func hasInterveningCodeAuthorRun(runs []AgentRunInfo, prev, current int) bool {
 
 func isCodeAuthorRun(run AgentRunInfo) bool {
 	switch run.Role {
-	case "", "implementation", "fix-review", "pr-fix":
+	case "", "implementation", "fix-review", "pr-fix", "test-fix":
 		return true
 	default:
 		return false

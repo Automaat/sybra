@@ -12,8 +12,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestSelectDeterministic(t *testing.T) {
+func enabledDefaultConfig() Config {
 	cfg := DefaultConfig()
+	enabled := true
+	cfg.Enabled = &enabled
+	return cfg
+}
+
+func TestSelectDeterministic(t *testing.T) {
+	cfg := enabledDefaultConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("DefaultConfig().Validate: %v", err)
 	}
@@ -32,6 +39,27 @@ func TestSelectDeterministic(t *testing.T) {
 		if !reflect.DeepEqual(got, a) {
 			t.Fatalf("assignment changed: got %+v want %+v", got, a)
 		}
+	}
+}
+
+func TestSelectStampsDecisionVersionFromConfigWeightsVersion(t *testing.T) {
+	cfg := enabledDefaultConfig()
+	a, ok, err := Select(cfg, "task-1", "implementation", "implement")
+	if err != nil || !ok {
+		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.DecisionVersion != 0 {
+		t.Fatalf("DecisionVersion = %d, want 0 for a config with no WeightsVersion", a.DecisionVersion)
+	}
+
+	version := 42
+	cfg.WeightsVersion = &version
+	a, ok, err = Select(cfg, "task-1", "implementation", "implement")
+	if err != nil || !ok {
+		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.DecisionVersion != 42 {
+		t.Fatalf("DecisionVersion = %d, want 42", a.DecisionVersion)
 	}
 }
 
@@ -87,7 +115,7 @@ func TestSelectSkipsNonMatchingRole(t *testing.T) {
 }
 
 func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	cases := []struct {
 		role         string
 		experimentID string
@@ -123,7 +151,7 @@ func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 // requires this), and their enrollment is controlled by offline eval gates
 // instead of provider-balance checks.
 func TestDefaultConfigEnrollsEveryProviderUniformly(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	for _, exp := range cfg.Experiments {
 		if exp.KindValue() == "prompt" || exp.KindValue() == "skill" {
 			continue
@@ -144,7 +172,7 @@ func TestDefaultConfigEnrollsEveryProviderUniformly(t *testing.T) {
 }
 
 func TestDefaultConfigUsesExpensiveBracketForFixReview(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	for i := range 100 {
 		a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), "fix-review", "step")
 		if err != nil || !ok {
@@ -162,7 +190,7 @@ func TestDefaultConfigUsesExpensiveBracketForFixReview(t *testing.T) {
 }
 
 func TestDefaultConfigUsesExpensiveBracketForReviewRoles(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	for _, role := range []string{"review", "plan"} {
 		t.Run(role, func(t *testing.T) {
 			for i := range 100 {
@@ -188,7 +216,7 @@ func TestDefaultConfigUsesExpensiveBracketForReviewRoles(t *testing.T) {
 }
 
 func TestDefaultConfigReviewTightenVariantIsDigestedPromptTransform(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	var found *Variant
 	for i := range cfg.Experiments {
 		if cfg.Experiments[i].ID != "review-tighten-instructions-pl-a2d853b2c1d9" {
@@ -906,7 +934,7 @@ func TestSelectEligibleEvalPassedSeam(t *testing.T) {
 }
 
 func TestSelectEligibleNilEvalPassedUnchanged(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("DefaultConfig().Validate: %v", err)
 	}

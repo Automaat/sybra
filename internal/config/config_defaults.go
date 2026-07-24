@@ -59,6 +59,11 @@ func (c *Config) RetryWatchdog() int {
 // redispatching forever.
 const DefaultMaxCheckpoints = 3
 
+// DefaultMaxReviewRounds bounds how many automated review rounds one
+// simple-task-review execution may spend before Sybra parks the task
+// blocked.
+const DefaultMaxReviewRounds = 3
+
 // MaxCheckpoints returns the configured checkpoint-handoff cap or
 // DefaultMaxCheckpoints when unset/non-positive.
 func (c *Config) MaxCheckpoints() int {
@@ -213,6 +218,24 @@ func (c *Config) ReviewUntilClean() bool {
 	return true
 }
 
+// MaxReviewRounds returns the configured automated review-round cap or the
+// default when unset/non-positive.
+func (c *Config) MaxReviewRounds() int {
+	if c != nil && c.Agent.MaxReviewRounds > 0 {
+		return c.Agent.MaxReviewRounds
+	}
+	return DefaultMaxReviewRounds
+}
+
+// AllowUnboundedReviewRounds reports whether the legacy uncapped
+// review→fix→review loop is explicitly enabled.
+func (c *Config) AllowUnboundedReviewRounds() bool {
+	if c != nil && c.Agent.AllowUnboundedReviewRounds != nil {
+		return *c.Agent.AllowUnboundedReviewRounds
+	}
+	return false
+}
+
 // PromptLabAutoApprove reports whether a filed Prompt Lab proposal may start
 // its authoring workflow without a human click. Defaults to true, but is
 // hard-gated on evaluation.offline.enabled regardless of the setting.
@@ -336,13 +359,13 @@ func (c *Config) SurviveRestartEnabled() bool {
 }
 
 // InAppBrowserEnabled reports whether the desktop app should open external
-// links in the in-app Sybra Browser webview. Defaults to true when unset so
-// existing installs keep their current behavior without migration.
+// links in the in-app Sybra Browser webview. Defaults to false when unset;
+// the embedded browser is opt-in via explicit browser.in_app: true.
 func (c *Config) InAppBrowserEnabled() bool {
 	if c != nil && c.Browser.InApp != nil {
 		return *c.Browser.InApp
 	}
-	return true
+	return false
 }
 
 // DefaultTestingMaxConcurrent bounds concurrent test-runner agents (each owns
@@ -395,6 +418,10 @@ const (
 	DefaultIssuesSeconds                = 600 // was 300
 	DefaultRenovateFastSeconds          = 120 // was 60
 	DefaultRenovateSlowSeconds          = 600 // was 300
+	// DefaultFlakySuccessThreshold is the fallback same-check success rate
+	// (0-1) above which a currently-failing gating check is classified
+	// flaky rather than deterministic. See GitHubConfig.FlakyThreshold.
+	DefaultFlakySuccessThreshold = 0.75
 )
 
 // RunsSearchPollers reports whether this machine owns the periodic GitHub
@@ -407,13 +434,37 @@ func (c GitHubConfig) RunsSearchPollers() bool {
 // RunsIssuesFetcher reports the effective state of the GitHub Issues fetcher:
 // the top-level kill-switch AND the issues-specific sub-toggle.
 func (c GitHubConfig) RunsIssuesFetcher() bool {
-	return c.Enabled && c.IssuesEnabled
+	return c.Enabled && c.Polling.Issues.Enabled
 }
 
-// RunsReviewer reports the effective state of PR reviewer poll registration:
-// the top-level kill-switch AND the reviews-specific sub-toggle.
+// RunsSybraPRs reports whether Sybra's own PR-monitoring stream is enabled on
+// this machine. A secondary still monitors known linked task PRs even when the
+// global author:@me search leg is skipped.
+func (c GitHubConfig) RunsSybraPRs() bool {
+	return c.Enabled && c.Polling.SybraPRs.Enabled
+}
+
+// RunsAssignedPRs reports whether inbound review discovery is enabled before
+// poller-role gating is applied.
+func (c GitHubConfig) RunsAssignedPRs() bool {
+	return c.Enabled && c.Polling.AssignedPRs.Enabled
+}
+
+// RunsSybraPRSearches reports whether the self-authored PR search leg runs on
+// this machine.
+func (c GitHubConfig) RunsSybraPRSearches() bool {
+	return c.RunsSybraPRs() && c.RunsSearchPollers()
+}
+
+// RunsAssignedPRSearches reports whether the assigned/reviewed-by search legs
+// run on this machine.
+func (c GitHubConfig) RunsAssignedPRSearches() bool {
+	return c.RunsAssignedPRs() && c.RunsSearchPollers()
+}
+
+// RunsReviewer is the compatibility aggregate for the shared review handler.
 func (c GitHubConfig) RunsReviewer() bool {
-	return c.Enabled && c.ReviewsEnabled
+	return c.RunsSybraPRs() || c.RunsAssignedPRs()
 }
 
 // ReviewRoundsPerHourLimit resolves the per-PR review rate cap. 0 means unset
@@ -425,12 +476,20 @@ func (c GitHubConfig) ReviewRoundsPerHourLimit() int {
 	return c.ReviewRoundsPerHour
 }
 
-func (c GitHubConfig) reviewsFast() time.Duration {
-	return secsOr(c.ReviewsFastSeconds, DefaultReviewsFastSeconds)
+func (c GitHubConfig) sybraPRsActive() time.Duration {
+	return secsOr(c.Polling.SybraPRs.ActiveIntervalSeconds, DefaultReviewsFastSeconds)
 }
 
-func (c GitHubConfig) reviewsSlow() time.Duration {
-	return secsOr(c.ReviewsSlowSeconds, DefaultReviewsSlowSeconds)
+func (c GitHubConfig) sybraPRsIdle() time.Duration {
+	return secsOr(c.Polling.SybraPRs.IdleIntervalSeconds, DefaultReviewsSlowSeconds)
+}
+
+func (c GitHubConfig) assignedPRsActive() time.Duration {
+	return secsOr(c.Polling.AssignedPRs.ActiveIntervalSeconds, DefaultReviewsFastSeconds)
+}
+
+func (c GitHubConfig) assignedPRsIdle() time.Duration {
+	return secsOr(c.Polling.AssignedPRs.IdleIntervalSeconds, DefaultReviewsSlowSeconds)
 }
 
 // ReviewsMaxPRsPerTick returns the configured per-tick linked-PR cap.
@@ -468,18 +527,40 @@ func (c *Config) ReviewsStableBackoffMaxTicks() int {
 	}
 }
 
-// ReviewsFast/ReviewsSlow/Issues/RenovateFast/RenovateSlow return resolved poll
-// intervals (override or raised default).
-func (c GitHubConfig) ReviewsFast() time.Duration { return c.reviewsFast() }
-func (c GitHubConfig) ReviewsSlow() time.Duration { return c.reviewsSlow() }
+// ReviewsFast/ReviewsSlow remain compatibility helpers for the legacy single
+// review stream. New code should use the per-stream helpers below.
+func (c GitHubConfig) ReviewsFast() time.Duration { return c.sybraPRsActive() }
+func (c GitHubConfig) ReviewsSlow() time.Duration { return c.sybraPRsIdle() }
+func (c GitHubConfig) SybraPRsActive() time.Duration {
+	return c.sybraPRsActive()
+}
+func (c GitHubConfig) SybraPRsIdle() time.Duration {
+	return c.sybraPRsIdle()
+}
+func (c GitHubConfig) AssignedPRsActive() time.Duration {
+	return c.assignedPRsActive()
+}
+func (c GitHubConfig) AssignedPRsIdle() time.Duration {
+	return c.assignedPRsIdle()
+}
 func (c GitHubConfig) Issues() time.Duration {
-	return secsOr(c.IssuesSeconds, DefaultIssuesSeconds)
+	return secsOr(c.Polling.Issues.IntervalSeconds, DefaultIssuesSeconds)
 }
 func (c GitHubConfig) RenovateFast() time.Duration {
 	return secsOr(c.RenovateFastSeconds, DefaultRenovateFastSeconds)
 }
 func (c GitHubConfig) RenovateSlow() time.Duration {
 	return secsOr(c.RenovateSlowSeconds, DefaultRenovateSlowSeconds)
+}
+
+// FlakyThreshold resolves the configured same-check success-rate threshold
+// for flaky classification. Non-positive (unset) falls back to
+// DefaultFlakySuccessThreshold.
+func (c GitHubConfig) FlakyThreshold() float64 {
+	if c.FlakySuccessThreshold <= 0 {
+		return DefaultFlakySuccessThreshold
+	}
+	return c.FlakySuccessThreshold
 }
 
 func secsOr(v, def int) time.Duration {
@@ -494,6 +575,9 @@ func secsOr(v, def int) time.Duration {
 const DefaultHumanReviewMaxPerHour = 6
 
 const (
+	// HumanReviewSybraBugActionFileIssue is a legacy config value. It is
+	// accepted for compatibility but maps to note_only so the human-review
+	// automation no longer opens low-signal GitHub issues.
 	HumanReviewSybraBugActionFileIssue = "file_issue"
 	HumanReviewSybraBugActionLocalTask = "local_task"
 	HumanReviewSybraBugActionBlockOnly = "block_only"
@@ -508,7 +592,8 @@ func (c *Config) HumanReviewMaxPerHour() int {
 	return DefaultHumanReviewMaxPerHour
 }
 
-// HumanReviewRepo returns the configured target repo or "Automaat/sybra".
+// HumanReviewRepo returns the configured local tracking project or
+// "Automaat/sybra".
 func (c *Config) HumanReviewRepo() string {
 	if c != nil && c.HumanReview.Repo != "" {
 		return c.HumanReview.Repo
@@ -517,17 +602,19 @@ func (c *Config) HumanReviewRepo() string {
 }
 
 // HumanReviewModel returns the configured model name or alias, defaulting to
-// "claude-haiku-4-5-20251001". Same diagnosis shape as the watchdog
+// "haiku". Same diagnosis shape as the watchdog
 // inspector (applyWatchdogDefaults): classifying why a task stalled, not
 // authoring a fix.
 func (c *Config) HumanReviewModel() string {
 	if c != nil && c.HumanReview.Model != "" {
 		return c.HumanReview.Model
 	}
-	return "claude-haiku-4-5-20251001"
+	return "haiku"
 }
 
-// HumanReviewIssueLabel returns the configured label or "sybra-bug".
+// HumanReviewIssueLabel returns the legacy configured label or "sybra-bug".
+// Human-review no longer files GitHub issues directly, but the accessor is
+// kept so old configs and generated docs remain stable.
 func (c *Config) HumanReviewIssueLabel() string {
 	if c != nil && c.HumanReview.IssueLabel != "" {
 		return c.HumanReview.IssueLabel
@@ -537,11 +624,11 @@ func (c *Config) HumanReviewIssueLabel() string {
 
 func (c *Config) HumanReviewSybraBugAction() string {
 	if c == nil {
-		return HumanReviewSybraBugActionFileIssue
+		return HumanReviewSybraBugActionNoteOnly
 	}
 	switch strings.ToLower(strings.TrimSpace(c.HumanReview.SybraBugAction)) {
 	case "", HumanReviewSybraBugActionFileIssue:
-		return HumanReviewSybraBugActionFileIssue
+		return HumanReviewSybraBugActionNoteOnly
 	case HumanReviewSybraBugActionLocalTask:
 		return HumanReviewSybraBugActionLocalTask
 	case HumanReviewSybraBugActionBlockOnly:
@@ -549,8 +636,8 @@ func (c *Config) HumanReviewSybraBugAction() string {
 	case HumanReviewSybraBugActionNoteOnly:
 		return HumanReviewSybraBugActionNoteOnly
 	default:
-		slog.Warn("config: invalid human_review.sybra_bug_action; falling back to file_issue", "value", c.HumanReview.SybraBugAction)
-		return HumanReviewSybraBugActionFileIssue
+		slog.Warn("config: invalid human_review.sybra_bug_action; falling back to note_only", "value", c.HumanReview.SybraBugAction)
+		return HumanReviewSybraBugActionNoteOnly
 	}
 }
 
@@ -563,7 +650,38 @@ func HomeDir() string {
 }
 
 func DefaultConfig() *Config {
-	return &Config{
+	fileCfg, err := ParseFileConfig([]byte("{}\n"))
+	if err != nil {
+		panic(fmt.Sprintf("config: parse built-in empty config: %v", err))
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		panic(fmt.Sprintf("config: resolve built-in empty config: %v", err))
+	}
+	return resolved.Config
+}
+
+const DefaultAttachmentMaxSizeMB = 10
+
+// defaultEvaluationSeed seeds the two count/rate SLO caps where an explicit 0
+// is a meaningful "zero tolerance" target, so a YAML `0` survives instead of
+// being clobbered back by applySLOTargetDefaults (same pattern as
+// Watchdog.LoopThreshold). The fraction targets are deliberately left unset:
+// for those 0 is a degenerate target, so applySLOTargetDefaults fills them via
+// its <= 0 check.
+func defaultEvaluationSeed() EvaluationConfig {
+	d := DefaultSLOTargets()
+	return EvaluationConfig{
+		SLO: SLOTargets{
+			MaxIdenticalRetryCap: d.MaxIdenticalRetryCap,
+			MaxRestartsPerHour:   d.MaxRestartsPerHour,
+		},
+	}
+}
+
+func defaultSeedConfig() *Config {
+	cfg := &Config{
+		SchemaVersion: CurrentSchemaVersion,
 		Logging: LoggingConfig{
 			Level:     "info",
 			Dir:       defaultLogDir(),
@@ -574,12 +692,16 @@ func DefaultConfig() *Config {
 			Enabled:       true,
 			RetentionDays: 30,
 		},
+		Attachments: AttachmentConfig{
+			MaxSizeMB: DefaultAttachmentMaxSizeMB,
+		},
 		Agent: AgentDefaults{
 			Provider:         "claude",
 			MaxConcurrent:    25,
 			MaxCostUSD:       5.0,
 			MaxTurns:         150,
 			MaxCheckpoints:   DefaultMaxCheckpoints,
+			MaxReviewRounds:  DefaultMaxReviewRounds,
 			DispatchJitterMs: 1000,
 		},
 		Notification: NotificationConfig{
@@ -590,15 +712,15 @@ func DefaultConfig() *Config {
 			Author:  "app/renovate",
 		},
 		GitHub: GitHubConfig{
-			IssuesEnabled:  true,
-			ReviewsEnabled: true,
+			Polling: GitHubPollingConfig{
+				Issues:      GitHubPollingStreamConfig{Enabled: true},
+				SybraPRs:    GitHubPRPollingConfig{Enabled: true},
+				AssignedPRs: GitHubPRPollingConfig{Enabled: true},
+			},
 		},
-		Monitor: MonitorConfig{
-			Enabled: true,
-		},
-		HarnessEvolve: HarnessEvolveConfig{
-			Enabled: true,
-		},
+		Monitor:       MonitorConfig{Enabled: true},
+		HarnessEvolve: HarnessEvolveConfig{Enabled: true},
+		Evaluation:    defaultEvaluationSeed(),
 		Watchdog: WatchdogConfig{
 			Enabled:          true,
 			LoopThreshold:    6,
@@ -612,6 +734,7 @@ func DefaultConfig() *Config {
 			Mode:                "notify",
 			PollSeconds:         300,
 			RestartDelaySeconds: 2,
+			CoalesceSeconds:     3600,
 		},
 		Providers: ProvidersConfig{
 			HealthCheck: ProviderHealthCheckConfig{
@@ -635,6 +758,9 @@ func DefaultConfig() *Config {
 		Cluster: ClusterConfig{
 			Role: ClusterRoleStandalone,
 		},
+		Webhook: WebhookConfig{
+			Port: DefaultWebhookPort,
+		},
 		Orchestrator: OrchestratorConfig{
 			Role: InstanceRoleFull,
 			// Seed the pressure thresholds here (not in applyPressureDefaults) so
@@ -646,15 +772,24 @@ func DefaultConfig() *Config {
 				MinDiskFreePercent:     5,
 				MinMemAvailablePercent: 8,
 				MaxLoadPerCPU:          8.0,
+				WarningDiskFreePercent: 15,
 				SampleIntervalSeconds:  15,
+				ReclaimCooldownSeconds: 300,
 			},
 		},
 		TasksDir: defaultTasksDir(),
 	}
+	applyResolvedDefaults(cfg, nil)
+	return cfg
 }
 
 func (c *Config) AuditDir() string {
 	return filepath.Join(c.Logging.Dir, "audit")
+}
+
+// AttachmentsDir returns the local root directory for task attachment blobs.
+func (c *Config) AttachmentsDir() string {
+	return defaultAttachmentsDir()
 }
 
 // Save writes the current config to disk.
@@ -694,27 +829,10 @@ func ReadRawConfig() (string, error) {
 // the file watcher and concurrent readers never observe a partial write.
 func WriteRawConfig(data []byte) error {
 	path := configPath()
-	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
+	if err := preserveLastKnownGoodConfig(path); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // harmless once the rename below consumes it
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(configFilePerm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return writeFileAtomic(path, data, ".config-*.yaml.tmp")
 }
 
 // Directories returns the resolved paths for all sybra data directories.
@@ -725,6 +843,7 @@ func (c *Config) Directories() map[string]string {
 		"projects":        c.ProjectsDir,
 		"clones":          c.ClonesDir,
 		"worktrees":       c.WorktreesDir,
+		"attachments":     c.AttachmentsDir(),
 		"logs":            c.Logging.Dir,
 		"audit":           c.AuditDir(),
 		"loop_agents":     c.LoopAgentsDir,
@@ -761,14 +880,14 @@ func (c *Config) ExperiencesDir() string {
 	return filepath.Join(HomeDir(), "experience")
 }
 
-func Load() (*Config, error) {
+func Load() (*ResolvedConfig, error) {
 	return load(loadOptions{persistLoadReconciles: true})
 }
 
 // LoadNoPersist reads config.yaml and applies in-memory defaults/reconciles
 // without writing any migration back to disk. Reload paths use this to keep
 // their read-only contract and to preserve raw-editor formatting/comments.
-func LoadNoPersist() (*Config, error) {
+func LoadNoPersist() (*ResolvedConfig, error) {
 	return load(loadOptions{})
 }
 
@@ -776,161 +895,152 @@ type loadOptions struct {
 	persistLoadReconciles bool
 }
 
-func load(opts loadOptions) (*Config, error) {
-	cfg := DefaultConfig()
-
+func load(opts loadOptions) (*ResolvedConfig, error) {
 	path := configPath()
 	data, err := os.ReadFile(path)
 	existingFile := err == nil
-	if existingFile {
-		// Keep the rest of DefaultConfig pre-seeded, but let builtin_version
-		// reflect the document exactly: nil means "key absent" on older files.
-		cfg.ABTesting.BuiltinVersion = nil
-		if err := yaml.Unmarshal(data, cfg); err != nil {
+	var fileCfg *FileConfig
+	switch {
+	case existingFile:
+		fileCfg, err = ParseFileConfig(data)
+		if err != nil {
 			return nil, err
 		}
-		applyLegacyGitHubDefault(data, cfg)
-	} else if os.IsNotExist(err) {
-		if writeErr := writeDefaultConfig(path); writeErr != nil {
-			return nil, writeErr
+		for _, warning := range fileCfg.Warnings() {
+			slog.Warn("config: deprecated schema v2 alias", "warning", warning)
 		}
+	case os.IsNotExist(err):
+		if opts.persistLoadReconciles {
+			if writeErr := writeDefaultConfig(path); writeErr != nil {
+				return nil, writeErr
+			}
+		}
+	default:
+		return nil, err
 	}
 	if opts.persistLoadReconciles {
 		tightenConfigPerms(path, existingFile)
 	}
-
-	if v := os.Getenv("SYBRA_LOG_LEVEL"); v != "" {
-		cfg.Logging.Level = v
+	resolved, err := Resolve(fileCfg, environmentFromOS(), ResolveOptions{
+		GenerateSecrets: opts.persistLoadReconciles,
+		ExistingFile:    existingFile,
+	})
+	if err != nil {
+		return nil, err
 	}
-	if v := os.Getenv("SYBRA_LOG_DIR"); v != "" {
-		cfg.Logging.Dir = v
-	}
-
-	if cfg.Logging.Dir == "" {
-		cfg.Logging.Dir = defaultLogDir()
-	}
-	if cfg.TasksDir == "" {
-		cfg.TasksDir = defaultTasksDir()
-	}
-	if v := os.Getenv("SYBRA_TASKS_DIR"); v != "" {
-		cfg.TasksDir = v
-	}
-
-	if cfg.SkillsDir == "" {
-		cfg.SkillsDir = defaultSkillsDir()
-	}
-
-	// Migration: previous releases defaulted to ~/.sybra/skills which Claude
-	// Code never reads. Silently retarget the old default so users with stale
-	// configs get the fix without manual intervention. cdb6dc5 changed the
-	// default but did not migrate persisted overrides.
-	if cfg.SkillsDir == filepath.Join(HomeDir(), "skills") {
-		cfg.SkillsDir = defaultSkillsDir()
-	}
-	if cfg.ProjectsDir == "" {
-		cfg.ProjectsDir = defaultProjectsDir()
-	}
-	if cfg.ClonesDir == "" {
-		cfg.ClonesDir = defaultClonesDir()
-	}
-	if cfg.WorktreesDir == "" {
-		cfg.WorktreesDir = defaultWorktreesDir()
-	}
-	if cfg.LoopAgentsDir == "" {
-		cfg.LoopAgentsDir = defaultLoopAgentsDir()
-	}
-
-	if v := os.Getenv("SYBRA_TODOIST_TOKEN"); v != "" {
-		cfg.Todoist.APIToken = v
-	}
-	if cfg.Todoist.PollSeconds <= 0 {
-		cfg.Todoist.PollSeconds = 120
-	}
-
-	if cfg.Renovate.Author == "" {
-		cfg.Renovate.Author = "app/renovate"
-	}
-	if cfg.Triage.PollSeconds <= 0 {
-		cfg.Triage.PollSeconds = 60
-	}
-	// Triage.Model intentionally has no default override here: an empty
-	// model lets triage.FallbackClassifier fall through to its llmjob.SuperCheap
-	// tier (haiku), which is ~10x cheaper than sonnet for a structured
-	// classification job. A non-empty value (set explicitly by a user)
-	// still overrides the tier via claudeModelOverride.
-	if cfg.Agent.Provider == "" {
-		cfg.Agent.Provider = "claude"
-	}
-
-	applyProvidersDefaults(cfg)
-	applyMonitorDefaults(cfg)
-	applyWatchdogDefaults(cfg)
-	applySelfMonitorDefaults(cfg)
-	applyEvaluationDefaults(cfg)
-	applyLearningDigestDefaults(cfg)
-	applyHarnessEvolveDefaults(cfg)
-	applyPromptLabDefaults(cfg)
-	applyExperienceDefaults(cfg)
-	abTestingReconciled := applyABTestingDefaults(cfg, opts.persistLoadReconciles)
-	applyOrchestratorDefaults(cfg)
-	applyAutoUpdateDefaults(cfg)
-	applyReviewHoldDefaults(cfg)
-	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
-
-	persistLoadReconciles(cfg, opts, existingFile, abTestingReconciled, serverTokenGenerated)
-
-	return cfg, nil
+	ensureServerAuthToken(resolved.Config, opts.persistLoadReconciles)
+	return resolved.Config, nil
 }
 
-// persistLoadReconciles writes back in-memory-only changes made during load()
-// that must survive a restart: the ab_testing builtin reconcile (existing
-// files only) and a freshly generated server auth token (even for a
-// brand-new install — sybra-server reads Server.AuthToken once at startup,
-// so an unsaved token would silently rotate on every restart and lock
-// operators out).
-func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestingReconciled, serverTokenGenerated bool) {
-	if opts.persistLoadReconciles && existingFile && abTestingReconciled {
-		if saveErr := cfg.Save(); saveErr != nil {
-			slog.Warn("config: failed to persist ab_testing builtin reconcile", "err", saveErr)
-		}
+// AuthTokenPath is where sybra-server's generated bearer token is persisted
+// when config.yaml does not declare server.auth_token itself. Keeping the
+// generated secret out of config.yaml means an externally-rendered file
+// (Ansible, Nix, Chezmoi, a git-tracked file) is never written to just to
+// carry state Sybra invented at runtime — see #2180. An operator who wants
+// the token declared in config.yaml (e.g. pinned from a secrets manager)
+// can still set server.auth_token there directly; it always wins over this
+// file.
+func AuthTokenPath() string {
+	return filepath.Join(HomeDir(), "server_auth_token")
+}
+
+// LastKnownGoodConfigPath is the crash-safe rollback copy of config.yaml that
+// SaveRawConfig/UpdateSettings restore if a persisted candidate cannot be
+// activated hot.
+func LastKnownGoodConfigPath() string {
+	return filepath.Join(HomeDir(), "config.last-known-good.yaml")
+}
+
+// readAuthTokenFile returns the token persisted at AuthTokenPath(), or "" if
+// it's absent or unreadable.
+func readAuthTokenFile() string {
+	data, err := os.ReadFile(AuthTokenPath())
+	if err != nil {
+		return ""
 	}
-	if opts.persistLoadReconciles && serverTokenGenerated {
-		if saveErr := cfg.Save(); saveErr != nil {
-			slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
-		}
+	return strings.TrimSpace(string(data))
+}
+
+// writeAuthTokenFile persists token to AuthTokenPath() via temp file + rename,
+// mirroring WriteRawConfig's crash-safety, but targeting the dedicated token
+// file instead of config.yaml.
+func writeAuthTokenFile(token string) error {
+	return writeFileAtomic(AuthTokenPath(), []byte(token+"\n"), ".server_auth_token-*.tmp")
+}
+
+func preserveLastKnownGoodConfig(path string) error {
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		return writeFileAtomic(LastKnownGoodConfigPath(), data, ".config-last-good-*.tmp")
+	case os.IsNotExist(err):
+		return nil
+	default:
+		return err
 	}
 }
 
-// applyServerDefaults resolves sybra-server's auth token and CORS allowlist:
-// env vars win when set, otherwise a missing token is auto-generated so the
-// HTTP control plane always fails closed instead of silently running
-// unauthenticated. Returns true when a new token was generated (the caller
-// must persist it — see load()). Read-only config loads pass allowGenerate=false
-// so they never invent an in-memory-only secret that diverges from disk.
-func applyServerDefaults(cfg *Config, allowGenerate bool) bool {
-	if v := os.Getenv("SYBRA_AUTH_TOKEN"); v != "" {
-		cfg.Server.AuthToken = v
+// RestoreLastKnownGoodConfig copies LastKnownGoodConfigPath back onto
+// config.yaml through the same atomic-write path used by WriteRawConfig.
+func RestoreLastKnownGoodConfig() error {
+	data, err := os.ReadFile(LastKnownGoodConfigPath())
+	if err != nil {
+		return err
 	}
-	if v := os.Getenv("SYBRA_ALLOWED_ORIGINS"); v != "" {
-		origins := strings.Split(v, ",")
-		for i := range origins {
-			origins[i] = strings.TrimSpace(origins[i])
-		}
-		cfg.Server.AllowedOrigins = origins
+	return writeFileAtomic(configPath(), data, ".config-restore-*.tmp")
+}
+
+func writeFileAtomic(path string, data []byte, tempPattern string) error {
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), tempPattern)
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(configFilePerm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// ensureServerAuthToken completes the server auth-token precedence after
+// Resolve() applied file values and environment overrides. Tokens generated by
+// Sybra live in AuthTokenPath(), never in config.yaml.
+func ensureServerAuthToken(cfg *Config, allowGenerate bool) {
+	if cfg == nil {
+		return
 	}
 	if cfg.Server.AuthToken != "" {
-		return false
+		return
+	}
+	if token := readAuthTokenFile(); token != "" {
+		cfg.Server.AuthToken = token
+		return
 	}
 	if !allowGenerate {
-		return false
+		return
 	}
 	token, err := generateAuthToken()
 	if err != nil {
 		slog.Warn("config: failed to generate server auth token", "err", err)
-		return false
+		return
+	}
+	if err := writeAuthTokenFile(token); err != nil {
+		slog.Warn("config: failed to persist generated server auth token", "err", err)
+		return
 	}
 	cfg.Server.AuthToken = token
-	return true
 }
 
 // generateAuthToken returns a random 256-bit hex-encoded shared secret for
@@ -960,7 +1070,7 @@ func applyReviewHoldDefaults(cfg *Config) {
 	if !cfg.ReviewHold.Enabled {
 		return
 	}
-	if !validReviewHoldMode(cfg.ReviewHold.Mode) {
+	if cfg.ReviewHold.Mode == "" {
 		cfg.ReviewHold.Mode = DefaultReviewHoldMode
 	}
 	if cfg.ReviewHold.NitMaxLines <= 0 {
@@ -1022,6 +1132,9 @@ func applyAutoUpdateDefaults(cfg *Config) {
 	if cfg.AutoUpdate.RestartDelaySeconds <= 0 {
 		cfg.AutoUpdate.RestartDelaySeconds = 2
 	}
+	if cfg.AutoUpdate.CoalesceSeconds <= 0 {
+		cfg.AutoUpdate.CoalesceSeconds = 3600
+	}
 }
 
 // applyLegacyGitHubDefault keeps sparse configs created before GitHub became
@@ -1032,6 +1145,42 @@ func applyLegacyGitHubDefault(data []byte, cfg *Config) {
 		return
 	}
 	cfg.GitHub.Enabled = true
+}
+
+func applyGitHubPollingCompat(cfg *Config, file *FileConfig) {
+	if cfg == nil || file == nil {
+		return
+	}
+	if file.Has("github", "issues_enabled") && !file.Has("github", "polling", "issues", "enabled") {
+		cfg.GitHub.Polling.Issues.Enabled = cfg.GitHub.IssuesEnabled
+	}
+	if file.Has("github", "reviews_enabled") {
+		if !file.Has("github", "polling", "sybra_prs", "enabled") {
+			cfg.GitHub.Polling.SybraPRs.Enabled = cfg.GitHub.ReviewsEnabled
+		}
+		if !file.Has("github", "polling", "assigned_prs", "enabled") {
+			cfg.GitHub.Polling.AssignedPRs.Enabled = cfg.GitHub.ReviewsEnabled
+		}
+	}
+	if file.Has("github", "issues_seconds") && !file.Has("github", "polling", "issues", "interval") {
+		cfg.GitHub.Polling.Issues.IntervalSeconds = cfg.GitHub.IssuesSeconds
+	}
+	if file.Has("github", "reviews_fast_seconds") {
+		if !file.Has("github", "polling", "sybra_prs", "active_interval") {
+			cfg.GitHub.Polling.SybraPRs.ActiveIntervalSeconds = cfg.GitHub.ReviewsFastSeconds
+		}
+		if !file.Has("github", "polling", "assigned_prs", "active_interval") {
+			cfg.GitHub.Polling.AssignedPRs.ActiveIntervalSeconds = cfg.GitHub.ReviewsFastSeconds
+		}
+	}
+	if file.Has("github", "reviews_slow_seconds") {
+		if !file.Has("github", "polling", "sybra_prs", "idle_interval") {
+			cfg.GitHub.Polling.SybraPRs.IdleIntervalSeconds = cfg.GitHub.ReviewsSlowSeconds
+		}
+		if !file.Has("github", "polling", "assigned_prs", "idle_interval") {
+			cfg.GitHub.Polling.AssignedPRs.IdleIntervalSeconds = cfg.GitHub.ReviewsSlowSeconds
+		}
+	}
 }
 
 func hasYAMLPath(data []byte, path ...string) bool {
@@ -1063,44 +1212,40 @@ func hasYAMLPath(data []byte, path ...string) bool {
 }
 
 // applyABTestingDefaults fills zero-value A/B testing config and reconciles
-// built-in experiments against the current code defaults. Returns true when
-// a builtin experiment reconcile actually rewrote cfg.ABTesting.Experiments,
-// so the caller knows whether the change needs persisting.
-func applyABTestingDefaults(cfg *Config, persist bool) bool {
+// built-in experiments against the current code defaults. The reconcile is
+// in-memory only and re-runs on every load — it never writes config.yaml, so
+// a config file that pins a stale builtin_version keeps reconciling (and thus
+// keeps taking effect) on every restart instead of drifting until someone
+// bumps the file by hand.
+func applyABTestingDefaults(cfg *Config) {
 	if cfg == nil {
-		return false
+		return
 	}
 	def := abtest.DefaultConfig()
-	if cfg.ABTesting.Enabled == nil {
-		cfg.ABTesting.Enabled = def.Enabled
-	}
 	if cfg.ABTesting.MinSamplesPerVariant <= 0 {
 		cfg.ABTesting.MinSamplesPerVariant = def.MinSamplesPerVariant
 	}
 	if len(cfg.ABTesting.Experiments) == 0 {
 		cfg.ABTesting.Experiments = def.Experiments
-		cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
-		return false
+		if cfg.ABTesting.BuiltinVersion == nil {
+			cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
+		}
+		return
 	}
-	return reconcileBuiltinExperiments(cfg, def, persist)
+	reconcileBuiltinExperiments(cfg, def)
 }
 
 // reconcileBuiltinExperiments refreshes a persisted config's built-in A/B
 // experiments (see abtest.BuiltinExperimentIDs) when they lag the code's
 // current defaults. Experiments outside that ID set — i.e. user-authored —
-// are left untouched. A one-generation backup of the prior experiment list is
-// written before the built-ins are replaced, so a same-ID hand-tuned built-in
-// is recoverable even though reconcile treats the ID as Sybra-owned.
-func reconcileBuiltinExperiments(cfg *Config, def abtest.Config, persist bool) bool {
+// are left untouched. The result lives only in cfg (never written back to
+// config.yaml — see applyABTestingDefaults), so a same-ID hand-tuned built-in
+// stays fully recoverable simply by reading the operator's own file; no
+// separate backup is needed.
+func reconcileBuiltinExperiments(cfg *Config, def abtest.Config) {
 	priorVersion := cfg.ABTesting.BuiltinVersionValue()
 	if priorVersion >= def.BuiltinVersionValue() {
-		return false
-	}
-	if persist {
-		if err := backupABTestingExperiments(cfg.ABTesting.Experiments, priorVersion); err != nil {
-			slog.Warn("config: ab_testing builtin reconcile backup failed; skipping refresh", "err", err)
-			return false
-		}
+		return
 	}
 	builtin := make(map[string]bool, len(abtest.BuiltinExperimentIDs))
 	for _, id := range abtest.BuiltinExperimentIDs {
@@ -1116,32 +1261,6 @@ func reconcileBuiltinExperiments(cfg *Config, def abtest.Config, persist bool) b
 	cfg.ABTesting.Experiments = kept
 	cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
 	slog.Info("config: ab_testing builtin experiments reconciled", "builtin_version", def.BuiltinVersionValue())
-	return true
-}
-
-// abTestingBackupPath returns the version-stamped backup path written before a
-// builtin reconcile overwrites persisted experiments. Each prior builtin
-// version keeps its own snapshot so successive builtin-version bumps do not
-// destroy the true pre-migration original.
-func abTestingBackupPath(priorVersion int) string {
-	return filepath.Join(HomeDir(), fmt.Sprintf("config.ab_testing.backup.v%d.yaml", priorVersion))
-}
-
-type abTestingBackup struct {
-	PriorBuiltinVersion int                 `yaml:"prior_builtin_version"`
-	Experiments         []abtest.Experiment `yaml:"experiments"`
-}
-
-func backupABTestingExperiments(experiments []abtest.Experiment, priorVersion int) error {
-	data, err := yaml.Marshal(abTestingBackup{PriorBuiltinVersion: priorVersion, Experiments: experiments})
-	if err != nil {
-		return err
-	}
-	path := abTestingBackupPath(priorVersion)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
 }
 
 // applyWatchdogDefaults fills the Watchdog model default. Enabled and
@@ -1153,7 +1272,7 @@ func backupABTestingExperiments(experiments []abtest.Experiment, priorVersion in
 func applyWatchdogDefaults(cfg *Config) {
 	w := &cfg.Watchdog
 	if w.Model == "" {
-		w.Model = "claude-haiku-4-5-20251001"
+		w.Model = "haiku"
 	}
 	// MaxRunsPerWindow and RunWindowMinutes are deliberately NOT defaulted
 	// here, same as LoopThreshold above — both are seeded by DefaultConfig
@@ -1180,6 +1299,32 @@ func applyEvaluationDefaults(cfg *Config) {
 	}
 	if e.Offline.UnavailablePolicy == "" {
 		e.Offline.UnavailablePolicy = "fail"
+	}
+	applySLOTargetDefaults(&e.SLO)
+}
+
+// applySLOTargetDefaults fills zero-value SLO target fields individually
+// (rather than replacing the whole struct) so an operator who overrides only
+// one target in config.yaml keeps that override and still gets defaults for
+// the rest, instead of a partial config silently zeroing the others.
+//
+// Only the fraction targets (MinAutonomyRate, MinCIFirstPassRate,
+// MaxReworkRate) are defaulted here — for those, 0 is a degenerate target so
+// treating it as "unset" is safe. MaxIdenticalRetryCap and MaxRestartsPerHour
+// are deliberately NOT defaulted here: they are seeded by defaultSeedConfig so
+// an explicit `max_identical_retry_cap: 0` ("no repeated failures tolerated")
+// or `max_restarts_per_hour: 0` ("any automatic restart is a breach") survives
+// instead of being clobbered back to the shipped default.
+func applySLOTargetDefaults(slo *SLOTargets) {
+	d := DefaultSLOTargets()
+	if slo.MinAutonomyRate <= 0 {
+		slo.MinAutonomyRate = d.MinAutonomyRate
+	}
+	if slo.MinCIFirstPassRate <= 0 {
+		slo.MinCIFirstPassRate = d.MinCIFirstPassRate
+	}
+	if slo.MaxReworkRate <= 0 {
+		slo.MaxReworkRate = d.MaxReworkRate
 	}
 }
 
@@ -1250,10 +1395,82 @@ func applyPromptLabDefaults(cfg *Config) {
 	}
 }
 
+// applyRoutingDefaults fills zero values while preserving Enabled from an
+// explicit YAML override — the zero value (false) is exactly the desired
+// shadow-mode default, so no DefaultConfig entry is needed. Coefficient
+// fields are filled independently so an operator overriding a single
+// coefficient (e.g. cost_weight) does not silently zero every other term.
+func applyRoutingDefaults(cfg *Config) {
+	r := &cfg.Routing
+	if r.IntervalHours < 1 {
+		r.IntervalHours = 6
+	}
+	if r.WeightBudget <= 0 {
+		r.WeightBudget = 40
+	}
+	if r.FloorWeight <= 0 {
+		r.FloorWeight = 1
+	}
+	if r.MaxStep <= 0 {
+		r.MaxStep = 5
+	}
+	if r.MinSamplesToShift <= 0 {
+		r.MinSamplesToShift = 20
+	}
+	def := DefaultRoutingCoefficients()
+	c := &r.Coefficients
+	if c.LandedWeight == 0 {
+		c.LandedWeight = def.LandedWeight
+	}
+	if c.MergeWeight == 0 {
+		c.MergeWeight = def.MergeWeight
+	}
+	if c.CIFirstPassWeight == 0 {
+		c.CIFirstPassWeight = def.CIFirstPassWeight
+	}
+	if c.ReworkWeight == 0 {
+		c.ReworkWeight = def.ReworkWeight
+	}
+	if c.FailureWeight == 0 {
+		c.FailureWeight = def.FailureWeight
+	}
+	if c.CostWeight == 0 {
+		c.CostWeight = def.CostWeight
+	}
+	if c.DurationWeight == 0 {
+		c.DurationWeight = def.DurationWeight
+	}
+	if c.CostNormalizer == 0 {
+		c.CostNormalizer = def.CostNormalizer
+	}
+	if c.DurationNormalizer == 0 {
+		c.DurationNormalizer = def.DurationNormalizer
+	}
+}
+
+// DefaultRoutingCoefficients returns the shipped scoring weights: landed and
+// merge outcomes dominate, CI-first-pass is a smaller positive signal,
+// rework/failure are the strongest penalties, and cost/duration are gentle
+// tie-breakers — reflecting that a slower or pricier variant that lands
+// cleanly should still outrank a cheap one that needs rework.
+func DefaultRoutingCoefficients() RoutingCoefficients {
+	return RoutingCoefficients{
+		LandedWeight:       1.0,
+		MergeWeight:        0.5,
+		CIFirstPassWeight:  0.25,
+		ReworkWeight:       0.75,
+		FailureWeight:      1.0,
+		CostWeight:         0.2,
+		DurationWeight:     0.1,
+		CostNormalizer:     5.0,    // $5/landed PR treated as "expensive"
+		DurationNormalizer: 3600.0, // 1h treated as "slow"
+	}
+}
+
 // applySelfMonitorDefaults fills zero values for the SelfMonitor block so
 // older configs behave deterministically and the service can rely on every
 // field. Enabled stays false until operators opt in.
-func applySelfMonitorDefaults(cfg *Config) {
+func applySelfMonitorDefaults(cfg *Config, file *FileConfig) {
 	s := &cfg.SelfMonitor
 	if s.IntervalHours < 1 {
 		s.IntervalHours = 6
@@ -1286,14 +1503,15 @@ func applySelfMonitorDefaults(cfg *Config) {
 	// when none of the user-facing knobs were set. This avoids silently
 	// re-enabling DryRun on an operator who explicitly disabled it.
 	//
-	// Proxy for "freshly populated": IssueLabel is the last field the
-	// operator typically edits; if it's empty after the above defaults
-	// ran, we know nothing in the block was user-specified.
+	// With FileConfig we can check the field directly instead of guessing via
+	// a later sibling's zero value.
 	if s.IssueCooldownHours <= 0 {
 		s.IssueCooldownHours = 24
 	}
 	if s.IssueLabel == "" {
 		s.IssueLabel = "selfmonitor"
+	}
+	if file == nil || !file.Has("self_monitor", "dry_run") {
 		s.DryRun = true
 	}
 	if s.MaxCostPerTickUSD <= 0 {
@@ -1324,39 +1542,46 @@ func applyOrchestratorDefaults(cfg *Config) {
 }
 
 // applyPressureDefaults fills the Pressure block. The thresholds
-// (MinDiskFreePercent, MinMemAvailablePercent, MaxLoadPerCPU) are seeded in
-// DefaultConfig, NOT here: their documented `<=0 disables this dimension`
-// sentinel means an explicit `0` in YAML must survive loading, so defaulting
-// them on `<=0` would silently re-enable a signal the operator turned off. A
-// config missing the block entirely keeps the DefaultConfig seeds; a config
-// that sets one threshold to 0 keeps its 0.
+// (MinDiskFreePercent, MinMemAvailablePercent, MaxLoadPerCPU,
+// WarningDiskFreePercent) are seeded in DefaultConfig, NOT here: their
+// documented `<=0 disables this dimension` sentinel means an explicit `0` in
+// YAML must survive loading, so defaulting them on `<=0` would silently
+// re-enable a signal the operator turned off. A config missing the block
+// entirely keeps the DefaultConfig seeds; a config that sets one threshold
+// to 0 keeps its 0.
 //
-// SampleIntervalSeconds is different — its `<=0` means "fall back to the
-// default", not "disable" — so it is safe to normalize here (pressure.Gate
-// also falls back internally).
+// SampleIntervalSeconds and ReclaimCooldownSeconds are different — their
+// `<=0` means "fall back to the default", not "disable" — so it is safe to
+// normalize them here (pressure.Gate and internal/diskreclaim.Reclaimer also
+// fall back internally).
 func applyPressureDefaults(cfg *Config) {
 	p := &cfg.Orchestrator.Pressure
 	if p.SampleIntervalSeconds <= 0 {
 		p.SampleIntervalSeconds = 15
+	}
+	if p.ReclaimCooldownSeconds <= 0 {
+		p.ReclaimCooldownSeconds = 300
 	}
 }
 
 // applyMonitorDefaults fills zero values for the Monitor block so older
 // configs behave deterministically and the service can rely on every field.
 // Enabled stays false until users opt in.
-func applyMonitorDefaults(cfg *Config) {
+func applyMonitorDefaults(cfg *Config, file *FileConfig) {
 	if cfg.Monitor.IntervalSeconds < 60 {
 		cfg.Monitor.IntervalSeconds = 300
 	}
 	if cfg.Monitor.Model == "" {
 		// Same diagnosis shape as the watchdog inspector (applyWatchdogDefaults):
 		// classifying an anomaly, not authoring a fix.
-		cfg.Monitor.Model = "claude-haiku-4-5-20251001"
+		cfg.Monitor.Model = "haiku"
 	}
 	if cfg.Monitor.IssueCooldownMinutes <= 0 {
 		cfg.Monitor.IssueCooldownMinutes = 30
 	}
-	if cfg.Monitor.DispatchLimit <= 0 {
+	if file == nil || !file.Has("monitor", "dispatch_limit") {
+		cfg.Monitor.DispatchLimit = cfg.Agent.MaxConcurrent
+	} else if cfg.Monitor.DispatchLimit <= 0 {
 		cfg.Monitor.DispatchLimit = cfg.Agent.MaxConcurrent
 	}
 	if cfg.Monitor.StuckHumanHours <= 0 {
@@ -1445,16 +1670,19 @@ const (
 	configFilePerm os.FileMode = 0o600
 )
 
+// defaultConfigStub is the minimal document written for a brand-new install.
+var defaultConfigStub = []byte("# Sybra configuration\nschema_version: 2\n# GitHub automations are opt-in on first run.\nintegrations:\n  github:\n    enabled: false\n")
+
 func writeDefaultConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Sybra configuration\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n"), configFilePerm)
+	return os.WriteFile(path, defaultConfigStub, configFilePerm)
 }
 
 // tightenConfigPerms retrofits the config directory and file to 0o700/0o600
 // on installs created before those became the write-time default (config.yaml
-// holds the plaintext Todoist token). Best-effort: a failed chmod is logged,
+// holds plaintext secrets). Best-effort: a failed chmod is logged,
 // not fatal — Load must still succeed on read-only or restricted filesystems.
 func tightenConfigPerms(path string, existingFile bool) {
 	tightenPathPerm(filepath.Dir(path), configDirPerm, "home dir")
@@ -1516,6 +1744,10 @@ func defaultLoopAgentsDir() string {
 	return filepath.Join(HomeDir(), "loop-agents")
 }
 
+func defaultAttachmentsDir() string {
+	return filepath.Join(HomeDir(), "attachments")
+}
+
 func WorkflowsDir() string {
 	return filepath.Join(HomeDir(), "workflows")
 }
@@ -1560,6 +1792,14 @@ func HarnessEvolveDir() string {
 // internal/promptlab.
 func PromptLabDir() string {
 	return filepath.Join(HomeDir(), "prompt-lab")
+}
+
+// RoutingDir is the local store for the adaptive-routing weight overlay
+// (internal/routing.Store) — the versioned per-experiment/variant weights and
+// score-input snapshot the routing service computes each tick. Never written
+// into config.yaml.
+func RoutingDir() string {
+	return filepath.Join(HomeDir(), "routing")
 }
 
 // PromptEvalDir is the local store for offline prompt/skill eval verdicts

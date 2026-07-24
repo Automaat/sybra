@@ -14,9 +14,11 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/diskreclaim"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
@@ -38,7 +40,6 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -180,10 +181,11 @@ func (a *App) initBgops(emit func(string, any)) {
 
 func (a *App) initFileWatcher(ctx context.Context, emit func(string, any)) {
 	w := watcher.New(a.tasksDir, emit, a.logger)
-	a.watcher = w
 	if err := w.Start(ctx); err != nil {
 		a.logger.Error("watcher.start", "err", err)
+		return
 	}
+	a.watcher = w
 }
 
 // MonitorReportBinding is the Wails-friendly envelope for the latest
@@ -248,12 +250,16 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 	if !a.cfg.GitHub.RunsIssuesFetcher() {
 		a.logger.Info("github.issues.disabled",
 			"github_enabled", a.cfg.GitHub.Enabled,
-			"issues_enabled", a.cfg.GitHub.IssuesEnabled,
+			"issues_polling_enabled", a.cfg.GitHub.Polling.Issues.Enabled,
 		)
 		return nil
 	}
 	f := poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)
 	f.SetPollInterval(a.cfg.GitHub.Issues())
+	if phrase := strings.TrimSpace(a.cfg.GitHub.MentionTriggerPhrase); phrase != "" {
+		f.SetMentionTrigger(phrase)
+		a.logger.Info("github.issues.mention-trigger.enabled", "phrase", phrase)
+	}
 	if a.cfg.Umbrella.Enabled {
 		model := a.cfg.Umbrella.Model
 		ground := a.cfg.Umbrella.Ground
@@ -292,10 +298,12 @@ func (a *App) logAutomationsSummary() {
 		"instance_role", a.cfg.Orchestrator.InstanceRole(),
 		"orchestrator", a.cfg.Orchestrator.RunsOrchestrator(),
 		"scheduler", a.cfg.Orchestrator.RunsScheduler(),
-		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
 		"github", a.cfg.GitHub.Enabled,
 		"github_issues", a.cfg.GitHub.RunsIssuesFetcher(),
-		"github_reviews", a.cfg.GitHub.RunsReviewer(),
+		"github_sybra_prs", a.cfg.GitHub.RunsSybraPRs(),
+		"github_sybra_pr_searches", a.cfg.GitHub.RunsSybraPRSearches(),
+		"github_assigned_prs", a.cfg.GitHub.RunsAssignedPRs(),
+		"github_assigned_pr_searches", a.cfg.GitHub.RunsAssignedPRSearches(),
 		"renovate", a.cfg.Renovate.Enabled,
 		"triage", a.cfg.Triage.Enabled,
 		"human_review", a.humanReview != nil,
@@ -322,10 +330,25 @@ func (a *App) initStats() {
 // initLocalStores wires the small local-only data stores that degrade to nil
 // on failure rather than blocking startup.
 func (a *App) initLocalStores() {
+	a.initAttachments()
 	a.initArtifacts()
 	a.initExperience()
 	a.initLearning()
 	a.initAgentQueue()
+}
+
+func (a *App) initAttachments() {
+	store, err := attachment.NewStore(a.cfg.AttachmentsDir(), int64(a.cfg.Attachments.MaxSizeMB)*1024*1024)
+	if err != nil {
+		a.logger.Warn("attachments.init.degraded", "err", err)
+		return
+	}
+	a.attachments = store
+	a.tasks.SetDeleteHook(func(id string) {
+		if err := store.DeleteTask(id); err != nil {
+			a.logger.Warn("attachments.gc.delete", "task_id", id, "err", err)
+		}
+	})
 }
 
 func (a *App) initExperience() {
@@ -484,6 +507,7 @@ func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerCo
 		Image:     cfg.Image,
 		Command:   cfg.Command,
 		TTL:       cfg.TTL,
+		FailedTTL: cfg.FailedTTL,
 		Mode:      cfg.Mode,
 		CreatePR:  cfg.CreatePR,
 	}
@@ -620,7 +644,7 @@ func (a *App) initStatusHook() {
 		runsNoAgent := false
 		if t, err := a.tasks.Get(taskID); err == nil {
 			local = a.runsTaskLocally(t)
-			runsNoAgent = t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella
+			runsNoAgent = t.TaskType == task.TaskTypeUmbrella
 		}
 
 		// Wake the dispatch pass immediately so a task that just became ready
@@ -633,6 +657,18 @@ func (a *App) initStatusHook() {
 		// never exit between turns) signal step completion.
 		if local && a.workflowEngine != nil {
 			a.workflowEngine.HandleStatusChange(taskID, to)
+		}
+		// HandleStatusChange may reroute a human-required self-escalation back
+		// into the PR flow (missing live-PR blocker recovery). When it does the
+		// task no longer sits at human-required, so skip the stale
+		// human-required follow-up below — just release the agents and return.
+		if to == string(task.StatusHumanRequired) {
+			if t, err := a.tasks.Get(taskID); err == nil && t.Status != task.StatusHumanRequired {
+				if local && releaseTaskAgents {
+					a.releaseTaskAgents(taskID)
+				}
+				return
+			}
 		}
 		if local && releaseTaskAgents {
 			a.releaseTaskAgents(taskID)
@@ -736,7 +772,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 	}
 	filtered := make([]*agent.Agent, 0, len(targets))
 	for _, ag := range targets {
-		if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+		if ag.EffectiveRole() == agent.RoleHumanReview {
 			continue
 		}
 		filtered = append(filtered, ag)
@@ -744,8 +780,19 @@ func (a *App) releaseTaskAgents(taskID string) {
 	if len(filtered) == 0 {
 		return
 	}
-	go func(agentsToStop []*agent.Agent) {
-		for _, ag := range agentsToStop {
+	// Tracked by a.wg (not a bare `go func`): App.Shutdown waits on a.wg
+	// before calling agents.Shutdown, which explicitly skips detached agents
+	// so they survive a restart. A task landing (e.g. its own PR merging)
+	// commonly races the very redeploy that lands it, so an untracked
+	// goroutine here can be starved of scheduler time entirely — the process
+	// exits before ever sending the stop signal, and a detached interactive
+	// agent (a never-EOF stdin FIFO) then idles forever holding a
+	// concurrency slot until happenstance reaps it on some later restart.
+	// Tracking it here only needs to guarantee the signal is sent — once
+	// StopAgent's SIGINT/SIGKILL reaches the OS, delivery no longer depends
+	// on this process staying alive.
+	a.wg.Go(func() {
+		for _, ag := range filtered {
 			var err error
 			if ag.Mode == "headless" && ag.CompletedSuccessfully() {
 				err = a.agents.StopCompletedAgent(ag.ID)
@@ -756,7 +803,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 				a.logger.Warn("task.status.release-agent", "task_id", taskID, "agent_id", ag.ID, "err", err)
 			}
 		}
-	}(filtered)
+	})
 }
 
 func (a *App) runsTaskLocally(t task.Task) bool {
@@ -801,8 +848,10 @@ func (a *App) initCluster() {
 	}
 	a.clusterRoster = roster
 	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.isWorkProject, a.auditClusterBlock, a.logger)
+	a.assigner.SetAttachments(a.attachments)
 	a.assigner.SetStopLocalAgents(a.releaseTaskAgents)
 	a.mirror = clusterlead.NewMirror(a.cfg, a.tasks, roster, a.logger, 0)
+	a.mirror.SetAttachments(a.attachments)
 	if a.clusterSvc != nil {
 		a.clusterSvc.setRoster(roster)
 		a.clusterSvc.setAssigner(a.assigner)
@@ -844,13 +893,13 @@ func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
 		if !a.runsTaskLocally(t) {
 			return
 		}
-		// Umbrella/chat tasks run no agent (agentorch.startAgent refuses
-		// them at the dispatch choke point). Every status-triggered
-		// workflow here ends in a run_agent step, so dispatching one onto
-		// a tracker is a guaranteed 3-attempt circuit-breaker trip that
-		// flips the tracker to human-required — and umbrella.rollup then
-		// flips it back to in-progress on the next tick, looping forever.
-		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+		// Umbrella tasks run no agent (agentorch.startAgent refuses them at
+		// the dispatch choke point). Every status-triggered workflow here
+		// ends in a run_agent step, so dispatching one onto a tracker is a
+		// guaranteed 3-attempt circuit-breaker trip that flips the tracker
+		// to human-required — and umbrella.rollup then flips it back to
+		// in-progress on the next tick, looping forever.
+		if t.TaskType == task.TaskTypeUmbrella {
 			return
 		}
 	}
@@ -876,8 +925,7 @@ func expectedHumanKind(t task.Task) string {
 	case t.ReviewPhase == review.ReviewPhaseDrafted ||
 		strings.HasPrefix(t.StatusReason, "Draft review ready"):
 		return "review_draft"
-	case t.ReviewPhase == review.ReviewPhaseManual ||
-		strings.HasPrefix(t.StatusReason, "PR too small for agent review"):
+	case t.ReviewPhase == review.ReviewPhaseManual:
 		return "review_manual"
 	default:
 		return ""
@@ -994,6 +1042,19 @@ func (a *App) initAudit() {
 	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
 		a.logger.Warn("audit.cleanup", "err", err)
 	}
+
+	// Wired here (rather than per-caller) so every push-preflight failure —
+	// from review.Handler's PR-fix path and workflow.Engine's PR-tail push
+	// step alike — surfaces as one audit event internal/health's
+	// checkGHPushAuthFailure turns into an operator-visible finding, instead
+	// of only the per-task status_reason PreflightPushCredentials' callers
+	// already set. See #2315: a task landed in human-required with no signal
+	// beyond a log line when the host's only gh session expired.
+	project.SetPushAuthFailureHook(func(err error) {
+		a.logAudit(audit.EventGHPushAuthFailed, "", "", map[string]any{
+			"err": err.Error(),
+		})
+	})
 }
 
 // initArtifacts constructs the artifact store, wires the task delete hook to
@@ -1043,6 +1104,10 @@ func (a *App) initProviderHealth(ctx context.Context, emit func(string, any)) {
 		CopilotRLCooldown:  time.Duration(a.cfg.Providers.Copilot.RateLimitCooldownSeconds) * time.Second,
 		OpenCodeRLCooldown: time.Duration(a.cfg.Providers.OpenCode.RateLimitCooldownSeconds) * time.Second,
 	}, emit, a.logger)
+	// New seeds every provider Healthy=false until probed; probe once here,
+	// before the gate is live, so startLifecycle's dispatch never sees a
+	// window where every provider reads unhealthy and fails closed.
+	pc.ProbeOnce(ctx)
 	a.providerHealth = pc
 	a.agents.SetHealthGate(pc)
 	a.wg.Go(func() { pc.Run(ctx) })
@@ -1063,7 +1128,6 @@ func (a *App) emitDegradedWarnings(emit func(string, any)) {
 // and returns the GitHub issues fetcher (still consumed by
 // startBackgroundServices). Extracted so Startup stays under funlen.
 func (a *App) initAutomations(emit func(string, any)) *poll.IssuesFetcher {
-	a.initTodoist(emit)
 	a.initRenovate(emit)
 	a.initPromptLab()
 	a.initTriage()
@@ -1101,14 +1165,12 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
 	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
 	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
+	a.workflowEngine.SetPRCloser(prCloserAdapter{})
 	a.workflowEngine.SetPRFinder(prFinderAdapter{})
+	a.workflowEngine.SetPRAnyStateFinder(prFinderAdapter{})
+	a.workflowEngine.SetPRExistenceChecker(prExistenceCheckerAdapter{})
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
-	a.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
-		tasks:      a.tasks,
-		projects:   a.projects,
-		classifier: &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
-		audit:      a.audit,
-	})
+	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
@@ -1200,7 +1262,7 @@ func (a *App) initWorkflowEngine() {
 func (a *App) configureWorkflowPolicies() {
 	a.configureTestingEscalation()
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
-	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
+	a.workflowEngine.SetABTestingConfig(a.abTestingConfig())
 	a.configurePlanAutoApproval()
 }
 
@@ -1233,8 +1295,24 @@ func (a *App) newWorkflowAgentLauncher() *agentAdapter {
 func (a *App) getPressureGate() *pressure.Gate {
 	if a.pressureGate == nil {
 		a.pressureGate = pressure.New(a.cfg.Orchestrator.Pressure, config.HomeDir(), a.logger)
+		if a.pressureGate != nil {
+			if reclaimer := a.getDiskReclaimer(); reclaimer != nil {
+				a.pressureGate.SetReclaimTrigger(func() { reclaimer.TryRun() })
+			}
+		}
 	}
 	return a.pressureGate
+}
+
+func (a *App) getDiskReclaimer() *diskreclaim.Reclaimer {
+	if a == nil || a.cfg == nil || a.tasks == nil {
+		return nil
+	}
+	if a.diskReclaimer == nil {
+		cooldown := time.Duration(a.cfg.Orchestrator.Pressure.ReclaimCooldownSeconds) * time.Second
+		a.diskReclaimer = diskreclaim.New(a.cfg, a.tasks, cooldown, a.logger)
+	}
+	return a.diskReclaimer
 }
 
 // configureTestingEscalation wires the testing→escalation config knobs onto
@@ -1243,26 +1321,26 @@ func (a *App) getPressureGate() *pressure.Gate {
 func (a *App) configureTestingEscalation() {
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	a.workflowEngine.SetReviewUntilClean(a.cfg.ReviewUntilClean())
+	a.workflowEngine.SetMaxReviewRounds(a.cfg.MaxReviewRounds())
+	a.workflowEngine.SetAllowUnboundedReviewRounds(a.cfg.AllowUnboundedReviewRounds())
 	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
 	a.warnUnboundedReviewLoop()
 }
 
 // warnUnboundedReviewLoop surfaces the one posture where the review→fix cycle
-// has no stopping condition at all. The cycle has no round cap by design, so
-// agent.max_task_cost_usd is its only bound — and that guardrail is disabled at
-// its default of 0 (enforceTaskCostBudget returns early on <= 0). Stock config
-// therefore pairs an uncapped loop with no ceiling, which a reviewer and fixer
-// that disagree can ride indefinitely. Operators should not have to read the
-// workflow YAML to discover that.
+// has no stopping condition at all: the legacy uncapped review→fix→review loop
+// plus no cumulative task-cost ceiling. Fresh installs now default to a review
+// round cap; this warning remains for explicit opt-ins.
 func (a *App) warnUnboundedReviewLoop() {
-	if !a.cfg.ReviewUntilClean() || a.cfg.Agent.MaxTaskCostUSD > 0 {
+	if !a.cfg.ReviewUntilClean() || !a.cfg.AllowUnboundedReviewRounds() || a.cfg.Agent.MaxTaskCostUSD > 0 {
 		return
 	}
 	a.logger.Warn("review.loop.unbounded",
 		"review_until_clean", true,
+		"allow_unbounded_review_rounds", true,
 		"max_task_cost_usd", 0,
-		"detail", "review→fix cycles until CLEAN with no round cap and no cost ceiling; "+
-			"set agent.max_task_cost_usd to bound it, or agent.review_until_clean: false for a single review pass",
+		"detail", "review→fix cycles until CLEAN with no review-round cap and no task-cost ceiling; "+
+			"set agent.max_task_cost_usd to bound it, disable allow_unbounded_review_rounds, or set agent.review_until_clean: false for a single review pass",
 	)
 }
 
@@ -1380,6 +1458,12 @@ func (a *App) newRecovery() *recovery.Recovery {
 		OrphanRoots: []string{
 			filepath.Join(config.HomeDir(), "sandboxes"),
 			filepath.Join(config.HomeDir(), "worktrees"),
+			// The /sybra-test skill's fake-provider harness spawns its
+			// subject process directly under a fresh os.TempDir()/sybra-test-*
+			// sandbox, outside the normal task/worktree/sandbox lifecycle
+			// (sybra#2210) — glob-expanded fresh on every sweep since each
+			// test run gets its own directory.
+			filepath.Join(os.TempDir(), "sybra-test-*"),
 		},
 		// Also gate on the instance role: RunStartupCleanup calls
 		// RestartStaleInProgress outside the (gated) maintenance pass, so an

@@ -10,8 +10,106 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+// TestReconcileAndRebase_PushedBranchMergesNotRebases is the regression guard
+// for the recurring "branch diverged from remote": a branch that already exists
+// on its push remote (open PR) must be integrated with base via merge, never
+// rebase. Rebasing rewrites the pushed commits' SHAs, and since Sybra never
+// force-pushes, the local head then diverges from the remote and loops through
+// conflict recovery forever. An unpushed branch is still rebased.
+func TestReconcileAndRebase_PushedBranchMergesNotRebases(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		push           bool
+		wantOrigPreset bool
+	}{
+		{name: "pushed branch merges (SHAs preserved, no divergence)", push: true, wantOrigPreset: true},
+		{name: "unpushed branch rebases (linear history)", push: false, wantOrigPreset: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			remote := filepath.Join(root, "remote.git")
+			wt := filepath.Join(root, "wt")
+
+			git := func(dir string, args ...string) string {
+				t.Helper()
+				out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+				if err != nil {
+					t.Fatalf("git %v: %v: %s", args, err, out)
+				}
+				return strings.TrimSpace(string(out))
+			}
+			mustRun := func(name string, args ...string) {
+				t.Helper()
+				if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+					t.Fatalf("%s %v: %v: %s", name, args, err, out)
+				}
+			}
+
+			mustRun("git", "init", "--bare", "-b", "main", remote)
+			mustRun("git", "clone", remote, wt)
+			git(wt, "config", "user.email", "t@t")
+			git(wt, "config", "user.name", "t")
+
+			write := func(name, body string) {
+				if err := os.WriteFile(filepath.Join(wt, name), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write("main.txt", "base")
+			git(wt, "add", ".")
+			git(wt, "commit", "-m", "init main")
+			git(wt, "push", "origin", "main")
+
+			// Feature branch with a commit; push it only in the "pushed" case.
+			git(wt, "checkout", "-b", "feat")
+			write("feat.txt", "work")
+			git(wt, "add", ".")
+			git(wt, "commit", "-m", "feat work")
+			featSHA := git(wt, "rev-parse", "HEAD")
+			if tc.push {
+				git(wt, "push", "-u", "origin", "feat")
+			}
+
+			// Base advances on a different file (no conflict), pushed to remote.
+			git(wt, "checkout", "main")
+			write("base2.txt", "more base")
+			git(wt, "add", ".")
+			git(wt, "commit", "-m", "advance main")
+			baseSHA := git(wt, "rev-parse", "HEAD")
+			git(wt, "push", "origin", "main")
+			git(wt, "checkout", "feat")
+
+			m := New(Config{Logger: discardLogger()})
+			if err := m.reconcileAndRebase(ctx, wt, "feat", "origin/main", nil); err != nil {
+				t.Fatalf("reconcileAndRebase: %v", err)
+			}
+			head := git(wt, "rev-parse", "HEAD")
+
+			isAncestor := func(a, b string) bool {
+				return exec.Command("git", "-C", wt, "merge-base", "--is-ancestor", a, b).Run() == nil
+			}
+			if !isAncestor(baseSHA, head) {
+				t.Fatalf("base %s not integrated into feat HEAD %s", baseSHA, head)
+			}
+			if got := isAncestor(featSHA, head); got != tc.wantOrigPreset {
+				t.Fatalf("pre-reconcile commit %s ancestor-of-HEAD = %v, want %v (pushed=%v)", featSHA, got, tc.wantOrigPreset, tc.push)
+			}
+			if tc.push {
+				// The local bare remote makes the post-merge push deterministic:
+				// a clean fast-forward returns nil. Any error (divergence or
+				// otherwise) is a regression.
+				if err := project.PushSync(ctx, wt, "feat"); err != nil {
+					t.Fatalf("PushSync after merging a pushed branch = %v, want nil (clean fast-forward)", err)
+				}
+			}
+		})
+	}
+}
 
 // TestPrepareForBranchFix_ExistingBranch verifies the happy path: a task
 // whose branch already exists (locally or on origin) gets a worktree checked

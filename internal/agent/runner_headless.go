@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
@@ -180,6 +181,10 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	defer prepared.cleanup()
 	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == "claude")
 
+	if _, _, unrendered := a.GetPromptRender(); len(unrendered) > 0 {
+		m.logger.Warn("agent.headless.skill_unrendered", "id", a.ID, "provider", prepared.inv.name, "skills", unrendered)
+	}
+
 	if m.survives() && a.Mode == "headless" {
 		inv := prepared.inv
 		return m.runHeadlessAttemptSurvive(ctx, a, prepared.cfg, outFile, tailOffset, inv.name, inv.args, inv.env, inv.command)
@@ -323,6 +328,55 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		return true, nil
 	}
 	return false, nil
+}
+
+// makeFIFO creates (or recreates) a named pipe at path. A stale pipe from a
+// prior run is removed first so the mode bits are always fresh.
+func makeFIFO(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return syscall.Mkfifo(path, 0o600)
+}
+
+// startHeadlessProcessSurviveStdin assigns a steerable detached headless
+// claude process's stdin to a FIFO (reusing makeFIFO/agentFIFOPath). Unlike a
+// conversational agent — which is handed an O_RDWR fd so it never sees EOF and
+// survives the parent indefinitely — a headless run MUST terminate when the
+// steer turn boundary closes stdin with no queued message (see
+// drainOrCloseHeadlessSteer). So the child is given a READ-ONLY stdin fd while
+// the parent keeps its own O_RDWR writer: closing the parent's only writer then
+// delivers EOF to the child, which exits exactly like a plain one-shot
+// `claude -p`. Passing the child an O_RDWR fd instead (as the convo path does)
+// leaves the child itself a writer on the pipe, so it never sees EOF and every
+// unsteered run hangs until postResultGrace kills it.
+//
+// The returned *os.File is the parent's copy of the child's read end; the
+// caller must close it after cmd.Start() (the child holds its own dup) so a
+// single closeStdinPipe on the parent's writer is enough to EOF the child.
+// Called from startHeadlessSurviveProcess before cmd.Start(); on any error
+// cmd.Stdin is left unset and the caller aborts the attempt.
+func (m *Manager) startHeadlessProcessSurviveStdin(a *Agent, cmd *exec.Cmd) (*os.File, error) {
+	fifoPath := agentFIFOPath(m.registryDir(), a.ID)
+	if err := makeFIFO(fifoPath); err != nil {
+		return nil, fmt.Errorf("mkfifo: %w", err)
+	}
+	// Open the writer first (O_RDWR never blocks on a FIFO), so the read-only
+	// open below finds a writer present and returns immediately too.
+	writeFifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open fifo (write): %w", err)
+	}
+	childStdin, err := os.OpenFile(fifoPath, os.O_RDONLY, 0)
+	if err != nil {
+		_ = writeFifo.Close()
+		return nil, fmt.Errorf("open fifo (read): %w", err)
+	}
+	cmd.Stdin = childStdin
+	a.convo.replaceStdinPipe(writeFifo)
+	a.setStdinPath(fifoPath)
+	a.setFinalizing(false)
+	return childStdin, nil
 }
 
 // startHeadlessSurviveProcess builds and starts the detached subprocess for a
@@ -769,7 +823,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	if event.Type == "" {
 		return false
 	}
-	event = bindToolResultEvent(a.TaskID, string(RoleFromName(a.Name)), m.artifacts, event)
+	event = bindToolResultEvent(a.TaskID, string(a.EffectiveRole()), m.artifacts, event)
 
 	event.Timestamp = time.Now().UTC()
 	if event.LimitSnapshot != nil {
@@ -1028,6 +1082,7 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	}
 	// Must follow AddCacheStats: cached input dominates a codex run and prices at a tenth of standard. EXC:FILE011:load-bearing-invariant
 	costNow := a.BankEstimatedCost()
+	costSource := a.CostSource()
 	// Codex NDJSON never reports session_id/cost on the result event, so
 	// those alone read as an empty/crashed run (this misled diagnosis of
 	// the 2026-07-05 stalled-workflow incident, #1559). Omit the
@@ -1051,7 +1106,7 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	maxCost := m.guardrails.MaxCostUSD
 	m.mu.RUnlock()
 	if maxCost > 0 && costNow > maxCost {
-		if keepGoing := m.checkCostGuardrail(a, costNow, maxCost); !keepGoing {
+		if keepGoing := m.checkCostGuardrail(a, costNow, maxCost, costSource); !keepGoing {
 			return false
 		}
 	}
@@ -1198,8 +1253,8 @@ func (m *Manager) warnIfResultHasLiveBackgroundTasks(a *Agent) {
 // any sidecar it already wrote) gets discarded as a hard failure purely
 // because the kill happened to land after the cost ceiling (see task
 // 6ee7ee8d).
-func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64) bool {
-	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
+func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64, costSource string) bool {
+	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost, "source", costSource)
 	a.MarkStopped()
 	// Stamping "cost" over a checkpoint discards a handoff whose work is already committed. EXC:FILE011:load-bearing-invariant
 	if !IsCheckpointEscalation(a.GetEscalationReason()) {
@@ -1207,9 +1262,13 @@ func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64) bool {
 	}
 	a.setCompletedByResult(true)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
-		Reason:  "cost",
-		CostUSD: costNow,
-		Limit:   maxCost,
+		Reason:        "cost",
+		Guardrail:     "execution.agent.post_result_cost_usd",
+		Measurement:   "post_result_usd",
+		CostSource:    costSource,
+		CostUSD:       costNow,
+		MeasuredValue: costNow,
+		Limit:         maxCost,
 	})
 	m.emit(events.AgentState(a.ID), a)
 	return false
@@ -1250,9 +1309,12 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 	}
 	a.SetEscalationReason(EscalationReasonTurns)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
-		Reason:    "turns",
-		TurnCount: turns,
-		Limit:     float64(maxTurns),
+		Reason:        "turns",
+		Guardrail:     "execution.agent.max_assistant_events",
+		Measurement:   "assistant_events",
+		TurnCount:     turns,
+		MeasuredValue: float64(turns),
+		Limit:         float64(maxTurns),
 	})
 	m.emit(events.AgentState(a.ID), a)
 	select {

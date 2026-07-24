@@ -18,6 +18,7 @@ type PlanContract struct {
 	Worktree           string                     `json:"worktree"`
 	Files              []PlanContractFile         `json:"files"`
 	Steps              []string                   `json:"steps"`
+	ExpectedDeletions  []string                   `json:"expected_deletions,omitempty"`
 	Verification       []PlanContractVerification `json:"verification"`
 	AcceptanceCriteria []string                   `json:"acceptance_criteria"`
 	RiskTier           string                     `json:"risk_tier"`
@@ -92,6 +93,11 @@ func ValidatePlanContractForTask(raw, taskID, taskBody string) []string {
 	}
 	if len(nonEmptyStrings(contract.Steps)) == 0 {
 		problems = append(problems, "steps must include at least one implementation step")
+	}
+	for i, pattern := range contract.ExpectedDeletions {
+		if _, _, err := normalizeExpectedDeletionEntry(pattern); err != nil {
+			problems = append(problems, fmt.Sprintf("expected_deletions[%d]: %v", i, err))
+		}
 	}
 	if len(contract.Verification) == 0 {
 		problems = append(problems, "verification must include at least one command or manual check")
@@ -308,6 +314,27 @@ func validateContractPath(p string) error {
 		return fmt.Errorf("must be clean path %q", clean)
 	}
 	return nil
+}
+
+func normalizeExpectedDeletionEntry(raw string) (entry string, isGlob bool, err error) {
+	p := strings.TrimSpace(raw)
+	if err := validateContractPath(p); err != nil {
+		return "", false, err
+	}
+	if !looksLikeExpectedDeletionGlob(p) {
+		return p, false, nil
+	}
+	if strings.Contains(p, "**") {
+		return "", false, fmt.Errorf("recursive ** globs are not supported")
+	}
+	if _, err := path.Match(p, p); err != nil {
+		return "", false, fmt.Errorf("invalid glob pattern: %w", err)
+	}
+	return p, true, nil
+}
+
+func looksLikeExpectedDeletionGlob(p string) bool {
+	return strings.ContainsAny(p, "*?[")
 }
 
 func isWindowsDrivePath(p string) bool {

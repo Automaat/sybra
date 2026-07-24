@@ -74,7 +74,7 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 		}
 		if err := e.spawnParallelChild(taskID, step, child, wfExec, ctx, dir, status); err != nil {
 			e.logger.Error("workflow.parallel.spawn", "task_id", taskID, "parent", step.ID, "child", child.ID, "err", err)
-			if transientAgentStartError(err) {
+			if e.transientOrShutdownStartError(err) {
 				status.Status = "pending"
 				status.Output = "spawn blocked: " + err.Error()
 				e.surfaceStartFailure(taskID, ctx.Task.Status, err, wfExec, child.ID)
@@ -114,7 +114,11 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 			mode = rendered
 		}
 	}
-	if mode == "" {
+	// Parallel children must run as headless one-shot so the parent can
+	// advance. Interactive dispatch no longer exists — coerce empty and any
+	// legacy interactive value to headless before AdmitDispatch so the
+	// resource-pressure gate sees the real mode (matches spawnBestOfNAttempt).
+	if mode == "" || mode == "interactive" {
 		mode = "headless"
 	}
 	if admit, reason := e.agents.AdmitDispatch(taskID, child.Config.Role, mode); !admit {
@@ -137,12 +141,7 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	}
 
 	// Headless one-shot: parallel children must terminate so the parent
-	// can advance. Interactive/wait_for_status children are not supported
-	// here (validated at definition load time would be the proper place;
-	// guard here defensively).
-	if mode == "interactive" {
-		return fmt.Errorf("parallel child %q: interactive mode not supported", child.ID)
-	}
+	// can advance (mode is forced to headless above).
 	oneShot := false
 
 	// Hold e.mu across StartAgent so HandleAgentComplete (which acquires

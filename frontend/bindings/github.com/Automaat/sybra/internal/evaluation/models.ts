@@ -8,6 +8,9 @@ import { Create as $Create } from "@wailsio/runtime";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as abtest$0 from "../abtest/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as config$0 from "../config/models.js";
 
 /**
  * Breakdown is the per-dimension (provider, role) slice of the effort and
@@ -119,6 +122,25 @@ export class ComparisonBreakdown {
     "toolsPerLanded": number;
     "insufficientData": boolean;
     "qualityAttributionLimited": boolean;
+
+    /**
+     * SkillConformance is this row's skill-conformance bucket
+     * (SkillCohortSkill/SkillCohortDirect/SkillCohortIndeterminate) when every
+     * run credited to the row shares one, "" when the row blends more than
+     * one — see SkillParityUnknown, the same condition reified as a bool for
+     * API consumers that would rather not special-case an empty string.
+     */
+    "skillConformance"?: string;
+
+    /**
+     * SkillParityUnknown reports whether this row's population is not purely
+     * SkillCohortSkill or SkillCohortDirect — either it blends runs with
+     * different skill delivery, or every run in it has indeterminate
+     * conformance. Either way the row can't support a skill-parity
+     * comparison regardless of sample size, so it always forces
+     * InsufficientData.
+     */
+    "skillParityUnknown"?: boolean;
     "baseline": boolean;
     "baselineVariantId"?: string;
     "sampleStatus"?: string;
@@ -245,7 +267,7 @@ export class ComparisonBreakdown {
         const $$createField28_0 = $$createType2;
         const $$createField29_0 = $$createType2;
         const $$createField30_0 = $$createType2;
-        const $$createField45_0 = $$createType4;
+        const $$createField47_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("subject" in $$parsedSource) {
             $$parsedSource["subject"] = $$createField9_0($$parsedSource["subject"]);
@@ -272,7 +294,7 @@ export class ComparisonBreakdown {
             $$parsedSource["revertEstimate"] = $$createField30_0($$parsedSource["revertEstimate"]);
         }
         if ("roleBreakdowns" in $$parsedSource) {
-            $$parsedSource["roleBreakdowns"] = $$createField45_0($$parsedSource["roleBreakdowns"]);
+            $$parsedSource["roleBreakdowns"] = $$createField47_0($$parsedSource["roleBreakdowns"]);
         }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
     }
@@ -589,6 +611,14 @@ export class Report {
     "weaknesses"?: Weakness[];
     "notes"?: string[];
 
+    /**
+     * SLO is the rolling autonomy/reliability compliance verdict for this
+     * window — see EvaluateSLOs. Populated by Service.Scan; a Report built
+     * by hand (e.g. in weakness_test.go fixtures) leaves this as the zero
+     * value, which is not a meaningful verdict either way.
+     */
+    "slo": SLOReport;
+
     /** Creates a new Report instance. */
     constructor($$source: Partial<Report> = {}) {
         if (!("generatedAt" in $$source)) {
@@ -602,6 +632,9 @@ export class Report {
         }
         if (!("overall" in $$source)) {
             this["overall"] = (new Scorecard());
+        }
+        if (!("slo" in $$source)) {
+            this["slo"] = (new SLOReport());
         }
 
         Object.assign(this, $$source);
@@ -620,6 +653,7 @@ export class Report {
         const $$createField9_0 = $$createType19;
         const $$createField10_0 = $$createType21;
         const $$createField11_0 = $$createType22;
+        const $$createField12_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -648,9 +682,136 @@ export class Report {
         if ("notes" in $$parsedSource) {
             $$parsedSource["notes"] = $$createField11_0($$parsedSource["notes"]);
         }
+        if ("slo" in $$parsedSource) {
+            $$parsedSource["slo"] = $$createField12_0($$parsedSource["slo"]);
+        }
         return new Report($$parsedSource as Partial<Report>);
     }
 }
+
+/**
+ * SLOReport is the compliance verdict for one Scorecard + SLOSignals pair
+ * against a target set.
+ */
+export class SLOReport {
+    "targets": SLOTargets;
+
+    /**
+     * Statuses is fixed order: autonomy, ci_first_pass, rework,
+     * identical_retry_cap, restart_cadence.
+     */
+    "statuses": SLOStatus[];
+    "compliant": boolean;
+
+    /**
+     * ErrorBudgetRemaining is min(Statuses[i].BudgetRemaining), floored at 0.
+     * 0 means at least one SLO is breached; the throttle in
+     * internal/sybra/agentorch keys off this reaching 0.
+     */
+    "errorBudgetRemaining": number;
+    "breaches"?: string[];
+
+    /** Creates a new SLOReport instance. */
+    constructor($$source: Partial<SLOReport> = {}) {
+        if (!("targets" in $$source)) {
+            this["targets"] = (new SLOTargets());
+        }
+        if (!("statuses" in $$source)) {
+            this["statuses"] = [];
+        }
+        if (!("compliant" in $$source)) {
+            this["compliant"] = false;
+        }
+        if (!("errorBudgetRemaining" in $$source)) {
+            this["errorBudgetRemaining"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SLOReport instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SLOReport {
+        const $$createField0_0 = $$createType24;
+        const $$createField1_0 = $$createType26;
+        const $$createField4_0 = $$createType22;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("targets" in $$parsedSource) {
+            $$parsedSource["targets"] = $$createField0_0($$parsedSource["targets"]);
+        }
+        if ("statuses" in $$parsedSource) {
+            $$parsedSource["statuses"] = $$createField1_0($$parsedSource["statuses"]);
+        }
+        if ("breaches" in $$parsedSource) {
+            $$parsedSource["breaches"] = $$createField4_0($$parsedSource["breaches"]);
+        }
+        return new SLOReport($$parsedSource as Partial<SLOReport>);
+    }
+}
+
+/**
+ * SLOStatus is one target's compliance verdict.
+ */
+export class SLOStatus {
+    "name": string;
+    "actual": number;
+    "target": number;
+    "met": boolean;
+
+    /**
+     * BudgetRemaining is 0 (breached) .. 1 (at least a full safety margin of
+     * headroom above/below target), normalized so five heterogeneous SLOs
+     * (rates in [0,1], integer counts, an hourly cadence) can be compared on
+     * one scale and the minimum taken as the fleet-wide error budget.
+     */
+    "budgetRemaining": number;
+
+    /** Creates a new SLOStatus instance. */
+    constructor($$source: Partial<SLOStatus> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("actual" in $$source)) {
+            this["actual"] = 0;
+        }
+        if (!("target" in $$source)) {
+            this["target"] = 0;
+        }
+        if (!("met" in $$source)) {
+            this["met"] = false;
+        }
+        if (!("budgetRemaining" in $$source)) {
+            this["budgetRemaining"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SLOStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SLOStatus {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SLOStatus($$parsedSource as Partial<SLOStatus>);
+    }
+}
+
+/**
+ * SLOTargets is the rolling autonomy/reliability target set (#2441). Defined
+ * in internal/config (config cannot import evaluation, since evaluation
+ * already imports config for EvaluationConfig) and aliased here so
+ * evaluation code reads naturally as evaluation.SLOTargets.
+ */
+export const SLOTargets = config$0.SLOTargets;
+
+/**
+ * SLOTargets is the rolling autonomy/reliability target set (#2441). Defined
+ * in internal/config (config cannot import evaluation, since evaluation
+ * already imports config for EvaluationConfig) and aliased here so
+ * evaluation code reads naturally as evaluation.SLOTargets.
+ */
+export type SLOTargets = config$0.SLOTargets;
 
 /**
  * Scorecard holds the aggregate metrics over one time window.
@@ -869,7 +1030,7 @@ export class TaskPhases {
      * Creates a new TaskPhases instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskPhases {
-        const $$createField2_0 = $$createType23;
+        const $$createField2_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("byPhase" in $$parsedSource) {
             $$parsedSource["byPhase"] = $$createField2_0($$parsedSource["byPhase"]);
@@ -996,4 +1157,8 @@ const $$createType19 = $Create.Array($$createType18);
 const $$createType20 = Weakness.createFrom;
 const $$createType21 = $Create.Array($$createType20);
 const $$createType22 = $Create.Array($Create.Any);
-const $$createType23 = $Create.Map($Create.Any, $Create.Any);
+const $$createType23 = SLOReport.createFrom;
+const $$createType24 = config$0.SLOTargets.createFrom;
+const $$createType25 = SLOStatus.createFrom;
+const $$createType26 = $Create.Array($$createType25);
+const $$createType27 = $Create.Map($Create.Any, $Create.Any);

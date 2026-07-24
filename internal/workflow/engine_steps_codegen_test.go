@@ -245,6 +245,28 @@ func TestExecCodegenGate_TimeoutFlagsHumanRequired(t *testing.T) {
 	}
 }
 
+func TestExecCodegenGate_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
+	orig := workflowCheckLoadPerCPU
+	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newCodegenGateEngine(t, wt, []string{"sleep 0.2"})
+	engine.SetVerifyTimeout(100 * time.Millisecond)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (scaled timeout should cover host oversubscription)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want unchanged", ti.Status)
+	}
+}
+
 func TestExecCodegenGate_CommitFailureFlagsHumanRequired(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})

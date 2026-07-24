@@ -7,9 +7,11 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 )
 
@@ -25,6 +27,8 @@ type TaskInfo struct {
 	Title        string
 	Status       string
 	StatusReason string
+	Blocker      blocker.State
+	Role         string
 	Tags         []string
 	AgentMode    string
 	// Priority mirrors task.Priority ("", "low", "medium", "high", "urgent").
@@ -47,6 +51,7 @@ type TaskInfo struct {
 	PlanDecisions         string
 	PlanBrief             string
 	CodeReview            string
+	Attachments           []AttachmentInfo
 	// PlanDrafts holds raw per-provider plans during dual-/N-provider planning.
 	// Keys are parallel child step IDs (e.g. "plan_claude", "plan_codex").
 	PlanDrafts map[string]string
@@ -63,6 +68,15 @@ type TaskInfo struct {
 	TestingCycleStartedAt *time.Time
 	// ManualTest is repo/project-declared guidance for black-box testing.
 	ManualTest ManualTestInfo
+}
+
+// AttachmentInfo is the workflow-visible subset of task attachment metadata.
+type AttachmentInfo struct {
+	ID          string
+	FileName    string
+	ContentType string
+	SizeBytes   int64
+	Path        string
 }
 
 // ManualTestInfo describes the runnable surface a test-runner should exercise.
@@ -86,6 +100,7 @@ type AgentRunInfo struct {
 	TestOutcome            string
 	TestFailureFingerprint string
 	HeadSHA                string
+	FinalCommitSource      string
 }
 
 // TaskProvider reads and updates tasks.
@@ -93,10 +108,12 @@ type TaskProvider interface {
 	GetTask(id string) (TaskInfo, error)
 	ListTasks() ([]TaskInfo, error)
 	UpdateTaskStatus(id, status, reason string) error
+	UpdateTaskBlocker(id, status, reason string, state blocker.State) error
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
 	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
+	RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error
 	AppendTaskBody(id, content string) error
 	// ReplaceTaskBody overwrites the task's full body. Used by the test-route
 	// step to archive/strip a stale "## Test Failures" section before
@@ -158,6 +175,7 @@ type CheckConfigGetter interface {
 	CodegenCommands(ctx context.Context, taskID string) []string
 	VerifyCommands(ctx context.Context, taskID string) []string
 	SetupCommands(ctx context.Context, taskID string) []string
+	FocusedChecks(ctx context.Context, taskID string) []project.FocusedCheck
 }
 
 // ManualTestConfigGetter resolves repo/project-declared black-box testing hints.
@@ -183,6 +201,7 @@ type PRLinker interface {
 // workflow fixes review comments and pushes updated commits.
 type PRReviewRequester interface {
 	RerequestReview(repo string, prNumber int) (reviewers []string, err error)
+	RequestCopilotReview(ctx context.Context, repo string, prNumber int) error
 }
 
 // PRStateFetcher fetches the live state of a GitHub pull request. Used by
@@ -220,12 +239,36 @@ type PRCreator interface {
 	CreatePR(ctx context.Context, dir string, req PRCreateRequest) (number int, headSHA string, err error)
 }
 
+// PRCloser closes an open pull request that has been superseded by a newer PR
+// for the same task. Engine treats this as best-effort cleanup: a close failure
+// must not roll back linking the replacement PR.
+type PRCloser interface {
+	ClosePR(ctx context.Context, repo string, number int, comment string) error
+}
+
 // PRFinder looks up an open PR by its head branch, backing the create_pr
 // idempotency guard (a prior run may have created the PR but crashed before
 // persisting pr_number). Engine operates with a nil finder — the guard is
 // then skipped and create_pr always attempts a fresh push/create.
 type PRFinder interface {
 	FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error)
+}
+
+// PRAnyStateFinder resolves a PR for a head branch across open and merged
+// states. Used as a stronger duplicate guard before create_pr opens a new PR:
+// a previously squash-merged PR can leave the branch tip non-ancestor of base
+// while the tree diff is already present on base.
+type PRAnyStateFinder interface {
+	FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error)
+}
+
+// PRExistenceChecker confirms a pr_number actually resolves against a given
+// repo, guarding link_pr_and_review against trusting an out-of-band pr_number
+// set for the wrong repo (e.g. an agent that created a PR in its own fork
+// instead of upstream). Engine operates with a nil checker — the guard is
+// then skipped and task.pr_number is trusted as before.
+type PRExistenceChecker interface {
+	PRExists(ctx context.Context, repo string, number int) (bool, error)
 }
 
 // PRCreateRequest describes a new pull request to open for an
@@ -302,7 +345,10 @@ type Engine struct {
 	prHeads          PRHeadFetcher
 	pushPreflight    PushCredentialPreflighter
 	prCreator        PRCreator
+	prCloser         PRCloser
 	prFinder         PRFinder
+	prAnyStateFinder PRAnyStateFinder
+	prExistence      PRExistenceChecker
 	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
 	attemptNotes     AttemptNoteAppender
@@ -322,30 +368,53 @@ type Engine struct {
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
-	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
-	dispatching      map[string]struct{}        // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
-	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
-	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
-	agentRoutes      map[string]agentRoute      // agentID → {taskID, stepID}
-	pendingStepStart map[string]int             // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
-	cascadeDepth     map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
-	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
-	resumeError      *logging.ErrorThrottle
-	demotionThrottle *logging.ErrorThrottle
-	maxTestAttempts  int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
+	inflightMutexes  map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
+	dispatching      map[string]struct{}    // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
+	starting         map[string]struct{}    // taskID → StartWorkflowWithVars in progress
+	humanAction      map[string]struct{}    // taskID → HandleHumanAction in progress
+	agentRoutes      map[string]agentRoute  // agentID → {taskID, stepID}
+	pendingStepStart map[string]int         // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
+	// pendingCompletions holds an agent completion that arrived while its own
+	// step's start was still registering (see resolveCompletionRoute). Keyed
+	// like pendingStepStart; execRunAgent's deferred cleanup always pops and
+	// redelivers it via unmarkStepStartingAndTakePending — if the route ended
+	// up registered, that redelivery is a normal tracked completion; if the
+	// underlying StartAgent call had failed instead, it falls through to the
+	// usual untracked-completion handling (dropped as a phantom, or credited
+	// to the current step for a role match) rather than being silently lost.
+	pendingCompletions map[string][]AgentCompletion
+	cascadeDepth       map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
+	pendingRecovery    map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
+	resumeError        *logging.ErrorThrottle
+	demotionThrottle   *logging.ErrorThrottle
+	resumeSkip         *logging.InfoThrottle
+	maxTestAttempts    int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
 	// reviewLoopDisabled: see SetReviewUntilClean. Inverted so the zero value
 	// keeps the review→fix→review cycle running, matching
 	// config.ReviewUntilClean's default of true.
 	reviewLoopDisabled bool
+	// maxReviewRounds bounds how many automated review rounds one
+	// simple-task-review execution may spend before it is parked
+	// blocked. 0 → config.DefaultMaxReviewRounds.
+	maxReviewRounds int
+	// allowUnboundedReviewRounds restores the legacy uncapped
+	// review→fix→review loop. Defaults to false.
+	allowUnboundedReviewRounds bool
 	// openPROnUnrunnableGate: see SetOpenPROnUnrunnableGate. Defaults to true
 	// (set in NewEngine), matching config.TestingOpenPROnUnrunnableGateEnabled's
 	// nil-is-true default.
 	openPROnUnrunnableGate bool
 	maxCheckpoints         int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
 	verifyTimeout          time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
-	abTesting              abtest.Config
-	evalGate               *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
-	conflictRecovery       func(taskID string) bool
+	verifyChecksSlots      chan struct{} // process-local verify_checks concurrency cap; lazily initialized for zero-value Engines in tests
+	// abMu guards abTesting alone: the routing ticker hot-swaps the A/B config
+	// via SetABTestingConfig while dispatch reads it (selectABVariant,
+	// providerEligibilitySnapshot, demotion/shutout reporting). Kept separate
+	// from mu so a config swap never contends with dispatch bookkeeping.
+	abMu             sync.RWMutex
+	abTesting        abtest.Config
+	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	conflictRecovery func(taskID string) bool
 	// dispatchComparator, when set, orders TaskInfo pairs for ResumeStalled's
 	// per-tick dispatch scan, replacing the built-in
 	// dispatchorder.Rank(status)-only sort. Wired by app_init.go so
@@ -387,10 +456,12 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		humanAction:            make(map[string]struct{}),
 		agentRoutes:            make(map[string]agentRoute),
 		pendingStepStart:       make(map[string]int),
+		pendingCompletions:     make(map[string][]AgentCompletion),
 		cascadeDepth:           make(map[string]int),
 		pendingRecovery:        make(map[string]pendingRecovery),
 		resumeError:            logging.NewErrorThrottle(),
 		demotionThrottle:       logging.NewErrorThrottle(),
+		resumeSkip:             logging.NewInfoThrottle(),
 		openPROnUnrunnableGate: true,
 	}
 }
@@ -474,9 +545,23 @@ func (e *Engine) SetPushCredentialPreflighter(p PushCredentialPreflighter) {
 // create_pr is reached, since a PR cannot be opened without it.
 func (e *Engine) SetPRCreator(c PRCreator) { e.prCreator = c }
 
+// SetPRCloser wires best-effort cleanup for superseded PRs after a task is
+// relinked to a replacement PR.
+func (e *Engine) SetPRCloser(c PRCloser) { e.prCloser = c }
+
 // SetPRFinder wires the open-PR-by-branch lookup used by create_pr's
 // idempotency guard. Leaving it unset skips the guard.
 func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
+
+// SetPRAnyStateFinder wires the all-state branch lookup used by create_pr's
+// squash-merge duplicate guard. Leaving it unset skips the guard.
+func (e *Engine) SetPRAnyStateFinder(f PRAnyStateFinder) { e.prAnyStateFinder = f }
+
+// SetPRExistenceChecker wires the pr_number-belongs-to-repo verification used
+// by link_pr_and_review's Path 1. Leaving it unset skips the check and
+// trusts task.pr_number outright, matching the engine's pre-existing
+// behavior.
+func (e *Engine) SetPRExistenceChecker(c PRExistenceChecker) { e.prExistence = c }
 
 // SetPRContentGenerator wires the LLM-backed title/body drafter used by the
 // `create_pr` step. Leaving it unset falls back to a templated title/body.
@@ -543,9 +628,17 @@ func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
 
 // SetReviewUntilClean controls whether simple-task-review re-reviews after
 // every fix until the verdict is CLEAN (true, the default) or runs a single
-// review pass per task (false). The cycle has no round cap; false is the way
-// to bound it when a per-task cost ceiling is not configured.
+// review pass per task (false).
 func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
+
+// SetMaxReviewRounds sets how many automated review rounds one
+// simple-task-review execution may spend before the task is parked
+// blocked. Values <= 0 fall back to config.DefaultMaxReviewRounds.
+func (e *Engine) SetMaxReviewRounds(n int) { e.maxReviewRounds = n }
+
+// SetAllowUnboundedReviewRounds restores the legacy uncapped
+// review→fix→review loop when true.
+func (e *Engine) SetAllowUnboundedReviewRounds(v bool) { e.allowUnboundedReviewRounds = v }
 
 // SetOpenPROnUnrunnableGate controls whether execRouteTestResult opens a PR
 // (ready-pr) instead of escalating to human-required once a testing cycle
@@ -561,7 +654,24 @@ func (e *Engine) SetOpenPROnUnrunnableGate(v bool) { e.openPROnUnrunnableGate = 
 func (e *Engine) SetMaxCheckpoints(n int) { e.maxCheckpoints = n }
 
 // SetABTestingConfig wires deterministic A/B assignment for run_agent steps.
-func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }
+// Safe to call concurrently with dispatch: the routing ticker hot-swaps this
+// live via applyRoutingWeights.
+func (e *Engine) SetABTestingConfig(cfg abtest.Config) {
+	e.abMu.Lock()
+	e.abTesting = cfg
+	e.abMu.Unlock()
+}
+
+// abTestingConfig returns the current A/B config under the read lock. The
+// returned value shares abTesting's backing experiment slice, but every writer
+// (SetABTestingConfig / mergeWeights) publishes a freshly built slice rather
+// than mutating in place, so an in-flight reader iterating this snapshot is
+// unaffected by a concurrent swap.
+func (e *Engine) abTestingConfig() abtest.Config {
+	e.abMu.RLock()
+	defer e.abMu.RUnlock()
+	return e.abTesting
+}
 
 // SetEvalGate wires a prompteval.Gate so stored offline eval verdicts block
 // online A/B enrollment for digested variants. Leaving it unset (nil)

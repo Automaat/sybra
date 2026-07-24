@@ -30,8 +30,10 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		PID:                      os.Getpid(),
 		Provider:                 "codex",
 		Model:                    "gpt-5",
+		RequestedModel:           "opus",
 		ExperimentID:             "experiment-1",
 		VariantID:                "variant-1",
+		RoutingReason:            "ab",
 		AssignmentUnit:           "task",
 		AssignmentKey:            "task-1",
 		ReasoningEffort:          "high",
@@ -78,8 +80,10 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		Mode:                 rehydrated.Mode,
 		Provider:             rehydrated.Provider,
 		Model:                rehydrated.Model,
+		RequestedModel:       rehydrated.RequestedModel,
 		ExperimentID:         rehydrated.ExperimentID,
 		VariantID:            rehydrated.VariantID,
+		RoutingReason:        rehydrated.RoutingReason,
 		AssignmentUnit:       rehydrated.AssignmentUnit,
 		AssignmentKey:        rehydrated.AssignmentKey,
 		PID:                  rehydrated.PID,
@@ -106,8 +110,10 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		Mode:                 original.Mode,
 		Provider:             original.Provider,
 		Model:                original.Model,
+		RequestedModel:       original.RequestedModel,
 		ExperimentID:         original.ExperimentID,
 		VariantID:            original.VariantID,
+		RoutingReason:        original.RoutingReason,
 		AssignmentUnit:       original.AssignmentUnit,
 		AssignmentKey:        original.AssignmentKey,
 		PID:                  original.PID,
@@ -219,8 +225,10 @@ type persistedAgentFields struct {
 	Mode                 string
 	Provider             string
 	Model                string
+	RequestedModel       string
 	ExperimentID         string
 	VariantID            string
+	RoutingReason        string
 	AssignmentUnit       string
 	AssignmentKey        string
 	PID                  int

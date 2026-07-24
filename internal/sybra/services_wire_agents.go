@@ -15,9 +15,7 @@ func (a *App) wireOrchestratorService(emit func(string, any)) {
 	a.orchSvc.audit = a.audit
 	a.orchSvc.logger = a.logger
 	a.orchSvc.emit = emit
-	if a.cfg != nil {
-		a.orchSvc.abTesting = a.cfg.ABTesting
-	}
+	a.orchSvc.abTesting = a.abTestingConfig()
 }
 
 func (a *App) wireAgentOrchestrator() {

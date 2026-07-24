@@ -98,7 +98,7 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	if !restored.isDetached() {
 		t.Fatal("fromRecord must mark the skeleton agent detached")
 	}
-	if restored.cancel != nil || restored.done != nil || restored.hasPromptChannel() || restored.GetCmd() != nil {
+	if restored.cancel != nil || restored.done != nil || restored.convo.hasStdinPipe() || restored.GetCmd() != nil {
 		t.Fatal("fromRecord must leave live runtime wiring to reattach callers")
 	}
 
@@ -172,13 +172,17 @@ func recordMappingAgent(started time.Time) *Agent {
 		ID:                      "a-map",
 		TaskID:                  "task-map",
 		Name:                    "mapper",
+		Role:                    RoleMonitor,
 		Mode:                    "interactive",
 		Provider:                "codex",
 		Model:                   "gpt-5.3-codex",
+		RequestedModel:          "opus",
 		ExperimentID:            "exp-1",
 		VariantID:               "variant-a",
+		RoutingReason:           "ab",
 		AssignmentUnit:          "task",
 		AssignmentKey:           "task-map",
+		DecisionVersion:         3,
 		PID:                     12345,
 		SessionID:               "sess-map",
 		LogPath:                 "/tmp/sybra/agents/a-map.ndjson",
@@ -189,10 +193,16 @@ func recordMappingAgent(started time.Time) *Agent {
 		SkillExecutionMode:      "injected",
 		ResolvedSkillSourceHash: "deadbeefcafebabe",
 		SkillConformance:        "exact",
+		OutputSchema:            `{"type":"object"}`,
 		skillRecoveryAttempt:    true,
+		hasOutputSchema:         true,
 		postResultWaitReason:    postResultWaitBackgroundTask,
 		postResultWaitSince:     started.Add(10 * time.Minute),
 		forkSubagent:            true,
+		promptHash:              "prompt-hash-map",
+		renderedSyntax:          "slash-to-dollar",
+		renderedSkills:          []string{"sybra-test"},
+		unrenderedSkills:        []string{"sybra-tasks"},
 	}
 }
 
@@ -201,13 +211,17 @@ func recordMappingRecord(started time.Time) Record {
 		ID:                      "a-map",
 		TaskID:                  "task-map",
 		Name:                    "mapper",
+		Role:                    RoleMonitor,
 		Mode:                    "interactive",
 		Provider:                "codex",
 		Model:                   "gpt-5.3-codex",
+		RequestedModel:          "opus",
 		ExperimentID:            "exp-1",
 		VariantID:               "variant-a",
+		RoutingReason:           "ab",
 		AssignmentUnit:          "task",
 		AssignmentKey:           "task-map",
+		DecisionVersion:         3,
 		PID:                     12345,
 		SessionID:               "sess-map",
 		LogPath:                 "/tmp/sybra/agents/a-map.ndjson",
@@ -225,10 +239,16 @@ func recordMappingRecord(started time.Time) Record {
 		SkillExecutionMode:      "injected",
 		ResolvedSkillSourceHash: "deadbeefcafebabe",
 		SkillConformance:        "exact",
+		OutputSchema:            `{"type":"object"}`,
 		SkillRecoveryAttempt:    true,
+		HasOutputSchema:         true,
 		PostResultWaitReason:    postResultWaitBackgroundTask,
 		PostResultWaitSince:     started.Add(10 * time.Minute),
 		ForkSubagent:            true,
+		PromptHash:              "prompt-hash-map",
+		RenderedSyntax:          "slash-to-dollar",
+		RenderedSkills:          []string{"sybra-test"},
+		UnrenderedSkills:        []string{"sybra-tasks"},
 	}
 }
 

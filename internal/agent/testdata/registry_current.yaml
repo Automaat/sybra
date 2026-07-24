@@ -1,13 +1,17 @@
 id: a-map
 task_id: task-map
 name: mapper
+role: monitor
 mode: interactive
 provider: codex
 model: gpt-5.3-codex
+requested_model: opus
 experiment_id: exp-1
 variant_id: variant-a
+routing_reason: ab
 assignment_unit: task
 assignment_key: task-map
+decision_version: 3
 pid: 12345
 session_id: sess-map
 log_path: /tmp/sybra/agents/a-map.ndjson
@@ -28,7 +32,15 @@ requested_skill: sybra-test
 skill_execution_mode: injected
 resolved_skill_source_hash: deadbeefcafebabe
 skill_conformance: exact
+output_schema: '{"type":"object"}'
 skill_recovery_attempt: true
+has_output_schema: true
 post_result_wait_reason: background_tasks
 post_result_wait_since: 2026-06-28T20:40:00Z
 fork_subagent: true
+prompt_hash: prompt-hash-map
+rendered_syntax: slash-to-dollar
+rendered_skills:
+    - sybra-test
+unrendered_skills:
+    - sybra-tasks

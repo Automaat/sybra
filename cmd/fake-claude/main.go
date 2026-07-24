@@ -40,6 +40,11 @@
 //     `sybra-cli update` (no --home) on the task — proves default writes land
 //     in the per-task sandbox while task CRUD still reaches the real store
 //     via SYBRA_CONTROL_HOME (sybra#1577).
+//   - verify_commits_remote_race: leaves a dirty file in the current worktree,
+//     but also spawns a detached helper clone that commits and pushes the same
+//     tree to the task branch. Used to reproduce verify_commits creating a
+//     duplicate local fallback commit even though the agent-owned remote commit
+//     already exists.
 //   - k8s_repo_change: writes k8s-agent-output.txt in the current git
 //     worktree. Used by the Kubernetes PoC fake-repo smoke; the k8s wrapper
 //     commits and pushes the dirty file after the fake provider exits.
@@ -176,22 +181,24 @@ var scenarioHandlers = map[string]func(string){
 		emitAssistant("Implementing...")
 		emitResult("Implementation done. PR created")
 	},
-	"interactive_implement": func(string) { runInteractiveImplement() },
-	"evaluate":              runEvaluate,
-	"pr_created":            func(string) { runPRCreated() },
-	"signal_kill":           func(string) { runSignalKill() },
-	"block_silent":          func(string) { _, _ = io.Copy(io.Discard, os.Stdin) },
-	"hang":                  func(string) { runHang() },
-	"success_then_hang":     func(string) { runSuccessThenHang() },
-	"auth_error":            func(string) { emitSystem(); emitAssistant("Authentication failed. Please re-auth."); os.Exit(1) },
-	"malformed_pr_output":   func(string) { runMalformedPROutput() },
-	"perf_stream":           func(string) { runPerfStream() },
-	"perf_burst":            func(string) { runPerfBurst() },
-	"perf_long":             func(string) { runPerfLong() },
-	"sybra_home_sentinel":   runSybraHomeSentinel,
-	"best_of_n_attempt":     func(string) { runBestOfNAttempt() },
-	"best_of_n_judge":       func(string) { runBestOfNJudge() },
-	"k8s_repo_change":       runK8sRepoChange,
+	"interactive_implement":           func(string) { runInteractiveImplement() },
+	"evaluate":                        runEvaluate,
+	"pr_created":                      func(string) { runPRCreated() },
+	"human_review_invalid_structured": func(string) { runHumanReviewInvalidStructured() },
+	"signal_kill":                     func(string) { runSignalKill() },
+	"block_silent":                    func(string) { _, _ = io.Copy(io.Discard, os.Stdin) },
+	"hang":                            func(string) { runHang() },
+	"success_then_hang":               func(string) { runSuccessThenHang() },
+	"auth_error":                      func(string) { emitSystem(); emitAssistant("Authentication failed. Please re-auth."); os.Exit(1) },
+	"malformed_pr_output":             func(string) { runMalformedPROutput() },
+	"perf_stream":                     func(string) { runPerfStream() },
+	"perf_burst":                      func(string) { runPerfBurst() },
+	"perf_long":                       func(string) { runPerfLong() },
+	"sybra_home_sentinel":             runSybraHomeSentinel,
+	"verify_commits_remote_race":      func(string) { runVerifyCommitsRemoteRace() },
+	"best_of_n_attempt":               func(string) { runBestOfNAttempt() },
+	"best_of_n_judge":                 func(string) { runBestOfNJudge() },
+	"k8s_repo_change":                 runK8sRepoChange,
 }
 
 func scenarioNeedsPromptContext(scenario string) bool {
@@ -259,14 +266,12 @@ func runBestOfNAttempt() {
 		emitResult("best_of_n_attempt: write failed: " + err.Error())
 		os.Exit(1)
 	}
-	for _, args := range [][]string{
-		{"config", "user.email", "fake-claude@test.local"},
-		{"config", "user.name", "Fake Claude"},
-		{"add", fname},
-		{"commit", "-m", "best-of-n attempt work: " + name},
-	} {
-		runGitIn(cwd, args...)
-	}
+	runGitIn(cwd, "add", fname)
+	runGitIn(cwd,
+		"-c", "user.email=fake-claude@test.local",
+		"-c", "user.name=Fake Claude",
+		"commit", "-m", "best-of-n attempt work: "+name,
+	)
 	emitAssistant("Implemented attempt in " + name)
 	emitResult("Implementation done for " + name + ". Committed, did not push.")
 }
@@ -361,6 +366,87 @@ func runSybraHomeSentinel(taskID string) {
 		runCLI("update", taskID, "--status", "in-review")
 	}
 	emitResult("Sentinel done.")
+}
+
+func runVerifyCommitsRemoteRace() {
+	emitSystem()
+	cwd, err := os.Getwd()
+	if err != nil {
+		emitResult("verify_commits_remote_race failed: getwd: " + err.Error())
+		os.Exit(1)
+	}
+	branch, err := gitOutput(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		emitResult("verify_commits_remote_race failed: branch: " + err.Error())
+		os.Exit(1)
+	}
+	remote, err := gitOutput(cwd, "remote", "get-url", "origin")
+	if err != nil {
+		emitResult("verify_commits_remote_race failed: remote: " + err.Error())
+		os.Exit(1)
+	}
+	const fileName = "verify-commits-race.txt"
+	content := "verify_commits race\n"
+	if err := os.WriteFile(filepath.Join(cwd, fileName), []byte(content), 0o644); err != nil {
+		emitResult("verify_commits_remote_race failed: write: " + err.Error())
+		os.Exit(1)
+	}
+	if err := spawnRemoteEquivalentPush(remote, branch, fileName, content); err != nil {
+		emitResult("verify_commits_remote_race failed: spawn: " + err.Error())
+		os.Exit(1)
+	}
+	emitAssistant("Queued remote equivalent push")
+	emitResult("Task completed successfully.")
+}
+
+func spawnRemoteEquivalentPush(remote, branch, fileName, content string) error {
+	stageDir, err := os.MkdirTemp("", "fake-claude-race-*")
+	if err != nil {
+		return err
+	}
+	script := `
+set -eu
+remote="$1"
+branch="$2"
+file="$3"
+content="$4"
+stage="$5"
+repo="$stage/repo"
+cleanup() {
+  rm -rf "$stage"
+}
+trap cleanup EXIT INT TERM
+git clone "$remote" "$repo" >/dev/null 2>&1
+cd "$repo"
+if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+  git checkout -B "$branch" "origin/$branch" >/dev/null 2>&1
+else
+  git checkout -B "$branch" >/dev/null 2>&1
+fi
+printf '%s' "$content" > "$file"
+git add "$file"
+git -c user.email=fake-claude@test.local -c user.name="Fake Claude" commit -m "feat: remote race" >/dev/null 2>&1
+git push origin "HEAD:refs/heads/$branch" >/dev/null 2>&1
+`
+	cmd := exec.CommandContext(context.Background(), "bash", "-lc", script, "bash", remote, branch, fileName, content, stageDir)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		_ = os.RemoveAll(stageDir)
+		return err
+	}
+	return nil
+}
+
+func gitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func runEvaluate(taskID string) {
@@ -463,6 +549,12 @@ func runInteractiveImplement() {
 	emitAssistant("Implementing interactively...")
 	emitResult("Implementation done. PR created")
 	_, _ = io.Copy(io.Discard, os.Stdin)
+}
+
+func runHumanReviewInvalidStructured() {
+	emitSystem()
+	emitAssistant(`{"decision":"human","reason":"","recoverable_action":"none","confidence":"high"}`)
+	emitResult("invalid structured verdict")
 }
 
 // runPRCreated emits an implement result whose text carries a PR URL, so the
@@ -880,6 +972,7 @@ func fakePlanContract(taskID string) string {
     {"path": "internal/sybra/e2e_workflow_test.go", "purpose": "test"}
   ],
   "steps": ["drive the fake workflow"],
+  "expected_deletions": [],
   "verification": [
     {"command": "go test ./internal/sybra", "expected": "tests pass"}
   ],

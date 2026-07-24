@@ -2,209 +2,225 @@
 
 # Sybra Configuration Reference
 
-Every key Sybra reads from `~/.sybra/config.yaml`, grouped by top-level section. Defaults shown are `config.DefaultConfig()`'s values; an empty Default cell means the Go zero value (unset). Env var overrides applied in `config.Load` (e.g. `SYBRA_LOG_LEVEL`, `SYBRA_TASKS_DIR`, `SYBRA_TODOIST_TOKEN`) are not shown here — see internal/config/config_defaults.go.
+Every key Sybra reads from `~/.sybra/config.yaml`, grouped by the schema v2 namespace hierarchy. Defaults shown are the resolved runtime values from `config.DefaultConfig()`. Env overrides, aliases, secret status, and reload policy come from the shared config descriptor model used by the CLI and Settings UI.
 
 Regenerate with `go generate ./internal/config/...` after changing a struct tag or doc comment; internal/config's `TestConfigDocs_InSyncWithSource` fails CI if this file drifts.
 
-## Config
+## V2 Namespace Ownership
 
-Config is Sybra's top-level configuration, loaded from
-~/.sybra/config.yaml by Load with env-var and default-value fallbacks
-applied per field. See docs/CONFIG.md (generated from this file's
-struct tags and doc comments) for the full reference, or run
-`sybra-cli config dump` to see the resolved, redacted config for this
-machine.
+| Namespace | Owns | Canonical paths |
+|---|---|---|
+| `instance` | Machine role, local routing, and operator-scoped UX defaults. | `instance`, `instance.project_types` |
+| `execution` | How Sybra launches and routes agent work across providers and local backends. | `execution.agent`, `execution.providers` |
+| `workflow` | Task-stage policy, planning/testing orchestration, and board-driven automation. | `workflow.orchestrator`, `workflow.testing`, `workflow.triage`, `workflow.umbrella` |
+| `integrations` | External systems Sybra talks to on the operator's behalf. | `integrations.notification`, `integrations.github`, `integrations.renovate`, `integrations.browser` |
+| `supervision` | Health checks, review escalation, and autonomous oversight loops. | `supervision.human_review`, `supervision.monitor`, `supervision.watchdog`, `supervision.self_monitor`, `supervision.evaluation`, `supervision.learning_digest`, `supervision.harness_evolution`, `supervision.prompt_lab` |
+| `storage` | Filesystem-backed retention and path layout under SYBRA_HOME. | `storage.attachments`, `storage.trash`, `storage.sandboxes`, `storage.task_snapshot`, `storage.paths` |
+| `observability` | Logs, audit, metrics, experimentation, and operator evidence retention. | `observability.logging`, `observability.audit`, `observability.metrics`, `observability.experience`, `observability.ab_testing` |
+| `routing` | Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes. | `routing` |
+| `server` | Local API/server exposure and auth for the running Sybra instance. | `server` |
+| `webhook` | Inbound external task-creation webhook listener and request-signing controls. | `webhook` |
+| `cluster` | Cluster/task-trust policy for multi-node execution backends. | `cluster` |
+| `auto_update` | Deployment self-update behavior for long-running Sybra installs. | `auto_update` |
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `logging` | `LoggingConfig` | _(see below)_ |  |
-| `audit` | `AuditConfig` | _(see below)_ |  |
-| `trash` | `TrashConfig` | _(see below)_ |  |
-| `sandbox` | `SandboxConfig` | _(see below)_ |  |
-| `task_snapshot` | `TaskSnapshotConfig` | _(see below)_ |  |
-| `agent` | `AgentDefaults` | _(see below)_ |  |
-| `testing` | `TestingConfig` | _(see below)_ |  |
-| `notification` | `NotificationConfig` | _(see below)_ |  |
-| `orchestrator` | `OrchestratorConfig` | _(see below)_ |  |
-| `todoist` | `TodoistConfig` | _(see below)_ |  |
-| `renovate` | `RenovateConfig` | _(see below)_ |  |
-| `github` | `GitHubConfig` | _(see below)_ |  |
-| `umbrella` | `UmbrellaConfig` | _(see below)_ |  |
-| `triage` | `TriageConfig` | _(see below)_ |  |
-| `human_review` | `HumanReviewConfig` | _(see below)_ |  |
-| `review_hold` | `ReviewHoldConfig` | _(see below)_ |  |
-| `monitor` | `MonitorConfig` | _(see below)_ |  |
-| `watchdog` | `WatchdogConfig` | _(see below)_ |  |
-| `self_monitor` | `SelfMonitorConfig` | _(see below)_ |  |
-| `evaluation` | `EvaluationConfig` | _(see below)_ |  |
-| `learning_digest` | `LearningDigestConfig` | _(see below)_ |  |
-| `harness_evolution` | `HarnessEvolveConfig` | _(see below)_ |  |
-| `prompt_lab` | `PromptLabConfig` | _(see below)_ |  |
-| `experience` | `ExperienceConfig` | _(see below)_ |  |
-| `ab_testing` | `abtest.Config` |  |  |
-| `providers` | `ProvidersConfig` | _(see below)_ |  |
-| `metrics` | `MetricsConfig` | _(see below)_ |  |
-| `server` | `ServerConfig` | _(see below)_ |  |
-| `cluster` | `ClusterConfig` | _(see below)_ |  |
-| `auto_update` | `AutoUpdateConfig` | _(see below)_ |  |
-| `browser` | `BrowserConfig` | _(see below)_ |  |
-| `project_types` | `[]string` |  |  |
-| `tasks_dir` | `string` | `~/.sybra/tasks` |  |
-| `skills_dir` | `string` |  |  |
-| `repo_dir` | `string` |  |  |
-| `projects_dir` | `string` |  |  |
-| `clones_dir` | `string` |  |  |
-| `worktrees_dir` | `string` |  |  |
-| `loop_agents_dir` | `string` |  |  |
+## Schema
 
-## LoggingConfig (`logging`)
+Schema negotiation and migration controls.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `logging.level` | `string` | `info` |  |
-| `logging.dir` | `string` | `~/.sybra/logs` |  |
-| `logging.max_size_mb` | `int` | `50` |  |
-| `logging.max_files` | `int` | `5` |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `schema_version` | `int` | `2` |  |  |  | `false` | `immutable` | `supported values: 1, 2` |  |
 
-## AuditConfig (`audit`)
+## Instance
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `audit.enabled` | `bool` | `true` |  |
-| `audit.retention_days` | `int` | `30` |  |
+Machine role, local routing, and operator-scoped UX defaults.
 
-## TrashConfig (`trash`)
+### Instance Root (`instance`)
 
-TrashConfig controls the retention of soft-deleted tasks under
-~/.sybra/trash (see internal/task.Store.Delete).
+Scalar/root keys that live directly under this namespace.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `trash.retention_days` | `int` |  | RetentionDays bounds how long a trashed task generation survives before the startup sweep permanently removes it. 0 falls back to DefaultTrashRetentionDays (14); a negative value disables pruning. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `instance.project_types` | `[]string` |  |  |  | `project_types` | `false` | `restart` |  |  |
 
-## SandboxConfig (`sandbox`)
+## Execution
 
-SandboxConfig controls retention of per-task app sandbox dirs under
-~/.sybra/sandboxes (see internal/sandbox.Manager.CleanupOrphaned).
+How Sybra launches and routes agent work across providers and local backends.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `sandbox.retention_hours` | `int` |  | RetentionHours bounds how long a done/cancelled/blocked task's sandbox dir survives before the periodic sweep removes it. 0 falls back to DefaultSandboxRetention (24h); a negative value disables age-based pruning (eligible dirs are never removed by age, only on task delete). |
+### AgentDefaults (`execution.agent`)
 
-## TaskSnapshotConfig (`task_snapshot`)
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.agent.provider` | `string` | `"claude"` |  |  | `agent.provider` | `false` | `hot` |  |  |
+| `execution.agent.model` | `string` | `""` |  |  | `agent.model` | `false` | `hot` |  |  |
+| `execution.agent.mode` | `string` | `""` |  |  | `agent.mode` | `false` | `hot` |  |  |
+| `execution.agent.max_concurrent` | `int` | `25` |  |  | `agent.max_concurrent` | `false` | `hot` |  |  |
+| `execution.agent.research_machine_dir` | `string` | `""` |  |  | `agent.research_machine_dir` | `false` | `hot` |  |  |
+| `execution.agent.post_result_cost_usd` | `float64` | `5` |  |  | `agent.post_result_cost_usd`, `agent.max_cost_usd` | `false` | `hot` |  | PostResultCostUSD is a reactive per-run USD circuit breaker: Sybra checks it only when the provider emits a terminal result event, after that spend is already incurred. 0 (default in raw zero values, 5 in fresh installs) disables the breaker. |
+| `execution.agent.max_assistant_events` | `int` | `150` |  |  | `agent.max_assistant_events`, `agent.max_turns` | `false` | `hot` |  | MaxAssistantEvents caps top-level assistant stream events per run, not provider CLI turns. 0 disables the ceiling. |
+| `execution.agent.max_checkpoints` | `int` | `3` |  |  | `agent.max_checkpoints` | `false` | `hot` |  | MaxCheckpoints bounds how many times a single workflow step may checkpoint-and-handoff after hitting the per-run assistant-event ceiling. 0 means use DefaultMaxCheckpoints (3). |
+| `execution.agent.checkpoint_on_assistant_event_ceiling` | `*bool` | _(nil)_ |  |  | `agent.checkpoint_on_assistant_event_ceiling`, `agent.checkpoint_on_turn_ceiling` | `false` | `hot` |  | CheckpointOnTurnCeiling swaps the legacy raise-the-assistant-event-ceiling auto-continue for a checkpoint-and-handoff to a fresh run when an eligible code-author headless run hits its per-run assistant-event ceiling. nil means not configured (defaults to true). Set false to restore the legacy in-process auto-continue behavior with no code revert. |
+| `execution.agent.max_task_cost_usd` | `float64` | `0` |  |  | `agent.max_task_cost_usd` | `false` | `hot` |  | MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task has ever had (unlike PostResultCostUSD, which resets every run). Closes the gap where each retry stays under the per-run cap but the task's total spend still balloons unbounded. Checked once per dispatch, before an agent is started — StartAgentWithAssignment refuses to start and flips the task to human-required when the task's already-recorded AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the check. |
+| `execution.agent.assistant_event_cost_fraction` | `float64` | `0` |  |  | `agent.assistant_event_cost_fraction`, `agent.turn_cost_fraction` | `false` | `hot` |  | TurnCostFraction is the fraction of PostResultCostUSD below which an assistant-event escalation is auto-continued. Default 0.8 when unset. |
+| `execution.agent.assistant_event_multiplier` | `float64` | `0` |  |  | `agent.assistant_event_multiplier`, `agent.turn_multiplier` | `false` | `hot` |  | TurnMultiplier scales the assistant-event ceiling on each auto-continuation. Default 2 when unset. |
+| `execution.agent.require_permissions` | `*bool` | _(nil)_ |  |  | `agent.require_permissions` | `false` | `hot` |  | RequirePermissions sets the default permission requirement for agents. nil means not configured (falls back to true — safe default). Set to false in config to opt all tasks into skip-permissions mode. |
+| `execution.agent.review_until_clean` | `*bool` | _(nil)_ |  |  | `agent.review_until_clean` | `false` | `hot` |  | ReviewUntilClean keeps simple-task-review cycling review→fix→review until the reviewer returns a CLEAN verdict, so the fix agent's diff is never the last word. nil means not configured (falls back to true). false falls back to a single review pass per task: cheaper and more predictable when no per-task budget is configured. |
+| `execution.agent.max_review_rounds` | `int` | `3` |  |  | `agent.max_review_rounds` | `false` | `hot` |  | MaxReviewRounds bounds how many automated review rounds a single simple-task-review execution may spend before Sybra parks the task blocked. 0 means use DefaultMaxReviewRounds (3). Ignored when ReviewUntilClean is false or AllowUnboundedReviewRounds is true. |
+| `execution.agent.allow_unbounded_review_rounds` | `*bool` | _(nil)_ |  |  | `agent.allow_unbounded_review_rounds` | `false` | `hot` |  | AllowUnboundedReviewRounds restores the legacy "loop until CLEAN with no review-round cap" posture. nil means not configured (defaults to false). Use only with a deliberate MaxTaskCostUSD backstop. |
+| `execution.agent.bash_timeout` | `int` | `0` | `seconds` |  | `agent.bash_timeout_seconds`, `agent.bash_timeout` | `false` | `hot` |  | BashTimeoutSeconds sets the per-bash-tool-call timeout passed to claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env vars (claude has no equivalent CLI flag). 0 means use DefaultBashTimeoutSeconds (300). |
+| `execution.agent.retry_watchdog` | `int` | `0` |  |  | `agent.retry_watchdog` | `false` | `hot` |  | RetryWatchdog sets CLAUDE_CODE_RETRY_WATCHDOG on the claude subprocess for headless (unattended) runs. Replaces CLAUDE_CODE_MAX_RETRIES (now capped at 15) for server/unattended sessions. 0 means use DefaultRetryWatchdog (30). Negative (e.g. -1) disables the watchdog entirely (env var omitted), matching the zero-omit semantics at the RunConfig level. |
+| `execution.agent.fallback_model` | `string` | `""` |  |  | `agent.fallback_model` | `false` | `hot` |  | FallbackModel, when set, passes --fallback-model to claude for headless runs. Paired with RetryWatchdog so the watchdog can retry with a less loaded model when the primary is overloaded. |
+| `execution.agent.max_log_events` | `int` | `0` |  |  | `agent.max_log_events` | `false` | `hot` |  | MaxLogEvents caps how many NDJSON events are returned when replaying a completed agent's log file. 0 means use DefaultMaxLogEvents (500). |
+| `execution.agent.log_retention` | `int` | `0` | `days` |  | `agent.log_retention_days`, `agent.log_retention` | `false` | `hot` |  | LogRetentionDays bounds how long per-agent NDJSON log files live under ~/.sybra/logs/agents/. Files older than this (plus all 0-byte files, regardless of age) are swept on app startup and daily thereafter. 0 falls back to DefaultLogRetentionDays (14). A negative value disables age-based deletion (0-byte files are still removed). |
+| `execution.agent.log_gzip_after` | `int` | `0` | `days` |  | `agent.log_gzip_after_days`, `agent.log_gzip_after` | `false` | `hot` |  | LogGzipAfterDays bounds how long a retained per-agent NDJSON log stays uncompressed before the retention sweep gzips it in place (original removed once the .gz sibling is written successfully). 0 falls back to DefaultLogGzipAfterDays (3). A negative value disables compression entirely. |
+| `execution.agent.log_retention_max_size_mb` | `int` | `0` |  |  | `agent.log_retention_max_size_mb` | `false` | `hot` |  | LogRetentionMaxSizeMB caps the total size (in MB) of the per-agent NDJSON log directory (~/.sybra/logs/agents/, including any gzip-compressed and .stderr sidecar files). When the age/gzip passes still leave the directory over this cap, the sweep deletes the oldest non-active files (by mtime) until it's back under the cap, or only currently-active agents' logs remain. 0 falls back to DefaultLogRetentionMaxSizeMB (1024, i.e. 1 GiB). A negative value disables size-based enforcement entirely. |
+| `execution.agent.survive_restart` | `*bool` | _(nil)_ |  |  | `agent.survive_restart` | `false` | `hot` |  | SurviveRestart keeps agent subprocesses running across an app restart (detached, output streamed to their log files) and reattaches to them on the next startup. nil means not configured (defaults to true). Set false to revert to the legacy behaviour where agents are killed on shutdown and recovered via restart-stale. |
+| `execution.agent.approval_port` | `int` | `0` |  |  | `agent.approval_port` | `false` | `hot` |  | ApprovalPort pins the localhost port of the PreToolUse approval server. The hook URL is baked into a permission-gated agent's --settings at spawn, so a fixed port lets a detached agent's approval requests still resolve after a restart. 0 (default) binds a random port (no cross-restart approval survival). |
+| `execution.agent.headless_permission_mode` | `string` | `""` |  |  | `agent.headless_permission_mode` | `false` | `hot` |  | HeadlessPermissionMode sets the default permission posture for unattended headless claude runs. "bypass" (default) keeps the current --dangerously-skip-permissions behavior. "auto" emits --permission-mode auto which activates the Claude Code auto-mode classifier (blocks destructive ops such as rm -rf $HOME, force-push, terraform destroy). Empty treated as "bypass". |
+| `execution.agent.dispatch_jitter_ms` | `int` | `1000` |  |  | `agent.dispatch_jitter_ms` | `false` | `hot` |  | DispatchJitterMs bounds a uniform random delay applied before headless agent dispatch, so a wave of concurrently ready tasks does not all probe the provider health gate in the same tick. 0 disables jitter. Never applied to interactive/chat dispatch. Default 1000 — set 0 to disable. |
+| `execution.agent.sandbox_mode` | `string` | `""` |  |  | `agent.sandbox_mode` | `false` | `hot` |  | SandboxMode sets the default OS-level process-sandbox posture for agent subprocesses (darwin: sandbox-exec seatbelt, linux: bwrap). "off" spawns unwrapped with no validation. "report" (default) validates and logs the resolved write allowlist (worktree/sandbox-home/tmp plus task-scoped git metadata) without ever wrapping the spawn, so a profile/wrapper defect can only affect an explicit "enforce" posture, never the default rollout posture. "enforce" actually wraps the spawn and blocks writes outside that allowlist, failing the spawn closed if the wrapper is unavailable. Empty treated as "report". |
+| `execution.agent.headless_steerable` | `*bool` | _(nil)_ |  |  | `agent.headless_steerable` | `false` | `hot` |  | HeadlessSteerable controls whether headless claude runs launch with the stdin/stream-json shape that accepts mid-run steer messages (instead of the legacy one-shot `-p <prompt>` invocation). nil means not configured (defaults to true). Set false to restore the legacy launch shape with no stdin transport — a config-only rollback with no code revert. |
+| `execution.agent.default_project_id` | `string` | `""` |  |  | `agent.default_project_id` | `false` | `hot` |  | DefaultProjectID pins the project a project-less task auto-assigns to when it needs an isolated worktree (e.g. a meta/self-referential task routed to the plan step). Without it, auto-assignment only fires when exactly one project is registered — on a machine with two or more projects, a project-less task can never dispatch and always ends up human-required. Empty means no default (falls back to the sole-project behavior). |
+| `execution.agent.role_effort` | `map[string]string` |  |  |  | `agent.role_effort` | `false` | `hot` |  | RoleEffort overrides the built-in per-role reasoning-effort baseline (see agent.Role.DefaultReasoningEffort), keyed by role name (e.g. "triage", "implementation"). Still loses to an experiment assignment's or the task's own ReasoningEffort — this only replaces the role fallback, not an explicit per-task/per-run override. Unknown role keys or invalid effort values are ignored (falls back to the built-in default for that role). |
+| `execution.agent.playwright_mcp` | `PlaywrightMCPConfig` | _(see below)_ |  |  |  | `false` |  |  | PlaywrightMCP configures the default-off headless Playwright MCP server attached to test-runner runs that resolve to the Claude provider. |
+| `execution.agent.k8s_jobs` | `K8sJobsConfig` | _(see below)_ |  |  |  | `false` |  |  | K8sJobs configures an experimental backend that runs headless agents as short-lived Kubernetes Jobs instead of local subprocesses. |
+| `execution.agent.queue` | `QueueConfig` | _(see below)_ |  |  |  | `false` |  |  | Queue configures the agent-dispatch admission queue (internal/agentqueue) that a workflow implementation dispatch falls back to when the agent pool is saturated, instead of erroring or wasting a worktree prep. |
 
-TaskSnapshotConfig controls the background git snapshotter that versions
-the tasks dir (see internal/tasksnapshot.Snapshotter), giving recovery a
-`git checkout` path for external deleters that bypass task.Store's
-trash-based soft delete (the case #1576's forensics-only recovery
-couldn't catch).
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `task_snapshot.enabled` | `*bool` | _(nil)_ | Enabled toggles the background snapshotter. nil means not configured (defaults to true — safe default, matches RequirePermissions' nil-means-on convention). Set to false to disable entirely. |
-| `task_snapshot.interval_seconds` | `int` |  | IntervalSeconds is the fixed interval between commit attempts. 0 or negative falls back to DefaultTaskSnapshotInterval (30s). |
-
-## AgentDefaults (`agent`)
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `agent.provider` | `string` | `claude` |  |
-| `agent.model` | `string` |  |  |
-| `agent.mode` | `string` |  |  |
-| `agent.max_concurrent` | `int` | `25` |  |
-| `agent.research_machine_dir` | `string` |  |  |
-| `agent.max_cost_usd` | `float64` | `5` |  |
-| `agent.max_turns` | `int` | `150` |  |
-| `agent.max_checkpoints` | `int` | `3` | MaxCheckpoints bounds how many times a single workflow step may checkpoint-and-handoff after hitting the per-run turn ceiling. 0 means use DefaultMaxCheckpoints (3). |
-| `agent.checkpoint_on_turn_ceiling` | `*bool` | _(nil)_ | CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for a checkpoint-and-handoff to a fresh run when an eligible code-author headless run hits its per-run turn ceiling. nil means not configured (defaults to true). Set false to restore the legacy in-process auto-continue behavior with no code revert. |
-| `agent.max_task_cost_usd` | `float64` |  | MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task has ever had (unlike MaxCostUSD, which resets every run). Closes the gap where each retry stays under the per-run cap but the task's total spend still balloons unbounded. Checked once per dispatch, before an agent is started — StartAgentWithAssignment refuses to start and flips the task to human-required when the task's already-recorded AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the check. |
-| `agent.turn_cost_fraction` | `float64` |  | TurnCostFraction is the fraction of MaxCostUSD below which a turns escalation is auto-continued. Default 0.8 when unset. |
-| `agent.turn_multiplier` | `float64` |  | TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset. |
-| `agent.require_permissions` | `*bool` | _(nil)_ | RequirePermissions sets the default permission requirement for agents. nil means not configured (falls back to true — safe default). Set to false in config to opt all tasks into skip-permissions mode. |
-| `agent.review_until_clean` | `*bool` | _(nil)_ | ReviewUntilClean keeps simple-task-review cycling review→fix→review until the reviewer returns a CLEAN verdict, so the fix agent's diff is never the last word. nil means not configured (falls back to true). The cycle is uncapped by design — a round cap would censor the review-rounds distribution the stats page reports — and is bounded only by MaxTaskCostUSD, which is enforced before every dispatch. false falls back to a single review pass per task: cheaper and more predictable when no per-task budget is configured. |
-| `agent.bash_timeout_seconds` | `int` |  | BashTimeoutSeconds sets the per-bash-tool-call timeout passed to claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env vars (claude has no equivalent CLI flag). 0 means use DefaultBashTimeoutSeconds (300). |
-| `agent.retry_watchdog` | `int` |  | RetryWatchdog sets CLAUDE_CODE_RETRY_WATCHDOG on the claude subprocess for headless (unattended) runs. Replaces CLAUDE_CODE_MAX_RETRIES (now capped at 15) for server/unattended sessions. 0 means use DefaultRetryWatchdog (30). Negative (e.g. -1) disables the watchdog entirely (env var omitted), matching the zero-omit semantics at the RunConfig level. |
-| `agent.fallback_model` | `string` |  | FallbackModel, when set, passes --fallback-model to claude for headless runs. Paired with RetryWatchdog so the watchdog can retry with a less loaded model when the primary is overloaded. |
-| `agent.max_log_events` | `int` |  | MaxLogEvents caps how many NDJSON events are returned when replaying a completed agent's log file. 0 means use DefaultMaxLogEvents (500). |
-| `agent.log_retention_days` | `int` |  | LogRetentionDays bounds how long per-agent NDJSON log files live under ~/.sybra/logs/agents/. Files older than this (plus all 0-byte files, regardless of age) are swept on app startup and daily thereafter. 0 falls back to DefaultLogRetentionDays (14). A negative value disables age-based deletion (0-byte files are still removed). |
-| `agent.log_gzip_after_days` | `int` |  | LogGzipAfterDays bounds how long a retained per-agent NDJSON log stays uncompressed before the retention sweep gzips it in place (original removed once the .gz sibling is written successfully). 0 falls back to DefaultLogGzipAfterDays (3). A negative value disables compression entirely. |
-| `agent.log_retention_max_size_mb` | `int` |  | LogRetentionMaxSizeMB caps the total size (in MB) of the per-agent NDJSON log directory (~/.sybra/logs/agents/, including any gzip-compressed and .stderr sidecar files). When the age/gzip passes still leave the directory over this cap, the sweep deletes the oldest non-active files (by mtime) until it's back under the cap, or only currently-active agents' logs remain. 0 falls back to DefaultLogRetentionMaxSizeMB (1024, i.e. 1 GiB). A negative value disables size-based enforcement entirely. |
-| `agent.survive_restart` | `*bool` | _(nil)_ | SurviveRestart keeps agent subprocesses running across an app restart (detached, output streamed to their log files) and reattaches to them on the next startup. nil means not configured (defaults to true). Set false to revert to the legacy behaviour where agents are killed on shutdown and recovered via restart-stale. |
-| `agent.approval_port` | `int` |  | ApprovalPort pins the localhost port of the PreToolUse approval server. The hook URL is baked into a permission-gated agent's --settings at spawn, so a fixed port lets a detached agent's approval requests still resolve after a restart. 0 (default) binds a random port (no cross-restart approval survival). |
-| `agent.headless_permission_mode` | `string` |  | HeadlessPermissionMode sets the default permission posture for unattended headless claude runs. "bypass" (default) keeps the current --dangerously-skip-permissions behavior. "auto" emits --permission-mode auto which activates the Claude Code auto-mode classifier (blocks destructive ops such as rm -rf $HOME, force-push, terraform destroy). Empty treated as "bypass". |
-| `agent.dispatch_jitter_ms` | `int` | `1000` | DispatchJitterMs bounds a uniform random delay applied before headless agent dispatch, so a wave of concurrently ready tasks does not all probe the provider health gate in the same tick. 0 disables jitter. Never applied to interactive/chat dispatch. Default 1000 — set 0 to disable. |
-| `agent.sandbox_mode` | `string` |  | SandboxMode sets the default OS-level process-sandbox posture for agent subprocesses (darwin: sandbox-exec seatbelt, linux: bwrap). "off" spawns unwrapped with no validation. "report" (default) validates and logs the resolved write allowlist (worktree/sandbox-home/tmp plus task-scoped git metadata) without ever wrapping the spawn, so a profile/wrapper defect can only affect an explicit "enforce" posture, never the default rollout posture. "enforce" actually wraps the spawn and blocks writes outside that allowlist, failing the spawn closed if the wrapper is unavailable. Empty treated as "report". |
-| `agent.headless_steerable` | `*bool` | _(nil)_ | HeadlessSteerable controls whether headless claude runs launch with the stdin/stream-json shape that accepts mid-run steer messages (instead of the legacy one-shot `-p <prompt>` invocation). nil means not configured (defaults to true). Set false to restore the legacy launch shape with no stdin transport — a config-only rollback with no code revert. |
-| `agent.default_project_id` | `string` |  | DefaultProjectID pins the project a project-less task auto-assigns to when it needs an isolated worktree (e.g. a meta/self-referential task routed to the plan step). Without it, auto-assignment only fires when exactly one project is registered — on a machine with two or more projects, a project-less task can never dispatch and always ends up human-required. Empty means no default (falls back to the sole-project behavior). |
-| `agent.role_effort` | `map[string]string` |  | RoleEffort overrides the built-in per-role reasoning-effort baseline (see agent.Role.DefaultReasoningEffort), keyed by role name (e.g. "triage", "implementation"). Still loses to an experiment assignment's or the task's own ReasoningEffort — this only replaces the role fallback, not an explicit per-task/per-run override. Unknown role keys or invalid effort values are ignored (falls back to the built-in default for that role). |
-| `agent.playwright_mcp` | `PlaywrightMCPConfig` | _(see below)_ | PlaywrightMCP configures the default-off headless Playwright MCP server attached to test-runner runs that resolve to the Claude provider. |
-| `agent.k8s_jobs` | `K8sJobsConfig` | _(see below)_ | K8sJobs configures an experimental backend that runs headless agents as short-lived Kubernetes Jobs instead of local subprocesses. |
-| `agent.queue` | `QueueConfig` | _(see below)_ | Queue configures the agent-dispatch admission queue (internal/agentqueue) that a workflow implementation dispatch falls back to when the agent pool is saturated, instead of erroring or wasting a worktree prep. |
-
-## PlaywrightMCPConfig (`agent.playwright_mcp`)
+### PlaywrightMCPConfig (`execution.agent.playwright_mcp`)
 
 PlaywrightMCPConfig opts test-runner runs into a headless Playwright MCP
 server for visual/console verification. Default-off: Manager.prepareRunConfig
 only attaches it for headless test-runner runs that resolve to the Claude
 provider and pass a launcher preflight (see internal/agent/mcp.go).
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `agent.playwright_mcp.enabled` | `bool` |  | Enabled opts this machine into attaching the Playwright MCP server. |
-| `agent.playwright_mcp.extra_args` | `[]string` |  | ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest --headless --output-dir <dir>` launch command. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.agent.playwright_mcp.enabled` | `bool` | `false` |  |  | `agent.playwright_mcp.enabled` | `false` | `hot` |  | Enabled opts this machine into attaching the Playwright MCP server. |
+| `execution.agent.playwright_mcp.extra_args` | `[]string` |  |  |  | `agent.playwright_mcp.extra_args` | `false` | `hot` |  | ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest --headless --output-dir <dir>` launch command. |
 
-## K8sJobsConfig (`agent.k8s_jobs`)
+### K8sJobsConfig (`execution.agent.k8s_jobs`)
 
 K8sJobsConfig is a PoC execution backend for headless-only Sybra. When
 enabled, future headless agents are run as Kubernetes Jobs using the
 in-cluster service account.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `agent.k8s_jobs.enabled` | `bool` |  |  |
-| `agent.k8s_jobs.namespace` | `string` |  |  |
-| `agent.k8s_jobs.image` | `string` |  |  |
-| `agent.k8s_jobs.command` | `[]string` |  |  |
-| `agent.k8s_jobs.ttl_seconds_after_finished` | `int` |  |  |
-| `agent.k8s_jobs.mode` | `string` |  |  |
-| `agent.k8s_jobs.create_pr` | `bool` |  | CreatePR lets the agent Job open its own pull request once it has pushed its branch, instead of the server shelling gh in the task worktree. Only fires when the task's remote is a GitHub URL — a PVC-backed bare clone has no PR to open. Default false: the server-side create_pr workflow step still owns the normal path, and this would otherwise open a PR after every agent run rather than at the pr stage. |
-| `agent.k8s_jobs.env` | `[]K8sJobEnvVar` | _(see below)_ |  |
-| `agent.k8s_jobs.secret_env` | `[]K8sJobSecretEnvVar` | _(see below)_ |  |
-| `agent.k8s_jobs.volumes` | `[]K8sJobVolume` | _(see below)_ |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.agent.k8s_jobs.enabled` | `bool` | `false` |  |  | `agent.k8s_jobs.enabled` | `false` | `hot` |  |  |
+| `execution.agent.k8s_jobs.namespace` | `string` | `""` |  |  | `agent.k8s_jobs.namespace` | `false` | `hot` |  |  |
+| `execution.agent.k8s_jobs.image` | `string` | `""` |  |  | `agent.k8s_jobs.image` | `false` | `hot` |  |  |
+| `execution.agent.k8s_jobs.command` | `[]string` |  |  |  | `agent.k8s_jobs.command` | `false` | `hot` |  |  |
+| `execution.agent.k8s_jobs.ttl_after_finished` | `int` | `0` | `seconds` |  | `agent.k8s_jobs.ttl_seconds_after_finished`, `agent.k8s_jobs.ttl_after_finished` | `false` | `hot` |  |  |
+| `execution.agent.k8s_jobs.failed_ttl_after_finished` | `int` | `0` | `seconds` |  | `agent.k8s_jobs.failed_ttl_seconds_after_finished`, `agent.k8s_jobs.failed_ttl_after_finished` | `false` | `hot` |  | FailedTTL overrides TTL for a Job that finishes Failed rather than Succeeded, via a post-completion patch once the runner observes the failure — Kubernetes' own ttlSecondsAfterFinished is a single value that cannot vary by outcome at creation time. Defaults much longer than TTL's own default so a failed run's logs survive long enough for an operator to pull them before Kubernetes garbage-collects the Pod. |
+| `execution.agent.k8s_jobs.mode` | `string` | `""` |  |  | `agent.k8s_jobs.mode` | `false` | `hot` |  |  |
+| `execution.agent.k8s_jobs.create_pr` | `bool` | `false` |  |  | `agent.k8s_jobs.create_pr` | `false` | `hot` |  | CreatePR lets the agent Job open its own pull request once it has pushed its branch, instead of the server shelling gh in the task worktree. Only fires when the task's remote is a GitHub URL — a PVC-backed bare clone has no PR to open. Default false: the server-side create_pr workflow step still owns the normal path, and this would otherwise open a PR after every agent run rather than at the pr stage. |
+| `execution.agent.k8s_jobs.env` | `[]K8sJobEnvVar` | _(see below)_ |  |  | `agent.k8s_jobs.env` | `false` | `hot` |  |  |
+| `execution.agent.k8s_jobs.secret_env` | `[]K8sJobSecretEnvVar` | _(see below)_ |  |  | `agent.k8s_jobs.secret_env` | `false` | `hot` |  |  |
+| `execution.agent.k8s_jobs.volumes` | `[]K8sJobVolume` | _(see below)_ |  |  | `agent.k8s_jobs.volumes` | `false` | `hot` |  |  |
 
-## K8sJobEnvVar (`agent.k8s_jobs.env`)
+### K8sJobEnvVar (`execution.agent.k8s_jobs.env`)
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `agent.k8s_jobs.env.name` | `string` |  |  |
-| `agent.k8s_jobs.env.value` | `string` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.agent.k8s_jobs.env.name` | `string` |  |  |  |  | `false` |  |  |  |
+| `execution.agent.k8s_jobs.env.value` | `string` |  |  |  |  | `false` |  |  |  |
 
-## K8sJobSecretEnvVar (`agent.k8s_jobs.secret_env`)
+### K8sJobSecretEnvVar (`execution.agent.k8s_jobs.secret_env`)
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `agent.k8s_jobs.secret_env.name` | `string` |  |  |
-| `agent.k8s_jobs.secret_env.secret_name` | `string` |  |  |
-| `agent.k8s_jobs.secret_env.secret_key` | `string` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.agent.k8s_jobs.secret_env.name` | `string` |  |  |  |  | `false` |  |  |  |
+| `execution.agent.k8s_jobs.secret_env.secret_name` | `string` |  |  |  |  | `false` |  |  |  |
+| `execution.agent.k8s_jobs.secret_env.secret_key` | `string` |  |  |  |  | `false` |  |  |  |
 
-## K8sJobVolume (`agent.k8s_jobs.volumes`)
+### K8sJobVolume (`execution.agent.k8s_jobs.volumes`)
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `agent.k8s_jobs.volumes.name` | `string` |  |  |
-| `agent.k8s_jobs.volumes.claim_name` | `string` |  |  |
-| `agent.k8s_jobs.volumes.mount_path` | `string` |  |  |
-| `agent.k8s_jobs.volumes.read_only` | `bool` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.agent.k8s_jobs.volumes.name` | `string` |  |  |  |  | `false` |  |  |  |
+| `execution.agent.k8s_jobs.volumes.claim_name` | `string` |  |  |  |  | `false` |  |  |  |
+| `execution.agent.k8s_jobs.volumes.mount_path` | `string` |  |  |  |  | `false` |  |  |  |
+| `execution.agent.k8s_jobs.volumes.read_only` | `bool` |  |  |  |  | `false` |  |  |  |
 
-## QueueConfig (`agent.queue`)
+### QueueConfig (`execution.agent.queue`)
 
 QueueConfig configures the agent-dispatch admission queue.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `agent.queue.max_depth` | `int` |  | MaxDepth caps the number of distinct tasks the admission queue holds at once (agentqueue.Options.MaxDepth). 0 means unbounded. Once full, a new task that can't get a pool slot is rejected with a normal dispatch error instead of being queued. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.agent.queue.max_depth` | `int` | `0` |  |  | `agent.queue.max_depth` | `false` | `hot` |  | MaxDepth caps the number of distinct tasks the admission queue holds at once (agentqueue.Options.MaxDepth). 0 means unbounded. Once full, a new task that can't get a pool slot is rejected with a normal dispatch error instead of being queued. |
 
-## TestingConfig (`testing`)
+### ProvidersConfig (`execution.providers`)
+
+ProvidersConfig groups per-machine routing for CLI providers (claude, codex,
+copilot, opencode) and their background health-check loop. A missing block defaults to
+"all providers enabled, health check on, auto-failover on, 300s interval".
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.providers.health_check` | `ProviderHealthCheckConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `execution.providers.claude` | `ProviderEntryConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `execution.providers.codex` | `ProviderEntryConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `execution.providers.copilot` | `ProviderEntryConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `execution.providers.opencode` | `ProviderEntryConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `execution.providers.limits` | `ProviderLimitsConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `execution.providers.auto_failover` | `bool` | `true` |  |  | `providers.auto_failover` | `false` | `hot` |  |  |
+
+### ProviderHealthCheckConfig (`execution.providers.health_check`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.providers.health_check.enabled` | `bool` | `true` |  |  | `providers.health_check.enabled` | `false` | `restart` |  |  |
+| `execution.providers.health_check.interval` | `int` | `300` | `seconds` |  | `providers.health_check.interval_seconds`, `providers.health_check.interval` | `false` | `restart` |  |  |
+
+### ProviderEntryConfig (`execution.providers.claude`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.providers.claude.enabled` | `bool` | `true` |  |  | `providers.claude.enabled` | `false` | `hot` |  |  |
+| `execution.providers.claude.rate_limit_cooldown` | `int` | `900` | `seconds` |  | `providers.claude.rate_limit_cooldown_seconds`, `providers.claude.rate_limit_cooldown` | `false` | `hot` |  |  |
+| `execution.providers.claude.monthly_subscription_usd` | `float64` | `0` |  |  | `providers.claude.monthly_subscription_usd` | `false` | `hot` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+
+### ProviderEntryConfig (`execution.providers.codex`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.providers.codex.enabled` | `bool` | `true` |  |  | `providers.codex.enabled` | `false` | `hot` |  |  |
+| `execution.providers.codex.rate_limit_cooldown` | `int` | `900` | `seconds` |  | `providers.codex.rate_limit_cooldown_seconds`, `providers.codex.rate_limit_cooldown` | `false` | `hot` |  |  |
+| `execution.providers.codex.monthly_subscription_usd` | `float64` | `0` |  |  | `providers.codex.monthly_subscription_usd` | `false` | `hot` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+
+### ProviderEntryConfig (`execution.providers.copilot`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.providers.copilot.enabled` | `bool` | `true` |  |  | `providers.copilot.enabled` | `false` | `hot` |  |  |
+| `execution.providers.copilot.rate_limit_cooldown` | `int` | `900` | `seconds` |  | `providers.copilot.rate_limit_cooldown_seconds`, `providers.copilot.rate_limit_cooldown` | `false` | `hot` |  |  |
+| `execution.providers.copilot.monthly_subscription_usd` | `float64` | `0` |  |  | `providers.copilot.monthly_subscription_usd` | `false` | `hot` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+
+### ProviderEntryConfig (`execution.providers.opencode`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.providers.opencode.enabled` | `bool` | `true` |  |  | `providers.opencode.enabled` | `false` | `hot` |  |  |
+| `execution.providers.opencode.rate_limit_cooldown` | `int` | `900` | `seconds` |  | `providers.opencode.rate_limit_cooldown_seconds`, `providers.opencode.rate_limit_cooldown` | `false` | `hot` |  |  |
+| `execution.providers.opencode.monthly_subscription_usd` | `float64` | `0` |  |  | `providers.opencode.monthly_subscription_usd` | `false` | `hot` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+
+### ProviderLimitsConfig (`execution.providers.limits`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.providers.limits.enabled` | `bool` | `true` |  |  | `providers.limits.enabled` | `false` | `hot` |  |  |
+| `execution.providers.limits.session_threshold_percent` | `float64` | `85` |  |  | `providers.limits.session_threshold_percent` | `false` | `hot` |  |  |
+| `execution.providers.limits.weekly_threshold_percent` | `float64` | `90` |  |  | `providers.limits.weekly_threshold_percent` | `false` | `hot` |  |  |
+| `execution.providers.limits.prefer_underused` | `bool` | `true` |  |  | `providers.limits.prefer_underused` | `false` | `hot` |  |  |
+| `execution.providers.limits.backfill_days` | `int` | `14` |  |  | `providers.limits.backfill_days` | `false` | `hot` |  |  |
+| `execution.providers.limits.max_in_flight_per_provider` | `int` | `0` |  |  | `providers.limits.max_in_flight_per_provider` | `false` | `hot` |  | MaxInFlightPerProvider caps concurrent in-flight agents per provider, distinct from the global agent.max_concurrent ceiling. 0 (default) disables the cap. When set, gateProvider redirects new dispatches away from an at-cap provider even when PreferUnderused is false, so the cap cannot silently no-op. |
+
+## Workflow
+
+Task-stage policy, planning/testing orchestration, and board-driven automation.
+
+### TestingConfig (`workflow.testing`)
 
 TestingConfig controls the autonomous manual-testing phase. A task entering
 status=testing spawns a single adversarial test-runner agent that starts the
@@ -213,19 +229,13 @@ implementation does not satisfy the task. Each test-runner holds its own
 sandbox (Docker compose project / k3d cluster), so MaxConcurrent bounds
 real-app/cluster load independently of Agent.MaxConcurrent.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `testing.max_concurrent` | `int` |  | MaxConcurrent caps simultaneously-running test-runner agents on this machine. 0 falls back to DefaultTestingMaxConcurrent. |
-| `testing.max_attempts` | `int` |  | MaxAttempts is the generous absolute backstop for the testing → re-implementation loop. Recurring grounded failure fingerprints escalate independently of this count; this limit only parks a task human-required when distinct grounded defects keep surfacing without convergence. 0 falls back to DefaultTestingMaxAttempts. |
-| `testing.open_pr_on_unrunnable_gate` | `*bool` | _(nil)_ | OpenPROnUnrunnableGate controls what happens when a testing cycle exhausts its auto-retry budget on an infra_failure outcome — the manual gate itself could not be run (harness/tooling limitation), not a product defect (see classifyTestOutcome). nil means not configured (defaults to true): the task opens a PR (ready-pr) so CI and a human reviewer see the real diff, instead of parking at human-required with no PR for anyone to act on. Set false to restore the legacy human-required escalation. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `workflow.testing.max_concurrent` | `int` | `0` |  |  | `testing.max_concurrent` | `false` | `hot` |  | MaxConcurrent caps simultaneously-running test-runner agents on this machine. 0 falls back to DefaultTestingMaxConcurrent. |
+| `workflow.testing.max_attempts` | `int` | `0` |  |  | `testing.max_attempts` | `false` | `hot` |  | MaxAttempts is the generous absolute backstop for the testing → re-implementation loop. Recurring grounded failure fingerprints escalate independently of this count; this limit only parks a task human-required when distinct grounded defects keep surfacing without convergence. 0 falls back to DefaultTestingMaxAttempts. |
+| `workflow.testing.open_pr_on_unrunnable_gate` | `*bool` | _(nil)_ |  |  | `testing.open_pr_on_unrunnable_gate` | `false` | `hot` |  | OpenPROnUnrunnableGate controls what happens when a testing cycle exhausts its auto-retry budget on an infra_failure outcome — the manual gate itself could not be run (harness/tooling limitation), not a product defect (see classifyTestOutcome). nil means not configured (defaults to true): the task opens a PR (ready-pr) so CI and a human reviewer see the real diff, instead of parking at human-required with no PR for anyone to act on. Set false to restore the legacy human-required escalation. |
 
-## NotificationConfig (`notification`)
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `notification.desktop` | `bool` | `true` |  |
-
-## OrchestratorConfig (`orchestrator`)
+### OrchestratorConfig (`workflow.orchestrator`)
 
 OrchestratorConfig gates and paces the self-starting automations. Role
 "full" runs the orchestrator brain session and the auto-dispatch scheduler,
@@ -234,17 +244,17 @@ serves the HTTP API and runs explicitly-started agents but never orchestrates
 on its own — the posture for a secondary/test deployment (a Kubernetes
 agent-only server, a scratch instance) that must not race a full instance.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `orchestrator.role` | `string` | `full` | Role declares which self-starting automations this instance owns: "full" (default) or "agent-only". An invalid value falls back to "full" with a warning, so a typo never silently parks an instance that was meant to orchestrate. |
-| `orchestrator.enabled` | `*bool` | _(nil)_ | Enabled overrides Role for the orchestrator brain session — the conversational context auto-started while tasks are active. nil (default) derives from Role. Explicit true re-enables the brain on an agent-only instance; explicit false parks it on a full one. Never gates an operator's manual StartOrchestrator call. |
-| `orchestrator.scheduler_enabled` | `*bool` | _(nil)_ | SchedulerEnabled overrides Role for the auto-dispatch scheduler — the pass that reconciles board tasks, drains the admission queue, releases unblocked children, and restarts stale in-progress agents. nil (default) derives from Role. Maintenance cleanup (orphan worktrees/sandboxes, metrics) always runs, so a parked instance still collects its garbage. |
-| `orchestrator.dispatch_interval_seconds` | `int` |  | DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive dispatch pass (start the orchestrator, release unblocked children). Kept short — and also fired on demand on every status change — so a freshly-ready task is not left idle for a full tick. Default 10. |
-| `orchestrator.maintenance_interval_seconds` | `int` |  | MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup pass (resume stalled workflows, restart stale agents, prune orphan worktrees) which hits git and may spawn agents, so it must not run hot. Default 60. |
-| `orchestrator.auto_approve_plans_without_decisions` | `bool` |  | AutoApprovePlansWithoutDecisions lets the workflow engine advance a validated simple-task plan from plan-review to implementation when the planner explicitly recorded that there are no open human decisions. Default false. |
-| `orchestrator.pressure` | `PressureConfig` | _(see below)_ | Pressure configures the local resource-pressure admission gate that defers new agent dispatch while the host is short on disk, memory, or CPU headroom. See internal/pressure. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `workflow.orchestrator.role` | `string` | `"full"` |  |  | `orchestrator.role` | `false` | `restart` |  | Role declares which self-starting automations this instance owns: "full" (default) or "agent-only". An invalid value falls back to "full" with a warning, so a typo never silently parks an instance that was meant to orchestrate. |
+| `workflow.orchestrator.enabled` | `*bool` | _(nil)_ |  |  | `orchestrator.enabled` | `false` | `restart` |  | Enabled overrides Role for the orchestrator brain session — the conversational context auto-started while tasks are active. nil (default) derives from Role. Explicit true re-enables the brain on an agent-only instance; explicit false parks it on a full one. Never gates an operator's manual StartOrchestrator call. |
+| `workflow.orchestrator.scheduler_enabled` | `*bool` | _(nil)_ |  |  | `orchestrator.scheduler_enabled` | `false` | `restart` |  | SchedulerEnabled overrides Role for the auto-dispatch scheduler — the pass that reconciles board tasks, drains the admission queue, releases unblocked children, and restarts stale in-progress agents. nil (default) derives from Role. Maintenance cleanup (orphan worktrees/sandboxes, metrics) always runs, so a parked instance still collects its garbage. |
+| `workflow.orchestrator.dispatch_interval` | `int` | `10` | `seconds` |  | `orchestrator.dispatch_interval_seconds`, `orchestrator.dispatch_interval` | `false` | `restart` |  | DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive dispatch pass (start the orchestrator, release unblocked children). Kept short — and also fired on demand on every status change — so a freshly-ready task is not left idle for a full tick. Default 10. |
+| `workflow.orchestrator.maintenance_interval` | `int` | `60` | `seconds` |  | `orchestrator.maintenance_interval_seconds`, `orchestrator.maintenance_interval` | `false` | `restart` |  | MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup pass (resume stalled workflows, restart stale agents, prune orphan worktrees) which hits git and may spawn agents, so it must not run hot. Default 60. |
+| `workflow.orchestrator.auto_approve_plans_without_decisions` | `bool` | `false` |  |  | `orchestrator.auto_approve_plans_without_decisions` | `false` | `restart` |  | AutoApprovePlansWithoutDecisions lets the workflow engine advance a validated simple-task plan from plan-review to implementation when the planner explicitly recorded that there are no open human decisions. Default false. |
+| `workflow.orchestrator.pressure` | `PressureConfig` | _(see below)_ |  |  |  | `false` |  |  | Pressure configures the local resource-pressure admission gate that defers new agent dispatch while the host is short on disk, memory, or CPU headroom. See internal/pressure. |
 
-## PressureConfig (`orchestrator.pressure`)
+### PressureConfig (`workflow.orchestrator.pressure`)
 
 PressureConfig configures internal/pressure.Gate, the local
 resource-pressure admission gate consulted before dispatching new agent
@@ -252,109 +262,126 @@ work. Thresholds are captured once at Gate construction, so a change here
 requires a restart to take effect (see diffConfig's
 "orchestrator.pressure" restart entry).
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `orchestrator.pressure.enabled` | `bool` | `true` | Enabled turns the gate on. Default true. When false, New returns a nil *Gate and every dispatch path admits unconditionally — the same as running without this feature at all. |
-| `orchestrator.pressure.min_disk_free_percent` | `float64` | `5` | MinDiskFreePercent is the minimum percentage of free disk space (on the filesystem holding SYBRA_HOME) below which new dispatch is deferred. <=0 disables this dimension. Default 5. |
-| `orchestrator.pressure.min_mem_available_percent` | `float64` | `8` | MinMemAvailablePercent is the minimum percentage of available memory (reclaimable caches counted as available, matching the kernel's own notion of headroom) below which new dispatch is deferred. <=0 disables this dimension. Default 8. |
-| `orchestrator.pressure.max_load_per_cpu` | `float64` | `8` | MaxLoadPerCPU is the maximum 1-minute load average, normalized by CPU count, above which new dispatch is deferred. <=0 disables this dimension. Default 8.0. |
-| `orchestrator.pressure.sample_interval_seconds` | `int` | `15` | SampleIntervalSeconds is both the resource-sample cache TTL and the deny-log throttle window. <=0 falls back to pressure.DefaultSampleIntervalSeconds (15). Default 15. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `workflow.orchestrator.pressure.enabled` | `bool` | `true` |  |  | `orchestrator.pressure.enabled` | `false` | `restart` |  | Enabled turns the gate on. Default true. When false, New returns a nil *Gate and every dispatch path admits unconditionally — the same as running without this feature at all. |
+| `workflow.orchestrator.pressure.min_disk_free_percent` | `float64` | `5` |  |  | `orchestrator.pressure.min_disk_free_percent` | `false` | `restart` |  | MinDiskFreePercent is the minimum percentage of free disk space (on the filesystem holding SYBRA_HOME) below which new dispatch is deferred. <=0 disables this dimension. Default 5. |
+| `workflow.orchestrator.pressure.min_mem_available_percent` | `float64` | `8` |  |  | `orchestrator.pressure.min_mem_available_percent` | `false` | `restart` |  | MinMemAvailablePercent is the minimum percentage of available memory (reclaimable caches counted as available, matching the kernel's own notion of headroom) below which new dispatch is deferred. <=0 disables this dimension. Default 8. |
+| `workflow.orchestrator.pressure.max_load_per_cpu` | `float64` | `8` |  |  | `orchestrator.pressure.max_load_per_cpu` | `false` | `restart` |  | MaxLoadPerCPU is the maximum 1-minute load average, normalized by CPU count, above which new dispatch is deferred. <=0 disables this dimension. Default 8.0. |
+| `workflow.orchestrator.pressure.warning_disk_free_percent` | `float64` | `15` |  |  | `orchestrator.pressure.warning_disk_free_percent` | `false` | `restart` |  | WarningDiskFreePercent is the free-disk-space percentage at which Sybra automatically runs a safe-cache reclaim pass (internal/cleanup's RiskSafe buckets, via internal/diskreclaim), before disk free space reaches MinDiskFreePercent and dispatch starts being deferred. Must be set higher than MinDiskFreePercent for cleanup to get a chance to run first; the gate still triggers cleanup even once MinDiskFreePercent has also been crossed. <=0 disables the warning-triggered cleanup entirely. Default 15. |
+| `workflow.orchestrator.pressure.reclaim_cooldown` | `int` | `300` | `seconds` |  | `orchestrator.pressure.reclaim_cooldown_seconds`, `orchestrator.pressure.reclaim_cooldown` | `false` | `restart` |  | ReclaimCooldownSeconds rate-limits how often the warning-triggered safe cleanup pass may run, so a host hovering right at the watermark doesn't re-scan/re-delete on every dispatch tick. <=0 falls back to diskreclaim.DefaultCooldown (5 minutes). Default 300. |
+| `workflow.orchestrator.pressure.sample_interval` | `int` | `15` | `seconds` |  | `orchestrator.pressure.sample_interval_seconds`, `orchestrator.pressure.sample_interval` | `false` | `restart` |  | SampleIntervalSeconds is both the resource-sample cache TTL and the deny-log throttle window. <=0 falls back to pressure.DefaultSampleIntervalSeconds (15). Default 15. |
 
-## TodoistConfig (`todoist`)
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `todoist.enabled` | `bool` |  |  |
-| `todoist.api_token` | `string` | `[redacted]` |  |
-| `todoist.project_id` | `string` |  |  |
-| `todoist.default_project_id` | `string` |  |  |
-| `todoist.poll_seconds` | `int` |  |  |
-
-## RenovateConfig (`renovate`)
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `renovate.enabled` | `bool` | `true` |  |
-| `renovate.author` | `string` | `app/renovate` |  |
-
-## GitHubConfig (`github`)
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `github.enabled` | `bool` |  | Enabled is the top-level kill-switch: false forces every GitHub automation off regardless of the sub-toggles below. Fresh generated configs set this to false so first-run GitHub polling is opt-in. Legacy configs that omit this key keep the old enabled behavior during load. true defers to IssuesEnabled/ReviewsEnabled. |
-| `github.issues_enabled` | `bool` | `true` | IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && IssuesEnabled — use RunsIssuesFetcher() rather than reading this field directly. |
-| `github.reviews_enabled` | `bool` | `true` | ReviewsEnabled gates PR reviewer poll registration specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this field directly. |
-| `github.poller_role` | `string` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |
-| `github.reviews_fast_seconds` | `int` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. |
-| `github.review_rounds_per_hour` | `int` |  | ReviewRoundsPerHour caps automated review runs one PR may receive in a rolling hour before the task is parked for a human. 0 uses the default; negative disables the cap. Rate-based rather than a lifetime total so a long-lived PR that is legitimately re-reviewed after each push is never blocked, while a runaway loop is stopped within the hour (#2164 sustained ~5/hour for 23 hours). |
-| `github.reviews_slow_seconds` | `int` |  |  |
-| `github.reviews_max_prs_per_tick` | `int` |  | ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR poller fetches in one tick. Zero falls back to the built-in default; resolved non-positive values mean "unlimited". |
-| `github.reviews_stable_backoff_max_ticks` | `int` |  | ReviewsStableBackoffMaxTicks caps the exponential skip window for linked PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls back to the built-in default; resolved non-positive values disable the backoff entirely. |
-| `github.issues_seconds` | `int` |  |  |
-| `github.renovate_fast_seconds` | `int` |  |  |
-| `github.renovate_slow_seconds` | `int` |  |  |
-| `github.app` | `GitHubAppConfig` | _(see below)_ | App configures GitHub App installation-token auth. When enabled, Sybra mints a short-lived installation token and injects it into the gh subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall back to gh's own auth. |
-| `github.native_auto_merge` | `bool` |  | NativeAutoMerge is a kill-switch for arming GitHub's native `gh pr merge --auto` on pet-project PRs once Sybra's own review/fix cycle is done and the base branch's protection supports it. It is an accelerator on top of the existing green-gated MergePR path, not a replacement — when unsupported or disabled the legacy merge stays the fallback. Default off (zero value = false). |
-| `github.auto_resolve_clean_merges` | `bool` |  | AutoResolveCleanMerges is a kill-switch for the deterministic clean-merge fast-path: before dispatching a conflict-recovery agent, Sybra attempts a plain `git merge` of the PR's base branch in Go. When that merge creates a commit with no conflicting hunks, it is pushed and no agent is spawned; conflicts, no-op merges, and errors still fall through to the agent-assisted path. Default off (zero value = false). |
-
-## GitHubAppConfig (`github.app`)
-
-GitHubAppConfig holds GitHub App installation-token credentials. The private
-key never leaves disk as plaintext config — only its path is stored.
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `github.app.enabled` | `bool` |  |  |
-| `github.app.app_id` | `int64` |  |  |
-| `github.app.installation_id` | `int64` |  |  |
-| `github.app.private_key_path` | `string` |  |  |
-
-## UmbrellaConfig (`umbrella`)
+### UmbrellaConfig (`workflow.umbrella`)
 
 UmbrellaConfig governs auto-expansion of ☂️ umbrella issues by the GitHub
 issue fetcher. Disabled by default; project-scoped via the top-level
 project_types allowlist so only one machine expands a given umbrella.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `umbrella.enabled` | `bool` |  |  |
-| `umbrella.model` | `string` |  | Model overrides the planner model (empty = claude default). |
-| `umbrella.ground` | `bool` |  | Ground gates the optional grounding step that confirms each sub-issue's touches against the real repo's tracked files. Disabled by default (extra git/tool calls); additive on top of planner output. |
-| `umbrella.ground_min_sub_issues` | `int` |  | GroundMinSubIssues gates grounding on umbrella size: grounding only runs when the umbrella has at least this many sub-issues. Zero or negative means always ground when Ground is enabled. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `workflow.umbrella.enabled` | `bool` | `false` |  |  | `umbrella.enabled` | `false` | `restart` |  |  |
+| `workflow.umbrella.model` | `string` | `""` |  |  | `umbrella.model` | `false` | `restart` |  | Model overrides the planner model (empty = claude default). |
+| `workflow.umbrella.ground` | `bool` | `false` |  |  | `umbrella.ground` | `false` | `restart` |  | Ground gates the optional grounding step that confirms each sub-issue's touches against the real repo's tracked files. Disabled by default (extra git/tool calls); additive on top of planner output. |
+| `workflow.umbrella.ground_min_sub_issues` | `int` | `0` |  |  | `umbrella.ground_min_sub_issues` | `false` | `restart` |  | GroundMinSubIssues gates grounding on umbrella size: grounding only runs when the umbrella has at least this many sub-issues. Zero or negative means always ground when Ground is enabled. |
 
-## TriageConfig (`triage`)
+### TriageConfig (`workflow.triage`)
 
 TriageConfig controls the background auto-triage worker. When Enabled,
 sybra periodically classifies tasks in status=new via claude -p and
 atomically applies the verdict (title, tags, size/type, mode, project).
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `triage.enabled` | `bool` |  |  |
-| `triage.poll_seconds` | `int` |  |  |
-| `triage.model` | `string` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `workflow.triage.enabled` | `bool` | `false` |  |  | `triage.enabled` | `false` | `hot` |  |  |
+| `workflow.triage.poll` | `int` | `60` | `seconds` |  | `triage.poll_seconds`, `triage.poll` | `false` | `hot` |  |  |
+| `workflow.triage.model` | `string` | `""` |  |  | `triage.model` | `false` | `hot` |  |  |
 
-## HumanReviewConfig (`human_review`)
+## Integrations
 
-HumanReviewConfig controls the in-process automation that spawns a
-headless review agent every time a task transitions to human-required.
-The agent inspects the task, its agent runs, recent logs and the Sybra
-source tree, decides whether the transition is genuine or a Sybra bug,
-and (on bug) files a deduplicated GitHub issue + flips the task to
-blocked. Per-machine toggle: enable on the laptop with the source
-checkout, leave disabled on the server.
+External systems Sybra talks to on the operator's behalf.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `human_review.enabled` | `bool` |  |  |
-| `human_review.sybra_repo_dir` | `string` |  |  |
-| `human_review.repo` | `string` |  | Repo is the owner/name where bug issues are filed. Defaults to "Automaat/sybra" when empty. |
-| `human_review.model` | `string` |  | Model is the Claude model name or alias (e.g. "sonnet", "claude-haiku-4-5-20251001"). Defaults to "claude-haiku-4-5-20251001" when empty — diagnosis, not authoring. |
-| `human_review.max_per_hour` | `int` |  | MaxPerHour caps how many review agents may be spawned in any rolling 60-minute window across all tasks on this machine. Zero falls back to DefaultHumanReviewMaxPerHour. |
-| `human_review.issue_label` | `string` |  | IssueLabel is the label applied to filed issues (in addition to "bug"). Defaults to "sybra-bug". |
-| `human_review.sybra_bug_action` | `string` |  | SybraBugAction controls the side-effect for sybra_bug verdicts: file_issue (default), local_task, block_only, or note_only. |
+### NotificationConfig (`integrations.notification`)
 
-## ReviewHoldConfig (`review_hold`)
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.notification.desktop` | `bool` | `true` |  |  | `notification.desktop` | `false` | `hot` |  |  |
+
+### RenovateConfig (`integrations.renovate`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.renovate.enabled` | `bool` | `true` |  |  | `renovate.enabled` | `false` | `hot` |  |  |
+| `integrations.renovate.author` | `string` | `"app/renovate"` |  |  | `renovate.author` | `false` | `hot` |  |  |
+
+### GitHubConfig (`integrations.github`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.enabled` | `bool` | `true` |  |  | `github.enabled` | `false` | `restart` |  | Enabled is the top-level kill-switch: false forces every GitHub automation off regardless of the sub-toggles below. Fresh generated configs set this to false so first-run GitHub polling is opt-in. Legacy configs that omit this key keep the old enabled behavior during load. true defers to IssuesEnabled/ReviewsEnabled. |
+| `integrations.github.polling` | `GitHubPollingConfig` | _(see below)_ |  |  |  | `false` |  |  | Polling is the primary stream-level control surface for GitHub polling. The legacy fields below remain as compatibility inputs during load but new code should read this block through the effective helper methods. |
+| `integrations.github.issues_enabled` | `bool` | `false` |  |  | `github.issues_enabled` | `false` | `restart` |  | IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to true for legacy configs. Deprecated compatibility input for github.polling.issues.enabled. |
+| `integrations.github.reviews_enabled` | `bool` | `false` |  |  | `github.reviews_enabled` | `false` | `restart` |  | ReviewsEnabled gates PR reviewer poll registration specifically. Deprecated compatibility input for both github.polling.sybra_prs.enabled and github.polling.assigned_prs.enabled. |
+| `integrations.github.poller_role` | `string` | `""` |  |  | `github.poller_role` | `false` | `restart` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |
+| `integrations.github.reviews_fast` | `int` | `0` | `seconds` |  | `github.reviews_fast_seconds`, `github.reviews_fast` | `false` | `restart` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. Deprecated compatibility input for both PR streams' active intervals. |
+| `integrations.github.review_rounds_per_hour` | `int` | `0` |  |  | `github.review_rounds_per_hour` | `false` | `restart` |  | ReviewRoundsPerHour caps automated review runs one PR may receive in a rolling hour before the task is parked for a human. 0 uses the default; negative disables the cap. Rate-based rather than a lifetime total so a long-lived PR that is legitimately re-reviewed after each push is never blocked, while a runaway loop is stopped within the hour (#2164 sustained ~5/hour for 23 hours). |
+| `integrations.github.reviews_slow` | `int` | `0` | `seconds` |  | `github.reviews_slow_seconds`, `github.reviews_slow` | `false` | `restart` |  | Deprecated compatibility input for both PR streams' idle intervals. |
+| `integrations.github.reviews_max_prs_per_tick` | `int` | `0` |  |  | `github.reviews_max_prs_per_tick` | `false` | `restart` |  | ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR poller fetches in one tick. Zero falls back to the built-in default; resolved non-positive values mean "unlimited". |
+| `integrations.github.reviews_stable_backoff_max_ticks` | `int` | `0` |  |  | `github.reviews_stable_backoff_max_ticks` | `false` | `restart` |  | ReviewsStableBackoffMaxTicks caps the exponential skip window for linked PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls back to the built-in default; resolved non-positive values disable the backoff entirely. |
+| `integrations.github.issues` | `int` | `0` | `seconds` |  | `github.issues_seconds`, `github.issues` | `false` | `restart` |  | Deprecated compatibility input for github.polling.issues.interval. |
+| `integrations.github.mention_trigger_phrase` | `string` | `""` |  |  | `github.mention_trigger_phrase` | `false` | `restart` |  | MentionTriggerPhrase, when set, gates a comment-mention search alongside the existing assigned/labeled issue paths: an open issue whose comments contain this phrase (e.g. "@sybra") gets a task via the same dedup/creation path. Empty (default) disables the feature — existing installs see no behavior change. |
+| `integrations.github.renovate_fast` | `int` | `0` | `seconds` |  | `github.renovate_fast_seconds`, `github.renovate_fast` | `false` | `restart` |  |  |
+| `integrations.github.renovate_slow` | `int` | `0` | `seconds` |  | `github.renovate_slow_seconds`, `github.renovate_slow` | `false` | `restart` |  |  |
+| `integrations.github.app` | `GitHubAppConfig` | _(see below)_ |  |  |  | `false` |  |  | App configures GitHub App installation-token auth. When enabled, Sybra mints a short-lived installation token and injects it into the gh subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall back to gh's own auth. |
+| `integrations.github.native_auto_merge` | `bool` | `false` |  |  | `github.native_auto_merge` | `false` | `restart` |  | NativeAutoMerge is a kill-switch for arming GitHub's native `gh pr merge --auto` on pet-project PRs once Sybra's own review/fix cycle is done and the base branch's protection supports it. It is an accelerator on top of the existing green-gated MergePR path, not a replacement — when unsupported or disabled the legacy merge stays the fallback. Default off (zero value = false). |
+| `integrations.github.auto_resolve_clean_merges` | `bool` | `false` |  |  | `github.auto_resolve_clean_merges` | `false` | `restart` |  | AutoResolveCleanMerges is a kill-switch for the deterministic clean-merge fast-path: before dispatching a conflict-recovery agent, Sybra attempts a plain `git merge` of the PR's base branch in Go. When that merge creates a commit with no conflicting hunks, it is pushed and no agent is spawned; conflicts, no-op merges, and errors still fall through to the agent-assisted path. Default off (zero value = false). |
+| `integrations.github.flaky_detection` | `bool` | `false` |  |  | `github.flaky_detection` | `false` | `restart` |  | FlakyDetection is a kill-switch for same-commit CI flakiness classification. When true, a lone ci_failure issue is classified via ClassifyCIFlakiness (the head commit's full check-run history, not just the latest attempt) before it is escalated to a fix agent or a human: a check that both passed and failed on the same SHA at or above FlakySuccessThreshold is flaky, and gets a targeted rerun plus a distinct audit event instead. Default off (zero value = false). |
+| `integrations.github.flaky_success_threshold` | `float64` | `0` |  |  | `github.flaky_success_threshold` | `false` | `restart` |  | FlakySuccessThreshold is the minimum same-check success rate (0-1) for a currently-failing gating check to be classified flaky rather than deterministic. Zero falls back to the built-in default; see GitHubConfig.FlakyThreshold(). |
+
+### GitHubPollingConfig (`integrations.github.polling`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.issues` | `GitHubPollingStreamConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `integrations.github.polling.sybra_prs` | `GitHubPRPollingConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `integrations.github.polling.assigned_prs` | `GitHubPRPollingConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+
+### GitHubPollingStreamConfig (`integrations.github.polling.issues`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.issues.enabled` | `bool` | `true` |  |  | `github.polling.issues.enabled` | `false` | `restart` |  |  |
+| `integrations.github.polling.issues.interval` | `int` | `0` | `seconds` |  | `github.polling.issues.interval_seconds`, `github.polling.issues.interval` | `false` | `restart` |  |  |
+
+### GitHubPRPollingConfig (`integrations.github.polling.sybra_prs`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.sybra_prs.enabled` | `bool` | `true` |  |  | `github.polling.sybra_prs.enabled` | `false` | `restart` |  |  |
+| `integrations.github.polling.sybra_prs.active_interval` | `int` | `0` | `seconds` |  | `github.polling.sybra_prs.active_interval_seconds`, `github.polling.sybra_prs.active_interval` | `false` | `restart` |  |  |
+| `integrations.github.polling.sybra_prs.idle_interval` | `int` | `0` | `seconds` |  | `github.polling.sybra_prs.idle_interval_seconds`, `github.polling.sybra_prs.idle_interval` | `false` | `restart` |  |  |
+
+### GitHubPRPollingConfig (`integrations.github.polling.assigned_prs`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.polling.assigned_prs.enabled` | `bool` | `true` |  |  | `github.polling.assigned_prs.enabled` | `false` | `restart` |  |  |
+| `integrations.github.polling.assigned_prs.active_interval` | `int` | `0` | `seconds` |  | `github.polling.assigned_prs.active_interval_seconds`, `github.polling.assigned_prs.active_interval` | `false` | `restart` |  |  |
+| `integrations.github.polling.assigned_prs.idle_interval` | `int` | `0` | `seconds` |  | `github.polling.assigned_prs.idle_interval_seconds`, `github.polling.assigned_prs.idle_interval` | `false` | `restart` |  |  |
+
+### GitHubAppConfig (`integrations.github.app`)
+
+GitHubAppConfig holds GitHub App installation-token credentials. The private
+key never leaves disk as plaintext config — only its path is stored.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.app.enabled` | `bool` | `false` |  |  | `github.app.enabled` | `false` | `restart` |  |  |
+| `integrations.github.app.app_id` | `int64` | `0` |  |  | `github.app.app_id` | `false` | `restart` |  |  |
+| `integrations.github.app.installation_id` | `int64` | `0` |  |  | `github.app.installation_id` | `false` | `restart` |  |  |
+| `integrations.github.app.private_key_path` | `string` | `""` |  |  | `github.app.private_key_path` | `false` | `restart` |  |  |
+
+### ReviewHoldConfig (`integrations.github.review_hold`)
 
 ReviewHoldConfig gates whether Sybra may publish PR comment replies without a
 human check. When enabled, fix-review agents draft the replies they would
@@ -367,13 +394,46 @@ extends the same gate to the reply/fix-review flow.
 Mode controls how far the hold extends to the agent's own code changes.
 Per-machine toggle: enable on the machine where you review before publishing.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `review_hold.enabled` | `bool` |  | Enabled turns the hold on. Default off — preserves the live-reply behavior. |
-| `review_hold.mode` | `string` |  | Mode controls what the fix-review agent may push once its replies are held:   push       — reply held as a pending review; code fixes still committed                and pushed to the PR branch (default).   push_nits  — reply held; code pushed only when the diff is at most                NitMaxLines changed lines (a nit), otherwise held for review.   hold       — reply held AND code held; nothing is pushed, the human                reviews the diff too. In a coalesced fix this also holds                bundled non-reply changes (e.g. a CI fix), so CI stays red                until the human pushes — the "review everything" tradeoff. Unknown/empty values fall back to "push". |
-| `review_hold.nit_max_lines` | `int` |  | NitMaxLines is the changed-line ceiling that still counts as a "nit" for the push_nits mode. Zero falls back to DefaultReviewHoldNitMaxLines. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.review_hold.enabled` | `bool` | `false` |  |  | `review_hold.enabled` | `false` | `hot` |  | Enabled turns the hold on. Default off — preserves the live-reply behavior. |
+| `integrations.github.review_hold.mode` | `string` | `""` |  |  | `review_hold.mode` | `false` | `hot` |  | Mode controls what the fix-review agent may push once its replies are held:   push       — reply held as a pending review; code fixes still committed                and pushed to the PR branch (default).   push_nits  — reply held; code pushed only when the diff is at most                NitMaxLines changed lines (a nit), otherwise held for review.   hold       — reply held AND code held; nothing is pushed, the human                reviews the diff too. In a coalesced fix this also holds                bundled non-reply changes (e.g. a CI fix), so CI stays red                until the human pushes — the "review everything" tradeoff. Unknown/empty values fall back to "push". |
+| `integrations.github.review_hold.nit_max_lines` | `int` | `0` |  |  | `review_hold.nit_max_lines` | `false` | `hot` |  | NitMaxLines is the changed-line ceiling that still counts as a "nit" for the push_nits mode. Zero falls back to DefaultReviewHoldNitMaxLines. |
 
-## MonitorConfig (`monitor`)
+### BrowserConfig (`integrations.browser`)
+
+BrowserConfig controls how the desktop app opens external links (GitHub,
+PRs, issues). Read once at startup — flipping this value requires an app
+restart, since the opener closure is wired into the app at boot in main.go.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.browser.in_app` | `*bool` | _(nil)_ |  |  | `browser.in_app` | `false` | `restart` |  | InApp opens links in an in-app Sybra Browser webview window backed by a persistent, app-wide cookie store, so a login is reused across windows and survives restarts. Nil/unset defaults to false, so the built-in browser stays opt-in. Set to true to use the Sybra browser instead of the default system browser. |
+
+## Supervision
+
+Health checks, review escalation, and autonomous oversight loops.
+
+### HumanReviewConfig (`supervision.human_review`)
+
+HumanReviewConfig controls the in-process automation that spawns a
+headless review agent every time a task transitions to human-required.
+The agent inspects the task, its agent runs, recent logs and the Sybra
+source tree, decides whether the transition is genuine or a Sybra bug,
+and records the diagnosis on the task. Per-machine toggle: enable on the
+laptop with the source checkout, leave disabled on the server.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.human_review.enabled` | `bool` | `false` |  |  | `human_review.enabled` | `false` | `hot` |  |  |
+| `supervision.human_review.sybra_repo_dir` | `string` | `""` |  |  | `human_review.sybra_repo_dir` | `false` | `hot` |  | SybraRepoDir is the fallback working directory used only when a task has no worktree of its own (e.g. project-less, or the recorded worktree was cleaned up) — see humanReviewDispatchDir. It must be a dedicated checkout, distinct from auto_update.repo_dir: the review agent is dispatched with RunConfig.ReadOnlyDir=true in that fallback case, so the OS process sandbox denies writes to it under enforce regardless, but pointing it at the live deploy/build checkout is still wrong on principle — this diagnostic agent has no business sharing a directory that autoupdate concurrently ff-merges and builds from. |
+| `supervision.human_review.repo` | `string` | `""` |  |  | `human_review.repo` | `false` | `hot` |  | Repo is the owner/name project_id assigned to local sybra-bug tasks. Defaults to "Automaat/sybra" when empty. |
+| `supervision.human_review.model` | `string` | `""` |  |  | `human_review.model` | `false` | `hot` |  | Model is the Claude model name or alias (e.g. "sonnet", "claude-haiku-4-5-20251001"). Defaults to "claude-haiku-4-5-20251001" when empty — diagnosis, not authoring. |
+| `supervision.human_review.max_per_hour` | `int` | `0` |  |  | `human_review.max_per_hour` | `false` | `hot` |  | MaxPerHour caps how many review agents may be spawned in any rolling 60-minute window across all tasks on this machine. Zero falls back to DefaultHumanReviewMaxPerHour. |
+| `supervision.human_review.issue_label` | `string` | `""` |  |  | `human_review.issue_label` | `false` | `hot` |  | IssueLabel is a legacy setting from the removed GitHub issue filing path. Defaults to "sybra-bug". |
+| `supervision.human_review.sybra_bug_action` | `string` | `""` |  |  | `human_review.sybra_bug_action` | `false` | `hot` |  | SybraBugAction controls the side-effect for sybra_bug verdicts: note_only (default), local_task, or block_only. The legacy file_issue value is accepted but treated as note_only. |
+
+### MonitorConfig (`supervision.monitor`)
 
 MonitorConfig controls the in-process monitor service that replaces the
 /loop 5m /sybra-monitor skill. Each tick snapshots the board + audit
@@ -381,22 +441,22 @@ window, detects anomalies (lost agents, PR gaps, dwell, failure spikes,
 bottlenecks), runs idempotent remediations directly, and dispatches a
 focused headless agent for anomalies that need LLM judgment.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `monitor.enabled` | `bool` | `true` |  |
-| `monitor.interval_seconds` | `int` |  |  |
-| `monitor.model` | `string` |  |  |
-| `monitor.issue_cooldown_minutes` | `int` |  |  |
-| `monitor.dispatch_limit` | `int` |  |  |
-| `monitor.stuck_human_hours` | `float64` |  |  |
-| `monitor.lost_agent_minutes` | `int` |  |  |
-| `monitor.pr_gap_grace_minutes` | `int` |  |  |
-| `monitor.failure_rate_threshold` | `float64` |  |  |
-| `monitor.bottleneck_hours` | `map[string]float64` |  |  |
-| `monitor.issue_label` | `string` |  |  |
-| `monitor.issue_repo` | `string` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.monitor.enabled` | `bool` | `true` |  |  | `monitor.enabled` | `false` | `restart` |  |  |
+| `supervision.monitor.interval` | `int` | `300` | `seconds` |  | `monitor.interval_seconds`, `monitor.interval` | `false` | `restart` |  |  |
+| `supervision.monitor.model` | `string` | `"haiku"` |  |  | `monitor.model` | `false` | `restart` |  |  |
+| `supervision.monitor.issue_cooldown` | `int` | `30` | `minutes` |  | `monitor.issue_cooldown_minutes`, `monitor.issue_cooldown` | `false` | `restart` |  |  |
+| `supervision.monitor.dispatch_limit` | `int` | `25` |  |  | `monitor.dispatch_limit` | `false` | `restart` |  |  |
+| `supervision.monitor.stuck_human` | `float64` | `8` | `hours` |  | `monitor.stuck_human_hours`, `monitor.stuck_human` | `false` | `restart` |  |  |
+| `supervision.monitor.lost_agent` | `int` | `15` | `minutes` |  | `monitor.lost_agent_minutes`, `monitor.lost_agent` | `false` | `restart` |  |  |
+| `supervision.monitor.pr_gap_grace` | `int` | `15` | `minutes` |  | `monitor.pr_gap_grace_minutes`, `monitor.pr_gap_grace` | `false` | `restart` |  |  |
+| `supervision.monitor.failure_rate_threshold` | `float64` | `0.3` |  |  | `monitor.failure_rate_threshold` | `false` | `restart` |  |  |
+| `supervision.monitor.bottleneck_hours` | `map[string]float64` |  |  |  | `monitor.bottleneck_hours` | `false` | `restart` |  |  |
+| `supervision.monitor.issue_label` | `string` | `"monitor"` |  |  | `monitor.issue_label` | `false` | `restart` |  |  |
+| `supervision.monitor.issue_repo` | `string` | `"Automaat/sybra"` |  |  | `monitor.issue_repo` | `false` | `restart` |  |  |
 
-## WatchdogConfig (`watchdog`)
+### WatchdogConfig (`supervision.watchdog`)
 
 WatchdogConfig controls the in-process agent watchdog (internal/watchdog),
 which supervises running headless agents: it triggers a cheap LLM inspection
@@ -410,15 +470,15 @@ role a single task may accumulate within a trailing window before being
 escalated to human-required — a rate-based backstop for a redispatch loop
 that the dwell budget (hours) would only catch much later.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `watchdog.enabled` | `bool` | `true` |  |
-| `watchdog.model` | `string` |  |  |
-| `watchdog.loop_threshold` | `int` | `6` |  |
-| `watchdog.max_runs_per_window` | `int` | `30` |  |
-| `watchdog.run_window_minutes` | `int` | `30` |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.watchdog.enabled` | `bool` | `true` |  |  | `watchdog.enabled` | `false` | `restart` |  |  |
+| `supervision.watchdog.model` | `string` | `"haiku"` |  |  | `watchdog.model` | `false` | `restart` |  |  |
+| `supervision.watchdog.loop_threshold` | `int` | `6` |  |  | `watchdog.loop_threshold` | `false` | `restart` |  |  |
+| `supervision.watchdog.max_runs_per_window` | `int` | `30` |  |  | `watchdog.max_runs_per_window` | `false` | `restart` |  |  |
+| `supervision.watchdog.run_window` | `int` | `30` | `minutes` |  | `watchdog.run_window_minutes`, `watchdog.run_window` | `false` | `restart` |  |  |
 
-## SelfMonitorConfig (`self_monitor`)
+### SelfMonitorConfig (`supervision.self_monitor`)
 
 SelfMonitorConfig controls the in-process selfmonitor service that
 replaces the /loop 6h /sybra-self-monitor skill. Each tick snapshots
@@ -428,53 +488,71 @@ deduped issues via the shared monitor.IssueSink, and autonomously
 remediates a whitelisted set of categories (Phase D). Enabled stays
 false until users opt in.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `self_monitor.enabled` | `bool` |  |  |
-| `self_monitor.interval_hours` | `float64` |  |  |
-| `self_monitor.judge_model` | `string` |  |  |
-| `self_monitor.synthesizer_model` | `string` |  |  |
-| `self_monitor.max_issues_per_run` | `int` |  |  |
-| `self_monitor.max_auto_actions_per_day` | `int` |  |  |
-| `self_monitor.auto_act_categories` | `[]string` |  |  |
-| `self_monitor.dry_run` | `bool` |  |  |
-| `self_monitor.issue_cooldown_hours` | `float64` |  |  |
-| `self_monitor.issue_label` | `string` |  |  |
-| `self_monitor.max_cost_per_tick_usd` | `float64` |  |  |
-| `self_monitor.judge_parallelism` | `int` |  |  |
-| `self_monitor.suppression_days` | `int` |  |  |
-| `self_monitor.suppression_threshold` | `int` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.self_monitor.enabled` | `bool` | `false` |  |  | `self_monitor.enabled` | `false` | `restart` |  |  |
+| `supervision.self_monitor.interval` | `float64` | `6` | `hours` |  | `self_monitor.interval_hours`, `self_monitor.interval` | `false` | `restart` |  |  |
+| `supervision.self_monitor.judge_model` | `string` | `"claude-haiku-4-5-20251001"` |  |  | `self_monitor.judge_model` | `false` | `restart` |  |  |
+| `supervision.self_monitor.synthesizer_model` | `string` | `"claude-sonnet-4-6"` |  |  | `self_monitor.synthesizer_model` | `false` | `restart` |  |  |
+| `supervision.self_monitor.max_issues_per_run` | `int` | `5` |  |  | `self_monitor.max_issues_per_run` | `false` | `restart` |  |  |
+| `supervision.self_monitor.max_auto_actions_per_day` | `int` | `3` |  |  | `self_monitor.max_auto_actions_per_day` | `false` | `restart` |  |  |
+| `supervision.self_monitor.auto_act_categories` | `[]string` |  |  |  | `self_monitor.auto_act_categories` | `false` | `restart` |  |  |
+| `supervision.self_monitor.dry_run` | `bool` | `true` |  |  | `self_monitor.dry_run` | `false` | `restart` |  |  |
+| `supervision.self_monitor.issue_cooldown` | `float64` | `24` | `hours` |  | `self_monitor.issue_cooldown_hours`, `self_monitor.issue_cooldown` | `false` | `restart` |  |  |
+| `supervision.self_monitor.issue_label` | `string` | `"selfmonitor"` |  |  | `self_monitor.issue_label` | `false` | `restart` |  |  |
+| `supervision.self_monitor.max_cost_per_tick_usd` | `float64` | `2` |  |  | `self_monitor.max_cost_per_tick_usd` | `false` | `restart` |  |  |
+| `supervision.self_monitor.judge_parallelism` | `int` | `4` |  |  | `self_monitor.judge_parallelism` | `false` | `restart` |  |  |
+| `supervision.self_monitor.suppression` | `int` | `7` | `days` |  | `self_monitor.suppression_days`, `self_monitor.suppression` | `false` | `restart` |  |  |
+| `supervision.self_monitor.suppression_threshold` | `int` | `3` |  |  | `self_monitor.suppression_threshold` | `false` | `restart` |  |  |
 
-## EvaluationConfig (`evaluation`)
+### EvaluationConfig (`supervision.evaluation`)
 
 EvaluationConfig controls the in-process evaluation service, which periodically
 computes a fleet scorecard (autonomy, throughput, reliability, efficiency) from
 stats + audit data. Read-only: it never dispatches agents or files issues, so
 it needs no project-type routing — each machine scores its own local data.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `evaluation.enabled` | `bool` |  |  |
-| `evaluation.interval_hours` | `float64` |  |  |
-| `evaluation.window_days` | `int` |  |  |
-| `evaluation.offline` | `OfflineEvalConfig` | _(see below)_ |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.evaluation.enabled` | `bool` | `false` |  |  | `evaluation.enabled` | `false` | `restart` |  |  |
+| `supervision.evaluation.interval` | `float64` | `24` | `hours` |  | `evaluation.interval_hours`, `evaluation.interval` | `false` | `restart` |  |  |
+| `supervision.evaluation.window_days` | `int` | `30` |  |  | `evaluation.window_days` | `false` | `restart` |  |  |
+| `supervision.evaluation.offline` | `OfflineEvalConfig` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `supervision.evaluation.slo` | `SLOTargets` | _(see below)_ |  |  |  | `false` |  |  | SLO is the rolling autonomy/reliability target set the evaluation scorecard is graded against — see internal/evaluation.EvaluateSLOs. Zero-value fields are filled by applyEvaluationDefaults so existing configs need no migration. |
 
-## OfflineEvalConfig (`evaluation.offline`)
+### OfflineEvalConfig (`supervision.evaluation.offline`)
 
 OfflineEvalConfig controls the offline prompt/skill eval runner
 (internal/prompteval) that screens candidate variants before they are
 eligible for online A/B enrollment.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `evaluation.offline.enabled` | `bool` |  |  |
-| `evaluation.offline.runner` | `string` |  | Runner selects the offline runner: "auto" (default, promptfoo if on PATH else native), "promptfoo", or "native". |
-| `evaluation.offline.binary_path` | `string` |  |  |
-| `evaluation.offline.min_score` | `float64` |  | MinScore is the minimum Result.Score (0..1) required for a verdict to be scored StatusPass. |
-| `evaluation.offline.unavailable_policy` | `string` |  | UnavailablePolicy is "fail" (default, fail-closed) or "pass" — what AllowEnrollment returns when no verdict is recorded or the runner could not measure a result. |
-| `evaluation.offline.mode` | `string` |  | Mode is reserved for future dry-run/enforce distinctions; currently informational only. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.evaluation.offline.enabled` | `bool` | `false` |  |  | `evaluation.offline.enabled` | `false` | `restart` |  |  |
+| `supervision.evaluation.offline.runner` | `string` | `"auto"` |  |  | `evaluation.offline.runner` | `false` | `restart` |  | Runner selects the offline runner: "auto" (default, promptfoo if on PATH else native), "promptfoo", or "native". |
+| `supervision.evaluation.offline.binary_path` | `string` | `""` |  |  | `evaluation.offline.binary_path` | `false` | `restart` |  |  |
+| `supervision.evaluation.offline.min_score` | `float64` | `1` |  |  | `evaluation.offline.min_score` | `false` | `restart` |  | MinScore is the minimum Result.Score (0..1) required for a verdict to be scored StatusPass. |
+| `supervision.evaluation.offline.unavailable_policy` | `string` | `"fail"` |  |  | `evaluation.offline.unavailable_policy` | `false` | `restart` |  | UnavailablePolicy is "fail" (default, fail-closed) or "pass" — what AllowEnrollment returns when no verdict is recorded or the runner could not measure a result. |
+| `supervision.evaluation.offline.mode` | `string` | `""` |  |  | `evaluation.offline.mode` | `false` | `restart` |  | Mode is reserved for future dry-run/enforce distinctions; currently informational only. |
 
-## LearningDigestConfig (`learning_digest`)
+### SLOTargets (`supervision.evaluation.slo`)
+
+SLOTargets are the rolling autonomy/reliability targets Sybra holds
+itself to (see #2441). Defined here rather than in internal/evaluation
+because config cannot import evaluation (evaluation already imports
+config); internal/evaluation/slo.go aliases this type so evaluation code
+reads naturally as evaluation.SLOTargets.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.evaluation.slo.min_autonomy_rate` | `float64` | `0.8` |  |  | `evaluation.slo.min_autonomy_rate` | `false` | `restart` |  | MinAutonomyRate is the minimum fraction of landed tasks that must reach done without a human in the loop. |
+| `supervision.evaluation.slo.min_ci_first_pass_rate` | `float64` | `0.8` |  |  | `evaluation.slo.min_ci_first_pass_rate` | `false` | `restart` |  | MinCIFirstPassRate is the minimum fraction of landed tasks that must pass CI on the first push (no CI-fix agent needed). |
+| `supervision.evaluation.slo.max_rework_rate` | `float64` | `0.4` |  |  | `evaluation.slo.max_rework_rate` | `false` | `restart` |  | MaxReworkRate is the maximum fraction of landed tasks allowed to bounce between statuses (a repeated status transition). |
+| `supervision.evaluation.slo.max_identical_retry_cap` | `int` | `3` |  |  | `evaluation.slo.max_identical_retry_cap` | `false` | `restart` |  | MaxIdenticalRetryCap is the maximum number of failed agent runs a single task may accumulate in-window before it counts as a breach. |
+| `supervision.evaluation.slo.max_restarts_per_hour` | `float64` | `1` |  |  | `evaluation.slo.max_restarts_per_hour` | `false` | `restart` |  | MaxRestartsPerHour is the maximum rate of automatic human-required recovery restarts (monitor auto-retry, PR-monitor blocker reconciliation) the fleet may sustain. |
+| `supervision.evaluation.slo.throttle_on_budget_exhausted` | `bool` | `false` |  |  | `evaluation.slo.throttle_on_budget_exhausted` | `false` | `restart` |  | ThrottleOnBudgetExhausted enables a default-off dispatch clamp (internal/sybra/agentorch.effectiveMaxConcurrent) that narrows the concurrency ceiling for new workflow-driven implementation dispatch while the SLO error budget is exhausted. Recovery and interactive/operator dispatch are never throttled by this flag. |
+
+### LearningDigestConfig (`supervision.learning_digest`)
 
 LearningDigestConfig controls the periodic Learning Digest service
 (internal/learning), which distills the evaluation scorecard, stats, audit
@@ -482,31 +560,31 @@ signals, and active A/B experiments into a retrospective of what worked,
 what didn't, and what to try next. Default-disabled: operators opt in
 explicitly, mirroring EvaluationConfig.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `learning_digest.enabled` | `bool` |  |  |
-| `learning_digest.interval_hours` | `float64` |  |  |
-| `learning_digest.window_days` | `int` |  |  |
-| `learning_digest.max_window_days` | `int` |  | MaxWindowDays caps how far back a cold-start or long-idle window can reach, so a fresh install or resumed-after-months instance never feeds the summarizer an unbounded prompt. |
-| `learning_digest.model` | `string` |  | Model is passed to the claude CLI (the digest summarizer runs claude-only — see internal/learning/digest.go). |
-| `learning_digest.min_runs` | `int` |  | MinRuns and MinLandings gate generation: a digest is only produced when the window has at least this much fresh signal, so an idle fleet does not produce an empty/noisy retrospective. |
-| `learning_digest.min_landings` | `int` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.learning_digest.enabled` | `bool` | `false` |  |  | `learning_digest.enabled` | `false` | `restart` |  |  |
+| `supervision.learning_digest.interval` | `float64` | `24` | `hours` |  | `learning_digest.interval_hours`, `learning_digest.interval` | `false` | `restart` |  |  |
+| `supervision.learning_digest.window_days` | `int` | `7` |  |  | `learning_digest.window_days` | `false` | `restart` |  |  |
+| `supervision.learning_digest.max_window_days` | `int` | `30` |  |  | `learning_digest.max_window_days` | `false` | `restart` |  | MaxWindowDays caps how far back a cold-start or long-idle window can reach, so a fresh install or resumed-after-months instance never feeds the summarizer an unbounded prompt. |
+| `supervision.learning_digest.model` | `string` | `"sonnet"` |  |  | `learning_digest.model` | `false` | `restart` |  | Model is passed to the claude CLI (the digest summarizer runs claude-only — see internal/learning/digest.go). |
+| `supervision.learning_digest.min_runs` | `int` | `20` |  |  | `learning_digest.min_runs` | `false` | `restart` |  | MinRuns and MinLandings gate generation: a digest is only produced when the window has at least this much fresh signal, so an idle fleet does not produce an empty/noisy retrospective. |
+| `supervision.learning_digest.min_landings` | `int` | `3` |  |  | `learning_digest.min_landings` | `false` | `restart` |  |  |
 
-## HarnessEvolveConfig (`harness_evolution`)
+### HarnessEvolveConfig (`supervision.harness_evolution`)
 
 HarnessEvolveConfig controls the governed harness-evolution proposal loop.
 The loop proposes reviewable tasks/issues from telemetry; it never applies
 prompt, workflow, permission, retry, validator, or deployment changes itself.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `harness_evolution.enabled` | `bool` | `true` |  |
-| `harness_evolution.interval_hours` | `float64` |  |  |
-| `harness_evolution.lookback_hours` | `float64` |  |  |
-| `harness_evolution.min_cluster_size` | `int` |  |  |
-| `harness_evolution.sink` | `string` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.harness_evolution.enabled` | `bool` | `true` |  |  | `harness_evolution.enabled` | `false` | `restart` |  |  |
+| `supervision.harness_evolution.interval` | `float64` | `24` | `hours` |  | `harness_evolution.interval_hours`, `harness_evolution.interval` | `false` | `restart` |  |  |
+| `supervision.harness_evolution.lookback` | `float64` | `168` | `hours` |  | `harness_evolution.lookback_hours`, `harness_evolution.lookback` | `false` | `restart` |  |  |
+| `supervision.harness_evolution.min_cluster_size` | `int` | `2` |  |  | `harness_evolution.min_cluster_size` | `false` | `restart` |  |  |
+| `supervision.harness_evolution.sink` | `string` | `"local-task"` |  |  | `harness_evolution.sink` | `false` | `restart` |  |  |
 
-## PromptLabConfig (`prompt_lab`)
+### PromptLabConfig (`supervision.prompt_lab`)
 
 PromptLabConfig controls the automated Prompt Lab loop that scaffolds
 versioned prompt/skill variant proposals from fleet evidence (Evaluation
@@ -530,120 +608,216 @@ proposals reaches done/cancelled. A proposal ID is a stable hash of
 let each role produce at most two proposals ever and then go silent —
 while never suppressing re-files the same ID every tick. Defaults to 30.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `prompt_lab.enabled` | `bool` |  |  |
-| `prompt_lab.interval_hours` | `float64` |  |  |
-| `prompt_lab.lookback_hours` | `float64` |  |  |
-| `prompt_lab.min_samples` | `int` |  |  |
-| `prompt_lab.min_effect_size` | `float64` |  |  |
-| `prompt_lab.max_proposals_per_run` | `int` |  |  |
-| `prompt_lab.auto_approve` | `*bool` | _(nil)_ |  |
-| `prompt_lab.refile_cooldown_days` | `float64` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `supervision.prompt_lab.enabled` | `bool` | `false` |  |  | `prompt_lab.enabled` | `false` | `restart` |  |  |
+| `supervision.prompt_lab.interval` | `float64` | `24` | `hours` |  | `prompt_lab.interval_hours`, `prompt_lab.interval` | `false` | `restart` |  |  |
+| `supervision.prompt_lab.lookback` | `float64` | `168` | `hours` |  | `prompt_lab.lookback_hours`, `prompt_lab.lookback` | `false` | `restart` |  |  |
+| `supervision.prompt_lab.min_samples` | `int` | `5` |  |  | `prompt_lab.min_samples` | `false` | `restart` |  |  |
+| `supervision.prompt_lab.min_effect_size` | `float64` | `0.15` |  |  | `prompt_lab.min_effect_size` | `false` | `restart` |  |  |
+| `supervision.prompt_lab.max_proposals_per_run` | `int` | `3` |  |  | `prompt_lab.max_proposals_per_run` | `false` | `restart` |  |  |
+| `supervision.prompt_lab.auto_approve` | `*bool` | _(nil)_ |  |  | `prompt_lab.auto_approve` | `false` | `restart` |  |  |
+| `supervision.prompt_lab.refile_cooldown` | `float64` | `30` | `days` |  | `prompt_lab.refile_cooldown_days`, `prompt_lab.refile_cooldown` | `false` | `restart` |  |  |
 
-## ExperienceConfig (`experience`)
+## Storage
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `experience.enabled` | `bool` |  |  |
-| `experience.max_records` | `int` |  |  |
-| `experience.ttl_days` | `int` |  | TTLDays expires records older than this many days out of injection — a stale record can otherwise poison a prompt with advice that no longer matches the current codebase. 0 (default) disables expiry, so existing deployments are unaffected until an operator opts in. |
+Filesystem-backed retention and path layout under SYBRA_HOME.
 
-## ProvidersConfig (`providers`)
+### Storage Root (`storage`)
 
-ProvidersConfig groups per-machine routing for CLI providers (claude, codex,
-copilot, opencode) and their background health-check loop. A missing block defaults to
-"all providers enabled, health check on, auto-failover on, 300s interval".
+Scalar/root keys that live directly under this namespace.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `providers.health_check` | `ProviderHealthCheckConfig` | _(see below)_ |  |
-| `providers.claude` | `ProviderEntryConfig` | _(see below)_ |  |
-| `providers.codex` | `ProviderEntryConfig` | _(see below)_ |  |
-| `providers.copilot` | `ProviderEntryConfig` | _(see below)_ |  |
-| `providers.opencode` | `ProviderEntryConfig` | _(see below)_ |  |
-| `providers.limits` | `ProviderLimitsConfig` | _(see below)_ |  |
-| `providers.auto_failover` | `bool` | `true` |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `storage.paths.tasks` | `string` | `"~/.sybra/tasks"` |  | `SYBRA_TASKS_DIR` | `tasks_dir` | `false` | `immutable` |  |  |
+| `storage.paths.skills` | `string` | `"~/.sybra/.claude/skills"` |  |  | `skills_dir` | `false` | `immutable` |  |  |
+| `storage.paths.repo` | `string` | `""` |  |  | `repo_dir` | `false` | `immutable` |  |  |
+| `storage.paths.projects` | `string` | `"~/.sybra/projects"` |  |  | `projects_dir` | `false` | `immutable` |  |  |
+| `storage.paths.clones` | `string` | `"~/.sybra/clones"` |  |  | `clones_dir` | `false` | `immutable` |  |  |
+| `storage.paths.worktrees` | `string` | `"~/.sybra/worktrees"` |  |  | `worktrees_dir` | `false` | `immutable` |  |  |
+| `storage.paths.loop_agents` | `string` | `"~/.sybra/loop-agents"` |  |  | `loop_agents_dir` | `false` | `immutable` |  |  |
 
-## ProviderHealthCheckConfig (`providers.health_check`)
+### AttachmentConfig (`storage.attachments`)
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `providers.health_check.enabled` | `bool` | `true` |  |
-| `providers.health_check.interval_seconds` | `int` | `300` |  |
+AttachmentConfig controls local task attachment uploads.
 
-## ProviderEntryConfig (`providers.claude`)
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `storage.attachments.max_size_mb` | `int` | `10` |  |  | `attachments.max_size_mb` | `false` | `hot` |  | MaxSizeMB caps a single uploaded attachment's raw byte size before it is written to disk. 0 falls back to DefaultAttachmentMaxSizeMB. |
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `providers.claude.enabled` | `bool` | `true` |  |
-| `providers.claude.rate_limit_cooldown_seconds` | `int` | `900` |  |
-| `providers.claude.monthly_subscription_usd` | `float64` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+### TrashConfig (`storage.trash`)
 
-## ProviderEntryConfig (`providers.codex`)
+TrashConfig controls the retention of soft-deleted tasks under
+~/.sybra/trash (see internal/task.Store.Delete).
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `providers.codex.enabled` | `bool` | `true` |  |
-| `providers.codex.rate_limit_cooldown_seconds` | `int` | `900` |  |
-| `providers.codex.monthly_subscription_usd` | `float64` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `storage.trash.retention_days` | `int` | `0` |  |  | `trash.retention_days` | `false` | `hot` |  | RetentionDays bounds how long a trashed task generation survives before the startup sweep permanently removes it. 0 falls back to DefaultTrashRetentionDays (14); a negative value disables pruning. |
 
-## ProviderEntryConfig (`providers.copilot`)
+### SandboxConfig (`storage.sandboxes`)
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `providers.copilot.enabled` | `bool` | `true` |  |
-| `providers.copilot.rate_limit_cooldown_seconds` | `int` | `900` |  |
-| `providers.copilot.monthly_subscription_usd` | `float64` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+SandboxConfig controls retention of per-task app sandbox dirs under
+~/.sybra/sandboxes (see internal/sandbox.Manager.CleanupOrphaned).
 
-## ProviderEntryConfig (`providers.opencode`)
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `storage.sandboxes.retention` | `int` | `0` | `hours` |  | `sandbox.retention_hours`, `sandbox.retention` | `false` | `hot` |  | RetentionHours bounds how long a done/cancelled/blocked task's sandbox dir survives before the periodic sweep removes it. 0 falls back to DefaultSandboxRetention (24h); a negative value disables age-based pruning (eligible dirs are never removed by age, only on task delete). |
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `providers.opencode.enabled` | `bool` | `true` |  |
-| `providers.opencode.rate_limit_cooldown_seconds` | `int` | `900` |  |
-| `providers.opencode.monthly_subscription_usd` | `float64` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+### TaskSnapshotConfig (`storage.task_snapshot`)
 
-## ProviderLimitsConfig (`providers.limits`)
+TaskSnapshotConfig controls the background git snapshotter that versions
+the tasks dir (see internal/tasksnapshot.Snapshotter), giving recovery a
+`git checkout` path for external deleters that bypass task.Store's
+trash-based soft delete (the case #1576's forensics-only recovery
+couldn't catch).
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `providers.limits.enabled` | `bool` | `true` |  |
-| `providers.limits.session_threshold_percent` | `float64` | `85` |  |
-| `providers.limits.weekly_threshold_percent` | `float64` | `90` |  |
-| `providers.limits.prefer_underused` | `bool` | `true` |  |
-| `providers.limits.backfill_days` | `int` | `14` |  |
-| `providers.limits.max_in_flight_per_provider` | `int` |  | MaxInFlightPerProvider caps concurrent in-flight agents per provider, distinct from the global agent.max_concurrent ceiling. 0 (default) disables the cap. When set, gateProvider redirects new dispatches away from an at-cap provider even when PreferUnderused is false, so the cap cannot silently no-op. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `storage.task_snapshot.enabled` | `*bool` | _(nil)_ |  |  | `task_snapshot.enabled` | `false` | `restart` |  | Enabled toggles the background snapshotter. nil means not configured (defaults to true — safe default, matches RequirePermissions' nil-means-on convention). Set to false to disable entirely. |
+| `storage.task_snapshot.interval` | `int` | `0` | `seconds` |  | `task_snapshot.interval_seconds`, `task_snapshot.interval` | `false` | `restart` |  | IntervalSeconds is the fixed interval between commit attempts. 0 or negative falls back to DefaultTaskSnapshotInterval (30s). |
 
-## MetricsConfig (`metrics`)
+## Observability
+
+Logs, audit, metrics, experimentation, and operator evidence retention.
+
+### Observability Root (`observability`)
+
+Scalar/root keys that live directly under this namespace.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `observability.ab_testing` | `abtest.Config` |  |  |  |  | `false` |  |  |  |
+
+### LoggingConfig (`observability.logging`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `observability.logging.level` | `string` | `"info"` |  | `SYBRA_LOG_LEVEL` | `logging.level` | `false` | `hot` |  |  |
+| `observability.logging.dir` | `string` | `"~/.sybra/logs"` |  | `SYBRA_LOG_DIR` | `logging.dir` | `false` | `immutable` |  |  |
+| `observability.logging.max_size_mb` | `int` | `50` |  |  | `logging.max_size_mb` | `false` | `hot` |  |  |
+| `observability.logging.max_files` | `int` | `5` |  |  | `logging.max_files` | `false` | `hot` |  |  |
+
+### AuditConfig (`observability.audit`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `observability.audit.enabled` | `bool` | `true` |  |  | `audit.enabled` | `false` | `hot` |  |  |
+| `observability.audit.retention_days` | `int` | `30` |  |  | `audit.retention_days` | `false` | `hot` |  |  |
+
+### ExperienceConfig (`observability.experience`)
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `observability.experience.enabled` | `bool` | `false` |  |  | `experience.enabled` | `false` | `hot` |  |  |
+| `observability.experience.max_records` | `int` | `5` |  |  | `experience.max_records` | `false` | `hot` |  |  |
+| `observability.experience.ttl` | `int` | `0` | `days` |  | `experience.ttl_days`, `experience.ttl` | `false` | `hot` |  | TTLDays expires records older than this many days out of injection — a stale record can otherwise poison a prompt with advice that no longer matches the current codebase. 0 (default) disables expiry, so existing deployments are unaffected until an operator opts in. |
+
+### MetricsConfig (`observability.metrics`)
 
 MetricsConfig controls the OpenTelemetry metrics pipeline. When Enabled is
 true, sybra-server mounts /metrics on its existing mux and emits
 Prometheus-format output for external scrapers.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `metrics.enabled` | `bool` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `observability.metrics.enabled` | `bool` | `false` |  |  | `metrics.enabled` | `false` | `restart` |  |  |
 
-## ServerConfig (`server`)
+## Routing
+
+Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes.
+
+### RoutingConfig (`routing`)
+
+RoutingConfig controls the adaptive provider-routing service, which turns
+the periodic evaluation scorecard into bounded, versioned weight nudges for
+internal/abtest's per-experiment variants. It never writes to config.yaml —
+learned weights live in a side-store overlay (routing.Store) applied
+in-process — so a bad tick is trivially recoverable (delete the overlay,
+restart) and the operator's own ab_testing.yaml stays the source of truth
+for which variants exist at all.
+
+Enabled defaults to false: a fresh install computes and audits weight
+proposals (shadow mode) without ever pushing them live, matching
+PromptLabConfig's opt-in posture for a new autonomous loop.
+
+Coefficients is left zero-valued by most operators; applyRoutingDefaults
+fills any zero field from DefaultCoefficients so a partial override (e.g.
+only CostWeight) leaves every other term at its shipped default.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `routing.enabled` | `bool` | `false` |  |  |  | `false` | `restart` |  |  |
+| `routing.interval` | `float64` | `6` | `hours` |  | `routing.interval_hours` | `false` | `restart` |  |  |
+| `routing.weight_budget` | `int` | `40` |  |  |  | `false` | `restart` |  | WeightBudget is the total weight distributed across a single experiment's variants each tick (floor allocation included). Higher values let the top-ranked variant pull further ahead of the floor. |
+| `routing.floor_weight` | `int` | `1` |  |  |  | `false` | `restart` |  | FloorWeight is the minimum weight every configured variant keeps regardless of score, guaranteeing exploration traffic to low-sample and parity-unknown cohorts (acceptance criterion: "low-sample cohorts retain exploration traffic"). |
+| `routing.max_step` | `int` | `5` |  |  |  | `false` | `restart` |  | MaxStep bounds how far a single tick may move one variant's weight, up or down, so a noisy score swing cannot re-route most traffic in one generation. |
+| `routing.min_samples_to_shift` | `int` | `20` |  |  |  | `false` | `restart` |  | MinSamplesToShift is the resolved-run threshold below which a variant is treated as insufficiently sampled and held at FloorWeight instead of being ranked — distinct from ab_testing.min_samples_per_variant, which gates the evaluation scorecard's InsufficientData display flag. |
+| `routing.coefficients` | `RoutingCoefficients` | _(see below)_ |  |  |  | `false` |  |  |  |
+
+### RoutingCoefficients (`routing.coefficients`)
+
+RoutingCoefficients weights each score input's contribution to a variant's
+composite outcome score. Positive fields reward the metric (landed, merge,
+CI-first-pass rate); the rework/failure/cost/duration fields are already
+applied as penalties by routing.ScoreVariants, so a larger value here means
+a stronger penalty, never a sign flip.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `routing.coefficients.landed_weight` | `float64` | `1` |  |  |  | `false` | `restart` |  |  |
+| `routing.coefficients.merge_weight` | `float64` | `0.5` |  |  |  | `false` | `restart` |  |  |
+| `routing.coefficients.ci_first_pass_weight` | `float64` | `0.25` |  |  |  | `false` | `restart` |  |  |
+| `routing.coefficients.rework_weight` | `float64` | `0.75` |  |  |  | `false` | `restart` |  |  |
+| `routing.coefficients.failure_weight` | `float64` | `1` |  |  |  | `false` | `restart` |  |  |
+| `routing.coefficients.cost_weight` | `float64` | `0.2` |  |  |  | `false` | `restart` |  | CostWeight and DurationWeight scale a normalized (0..1-clamped) cost/ duration penalty — see CostNormalizer/DurationNormalizer — so cost only ever lowers a variant's rank, never zeroes its weight (FloorWeight is the hard floor no penalty can cross). |
+| `routing.coefficients.duration_weight` | `float64` | `0.1` |  |  |  | `false` | `restart` |  |  |
+| `routing.coefficients.cost_normalizer` | `float64` | `5` |  |  |  | `false` | `restart` |  |  |
+| `routing.coefficients.duration_normalizer` | `float64` | `3600` |  |  |  | `false` | `restart` |  |  |
+
+## Server
+
+Local API/server exposure and auth for the running Sybra instance.
+
+### ServerConfig (`server`)
 
 ServerConfig controls sybra-server's HTTP control-plane authentication and
 CORS policy. AuthToken gates every request except GET /health behind a
 shared-secret bearer token: callers must send
 `Authorization: Bearer <token>`, or, for the SSE endpoints only (browser
 EventSource cannot set request headers), a `?token=<token>` query param.
-AuthToken is auto-generated and persisted to config.yaml on first run if
-left empty — see applyServerDefaults.
+AuthToken is auto-generated and persisted to AuthTokenPath() on first run
+if left empty, never to config.yaml — see applyServerDefaults.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `server.auth_token` | `string` | `[redacted]` |  |
-| `server.allowed_origins` | `[]string` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `server.auth_token` | `string` | `[redacted]` |  | `SYBRA_AUTH_TOKEN` |  | `true` | `restart` |  |  |
+| `server.allowed_origins` | `[]string` |  |  | `SYBRA_ALLOWED_ORIGINS` |  | `false` | `restart` |  |  |
 
-## ClusterConfig (`cluster`)
+## Webhook
+
+Inbound external task-creation webhook listener and request-signing controls.
+
+### WebhookConfig (`webhook`)
+
+WebhookConfig controls the optional inbound HTTP webhook used for external
+task creation. When Enabled is true, sybra-server starts a separate listener
+on Port and serves POST /webhook/task. Secret optionally enables HMAC-SHA256
+request signing via X-Sybra-Signature: sha256=<hex>.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `webhook.enabled` | `bool` | `false` |  |  |  | `false` | `restart` |  |  |
+| `webhook.port` | `int` | `8081` |  |  |  | `false` | `restart` |  |  |
+| `webhook.secret` | `string` | `[redacted]` |  | `SYBRA_WEBHOOK_SECRET` |  | `true` | `restart` |  |  |
+
+## Cluster
+
+Cluster/task-trust policy for multi-node execution backends.
+
+### ClusterConfig (`cluster`)
 
 ClusterConfig configures leader-follower mode (umbrella #1803). The leader
-owns the canonical task store, polls Todoist/GitHub, and assigns work to
+owns the canonical task store, polls GitHub and Renovate, and assigns work to
 followers by per-project homing; followers execute assigned tasks and stream
 state back. Default role "standalone" preserves single-node behavior, so the
 block requires zero migration. Role is "standalone", "leader", or "follower"
@@ -651,16 +825,16 @@ block requires zero migration. Role is "standalone", "leader", or "follower"
 control-plane bind. LocalHomes pins project ids to this node; TLS carries a
 follower's server cert/key for the TLS + cert-pin transport tier.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `cluster.role` | `string` | `standalone` |  |
-| `cluster.bind_addr` | `string` |  |  |
-| `cluster.bind_addrs` | `[]string` |  |  |
-| `cluster.followers` | `[]Follower` | _(see below)_ |  |
-| `cluster.local_homes` | `[]string` |  |  |
-| `cluster.tls` | `ClusterTLS` | _(see below)_ |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `cluster.role` | `string` | `"standalone"` |  |  |  | `false` | `restart` |  |  |
+| `cluster.bind_addr` | `string` | `""` |  |  |  | `false` | `restart` |  |  |
+| `cluster.bind_addrs` | `[]string` |  |  |  |  | `false` | `restart` |  |  |
+| `cluster.followers` | `[]Follower` | _(see below)_ |  |  |  | `false` | `restart` |  |  |
+| `cluster.local_homes` | `[]string` |  |  |  |  | `false` | `restart` |  |  |
+| `cluster.tls` | `ClusterTLS` | _(see below)_ |  |  |  | `false` |  |  |  |
 
-## Follower (`cluster.followers`)
+### Follower (`cluster.followers`)
 
 Follower is one entry in the leader's roster: a node the leader may assign
 projects to over the control plane. Name is stamped into task.AssignedNode.
@@ -671,47 +845,43 @@ lands in config.yaml. Trusted marks a node cleared for work-typed tasks;
 Homes pins project ids to this follower; TLSPin is the expected SHA-256
 fingerprint of its server certificate.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `cluster.followers.name` | `string` |  |  |
-| `cluster.followers.endpoints` | `[]string` |  |  |
-| `cluster.followers.auth_token_env` | `string` |  |  |
-| `cluster.followers.trusted` | `bool` |  |  |
-| `cluster.followers.homes` | `[]string` |  |  |
-| `cluster.followers.tls_pin` | `string` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `cluster.followers.name` | `string` |  |  |  |  | `false` |  |  |  |
+| `cluster.followers.endpoints` | `[]string` |  |  |  |  | `false` |  |  |  |
+| `cluster.followers.auth_token_env` | `string` |  |  |  |  | `false` |  |  |  |
+| `cluster.followers.trusted` | `bool` |  |  |  |  | `false` |  |  |  |
+| `cluster.followers.homes` | `[]string` |  |  |  |  | `false` |  |  |  |
+| `cluster.followers.tls_pin` | `string` |  |  |  |  | `false` |  |  |  |
 
-## ClusterTLS (`cluster.tls`)
+### ClusterTLS (`cluster.tls`)
 
 ClusterTLS holds a follower's server certificate/key paths for the TLS +
 cert-pin transport tier (P7 provides cert-gen). Empty = plain HTTP.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `cluster.tls.cert_file` | `string` |  |  |
-| `cluster.tls.key_file` | `string` |  |  |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `cluster.tls.cert_file` | `string` | `""` |  |  |  | `false` | `restart` |  |  |
+| `cluster.tls.key_file` | `string` | `""` |  |  |  | `false` | `restart` |  |  |
 
-## AutoUpdateConfig (`auto_update`)
+## Auto_update
+
+Deployment self-update behavior for long-running Sybra installs.
+
+### AutoUpdateConfig (`auto_update`)
 
 AutoUpdateConfig controls source update checks. In "auto" mode a clean
 fast-forward update is applied and Sybra requests a supervisor restart.
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `auto_update.enabled` | `bool` |  |  |
-| `auto_update.repo_dir` | `string` |  |  |
-| `auto_update.remote` | `string` | `origin` |  |
-| `auto_update.branch` | `string` | `main` |  |
-| `auto_update.mode` | `string` | `notify` |  |
-| `auto_update.poll_seconds` | `int` | `300` |  |
-| `auto_update.restart_delay_seconds` | `int` | `2` | Deprecated: ignored. Kept so existing config files continue to load. |
-
-## BrowserConfig (`browser`)
-
-BrowserConfig controls how the desktop app opens external links (GitHub,
-PRs, issues). Read once at startup — flipping this value requires an app
-restart, since the opener closure is wired into the app at boot in main.go.
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `browser.in_app` | `*bool` | _(nil)_ | InApp opens links in an in-app Sybra Browser webview window backed by a persistent, app-wide cookie store, so a login is reused across windows and survives restarts. Nil/unset defaults to true (current behavior). Set to false to always open links in the default system browser instead. |
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `auto_update.enabled` | `bool` | `false` |  |  |  | `false` | `restart` |  |  |
+| `auto_update.repo_dir` | `string` | `""` |  |  |  | `false` | `restart` |  |  |
+| `auto_update.remote` | `string` | `"origin"` |  |  |  | `false` | `restart` |  |  |
+| `auto_update.branch` | `string` | `"main"` |  |  |  | `false` | `restart` |  |  |
+| `auto_update.mode` | `string` | `"notify"` |  |  |  | `false` | `restart` |  |  |
+| `auto_update.required_checks` | `[]string` |  |  |  |  | `false` | `restart` |  | RequiredChecks is the exact set of status/check names that must report SUCCESS on the candidate commit before auto mode may apply it. Empty is allowed in notify mode; auto mode fails closed when this list is empty. |
+| `auto_update.poll` | `int` | `300` | `seconds` |  | `auto_update.poll_seconds` | `false` | `restart` |  |  |
+| `auto_update.restart_delay` | `int` | `2` | `seconds` |  | `auto_update.restart_delay_seconds` | `false` | `restart` |  | Deprecated: ignored. Kept so existing config files continue to load. |
+| `auto_update.coalesce` | `int` | `3600` | `seconds` |  | `auto_update.coalesce_seconds` | `false` | `restart` |  | CoalesceSeconds is the minimum time between graceful restarts in auto mode, separate from PollSeconds (which only controls how often the remote is polled for a new candidate). |
 

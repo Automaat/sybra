@@ -17,7 +17,8 @@ import (
 // ExperimentSignal is one A/B experiment/variant row surfaced to the
 // summarizer: aggregate counts and sample-readiness only, never raw run
 // content. Mirrors the fields of evaluation.ComparisonBreakdown the
-// summarizer actually needs to cite a variant and caveat a low-sample one.
+// summarizer actually needs to cite a variant and caveat one that is low-N,
+// parity-unknown, or both.
 type ExperimentSignal struct {
 	ExperimentID         string  `json:"experimentId"`
 	Kind                 string  `json:"kind"`
@@ -202,8 +203,10 @@ func buildPrompt(pkt Packet) string {
 	}
 	if len(pkt.Experiments) > 0 {
 		if exp, err := json.Marshal(pkt.Experiments); err == nil {
-			b.WriteString("Active A/B experiments (variant-level; insufficientData=true means the sample is below ")
-			b.WriteString("the configured minimum — treat conclusions from these rows as low-confidence and say so):\n")
+			b.WriteString("Active A/B experiments (variant-level; insufficientData=true means the row is not ")
+			b.WriteString("comparable yet: sampleStatus is one of actionable, low-sample, parity-unknown, or ")
+			b.WriteString("low-sample+parity-unknown. Treat the non-actionable statuses as caveats and never ")
+			b.WriteString("frame parity-unknown rows as wins/losses):\n")
 			fmt.Fprintf(&b, "%s\n\n", exp)
 		}
 	}

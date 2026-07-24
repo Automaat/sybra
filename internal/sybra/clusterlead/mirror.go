@@ -2,12 +2,18 @@ package clusterlead
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
+	"os"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -33,6 +39,23 @@ const DefaultReconcileInterval = 30 * time.Second
 // still exceeds the response cap, network loss) becomes impossible to miss.
 const reconcileFailureEscalateThreshold = 5
 
+// missingConfirmThreshold is how many consecutive reconcile ticks a task must
+// 404 on its assigned node before reconcileMissing trusts that as "the
+// follower confirms this task is gone" and trashes the leader's canonical
+// copy. Assigner.Reassign stamps canonical.AssignedNode to the new node
+// *before* pushing the task there (reassign.go's stampNode doc comment: this
+// ordering is deliberate, so a revived dead follower cannot clobber a task
+// that has moved) — so a single 404 on a freshly assigned node is exactly as
+// consistent with "not pushed yet" as with "genuinely deleted," and a
+// follower client call can legitimately take up to defaultCallTimeout (30s)
+// before even failing. Requiring the same node to 404 across
+// missingConfirmThreshold ticks (each spaced by the reconcile interval)
+// gives a slow AssignTask/attachment-transfer push comfortably longer than
+// one RPC timeout to land before the leader trusts the absence and trashes
+// its own copy — while a genuinely deleted task, which will 404 forever,
+// still gets cleaned up in bounded time instead of staying a ghost.
+const missingConfirmThreshold = 3
+
 // Mirror keeps the leader's canonical store in sync with follower execution
 // state via a reconcile ticker, applying every update through one authority
 // merge: execution fields are follower-authoritative, identity/assignment
@@ -45,6 +68,14 @@ type Mirror struct {
 	logger   *slog.Logger
 	interval time.Duration
 	applyMu  sync.Mutex
+
+	attachments *attachment.Store
+	anomalySink monitor.IssueSink
+
+	// missingMu guards missingStreak, written from each node's independent
+	// reconcileLoop goroutine.
+	missingMu     sync.Mutex
+	missingStreak map[string]int // "node|taskID" -> consecutive confirmed-404 ticks
 }
 
 // NewMirror constructs a Mirror. A nil logger falls back to slog.Default(); a
@@ -56,7 +87,25 @@ func NewMirror(cfg *config.Config, tasks *task.Manager, roster *cluster.Roster, 
 	if interval <= 0 {
 		interval = DefaultReconcileInterval
 	}
-	return &Mirror{cfg: cfg, tasks: tasks, roster: roster, logger: logger, interval: interval}
+	return &Mirror{
+		cfg: cfg, tasks: tasks, roster: roster, logger: logger, interval: interval,
+		missingStreak: make(map[string]int),
+	}
+}
+
+// SetAttachments supplies the leader-local blob store used to mirror follower
+// attachment uploads back into the canonical task view.
+func (m *Mirror) SetAttachments(store *attachment.Store) {
+	m.attachments = store
+}
+
+// SetAnomalySink supplies the sink drift detection reports through — the same
+// routing sink monitor.Service uses, so a cluster-drift finding gets the
+// existing dedup, work-project scrubbing, and durable GitHub-issue-outbox
+// behavior for free. A nil sink (monitor disabled, or not yet wired at
+// construction time) disables alerting only; detection and repair still run.
+func (m *Mirror) SetAnomalySink(sink monitor.IssueSink) {
+	m.anomalySink = sink
 }
 
 // Run starts, per follower, a reconcile ticker, and blocks until ctx is
@@ -106,19 +155,158 @@ func (m *Mirror) reconcileNode(ctx context.Context, node string, consecutiveFail
 	}
 	*consecutiveFailures = 0
 	for i := range tasks {
-		m.applyFollowerTask(node, tasks[i])
+		m.applyFollowerTaskWithContext(ctx, node, tasks[i])
+	}
+	m.reconcileMissing(ctx, node, client, tasks)
+}
+
+// reconcileMissing closes the gap ListTasksForNode's staleness filter opens: a
+// non-terminal task the leader still considers live and assigned to node, but
+// that this node's response omitted. Fetches only the handful of affected
+// tasks directly (GetTask) instead of falling back to a full list, and
+// branches on the result:
+//   - The follower 404s (os.ErrNotExist surfaced as http.StatusNotFound — see
+//     httpapi.stripErrorResult) on missingConfirmThreshold consecutive ticks:
+//     the follower closed the task more than mirrorStaleTerminalWindow ago
+//     while unreachable (an outage or restart spanning the whole window, so
+//     the closing update never applied), or it was trashed outright (e.g. a
+//     duplicate cleanup, #2294's post-mortem). Either way the follower will
+//     never offer it again, so the leader trashes its own stale copy instead
+//     of leaving it stuck at its last non-terminal state permanently — which
+//     would otherwise keep poisoning downstream rollup logic that scans all
+//     children, like trackerRollup's cancelled-child check, forever. A
+//     single 404 is not enough on its own — see missingConfirmThreshold's
+//     doc comment for why a freshly reassigned task looks identical for one
+//     tick.
+//   - Any other error (network failure, follower down): leave the canonical
+//     copy untouched and retry next tick — the follower may still have it.
+func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *cluster.Client, tasks []task.Task) {
+	seen := make(map[string]struct{}, len(tasks))
+	for i := range tasks {
+		seen[tasks[i].ID] = struct{}{}
+	}
+	// A task the follower's snapshot accounts for is not missing this tick,
+	// whatever it was on a prior tick — drop any confirmed-404 streak so a
+	// task that legitimately reappeared (e.g. a slow Reassign push that
+	// finally landed) starts from zero if it ever goes missing again, rather
+	// than resuming a stale count left over from an unrelated earlier gap.
+	m.clearMissingStreaks(node, tasks)
+
+	canonical, err := m.tasks.List()
+	if err != nil {
+		m.logger.Warn("cluster.mirror.reconcile_missing.list_failed", "node", node, "err", err)
+		return
+	}
+	for i := range canonical {
+		t := canonical[i]
+		if t.AssignedNode != node || task.IsTerminalStatus(t.Status) {
+			continue
+		}
+		if _, ok := seen[t.ID]; ok {
+			continue
+		}
+		follower, gerr := client.GetTask(ctx, t.ID)
+		if gerr != nil {
+			var apiErr *cluster.APIError
+			if errors.As(gerr, &apiErr) && apiErr.Status == http.StatusNotFound {
+				streak := m.bumpMissingStreak(node, t.ID)
+				if streak < missingConfirmThreshold {
+					m.logger.Info("cluster.mirror.reconcile_missing.confirming",
+						"node", node, "task", t.ID, "streak", streak, "threshold", missingConfirmThreshold)
+					continue
+				}
+				// The follower has confirmed this task gone across
+				// missingConfirmThreshold consecutive ticks (e.g. trashed as
+				// a duplicate cleanup, see #2294's post-mortem) — long enough
+				// to rule out a task freshly reassigned to node whose push
+				// just hasn't landed yet (Assigner.Reassign stamps
+				// AssignedNode before pushing; see missingConfirmThreshold's
+				// doc comment). Trash the leader's stale mirror so it stops
+				// permanently gating downstream rollup logic (like
+				// trackerRollup's cancelled-child check) on a ghost task the
+				// follower will never offer again.
+				if derr := m.tasks.Delete(t.ID); derr != nil {
+					m.logger.Warn("cluster.mirror.reconcile_missing.trash_failed", "node", node, "task", t.ID, "err", derr)
+					continue
+				}
+				m.clearMissingStreak(node, t.ID)
+				m.logger.Info("cluster.mirror.reconcile_missing.trashed", "node", node, "task", t.ID, "confirmations", streak)
+				continue
+			}
+			m.logger.Debug("cluster.mirror.reconcile_missing.failed", "node", node, "task", t.ID, "err", gerr)
+			continue
+		}
+		// Found despite this tick's snapshot omitting it — a later absence
+		// is unrelated and must not inherit a stale streak.
+		m.clearMissingStreak(node, t.ID)
+		m.applyFollowerTaskWithContext(ctx, node, follower)
+	}
+}
+
+func missingStreakKey(node, taskID string) string { return node + "|" + taskID }
+
+// bumpMissingStreak increments and returns node/taskID's consecutive
+// confirmed-404 count.
+func (m *Mirror) bumpMissingStreak(node, taskID string) int {
+	m.missingMu.Lock()
+	defer m.missingMu.Unlock()
+	key := missingStreakKey(node, taskID)
+	m.missingStreak[key]++
+	return m.missingStreak[key]
+}
+
+func (m *Mirror) clearMissingStreak(node, taskID string) {
+	m.missingMu.Lock()
+	defer m.missingMu.Unlock()
+	delete(m.missingStreak, missingStreakKey(node, taskID))
+}
+
+// clearMissingStreaks drops the confirmed-404 streak for every task node's
+// fresh ListTasks snapshot accounts for.
+func (m *Mirror) clearMissingStreaks(node string, tasks []task.Task) {
+	if len(tasks) == 0 {
+		return
+	}
+	m.missingMu.Lock()
+	defer m.missingMu.Unlock()
+	for i := range tasks {
+		delete(m.missingStreak, missingStreakKey(node, tasks[i].ID))
 	}
 }
 
 func (m *Mirror) applyFollowerTask(node string, follower task.Task) bool {
+	return m.applyFollowerTaskWithContext(context.Background(), node, follower)
+}
+
+func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, follower task.Task) bool {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 
 	canonical, err := m.tasks.Get(follower.ID)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return m.adoptFollowerTask(ctx, node, follower)
+		}
+		// A genuine local-store fault (I/O, corrupt frontmatter), not
+		// "doesn't exist yet" — the discarded bool at the call site leaves
+		// this as the only trace convergence stalled for this task.
+		m.logger.Warn("cluster.mirror.apply.get_failed", "node", node, "task", follower.ID, "err", err)
 		return false
 	}
 	if canonical.AssignedNode != node {
+		// Silent before this diff too, but now reachable by a new class of
+		// cause: adoptFollowerTask assigns a never-seen ID to the first node
+		// whose reconcile tick claims it, so a same-ID collision between two
+		// followers' independently self-originated tasks (task IDs are only
+		// 32 bits of randomness, internal/task/store.go) would permanently
+		// strand the loser here with no prior trace at all. Whatever the
+		// cause, a canonical/reporting-node mismatch deserves a log line.
+		m.logger.Warn("cluster.mirror.apply.assigned_elsewhere", "node", node, "task", follower.ID, "assigned_node", canonical.AssignedNode)
+		return false
+	}
+	m.detectAndRepairDrift(ctx, node, canonical, follower)
+	follower, ok := m.localizeFollowerAttachments(ctx, node, canonical, follower)
+	if !ok {
 		return false
 	}
 	merged, ok := Merge(canonical, follower)
@@ -135,6 +323,192 @@ func (m *Mirror) applyFollowerTask(node string, follower task.Task) bool {
 	}
 	m.logger.Debug("cluster.mirror.applied", "node", node, "task", follower.ID, "status", string(merged.Status), "rev", merged.MirrorRev)
 	return true
+}
+
+// adoptFollowerTask creates the leader's first canonical record for a task
+// that exists only on node — e.g. a follower's own local umbrella expansion
+// or triage, created without leader involvement and so never assigned a
+// node (ListTasksForNode returns these to the node that actually holds
+// them; see its doc comment). There is no existing canonical copy to merge
+// against, so unlike applyFollowerTaskWithContext's steady-state path, this
+// takes follower's own fields as the whole record rather than preserving
+// leader-authoritative identity fields from a prior version — there is no
+// prior version.
+func (m *Mirror) adoptFollowerTask(ctx context.Context, node string, follower task.Task) bool {
+	adopted, ok := m.localizeFollowerAttachments(ctx, node, task.Task{}, follower)
+	if !ok {
+		return false
+	}
+	adopted.AssignedNode = node
+	adopted.MirrorRev = 1
+	followerUpdated := adopted.UpdatedAt
+	adopted.MirrorUpdatedAt = &followerUpdated
+	adopted.UpdatedAt = time.Now().UTC()
+	if err := m.writeSidecars(adopted); err != nil {
+		m.logger.Warn("cluster.mirror.adopt.sidecar_failed", "node", node, "task", adopted.ID, "err", err)
+		return false
+	}
+	if _, _, err := m.tasks.Put(adopted); err != nil {
+		m.logger.Warn("cluster.mirror.adopt.failed", "node", node, "task", adopted.ID, "err", err)
+		return false
+	}
+	m.logger.Info("cluster.mirror.adopted", "node", node, "task", adopted.ID, "status", string(adopted.Status))
+	return true
+}
+
+// detectAndRepairDrift compares the two leader-authoritative fields Merge
+// never touches — Tags and DependsOn — between the leader's canonical copy
+// and what the follower actually reports. Every other field either flows
+// follower-authoritative through Merge every reconcile tick (Status,
+// Workflow, AgentRuns, ...) or is immutable identity (ID, ProjectID,
+// CreatedAt), so an ordinary disagreement there is expected and self-heals
+// on its own — alerting on it would just be noise. Tags/DependsOn only ever
+// change on the leader (umbrella-gate release, a manual sybra-cli edit, ...);
+// if a leader-side write to one of them never reached the follower — the
+// #2349 class of bug, from any cause, not just the one fixed there — nothing
+// else in the reconcile loop will ever notice, because Merge doesn't carry
+// them and Assigner only pushes a task to its follower once, at first
+// assignment. This is the backstop: detected within one reconcile interval,
+// logged, alerted through the same anomaly sink as everything else, and
+// repaired by pushing just the drifted fields onto the follower's own
+// current state (never a stale full-task overwrite that could roll back
+// follower-side execution progress).
+func (m *Mirror) detectAndRepairDrift(ctx context.Context, node string, canonical, follower task.Task) {
+	tagsDrift := !slices.Equal(sortedCopy(canonical.Tags), sortedCopy(follower.Tags))
+	depsDrift := !slices.Equal(sortedCopy(canonical.DependsOn), sortedCopy(follower.DependsOn))
+	if !tagsDrift && !depsDrift {
+		return
+	}
+	m.logger.Error("cluster.mirror.drift_detected",
+		"task", canonical.ID, "node", node,
+		"tags_drift", tagsDrift, "deps_drift", depsDrift,
+		"canonical_tags", canonical.Tags, "follower_tags", follower.Tags,
+		"canonical_depends_on", canonical.DependsOn, "follower_depends_on", follower.DependsOn)
+	m.alertDrift(ctx, node, canonical, tagsDrift, depsDrift)
+	m.repairDrift(ctx, node, canonical)
+}
+
+func (m *Mirror) alertDrift(ctx context.Context, node string, canonical task.Task, tagsDrift, depsDrift bool) {
+	if m.anomalySink == nil {
+		return
+	}
+	ev := map[string]any{
+		"node":       node,
+		"tags_drift": tagsDrift,
+		"deps_drift": depsDrift,
+		"tags":       canonical.Tags,
+		"depends_on": canonical.DependsOn,
+	}
+	a := monitor.Anomaly{
+		Kind:        monitor.KindClusterDrift,
+		TaskID:      canonical.ID,
+		Severity:    monitor.SeverityError,
+		RequiresLLM: false,
+		Fingerprint: monitor.Fingerprint(monitor.KindClusterDrift, canonical.ID, ev),
+		Evidence:    ev,
+		DetectedAt:  time.Now().UTC(),
+	}
+	if _, err := m.anomalySink.Submit(ctx, a, monitor.DeterministicIssueBody(a)); err != nil {
+		m.logger.Warn("cluster.mirror.drift_alert.failed", "task", canonical.ID, "node", node, "err", err)
+	}
+}
+
+// driftRepairTimeout bounds repairDrift's two follower round trips (a
+// re-fetch plus the repair push) so one unreachable follower can't hold
+// applyMu — shared across every node's reconcile goroutine — for the full
+// 30s cluster client default per drifted task.
+const driftRepairTimeout = 5 * time.Second
+
+// repairDrift pushes only the drifted fields onto the follower's own current
+// task state (not the leader's canonical copy verbatim) — the follower's
+// Status/Workflow/AgentRuns/etc. may be more current than what the leader
+// last pulled, and overwriting those would roll back real execution
+// progress, exactly the split-brain risk PushUpdate exists to avoid. It
+// re-fetches via GetTask rather than reusing this tick's ListTasks snapshot,
+// which can already be stale by the time this repair runs — earlier tasks in
+// the same batch, under the same applyMu lock, each take up to
+// driftRepairTimeout first.
+func (m *Mirror) repairDrift(ctx context.Context, node string, canonical task.Task) {
+	client, ok := m.roster.Client(node)
+	if !ok || client == nil {
+		m.logger.Warn("cluster.mirror.drift_repair.no_client", "task", canonical.ID, "node", node)
+		return
+	}
+	repairCtx, cancel := context.WithTimeout(ctx, driftRepairTimeout)
+	defer cancel()
+	live, err := client.GetTask(repairCtx, canonical.ID)
+	if err != nil {
+		m.logger.Warn("cluster.mirror.drift_repair.refetch_failed", "task", canonical.ID, "node", node, "err", err)
+		return
+	}
+	repaired := live
+	repaired.Tags = canonical.Tags
+	repaired.DependsOn = canonical.DependsOn
+	repaired.AssignedNode = node
+	if err := client.AssignTask(repairCtx, repaired); err != nil {
+		m.logger.Warn("cluster.mirror.drift_repair.failed", "task", canonical.ID, "node", node, "err", err)
+		return
+	}
+	m.logger.Info("cluster.mirror.drift_repaired", "task", canonical.ID, "node", node)
+}
+
+// sortedCopy returns a sorted copy of ss so set-like fields (Tags,
+// DependsOn) compare equal regardless of element order.
+func sortedCopy(ss []string) []string {
+	out := slices.Clone(ss)
+	slices.Sort(out)
+	return out
+}
+
+func (m *Mirror) localizeFollowerAttachments(ctx context.Context, node string, canonical, follower task.Task) (task.Task, bool) {
+	if len(follower.Attachments) == 0 {
+		return follower, true
+	}
+	if m.attachments == nil || m.roster == nil {
+		m.logger.Warn("cluster.mirror.attachments.unavailable", "node", node, "task", follower.ID)
+		return follower, false
+	}
+	client, ok := m.roster.Client(node)
+	if !ok || client == nil {
+		m.logger.Warn("cluster.mirror.attachments.no_client", "node", node, "task", follower.ID)
+		return follower, false
+	}
+
+	canonicalByID := make(map[string]task.Attachment, len(canonical.Attachments))
+	for i := range canonical.Attachments {
+		canonicalByID[canonical.Attachments[i].ID] = canonical.Attachments[i]
+	}
+	local := make([]task.Attachment, 0, len(follower.Attachments))
+	for i := range follower.Attachments {
+		att := follower.Attachments[i]
+		if existing, ok := canonicalByID[att.ID]; ok && attachmentEquivalent(existing, att) {
+			if _, err := m.attachments.Path(canonical.ID, existing.ID); err == nil {
+				local = append(local, existing)
+				continue
+			}
+		}
+		data, err := client.ExportAttachment(ctx, follower.ID, att.ID)
+		if err != nil {
+			m.logger.Warn("cluster.mirror.attachment.export.failed", "node", node, "task", follower.ID, "attachment_id", att.ID, "err", err)
+			return follower, false
+		}
+		imported, err := m.attachments.Import(follower.ID, att, data)
+		if err != nil {
+			m.logger.Warn("cluster.mirror.attachment.import.failed", "node", node, "task", follower.ID, "attachment_id", att.ID, "err", err)
+			return follower, false
+		}
+		local = append(local, imported)
+	}
+	follower.Attachments = local
+	return follower, true
+}
+
+func attachmentEquivalent(a, b task.Attachment) bool {
+	return a.ID == b.ID &&
+		a.FileName == b.FileName &&
+		a.ContentType == b.ContentType &&
+		a.SizeBytes == b.SizeBytes &&
+		a.CreatedAt.Equal(b.CreatedAt)
 }
 
 func (m *Mirror) writeSidecars(t task.Task) error {
@@ -204,6 +578,7 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 	out.PlanDecisions = follower.PlanDecisions
 	out.PlanBrief = follower.PlanBrief
 	out.CodeReview = follower.CodeReview
+	out.Attachments = follower.Attachments
 
 	out.MirrorRev = canonical.MirrorRev + 1
 	followerUpdated := follower.UpdatedAt

@@ -11,18 +11,9 @@
   const { task }: Props = $props()
 
   let prompt = $state('')
-  let agentMode = $state('interactive')
   let includeTaskDescription = $state(false)
   let starting = $state(false)
   let error = $state('')
-  let modeInit = false
-
-  $effect(() => {
-    if (!modeInit && task.agentMode) {
-      agentMode = task.agentMode
-      modeInit = true
-    }
-  })
 
   async function startAgent() {
     if (!prompt.trim()) return
@@ -31,8 +22,10 @@
     try {
       // The started agent is surfaced by LiveAgentPanel (pinned above the tabs),
       // which tracks the running agent off the store — so this form only kicks
-      // it off and resets.
-      await agentStore.start(task.id, agentMode, prompt.trim(), includeTaskDescription)
+      // it off and resets. Every ad-hoc run dispatches headless (the backend
+      // coerces any legacy "interactive" mode to headless anyway), so there is
+      // no mode toggle here.
+      await agentStore.start(task.id, 'headless', prompt.trim(), includeTaskDescription)
       prompt = ''
     } catch (e) {
       error = String(e)
@@ -61,15 +54,6 @@
       </span>
     </div>
     <div class="flex flex-wrap items-center gap-4">
-      <label class="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={agentMode === 'headless'}
-          onchange={(e) => { agentMode = e.currentTarget.checked ? 'headless' : 'interactive' }}
-          class="rounded border-surface-300 dark:border-surface-600"
-        />
-        <span class="text-sm">Headless</span>
-      </label>
       <label class="flex items-center gap-2">
         <input
           type="checkbox"

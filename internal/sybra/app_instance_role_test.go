@@ -3,6 +3,7 @@ package sybra
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -85,12 +86,12 @@ func TestQueueDrainPassDrainsManualStartsForEveryRole(t *testing.T) {
 			a.cfg.Orchestrator.Role = tt.role
 			a.applyInstanceRole()
 
-			blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+			blocker := createTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
 			blockerAgent, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 			if err != nil {
 				t.Fatalf("StartAgent(blocker): %v", err)
 			}
-			queued := createResearchTaskWithPriority(t, a.tasks, "queued", task.PriorityMedium)
+			queued := createTaskWithPriority(t, a.tasks, "queued", task.PriorityMedium)
 			if _, err := a.StartAgent(queued.ID, "headless", "queued", false); err != nil {
 				t.Fatalf("StartAgent(queued): %v", err)
 			}
@@ -262,6 +263,21 @@ steps:
 				}
 			})
 		}
+	}
+}
+
+// TestNewRecovery_OrphanRootsIncludesSybraTestTmpGlob guards sybra#2210: the
+// /sybra-test skill's fake-provider harness spawns its subject process
+// directly under a fresh os.TempDir()/sybra-test-* sandbox, outside the
+// normal task/worktree/sandbox lifecycle, so the boot-time orphan sweep must
+// be told about that root explicitly.
+func TestNewRecovery_OrphanRootsIncludesSybraTestTmpGlob(t *testing.T) {
+	a := setupApp(t)
+	rec := a.newRecovery()
+
+	want := filepath.Join(os.TempDir(), "sybra-test-*")
+	if !slices.Contains(rec.OrphanRoots, want) {
+		t.Fatalf("OrphanRoots = %v, want to contain %q", rec.OrphanRoots, want)
 	}
 }
 

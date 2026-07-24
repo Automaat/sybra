@@ -4,6 +4,7 @@ import { PullRequest } from '../../bindings/github.com/Automaat/sybra/internal/g
 
 vi.mock('$lib/api', () => ({
   BrowserOpenURL: vi.fn(),
+  GetSettings: vi.fn().mockResolvedValue({ browser: { inApp: false } }),
 }))
 
 const PRDetailView = (await import('./PRDetailView.svelte')).default

@@ -239,7 +239,7 @@ describe('AgentDetail', () => {
     })
     await vi.waitFor(() => {
       expect(screen.getByText('GUARDRAIL')).toBeDefined()
-      expect(screen.getByText(/Turn limit reached/)).toBeDefined()
+      expect(screen.getByText(/Assistant-event ceiling reached/)).toBeDefined()
       expect(screen.getByText('Continue')).toBeDefined()
       expect(screen.getByText('Kill')).toBeDefined()
     })
@@ -255,10 +255,12 @@ describe('AgentDetail', () => {
       reason: 'cost',
       costUsd: 5.5,
       limit: 5,
+      costSource: 'estimated',
     })
     await vi.waitFor(() => {
       expect(screen.getByText('GUARDRAIL')).toBeDefined()
-      expect(screen.getByText(/Cost limit exceeded/)).toBeDefined()
+      expect(screen.getByText(/Post-result cost ceiling exceeded/)).toBeDefined()
+      expect(screen.getByText(/source: estimated/)).toBeDefined()
       expect(screen.queryByText('Continue')).toBeNull()
       expect(screen.getByText('Dismiss')).toBeDefined()
     })

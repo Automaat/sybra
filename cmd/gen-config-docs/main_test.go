@@ -29,12 +29,18 @@ func TestWalkRendersRepeatedLocalStructsAtEachYAMLPath(t *testing.T) {
 	doc := render(sections)
 
 	for _, want := range []string{
-		"## ProviderEntryConfig (`providers.claude`)",
-		"## ProviderEntryConfig (`providers.codex`)",
-		"## ProviderEntryConfig (`providers.copilot`)",
-		"| `providers.claude.enabled` |",
-		"| `providers.codex.enabled` |",
-		"| `providers.copilot.enabled` |",
+		"### ProviderEntryConfig (`execution.providers.claude`)",
+		"### ProviderEntryConfig (`execution.providers.codex`)",
+		"### ProviderEntryConfig (`execution.providers.copilot`)",
+		"| `execution.providers.claude.enabled` |",
+		"| `execution.providers.codex.enabled` |",
+		"| `execution.providers.copilot.enabled` |",
+		"| `routing` | Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes. | `routing` |",
+		"## Routing",
+		"### RoutingConfig (`routing`)",
+		"| `webhook` | Inbound external task-creation webhook listener and request-signing controls. | `webhook` |",
+		"## Webhook",
+		"### WebhookConfig (`webhook`)",
 	} {
 		if !strings.Contains(doc, want) {
 			t.Fatalf("generated docs missing %q", want)

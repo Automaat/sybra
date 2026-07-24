@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -514,7 +515,7 @@ func setupBranchConflictNoPRHandler(t *testing.T, initialStatus task.Status, pri
 				Type: workflow.StepSetStatus,
 				Config: workflow.StepConfig{
 					Status:       "in-progress",
-					StatusReason: "recovering from a branch conflict (no PR yet)",
+					StatusReason: "recovering from a branch conflict",
 				},
 				Next: []workflow.Transition{{GoTo: "await_fix"}},
 			},
@@ -925,7 +926,7 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 			ID:     "set_recovering",
 			Name:   "Mark Recovering",
 			Type:   workflow.StepSetStatus,
-			Config: workflow.StepConfig{Status: "in-progress", StatusReason: "recovering from a branch conflict (no PR yet)"},
+			Config: workflow.StepConfig{Status: "in-progress", StatusReason: "recovering from a branch conflict"},
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -956,7 +957,7 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 				return false
 			}
 		}
-		return r.dispatchBranchConflictRecovery(taskID, "/fake/dir", "main", fresh, "", resume, false)
+		return r.dispatchBranchConflictRecovery(context.Background(), taskID, "/fake/dir", branchConflictPrompt(context.Background(), fresh, "main"), fresh, "", resume, false, branchConflictRetryKind)
 	})
 
 	done := make(chan error, 1)
@@ -973,7 +974,7 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 		t.Fatal(err)
 	}
 	resume := r.captureBranchConflictResumeState(fresh)
-	if !r.dispatchBranchConflictRecovery(tk.ID, "/fake/dir", "main", fresh, "", resume, false) {
+	if !r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/fake/dir", branchConflictPrompt(context.Background(), fresh, "main"), fresh, "", resume, false, branchConflictRetryKind) {
 		t.Fatal("dispatchBranchConflictRecovery = false while marker held, want true (queued for retry)")
 	}
 
@@ -1178,26 +1179,59 @@ func newDispatchFailureHandler(t *testing.T, launchErr error) (*Handler, task.Ta
 	return r, tk
 }
 
-// TestDispatchBranchConflictRecovery_TransientProviderUnhealthyParksForRetry
-// verifies that a provider-unhealthy/rate-limit failure starting the
-// branch-conflict-fix workflow itself is parked for a bounded number of
-// retries (restoring the task's prior status/workflow each time) instead of
-// escalating to human-required on the very first transient hit — the bug
-// this test guards against.
-func TestDispatchBranchConflictRecovery_TransientProviderUnhealthyParksForRetry(t *testing.T) {
+// TestDispatchBranchConflictRecovery_RateLimitedParksIndefinitely verifies that
+// a provider *rate-limit* failure starting the branch-conflict-fix workflow
+// parks and retries every poll without ever escalating or consuming the
+// dispatch budget. A rate limit always recovers, so escalating to a human (who
+// cannot un-rate-limit a provider) is wrong — 2026-07-24, 5 rapid retries
+// inside a multi-minute codex cooldown exhausted the cap and stranded kuma
+// task 5be87222. Mirrors sybra#1585's reschedule park-don't-burn policy.
+func TestDispatchBranchConflictRecovery_RateLimitedParksIndefinitely(t *testing.T) {
 	launchErr := &provider.UnhealthyError{Provider: "codex", Reason: provider.RateLimitReason, RateLimited: true}
 	r, tk := newDispatchFailureHandler(t, launchErr)
 	resume := r.captureBranchConflictResumeState(tk)
 
-	// Each call mirrors recoverBranchConflictNoPR's real sequence: cancel the
-	// active workflow (dispatchBranchConflictRecovery restores it on failure,
-	// same as the production caller does) immediately before dispatching.
+	// Well past the dispatch-failure limit: every attempt must park, restore the
+	// prior status/workflow, and never escalate or increment the budget.
+	for i := range branchConflictDispatchFailureLimit + 3 {
+		if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
+			t.Fatalf("attempt %d: cancel prior workflow: %v", i+1, err)
+		}
+		if !r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main"), tk, "deadbeef", resume, false, branchConflictRetryKind) {
+			t.Fatalf("attempt %d: want true (parked) on rate-limited dispatch failure", i+1)
+		}
+		got, err := r.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == task.StatusHumanRequired {
+			t.Fatalf("attempt %d: escalated to human-required on a rate limit", i+1)
+		}
+		if got.Status != task.StatusTesting || got.Workflow == nil || got.Workflow.WorkflowID != resume.workflowID {
+			t.Fatalf("attempt %d: prior status/workflow not restored: status=%q workflow=%+v", i+1, got.Status, got.Workflow)
+		}
+	}
+	if n := r.dispatchFailures[tk.ID]; n != 0 {
+		t.Fatalf("dispatchFailures[%s] = %d, want 0 (a rate limit must not consume the budget)", tk.ID, n)
+	}
+}
+
+// TestDispatchBranchConflictRecovery_NonRateLimitCooldownParksThenEscalates
+// verifies the conservative backstop: a transient cooldown that carries an
+// explicit Until deadline but is NOT a rate limit still parks for a bounded
+// number of retries, then escalates — so a future non-rate-limit cooldown
+// cannot park forever.
+func TestDispatchBranchConflictRecovery_NonRateLimitCooldownParksThenEscalates(t *testing.T) {
+	launchErr := &provider.UnhealthyError{Provider: "codex", Reason: "warming", Until: time.Now().Add(time.Minute)}
+	r, tk := newDispatchFailureHandler(t, launchErr)
+	resume := r.captureBranchConflictResumeState(tk)
+
 	for i := range branchConflictDispatchFailureLimit - 1 {
 		if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
 			t.Fatalf("attempt %d: cancel prior workflow: %v", i+1, err)
 		}
-		if !r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume, false) {
-			t.Fatalf("attempt %d: want true (parked for retry) on transient provider-unhealthy dispatch failure", i+1)
+		if !r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main"), tk, "deadbeef", resume, false, branchConflictRetryKind) {
+			t.Fatalf("attempt %d: want true (parked for retry) on transient cooldown dispatch failure", i+1)
 		}
 		got, err := r.tasks.Get(tk.ID)
 		if err != nil {
@@ -1206,15 +1240,12 @@ func TestDispatchBranchConflictRecovery_TransientProviderUnhealthyParksForRetry(
 		if got.Status == task.StatusHumanRequired {
 			t.Fatalf("attempt %d: escalated to human-required too early", i+1)
 		}
-		if got.Status != task.StatusTesting || got.Workflow == nil || got.Workflow.WorkflowID != resume.workflowID {
-			t.Fatalf("attempt %d: prior status/workflow not restored: status=%q workflow=%+v", i+1, got.Status, got.Workflow)
-		}
 	}
 
 	if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
 		t.Fatalf("cancel prior workflow before final attempt: %v", err)
 	}
-	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume, false) {
+	if r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main"), tk, "deadbeef", resume, false, branchConflictRetryKind) {
 		t.Fatal("budget-exhausted attempt: want false (escalate)")
 	}
 	got, err := r.tasks.Get(tk.ID)
@@ -1227,9 +1258,6 @@ func TestDispatchBranchConflictRecovery_TransientProviderUnhealthyParksForRetry(
 	if !strings.Contains(got.StatusReason, "branch-conflict-fix dispatch failed") {
 		t.Fatalf("status_reason = %q, want it to mention the exhausted dispatch retries", got.StatusReason)
 	}
-	if n := r.dispatchFailures[tk.ID]; n != 0 {
-		t.Fatalf("dispatchFailures[%s] = %d after escalation, want reset to 0", tk.ID, n)
-	}
 }
 
 func TestDispatchBranchConflictRecovery_NonTransientProviderUnhealthyEscalatesImmediately(t *testing.T) {
@@ -1239,7 +1267,7 @@ func TestDispatchBranchConflictRecovery_NonTransientProviderUnhealthyEscalatesIm
 		t.Fatalf("cancel prior workflow: %v", err)
 	}
 
-	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume, false) {
+	if r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main"), tk, "deadbeef", resume, false, branchConflictRetryKind) {
 		t.Fatal("want false: auth/provider configuration failures must escalate immediately")
 	}
 	if n := r.dispatchFailures[tk.ID]; n != 0 {
@@ -1258,7 +1286,7 @@ func TestDispatchBranchConflictRecovery_PermanentErrorEscalatesImmediately(t *te
 		t.Fatalf("cancel prior workflow: %v", err)
 	}
 
-	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume, false) {
+	if r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main"), tk, "deadbeef", resume, false, branchConflictRetryKind) {
 		t.Fatal("want false: non-transient dispatch error must escalate immediately")
 	}
 	got, err := r.tasks.Get(tk.ID)
@@ -1288,7 +1316,7 @@ func TestDispatchBranchConflictRecovery_PreservesEscalationFromInitialDispatch(t
 		t.Fatalf("cancel prior workflow: %v", err)
 	}
 
-	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume, false) {
+	if r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main"), tk, "deadbeef", resume, false, branchConflictRetryKind) {
 		t.Fatal("want false: a permanent dispatch error must not report success")
 	}
 

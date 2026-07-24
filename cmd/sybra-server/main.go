@@ -16,9 +16,14 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"log/slog"
@@ -41,6 +46,7 @@ import (
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
+	"github.com/Automaat/sybra/internal/task"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -91,26 +97,34 @@ func run() (int, error) {
 	broker := sse.New()
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
+	shutdownCh := make(chan struct{}, 1)
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signalCh)
 	var restartRequested atomic.Bool
 
 	app := sybra.NewApp(logger, levelVar, cfg,
 		sybra.WithEmit(broker.Emit),
 		sybra.WithSkillsFS(skills.FS),
-		sybra.WithRestartRequest(func() {
-			restartRequested.Store(true)
-			rootCancel()
-		}),
+		sybra.WithRestartRequest(newRestartRequest(shutdownCh, &restartRequested)),
 	)
 
-	ctx, stop := signal.NotifyContext(rootCtx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	if err := app.Startup(ctx); err != nil {
+	if err := app.Startup(rootCtx); err != nil {
 		return 1, fmt.Errorf("startup: %w", err)
 	}
-	defer app.Shutdown(ctx)
+	shutdownApp := true
+	defer func() {
+		if shutdownApp {
+			app.Shutdown(context.Background())
+		}
+	}()
 	if restartRequested.Load() {
 		return autoupdate.RestartExitCode, nil
+	}
+
+	webhookSrv, webhookErrCh, err := startWebhookServer(rootCtx, cfg, app, logger)
+	if err != nil {
+		return 1, err
 	}
 
 	mux := buildMux(logger, broker, app)
@@ -123,28 +137,28 @@ func run() (int, error) {
 	// reaching it.
 	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
 
-	srv, errCh, err := serveAll(ctx, cfg, handler, logger)
+	srv, errCh, err := serveAll(rootCtx, cfg, handler, logger)
 	if err != nil {
+		shutdownBackgroundServer(webhookSrv, logger, "webhook")
 		return 1, err
 	}
 
 	select {
-	case <-ctx.Done():
-		logger.Info("server.shutdown")
-		go forceExitAfter(logger, shutdownHardDeadline, &restartRequested)
-		// 30s window covers the agent manager's 20s grace (giving SIGTERM'd
-		// claude/codex processes a chance to flush their final result event)
-		// plus headroom for HTTP handlers to drain. Previously 10s, which
-		// caused server.shutdown.err: context deadline exceeded on every
-		// restart because HTTP + agent drains both ran inside that window.
-		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if shutErr := srv.Shutdown(shutCtx); shutErr != nil {
-			logger.Error("server.shutdown.err", "err", shutErr)
-		}
+	case sig := <-signalCh:
+		logger.Info("server.signal", "signal", sig.String())
+		shutdownApp = false
+		runGracefulShutdown(logger, app, srv, webhookSrv, &restartRequested)
+	case <-shutdownCh:
+		logger.Info("server.restart.requested")
+		shutdownApp = false
+		runGracefulShutdown(logger, app, srv, webhookSrv, &restartRequested)
 	case serveErr := <-errCh:
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			return 1, fmt.Errorf("serve: %w", serveErr)
+		}
+	case webhookErr := <-webhookErrCh:
+		if webhookErr != nil && !errors.Is(webhookErr, http.ErrServerClosed) {
+			return 1, fmt.Errorf("webhook serve: %w", webhookErr)
 		}
 	}
 	if restartRequested.Load() {
@@ -153,7 +167,49 @@ func run() (int, error) {
 	return 0, nil
 }
 
-const shutdownHardDeadline = 60 * time.Second
+const (
+	drainAdmissionWindow  = 1 * time.Second
+	httpShutdownDeadline  = 15 * time.Second
+	webhookShutdownBudget = 4 * time.Second
+	shutdownHardDeadline  = 40 * time.Second
+)
+
+func newRestartRequest(shutdownCh chan<- struct{}, restart *atomic.Bool) func() {
+	return func() {
+		restart.Store(true)
+		notifyShutdown(shutdownCh)
+	}
+}
+
+func notifyShutdown(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func runGracefulShutdown(logger *slog.Logger, app *sybra.App, srv, webhookSrv *http.Server, restart *atomic.Bool) {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownHardDeadline)
+	defer cancel()
+	app.BeginDrain()
+	logger.Info("server.shutdown", "restart", restart.Load(), "deadline", shutdownHardDeadline.String(), "drain_window", drainAdmissionWindow.String())
+	go forceExitAfter(logger, shutdownHardDeadline, restart)
+	time.Sleep(drainAdmissionWindow)
+	shutdownServer(shutdownCtx, logger, "server", srv, httpShutdownDeadline)
+	shutdownServer(shutdownCtx, logger, "webhook", webhookSrv, webhookShutdownBudget)
+	app.Shutdown(shutdownCtx)
+}
+
+func shutdownServer(ctx context.Context, logger *slog.Logger, name string, srv *http.Server, grace time.Duration) {
+	if srv == nil {
+		return
+	}
+	shutCtx, cancel := context.WithTimeout(ctx, grace)
+	defer cancel()
+	if err := shutdownHTTPServer(shutCtx, srv); err != nil {
+		logger.Error(name+".shutdown.err", "err", err)
+	}
+}
 
 func forceExitAfter(logger *slog.Logger, d time.Duration, restart *atomic.Bool) {
 	time.Sleep(d)
@@ -207,7 +263,7 @@ func buildMux(logger *slog.Logger, broker *sse.Broker, app *sybra.App) *http.Ser
 	mux.HandleFunc("GET /api/events/{eventName}", broker.ServeHTTP)
 
 	// API dispatch: POST /api/{service}/{method}
-	httpapi.Mount(mux, sybra.ServiceRegistry(app), logger)
+	httpapi.Mount(mux, sybra.ServiceRegistry(app), logger, app.HTTPAdmission)
 
 	// Optional SPA static files.
 	if staticDir := os.Getenv("SYBRA_STATIC_DIR"); staticDir != "" {
@@ -357,6 +413,224 @@ type slogWriter struct{ logger *slog.Logger }
 func (w slogWriter) Write(p []byte) (int, error) {
 	w.logger.Debug("stdlib.log", "msg", string(p))
 	return len(p), nil
+}
+
+const webhookSignatureHeader = "X-Sybra-Signature"
+
+type webhookTaskCreator interface {
+	CreateTaskWithInit(title, body, mode string, init task.Update) (task.Task, error)
+}
+
+type webhookAdmissionFunc func() error
+
+type webhookTaskRequest struct {
+	Title     string   `json:"title"`
+	Body      string   `json:"body"`
+	Mode      string   `json:"mode"`
+	Tags      []string `json:"tags"`
+	ProjectID string   `json:"project_id"`
+}
+
+type webhookTaskResponse struct {
+	TaskID string `json:"task_id"`
+}
+
+type webhookErrorEnvelope struct {
+	Error string `json:"error"`
+	Code  string `json:"code"`
+}
+
+func resolveWebhookTaskCreator(app *sybra.App) (webhookTaskCreator, error) {
+	taskSvc, ok := sybra.ServiceRegistry(app)["TaskService"]
+	if !ok {
+		return nil, fmt.Errorf("webhook task service unavailable")
+	}
+	creator, ok := taskSvc.Impl.(webhookTaskCreator)
+	if !ok {
+		return nil, fmt.Errorf("webhook task service has unexpected type %T", taskSvc.Impl)
+	}
+	return creator, nil
+}
+
+func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCreator, admit webhookAdmissionFunc) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webhook/task", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeWebhookError(w, logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, httpapi.MaxRequestBody)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeWebhookError(w, logger, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
+				return
+			}
+			writeWebhookError(w, logger, http.StatusBadRequest, "validation_error", "failed to read request body")
+			return
+		}
+		if secret != "" && !validWebhookSignature(secret, r.Header.Get(webhookSignatureHeader), body) {
+			writeWebhookError(w, logger, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
+			return
+		}
+		if admit != nil {
+			if err := admit(); err != nil {
+				writeWebhookAdmissionError(w, logger, err)
+				return
+			}
+		}
+
+		var req webhookTaskRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeWebhookError(w, logger, http.StatusBadRequest, "validation_error", "invalid JSON payload")
+			return
+		}
+		title := strings.TrimSpace(req.Title)
+		if title == "" {
+			writeWebhookError(w, logger, http.StatusBadRequest, "validation_error", "title is required")
+			return
+		}
+		mode := strings.TrimSpace(req.Mode)
+		if mode == "" {
+			mode = task.AgentModeHeadless
+		}
+		if _, err := task.ValidateAgentMode(mode); err != nil {
+			writeWebhookError(w, logger, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+
+		init := task.Update{}
+		if tags := normalizeWebhookTags(req.Tags); len(tags) > 0 {
+			init.Tags = task.Ptr(tags)
+		}
+		if projectID := strings.TrimSpace(req.ProjectID); projectID != "" {
+			init.ProjectID = task.Ptr(projectID)
+		}
+
+		created, err := creator.CreateTaskWithInit(title, req.Body, mode, init)
+		if err != nil {
+			logger.Error("webhook.create_task", "err", err)
+			writeWebhookError(w, logger, http.StatusInternalServerError, "internal_error", "internal error")
+			return
+		}
+		writeWebhookJSON(w, http.StatusCreated, webhookTaskResponse{TaskID: created.ID})
+	})
+	return mux
+}
+
+func normalizeWebhookTags(tags []string) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		out = append(out, tag)
+	}
+	return out
+}
+
+func validWebhookSignature(secret, header string, body []byte) bool {
+	sigHex, ok := strings.CutPrefix(header, "sha256=")
+	if !ok || sigHex == "" {
+		return false
+	}
+	got, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(body)
+	return hmac.Equal(got, mac.Sum(nil))
+}
+
+func writeWebhookJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeWebhookError(w http.ResponseWriter, logger *slog.Logger, status int, code, message string) {
+	if status >= 500 {
+		logger.Error("webhook.error", "status", status, "code", code)
+	} else {
+		logger.Warn("webhook.error", "status", status, "code", code)
+	}
+	writeWebhookJSON(w, status, webhookErrorEnvelope{Error: message, Code: code})
+}
+
+func writeWebhookAdmissionError(w http.ResponseWriter, logger *slog.Logger, err error) {
+	var clientErr httpapi.ClientError
+	if errors.As(err, &clientErr) {
+		code := "validation_error"
+		if clientErr.HTTPStatus() == http.StatusServiceUnavailable {
+			code = string(httpapi.ErrCodeUnavailable)
+		}
+		writeWebhookError(w, logger, clientErr.HTTPStatus(), code, clientErr.Error())
+		return
+	}
+	logger.Warn("webhook.admission.error", "err", err)
+	writeWebhookError(w, logger, http.StatusInternalServerError, "internal_error", "internal error")
+}
+
+func startWebhookServer(ctx context.Context, cfg *config.Config, app *sybra.App, logger *slog.Logger) (*http.Server, chan error, error) {
+	if cfg == nil || !cfg.Webhook.Enabled {
+		return nil, nil, nil
+	}
+	creator, err := resolveWebhookTaskCreator(app)
+	if err != nil {
+		return nil, nil, fmt.Errorf("webhook: %w", err)
+	}
+	admit := func() error {
+		return app.HTTPAdmission("TaskService", "CreateTask", httpapi.MethodMeta{})
+	}
+	return startWebhookServerWithHandler(ctx, cfg.Webhook, newWebhookHandler(logger, cfg.Webhook.Secret, creator, admit), logger)
+}
+
+func startWebhookServerWithHandler(ctx context.Context, cfg config.WebhookConfig, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
+	if !cfg.Enabled {
+		return nil, nil, nil
+	}
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	listeners, err := listenAll(ctx, []string{srv.Addr})
+	if err != nil {
+		return nil, nil, fmt.Errorf("webhook listen %s: %w", srv.Addr, err)
+	}
+	errCh := make(chan error, len(listeners))
+	for i := range listeners {
+		ln := listeners[i]
+		logger.Info("webhook.listen", "addr", ln.Addr().String())
+		go func() {
+			errCh <- srv.Serve(ln)
+		}()
+	}
+	return srv, errCh, nil
+}
+
+func shutdownHTTPServer(ctx context.Context, srv *http.Server) error {
+	if srv == nil {
+		return nil
+	}
+	return srv.Shutdown(ctx)
+}
+
+func shutdownBackgroundServer(srv *http.Server, logger *slog.Logger, name string) {
+	if srv == nil {
+		return
+	}
+	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutCtx); err != nil {
+		logger.Error(name+".shutdown.err", "err", err)
+	}
 }
 
 func serveAll(ctx context.Context, cfg *config.Config, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {

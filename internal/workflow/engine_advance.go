@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/config"
 )
 
 const triageRetryableStatusReasonPrefix = "triage retryable: "
@@ -69,6 +72,15 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		StartedAt: now,
 		EndedAt:   now,
 	})
+	if output.Status == "completed" {
+		// A clean completion means this fix_review round is done — the
+		// review-finding the retry pointed at got fixed. Drop the retry
+		// counter so a reward_hacking stop on a LATER, unrelated fix_review
+		// round (reached only after a fresh code_review cycle re-enters this
+		// same step ID) starts from a full budget instead of inheriting an
+		// already-exhausted counter from a prior round (#2229 stop-and-reset).
+		clearWatchdogRewardHackingRetry(wfExec, output.StepID)
+	}
 	if output.Output != "" {
 		wfExec.SetVar("step."+output.StepID+".output", truncate(output.Output, 2000))
 		// Extract the adversarial test verdict from the UNtruncated output and
@@ -82,11 +94,13 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 			}
 		}
 	}
-	if output.Status == "completed" && currentStep.Config.Role == "pr-fix" {
-		verdict, reason := classifyPRFixResult(output.Output)
-		wfExec.SetVar("step."+output.StepID+"."+PRFixVerdictVar, string(verdict))
-		wfExec.SetVar("step."+output.StepID+".pr_fix_requires_human", strconv.FormatBool(verdict == PRFixHuman))
-		wfExec.SetVar("step."+output.StepID+".pr_fix_reason", reason)
+	// test-fix reuses pr-fix's sentinel contract and step-var namespace (see
+	// pr-fix.yaml's test_fix step), so its completions must be classified the
+	// same way — otherwise prFixFailingTests' fallback re-parses raw output
+	// truncated to 4000 chars instead of reading the untruncated value this
+	// records, silently reintroducing the truncation issue #2223 fixed.
+	if output.Status == "completed" && (currentStep.Config.Role == "pr-fix" || currentStep.Config.Role == "test-fix") {
+		recordPRFixVars(wfExec, output.StepID, output.Output)
 	}
 
 	if output.TerminalStatus != "" {
@@ -96,23 +110,8 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return nil
 	}
 
-	// Retry failed steps if max_retries configured and not exhausted.
-	if output.Status == "failed" && currentStep.Config.MaxRetries > 0 && ctx.Task.Status != "human-required" {
-		retries := wfExec.CountStep(output.StepID)
-		if retries <= currentStep.Config.MaxRetries {
-			e.logger.Info("workflow.retry", "task_id", taskID, "step", output.StepID,
-				"attempt", retries, "max", currentStep.Config.MaxRetries)
-			if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-				return err
-			}
-			release()
-			return e.executeNextSteps(taskID, &def, currentStep, wfExec)
-		}
-		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
-			"attempts", retries)
-		if done, bErr := e.blockRetryExhaustedTriageIfNeeded(taskID, currentStep, wfExec, output.Output); done || bErr != nil {
-			return bErr
-		}
+	if handled, rErr := e.retryFailedStepIfConfigured(taskID, &def, currentStep, wfExec, ctx.Task, output, release); handled {
+		return rErr
 	}
 
 	// Mark task reviewed after a review-role step succeeds.
@@ -123,9 +122,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		}
 	}
 
-	t, parked, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
+	t, parked, comp, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
 	if err != nil || parked {
 		return err
+	}
+	if e.finishRecoveredCompletion(comp, release) {
+		return nil
 	}
 
 	nextStep, comp, err := e.resolveNext(taskID, &def, currentStep, wfExec, t)
@@ -145,16 +147,45 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	return e.executeNextSteps(taskID, &def, nextStep, wfExec)
 }
 
+// retryFailedStepIfConfigured re-dispatches a failed step when max_retries is
+// configured and not yet exhausted. handled=true means the caller must return
+// err immediately (either a fresh dispatch or a retry-exhausted block);
+// handled=false means the step isn't retryable (or retries are exhausted
+// without blocking) and AdvanceStep should keep resolving the next edge.
+func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, currentStep *Step, wfExec *Execution, task TaskInfo, output StepOutput, release func()) (handled bool, err error) {
+	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == "human-required" {
+		return false, nil
+	}
+	retries := wfExec.CountStep(output.StepID)
+	if retries <= currentStep.Config.MaxRetries {
+		e.logger.Info("workflow.retry", "task_id", taskID, "step", output.StepID,
+			"attempt", retries, "max", currentStep.Config.MaxRetries)
+		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+			return true, err
+		}
+		release()
+		return true, e.executeNextSteps(taskID, def, currentStep, wfExec)
+	}
+	e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
+		"attempts", retries)
+	if done, bErr := e.blockRetryExhaustedTriageIfNeeded(taskID, currentStep, wfExec, output.Output); done || bErr != nil {
+		return true, bErr
+	}
+	return false, nil
+}
+
 // reloadTaskAndCheckImplementRetry re-reads task state after a step
 // completion (the agent may have changed tags/status directly, e.g.
-// self-escalating to human-required) and gives maybeParkImplementGitHubRetry
-// a chance to reclassify a transient GitHub push/auth failure as a parked
-// retry before the caller resolves the next workflow edge. When parked is
-// true the caller must return immediately (err may be nil).
-func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *Step, wfExec *Execution, output StepOutput, release func()) (t TaskInfo, parked bool, err error) {
+// self-escalating to human-required) and gives workflow-level recovery hooks a
+// chance to rewrite that park before the caller resolves the next edge.
+//
+// parked=true means the current workflow was re-armed and the caller must
+// return immediately. comp!=nil means the current workflow was completed early
+// and the caller must fire that completion instead of advancing further.
+func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *Step, wfExec *Execution, output StepOutput, release func()) (t TaskInfo, parked bool, comp *CompletionInfo, err error) {
 	t, err = e.tasks.GetTask(taskID)
 	if err != nil {
-		return TaskInfo{}, false, err
+		return TaskInfo{}, false, nil, err
 	}
 	t = e.withManualTestConfig(t)
 	t.Workflow = wfExec
@@ -162,9 +193,27 @@ func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *St
 	parked, err = e.maybeParkImplementGitHubRetry(taskID, currentStep, wfExec, t, output)
 	if parked || err != nil {
 		release()
-		return t, parked, err
+		return t, parked, nil, err
 	}
-	return t, false, nil
+	var recovered bool
+	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output)
+	if recovered || err != nil {
+		return t, false, comp, err
+	}
+	comp, recovered, err = e.maybeRecoverHumanRequiredByOpeningPR(taskID, currentStep, wfExec, t, output)
+	if recovered || err != nil {
+		return t, false, comp, err
+	}
+	return t, false, nil, nil
+}
+
+func (e *Engine) finishRecoveredCompletion(comp *CompletionInfo, release func()) bool {
+	if comp == nil {
+		return false
+	}
+	release()
+	e.fireComplete(comp)
+	return true
 }
 
 // handleFanOutCompletion routes a parallel-child or best-of-N-attempt
@@ -497,7 +546,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return comp, err
 		case StepWaitHuman:
 			return nil, wrapDispatchErr(step.ID, e.execWaitHuman(taskID, step, wfExec))
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR, StepClassifyTask:
+		case StepClearPlanArtifacts, StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepFlagPlanCritique, StepDetectTampering, StepVerifyChecks, StepFocusedChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR, StepClassifyTask:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
@@ -563,6 +612,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 	switch step.Type {
 	case StepSetStatus:
 		return e.execSetStatus(taskID, step)
+	case StepClearPlanArtifacts:
+		return e.execClearPlanArtifacts(taskID, step, t)
 	case StepCondition:
 		return e.execCondition(step, wfExec, t)
 	case StepShell:
@@ -587,10 +638,14 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execValidatePlanContract(taskID, step, t)
 	case StepTriageReview:
 		return e.execTriageReview(taskID, step, t)
+	case StepFlagPlanCritique:
+		return e.execFlagPlanCritique(taskID, step, t)
 	case StepDetectTampering:
 		return e.execDetectTampering(taskID, step, t)
 	case StepVerifyChecks:
 		return e.execVerifyChecks(taskID, step, wfExec, t)
+	case StepFocusedChecks:
+		return e.execFocusedChecks(taskID, step, wfExec, t)
 	case StepRoutePRFixResult:
 		return e.execRoutePRFixResult(taskID, step, wfExec, t)
 	case StepRouteTestResult:
@@ -636,6 +691,7 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 	// follows the documented default instead of silently shipping
 	// single-pass review.
 	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled)
+	fields["task.review_round_limit_reached"] = strconv.FormatBool(e.reviewRoundLimitReached(t))
 
 	nextID, tErr := ResolveTransition(current.Next, fields)
 	if tErr != nil {
@@ -672,6 +728,32 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 		return nil, nil, err
 	}
 	return nextStep, nil, nil
+}
+
+func (e *Engine) reviewRoundLimitReached(t TaskInfo) bool {
+	if e.reviewLoopDisabled || e.allowUnboundedReviewRounds {
+		return false
+	}
+	limit := e.maxReviewRounds
+	if limit <= 0 {
+		limit = config.DefaultMaxReviewRounds
+	}
+	startedAt := time.Time{}
+	if t.Workflow != nil {
+		startedAt = t.Workflow.StartedAt
+	}
+	rounds := 0
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if run.Role != "review" {
+			continue
+		}
+		if !startedAt.IsZero() && run.StartedAt.Before(startedAt) {
+			continue
+		}
+		rounds++
+	}
+	return rounds >= limit
 }
 
 // maxCascadeDepth bounds how many workflows may chain synchronously off a
@@ -724,6 +806,7 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.title":                   t.Title,
 		"task.status":                  t.Status,
 		"task.status_reason":           t.StatusReason,
+		"task.role":                    t.Role,
 		"task.tags":                    strings.Join(t.Tags, ","),
 		"task.agent_mode":              t.AgentMode,
 		"task.project_id":              t.ProjectID,
@@ -773,7 +856,13 @@ func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wf
 	if reason == "" {
 		return false, nil
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "blocked", reason); err != nil {
+	if err := e.tasks.UpdateTaskBlocker(taskID, "blocked", reason, blocker.State{
+		Kind:       blocker.KindTriageRetryExhausted,
+		Actor:      blocker.ActorWorkflow,
+		Code:       "triage_retryable",
+		NextAction: "wait_for_operator_reclassify",
+		Exhausted:  true,
+	}); err != nil {
 		return true, err
 	}
 	now := time.Now().UTC()

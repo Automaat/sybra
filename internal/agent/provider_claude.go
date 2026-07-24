@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"encoding/json"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,6 +22,18 @@ func init() {
 
 func (claudeProvider) Name() string { return "claude" }
 
+// HonorsAllowedTools is true here alone: claudePermissionArgs turns the list
+// into --allowedTools. Every other provider inherits the false default.
+func (claudeProvider) HonorsAllowedTools() bool { return true }
+
+// SupportsOutputSchema is true: claude receives OutputSchema inline via
+// --json-schema (BuildHeadlessInvocation), forcing schema-valid JSON output.
+func (claudeProvider) SupportsOutputSchema() bool { return true }
+
+// EnforcesOutputSchema mirrors SupportsOutputSchema: claude forwards
+// OutputSchema to the CLI, forcing schema-valid JSON output.
+func (claudeProvider) EnforcesOutputSchema() bool { return true }
+
 func (claudeProvider) NormalizeModel(model string) string {
 	// [1m] is a Claude-Code-only context marker. Fable 5 ships a 1M context
 	// window by default, so CC 2.1.173 strips the redundant suffix; Sybra
@@ -38,6 +52,9 @@ func (claudeProvider) BuildCommand(cfg RunConfig, model string) string {
 }
 
 func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
+	// Claude invokes skills natively via its own slash syntax — no rewrite
+	// happens on this path.
+	a.SetPromptRender("none", nil, nil)
 	var args []string
 	if cfg.HeadlessSteerable {
 		// Mirrors buildConvoArgs: the prompt is delivered over stdin (as the
@@ -149,7 +166,17 @@ func effortArgs(effort string) []string {
 //  2. requirePerms -> nil (approval-hook mode; no bypass or auto flag)
 //  3. mode=="auto" -> --permission-mode auto (auto-mode classifier)
 //  4. else -> --dangerously-skip-permissions (legacy bypass, default)
+//
+// ScheduleWakeup is always denied on top of whichever branch above fires: a
+// headless run is a single `claude -p` process that reads one NDJSON stream
+// and exits, so nothing ever re-invokes it later. A run that schedules a
+// wakeup and then ends its turn strands itself — zero commits, clean exit —
+// which verify_commits cannot tell apart from a task with nothing to do.
 func claudePermissionArgs(allowed []string, requirePerms bool, mode string) []string {
+	return append(claudePermissionModeArgs(allowed, requirePerms, mode), "--disallowedTools", "ScheduleWakeup")
+}
+
+func claudePermissionModeArgs(allowed []string, requirePerms bool, mode string) []string {
 	if len(allowed) > 0 {
 		return []string{"--allowedTools", strings.Join(allowed, ",")}
 	}
@@ -166,4 +193,58 @@ var oneMSuffixRe = regexp.MustCompile(`(?i)\[1m\]$`)
 
 func stripContextSuffix(model string) string {
 	return oneMSuffixRe.ReplaceAllString(strings.TrimSpace(model), "")
+}
+
+type claudeHookSettings struct {
+	Hooks map[string][]claudeHookEntry `json:"hooks"`
+}
+
+type claudeHookEntry struct {
+	Matcher string             `json:"matcher"`
+	Hooks   []claudeHookAction `json:"hooks"`
+}
+
+type claudeHookAction struct {
+	Type    string `json:"type"`
+	Command string `json:"command,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Timeout int    `json:"timeout"`
+}
+
+func buildClaudeHookSettings(approvalAddr string, needsApproval bool) string {
+	var actions []claudeHookAction
+	if bin, ok := resolveKlaudiushHookBin(); ok {
+		actions = append(actions, claudeHookAction{
+			Type:    "command",
+			Command: bin + " --hook-type PreToolUse",
+			Timeout: 30,
+		})
+	}
+
+	// Only wire the approval hook for agents that actually need permission checks.
+	// Agents with --dangerously-skip-permissions still get klaudiush validation,
+	// but should not block on Sybra's human approval server.
+	if approvalAddr != "" && needsApproval {
+		actions = append(actions, claudeHookAction{
+			Type:    "http",
+			URL:     fmt.Sprintf("http://%s/hooks/pre-tool-use", approvalAddr),
+			Timeout: 300,
+		})
+	}
+	if len(actions) == 0 {
+		return ""
+	}
+	settings := claudeHookSettings{
+		Hooks: map[string][]claudeHookEntry{
+			"PreToolUse": {{
+				Matcher: "",
+				Hooks:   actions,
+			}},
+		},
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

@@ -15,10 +15,15 @@ trigger:
       operator: equals
       value: ""
 steps:
-  # Skip review when tagged noreview/trivial or already reviewed in a prior
-  # run. On skip, jump straight to done_review so the task still advances to
-  # testing — trivial-tagged tasks then also skip testing (see
-  # testing-task.yaml's maybe_test), landing directly on ready-pr.
+  # Skip review when tagged noreview/trivial or already CLEAN-reviewed in a
+  # prior run. A persisted NEEDS_FIXES review must win over task.reviewed: the
+  # review role marks task.reviewed when it completes, even for non-clean
+  # verdicts. If the review loop later hits max_review_rounds, that unresolved
+  # verdict parks the task blocked; the next ready-review pass must not skip
+  # the fresh code review.
+  # On skip, jump straight to done_review so the task still advances to
+  # testing — trivial-tagged tasks then also skip testing (see testing-task.yaml's
+  # maybe_test), landing directly on ready-pr.
   - id: maybe_review
     name: Review Decision
     type: condition
@@ -28,6 +33,11 @@ steps:
         operator: not_contains
         value: noreview
     next:
+      - when:
+          field: task.code_review
+          operator: starts_with
+          value: 'Review Verdict: NEEDS_FIXES'
+        goto: triage_review
       - when:
           field: task.reviewed
           operator: equals
@@ -271,6 +281,10 @@ steps:
         Never weaken, skip, delete, or hardcode tests to satisfy a review
         comment — fix the underlying code. Tampering is checked and blocks the
         task.
+        {{- if getvar .Vars "watchdog_reask_note"}}
+
+        {{getvar .Vars "watchdog_reask_note"}}
+        {{- end}}
     next:
       - goto: detect_tampering
 
@@ -284,19 +298,10 @@ steps:
   # and detect_tampering only inspects test/CI tampering, not whether the fix
   # is right or introduced a fresh bug. Re-review until CLEAN shuts that gap.
   #
-  # No round cap here, deliberately. A cap would censor the very distribution
-  # the review-rounds stat exists to measure (ReviewRoundsByModel in
-  # internal/stats), and every round is gated by a fresh reviewer that must
-  # reach CLEAN to exit.
-  #
-  # There is NO bound under stock config. agent.max_task_cost_usd is the only
-  # thing that can stop a non-converging cycle, and it is disabled at its
-  # default of 0 (enforceTaskCostBudget returns early on <= 0), so a reviewer
-  # and fixer that disagree can ride this indefinitely.
-  # App.warnUnboundedReviewLoop warns at startup when that pairing is live.
-  # A real ceiling requires agent.max_task_cost_usd; agent.review_until_clean:
-  # false gives the single-pass posture instead, routing straight to testing
-  # after the first fix.
+  # Fresh installs now default to a bounded review-round cap
+  # (agent.max_review_rounds, default 3). review_until_clean: false still opts
+  # into the single-pass posture, while allow_unbounded_review_rounds: true
+  # restores the legacy uncapped loop.
   #
   # A backward goto to a sync step is safe because the run_agent steps in the
   # cycle are async: each agent completion re-enters executeSteps with a fresh
@@ -316,7 +321,21 @@ steps:
           operator: equals
           value: "false"
         goto: done_review
+      - when:
+          field: task.review_round_limit_reached
+          operator: equals
+          value: "true"
+        goto: review_round_limit_hit
       - goto: clear_review_sidecar
+
+  - id: review_round_limit_hit
+    name: Review Round Limit Hit
+    type: set_status
+    config:
+      status: blocked
+      status_reason: automated review hit max_review_rounds without a CLEAN verdict - latest NEEDS_FIXES review is not eligible for testing or PR creation; inspect the latest review or opt into allow_unbounded_review_rounds
+    next:
+      - goto: ""
 
   # Hand the reviewed (and fixed) branch to the testing phase. The PR is NOT
   # created here — testing-task validates the feature first, then simple-task-pr

@@ -53,33 +53,72 @@ type Agent struct {
 	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
 	// PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
 	// raw count alongside the estimated USD equivalent persisted on task runs.
-	PremiumRequests         float64   `json:"premiumRequests,omitempty"`
-	StartedAt               time.Time `json:"startedAt"`
-	LastEventAt             time.Time `json:"lastEventAt"`
-	LogPath                 string    `json:"logPath,omitempty"`
-	External                bool      `json:"external"`
-	PID                     int       `json:"pid,omitempty"`
-	Command                 string    `json:"command,omitempty"`
-	Name                    string    `json:"name,omitempty"`
-	Project                 string    `json:"project,omitempty"`
-	Provider                string    `json:"provider,omitempty"`
-	Node                    string    `json:"node,omitempty"`
-	Model                   string    `json:"model,omitempty"`
-	ExperimentID            string    `json:"experimentId,omitempty"`
-	VariantID               string    `json:"variantId,omitempty"`
-	AssignmentUnit          string    `json:"assignmentUnit,omitempty"`
-	AssignmentKey           string    `json:"assignmentKey,omitempty"`
-	ReasoningEffort         string    `json:"reasoningEffort,omitempty"`
-	RequestedSkill          string    `json:"requestedSkill,omitempty"`
-	SkillExecutionMode      string    `json:"skillExecutionMode,omitempty"`
-	ResolvedSkillSourceHash string    `json:"resolvedSkillSourceHash,omitempty"`
-	SkillConformance        string    `json:"skillConformance,omitempty"`
-	Prompt                  string    `json:"prompt,omitempty"`
+	PremiumRequests float64   `json:"premiumRequests,omitempty"`
+	StartedAt       time.Time `json:"startedAt"`
+	LastEventAt     time.Time `json:"lastEventAt"`
+	LogPath         string    `json:"logPath,omitempty"`
+	External        bool      `json:"external"`
+	PID             int       `json:"pid,omitempty"`
+	Command         string    `json:"command,omitempty"`
+	Name            string    `json:"name,omitempty"`
+	Role            Role      `json:"role,omitempty"`
+	Project         string    `json:"project,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	Node            string    `json:"node,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	RequestedModel  string    `json:"-"`
+	ExperimentID    string    `json:"experimentId,omitempty"`
+	VariantID       string    `json:"variantId,omitempty"`
+	RoutingReason   string    `json:"routingReason,omitempty"`
+	AssignmentUnit  string    `json:"assignmentUnit,omitempty"`
+	AssignmentKey   string    `json:"assignmentKey,omitempty"`
+	// DecisionVersion is the routing-overlay generation (internal/routing)
+	// that set this run's variant weight, 0 when none applied.
+	DecisionVersion         int    `json:"decisionVersion,omitempty"`
+	ReasoningEffort         string `json:"reasoningEffort,omitempty"`
+	RequestedSkill          string `json:"requestedSkill,omitempty"`
+	SkillExecutionMode      string `json:"skillExecutionMode,omitempty"`
+	ResolvedSkillSourceHash string `json:"resolvedSkillSourceHash,omitempty"`
+	SkillConformance        string `json:"skillConformance,omitempty"`
+	// OutputSchema mirrors RunConfig.OutputSchema. Non-empty means completion
+	// must not require a skill-receipt marker: a schema-constrained final
+	// response has no room for one.
+	OutputSchema string `json:"outputSchema,omitempty"`
+	Prompt       string `json:"prompt,omitempty"`
 	// skillRecoveryAttempt marks the automatic receipt-recovery rerun for a
 	// mandatory workflow skill. Completion upgrades a verified retry to
 	// ConformanceRecovered so stats do not conflate it with a first-pass exact
 	// or fallback run.
 	skillRecoveryAttempt bool
+
+	// hasOutputSchema records whether this run enforced a provider output
+	// schema (--json-schema / --output-schema). It is true only when the
+	// provider actually forwards OutputSchema to its CLI (Provider.
+	// EnforcesOutputSchema) — copilot/opencode silently ignore the schema, so
+	// their runs stay false even with OutputSchema set. A schema-enforced run
+	// must return schema-valid JSON and so cannot also close with the trailing
+	// skill-conformance receipt line; completion skips receipt verification
+	// for these runs rather than downgrading a valid JSON result to
+	// unverified and self-escalating the task to human-required.
+	hasOutputSchema bool
+
+	// promptHash is a privacy-safe hash of the canonical (pre-render) prompt
+	// dispatched for this run, correlating the dispatch (agent.started) and
+	// completion (agent.prompt_rendered) audit records without persisting
+	// prompt text in either.
+	promptHash string
+	// renderedSyntax records how RequestedSkill invocations were rewritten
+	// for the active provider at BuildHeadlessInvocation time:
+	// "slash-to-dollar" (codex), "slash-stripped" (copilot/opencode), or
+	// "none" (claude, which invokes skills natively and rewrites nothing).
+	renderedSyntax string
+	// renderedSkills are invoked skill names the provider rewriter actually
+	// knew about and rewrote/stripped.
+	renderedSkills []string
+	// unrenderedSkills are invoked skill names the provider rewriter did not
+	// recognize and so left untouched in the prompt — a genuine rewrite
+	// failure the headless runner logs explicitly.
+	unrenderedSkills []string
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// ToolCalls counts tool_use blocks observed across the run. Persisted to
@@ -141,8 +180,9 @@ type Agent struct {
 	// replace the running total rather than add to it; costBaseUSD banks the
 	// last cumulative snapshot of any prior session once a new session id
 	// appears (e.g. across a --resume segment boundary).
-	costSessionID string
-	costBaseUSD   float64
+	costSessionID    string
+	costBaseUSD      float64
+	reportedCostSeen bool
 
 	// escalationCh receives the human's decision when a guardrail is hit.
 	// true = continue, false = kill.
@@ -232,14 +272,6 @@ type Agent struct {
 	// malformedToolCorrectionAttempts bounds in-session recovery prompts.
 	malformedToolCorrectionAttempts int
 
-	// handoff is set by SendMessage/regateBeforeClaudeTurn when a persistent
-	// Claude interactive agent's provider is switched at a turn boundary. The
-	// still-idle Claude process is torn down (closeStdinPipe/signalKill); once
-	// runConversational's goroutine observes the process actually exit, it
-	// consumes this instead of finalizing, and hands the same *Agent off to
-	// runPerTurnConversational on the new provider.
-	handoff *pendingConvoHandoff
-
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
@@ -283,6 +315,7 @@ type View struct {
 	PID                      int       `json:"pid,omitempty"`
 	Command                  string    `json:"command,omitempty"`
 	Name                     string    `json:"name,omitempty"`
+	Role                     Role      `json:"role,omitempty"`
 	Project                  string    `json:"project,omitempty"`
 	Provider                 string    `json:"provider,omitempty"`
 	Node                     string    `json:"node,omitempty"`
@@ -291,6 +324,7 @@ type View struct {
 	VariantID                string    `json:"variantId,omitempty"`
 	AssignmentUnit           string    `json:"assignmentUnit,omitempty"`
 	AssignmentKey            string    `json:"assignmentKey,omitempty"`
+	DecisionVersion          int       `json:"decisionVersion,omitempty"`
 	ReasoningEffort          string    `json:"reasoningEffort,omitempty"`
 	SkillExecutionMode       string    `json:"skillExecutionMode,omitempty"`
 	RequestedSkill           string    `json:"requestedSkill,omitempty"`
@@ -341,6 +375,7 @@ func (a *Agent) viewLocked(hasStdinPipe bool) View {
 		PID:                      a.PID,
 		Command:                  a.Command,
 		Name:                     a.Name,
+		Role:                     a.Role,
 		Project:                  a.Project,
 		Provider:                 a.Provider,
 		Node:                     a.Node,
@@ -349,6 +384,7 @@ func (a *Agent) viewLocked(hasStdinPipe bool) View {
 		VariantID:                a.VariantID,
 		AssignmentUnit:           a.AssignmentUnit,
 		AssignmentKey:            a.AssignmentKey,
+		DecisionVersion:          a.DecisionVersion,
 		ReasoningEffort:          a.ReasoningEffort,
 		SkillExecutionMode:       a.SkillExecutionMode,
 		RequestedSkill:           a.RequestedSkill,
@@ -377,34 +413,6 @@ func (a *Agent) MarshalJSON() ([]byte, error) {
 	return json.Marshal(a.View())
 }
 
-// pendingConvoHandoff carries the RunConfig and next prompt for a mid-run
-// persistent-Claude -> per-turn provider switch. See Agent.handoff.
-type pendingConvoHandoff struct {
-	cfg    RunConfig
-	prompt string
-}
-
-// SetPendingHandoff records a same-agent provider switch to be picked up by
-// runConversational's finalize path once its (now-doomed) process exits.
-func (a *Agent) SetPendingHandoff(cfg RunConfig, prompt string) {
-	a.mu.Lock()
-	a.handoff = &pendingConvoHandoff{cfg: cfg, prompt: prompt}
-	a.mu.Unlock()
-}
-
-// ConsumePendingHandoff returns and clears any pending handoff recorded by
-// SetPendingHandoff.
-func (a *Agent) ConsumePendingHandoff() (RunConfig, string, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.handoff == nil {
-		return RunConfig{}, "", false
-	}
-	h := a.handoff
-	a.handoff = nil
-	return h.cfg, h.prompt, true
-}
-
 // toRecord snapshots only the fields persisted for restart survival.
 // Callers that write a live process record must fill ProcStartedAt after the
 // snapshot so the PID-reuse guard reflects the current process state.
@@ -416,13 +424,17 @@ func (a *Agent) toRecord() Record {
 		ID:                      a.ID,
 		TaskID:                  a.TaskID,
 		Name:                    a.Name,
+		Role:                    a.Role,
 		Mode:                    a.Mode,
 		Provider:                a.Provider,
 		Model:                   a.Model,
+		RequestedModel:          a.RequestedModel,
 		ExperimentID:            a.ExperimentID,
 		VariantID:               a.VariantID,
+		RoutingReason:           a.RoutingReason,
 		AssignmentUnit:          a.AssignmentUnit,
 		AssignmentKey:           a.AssignmentKey,
+		DecisionVersion:         a.DecisionVersion,
 		PID:                     a.PID,
 		SessionID:               a.SessionID,
 		LogPath:                 a.LogPath,
@@ -440,27 +452,41 @@ func (a *Agent) toRecord() Record {
 		SkillExecutionMode:      a.SkillExecutionMode,
 		ResolvedSkillSourceHash: a.ResolvedSkillSourceHash,
 		SkillConformance:        a.SkillConformance,
+		OutputSchema:            a.OutputSchema,
 		SkillRecoveryAttempt:    a.skillRecoveryAttempt,
+		HasOutputSchema:         a.hasOutputSchema,
 		PostResultWaitReason:    a.postResultWaitReason,
 		PostResultWaitSince:     a.postResultWaitSince,
 		ForkSubagent:            a.forkSubagent,
+		PromptHash:              a.promptHash,
+		RenderedSyntax:          a.renderedSyntax,
+		RenderedSkills:          slices.Clone(a.renderedSkills),
+		UnrenderedSkills:        slices.Clone(a.unrenderedSkills),
 	}
 }
 
 // fromRecord builds a detached reattach skeleton, not a general Agent factory.
 // Reattach callers own runtime wiring such as cancel, done, cmd, and promptCh.
 func fromRecord(r Record) *Agent {
+	requestedModel := r.RequestedModel
+	if requestedModel == "" {
+		requestedModel = r.Model
+	}
 	return &Agent{
 		ID:                      r.ID,
 		TaskID:                  r.TaskID,
 		Name:                    r.Name,
+		Role:                    r.Role,
 		Mode:                    r.Mode,
 		Provider:                r.Provider,
 		Model:                   r.Model,
+		RequestedModel:          requestedModel,
 		ExperimentID:            r.ExperimentID,
 		VariantID:               r.VariantID,
+		RoutingReason:           r.RoutingReason,
 		AssignmentUnit:          r.AssignmentUnit,
 		AssignmentKey:           r.AssignmentKey,
+		DecisionVersion:         r.DecisionVersion,
 		PID:                     r.PID,
 		SessionID:               r.SessionID,
 		LogPath:                 r.LogPath,
@@ -479,10 +505,16 @@ func fromRecord(r Record) *Agent {
 		SkillExecutionMode:      r.SkillExecutionMode,
 		ResolvedSkillSourceHash: r.ResolvedSkillSourceHash,
 		SkillConformance:        r.SkillConformance,
+		OutputSchema:            r.OutputSchema,
 		skillRecoveryAttempt:    r.SkillRecoveryAttempt,
+		hasOutputSchema:         r.HasOutputSchema,
 		postResultWaitReason:    r.PostResultWaitReason,
 		postResultWaitSince:     r.PostResultWaitSince,
 		forkSubagent:            r.ForkSubagent,
+		promptHash:              r.PromptHash,
+		renderedSyntax:          r.RenderedSyntax,
+		renderedSkills:          slices.Clone(r.RenderedSkills),
+		unrenderedSkills:        slices.Clone(r.UnrenderedSkills),
 		detached:                true,
 	}
 }
@@ -509,10 +541,24 @@ func (a *Agent) GetState() State {
 	return a.State
 }
 
+// EffectiveRole returns the explicitly recorded role when present, falling
+// back to the legacy name-prefix parser for pre-role records/fixtures.
+func (a *Agent) EffectiveRole() Role {
+	a.mu.RLock()
+	role := a.Role
+	name := a.Name
+	a.mu.RUnlock()
+	if role != "" {
+		return role
+	}
+	return RoleFromName(name)
+}
+
 // MarkStopped records that the agent was stopped intentionally via StopAgent.
 func (a *Agent) MarkStopped() {
 	a.mu.Lock()
 	a.stopped = true
+	a.LastEventAt = time.Now().UTC()
 	a.mu.Unlock()
 }
 
@@ -606,6 +652,59 @@ func (a *Agent) GetSessionID() string {
 	return a.SessionID
 }
 
+// SetPromptHash records the privacy-safe hash of this run's canonical prompt,
+// correlating the dispatch and completion audit records.
+func (a *Agent) SetPromptHash(hash string) {
+	a.mu.Lock()
+	a.promptHash = hash
+	a.mu.Unlock()
+}
+
+// GetPromptHash returns the recorded prompt hash, if any.
+func (a *Agent) GetPromptHash() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.promptHash
+}
+
+// HasOutputSchema reports whether this run enforced a provider output schema.
+// Completion consults it to skip the skill-conformance receipt check, which is
+// unsatisfiable when the provider forces schema-valid JSON output.
+func (a *Agent) HasOutputSchema() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.hasOutputSchema
+}
+
+// SetHasOutputSchema records whether this run enforced a provider output
+// schema. Production sets it once at construction from RunConfig.OutputSchema;
+// it is exported for out-of-package tests that build Agent values directly.
+func (a *Agent) SetHasOutputSchema(v bool) {
+	a.mu.Lock()
+	a.hasOutputSchema = v
+	a.mu.Unlock()
+}
+
+// SetPromptRender records how provider-specific skill invocation syntax was
+// rendered for this run's prompt: syntax names the rewrite scheme
+// ("slash-to-dollar", "slash-stripped", or "none"), rendered lists invoked
+// skill names actually rewritten/stripped, and unrendered lists invoked
+// skill names left untouched (a genuine rewrite failure).
+func (a *Agent) SetPromptRender(syntax string, rendered, unrendered []string) {
+	a.mu.Lock()
+	a.renderedSyntax = syntax
+	a.renderedSkills = slices.Clone(rendered)
+	a.unrenderedSkills = slices.Clone(unrendered)
+	a.mu.Unlock()
+}
+
+// GetPromptRender returns the recorded provider render summary for this run.
+func (a *Agent) GetPromptRender() (syntax string, rendered, unrendered []string) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.renderedSyntax, slices.Clone(a.renderedSkills), slices.Clone(a.unrenderedSkills)
+}
+
 // GetStartedAt returns the agent's recorded start time.
 func (a *Agent) GetStartedAt() time.Time {
 	a.mu.RLock()
@@ -622,6 +721,18 @@ func (a *Agent) SetProviderAndModel(prov, model string) {
 	a.Provider = prov
 	a.Model = model
 	a.mu.Unlock()
+}
+
+func (a *Agent) SetRequestedModel(model string) {
+	a.mu.Lock()
+	a.RequestedModel = model
+	a.mu.Unlock()
+}
+
+func (a *Agent) GetRequestedModel() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.RequestedModel
 }
 
 // GetProvider returns the agent's current provider name. Safe to call
@@ -668,6 +779,9 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasonin
 		a.costBaseUSD = a.CostUSD
 		a.costSessionID = sessionID
 	}
+	if cost > 0 {
+		a.reportedCostSeen = true
+	}
 	a.CostUSD = a.costBaseUSD + cost
 	a.InputTokens += in
 	a.OutputTokens += out
@@ -675,6 +789,17 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasonin
 	result := a.CostUSD
 	a.mu.Unlock()
 	return result
+}
+
+// CostSource reports whether the current CostUSD came from provider-reported
+// USD or Sybra's token/premium-request estimator.
+func (a *Agent) CostSource() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.reportedCostSeen {
+		return "reported"
+	}
+	return "estimated"
 }
 
 // AddCacheStats merges cache token counts into the running totals.
@@ -1134,24 +1259,6 @@ func (a *Agent) GetStdinPath() string {
 	return a.convo.stdinPath
 }
 
-func (a *Agent) setPromptChannel(ch chan string) {
-	a.mu.Lock()
-	a.convo.promptCh = ch
-	a.mu.Unlock()
-}
-
-func (a *Agent) promptChannel() chan string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.convo.promptCh
-}
-
-func (a *Agent) hasPromptChannel() bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.convo.promptCh != nil
-}
-
 // setFinalizing marks a steerable headless run as closing its stdin down for
 // good (no further steer message can be delivered).
 func (a *Agent) setFinalizing(v bool) {
@@ -1170,8 +1277,8 @@ func (a *Agent) isFinalizing() bool {
 
 // computeCanSteer reports whether SendMessage would currently be accepted for
 // this agent: a live stdin transport, not finalizing, and a steerable
-// mode/provider (interactive, or headless claude). Mirrors the SendMessage
-// gate so the UI capability never disagrees with the backend.
+// mode/provider (headless claude). Mirrors the SendMessage gate so the UI
+// capability never disagrees with the backend.
 func (a *Agent) computeCanSteer() bool {
 	hasStdinPipe := a.convo.hasStdinPipe()
 	a.mu.RLock()
@@ -1184,8 +1291,6 @@ func (a *Agent) computeCanSteerLocked(hasStdinPipe bool) bool {
 		return false
 	}
 	switch a.Mode {
-	case "interactive":
-		return true
 	case "headless":
 		return a.Provider == "claude"
 	default:
@@ -1242,22 +1347,6 @@ func lastHeadlessResultEvent(events []StreamEvent) (found, isError bool) {
 	return true, resultSubtypeIsError(last.Subtype) || last.ErrorType != "" || last.ErrorStatus != 0
 }
 
-// lastConvoResult reports whether a terminal result event was observed in
-// the conversational buffer and whether that result was an error, scanning
-// newest-first. Used by reattach completion to tell a clean finish from an
-// error completion from a process that vanished mid-turn.
-func (a *Agent) lastConvoResult() (found, isError bool) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	for i := range slices.Backward(a.convoBuffer) {
-		if a.convoBuffer[i].Type == "result" {
-			e := a.convoBuffer[i]
-			return true, resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0
-		}
-	}
-	return false, false
-}
-
 // CompletedSuccessfully reports whether the headless agent's stream buffer
 // contains a non-error terminal result. The watchdog uses it to skip
 // inspecting (and never escalate) an agent that has already produced its
@@ -1285,6 +1374,20 @@ func (a *Agent) TerminalResultIdle(grace time.Duration) bool {
 		return false
 	}
 	return time.Since(a.LastEventAt) >= grace
+}
+
+// HadTerminalError reports whether the headless stream buffer contains a
+// terminal result event that ended in an error (e.g. a CLI-level
+// error_during_execution, distinct from a provider rate-limit/auth signal
+// classified via SetError/GetErrorKind). Callers use this to tell "the agent
+// crashed before producing any usable output" apart from "the agent finished
+// and returned text that just didn't parse the way we expected" — the two
+// need different recovery treatment.
+func (a *Agent) HadTerminalError() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	found, isError := bufferedResultEvent(a.outputBuffer)
+	return found && isError
 }
 
 // bufferedResultEvent scans the full event slice for the last "result" event,
@@ -1583,18 +1686,37 @@ func (a *Agent) Output() []StreamEvent {
 
 // RunConfig is the single entry point for starting any agent.
 type RunConfig struct {
-	TaskID             string
-	Name               string
-	Mode               string // "headless", "interactive", or "conversational"
-	Prompt             string
-	AllowedTools       []string
-	Dir                string
+	TaskID string
+	Name   string
+	Role   Role
+	Mode   string // "headless", "interactive", or "conversational"
+	Prompt string
+	// AllowedTools is honoured only by providers whose HonorsAllowedTools()
+	// reports true — claude alone today. Elsewhere it is silently ignored, and
+	// warnUnenforceableAllowedTools says so at dispatch, since ab/cross choose
+	// the provider long after the step declared its list. Treat it as advisory:
+	// only the OS-level sandbox binds a run on every provider.
+	AllowedTools []string
+	Dir          string
+	// ReadOnlyDir, when true, tells injectProcessSandbox to never add Dir (or
+	// its git metadata) to the sandbox's writable roots under enforce, and to
+	// additionally re-bind Dir read-only as the last bind in the sandbox
+	// wrapper — see injectReadOnlyProcessSandbox — so it stays read-only even
+	// if it happens to sit inside a broader writable root such as tmp. Set
+	// this for diagnostic-only runs whose Dir is not a task worktree the
+	// agent is meant to modify (e.g. human-review falling back to the Sybra
+	// source checkout when the task has no worktree of its own) so a live
+	// deploy/build checkout can never be written to by that run. Ignored
+	// outside sandbox enforce mode.
+	ReadOnlyDir        bool
 	Provider           string // "claude", "codex", or "copilot"
-	Model              string // "opus", "sonnet", or full model ID
+	Model              string // requested model: tier alias or full provider model ID
 	ExperimentID       string
 	VariantID          string
+	RoutingReason      string
 	AssignmentUnit     string
 	AssignmentKey      string
+	DecisionVersion    int
 	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
 	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)
 	// OneShot closes stdin after the first `result` event in conversational
@@ -1726,6 +1848,9 @@ type RunConfig struct {
 	// gates and failover. Replay paths that do not have RunConfig resolve from
 	// the persisted provider string instead.
 	provider Provider
+	// resolvedModel is the provider-specific model slug selected after the
+	// provider gate chose the final provider.
+	resolvedModel string
 	// resolvedSandboxHome is the per-task sandbox home directory resolved by
 	// injectSandboxHome, reused by injectProcessSandbox as one of the
 	// sandbox's allowed write roots. Never set by callers.
@@ -1742,6 +1867,10 @@ type RunConfig struct {
 	// operators are forced to require_permissions:false, which collapses to
 	// --dangerously-skip-permissions. Never set by callers.
 	approvalAddr string
+	// capacityReservation is an optional held pool slot reserved before
+	// expensive pre-run work (worktree setup). registerRunningAgent consumes it
+	// atomically with the live-agent registration.
+	capacityReservation *CapacityReservation
 }
 
 // needsApprovalHook reports whether a run should wire the PreToolUse approval
@@ -1780,4 +1909,24 @@ func (a *Agent) GetErrorKind() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.ErrorKind
+}
+
+// GetErrorMsg returns the classified error message recorded alongside
+// GetErrorKind, e.g. watchdogreason.ZeroOutputBeforeStartup for a zero-output
+// stall reported via RecordProviderSignal.
+func (a *Agent) GetErrorMsg() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ErrorMsg
+}
+
+// GetError returns the classified error kind and message as one atomic
+// snapshot under a single RLock. SetError writes both fields together, so a
+// caller that needs to compare them in tandem (e.g. poison-stall detection)
+// must read them together to avoid a torn kind/msg pairing when SetError
+// interleaves between two separate getter calls.
+func (a *Agent) GetError() (kind, msg string) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ErrorKind, a.ErrorMsg
 }

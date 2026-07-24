@@ -1,17 +1,24 @@
 package sybra
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/routing"
+	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,8 +29,6 @@ func setupConfigSvc(t *testing.T) (svc *ConfigService, cfgPath string) {
 	home := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
 
-	// Write seed config; Load applies all defaults so s.cfg matches what
-	// ReloadFromDisk will produce (e.g. Todoist.PollSeconds = 120).
 	seed := config.DefaultConfig()
 	seed.Agent.MaxConcurrent = 3
 	seed.Agent.Provider = "claude"
@@ -63,11 +68,12 @@ func setupConfigSvc(t *testing.T) (svc *ConfigService, cfgPath string) {
 	notifier := notification.New(emit)
 
 	svc = &ConfigService{
-		cfg:      cfg,
-		logLevel: logLevel,
-		notifier: notifier,
-		agents:   mgr,
-		logger:   logger,
+		cfg:       cfg,
+		persisted: cloneConfig(cfg),
+		logLevel:  logLevel,
+		notifier:  notifier,
+		agents:    mgr,
+		logger:    logger,
 	}
 	return
 }
@@ -86,6 +92,41 @@ func writeConfigYAML(t *testing.T, path string, cfg *config.Config) {
 	}
 }
 
+func TestCloneConfigPreservesABTestingWeightVersion(t *testing.T) {
+	builtinVersion := 6
+	weightsVersion := 42
+	src := &config.Config{
+		ABTesting: abtest.Config{
+			BuiltinVersion: &builtinVersion,
+			WeightsVersion: &weightsVersion,
+			Experiments: []abtest.Experiment{{
+				ID: "exp",
+				Variants: []abtest.Variant{{
+					ID:     "v1",
+					Weight: 1,
+				}},
+			}},
+		},
+	}
+
+	got := cloneConfig(src)
+	if got.ABTesting.WeightsVersion == nil || *got.ABTesting.WeightsVersion != weightsVersion {
+		t.Fatalf("WeightsVersion = %v, want %d", got.ABTesting.WeightsVersion, weightsVersion)
+	}
+	if got.ABTesting.BuiltinVersion == nil || *got.ABTesting.BuiltinVersion != builtinVersion {
+		t.Fatalf("BuiltinVersion = %v, want %d", got.ABTesting.BuiltinVersion, builtinVersion)
+	}
+
+	weightsVersion = 99
+	builtinVersion = 99
+	if *got.ABTesting.WeightsVersion != 42 {
+		t.Fatalf("WeightsVersion shares source pointer, got %d", *got.ABTesting.WeightsVersion)
+	}
+	if *got.ABTesting.BuiltinVersion != 6 {
+		t.Fatalf("BuiltinVersion shares source pointer, got %d", *got.ABTesting.BuiltinVersion)
+	}
+}
+
 func TestReloadFromDisk_MaxConcurrent(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 
@@ -94,12 +135,12 @@ func TestReloadFromDisk_MaxConcurrent(t *testing.T) {
 	next.Agent.MaxConcurrent = 8
 	writeConfigYAML(t, cfgPath, &next)
 
-	hot, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
 	}
-	if !slices.Contains(hot, "agent.max_concurrent") {
-		t.Errorf("expected agent.max_concurrent in hot, got %v", hot)
+	if !slices.Contains(result.Applied, "agent") {
+		t.Errorf("expected agent in applied, got %+v", result)
 	}
 	if got := svc.agents.RunningCount(); got < 0 {
 		t.Error("unexpected RunningCount")
@@ -121,18 +162,12 @@ func TestReloadFromDisk_Guardrails(t *testing.T) {
 	next.Agent.CheckpointOnTurnCeiling = &disabled
 	writeConfigYAML(t, cfgPath, &next)
 
-	hot, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
 	}
-	if !slices.Contains(hot, "agent.max_cost_usd") {
-		t.Errorf("expected agent.max_cost_usd in hot, got %v", hot)
-	}
-	if !slices.Contains(hot, "agent.max_checkpoints") {
-		t.Errorf("expected agent.max_checkpoints in hot, got %v", hot)
-	}
-	if !slices.Contains(hot, "agent.checkpoint_on_turn_ceiling") {
-		t.Errorf("expected agent.checkpoint_on_turn_ceiling in hot, got %v", hot)
+	if !slices.Contains(result.Applied, "agent") {
+		t.Errorf("expected agent in applied, got %+v", result)
 	}
 	g := svc.agents.Guardrails()
 	if g.MaxCostUSD != 20.0 {
@@ -149,6 +184,59 @@ func TestReloadFromDisk_Guardrails(t *testing.T) {
 	}
 }
 
+func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.workflowEngine = workflow.NewEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
+	svc.applyWorkflowGuardrails(*svc.cfg)
+
+	next := *svc.cfg
+	disabled := false
+	next.Agent.ReviewUntilClean = &disabled
+	next.Agent.MaxReviewRounds = 1
+	unbounded := true
+	next.Agent.AllowUnboundedReviewRounds = &unbounded
+	next.Agent.MaxCheckpoints = 9
+	writeConfigYAML(t, cfgPath, &next)
+
+	result, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if !slices.Contains(result.Applied, "agent") {
+		t.Errorf("expected agent in applied, got %+v", result)
+	}
+	if !workflowBoolField(t, svc.workflowEngine, "reviewLoopDisabled") {
+		t.Error("workflow reviewLoopDisabled = false, want true")
+	}
+	if got := workflowIntField(t, svc.workflowEngine, "maxReviewRounds"); got != 1 {
+		t.Errorf("workflow maxReviewRounds = %d, want 1", got)
+	}
+	if !workflowBoolField(t, svc.workflowEngine, "allowUnboundedReviewRounds") {
+		t.Error("workflow allowUnboundedReviewRounds = false, want true")
+	}
+	if got := workflowIntField(t, svc.workflowEngine, "maxCheckpoints"); got != 9 {
+		t.Errorf("workflow maxCheckpoints = %d, want 9", got)
+	}
+}
+
+func workflowBoolField(t *testing.T, e *workflow.Engine, name string) bool {
+	t.Helper()
+	v := reflect.ValueOf(e).Elem().FieldByName(name)
+	if !v.IsValid() {
+		t.Fatalf("workflow.Engine field %q not found", name)
+	}
+	return v.Bool()
+}
+
+func workflowIntField(t *testing.T, e *workflow.Engine, name string) int {
+	t.Helper()
+	v := reflect.ValueOf(e).Elem().FieldByName(name)
+	if !v.IsValid() {
+		t.Fatalf("workflow.Engine field %q not found", name)
+	}
+	return int(v.Int())
+}
+
 func TestReloadFromDisk_Provider(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 
@@ -156,12 +244,12 @@ func TestReloadFromDisk_Provider(t *testing.T) {
 	next.Agent.Provider = "codex"
 	writeConfigYAML(t, cfgPath, &next)
 
-	hot, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
 	}
-	if !slices.Contains(hot, "agent.provider") {
-		t.Errorf("expected agent.provider in hot, got %v", hot)
+	if !slices.Contains(result.Applied, "agent") {
+		t.Errorf("expected agent in applied, got %+v", result)
 	}
 	if got := svc.agents.DefaultProvider(); got != "codex" {
 		t.Errorf("DefaultProvider = %q, want codex", got)
@@ -175,12 +263,12 @@ func TestReloadFromDisk_LogLevel(t *testing.T) {
 	next.Logging.Level = "debug"
 	writeConfigYAML(t, cfgPath, &next)
 
-	hot, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
 	}
-	if !slices.Contains(hot, "logging.level") {
-		t.Errorf("expected logging.level in hot, got %v", hot)
+	if !slices.Contains(result.Applied, "logging.level") {
+		t.Errorf("expected logging.level in applied, got %+v", result)
 	}
 	if svc.logLevel.Level() != slog.LevelDebug {
 		t.Errorf("logLevel = %v, want Debug", svc.logLevel.Level())
@@ -259,11 +347,12 @@ func TestReloadFromDisk_RestartRequiredWarned(t *testing.T) {
 	notifier := notification.New(emit)
 
 	svc := &ConfigService{
-		cfg:      cfg,
-		logLevel: logLevel,
-		notifier: notifier,
-		agents:   mgr,
-		logger:   logger,
+		cfg:       cfg,
+		persisted: cloneConfig(cfg),
+		logLevel:  logLevel,
+		notifier:  notifier,
+		agents:    mgr,
+		logger:    logger,
 	}
 
 	// Change a restart-required field
@@ -271,12 +360,12 @@ func TestReloadFromDisk_RestartRequiredWarned(t *testing.T) {
 	next.Providers.HealthCheck.IntervalSeconds = 600
 	writeConfigYAML(t, cfgPath, &next)
 
-	hot, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
 	}
-	if len(hot) != 0 {
-		t.Errorf("expected no hot keys, got %v", hot)
+	if len(result.Applied) != 0 {
+		t.Errorf("expected no applied keys, got %+v", result)
 	}
 
 	// Check that restart_required was logged
@@ -291,19 +380,22 @@ func TestReloadFromDisk_RestartRequiredWarned(t *testing.T) {
 		t.Error("expected config.reload.restart_required warning, got none")
 	}
 
-	// Verify s.cfg updated to disk value (prevents repeated warnings)
-	if svc.cfg.Providers.HealthCheck.IntervalSeconds != 600 {
-		t.Error("s.cfg not updated with restart-required field after reload")
+	// Restart-required changes stay pending, not active.
+	if svc.cfg.Providers.HealthCheck.IntervalSeconds == 600 {
+		t.Error("active cfg unexpectedly published restart-required provider health change")
+	}
+	if got := svc.GetSettings().Providers.HealthCheck.IntervalSeconds; got != 600 {
+		t.Errorf("persisted settings provider health = %d, want 600", got)
 	}
 
 	// Second reload with same content: no new warnings
 	prevCount := len(records)
-	hot2, err := svc.ReloadFromDisk()
+	result2, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("second ReloadFromDisk: %v", err)
 	}
-	if len(hot2) != 0 {
-		t.Errorf("second reload: expected no hot keys, got %v", hot2)
+	if len(result2.Applied) != 0 || len(result2.RestartRequired) != 0 {
+		t.Errorf("second reload: expected no further changes, got %+v", result2)
 	}
 	warnCount := 0
 	for _, r := range records[prevCount:] {
@@ -347,24 +439,25 @@ func TestReloadFromDisk_BrowserRestartRequiredWarned(t *testing.T) {
 	notifier := notification.New(emit)
 
 	svc := &ConfigService{
-		cfg:      cfg,
-		logLevel: logLevel,
-		notifier: notifier,
-		agents:   mgr,
-		logger:   logger,
+		cfg:       cfg,
+		persisted: cloneConfig(cfg),
+		logLevel:  logLevel,
+		notifier:  notifier,
+		agents:    mgr,
+		logger:    logger,
 	}
 
 	next := *cfg
-	disabled := false
-	next.Browser.InApp = &disabled
+	enabled := true
+	next.Browser.InApp = &enabled
 	writeConfigYAML(t, cfgPath, &next)
 
-	hot, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
 	}
-	if len(hot) != 0 {
-		t.Errorf("expected no hot keys, got %v", hot)
+	if len(result.Applied) != 0 {
+		t.Errorf("expected no applied keys, got %+v", result)
 	}
 
 	found := false
@@ -386,8 +479,35 @@ func TestReloadFromDisk_BrowserRestartRequiredWarned(t *testing.T) {
 	if !found {
 		t.Error("expected browser restart warning, got none")
 	}
-	if svc.cfg.Browser.InApp == nil || *svc.cfg.Browser.InApp {
-		t.Error("s.cfg browser settings not updated after reload")
+	if svc.cfg.InAppBrowserEnabled() {
+		t.Error("active cfg unexpectedly published restart-required browser change")
+	}
+	if got := svc.GetSettings().Browser.InApp; got == nil || !*got {
+		t.Error("persisted browser setting not retained as pending")
+	}
+}
+
+func TestReloadFromDisk_ServerRestartRequiredWarnedAndSynced(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.cfg.Server.AuthToken = "old-token"
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	next := *svc.cfg
+	next.Server.AuthToken = "new-token"
+	writeConfigYAML(t, cfgPath, &next)
+
+	result, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if len(result.Applied) != 0 {
+		t.Errorf("expected no applied keys, got %+v", result)
+	}
+	if svc.cfg.Server.AuthToken == "new-token" {
+		t.Fatalf("active server auth token unexpectedly updated without restart")
+	}
+	if svc.persisted == nil || svc.persisted.Server.AuthToken != "new-token" {
+		t.Fatalf("persisted server auth token = %q, want new-token", svc.persisted.Server.AuthToken)
 	}
 }
 
@@ -428,38 +548,219 @@ func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 }
 
 func TestReloadFromDisk_NoFeedbackLoop(t *testing.T) {
-
 	// UpdateSettings saves to disk; watcher fires ReloadFromDisk; diff should
 	// be empty since disk now matches in-memory cfg.
 	svc, _ := setupConfigSvc(t)
 
-	// UpdateSettings mutates cfg and saves
-	settings := AppSettings{
-		Agent:        svc.cfg.Agent,
-		Notification: svc.cfg.Notification,
-		Orchestrator: svc.cfg.Orchestrator,
-		Logging: LoggingSettings{
-			Level:     "warn",
-			MaxSizeMB: svc.cfg.Logging.MaxSizeMB,
-			MaxFiles:  svc.cfg.Logging.MaxFiles,
-		},
-		Audit:     svc.cfg.Audit,
-		Todoist:   svc.cfg.Todoist,
-		Renovate:  svc.cfg.Renovate,
-		Providers: svc.cfg.Providers,
+	// UpdateSettings mutates cfg and saves. Build from the live round-tripped
+	// payload so newly added config sections participate in the test instead of
+	// silently regressing it to a partial overlay.
+	settings := configToSettings(svc.cfg)
+	settings.Logging = LoggingSettings{
+		Level:     "warn",
+		MaxSizeMB: svc.cfg.Logging.MaxSizeMB,
+		MaxFiles:  svc.cfg.Logging.MaxFiles,
 	}
 	settings.Agent.MaxConcurrent = 3 // ensure valid
-	if err := svc.UpdateSettings(settings); err != nil {
+	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
 	}
 
 	// Simulate watcher-triggered reload — disk now matches in-memory
-	hot, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
 	}
-	if len(hot) != 0 {
-		t.Errorf("feedback loop: expected empty hot keys after UpdateSettings+Reload, got %v", hot)
+	if len(result.Applied) != 0 || len(result.RestartRequired) != 0 {
+		t.Errorf("feedback loop: expected empty diff after UpdateSettings+Reload, got %+v", result)
+	}
+}
+
+func TestReloadFromDisk_ResultListsAppliedRestartAndUnchanged(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+
+	next := *svc.cfg
+	next.Logging.Level = "debug"
+	enabled := true
+	next.Browser.InApp = &enabled
+	writeConfigYAML(t, cfgPath, &next)
+
+	result, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if !slices.Contains(result.Applied, "logging.level") {
+		t.Fatalf("expected logging.level in applied, got %+v", result)
+	}
+	if !slices.Contains(result.RestartRequired, "browser") {
+		t.Fatalf("expected browser in restartRequired, got %+v", result)
+	}
+	if !slices.Contains(result.Unchanged, "audit") {
+		t.Fatalf("expected unchanged paths to include audit, got %+v", result)
+	}
+}
+
+func TestReloadFromDisk_ReadersSeeWholePersistedSnapshots(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+
+	done := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				got := svc.GetSettings()
+				inApp := got.Browser.InApp != nil && *got.Browser.InApp
+				key := got.Agent.Provider + "|" + got.Logging.Level
+				switch {
+				case key == "claude|info" && !inApp:
+				case key == "codex|debug" && inApp:
+				default:
+					errCh <- errors.New("observed mixed settings snapshot during reload")
+					return
+				}
+			}
+		}
+	}()
+
+	next := *svc.cfg
+	next.Agent.Provider = "codex"
+	next.Logging.Level = "debug"
+	enabled := true
+	next.Browser.InApp = &enabled
+	writeConfigYAML(t, cfgPath, &next)
+	if _, err := svc.ReloadFromDisk(); err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	close(done)
+
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
+	}
+}
+
+func TestSaveRawConfig_RestoresLastKnownGoodOnHotApplyFailure(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	writeConfigYAML(t, cfgPath, svc.cfg)
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := svc.GetRawConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(raw, "provider: claude", "provider: codex", 1)
+	svc.applyRuntime = func(config.Config) error { return errors.New("boom") }
+
+	err = svc.SaveRawConfig(edited)
+	if err == nil {
+		t.Fatal("expected hot apply failure, got nil")
+	}
+	var mutErr *configMutationError
+	if !errors.As(err, &mutErr) || mutErr.result.Recovery == nil || !mutErr.result.Recovery.RestoredLastKnownGood {
+		t.Fatalf("expected recovery result on hot apply failure, got %v", err)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config.yaml not restored after hot apply failure\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if svc.cfg.Agent.Provider != "claude" {
+		t.Fatalf("active cfg mutated after failed hot apply: provider=%s", svc.cfg.Agent.Provider)
+	}
+}
+
+// TestReloadFromDisk_ABTestingPreservesRoutingOverlay is the regression for a
+// base ab_testing hot-edit silently dropping the live routing overlay: the
+// reload replaces cfg.ABTesting with the plain operator-saved base, so without
+// an immediate overlay re-merge every selection site would dispatch on
+// unweighted base until the next routing tick (hours). The fix re-invokes the
+// routing service right after the base swap.
+func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+
+	base := abtest.Config{
+		MinSamplesPerVariant: 20,
+		Experiments: []abtest.Experiment{{
+			ID: "exp",
+			Variants: []abtest.Variant{
+				{ID: "v1", Provider: "claude", Weight: 1},
+				{ID: "v2", Provider: "codex", Weight: 1},
+			},
+		}},
+	}
+	svc.cfg.ABTesting = base
+	svc.persisted.ABTesting = base
+
+	store, err := routing.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("routing.NewStore: %v", err)
+	}
+	if err := store.Save(routing.Overlay{
+		Version: 3,
+		Experiments: []routing.OverlayExperiment{{
+			ExperimentID: "exp",
+			Variants: []routing.OverlayVariant{
+				{VariantID: "v1", Weight: 8},
+				{VariantID: "v2", Weight: 2},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+	routingSvc := routing.NewService(routing.Deps{
+		Cfg:   config.RoutingConfig{Enabled: true},
+		Base:  func() abtest.Config { return svc.cfg.ABTesting },
+		Store: store,
+		Apply: func(c abtest.Config) error { svc.cfg.ABTesting = c; return nil },
+	})
+	svc.reapplyRouting = routingSvc.ApplyPersistedOverlay
+
+	// Operator edits the base A/B suite (min samples) on disk.
+	next := *svc.cfg
+	next.ABTesting.MinSamplesPerVariant = 30
+	writeConfigYAML(t, cfgPath, &next)
+
+	result, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if !slices.Contains(result.Applied, "ab_testing") {
+		t.Fatalf("expected ab_testing in applied, got %+v", result.Applied)
+	}
+
+	got := svc.cfg.ABTesting
+	if got.MinSamplesPerVariant != 30 {
+		t.Errorf("MinSamplesPerVariant = %d, want 30 (new base)", got.MinSamplesPerVariant)
+	}
+	if got.WeightsVersion == nil || *got.WeightsVersion != 3 {
+		t.Fatalf("WeightsVersion = %v, want 3 (overlay re-merged)", got.WeightsVersion)
+	}
+	// Locate the operator's experiment by ID — config.Load reconciles builtin
+	// experiments into ab_testing, so it is not the only entry.
+	var exp *abtest.Experiment
+	for i := range got.Experiments {
+		if got.Experiments[i].ID == "exp" {
+			exp = &got.Experiments[i]
+			break
+		}
+	}
+	if exp == nil || len(exp.Variants) != 2 {
+		t.Fatalf("exp experiment missing/malformed after reload: %+v", got.Experiments)
+	}
+	if w := exp.Variants[0].Weight; w != 8 {
+		t.Errorf("v1 weight = %d, want 8 (overlay preserved, not base 1)", w)
+	}
+	if w := exp.Variants[1].Weight; w != 2 {
+		t.Errorf("v2 weight = %d, want 2 (overlay preserved, not base 1)", w)
 	}
 }
 

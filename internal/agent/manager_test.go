@@ -65,6 +65,15 @@ func newTestManager(t *testing.T, cfgs ...ManagerConfig) (mgr *Manager, emitted 
 	return m, emitted
 }
 
+// newTestManagerWithLogger is newTestManager for tests that assert on what the
+// manager logged rather than on what it did.
+func newTestManagerWithLogger(t *testing.T, logger *slog.Logger, cfgs ...ManagerConfig) (mgr *Manager, emitted *eventRecorder) {
+	t.Helper()
+	emitted = &eventRecorder{}
+	emit := func(event string, _ any) { emitted.add(event) }
+	return mustNewManager(t, t.Context(), emit, logger, t.TempDir(), cfgs...), emitted
+}
+
 // startTestAgent starts an agent in a fresh working directory, satisfying the
 // Run guard that requires a valid, existing working dir. Uses os.MkdirTemp
 // with a best-effort cleanup (not t.TempDir) because background goroutines
@@ -514,25 +523,6 @@ func TestAgentOutput(t *testing.T) {
 	}
 }
 
-func TestStartAgentInteractiveConversational(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, err := startTestAgent(t, m, "task-1", "Auth Middleware", "interactive", "build it", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	t.Cleanup(func() { _ = m.StopAgent(a.ID) })
-
-	if a.Name != "Auth Middleware" {
-		t.Errorf("Name = %q, want %q", a.Name, "Auth Middleware")
-	}
-	if a.Mode != "interactive" {
-		t.Errorf("Mode = %q, want %q", a.Mode, "interactive")
-	}
-	if a.done == nil {
-		t.Error("interactive agent should have done channel (conversational)")
-	}
-}
-
 func TestStopInteractiveAgent(t *testing.T) {
 	m, _ := newTestManager(t)
 
@@ -653,6 +643,48 @@ func TestProviderHealthy_ConfigDisabledWithNilGate(t *testing.T) {
 	if m.ProviderHealthy("copilot") {
 		t.Error("config-disabled provider should report unhealthy even with nil health gate")
 	}
+}
+
+// TestProviderHealthy_HardQuotaExhaustion covers the busy-loop this fix
+// closes: a hard quota block (e.g. a real multi-day rate-limit-reached, not
+// the probe-based health gate's 15-minute cooldown) must also report
+// unhealthy, so A/B eligibility excludes it up front instead of re-selecting
+// it every retry only for resolveProviderDecision's own limitGate check to
+// reject it at dispatch — burning a full worktree rebuild per cycle.
+func TestProviderHealthy_HardQuotaExhaustion(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime: ManagerRuntimeConfig{
+			LimitGate: &fakeLimitGate{
+				available: map[string]bool{"codex": false},
+				reasons:   map[string]string{"codex": "provider reports rate limit reached"},
+			},
+		},
+	})
+
+	if m.ProviderHealthy("codex") {
+		t.Error("hard quota-exhausted provider should report unhealthy")
+	}
+}
+
+// TestProviderHealthy_SoftThresholdStillHealthy is the negative case: a soft
+// session/weekly threshold must not exclude a provider from A/B eligibility
+// entirely — resolveProviderDecision's softLimitLastResort already handles
+// redirecting to a healthier peer for soft thresholds. ProviderHealthy
+// treating it the same as a hard block would strand the provider out of
+// rotation even though it still has real budget.
+func TestProviderHealthy_SoftThresholdStillHealthy(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime: ManagerRuntimeConfig{
+			LimitGate: &fakeLimitGate{
+				available: map[string]bool{"codex": false},
+				reasons:   map[string]string{"codex": "session limit near threshold"},
+			},
+		},
+	})
+
+	if !m.ProviderHealthy("codex") {
+		t.Error("soft-threshold provider should still report healthy for A/B eligibility")
+	}
 	if !m.ProviderHealthy("claude") {
 		t.Error("config-enabled provider should report healthy with nil health gate")
 	}
@@ -688,6 +720,21 @@ func TestClaimTaskDispatch(t *testing.T) {
 
 	// Releasing an unheld claim is a no-op (must not panic).
 	m.ReleaseTaskDispatch("never-claimed")
+}
+
+func TestHasRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	m.mu.Lock()
+	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.mu.Unlock()
+
+	if m.HasRunningAgentForTask("t1") {
+		t.Fatal("stale dispatch claim with no agent should not report running")
+	}
+	if m.IsDispatching("t1") {
+		t.Fatal("stale dispatch claim should be removed")
+	}
 }
 
 // TestIsDispatching verifies the read-only peek other coordinators (e.g.
@@ -855,6 +902,56 @@ func TestHasOtherRunningAgentForTask(t *testing.T) {
 	}
 }
 
+func TestHasOtherRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	running := &Agent{ID: "a1", TaskID: "t1", State: StateRunning, cancel: func() {}}
+	m.mu.Lock()
+	m.agents["a1"] = running
+	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.mu.Unlock()
+
+	if m.HasOtherRunningAgentForTask("t1", "a1") {
+		t.Fatal("stale dispatch claim should not count as another running agent")
+	}
+	if m.IsDispatching("t1") {
+		t.Fatal("stale dispatch claim should be removed")
+	}
+}
+
+func TestKillOtherAgentsForTaskExcludesCompletingAgent(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	selfDone := make(chan struct{})
+	otherDone := make(chan struct{})
+	var closeOther sync.Once
+	self := &Agent{ID: "self", TaskID: "t1", State: StateRunning, done: selfDone, cancel: func() {
+		t.Fatal("excluded completing agent was cancelled")
+	}}
+	other := &Agent{ID: "other", TaskID: "t1", State: StateRunning, done: otherDone, cancel: func() {
+		closeOther.Do(func() { close(otherDone) })
+	}}
+	m.mu.Lock()
+	m.agents[self.ID] = self
+	m.agents[other.ID] = other
+	m.mu.Unlock()
+
+	if !m.KillOtherAgentsForTask("t1", "self", time.Second) {
+		t.Fatal("expected non-excluded agent to exit")
+	}
+	if self.GetState() != StateRunning {
+		t.Fatalf("self state = %q, want running", self.GetState())
+	}
+	select {
+	case <-selfDone:
+		t.Fatal("excluded completing agent done channel was closed")
+	default:
+	}
+	if other.GetState() != StateStopped {
+		t.Fatalf("other state = %q, want stopped", other.GetState())
+	}
+}
+
 func TestBuildCommand(t *testing.T) {
 	// Reset server-side env override so tests see the default sandbox logic.
 	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "")
@@ -869,22 +966,22 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "no model no tools",
 			cfg:     RunConfig{},
-			wantCmd: "claude --dangerously-skip-permissions --model sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model sonnet",
 		},
 		{
 			name:    "valid model",
 			cfg:     RunConfig{Model: "claude-opus-4-6"},
-			wantCmd: "claude --dangerously-skip-permissions --model claude-opus-4-6",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model claude-opus-4-6",
 		},
 		{
 			name:    "valid tools",
 			cfg:     RunConfig{AllowedTools: []string{"Read", "Write", "Bash"}},
-			wantCmd: "claude --allowedTools Read,Write,Bash --model sonnet",
+			wantCmd: "claude --allowedTools Read,Write,Bash --disallowedTools ScheduleWakeup --model sonnet",
 		},
 		{
 			name:    "valid model and tools",
 			cfg:     RunConfig{Model: "claude-sonnet-4-6", AllowedTools: []string{"Read"}},
-			wantCmd: "claude --allowedTools Read --model claude-sonnet-4-6",
+			wantCmd: "claude --allowedTools Read --disallowedTools ScheduleWakeup --model claude-sonnet-4-6",
 		},
 		{
 			name:    "model with shell metachar semicolon",
@@ -929,7 +1026,7 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "valid model with slash and dot",
 			cfg:     RunConfig{Model: "anthropic/claude-3.5-sonnet"},
-			wantCmd: "claude --dangerously-skip-permissions --model anthropic/claude-3.5-sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model anthropic/claude-3.5-sonnet",
 		},
 		{
 			name:    "codex default model mapping",
@@ -949,22 +1046,22 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "fable alias",
 			cfg:     RunConfig{Model: "fable"},
-			wantCmd: "claude --dangerously-skip-permissions --model fable",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model fable",
 		},
 		{
 			name:    "fable with 1m suffix stripped",
 			cfg:     RunConfig{Model: "fable[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --model fable",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model fable",
 		},
 		{
 			name:    "claude-fable-5 with 1m suffix stripped",
 			cfg:     RunConfig{Model: "claude-fable-5[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --model claude-fable-5",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model claude-fable-5",
 		},
 		{
 			name:    "sonnet with 1m suffix stripped",
 			cfg:     RunConfig{Model: "sonnet[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --model sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model sonnet",
 		},
 		{
 			name:    "codex fable passes through as explicit model",
@@ -1269,78 +1366,6 @@ func TestActiveLogPaths(t *testing.T) {
 	}
 }
 
-// captureStdinAgent wires up a real io.Pipe so a test can observe
-// exactly what SendPromptToAgent writes to the conversational agent's
-// stdin. Returns the agent (already registered in m) and a channel that
-// receives one line per message written.
-func captureStdinAgent(t *testing.T, m *Manager, id, taskID string) (ag *Agent, stdinLines <-chan string) {
-	t.Helper()
-	r, w := io.Pipe()
-	a := &Agent{
-		ID:     id,
-		TaskID: taskID,
-		Name:   "plan:Test",
-		Mode:   "interactive",
-		State:  StatePaused,
-	}
-	if err := a.convo.installStdinPipe(w); err != nil {
-		t.Fatalf("installStdinPipe: %v", err)
-	}
-	putAgent(t, m, a)
-
-	lines := make(chan string, 4)
-	go func() {
-		defer close(lines)
-		buf := make([]byte, 4096)
-		for {
-			n, err := r.Read(buf)
-			if n > 0 {
-				lines <- string(buf[:n])
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-	t.Cleanup(func() { _ = r.Close() })
-	return a, lines
-}
-
-func TestSendPromptToAgent_WritesToStdinForConversationalAgent(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, lines := captureStdinAgent(t, m, "a1", "task-1")
-
-	err := m.SendPromptToAgent(a.ID, "please revise")
-
-	if err != nil {
-		t.Fatalf("SendPromptToAgent: %v", err)
-	}
-
-	select {
-	case got := <-lines:
-		// SendMessage encodes a JSON user message; verify both the
-		// envelope and the payload without being sensitive to exact
-		// field ordering.
-		if !strings.Contains(got, `"type":"user"`) {
-			t.Errorf("stdin payload missing user envelope: %q", got)
-		}
-		if !strings.Contains(got, `please revise`) {
-			t.Errorf("stdin payload missing message text: %q", got)
-		}
-		if !strings.HasSuffix(got, "\n") {
-			t.Errorf("stdin payload not newline-terminated: %q", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no data written to stdin within 2s")
-	}
-
-	// The agent must have been flipped back to Running so downstream
-	// code treats the next turn as active work.
-	if st := a.GetState(); st != StateRunning {
-		t.Errorf("State = %q, want %q after send", st, StateRunning)
-	}
-}
-
 func TestSendPromptToAgent_RejectsStoppedAgent(t *testing.T) {
 	m, _ := newTestManager(t)
 	putAgent(t, m, &Agent{
@@ -1371,119 +1396,6 @@ func TestSendPromptToAgent_RejectsAgentWithoutTransport(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error when agent has no transport")
-	}
-}
-
-// TestSendMessage_QueuesWhenRunning verifies the queue-on-busy behaviour:
-// a follow-up sent mid-turn (StateRunning) must not hit stdin and must not
-// flip state — it just lives in pendingPrompts until the next result.
-// Regression guard for the chat-input "queue follow-up" feature.
-func TestSendMessage_QueuesWhenRunning(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, lines := captureStdinAgent(t, m, "busy", "task-1")
-	a.SetState(StateRunning) // simulate mid-turn
-
-	if err := m.SendMessage(a.ID, "queued text"); err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-
-	// Nothing should land on stdin while the agent is mid-turn.
-	select {
-	case got := <-lines:
-		t.Fatalf("expected no stdin write while running, got %q", got)
-	case <-time.After(150 * time.Millisecond):
-	}
-
-	if got := a.PendingPromptCount(); got != 1 {
-		t.Fatalf("PendingPromptCount = %d, want 1", got)
-	}
-	if st := a.GetState(); st != StateRunning {
-		t.Errorf("State = %q, want %q (queued send must not flip state)", st, StateRunning)
-	}
-
-	// User message must still appear in the convo buffer immediately so
-	// the chat UI shows the queued bubble before the turn drains.
-	convo := a.ConvoOutput()
-	if len(convo) != 1 {
-		t.Fatalf("convo len = %d, want 1", len(convo))
-	}
-	if convo[0].Type != "user_input" || convo[0].Text != "queued text" {
-		t.Errorf("convo[0] = %+v, want user_input/queued text", convo[0])
-	}
-}
-
-// TestSendMessage_WritesStdinWhenPaused covers the idle-chat path: when the
-// agent is parked in StatePaused (e.g. fresh chat with no initial prompt),
-// the next SendMessage must hit stdin directly and flip back to Running.
-func TestSendMessage_WritesStdinWhenPaused(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, lines := captureStdinAgent(t, m, "idle", "task-1")
-	// captureStdinAgent already starts in StatePaused.
-
-	if err := m.SendMessage(a.ID, "first message"); err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-
-	select {
-	case got := <-lines:
-		if !strings.Contains(got, `first message`) {
-			t.Errorf("stdin payload missing text: %q", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no stdin write within 2s")
-	}
-
-	if got := a.PendingPromptCount(); got != 0 {
-		t.Errorf("PendingPromptCount = %d, want 0", got)
-	}
-	if st := a.GetState(); st != StateRunning {
-		t.Errorf("State = %q, want %q after immediate send", st, StateRunning)
-	}
-}
-
-// TestStreamConvoOutput_FlushesQueueOnResult verifies that streamConvoOutput
-// drains the pending prompt queue when a result event arrives — the next
-// queued prompt is written to stdin and the agent stays Running. Without
-// this drain, queued chat follow-ups would never reach claude.
-func TestStreamConvoOutput_FlushesQueueOnResult(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, lines := captureStdinAgent(t, m, "drain", "task-1")
-	a.SetState(StateRunning)
-	a.EnqueuePrompt("next turn please")
-
-	resultLine := `{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.1,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"
-	m.streamConvoOutput(context.Background(), a, strings.NewReader(resultLine), nil, false)
-
-	select {
-	case got := <-lines:
-		if !strings.Contains(got, `next turn please`) {
-			t.Errorf("queued prompt not drained to stdin: %q", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("queued prompt was not written to stdin within 2s")
-	}
-
-	if got := a.PendingPromptCount(); got != 0 {
-		t.Errorf("PendingPromptCount after drain = %d, want 0", got)
-	}
-	if st := a.GetState(); st != StateRunning {
-		t.Errorf("State = %q, want Running while queue still has work in flight", st)
-	}
-}
-
-// TestStreamConvoOutput_PausesWhenQueueEmpty verifies the default no-queue
-// path: a result event with an empty pending queue must flip the agent to
-// StatePaused so the chat input goes from "thinking" to typeable.
-func TestStreamConvoOutput_PausesWhenQueueEmpty(t *testing.T) {
-	m, _ := newTestManager(t)
-	a, _ := captureStdinAgent(t, m, "calm", "task-1")
-	a.SetState(StateRunning)
-
-	resultLine := `{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.05}` + "\n"
-	m.streamConvoOutput(context.Background(), a, strings.NewReader(resultLine), nil, false)
-
-	if st := a.GetState(); st != StatePaused {
-		t.Errorf("State = %q, want %q after result with empty queue", st, StatePaused)
 	}
 }
 

@@ -102,12 +102,15 @@ steps:
       # silently drifted (the inline SYBRA_HOME warning was missing the
       # skill's flock-enforcement fact) — see
       # TestBuiltinTestingTask_RunTestPromptDoesNotDuplicateSkillProcedure,
-      # which fails if that procedure text creeps back in here. The
-      # skill-receipt mechanism (engine_skill_receipt.go) guarantees
-      # /sybra-test actually runs, retrying once and then escalating to
-      # human-required rather than silently falling through like the old
-      # /council opt-out did — so there is no correctness reason to keep a
-      # redundant fallback copy of the procedure here.
+      # which fails if that procedure text creeps back in here. This step
+      # enforces output_schema, so the model must return the schema-valid
+      # verdict object — the schema itself is what constrains the output. A
+      # schema-enforced run cannot also close with the trailing HTML-comment
+      # skill-conformance receipt, so that receipt is intentionally skipped for
+      # this step (see resolveWorkflowSkillPrompt / Agent.HasOutputSchema);
+      # forcing it would fail every real run to human-required. There is no
+      # correctness reason to keep a redundant fallback copy of the procedure
+      # here.
       prompt: >-
         Adversarially test task {{.Task.ID}} using the /sybra-test skill.
         {{if getvar .Vars "testing_reask_note"}}

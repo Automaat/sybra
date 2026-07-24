@@ -317,6 +317,26 @@ func (c *Client) AssignTask(ctx context.Context, t task.Task) error {
 	return err
 }
 
+// ImportAttachment replicates one attachment blob onto a follower before the
+// task metadata that references it is assigned there.
+func (c *Client) ImportAttachment(ctx context.Context, taskID string, meta task.Attachment, data []byte) (task.Attachment, error) {
+	raw, err := c.Call(ctx, "ClusterAttachmentService", "ImportAttachment", taskID, meta, data)
+	if err != nil {
+		return task.Attachment{}, err
+	}
+	return decode[task.Attachment](raw)
+}
+
+// ExportAttachment reads one attachment blob from a follower for leader mirror
+// reconciliation.
+func (c *Client) ExportAttachment(ctx context.Context, taskID, attachmentID string) ([]byte, error) {
+	raw, err := c.callIdempotent(ctx, "ClusterAttachmentService", "ExportAttachment", taskID, attachmentID)
+	if err != nil {
+		return nil, err
+	}
+	return decode[[]byte](raw)
+}
+
 // RecoverLostAgent asks the follower to resume a specific task after the
 // leader has authoritatively detected a lost-agent anomaly for it.
 func (c *Client) RecoverLostAgent(ctx context.Context, taskID string) error {
@@ -333,9 +353,24 @@ func (c *Client) GetTask(ctx context.Context, id string) (task.Task, error) {
 	return decode[task.Task](raw)
 }
 
-// ListTasks fetches all of the follower's tasks.
+// ListTasks fetches the follower's tasks relevant to this node's mirror —
+// ListTasksForNode filters to tasks assigned to c.node.Name and drops
+// long-terminal ones (#2188/#2258: the leader's Mirror re-lists every
+// follower every 30s, and a follower's full unfiltered board — every task it
+// has ever touched, full body/plan/review sidecars included — routinely
+// exceeds the 30s call timeout long before it exceeds maxResponseBody).
+// Falls back to the legacy unfiltered ListTasks on a 404 so a leader that has
+// rolled out this client change ahead of a not-yet-updated follower (or vice
+// versa, during the follower's auto-update window) still gets a working,
+// just less efficient, reconcile instead of a broken one.
 func (c *Client) ListTasks(ctx context.Context) ([]task.Task, error) {
-	raw, err := c.callIdempotent(ctx, "TaskService", "ListTasks")
+	raw, err := c.callIdempotent(ctx, "TaskService", "ListTasksForNode", c.node.Name)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			raw, err = c.callIdempotent(ctx, "TaskService", "ListTasks")
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

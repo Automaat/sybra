@@ -1,6 +1,7 @@
 package project
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/executil"
+	"github.com/Automaat/sybra/internal/github"
 	"gopkg.in/yaml.v3"
 )
 
@@ -317,10 +319,35 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	if err := InstallSignoffHook(ctx, destPath); err != nil {
 		return fmt.Errorf("install signoff hook: %w", err)
 	}
+	if err := configureCommitIdentity(ctx, destPath); err != nil {
+		return fmt.Errorf("configure commit identity: %w", err)
+	}
 	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
 	// origin` becomes a no-op against refs/remotes/origin/*. Configure the
 	// standard refspec so fetches actually update tracking refs.
 	return runBare(ctx, destPath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+}
+
+// configureCommitIdentity sets an explicit git identity on the bare clone.
+// Headless/interactive agent commits are made by the agent's own bash tool
+// calls, not orchestrated Go code, so they inherit whatever identity is
+// already configured on the clone — an empty one fails every commit with
+// "empty ident name", and any stray local override (however it got there)
+// silently becomes the permanent author of every real commit. Setting it
+// explicitly at clone time means neither can happen by accident.
+// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL let an operator brand commits (e.g. as
+// their own GitHub App bot); the default matches the identity
+// internal/agent/k8s_job_runner.go already falls back to.
+func configureCommitIdentity(ctx context.Context, barePath string) error {
+	name := cmp.Or(os.Getenv("GIT_AUTHOR_NAME"), "Sybra Agent")
+	email := cmp.Or(os.Getenv("GIT_AUTHOR_EMAIL"), "sybra-agent@example.invalid")
+	if err := runBare(ctx, barePath, "config", "user.name", name); err != nil {
+		return fmt.Errorf("set user.name: %w", err)
+	}
+	if err := runBare(ctx, barePath, "config", "user.email", email); err != nil {
+		return fmt.Errorf("set user.email: %w", err)
+	}
+	return nil
 }
 
 // DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
@@ -411,6 +438,20 @@ func FetchOrigin(ctx context.Context, barePath string) error {
 		}
 		markFetched(barePath)
 		return nil
+	})
+}
+
+// FetchRemoteBranch fetches one branch from remote into refs/remotes/<remote>/*.
+// It exists for fork-backed PR heads, which are not covered by FetchOrigin.
+func FetchRemoteBranch(ctx context.Context, barePath, remote, branch string) error {
+	if remote == "origin" {
+		return FetchOrigin(ctx, barePath)
+	}
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "fetch", remote, refspec)
+		})
 	})
 }
 
@@ -845,6 +886,12 @@ func PushRemote(ctx context.Context, repoPath string) string {
 	return "origin"
 }
 
+// RemoteConfigured reports whether repoPath has a configured URL for remote.
+func RemoteConfigured(ctx context.Context, repoPath, remote string) bool {
+	_, err := executil.Output(ctx, repoPath, "git", "config", "--get", "remote."+remote+".url")
+	return err == nil
+}
+
 // forkOnlyDisabledPushURL is the sentinel pushURL written to origin when a
 // fork remote exists. Agents using `git push origin <branch>` (with or
 // without --no-verify) hit a transport-level failure naming this sentinel,
@@ -925,15 +972,44 @@ func PushUpstream(ctx context.Context, worktreePath, branch string) error {
 // run at once, and the resulting host CPU contention is what flakes
 // timing-sensitive tests unrelated to any of their diffs. The push lock is
 // intentionally separate from bareRepoLocks because hooks can run for minutes.
+//
+// pushEnv carries a cached GitHub App installation token via GH_TOKEN when one
+// is configured (see PreflightPushCredentials, which probes the same Git
+// credential path). Without it, the actual `git push` here would fall through to
+// whatever ambient `gh auth login` session ConfigureGitHubAuth's credential
+// helper finds — App auth would then validate clean in PreflightPushCredentials
+// while the push itself still depended on the single interactive session it
+// exists to back up (#2315).
 func pushLocked(ctx context.Context, worktreePath string, args ...string) error {
 	gitDir, err := gitCommonDir(ctx, worktreePath)
 	if err != nil {
 		return err
 	}
 	return withBareRepoPushLock(gitDir, func() error {
-		return executil.Run(ctx, worktreePath, "git", args...)
+		attempts := credentialAttempts(pushEnv())
+		var injectedErr error
+		for idx, attempt := range attempts {
+			err := executil.RunEnv(ctx, worktreePath, attempt.env, "git", args...)
+			if err == nil {
+				return nil
+			}
+			if idx == 0 && len(attempts) > 1 && github.IsAuthError(err) {
+				injectedErr = err
+				continue
+			}
+			if injectedErr != nil {
+				return fmt.Errorf("%w (after injected GH_TOKEN auth failed: %w)", err, injectedErr)
+			}
+			return err
+		}
+		return injectedErr
 	})
 }
+
+// pushEnv is indirected so tests can stub the environment `git push` and the
+// Git-based push preflight both run with, without needing a real minted GitHub
+// App installation token.
+var pushEnv = github.GHEnv
 
 // SetBranchTo force-sets a branch ref in the bare clone to point at commit,
 // creating the branch if it does not already exist. Used by best-of-N
@@ -1086,6 +1162,12 @@ func CurrentCommit(ctx context.Context, worktreePath string) (string, error) {
 	return strings.TrimSpace(sha), nil
 }
 
+// RemoteBranchHead returns the live head SHA of branch on remote via
+// `git ls-remote`. Returns ("", nil) when the remote branch does not exist.
+func RemoteBranchHead(ctx context.Context, worktreePath, remote, branch string) (string, error) {
+	return remoteBranchHead(ctx, worktreePath, remote, branch)
+}
+
 // isAncestor reports whether ancestor is reachable from descendant in the
 // worktree's history. Returns false when either ref is unknown.
 func isAncestor(ctx context.Context, worktreePath, ancestor, descendant string) bool {
@@ -1123,6 +1205,18 @@ func remoteTrackingRef(ctx context.Context, worktreePath, remote, branch string)
 	return sha, err == nil
 }
 
+// BranchPushed reports whether branch exists on the worktree's push remote —
+// i.e. it has been pushed at least once (an open PR). Reads the remote-tracking
+// ref, so callers must ReconcileWithRemote (or otherwise fetch the branch)
+// first; a first-push branch has no tracking ref and reports false. A pushed
+// branch must never be rebased: rewriting its SHAs diverges it from the remote,
+// and Sybra never force-pushes, so the divergence loops through conflict
+// recovery forever.
+func BranchPushed(ctx context.Context, worktreePath, branch string) bool {
+	_, ok := remoteTrackingRef(ctx, worktreePath, PushRemote(ctx, worktreePath), branch)
+	return ok
+}
+
 func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string) error {
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
 	fetchErr := withNetworkRetry(ctx, func() error {
@@ -1134,6 +1228,30 @@ func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string
 		return fmt.Errorf("fetch %s %s: %w", remote, refspec, fetchErr)
 	}
 	return nil
+}
+
+func reconcileWithTargetSHA(ctx context.Context, worktreePath, label, targetSHA string) error {
+	localSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return err
+	}
+	if localSHA == targetSHA {
+		return nil
+	}
+	if isAncestor(ctx, worktreePath, targetSHA, localSHA) {
+		return nil
+	}
+	if isAncestor(ctx, worktreePath, localSHA, targetSHA) {
+		dirty, err := worktreeDirty(ctx, worktreePath)
+		if err != nil {
+			return fmt.Errorf("check worktree dirty: %w", err)
+		}
+		if dirty {
+			return ErrDirtyWorktree
+		}
+		return executil.Run(ctx, worktreePath, "git", "merge", "--ff-only", targetSHA)
+	}
+	return fmt.Errorf("%w: local %s vs %s %s", ErrBranchDiverged, localSHA[:min(7, len(localSHA))], label, targetSHA[:min(7, len(targetSHA))])
 }
 
 // ReconcileWithRemote fast-forwards the worktree's checked-out branch to the
@@ -1154,7 +1272,14 @@ func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string
 //   - remote ahead (local is ancestor of remote): fast-forward local to remote
 //   - diverged (neither is an ancestor): ErrBranchDiverged, caller must not force
 func ReconcileWithRemote(ctx context.Context, worktreePath, branch string) error {
-	remote := PushRemote(ctx, worktreePath)
+	return ReconcileWithNamedRemote(ctx, worktreePath, PushRemote(ctx, worktreePath), branch)
+}
+
+// ReconcileWithNamedRemote is ReconcileWithRemote against an explicit remote.
+// Use it when the checkout source is known and must not follow push routing
+// policy, such as PR-fix worktrees created from origin refs while a fork remote
+// is also configured.
+func ReconcileWithNamedRemote(ctx context.Context, worktreePath, remote, branch string) error {
 	// Refresh the tracking ref from the live remote; fork remotes are not
 	// covered by the earlier FetchOrigin. A first-push branch has no remote
 	// head yet, so "couldn't find remote ref" is expected and not fatal — any
@@ -1175,28 +1300,53 @@ func ReconcileWithRemote(ctx context.Context, worktreePath, branch string) error
 		return nil
 	}
 
-	localSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "HEAD")
+	return reconcileWithTargetSHA(ctx, worktreePath, remote+"/"+branch, remoteSHA)
+}
+
+// ReconcileWithRef is ReconcileWithRemote for an already-fetched local ref.
+func ReconcileWithRef(ctx context.Context, worktreePath, ref string) error {
+	targetSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", ref)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve %s: %w", ref, err)
 	}
-	if localSHA == remoteSHA {
-		return nil
+	return reconcileWithTargetSHA(ctx, worktreePath, ref, targetSHA)
+}
+
+// MergeDivergedRemote repairs the ErrBranchDiverged case ReconcileWithRemote
+// refuses to touch: a worktree whose checked-out branch is both ahead and
+// behind its own live remote head (e.g. a stale local task-branch commit plus
+// an independent push from another clone/machine). Discarding the worktree
+// and recreating it from the same local branch — the naive recovery — does
+// not fix this: the recreated checkout starts from the identical diverged
+// history (see #2347). This instead runs one real `git merge` of the remote
+// head into local, via TryCleanMerge so the worktree is always left clean.
+//
+// Returns (true, nil) when the branches reconciled (a clean merge commit, or
+// a no-op because local already contained the remote head by the time this
+// ran) — the worktree now carries both sides' history and is safe to reuse.
+// Returns (false, nil) when the merge hit a genuine content conflict: a real
+// semantic blocker between two copies of the same branch, which the caller
+// must not paper over by recreating.
+func MergeDivergedRemote(ctx context.Context, worktreePath, branch string) (bool, error) {
+	return MergeDivergedNamedRemote(ctx, worktreePath, PushRemote(ctx, worktreePath), branch)
+}
+
+// MergeDivergedNamedRemote is MergeDivergedRemote against an explicit remote.
+func MergeDivergedNamedRemote(ctx context.Context, worktreePath, remote, branch string) (bool, error) {
+	result, err := TryCleanMerge(ctx, worktreePath, "refs/remotes/"+remote+"/"+branch)
+	if err != nil {
+		return false, err
 	}
-	if isAncestor(ctx, worktreePath, remoteSHA, localSHA) {
-		return nil // local already contains the remote head
+	return result != CleanMergeConflict, nil
+}
+
+// MergeDivergedRef is MergeDivergedRemote for an already-fetched local ref.
+func MergeDivergedRef(ctx context.Context, worktreePath, ref string) (bool, error) {
+	result, err := TryCleanMerge(ctx, worktreePath, ref)
+	if err != nil {
+		return false, err
 	}
-	if isAncestor(ctx, worktreePath, localSHA, remoteSHA) {
-		dirty, err := worktreeDirty(ctx, worktreePath)
-		if err != nil {
-			return fmt.Errorf("check worktree dirty: %w", err)
-		}
-		if dirty {
-			return ErrDirtyWorktree
-		}
-		// Remote strictly ahead — adopt its commits before rebasing.
-		return executil.Run(ctx, worktreePath, "git", "merge", "--ff-only", remoteSHA)
-	}
-	return fmt.Errorf("%w: local %s vs remote %s/%s %s", ErrBranchDiverged, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
+	return result != CleanMergeConflict, nil
 }
 
 func worktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
@@ -1277,11 +1427,58 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 	return fmt.Errorf("%w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 }
 
+// pushPreflightRetryBackoffs bounds retries for a push-credential preflight
+// failure. GitHub App installation tokens rotate hourly; a preflight landing
+// in the ~minute window around that rotation can observe a momentarily
+// invalid token rather than a genuine credential problem (#2160). Between
+// attempts, ForceRefreshAppToken mints a fresh token instead of waiting for
+// the 30-minute background refresh loop to catch up — a no-op without GitHub
+// App auth configured, so a plain-PAT setup just gets a couple of cheap
+// retries against a transient network blip.
+var (
+	pushPreflightRetryBackoffs = []time.Duration{1 * time.Second, 3 * time.Second}
+	pushPreflightRetrySleep    = sleepWithContext
+	// forceRefreshAppToken is indirected so tests can observe/stub the retry's
+	// token-refresh call without depending on internal/github's package-global
+	// App-auth state.
+	forceRefreshAppToken = github.ForceRefreshAppToken
+	// pushAuthFailureHook is called with the final error every time
+	// PreflightPushCredentials exhausts its retries and still can't
+	// authenticate. It's the single choke point both real callers
+	// (review.Handler and workflow.Engine both default to calling this
+	// function directly) go through, so wiring host-level alerting here once
+	// — rather than in each caller — can't be missed by a new call site. nil
+	// by default (no-op); wired once at startup via SetPushAuthFailureHook to
+	// record an audit event (see internal/health's checkGHPushAuthFailure).
+	pushAuthFailureHook = func(err error) {}
+)
+
+type credentialAttempt struct {
+	label string
+	env   []string
+}
+
+// SetPushAuthFailureHook overrides the push-preflight failure hook. Pass nil
+// to restore the no-op default.
+func SetPushAuthFailureHook(f func(err error)) {
+	if f == nil {
+		f = func(error) {}
+	}
+	pushAuthFailureHook = f
+}
+
 // PreflightPushCredentials cheaply validates the GitHub credential path before
 // Sybra spends an agent turn or starts push-dependent git work. It intentionally
 // skips SSH and non-GitHub remotes: those either use OS-level ssh-agent state or
 // an unknown host-specific credential mechanism, so a false-negative preflight
 // would be worse than letting the actual push report the error.
+//
+// The probe must be write-shaped, not read-shaped: a public GitHub repo can let
+// anonymous `git ls-remote` succeed while rejecting the real `git push`. Use a
+// dry-run push to a synthetic ref instead — it exercises the same credential
+// helper path without mutating remote state or depending on the live task branch
+// being fast-forwardable. The dry-run runs --no-verify so the project's pre-push
+// hook (tests, lint) never fires on this credential-only probe.
 func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 	remote := PushRemote(ctx, worktreePath)
 	pushURL, err := executil.Output(ctx, worktreePath, "git", "remote", "get-url", "--push", remote)
@@ -1291,17 +1488,83 @@ func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 	if !isGitHubHTTPSRemote(strings.TrimSpace(pushURL)) {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, "gh", "auth", "status", "--hostname", "github.com")
+
+	authErr := checkGitPushAuth(ctx, worktreePath, remote)
+	for attempt := 0; attempt < len(pushPreflightRetryBackoffs) && authErr != nil; attempt++ {
+		// Best-effort: a mint failure here (e.g. a transient network blip
+		// talking to GitHub) shouldn't itself abort the retry loop — the plain
+		// PAT / ambient-auth path still gets its retry either way.
+		_ = forceRefreshAppToken(ctx)
+		if err := pushPreflightRetrySleep(ctx, pushPreflightRetryBackoffs[attempt]); err != nil {
+			break
+		}
+		authErr = checkGitPushAuth(ctx, worktreePath, remote)
+	}
+	if authErr != nil {
+		pushAuthFailureHook(authErr)
+	}
+	return authErr
+}
+
+func checkGitPushAuth(ctx context.Context, worktreePath, remote string) error {
+	refspec, err := pushPreflightRefspec(ctx, worktreePath)
+	if err != nil {
+		return fmt.Errorf("%w: resolve preflight refspec: %w", ErrPushAuthPreflight, err)
+	}
+
+	failures := make([]string, 0, 2)
+	attempts := credentialAttempts(pushEnv())
+	for idx, attempt := range attempts {
+		msg, attemptErr := gitPushDryRunAuthMessage(ctx, worktreePath, remote, refspec, attempt.env)
+		if attemptErr == nil {
+			return nil
+		}
+		failures = append(failures, attempt.label+": "+msg)
+		if idx == 0 && len(attempts) > 1 && github.IsAuthError(attemptErr) {
+			continue
+		}
+		break
+	}
+	return fmt.Errorf("%w: git push --dry-run %s %s: %s", ErrPushAuthPreflight, remote, refspec, strings.Join(failures, "; "))
+}
+
+func credentialAttempts(injectedEnv []string) []credentialAttempt {
+	if injectedEnv == nil {
+		return []credentialAttempt{{label: "ambient env"}}
+	}
+	return []credentialAttempt{
+		{label: "injected GH_TOKEN", env: injectedEnv},
+		{label: "ambient env"},
+	}
+}
+
+func pushPreflightRefspec(ctx context.Context, worktreePath string) (string, error) {
+	head, err := CurrentCommit(ctx, worktreePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve HEAD commit: %w", err)
+	}
+	return "HEAD:refs/heads/sybra-preflight/" + head, nil
+}
+
+func gitPushDryRunAuthMessage(ctx context.Context, worktreePath, remote, refspec string, env []string) (string, error) {
+	// --no-verify skips the project's pre-push hook. The hook (e.g. `go test
+	// ./...` + frontend check) has nothing to do with the credential path this
+	// probe validates; without this it runs the whole test suite per attempt —
+	// up to len(pushPreflightRetryBackoffs)+1 times — defeating the "cheap
+	// credential check" contract and burying the real error under hook output.
+	cmd := exec.CommandContext(ctx, "git", "push", "--dry-run", "--no-verify", remote, refspec)
 	cmd.Dir = worktreePath
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		return nil
+		return "", nil
 	}
 	msg := strings.TrimSpace(string(out))
 	if msg == "" {
 		msg = err.Error()
 	}
-	return fmt.Errorf("%w: gh auth status: %s", ErrPushAuthPreflight, scrubCredentialPreflightMessage(msg))
+	msg = scrubCredentialPreflightMessage(msg)
+	return msg, fmt.Errorf("git push --dry-run %s %s: %w: %s", remote, refspec, err, msg)
 }
 
 func isGitHubHTTPSRemote(remoteURL string) bool {

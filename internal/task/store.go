@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/google/uuid"
@@ -38,6 +39,12 @@ type Store struct {
 	cacheMu       sync.RWMutex
 	listCache     []Task
 	listValid     bool
+	listSnapshot  map[string]listFileState
+}
+
+type listFileState struct {
+	size    int64
+	modTime time.Time
 }
 
 // NewStore creates dir if it does not exist and returns a Store rooted
@@ -201,6 +208,7 @@ func (s *Store) List() ([]Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read tasks dir: %w", err)
 	}
+	startSnapshot, hasStartSnapshot := s.listSnapshotFromEntries(entries)
 
 	// Bucket entries in one pass so we don't ReadDir per-task in the
 	// PlanDraftStore.List path (was N²) or stat-via-ENOENT 3 sidecars per
@@ -260,7 +268,11 @@ func (s *Store) List() ([]Task, error) {
 		tasks = append(tasks, t)
 	}
 	if !parseErr {
-		s.storeListCache(tasks)
+		if hasStartSnapshot {
+			s.storeListCacheIfSnapshotFresh(tasks, startSnapshot)
+		} else {
+			s.invalidateListCache()
+		}
 	}
 	return tasks, nil
 }
@@ -443,12 +455,12 @@ func (s *Store) safePath(id string) (string, error) {
 }
 
 // Create writes a new task file with a fresh 8-char ID, status "todo", and
-// type "normal". mode defaults to AgentModeInteractive when empty and is
+// type "normal". mode defaults to AgentModeHeadless when empty and is
 // validated via ValidateAgentMode. Use CreateFull to set additional fields
 // (tags, project, priority, ...) atomically at creation time.
 func (s *Store) Create(title, body, mode string) (Task, error) {
 	if mode == "" {
-		mode = AgentModeInteractive
+		mode = AgentModeHeadless
 	}
 	if _, err := ValidateAgentMode(mode); err != nil {
 		return Task{}, err
@@ -460,8 +472,8 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
-		TaskType:        TaskTypeNormal,
 		AgentMode:       mode,
+		Attachments:     []Attachment{},
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		StatusChangedAt: now,
@@ -490,7 +502,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 // Update applies.
 func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) {
 	if mode == "" {
-		mode = AgentModeInteractive
+		mode = AgentModeHeadless
 	}
 	if _, err := ValidateAgentMode(mode); err != nil {
 		return Task{}, err
@@ -502,8 +514,8 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
-		TaskType:        TaskTypeNormal,
 		AgentMode:       mode,
+		Attachments:     []Attachment{},
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		StatusChangedAt: now,
@@ -536,9 +548,6 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 // update paths cannot drift.
 func applyCreateInit(t *Task, init Update, now time.Time) {
 	applyLinkFields(t, init)
-	if init.TodoistID != nil {
-		t.TodoistID = *init.TodoistID
-	}
 	if init.Tags != nil {
 		t.Tags = *init.Tags
 	}
@@ -649,9 +658,7 @@ func (s *Store) Put(t Task) (Task, error) {
 	if t.StatusChangedAt.IsZero() {
 		t.StatusChangedAt = t.UpdatedAt
 	}
-	if t.TaskType == "" {
-		t.TaskType = TaskTypeNormal
-	}
+	t.TaskType = normalizeTaskType(t.TaskType)
 	data, err := marshalTask(t, false)
 	if err != nil {
 		return Task{}, err
@@ -659,41 +666,6 @@ func (s *Store) Put(t Task) (Task, error) {
 	t.FilePath = filepath.Join(s.dir, t.ID+".md")
 	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
-	}
-	s.storeTaskCache(t)
-	return t, nil
-}
-
-// CreateChat creates a synthetic chat task bound to projectID. Chat tasks are
-// hidden from the task list UI and never restart on app reboot. The slug is
-// "chat-<8char>" so the worktree DirName is distinctive.
-func (s *Store) CreateChat(projectID string) (Task, error) {
-	if projectID == "" {
-		return Task{}, fmt.Errorf("project_id is required for chat")
-	}
-	now := time.Now().UTC()
-	id := uuid.NewString()[:8]
-	title := "chat " + now.Format("01-02 15:04")
-	t := Task{
-		ID:              id,
-		Slug:            "chat-" + id,
-		Title:           title,
-		Status:          StatusInProgress,
-		TaskType:        TaskTypeChat,
-		AgentMode:       AgentModeInteractive,
-		ProjectID:       projectID,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-		StatusChangedAt: now,
-	}
-	data, err := Marshal(t)
-	if err != nil {
-		return Task{}, err
-	}
-	filename := fmt.Sprintf("%s.md", t.ID)
-	t.FilePath = filepath.Join(s.dir, filename)
-	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
-		return Task{}, fmt.Errorf("write chat task file: %w", err)
 	}
 	s.storeTaskCache(t)
 	return t, nil
@@ -1293,6 +1265,9 @@ func applyUpdateFields(t *Task, u Update) error {
 		if u.StatusReason == nil {
 			t.StatusReason = ""
 		}
+		if u.Blocker == nil {
+			t.Blocker = blocker.State{}
+		}
 		// Stamp ClosedAt on transition into a terminal status; clear on exit.
 		wasTerminal := IsTerminalStatus(oldStatus)
 		isTerminal := IsTerminalStatus(t.Status)
@@ -1306,6 +1281,15 @@ func applyUpdateFields(t *Task, u Update) error {
 	}
 	if u.StatusReason != nil {
 		t.StatusReason = *u.StatusReason
+		if *u.StatusReason == "" && u.Blocker == nil {
+			t.Blocker = blocker.State{}
+		}
+	}
+	if u.Blocker != nil {
+		if err := blocker.ValidateStatus(string(t.Status), *u.Blocker); err != nil {
+			return err
+		}
+		t.Blocker = *u.Blocker
 	}
 	if u.BlockedByIssue != nil {
 		t.BlockedByIssue = *u.BlockedByIssue
@@ -1333,9 +1317,6 @@ func applyUpdateFields(t *Task, u Update) error {
 		t.Reviewed = *u.Reviewed
 	}
 	applyReviewFields(t, u)
-	if u.TodoistID != nil {
-		t.TodoistID = *u.TodoistID
-	}
 	if u.Priority != nil {
 		t.Priority = *u.Priority
 	}
@@ -1359,6 +1340,9 @@ func applyUpdateFields(t *Task, u Update) error {
 	}
 	if u.TestingCycleStartedAt != nil {
 		t.TestingCycleStartedAt = u.TestingCycleStartedAt
+	}
+	if u.Attachments != nil {
+		t.Attachments = slices.Clone(*u.Attachments)
 	}
 	return nil
 }
@@ -1471,19 +1455,42 @@ func (s *Store) refreshCachedTask(id string) {
 }
 
 func (s *Store) cachedList() ([]Task, bool) {
-	s.cacheMu.RLock()
-	defer s.cacheMu.RUnlock()
-	if !s.listValid {
+	snapshot, ok := s.currentListSnapshot()
+	if !ok {
+		s.invalidateListCache()
 		return nil, false
 	}
-	return cloneTasks(s.listCache), true
+
+	s.cacheMu.RLock()
+	if !s.listValid || !sameListSnapshot(s.listSnapshot, snapshot) {
+		s.cacheMu.RUnlock()
+		return nil, false
+	}
+	tasks := cloneTasks(s.listCache)
+	s.cacheMu.RUnlock()
+	return tasks, true
 }
 
-func (s *Store) storeListCache(tasks []Task) {
+func (s *Store) storeListCache(tasks []Task, snapshot map[string]listFileState) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 	s.listCache = cloneTasks(tasks)
 	s.listValid = true
+	s.listSnapshot = cloneListSnapshot(snapshot)
+}
+
+func (s *Store) storeListCacheIfSnapshotFresh(tasks []Task, startSnapshot map[string]listFileState) bool {
+	snapshot, ok := s.currentListSnapshot()
+	if !ok {
+		s.invalidateListCache()
+		return false
+	}
+	if !sameListSnapshot(startSnapshot, snapshot) {
+		s.invalidateListCache()
+		return false
+	}
+	s.storeListCache(tasks, startSnapshot)
+	return true
 }
 
 func (s *Store) storeTaskCache(t Task) {
@@ -1498,9 +1505,11 @@ func (s *Store) storeTaskCache(t Task) {
 			continue
 		}
 		s.listCache[i] = cloned
+		s.refreshListSnapshotLocked(t.ID)
 		return
 	}
 	s.listCache = append(s.listCache, cloned)
+	s.refreshListSnapshotLocked(t.ID)
 }
 
 func (s *Store) deleteCachedTask(id string) {
@@ -1514,15 +1523,119 @@ func (s *Store) deleteCachedTask(id string) {
 			continue
 		}
 		s.listCache = append(s.listCache[:i], s.listCache[i+1:]...)
+		s.refreshListSnapshotLocked(id)
 		return
 	}
-	s.listValid = true
+	s.refreshListSnapshotLocked(id)
 }
 
 func (s *Store) invalidateListCache() {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 	s.listValid = false
+	s.listSnapshot = nil
+}
+
+func (s *Store) currentListSnapshot() (map[string]listFileState, bool) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, false
+	}
+	return s.listSnapshotFromEntries(entries)
+}
+
+func (s *Store) listSnapshotFromEntries(entries []os.DirEntry) (map[string]listFileState, bool) {
+	snapshot := map[string]listFileState{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		base := e.Name()
+		if !isListCacheFile(base) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			return nil, false
+		}
+		snapshot[base] = listFileState{
+			size:    info.Size(),
+			modTime: info.ModTime(),
+		}
+	}
+	return snapshot, true
+}
+
+func isListCacheFile(base string) bool {
+	if IsSidecarFile(base) {
+		return true
+	}
+	return strings.HasSuffix(base, ".md")
+}
+
+func sameListSnapshot(a, b map[string]listFileState) bool {
+	return sameListSnapshotExceptOwned(a, b, "")
+}
+
+func sameListSnapshotExceptOwned(a, b map[string]listFileState, id string) bool {
+	for base, state := range a {
+		if isOwnedListCacheFile(base, id) {
+			continue
+		}
+		other, ok := b[base]
+		if !ok || !sameListFileState(state, other) {
+			return false
+		}
+	}
+	for base := range b {
+		if isOwnedListCacheFile(base, id) {
+			continue
+		}
+		if _, ok := a[base]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func sameListFileState(a, b listFileState) bool {
+	return a.size == b.size && a.modTime.Equal(b.modTime)
+}
+
+func isOwnedListCacheFile(base, id string) bool {
+	if id == "" {
+		return false
+	}
+	if base == id+".md" || strings.HasPrefix(base, id+PlanDraftSidecarPrefix) {
+		return true
+	}
+	for _, suffix := range sidecarFileSuffixes {
+		if base == id+suffix {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneListSnapshot(snapshot map[string]listFileState) map[string]listFileState {
+	if snapshot == nil {
+		return nil
+	}
+	return maps.Clone(snapshot)
+}
+
+func (s *Store) refreshListSnapshotLocked(id string) {
+	if snapshot, ok := s.currentListSnapshot(); ok {
+		if !sameListSnapshotExceptOwned(s.listSnapshot, snapshot, id) {
+			s.listValid = false
+			s.listSnapshot = nil
+			return
+		}
+		s.listSnapshot = snapshot
+		return
+	}
+	s.listValid = false
+	s.listSnapshot = nil
 }
 
 func cloneTasks(tasks []Task) []Task {
@@ -1538,6 +1651,7 @@ func cloneTask(t Task) Task {
 	clone.AllowedTools = slices.Clone(t.AllowedTools)
 	clone.Tags = slices.Clone(t.Tags)
 	clone.DependsOn = slices.Clone(t.DependsOn)
+	clone.Attachments = slices.Clone(t.Attachments)
 	clone.AgentRuns = slices.Clone(t.AgentRuns)
 	if t.DueDate != nil {
 		d := *t.DueDate
@@ -1717,17 +1831,19 @@ func statusChangedAtBackfill(t Task, fallback time.Time) time.Time {
 // pointer: nil means "leave unchanged". Fields that carried an implicit
 // non-empty/true guard in the old map[string]any path keep that guard here
 // (see applyRunLifecycle/applyRunVerdict/applyRunTestOutcome/applyRunIdentity):
-// HeadSHA, Outcome, EscalationReason, and string verdict/test/session values
-// ignore empty strings, and VerdictRendered is a latch that only ever flips
-// true.
+// HeadSHA, FinalCommitSource, Outcome, EscalationReason, and string verdict/
+// test/session values ignore empty strings, and VerdictRendered is a latch
+// that only ever flips true.
 type RunPatch struct {
 	// Lifecycle
-	State            *string
-	Outcome          *string
-	EscalationReason *string
-	Result           *string
-	LogFile          *string
-	HeadSHA          *string
+	State                 *string
+	Outcome               *string
+	EscalationReason      *string
+	Result                *string
+	LogFile               *string
+	HeadSHA               *string
+	FinalCommitSource     *string
+	ResumeZeroOutputStall *bool
 
 	// Cost/tokens
 	CostUSD         *float64
@@ -1776,6 +1892,12 @@ func applyRunLifecycle(run *AgentRun, p RunPatch) {
 	}
 	if p.HeadSHA != nil && *p.HeadSHA != "" {
 		run.HeadSHA = *p.HeadSHA
+	}
+	if p.FinalCommitSource != nil && *p.FinalCommitSource != "" {
+		run.FinalCommitSource = *p.FinalCommitSource
+	}
+	if p.ResumeZeroOutputStall != nil && *p.ResumeZeroOutputStall {
+		run.ResumeZeroOutputStall = true
 	}
 }
 

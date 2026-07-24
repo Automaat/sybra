@@ -72,22 +72,32 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 	}
 	content, readErr := os.ReadFile(path)
 	if readErr != nil {
-		e.logger.Warn("workflow.import-sidecar.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
-		if cfg.Required {
-			// A template referencing the reserved worktree-dir var that
-			// rendered empty (e.g. "/.sybra-review-<id>.md" instead of
-			// "<worktree>/.sybra-review-<id>.md") means the engine lost
-			// track of the agent's working directory, not that the agent
-			// never produced the artifact — the file may well exist in the
-			// worktree the agent actually ran in. Surface this distinctly so
-			// it isn't misread as "review missing" when investigating.
-			if worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == "" {
-				e.failRequiredImport(taskID, stepID, cfg.Kind, "unresolved: worktree dir variable was empty at render time")
-			} else {
-				e.failRequiredImport(taskID, stepID, cfg.Kind, "missing")
+		dirVarUnresolved := worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == ""
+		if dirVarUnresolved {
+			// The engine lost track of the agent's working directory (e.g. a
+			// restart/reattach reloaded workflow state without _dir), not
+			// necessarily that the agent never produced the artifact — the
+			// file may well exist in the worktree the agent actually ran in.
+			// Before escalating, try to recover the real worktree dir from
+			// task metadata (the same lookup verify_checks/tamper/etc. use)
+			// and retry against it. See sybra#1988.
+			if recoveredPath, recoveredContent, ok := e.recoverSidecarFromTaskWorktree(taskID, stepID, step, info, cfg); ok {
+				path, content, readErr = recoveredPath, recoveredContent, nil
 			}
 		}
-		return
+		if readErr != nil {
+			e.logger.Warn("workflow.import-sidecar.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
+			if cfg.Required {
+				// Surface the empty-dir-var case distinctly so it isn't
+				// misread as "review missing" when investigating.
+				if dirVarUnresolved {
+					e.failRequiredImport(taskID, stepID, cfg.Kind, "unresolved: worktree dir variable was empty at render time")
+				} else {
+					e.failRequiredImport(taskID, stepID, cfg.Kind, "missing")
+				}
+			}
+			return
+		}
 	}
 	if cfg.Required && strings.TrimSpace(string(content)) == "" {
 		e.failRequiredImport(taskID, stepID, cfg.Kind, "empty")
@@ -125,6 +135,49 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 	}
 }
 
+// recoverSidecarFromTaskWorktree resolves the task's worktree dir from task
+// metadata (the same WorktreeGetter lookup verify_checks/tamper/codegen use,
+// independent of the workflow's own _dir variable) and retries rendering +
+// reading cfg.From against it. On success it also persists the recovered dir
+// back into the workflow's _dir variable so later sidecar imports and steps
+// in the same run don't repeat the same lost-variable failure. Returns
+// ok=false if no WorktreeGetter is wired, no worktree is found for the task,
+// or the file still doesn't exist at the recovered path — callers fall
+// through to the ordinary escalation path in that case.
+func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) (path string, content []byte, ok bool) {
+	if e.worktrees == nil {
+		return "", nil, false
+	}
+	wtPath, found := e.worktrees.GetWorktreePath(taskID)
+	if !found || strings.TrimSpace(wtPath) == "" {
+		return "", nil, false
+	}
+	vars := maps.Clone(info.Workflow.Variables)
+	if vars == nil {
+		vars = map[string]string{}
+	}
+	vars[WorkflowVarDir] = wtPath
+	recoveredPath, rErr := RenderTemplate(cfg.From, TemplateContext{
+		Task:     info,
+		Step:     *step,
+		Vars:     vars,
+		Workflow: info.Workflow,
+	})
+	if rErr != nil {
+		return "", nil, false
+	}
+	data, readErr := os.ReadFile(recoveredPath)
+	if readErr != nil {
+		return "", nil, false
+	}
+	info.Workflow.SetVar(WorkflowVarDir, wtPath)
+	if setErr := e.tasks.SetWorkflow(taskID, info.Workflow); setErr != nil {
+		e.logger.Warn("workflow.import-sidecar.recover.persist", "task_id", taskID, "step", stepID, "err", setErr)
+	}
+	e.logger.Info("workflow.import-sidecar.recovered-dir", "task_id", taskID, "step", stepID, "dir", wtPath)
+	return recoveredPath, data, true
+}
+
 func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	reason := fmt.Sprintf("required %s sidecar %s", strings.ReplaceAll(kind, "_", " "), state)
 	if stepID != "" {
@@ -141,8 +194,8 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		err := fmt.Errorf("%w: %s", ErrResourcePressure, reason)
-		classifiedReason, _ := ClassifyAgentStartError(err)
-		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, classifiedReason); err != nil {
+		failure := ClassifyAgentStartFailure(err)
+		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, failure.Reason); err != nil {
 			return err
 		}
 		wfExec.State = ExecWaiting
@@ -181,8 +234,19 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
+	if step.Config.Dir != "" {
+		renderedDir, dErr := RenderTemplate(step.Config.Dir, ctx)
+		if dErr != nil {
+			return fmt.Errorf("render dir: %w", dErr)
+		}
+		if strings.TrimSpace(renderedDir) == "" {
+			return errors.New("render dir: resolved to empty path")
+		}
+		dir = renderedDir
+	}
 	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
 	cleanRetryRef := wfExec.Variables[cleanRetryKey]
+	captureTamperDeletionAllowlist(wfExec, step.ID, step.Config.Role, ctx.Task)
 
 	// Stop stale agents left over from earlier workflow steps (e.g. an
 	// interactive plan agent with reuse_agent that outlived plan approval).
@@ -194,23 +258,34 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// retry budget. The agent spawned just below becomes the only tracked one.
 	e.clearAgentStepsForTask(taskID)
 
-	// Interactive agents that aren't meant to persist across turns (no
-	// reuse_agent, no wait_for_status) must signal completion via process
-	// exit. OneShot tells the runner to close stdin after the first result
-	// event so claude exits and onComplete fires, unblocking the next step
-	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
-	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
+	// mode is coerced to headless in resolveRunAgentMode, so no run_agent step
+	// dispatches an interactive one-shot anymore — a steerable headless run
+	// finalizes on its first completed turn on its own (drainOrCloseHeadlessSteer).
+	oneShot := false
 
-	// Mark the step as starting before the (potentially multi-second,
-	// worktree-prep-bound) StartAgent call so a stale/untracked agent
+	// The step-starting marker below brackets the (potentially multi-second,
+	// worktree-prep-bound) StartAgent call, so a stale/untracked agent
 	// completion arriving mid-start (e.g. a reattached agent from a prior
 	// step) sees this step as claimed instead of falling through to the
 	// "nothing tracked yet, credit the current step" fallback in
-	// HandleAgentComplete. Cleared by the deferred unmark when execRunAgent
-	// returns, at which point either agentRoutes (success) or the parked/failed
-	// step state takes over.
+	// HandleAgentComplete. The deferred unmark clears it once this function
+	// is done, at which point either agentRoutes (success) or the
+	// parked/failed step state takes over.
+	//
+	// A completion for this very start can also beat the agentRoutes write a
+	// few lines down. Unlike spawnParallelChild and startBestOfNAttempt,
+	// e.mu is not held across the StartAgent call here on purpose: this is
+	// the hot path and worktree prep can be slow. HandleAgentComplete
+	// buffers a completion that arrives in that window instead of dropping
+	// it (#2176's hang was exactly that silent drop). The deferred replay
+	// hands it back once this function's outcome — route registered, or
+	// parked/failed — is settled.
 	e.markStepStarting(taskID, step.ID)
-	defer e.unmarkStepStarting(taskID, step.ID)
+	defer func() {
+		for _, buffered := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {
+			e.HandleAgentComplete(taskID, buffered)
+		}
+	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
@@ -247,7 +322,12 @@ func resolveRunAgentMode(mode string, ctx TemplateContext) string {
 			mode = rendered
 		}
 	}
-	if mode == "" {
+	// A legacy task file can still carry agent_mode: interactive (kept as a
+	// load-only value), which the implement step templates straight through
+	// {{.Task.AgentMode}}. Interactive dispatch no longer exists — coerce it
+	// to headless here so AdmitDispatch and StartAgent both see the real mode,
+	// matching spawnBestOfNAttempt/spawnParallelChild.
+	if mode == "" || mode == "interactive" {
 		return "headless"
 	}
 	return mode
@@ -273,7 +353,11 @@ func (e *Engine) parkRunAgentStartError(taskID, stepID string, wfExec *Execution
 }
 
 func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, bool, error) {
-	eligibility := e.providerEligibilitySnapshot(ctx)
+	// Snapshot the A/B config once so a concurrent SetABTestingConfig swap by
+	// the routing ticker cannot race this selection or split it across two
+	// generations mid-flight.
+	cfg := e.abTestingConfig()
+	eligibility := e.providerEligibilitySnapshot(cfg)
 	providerAllowed := func(provider string) bool {
 		status, ok := eligibility[provider]
 		if !ok {
@@ -293,18 +377,19 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 			return allow
 		}
 	}
-	a, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, providerAllowed, evalPassed)
+	a, ok, err := abtest.SelectEligibleForContext(cfg, ctx, providerAllowed, evalPassed)
 	if err != nil || !ok {
 		if err == nil && !ok {
-			e.reportProviderShutout(ctx, eligibility, evalPassed)
+			e.reportProviderShutout(cfg, ctx, eligibility, evalPassed)
 		}
 		return AgentAssignment{}, ok, err
 	}
-	e.reportProviderDemotion(ctx, a, eligibility, evalPassed)
+	e.reportProviderDemotion(cfg, ctx, a, eligibility, evalPassed)
 	return AgentAssignment{
 		ExperimentID:    a.ExperimentID,
 		Kind:            a.Kind,
 		VariantID:       a.VariantID,
+		RoutingReason:   a.RoutingReason,
 		Provider:        a.Provider,
 		Model:           a.Model,
 		AssignmentUnit:  a.AssignmentUnit,
@@ -312,6 +397,7 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 		ReasoningEffort: a.ReasoningEffort,
 		PromptTransform: workflowPromptTransform(a.PromptTransform),
 		SkillAliases:    cloneWorkflowSkillAliases(a.SkillAliases),
+		DecisionVersion: a.DecisionVersion,
 	}, true, nil
 }
 
@@ -333,10 +419,10 @@ func (e *Engine) providerEligibility(provider string) providerEligibilityStatus 
 	}
 }
 
-func (e *Engine) providerEligibilitySnapshot(_ abtest.SelectionContext) map[string]providerEligibilityStatus {
+func (e *Engine) providerEligibilitySnapshot(cfg abtest.Config) map[string]providerEligibilityStatus {
 	statuses := map[string]providerEligibilityStatus{}
-	for i := range e.abTesting.Experiments {
-		exp := e.abTesting.Experiments[i]
+	for i := range cfg.Experiments {
+		exp := cfg.Experiments[i]
 		if !exp.EnabledValue() {
 			continue
 		}
@@ -358,8 +444,8 @@ func (e *Engine) providerEligibilitySnapshot(_ abtest.SelectionContext) map[stri
 // assignment, then logs the captured selection-time reason. Throttling is
 // fleet-wide per routing context + demotion tuple so a sustained outage does
 // not emit one ERROR per task.
-func (e *Engine) reportProviderDemotion(ctx abtest.SelectionContext, actual abtest.Assignment, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
-	wanted, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, nil, evalPassed)
+func (e *Engine) reportProviderDemotion(cfg abtest.Config, ctx abtest.SelectionContext, actual abtest.Assignment, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
+	wanted, ok, err := abtest.SelectEligibleForContext(cfg, ctx, nil, evalPassed)
 	if err != nil || !ok || wanted.Provider == actual.Provider {
 		return
 	}
@@ -387,8 +473,8 @@ func (e *Engine) reportProviderDemotion(ctx abtest.SelectionContext, actual abte
 // this signal the total shutout is indistinguishable from A/B being disabled or
 // no experiment matching the role. Throttled per routing context + experiment +
 // provider + reason so a sustained outage does not emit one ERROR per task.
-func (e *Engine) reportProviderShutout(ctx abtest.SelectionContext, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
-	wanted, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, nil, evalPassed)
+func (e *Engine) reportProviderShutout(cfg abtest.Config, ctx abtest.SelectionContext, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
+	wanted, ok, err := abtest.SelectEligibleForContext(cfg, ctx, nil, evalPassed)
 	if err != nil || !ok {
 		return
 	}
@@ -472,6 +558,9 @@ func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, 
 		e.logger.Warn(fallbackLog, "wanted", provider, "reason", "CLI not found")
 		return "", defaultModel, AgentAssignment{}, nil
 	}
+	if assignment.RoutingReason == "" && step.Config.Provider == "cross" {
+		assignment.RoutingReason = "cross"
+	}
 	return provider, resolvedModel, assignment, nil
 }
 
@@ -524,7 +613,7 @@ func lastCodeAuthorProvider(runs []AgentRunInfo) string {
 
 func isCodeAuthorRole(role string) bool {
 	switch role {
-	case "", "implementation", "fix-review", "pr-fix":
+	case "", "implementation", "fix-review", "pr-fix", "test-fix":
 		return true
 	default:
 		return false

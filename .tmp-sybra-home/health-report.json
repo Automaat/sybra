@@ -1,0 +1,109 @@
+{
+  "generatedAt": "2026-07-18T15:43:03.817589982Z",
+  "periodStart": "2026-07-17T15:43:03.817589982Z",
+  "periodEnd": "2026-07-18T15:43:03.817589982Z",
+  "score": "good",
+  "findings": null,
+  "stats": {
+    "totalAgentRuns": 0,
+    "failedAgentRuns": 0,
+    "failureRate": 0,
+    "costByRole": {},
+    "totalCostUsd": 0
+  },
+  "pressure": {
+    "diskFreePct": 60.72308349609376,
+    "memAvailablePct": 90.87534348169962,
+    "loadPerCpu": 0.37,
+    "warningDiskFreePct": 15,
+    "criticalDiskFreePct": 5
+  },
+  "processes": {
+    "topCpu": [
+      {
+        "pid": 1795861,
+        "pgid": 1795854,
+        "name": "codex",
+        "cpuPercent": 201,
+        "memPercent": 0.3,
+        "owned": false
+      },
+      {
+        "pid": 1796165,
+        "pgid": 1796165,
+        "name": "npm exec @playw",
+        "cpuPercent": 97.5,
+        "memPercent": 0.3,
+        "owned": false
+      },
+      {
+        "pid": 1788418,
+        "pgid": 1788418,
+        "name": "sybra-server",
+        "cpuPercent": 82.1,
+        "memPercent": 1.3,
+        "owned": false
+      },
+      {
+        "pid": 1781318,
+        "pgid": 1781242,
+        "name": "go",
+        "cpuPercent": 43.5,
+        "memPercent": 0.2,
+        "owned": false
+      },
+      {
+        "pid": 1792529,
+        "pgid": 1792529,
+        "name": "claude",
+        "cpuPercent": 13.8,
+        "memPercent": 1.1,
+        "owned": false
+      }
+    ],
+    "topMem": [
+      {
+        "pid": 1788418,
+        "pgid": 1788418,
+        "name": "sybra-server",
+        "cpuPercent": 82.1,
+        "memPercent": 1.3,
+        "owned": false
+      },
+      {
+        "pid": 778597,
+        "pgid": 778597,
+        "name": "claude",
+        "cpuPercent": 0.1,
+        "memPercent": 1.2,
+        "owned": false
+      },
+      {
+        "pid": 1792529,
+        "pgid": 1792529,
+        "name": "claude",
+        "cpuPercent": 13.8,
+        "memPercent": 1.1,
+        "owned": false
+      },
+      {
+        "pid": 1796329,
+        "pgid": 1796329,
+        "name": "claude",
+        "cpuPercent": 0,
+        "memPercent": 1.1,
+        "owned": false
+      },
+      {
+        "pid": 3548887,
+        "pgid": 3548887,
+        "name": "claude",
+        "cpuPercent": 0.1,
+        "memPercent": 1,
+        "owned": false
+      }
+    ],
+    "sampledAt": "2026-07-18T15:43:03.842456313Z",
+    "available": true
+  }
+}

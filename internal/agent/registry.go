@@ -18,27 +18,31 @@ import (
 // (~/.sybra/agents/<id>.yaml). Written when the PID is known and whenever
 // the session ID is first captured; deleted when the agent terminates.
 type Record struct {
-	ID             string    `yaml:"id"`
-	TaskID         string    `yaml:"task_id,omitempty"`
-	Name           string    `yaml:"name,omitempty"`
-	Mode           string    `yaml:"mode"`
-	Provider       string    `yaml:"provider"`
-	Model          string    `yaml:"model,omitempty"`
-	ExperimentID   string    `yaml:"experiment_id,omitempty"`
-	VariantID      string    `yaml:"variant_id,omitempty"`
-	AssignmentUnit string    `yaml:"assignment_unit,omitempty"`
-	AssignmentKey  string    `yaml:"assignment_key,omitempty"`
-	PID            int       `yaml:"pid"`
-	SessionID      string    `yaml:"session_id,omitempty"`
-	LogPath        string    `yaml:"log_path,omitempty"`
-	CWD            string    `yaml:"cwd,omitempty"`
-	SandboxHomeDir string    `yaml:"sandbox_home_dir,omitempty"`
-	StartedAt      time.Time `yaml:"started_at"`
-	ProcStartedAt  string    `yaml:"proc_started_at,omitempty"` // ps lstart, guards PID reuse
-	StdinPath      string    `yaml:"stdin_path,omitempty"`      // FIFO for interactive survival
-	PendingPrompts []string  `yaml:"pending_prompts,omitempty"` // queued follow-up turns
-	OneShot        bool      `yaml:"one_shot,omitempty"`
-	MaxTurns       int       `yaml:"max_turns,omitempty"`
+	ID              string    `yaml:"id"`
+	TaskID          string    `yaml:"task_id,omitempty"`
+	Name            string    `yaml:"name,omitempty"`
+	Role            Role      `yaml:"role,omitempty"`
+	Mode            string    `yaml:"mode"`
+	Provider        string    `yaml:"provider"`
+	Model           string    `yaml:"model,omitempty"`
+	RequestedModel  string    `yaml:"requested_model,omitempty"`
+	ExperimentID    string    `yaml:"experiment_id,omitempty"`
+	VariantID       string    `yaml:"variant_id,omitempty"`
+	RoutingReason   string    `yaml:"routing_reason,omitempty"`
+	AssignmentUnit  string    `yaml:"assignment_unit,omitempty"`
+	AssignmentKey   string    `yaml:"assignment_key,omitempty"`
+	DecisionVersion int       `yaml:"decision_version,omitempty"`
+	PID             int       `yaml:"pid"`
+	SessionID       string    `yaml:"session_id,omitempty"`
+	LogPath         string    `yaml:"log_path,omitempty"`
+	CWD             string    `yaml:"cwd,omitempty"`
+	SandboxHomeDir  string    `yaml:"sandbox_home_dir,omitempty"`
+	StartedAt       time.Time `yaml:"started_at"`
+	ProcStartedAt   string    `yaml:"proc_started_at,omitempty"` // ps lstart, guards PID reuse
+	StdinPath       string    `yaml:"stdin_path,omitempty"`      // FIFO for interactive survival
+	PendingPrompts  []string  `yaml:"pending_prompts,omitempty"` // queued follow-up turns
+	OneShot         bool      `yaml:"one_shot,omitempty"`
+	MaxTurns        int       `yaml:"max_turns,omitempty"`
 	// RequirePermissions preserves a codex chat's sandbox/approval choice
 	// across a restart (codex respawns per turn and would otherwise default
 	// to permissive).
@@ -64,16 +68,32 @@ type Record struct {
 	// SkillConformance preserves whether the resolved source exactly matched,
 	// fell back, or was unavailable.
 	SkillConformance string `yaml:"skill_conformance,omitempty"`
+	// OutputSchema preserves whether this run enforces structured output, so a
+	// reattached completion still knows to skip the skill-receipt requirement.
+	OutputSchema string `yaml:"output_schema,omitempty"`
 	// SkillRecoveryAttempt preserves whether this live run is the workflow
 	// engine's automatic second-chance retry after a missing conformance
 	// receipt.
 	SkillRecoveryAttempt bool `yaml:"skill_recovery_attempt,omitempty"`
+	// HasOutputSchema preserves whether this run enforced a provider output
+	// schema across restart, so a reattached completion still skips the
+	// unsatisfiable skill-conformance receipt check for schema-enforced runs
+	// instead of downgrading them to unverified and parking on human-required.
+	HasOutputSchema bool `yaml:"has_output_schema,omitempty"`
 	// PostResultWait* preserve the runner's post-terminal-result teardown
 	// decision so reattach can continue the same fast-close/grace path instead
 	// of starting a fresh wait window from restart time.
 	PostResultWaitReason string    `yaml:"post_result_wait_reason,omitempty"`
 	PostResultWaitSince  time.Time `yaml:"post_result_wait_since,omitempty"`
 	ForkSubagent         bool      `yaml:"fork_subagent,omitempty"`
+	// PromptHash and the RenderedSyntax/RenderedSkills/UnrenderedSkills triple
+	// preserve the dispatch-time prompt hash and provider render summary across
+	// restart so a reattached completion still emits agent.prompt_rendered
+	// instead of dropping it on an empty hash.
+	PromptHash       string   `yaml:"prompt_hash,omitempty"`
+	RenderedSyntax   string   `yaml:"rendered_syntax,omitempty"`
+	RenderedSkills   []string `yaml:"rendered_skills,omitempty"`
+	UnrenderedSkills []string `yaml:"unrendered_skills,omitempty"`
 }
 
 // survivalRegistry implementations must be safe for concurrent use.

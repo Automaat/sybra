@@ -4,15 +4,16 @@ package config
 
 import "github.com/Automaat/sybra/internal/abtest"
 
-// Config is Sybra's top-level configuration, loaded from
-// ~/.sybra/config.yaml by Load with env-var and default-value fallbacks
-// applied per field. See docs/CONFIG.md (generated from this file's
-// struct tags and doc comments) for the full reference, or run
-// `sybra-cli config dump` to see the resolved, redacted config for this
-// machine.
+// Config is Sybra's fully resolved runtime configuration. File decoding goes
+// through FileConfig + Resolve; runtime code consumes the concrete values here.
+// See docs/CONFIG.md (generated from this file's struct tags and doc comments)
+// for the full reference, or run `sybra-cli config dump` to see the resolved,
+// redacted config for this machine.
 type Config struct {
+	SchemaVersion  int                  `yaml:"schema_version,omitempty" json:"schemaVersion"`
 	Logging        LoggingConfig        `yaml:"logging" json:"logging"`
 	Audit          AuditConfig          `yaml:"audit" json:"audit"`
+	Attachments    AttachmentConfig     `yaml:"attachments" json:"attachments"`
 	Trash          TrashConfig          `yaml:"trash" json:"trash"`
 	Sandbox        SandboxConfig        `yaml:"sandbox" json:"sandbox"`
 	TaskSnapshot   TaskSnapshotConfig   `yaml:"task_snapshot" json:"taskSnapshot"`
@@ -20,7 +21,6 @@ type Config struct {
 	Testing        TestingConfig        `yaml:"testing" json:"testing"`
 	Notification   NotificationConfig   `yaml:"notification" json:"notification"`
 	Orchestrator   OrchestratorConfig   `yaml:"orchestrator" json:"orchestrator"`
-	Todoist        TodoistConfig        `yaml:"todoist" json:"todoist"`
 	Renovate       RenovateConfig       `yaml:"renovate" json:"renovate"`
 	GitHub         GitHubConfig         `yaml:"github" json:"github"`
 	Umbrella       UmbrellaConfig       `yaml:"umbrella" json:"umbrella"`
@@ -36,9 +36,11 @@ type Config struct {
 	PromptLab      PromptLabConfig      `yaml:"prompt_lab" json:"promptLab"`
 	Experience     ExperienceConfig     `yaml:"experience" json:"experience"`
 	ABTesting      abtest.Config        `yaml:"ab_testing" json:"abTesting"`
+	Routing        RoutingConfig        `yaml:"routing" json:"routing"`
 	Providers      ProvidersConfig      `yaml:"providers" json:"providers"`
 	Metrics        MetricsConfig        `yaml:"metrics" json:"metrics"`
 	Server         ServerConfig         `yaml:"server" json:"server"`
+	Webhook        WebhookConfig        `yaml:"webhook" json:"webhook"`
 	Cluster        ClusterConfig        `yaml:"cluster" json:"cluster"`
 	AutoUpdate     AutoUpdateConfig     `yaml:"auto_update" json:"autoUpdate"`
 	Browser        BrowserConfig        `yaml:"browser" json:"browser"`
@@ -51,3 +53,7 @@ type Config struct {
 	WorktreesDir   string               `yaml:"worktrees_dir" json:"worktreesDir"`
 	LoopAgentsDir  string               `yaml:"loop_agents_dir" json:"loopAgentsDir"`
 }
+
+// ResolvedConfig is the canonical runtime config shape. Keep Config as the
+// defined type for compatibility while callers migrate to the explicit name.
+type ResolvedConfig = Config

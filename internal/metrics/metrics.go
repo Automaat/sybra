@@ -46,10 +46,6 @@ var (
 	tasksUpdated metric.Int64Counter
 	tasksDeleted metric.Int64Counter
 
-	todoistPolls     metric.Int64Counter
-	todoistImported  metric.Int64Counter
-	todoistCompleted metric.Int64Counter
-
 	githubFetches  metric.Int64Counter
 	githubImported metric.Int64Counter
 
@@ -68,23 +64,37 @@ var (
 	agentFailoversCounter metric.Int64Counter
 	agentsGatedCounter    metric.Int64Counter
 
+	autoMergeAttempts metric.Int64Counter
+
 	// Observable gauge providers, mutated at wiring time and read from the
 	// meter's registered callback. Guarded by obsMu.
-	obsMu               sync.RWMutex
-	tasksByStatusFn     func() map[string]int64
-	agentsActiveFn      func() map[string]int64
-	renovatePRsFetchFn  func() int64
-	providerHealthFn    func() map[string]int64
-	pollerAuthHealthFn  func() map[string]int64
-	providerRawHealthFn func() map[string]int64
-	agentsInFlightFn    func() map[string]int64
-	tasksByStatusGauge  metric.Int64ObservableGauge
-	agentsActiveGauge   metric.Int64ObservableGauge
-	renovatePRsGauge    metric.Int64ObservableGauge
-	providerHealthyG    metric.Int64ObservableGauge
-	providerRawHealthyG metric.Int64ObservableGauge
-	pollerAuthHealthyG  metric.Int64ObservableGauge
-	agentsInFlightGauge metric.Int64ObservableGauge
+	obsMu                  sync.RWMutex
+	tasksByStatusFn        func() map[string]int64
+	agentsActiveFn         func() map[string]int64
+	renovatePRsFetchFn     func() int64
+	providerHealthFn       func() map[string]int64
+	pollerAuthHealthFn     func() map[string]int64
+	providerRawHealthFn    func() map[string]int64
+	agentsInFlightFn       func() map[string]int64
+	ghAuthStateFn          func() map[string]int64
+	ghAuthTransitionsFn    func() int64
+	ghAuthSuppressedFn     func() int64
+	ghIssueOutboxPendingFn func() map[string]int64
+	ghIssueOutboxReplayFn  func() map[string]int64
+	ghIssueOutboxAgeFn     func() map[string]int64
+	tasksByStatusGauge     metric.Int64ObservableGauge
+	agentsActiveGauge      metric.Int64ObservableGauge
+	renovatePRsGauge       metric.Int64ObservableGauge
+	providerHealthyG       metric.Int64ObservableGauge
+	providerRawHealthyG    metric.Int64ObservableGauge
+	pollerAuthHealthyG     metric.Int64ObservableGauge
+	agentsInFlightGauge    metric.Int64ObservableGauge
+	ghAuthStateGauge       metric.Int64ObservableGauge
+	ghAuthTransitionsGauge metric.Int64ObservableGauge
+	ghAuthSuppressedGauge  metric.Int64ObservableGauge
+	ghOutboxPendingGauge   metric.Int64ObservableGauge
+	ghOutboxReplayedGauge  metric.Int64ObservableGauge
+	ghOutboxAgeGauge       metric.Int64ObservableGauge
 )
 
 // Enabled reports whether the metrics pipeline was initialized and is active.
@@ -169,6 +179,9 @@ func createInstruments() error {
 	if err := createProviderInstruments(); err != nil {
 		return err
 	}
+	if err := createAutoMergeInstruments(); err != nil {
+		return err
+	}
 	return createObservableGauges()
 }
 
@@ -229,24 +242,6 @@ func createPollInstruments() error {
 		return nil
 	}
 	var err error
-	if todoistPolls, err = m.Int64Counter(
-		"sybra_todoist_polls_total",
-		metric.WithDescription("Todoist poll attempts, by result."),
-	); err != nil {
-		return err
-	}
-	if todoistImported, err = m.Int64Counter(
-		"sybra_todoist_items_imported_total",
-		metric.WithDescription("Todoist items imported as new tasks."),
-	); err != nil {
-		return err
-	}
-	if todoistCompleted, err = m.Int64Counter(
-		"sybra_todoist_items_completed_total",
-		metric.WithDescription("Todoist items marked complete by Sybra."),
-	); err != nil {
-		return err
-	}
 	if githubFetches, err = m.Int64Counter(
 		"sybra_github_fetches_total",
 		metric.WithDescription("GitHub Issues fetch attempts, by result."),
@@ -340,6 +335,19 @@ func createProviderInstruments() error {
 	return err
 }
 
+func createAutoMergeInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
+	var err error
+	autoMergeAttempts, err = m.Int64Counter(
+		"sybra_automerge_attempts_total",
+		metric.WithDescription("Auto-merge decision points, by result (attempted/failed/suppressed/armed/recovered/terminal) and error class."),
+	)
+	return err
+}
+
 func createObservableGauges() error {
 	m := meter
 	if m == nil {
@@ -388,9 +396,46 @@ func createObservableGauges() error {
 	); err != nil {
 		return err
 	}
+	if ghAuthStateGauge, err = m.Int64ObservableGauge(
+		"sybra_github_auth_state",
+		metric.WithDescription("Current centralized GitHub auth-health state (1=active), by state name."),
+	); err != nil {
+		return err
+	}
+	if ghAuthTransitionsGauge, err = m.Int64ObservableGauge(
+		"sybra_github_auth_transitions_total",
+		metric.WithDescription("Cumulative count of GitHub auth-health state transitions."),
+	); err != nil {
+		return err
+	}
+	if ghAuthSuppressedGauge, err = m.Int64ObservableGauge(
+		"sybra_github_auth_suppressed_calls_total",
+		metric.WithDescription("Cumulative count of gh calls skipped by the auth circuit breaker."),
+	); err != nil {
+		return err
+	}
+	if ghOutboxPendingGauge, err = m.Int64ObservableGauge(
+		"sybra_github_issue_outbox_pending",
+		metric.WithDescription("Current count of GitHub issue filings queued in the durable outbox, by sink."),
+	); err != nil {
+		return err
+	}
+	if ghOutboxReplayedGauge, err = m.Int64ObservableGauge(
+		"sybra_github_issue_outbox_replayed_total",
+		metric.WithDescription("Cumulative count of queued filings that succeeded after retry, by sink."),
+	); err != nil {
+		return err
+	}
+	if ghOutboxAgeGauge, err = m.Int64ObservableGauge(
+		"sybra_github_issue_outbox_oldest_pending_age_seconds",
+		metric.WithDescription("Age in seconds of the oldest queued filing in the durable outbox, by sink."),
+	); err != nil {
+		return err
+	}
 	_, err = m.RegisterCallback(
 		observe,
 		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, providerRawHealthyG, pollerAuthHealthyG, agentsInFlightGauge,
+		ghAuthStateGauge, ghAuthTransitionsGauge, ghAuthSuppressedGauge, ghOutboxPendingGauge, ghOutboxReplayedGauge, ghOutboxAgeGauge,
 	)
 	return err
 }
@@ -404,6 +449,12 @@ func observe(_ context.Context, obs metric.Observer) error {
 	providerRawHealth := providerRawHealthFn
 	pollerAuthHealth := pollerAuthHealthFn
 	inFlight := agentsInFlightFn
+	ghAuthState := ghAuthStateFn
+	ghAuthTransitions := ghAuthTransitionsFn
+	ghAuthSuppressed := ghAuthSuppressedFn
+	ghOutboxPending := ghIssueOutboxPendingFn
+	ghOutboxReplayed := ghIssueOutboxReplayFn
+	ghOutboxAge := ghIssueOutboxAgeFn
 	obsMu.RUnlock()
 
 	if byStatus != nil {
@@ -443,6 +494,36 @@ func observe(_ context.Context, obs metric.Observer) error {
 		for name, n := range inFlight() {
 			obs.ObserveInt64(agentsInFlightGauge, n,
 				metric.WithAttributes(attribute.String("provider", name)))
+		}
+	}
+	if ghAuthState != nil {
+		for state, active := range ghAuthState() {
+			obs.ObserveInt64(ghAuthStateGauge, active,
+				metric.WithAttributes(attribute.String("state", state)))
+		}
+	}
+	if ghAuthTransitions != nil {
+		obs.ObserveInt64(ghAuthTransitionsGauge, ghAuthTransitions())
+	}
+	if ghAuthSuppressed != nil {
+		obs.ObserveInt64(ghAuthSuppressedGauge, ghAuthSuppressed())
+	}
+	if ghOutboxPending != nil {
+		for sink, n := range ghOutboxPending() {
+			obs.ObserveInt64(ghOutboxPendingGauge, n,
+				metric.WithAttributes(attribute.String("sink", sink)))
+		}
+	}
+	if ghOutboxReplayed != nil {
+		for sink, n := range ghOutboxReplayed() {
+			obs.ObserveInt64(ghOutboxReplayedGauge, n,
+				metric.WithAttributes(attribute.String("sink", sink)))
+		}
+	}
+	if ghOutboxAge != nil {
+		for sink, n := range ghOutboxAge() {
+			obs.ObserveInt64(ghOutboxAgeGauge, n,
+				metric.WithAttributes(attribute.String("sink", sink)))
 		}
 	}
 	return nil
@@ -506,6 +587,56 @@ func RegisterAgentsInFlightByProvider(fn func() map[string]int64) {
 	obsMu.Unlock()
 }
 
+// RegisterGHAuthState wires a callback returning GitHub auth-health state
+// name -> 1 for the currently active state (0 for every other known state),
+// for the github_auth_state gauge. Never carries token or task content.
+func RegisterGHAuthState(fn func() map[string]int64) {
+	obsMu.Lock()
+	ghAuthStateFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHAuthTransitions wires a callback returning the cumulative count
+// of GitHub auth-health state transitions.
+func RegisterGHAuthTransitions(fn func() int64) {
+	obsMu.Lock()
+	ghAuthTransitionsFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHAuthSuppressedCalls wires a callback returning the cumulative
+// count of gh calls skipped by the auth circuit breaker.
+func RegisterGHAuthSuppressedCalls(fn func() int64) {
+	obsMu.Lock()
+	ghAuthSuppressedFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHIssueOutboxPending wires a callback returning durable-outbox
+// sink name -> current pending-filing depth.
+func RegisterGHIssueOutboxPending(fn func() map[string]int64) {
+	obsMu.Lock()
+	ghIssueOutboxPendingFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHIssueOutboxReplayed wires a callback returning durable-outbox
+// sink name -> cumulative count of queued filings that succeeded after
+// retry.
+func RegisterGHIssueOutboxReplayed(fn func() map[string]int64) {
+	obsMu.Lock()
+	ghIssueOutboxReplayFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHIssueOutboxOldestAgeSeconds wires a callback returning
+// durable-outbox sink name -> age in seconds of its oldest pending filing.
+func RegisterGHIssueOutboxOldestAgeSeconds(fn func() map[string]int64) {
+	obsMu.Lock()
+	ghIssueOutboxAgeFn = fn
+	obsMu.Unlock()
+}
+
 // --- Record helpers. Each is a cheap nil guard when metrics are disabled. ---
 
 func AgentStarted(provider, mode string) {
@@ -548,28 +679,6 @@ func TaskDeleted() {
 		return
 	}
 	tasksDeleted.Add(context.Background(), 1)
-}
-
-func TodoistPoll(ctx context.Context, ok bool) {
-	if todoistPolls == nil {
-		return
-	}
-	todoistPolls.Add(ctx, 1,
-		metric.WithAttributes(attribute.String("result", resultLabel(ok))))
-}
-
-func TodoistImported(ctx context.Context, n int) {
-	if todoistImported == nil || n <= 0 {
-		return
-	}
-	todoistImported.Add(ctx, int64(n))
-}
-
-func TodoistCompleted(ctx context.Context, n int) {
-	if todoistCompleted == nil || n <= 0 {
-		return
-	}
-	todoistCompleted.Add(ctx, int64(n))
 }
 
 func GitHubFetch(ctx context.Context, ok bool) {
@@ -693,6 +802,22 @@ func AgentGated(name, reason string) {
 		metric.WithAttributes(
 			attribute.String("provider", name),
 			attribute.String("reason", reason),
+		))
+}
+
+// AutoMergeAttempt records one auto-merge decision point. result is one of
+// "attempted", "failed", "suppressed", "armed", "recovered", or "terminal";
+// class is the github.MergeErrorClass behind a failed/suppressed/terminal
+// result, empty otherwise. Passed as a plain string so this package does not
+// need to import internal/github.
+func AutoMergeAttempt(ctx context.Context, result, class string) {
+	if autoMergeAttempts == nil {
+		return
+	}
+	autoMergeAttempts.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("result", result),
+			attribute.String("class", class),
 		))
 }
 

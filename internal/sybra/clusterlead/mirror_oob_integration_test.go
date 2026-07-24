@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/testutil/loadscale"
 )
 
 // managerTaskService is a real, *task.Manager-backed adapter exposing the
@@ -30,11 +33,85 @@ type managerTaskService struct{ mgr *task.Manager }
 
 func (s *managerTaskService) ListTasks() ([]task.Task, error) { return s.mgr.List() }
 
+// ListTasksForNode mirrors internal/sybra.TaskService.ListTasksForNode's
+// filter (assigned-to-node, drop terminal tasks closed more than 10m ago --
+// keep the window in sync with internal/sybra's mirrorStaleTerminalWindow) so
+// tests exercising realFollowerServer drive the real, lean mirror path rather
+// than the pre-#2258 fallback.
+func (s *managerTaskService) ListTasksForNode(node string) ([]task.Task, error) {
+	all, err := s.mgr.List()
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for i := range all {
+		t := all[i]
+		if t.AssignedNode != node {
+			continue
+		}
+		if task.IsTerminalStatus(t.Status) && t.ClosedAt != nil && time.Since(*t.ClosedAt) > 10*time.Minute {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 func (s *managerTaskService) GetTask(id string) (task.Task, error) { return s.mgr.Get(id) }
 
 func (s *managerTaskService) AssignTask(t task.Task) error {
 	_, _, err := s.mgr.Put(t)
 	return err
+}
+
+const (
+	clusterleadTimeoutScaleCeiling    = 8
+	mirrorOldResponseCapBytes         = 32 << 20
+	mirrorDefaultHeadroomBytes        = 8 << 20
+	mirrorOversubscribedHeadroomBytes = 3 << 20
+)
+
+var clusterleadTimeoutScaleCached struct {
+	once  sync.Once
+	value int64
+}
+
+func scaledClusterleadDeadline(base time.Duration) time.Duration {
+	return loadscale.ScaleDuration(base, clusterleadTimeoutScale())
+}
+
+func clusterleadTimeoutScale() int64 {
+	clusterleadTimeoutScaleCached.once.Do(func() {
+		clusterleadTimeoutScaleCached.value = clusterleadTimeoutScaleResolve()
+	})
+	return clusterleadTimeoutScaleCached.value
+}
+
+func clusterleadTimeoutScaleResolve() int64 {
+	return clusterleadTimeoutScaleResolveWith(
+		os.Getenv("SYBRA_CLUSTERLEAD_TIMEOUT_SCALE"),
+		func() int64 { return loadscale.HostOversubscriptionFactor(clusterleadTimeoutScaleCeiling) },
+	)
+}
+
+func clusterleadTimeoutScaleResolveWith(envValue string, hostFactor func() int64) int64 {
+	if v := strings.TrimSpace(envValue); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return hostFactor()
+}
+
+func mirrorOversizedPayloadBytes() int {
+	return mirrorOversizedPayloadBytesForScale(clusterleadTimeoutScale())
+}
+
+func mirrorOversizedPayloadBytesForScale(scale int64) int {
+	if scale > 1 {
+		return mirrorOldResponseCapBytes + mirrorOversubscribedHeadroomBytes
+	}
+	return mirrorOldResponseCapBytes + mirrorDefaultHeadroomBytes
 }
 
 // realFollowerServer stands up a genuine HTTP server, mounted with
@@ -47,8 +124,8 @@ func realFollowerServer(t *testing.T, mgr *task.Manager) *httptest.Server {
 		_, _ = io.WriteString(w, `{"status":"ok"}`)
 	})
 	httpapi.Mount(mux, map[string]httpapi.Service{
-		"TaskService": httpapi.NewService(&managerTaskService{mgr: mgr}, "ListTasks", "GetTask", "AssignTask"),
-	}, slog.New(slog.DiscardHandler))
+		"TaskService": httpapi.NewService(&managerTaskService{mgr: mgr}, "ListTasks", "ListTasksForNode", "GetTask", "AssignTask"),
+	}, slog.New(slog.DiscardHandler), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -83,10 +160,11 @@ func TestMirrorPropagatesOutOfBandFollowerWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The follower's own copy of the same task, as AssignTask would have
-	// written it there.
+	// written it there -- AssignedNode included, since the leader's push
+	// (clusterlead.Assigner.Route) stamps it on the task before sending.
 	if _, _, err := followerMgr.Put(task.Task{
 		ID: "task-oob", Title: "t", Status: task.StatusInProgress,
-		ProjectID: "owner/pet", CreatedAt: t0, UpdatedAt: t0,
+		ProjectID: "owner/pet", AssignedNode: "pet-box", CreatedAt: t0, UpdatedAt: t0,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +205,65 @@ func TestMirrorPropagatesOutOfBandFollowerWrite(t *testing.T) {
 	}
 }
 
+// TestMirrorReconcileMissingRecoversTaskListTasksForNodeOmitted repros the gap
+// ListTasksForNode's staleness filter opens: the follower closed a task
+// (ClosedAt) long before the leader ever managed a successful reconcile
+// against it (simulating a leader outage/restart spanning the entire
+// mirrorStaleTerminalWindow), so the task never once appears in
+// ListTasksForNode's response. Without Mirror.reconcileMissing's GetTask
+// backstop, canonical would stay stuck at its last non-terminal status
+// forever, since the follower will never offer that task again.
+func TestMirrorReconcileMissingRecoversTaskListTasksForNodeOmitted(t *testing.T) {
+	followerMgr := newManager(t)
+	srv := realFollowerServer(t, followerMgr)
+
+	leaderMgr := newManager(t)
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+
+	t0 := time.Now().Add(-time.Hour)
+	if _, _, err := leaderMgr.Put(task.Task{
+		ID: "task-late-close", Title: "t", Status: task.StatusInProgress,
+		ProjectID: "owner/pet", AssignedNode: "pet-box", CreatedAt: t0, UpdatedAt: t0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	closedAt := time.Now().Add(-time.Hour)
+	if _, _, err := followerMgr.Put(task.Task{
+		ID: "task-late-close", Title: "t", Status: task.StatusDone,
+		ProjectID: "owner/pet", AssignedNode: "pet-box", Branch: "feat/late-close",
+		UpdatedAt: closedAt, ClosedAt: &closedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mirror := NewMirror(cfg, leaderMgr, roster, slog.New(slog.DiscardHandler), 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); mirror.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got task.Task
+	for time.Now().Before(deadline) {
+		got, err = leaderMgr.Get("task-late-close")
+		if err == nil && got.Status == task.StatusDone {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got.Status != task.StatusDone {
+		t.Fatalf("leader canonical status = %q, want done -- reconcileMissing should have fetched the task ListTasksForNode's staleness filter omitted", got.Status)
+	}
+	if got.Branch != "feat/late-close" {
+		t.Errorf("leader canonical branch = %q, want feat/late-close", got.Branch)
+	}
+}
+
 // TestMirrorReconcileSucceedsPastOldThirtyTwoMegabyteCap attacks the size-cap
 // fix with a real oversized payload transmitted over a real HTTP connection
 // (chunked transfer, real read loop) -- not the author's own tiny
@@ -153,10 +290,11 @@ func TestMirrorReconcileSucceedsPastOldThirtyTwoMegabyteCap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bigBody := strings.Repeat("x", 40<<20) // 40MB of real bytes, transmitted over real loopback HTTP
+	payloadBytes := mirrorOversizedPayloadBytes()
+	bigBody := strings.Repeat("x", payloadBytes)
 	if _, _, err := followerMgr.Put(task.Task{
 		ID: "task-big", Title: "t", Status: task.StatusDone,
-		ProjectID: "owner/pet", Body: bigBody, UpdatedAt: time.Now(),
+		ProjectID: "owner/pet", AssignedNode: "pet-box", Body: bigBody, UpdatedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +305,7 @@ func TestMirrorReconcileSucceedsPastOldThirtyTwoMegabyteCap(t *testing.T) {
 	go func() { defer close(done); mirror.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-done })
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(scaledClusterleadDeadline(10 * time.Second))
 	var got task.Task
 	var gerr error
 	for time.Now().Before(deadline) {
@@ -183,6 +321,61 @@ func TestMirrorReconcileSucceedsPastOldThirtyTwoMegabyteCap(t *testing.T) {
 	}
 	if len(got.Body) != len(bigBody) {
 		t.Errorf("mirrored Body length = %d, want %d -- payload may have been truncated in transit", len(got.Body), len(bigBody))
+	}
+}
+
+func TestClusterleadTimeoutScaleResolveWithEnvOverride(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		host     int64
+		want     int64
+		wantHost bool
+	}{
+		{name: "explicit positive override wins", envValue: "1", host: 7, want: 1},
+		{name: "override is trimmed", envValue: " 3 ", host: 7, want: 3},
+		{name: "invalid override falls back", envValue: "nope", host: 4, want: 4, wantHost: true},
+		{name: "zero override falls back", envValue: "0", host: 5, want: 5, wantHost: true},
+		{name: "empty override uses host", envValue: "", host: 6, want: 6, wantHost: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			got := clusterleadTimeoutScaleResolveWith(tt.envValue, func() int64 {
+				called = true
+				return tt.host
+			})
+			if got != tt.want {
+				t.Fatalf("clusterleadTimeoutScaleResolveWith(%q) = %d, want %d", tt.envValue, got, tt.want)
+			}
+			if called != tt.wantHost {
+				t.Fatalf("host factor called = %v, want %v", called, tt.wantHost)
+			}
+		})
+	}
+}
+
+func TestMirrorOversizedPayloadBytesForScale(t *testing.T) {
+	tests := []struct {
+		name  string
+		scale int64
+		want  int
+	}{
+		{name: "unscaled keeps the original 40 MiB proof", scale: 1, want: 40 << 20},
+		{name: "oversubscribed host trims to 35 MiB", scale: 2, want: 35 << 20},
+		{name: "any larger scale keeps the lighter proof", scale: 8, want: 35 << 20},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mirrorOversizedPayloadBytesForScale(tt.scale); got != tt.want {
+				t.Fatalf("mirrorOversizedPayloadBytesForScale(%d) = %d, want %d", tt.scale, got, tt.want)
+			}
+			if got := mirrorOversizedPayloadBytesForScale(tt.scale); got <= mirrorOldResponseCapBytes {
+				t.Fatalf("mirrorOversizedPayloadBytesForScale(%d) = %d, want > old %d-byte cap", tt.scale, got, mirrorOldResponseCapBytes)
+			}
+		})
 	}
 }
 

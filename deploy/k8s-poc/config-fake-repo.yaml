@@ -29,6 +29,12 @@ data:
           - name: sybra-home
             claim_name: sybra-home
             mount_path: /home/sybra/.sybra
+          - name: sybra-clones
+            claim_name: sybra-clones
+            mount_path: /home/sybra/.sybra/clones
+          - name: sybra-worktrees
+            claim_name: sybra-worktrees
+            mount_path: /home/sybra/.sybra/worktrees
     ab_testing:
       enabled: false
     providers:
@@ -56,8 +62,6 @@ data:
     monitor:
       enabled: false
     github:
-      enabled: false
-    todoist:
       enabled: false
     renovate:
       enabled: false

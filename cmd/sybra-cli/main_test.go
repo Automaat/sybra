@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -55,6 +57,30 @@ func captureStdout(t *testing.T, fn func() int) (exitCode int, output string) {
 	buf := make([]byte, 64*1024)
 	n, _ := r.Read(buf)
 	return code, string(buf[:n])
+}
+
+func runCLIWithStderr(t *testing.T, args ...string) (exitCode int, stdout, stderr string) {
+	t.Helper()
+	oldOut := os.Stdout
+	outR, outW, _ := os.Pipe()
+	os.Stdout = outW
+
+	oldErr := os.Stderr
+	errR, errW, _ := os.Pipe()
+	os.Stderr = errW
+
+	code := run(args)
+
+	_ = outW.Close()
+	_ = errW.Close()
+	os.Stdout = oldOut
+	os.Stderr = oldErr
+
+	outBuf := make([]byte, 64*1024)
+	outN, _ := outR.Read(outBuf)
+	errBuf := make([]byte, 64*1024)
+	errN, _ := errR.Read(errBuf)
+	return code, string(outBuf[:outN]), string(errBuf[:errN])
 }
 
 func runGit(t *testing.T, dir string, args ...string) string {
@@ -228,6 +254,218 @@ func TestUpdateStatus(t *testing.T) {
 	}
 }
 
+func TestCLIWorksWithV2ObservabilityConfig(t *testing.T) {
+	dir := setupStore(t)
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	cfg := strings.Join([]string{
+		"schema_version: 2",
+		"observability:",
+		"  logging:",
+		"    level: debug",
+		"  audit:",
+		"    enabled: true",
+		"server:",
+		"  auth_token: local-test-token",
+		"",
+	}, "\n")
+	if err := os.WriteFile(config.ConfigPath(), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	created, err := manager.Create("observability task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	code, out := runCLI(t, "--json", "get", "--compact", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.ID != created.ID {
+		t.Fatalf("get id = %q, want %q", got.ID, created.ID)
+	}
+
+	code, out = runCLI(t, "--json", "update", created.ID, "--status", "in-progress")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	mustUnmarshal(t, out, &got)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+}
+
+func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
+	dir := setupStore(t)
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	created, err := manager.Create("fallback task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	code, stdout, stderr := runCLIWithStderr(t, "--json", "get", "--compact", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "falling back to direct task store") {
+		t.Fatalf("stderr missing fallback warning:\n%s", stderr)
+	}
+	var got task.Task
+	mustUnmarshal(t, stdout, &got)
+	if got.ID != created.ID {
+		t.Fatalf("get id = %q, want %q", got.ID, created.ID)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "update", created.ID, "--status", "in-progress", "--status-reason", "fallback path")
+	if code != 0 {
+		t.Fatalf("update exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "falling back to direct task store") {
+		t.Fatalf("stderr missing fallback warning on update:\n%s", stderr)
+	}
+	mustUnmarshal(t, stdout, &got)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if got.StatusReason != "fallback path" {
+		t.Fatalf("status reason = %q, want fallback path", got.StatusReason)
+	}
+}
+
+func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
+	dir := setupStore(t)
+	t.Setenv("SYBRA_TASKS_DIR", "")
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	seeded, err := manager.Create("seed task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	toDelete, err := manager.Create("delete me", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed delete task: %v", err)
+	}
+
+	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	assertFallback := func(t *testing.T, stderr string) {
+		t.Helper()
+		if !strings.Contains(stderr, "falling back to direct task store") {
+			t.Fatalf("stderr missing fallback warning:\n%s", stderr)
+		}
+	}
+
+	code, stdout, stderr := runCLIWithStderr(t, "--json", "list")
+	if code != 0 {
+		t.Fatalf("list exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var listed []task.Task
+	mustUnmarshal(t, stdout, &listed)
+	if len(listed) != 2 {
+		t.Fatalf("list returned %d tasks, want 2", len(listed))
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "create", "--title", "fallback created")
+	if code != 0 {
+		t.Fatalf("create exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var created task.Task
+	mustUnmarshal(t, stdout, &created)
+	if created.Title != "fallback created" {
+		t.Fatalf("created title = %q, want %q", created.Title, "fallback created")
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "link-pr", seeded.ID, "42")
+	if code != 0 {
+		t.Fatalf("link-pr exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var linked task.Task
+	mustUnmarshal(t, stdout, &linked)
+	if linked.PRNumber != 42 {
+		t.Fatalf("pr number = %d, want 42", linked.PRNumber)
+	}
+	if linked.Status != task.StatusInReview {
+		t.Fatalf("status after link-pr = %q, want %q", linked.Status, task.StatusInReview)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "reopen", seeded.ID)
+	if code != 0 {
+		t.Fatalf("reopen exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	reopened, err := store.Get(seeded.ID)
+	if err != nil {
+		t.Fatalf("get after reopen: %v", err)
+	}
+	if reopened.Status != task.StatusTodo {
+		t.Fatalf("status after reopen = %q, want %q", reopened.Status, task.StatusTodo)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "board")
+	if code != 0 {
+		t.Fatalf("board exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var board struct {
+		Counts map[string]int `json:"counts"`
+	}
+	mustUnmarshal(t, stdout, &board)
+	if board.Counts[string(task.StatusTodo)] < 1 {
+		t.Fatalf("board counts missing todo task: %+v", board.Counts)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "delete", toDelete.ID)
+	if code != 0 {
+		t.Fatalf("delete exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	if _, err := store.Get(toDelete.ID); err == nil {
+		t.Fatalf("task %s still present after delete", toDelete.ID)
+	}
+
+	code, stdout, stderr = runCLIWithStderr(t, "--json", "trash", "list")
+	if code != 0 {
+		t.Fatalf("trash list exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	assertFallback(t, stderr)
+	var trashed []task.TrashEntry
+	mustUnmarshal(t, stdout, &trashed)
+	found := false
+	for _, entry := range trashed {
+		if entry.ID == toDelete.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("trash list missing deleted task %s: %+v", toDelete.ID, trashed)
+	}
+}
+
 func TestDelete(t *testing.T) {
 	setupStore(t)
 
@@ -271,6 +509,19 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
     "manualCommand":"docker system prune",
     "sampledAt":"2026-07-13T20:00:00Z"
   },
+  "pressure":{
+    "diskFreePct":12.5,
+    "memAvailablePct":41.0,
+    "loadPerCpu":1.25,
+    "warningDiskFreePct":15,
+    "criticalDiskFreePct":5,
+    "lastReclaim":{
+      "ranAt":"2026-07-13T19:55:00Z",
+      "reclaimedBytes":3221225472,
+      "unreclaimableBytes":21474836480,
+      "errors":1
+    }
+  },
   "processes":{
     "topCpu":[{"pid":123,"name":"sybra-server","cpuPercent":18.5,"memPercent":4.2,"owned":true}],
     "topMem":[{"pid":456,"name":"browser","cpuPercent":2.0,"memPercent":11.4,"owned":false}],
@@ -286,7 +537,7 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("health exit %d: %s", code, out)
 	}
-	for _, want := range []string{"Docker:", "Reclaimable: 25.0GiB", "Total: 30.0GiB", "Manual cleanup: docker system prune", "Top CPU:", "Top Memory:", "[sybra]", "[ext]", "sybra-server", "browser"} {
+	for _, want := range []string{"Docker:", "Reclaimable: 25.0GiB", "Total: 30.0GiB", "Manual cleanup: docker system prune", "Pressure:", "Disk free: 12.5% (warning 15.0%, critical 5.0%)", "Memory available: 41.0%", "Load per CPU: 1.25", "Last reclaim: 3.0GiB reclaimed, 20.0GiB unreclaimable, errors 1 at 2026-07-13T19:55:00Z", "Top CPU:", "Top Memory:", "[sybra]", "[ext]", "sybra-server", "browser"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("health output missing %q:\n%s", want, out)
 		}
@@ -301,6 +552,14 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
 			ReclaimableBytes int64  `json:"reclaimableBytes"`
 			ManualCommand    string `json:"manualCommand"`
 		} `json:"docker"`
+		Pressure struct {
+			DiskFreePct float64 `json:"diskFreePct"`
+			LastReclaim struct {
+				ReclaimedBytes     int64 `json:"reclaimedBytes"`
+				UnreclaimableBytes int64 `json:"unreclaimableBytes"`
+				Errors             int   `json:"errors"`
+			} `json:"lastReclaim"`
+		} `json:"pressure"`
 		Processes struct {
 			TopCPU []struct {
 				PID   int  `json:"pid"`
@@ -311,6 +570,9 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
 	mustUnmarshal(t, out, &got)
 	if got.Docker.ReclaimableBytes != 26_843_545_600 || got.Docker.ManualCommand != "docker system prune" {
 		t.Fatalf("json health docker = %+v", got.Docker)
+	}
+	if got.Pressure.DiskFreePct != 12.5 || got.Pressure.LastReclaim.ReclaimedBytes != 3<<30 || got.Pressure.LastReclaim.UnreclaimableBytes != 20<<30 || got.Pressure.LastReclaim.Errors != 1 {
+		t.Fatalf("json health pressure = %+v", got.Pressure)
 	}
 	if len(got.Processes.TopCPU) != 1 || got.Processes.TopCPU[0].PID != 123 || !got.Processes.TopCPU[0].Owned {
 		t.Fatalf("json health processes = %+v", got.Processes)
@@ -563,6 +825,35 @@ func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONReportsGitHubPollingStates(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.GitHub.PollerRole = "secondary"
+	cfg.GitHub.Polling.AssignedPRs.Enabled = false
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected status-only doctor to stay non-fatal, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, want := range []string{
+		"github issues polling: inactive on this machine (poller_role=secondary)",
+		"github sybra prs polling: active (known linked PR monitor only; poller_role=secondary)",
+		"github assigned prs polling: disabled by stream toggle",
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "ok" && strings.Contains(f.Message, want)
+		}) {
+			t.Fatalf("expected %q in doctor report: %+v", want, report.Findings)
+		}
+	}
+}
+
 func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	setupStore(t)
 
@@ -690,6 +981,54 @@ func TestConfigDoctorJSONValidatesK8sSecretEnvRegardlessOfMode(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONWarnsOnLowTTLWithDifferingFailedTTL(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.TTL = 5
+	cfg.Agent.K8sJobs.FailedTTL = 86400
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected a warning-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" && strings.Contains(f.Message, "ttl_seconds_after_finished")
+	}) {
+		t.Fatalf("expected a low-ttl warning in report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONAcceptsTypicalTTLDefaults(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.K8sJobs.Enabled = true
+	cfg.Agent.K8sJobs.TTL = 300
+	cfg.Agent.K8sJobs.FailedTTL = 86400
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected typical TTL defaults to stay clean, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "ttl_seconds_after_finished is")
+	}) {
+		t.Fatalf("did not expect a TTL finding for the recommended defaults: %+v", report.Findings)
+	}
+}
+
 func TestConfigDoctorJSONReportsWhitespaceOnlyK8sSecretEnvFields(t *testing.T) {
 	setupStore(t)
 
@@ -794,6 +1133,356 @@ func TestConfigDoctorJSONAcceptsStricterConfigPermissions(t *testing.T) {
 	}) {
 		t.Fatalf("did not expect config permission warnings for stricter modes: %+v", report.Findings)
 	}
+}
+
+func TestConfigDoctorJSONReportsRoutingSummaryAndWarnings(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.Provider = "claude"
+	enabled := true
+	cfg.ABTesting.Enabled = &enabled
+	cfg.Routing.Enabled = true
+	cfg.Providers.Claude.Enabled = false
+	cfg.ABTesting.Experiments = []abtest.Experiment{{
+		ID:             "exp",
+		Enabled:        &enabled,
+		AssignmentUnit: "stage",
+		Roles:          []string{"implementation"},
+		Variants: []abtest.Variant{
+			{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Weight: 1},
+		},
+	}}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only routing doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if report.Routing.ProviderPreference != "claude" {
+		t.Fatalf("routing provider preference = %q, want claude", report.Routing.ProviderPreference)
+	}
+	if !report.Routing.ABTestingEnabled {
+		t.Fatal("routing abTestingEnabled = false, want true")
+	}
+	if !report.Routing.AdaptiveRoutingEnabled {
+		t.Fatal("routing adaptiveRoutingEnabled = false, want true")
+	}
+	if !slices.Equal(report.Routing.Precedence, []string{"ab_testing", "agent.provider", "providers.auto_failover", "providers.limits", "routing.overlay"}) {
+		t.Fatalf("routing precedence = %v", report.Routing.Precedence)
+	}
+	if len(report.Routing.EligibleVariants) != 1 {
+		t.Fatalf("routing eligible variants = %d, want 1", len(report.Routing.EligibleVariants))
+	}
+	if report.Routing.EligibleVariants[0].Reason != "provider_disabled" {
+		t.Fatalf("eligible variant reason = %q, want provider_disabled", report.Routing.EligibleVariants[0].Reason)
+	}
+	for _, want := range []string{
+		"routing: ab_testing experiment exp has zero eligible variants",
+		"routing: ab_testing is enabled but no provider-enabled variants are eligible",
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "warning" && f.Message == want
+		}) {
+			t.Fatalf("expected routing warning %q in %+v", want, report.Findings)
+		}
+	}
+}
+
+func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Providers.AutoFailover = true
+	cfg.Agent.Provider = "claude"
+	cfg.Agent.Model = "claude-fable-5"
+	cfg.Monitor.Model = "claude-fable-5"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, want := range []string{
+		`agent.model="claude-fable-5" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
+		`monitor.model="claude-fable-5" targets provider "claude", but failover cannot remap that concrete model on provider switch`,
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "warning" && f.Message == want
+		}) {
+			t.Fatalf("expected warning %q in %+v", want, report.Findings)
+		}
+	}
+}
+
+func TestConfigDumpRedactsTaggedSecrets(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Server.AuthToken = "server-secret"
+	cfg.Webhook.Secret = "webhook-secret"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDump(cfg, false)
+	})
+	if code != 0 {
+		t.Fatalf("config dump exit %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "server-secret") || strings.Contains(out, "webhook-secret") {
+		t.Fatalf("config dump leaked secret:\n%s", out)
+	}
+	if strings.Count(out, config.RedactedPlaceholder) != 2 {
+		t.Fatalf("config dump redaction count = %d, want 2:\n%s", strings.Count(out, config.RedactedPlaceholder), out)
+	}
+}
+
+func TestConfigExplainRedactsTaggedSecrets(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("server:\n  auth_token: file-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--json", "--home", dir, "config", "explain", "server.auth_token")
+	if code != 0 {
+		t.Fatalf("config explain exit %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "file-secret") {
+		t.Fatalf("config explain leaked secret:\n%s", out)
+	}
+	if !strings.Contains(out, config.RedactedPlaceholder) {
+		t.Fatalf("config explain missing redaction placeholder:\n%s", out)
+	}
+	if !strings.Contains(out, `"reloadPolicy": "restart"`) {
+		t.Fatalf("config explain missing reload metadata:\n%s", out)
+	}
+}
+
+func TestRunConfigDumpDoesNotMutateSparseConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	before := []byte("schema_version: 2\n# top comment\nagent:\n  # keep me\n  provider: codex\n")
+	if err := os.WriteFile(cfgPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.AuthTokenPath(), []byte("persisted-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--home", dir, "config", "dump")
+	if code != 0 {
+		t.Fatalf("config dump exit %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "persisted-token") {
+		t.Fatalf("config dump leaked persisted token:\n%s", out)
+	}
+	if !strings.Contains(out, config.RedactedPlaceholder) {
+		t.Fatalf("config dump missing redaction placeholder:\n%s", out)
+	}
+
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config dump rewrote sparse config.yaml:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tasks")); !os.IsNotExist(err) {
+		t.Fatalf("config dump should not create tasks dir, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "projects")); !os.IsNotExist(err) {
+		t.Fatalf("config dump should not create projects dir, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "clones")); !os.IsNotExist(err) {
+		t.Fatalf("config dump should not create clones dir, stat err = %v", err)
+	}
+}
+
+func TestRunConfigMigrateDryRunAndApply(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	before := []byte(strings.Join([]string{
+		"agent:",
+		"  provider: codex",
+		"  bash_timeout_seconds: 120",
+		"review_hold:",
+		"  enabled: true",
+		"server:",
+		"  auth_token: super-secret",
+		"",
+	}, "\n"))
+	if err := os.WriteFile(cfgPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2", "--dry-run")
+	if code != 0 {
+		t.Fatalf("config migrate dry-run exit %d:\n%s", code, out)
+	}
+	var dry configMigrateReport
+	mustUnmarshal(t, out, &dry)
+	if !dry.DryRun || !dry.Changed {
+		t.Fatalf("dry-run report = %+v, want changed dry-run", dry)
+	}
+	if dry.BackupPath != "" {
+		t.Fatalf("dry-run unexpectedly wrote backup path %q", dry.BackupPath)
+	}
+	foundSecretMove := false
+	for _, move := range dry.Moves {
+		if move.From == "server.auth_token" {
+			foundSecretMove = true
+			if move.ValueFrom != config.RedactedPlaceholder || move.ValueTo != config.RedactedPlaceholder {
+				t.Fatalf("secret move not redacted: %+v", move)
+			}
+		}
+	}
+	if !foundSecretMove {
+		t.Fatal("dry-run moves missing server.auth_token")
+	}
+	afterDryRun, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterDryRun, before) {
+		t.Fatalf("dry-run mutated config:\nbefore:\n%s\nafter:\n%s", before, afterDryRun)
+	}
+
+	code, out = runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2")
+	if code != 0 {
+		t.Fatalf("config migrate apply exit %d:\n%s", code, out)
+	}
+	var applied configMigrateReport
+	mustUnmarshal(t, out, &applied)
+	if applied.DryRun || !applied.Changed || applied.BackupPath == "" {
+		t.Fatalf("apply report = %+v", applied)
+	}
+	backup, err := os.ReadFile(applied.BackupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if !bytes.Equal(backup, before) {
+		t.Fatalf("backup mismatch:\nwant:\n%s\ngot:\n%s", before, backup)
+	}
+	migrated, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(migrated)
+	for _, want := range []string{
+		"schema_version: 2",
+		"execution:",
+		"  agent:",
+		"    provider: codex",
+		"    bash_timeout: 120s",
+		"integrations:",
+		"  github:",
+		"    review_hold:",
+		"      enabled: true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("migrated config missing %q:\n%s", want, text)
+		}
+	}
+
+	code, out = runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2")
+	if code != 0 {
+		t.Fatalf("config migrate second apply exit %d:\n%s", code, out)
+	}
+	var second configMigrateReport
+	mustUnmarshal(t, out, &second)
+	if second.Changed {
+		t.Fatalf("second apply should be a no-op: %+v", second)
+	}
+}
+
+func TestRunConfigMigrateDryRunNoOpForCanonicalGitHubReviewHoldConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	raw := []byte(strings.Join([]string{
+		"schema_version: 2",
+		"integrations:",
+		"  github:",
+		"    enabled: false",
+		"    review_hold:",
+		"      enabled: true",
+		"",
+	}, "\n"))
+	if err := os.WriteFile(cfgPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2", "--dry-run")
+	if code != 0 {
+		t.Fatalf("config migrate dry-run exit %d:\n%s", code, out)
+	}
+	var report configMigrateReport
+	mustUnmarshal(t, out, &report)
+	if !report.DryRun || report.Changed {
+		t.Fatalf("dry-run report = %+v, want no-op dry-run", report)
+	}
+
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, raw) {
+		t.Fatalf("dry-run mutated canonical config:\nbefore:\n%s\nafter:\n%s", raw, after)
+	}
+}
+
+func TestBinaryWorktreeDriftWarning(t *testing.T) {
+	t.Run("same revision", func(t *testing.T) {
+		if got := binaryWorktreeDriftWarning("abc123", "abc123"); got != "" {
+			t.Fatalf("warning = %q, want empty", got)
+		}
+	})
+
+	t.Run("missing revision", func(t *testing.T) {
+		if got := binaryWorktreeDriftWarning("", "abc123"); got != "" {
+			t.Fatalf("warning = %q, want empty", got)
+		}
+	})
+
+	t.Run("different revisions", func(t *testing.T) {
+		got := binaryWorktreeDriftWarning(
+			"1111111111111111111111111111111111111111",
+			"2222222222222222222222222222222222222222",
+		)
+		if !strings.Contains(got, "111111111111") || !strings.Contains(got, "222222222222") {
+			t.Fatalf("warning %q missing short revisions", got)
+		}
+		if !strings.Contains(got, "go run ./cmd/sybra-cli") || !strings.Contains(got, "go install ./cmd/sybra-cli") {
+			t.Fatalf("warning %q missing remediation", got)
+		}
+	})
 }
 
 func TestListFilterStatus(t *testing.T) {
@@ -956,6 +1645,131 @@ func TestUpdateMultipleFields(t *testing.T) {
 	}
 	if len(updated.Tags) != 3 {
 		t.Fatalf("Tags len = %d, want 3", len(updated.Tags))
+	}
+}
+
+func TestUpdateBlockerFlags(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "create", "--title", "blocker flags test")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, out = runCLI(t, "--json", "update", created.ID,
+		"--status", "blocked",
+		"--blocker-kind", "worktree_repair",
+		"--blocker-code", "disk_space",
+		"--blocker-next-action", "repair_worktree",
+		"--blocker-retry-after", "2026-01-01T00:00:00Z",
+	)
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	var updated task.Task
+	mustUnmarshal(t, out, &updated)
+	if updated.Blocker.Kind != "worktree_repair" {
+		t.Errorf("Blocker.Kind = %q, want %q", updated.Blocker.Kind, "worktree_repair")
+	}
+	if updated.Blocker.Code != "disk_space" {
+		t.Errorf("Blocker.Code = %q, want %q", updated.Blocker.Code, "disk_space")
+	}
+	if updated.Blocker.NextAction != "repair_worktree" {
+		t.Errorf("Blocker.NextAction = %q, want %q", updated.Blocker.NextAction, "repair_worktree")
+	}
+	if updated.Blocker.RetryAfter == nil || updated.Blocker.RetryAfter.Format("2006-01-02") != "2026-01-01" {
+		t.Errorf("Blocker.RetryAfter = %v, want 2026-01-01", updated.Blocker.RetryAfter)
+	}
+	if updated.Blocker.Exhausted {
+		t.Error("Blocker.Exhausted = true, want false")
+	}
+
+	// Setting only --blocker-exhausted must preserve the previously recorded
+	// kind/code/next_action rather than blanking them out.
+	code, out = runCLI(t, "--json", "update", created.ID, "--blocker-exhausted")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	mustUnmarshal(t, out, &updated)
+	if !updated.Blocker.Exhausted {
+		t.Error("Blocker.Exhausted = false, want true")
+	}
+	if updated.Blocker.Kind != "worktree_repair" {
+		t.Errorf("Blocker.Kind after exhausted-only update = %q, want preserved %q", updated.Blocker.Kind, "worktree_repair")
+	}
+
+	code, out = runCLI(t, "--json", "update", created.ID, "--blocker-clear")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	// json.Unmarshal only overwrites fields present in the payload, so start
+	// from a zero value — omitzero means an absent "blocker" key would
+	// otherwise silently leave the previous iteration's Blocker in place.
+	updated = task.Task{}
+	mustUnmarshal(t, out, &updated)
+	if !updated.Blocker.IsZero() {
+		t.Errorf("Blocker after --blocker-clear = %+v, want zero value", updated.Blocker)
+	}
+}
+
+func TestUpdateBlockerKindRejectsMachineKindAtHumanRequired(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "create", "--title", "blocker validation test")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "update", created.ID,
+		"--status", "human-required",
+		"--blocker-kind", "worktree_repair",
+	)
+	if code == 0 {
+		t.Error("expected non-zero exit: worktree_repair must never reach human-required")
+	}
+}
+
+func TestCmdBoardExposesBlockedBucket(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "create", "--title", "board blocked test")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, out = runCLI(t, "--json", "update", created.ID,
+		"--status", "blocked",
+		"--blocker-kind", "worktree_repair",
+		"--blocker-next-action", "repair_worktree",
+	)
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+
+	code, out = runCLI(t, "--json", "board")
+	if code != 0 {
+		t.Fatalf("board exit %d: %s", code, out)
+	}
+	var summary boardSummary
+	mustUnmarshal(t, out, &summary)
+	if summary.Counts["blocked"] != 1 {
+		t.Errorf("Counts[blocked] = %d, want 1", summary.Counts["blocked"])
+	}
+	if len(summary.Blocked) != 1 {
+		t.Fatalf("Blocked len = %d, want 1", len(summary.Blocked))
+	}
+	bt := summary.Blocked[0]
+	if bt.ID != created.ID {
+		t.Errorf("Blocked[0].ID = %q, want %q", bt.ID, created.ID)
+	}
+	if bt.Blocker.Kind != "worktree_repair" {
+		t.Errorf("Blocked[0].Blocker.Kind = %q, want %q", bt.Blocker.Kind, "worktree_repair")
+	}
+	if bt.Blocker.NextAction != "repair_worktree" {
+		t.Errorf("Blocked[0].Blocker.NextAction = %q, want %q", bt.Blocker.NextAction, "repair_worktree")
 	}
 }
 

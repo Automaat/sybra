@@ -23,10 +23,11 @@ type execer interface {
 type ghExecer struct{}
 
 func (ghExecer) run(args ...string) ([]byte, error) {
-	return ghGate.execute(func() ([]byte, error) {
-		// context.Background(): this is the plain, uncancellable fallback path
-		// (see runE below) — callers that want cancellation use runCtx/ghRunCtx.
-		cmd := exec.CommandContext(context.Background(), "gh", args...)
+	// context.Background(): this is the plain, uncancellable fallback path
+	// (see runE below) — callers that want cancellation use runCtx/ghRunCtx.
+	ctx := context.Background()
+	return ghGate.execute(ctx, func() ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "gh", args...)
 		if env := ghEnv(); env != nil {
 			cmd.Env = env
 		}
@@ -38,7 +39,7 @@ func (ghExecer) run(args ...string) ([]byte, error) {
 // expires — releasing the global request gate instead of holding it for the
 // kernel TCP timeout. Used by latency-sensitive callers (the PR poll loop).
 func ghRunCtx(ctx context.Context, args ...string) ([]byte, error) {
-	return ghGate.execute(func() ([]byte, error) {
+	return ghGate.execute(ctx, func() ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "gh", args...)
 		if env := ghEnv(); env != nil {
 			cmd.Env = env
@@ -199,6 +200,7 @@ const prQuery = `query($q: String!) {
         title
         url
         headRefName
+        headRepositoryOwner { login }
         isDraft
         mergeable
         createdAt
@@ -216,7 +218,14 @@ const prQuery = `query($q: String!) {
                 contexts(first: 50) {
                   nodes {
                     __typename
-                    ... on CheckRun { name status conclusion }
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                      startedAt
+                      completedAt
+                      checkSuite { workflowRun { id runAttempt } }
+                    }
                     ... on StatusContext { name: context state }
                   }
                 }
@@ -247,12 +256,20 @@ const prQuery = `query($q: String!) {
 // source. Only `CheckRun` populates status/conclusion, so callers must
 // dispatch on Typename.
 type gqlCheckContext struct {
-	Typename   string `json:"__typename"`
-	Name       string `json:"name"`
-	Context    string `json:"context"`    // StatusContext, non-GraphQL-aliased sources only
-	Status     string `json:"status"`     // CheckRun only: QUEUED|IN_PROGRESS|COMPLETED|...
-	Conclusion string `json:"conclusion"` // CheckRun only: SUCCESS|FAILURE|NEUTRAL|...
-	State      string `json:"state"`      // StatusContext only: PENDING|SUCCESS|FAILURE|ERROR|EXPECTED
+	Typename    string `json:"__typename"`
+	Name        string `json:"name"`
+	Context     string `json:"context"`     // StatusContext, non-GraphQL-aliased sources only
+	Status      string `json:"status"`      // CheckRun only: QUEUED|IN_PROGRESS|COMPLETED|...
+	Conclusion  string `json:"conclusion"`  // CheckRun only: SUCCESS|FAILURE|NEUTRAL|...
+	State       string `json:"state"`       // StatusContext only: PENDING|SUCCESS|FAILURE|ERROR|EXPECTED
+	StartedAt   string `json:"startedAt"`   // CheckRun only: RFC3339, when the run began
+	CompletedAt string `json:"completedAt"` // CheckRun only: RFC3339, when the run finished
+	CheckSuite  struct {
+		WorkflowRun *struct {
+			ID         string `json:"id"`
+			RunAttempt int    `json:"runAttempt"`
+		} `json:"workflowRun"`
+	} `json:"checkSuite"` // GitHub Actions only; nil for non-Actions checks
 }
 
 // effectiveName returns the check's display name regardless of which JSON
@@ -262,6 +279,39 @@ func (c gqlCheckContext) effectiveName() string {
 		return c.Name
 	}
 	return c.Context
+}
+
+// startedTime / completedTime parse the RFC3339 CheckRun timestamps, returning
+// the zero time when absent or unparseable (StatusContext, older gh shapes).
+// flakyOnlyFailure treats a zero time as "unknown" and refuses to classify the
+// check as flaky, so a missing timestamp fails safe toward the deterministic
+// fix path.
+func (c gqlCheckContext) startedTime() time.Time   { return parseCheckTime(c.StartedAt) }
+func (c gqlCheckContext) completedTime() time.Time { return parseCheckTime(c.CompletedAt) }
+
+func (c gqlCheckContext) workflowRunAttempt() int {
+	if c.CheckSuite.WorkflowRun == nil {
+		return 0
+	}
+	return c.CheckSuite.WorkflowRun.RunAttempt
+}
+
+func (c gqlCheckContext) workflowRunID() string {
+	if c.CheckSuite.WorkflowRun == nil {
+		return ""
+	}
+	return c.CheckSuite.WorkflowRun.ID
+}
+
+func parseCheckTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 type gqlStatusCheckRollup struct {
@@ -290,11 +340,14 @@ type gqlResponse struct {
 }
 
 type gqlPR struct {
-	Number         int    `json:"number"`
-	Title          string `json:"title"`
-	URL            string `json:"url"`
-	State          string `json:"state"`
-	HeadRefName    string `json:"headRefName"`
+	Number              int    `json:"number"`
+	Title               string `json:"title"`
+	URL                 string `json:"url"`
+	State               string `json:"state"`
+	HeadRefName         string `json:"headRefName"`
+	HeadRepositoryOwner struct {
+		Login string `json:"login"`
+	} `json:"headRepositoryOwner"`
 	BaseRefName    string `json:"baseRefName"`
 	IsDraft        bool   `json:"isDraft"`
 	Mergeable      string `json:"mergeable"`
@@ -377,7 +430,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 	}
 
 	var ciStatus string
-	var hasPendingChecks bool
+	var hasPendingChecks, ciFlaky bool
 	var headSHA string
 	if len(n.Commits.Nodes) > 0 {
 		headSHA = n.Commits.Nodes[0].Commit.OID
@@ -392,13 +445,14 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 				hasPendingChecks = filteredPending
 			} else {
 				ciStatus = rollup.State
-				for _, ctx := range rollup.Contexts.Nodes {
-					if ctx.Status != "" && ctx.Status != "COMPLETED" {
+				for i := range rollup.Contexts.Nodes {
+					if s := rollup.Contexts.Nodes[i].Status; s != "" && s != "COMPLETED" {
 						hasPendingChecks = true
 						break
 					}
 				}
 			}
+			ciFlaky = ciStatus == "FAILURE" && flakyOnlyFailure(rollup.Contexts.Nodes)
 		}
 	}
 
@@ -450,6 +504,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		Title:             n.Title,
 		URL:               n.URL,
 		HeadRefName:       n.HeadRefName,
+		HeadRepoOwner:     n.HeadRepositoryOwner.Login,
 		BaseRefName:       n.BaseRefName,
 		HeadSHA:           headSHA,
 		Repository:        n.Repository.NameWithOwner,
@@ -460,6 +515,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		Labels:            labels,
 		CIStatus:          ciStatus,
 		HasPendingChecks:  hasPendingChecks,
+		CIFlaky:           ciFlaky,
 		ReviewDecision:    n.ReviewDecision,
 		UnresolvedCount:   unresolved,
 		ActionableCount:   actionable,
@@ -613,20 +669,17 @@ func IsTransientError(err error) bool {
 }
 
 // IsAuthError reports whether err is a GitHub authentication failure — an
-// invalid/expired/revoked token (HTTP 401 / "Bad credentials") or gh having
-// no credentials configured at all (its local preflight fails before any
+// invalid/expired/revoked token (HTTP 401 / "Bad credentials"), gh having no
+// credentials configured at all (its local preflight fails before any
 // request with a "please run gh auth login" guidance message rather than an
-// API error). Neither resolves on its own: an invalid token needs a human to
-// rotate it, and a missing token needs App auth or `gh auth login`
-// configured — so pollers should circuit-break on this instead of retrying
-// at their normal cadence.
+// API error), or the shared auth circuit breaker suppressing the call
+// outright (see AuthCircuitOpen). All three resolve the same way from a
+// caller's perspective — not by retrying immediately, but by backing off and
+// letting the centralized auth-health state machine self-heal — so pollers
+// should circuit-break on this instead of retrying at their normal cadence.
 func IsAuthError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 401") ||
-		strings.Contains(msg, "bad credentials") ||
-		strings.Contains(msg, "gh auth login") ||
-		strings.Contains(msg, "gh_token environment variable")
+	return isAuthErrorMsg(err.Error())
 }

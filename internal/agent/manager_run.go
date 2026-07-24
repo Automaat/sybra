@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/google/uuid"
 )
 
@@ -27,11 +28,20 @@ func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt, dir string, allowe
 	return m.Run(RunConfig{TaskID: taskID, Name: taskTitle, Mode: mode, Prompt: prompt, AllowedTools: allowedTools, Dir: dir})
 }
 
+// RunWithCapacityReservation consumes reservation if the run reaches
+// registerRunningAgent; otherwise the caller still owns it and must release it.
+func (m *Manager) RunWithCapacityReservation(cfg RunConfig, reservation *CapacityReservation) (*Agent, error) {
+	cfg.capacityReservation = reservation
+	return m.Run(cfg)
+}
+
 func (a *Agent) setAssignment(cfg RunConfig) {
 	a.ExperimentID = cfg.ExperimentID
 	a.VariantID = cfg.VariantID
+	a.RoutingReason = cfg.RoutingReason
 	a.AssignmentUnit = cfg.AssignmentUnit
 	a.AssignmentKey = cfg.AssignmentKey
+	a.DecisionVersion = cfg.DecisionVersion
 }
 
 func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
@@ -102,26 +112,82 @@ func (m *Manager) jitterDispatchContext(ctx context.Context) error {
 	}
 }
 
+// warnUnenforceableAllowedTools reports a step whose allowed_tools list the
+// resolved provider cannot enforce.
+//
+// The check lives here rather than in Definition.Validate because `ab` and
+// `cross` pick the provider at dispatch: the same step is enforced on a claude
+// spawn and unenforced on the copilot spawn beside it, so which guarantee you
+// get depends on where the run landed. Nothing surfaced that before.
+//
+// It warns rather than refusing or re-routing. Excluding providers that cannot
+// enforce would silently narrow failover and strand a step whenever claude is
+// capped — the stranding shape that produced #2150's spin loop — and refusing
+// outright would break every step that has always used the list as an allowance
+// rather than a fence. The OS-level process sandbox (procsandbox_*.go) is the
+// boundary that actually binds every provider; allowed_tools is advisory
+// wherever this warns.
+func (m *Manager) warnUnenforceableAllowedTools(cfg RunConfig, prov Provider) {
+	if len(cfg.AllowedTools) == 0 || prov.HonorsAllowedTools() {
+		return
+	}
+	m.logger.Warn("agent.run.allowed_tools.unenforced",
+		"task_id", cfg.TaskID, "name", cfg.Name, "provider", prov.Name(),
+		"allowed_tools", strings.Join(cfg.AllowedTools, ","),
+		"detail", "provider ignores allowed_tools; the agent runs with its default tool reach and only the prompt and the process sandbox constrain it")
+}
+
 func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := validateRunDir(cfg.Dir); err != nil {
 		return cfg, nil, err
 	}
+	role, roleErr := ResolveRunRole(cfg.Role, cfg.Name)
+	if roleErr != nil {
+		return cfg, nil, roleErr
+	}
+	cfg.Role = role
+	m.mu.RLock()
+	if cfg.Model == "" {
+		cfg.Model = m.defaultModel
+	}
+	m.mu.RUnlock()
 	if cfg.SeedWorkingMemory {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
 	cfg.Prompt = withBackgroundTaskGuardrail(cfg.Prompt, cfg)
-	resolvedProvider, gateErr := m.gateProvider(cfg)
+	resolvedProvider, routingReason, gateEvents, gateErr := m.resolveProviderDecision(cfg)
 	if gateErr != nil {
+		m.emitProviderGateEvents(gateEvents)
 		return cfg, nil, gateErr
 	}
+	m.emitProviderGateEvents(gateEvents)
+	cfg.RoutingReason = routingReason
 	prov, providerErr := lookupProvider(resolvedProvider)
 	if providerErr != nil {
 		return cfg, nil, providerErr
 	}
-	if err := m.resolveWorkflowSkillPrompt(&cfg, prov.Name()); err != nil {
+	requestedProvider, requestedErr := m.providerForRun(cfg.Provider)
+	if requestedErr != nil {
+		return cfg, nil, requestedErr
+	}
+	resolvedModel, nextRequestedModel, modelErr := resolveRunModel(requestedProvider, prov.Name(), cfg.Model)
+	if modelErr != nil {
+		m.logger.Warn("agent.run.provider_model_incompatible",
+			"task_id", cfg.TaskID,
+			"requested_provider", requestedProvider,
+			"selected_provider", prov.Name(),
+			"model", cfg.Model,
+			"err", modelErr,
+		)
+		return cfg, nil, modelErr
+	}
+	cfg.Model = nextRequestedModel
+	cfg.resolvedModel = resolvedModel
+	if err := m.resolveWorkflowSkillPrompt(&cfg, prov); err != nil {
 		return cfg, nil, err
 	}
 	cfg.provider = prov
+	m.warnUnenforceableAllowedTools(cfg, prov)
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 	if cfg.Mode == "headless" {
 		m.mu.RLock()
@@ -129,7 +195,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		m.mu.RUnlock()
 		// Verifier/system roles and fix-review dispatch unattended (no caller
 		// ever writes a steer message) — see Role.SupportsHeadlessSteer.
-		cfg.HeadlessSteerable = steerable && RoleFromName(cfg.Name).SupportsHeadlessSteer()
+		cfg.HeadlessSteerable = steerable && cfg.Role.SupportsHeadlessSteer()
 	}
 	cfg.approvalAddr = m.approvalAddr
 	// Headless Claude runs with require_permissions:true rely on Sybra's
@@ -174,9 +240,6 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	m.preparePlaywrightMCP(&cfg)
 
 	m.mu.RLock()
-	if cfg.Model == "" {
-		cfg.Model = m.defaultModel
-	}
 	if cfg.BashTimeoutMs == 0 {
 		cfg.BashTimeoutMs = m.bashTimeoutMs
 	}
@@ -320,6 +383,9 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
+	if cfg.ReadOnlyDir {
+		return m.injectReadOnlyProcessSandbox(cfg, mode)
+	}
 	worktree := cfg.Dir
 	sandboxHome := cfg.resolvedSandboxHome
 	if sandboxHome == "" {
@@ -351,6 +417,14 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
+	return m.buildEnforceSpec(cfg, gitCtx, worktree, sandboxHome, tmp, sharedCache, gitRoots, gitErr)
+}
+
+// buildEnforceSpec canonicalizes every enforce-mode write root and the git
+// branch overlay, then assembles cfg.sandbox. Split out of
+// injectProcessSandbox purely to keep that function's posture-selection
+// logic (off/report/enforce, sandbox-exec availability) readable on its own.
+func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, worktree, sandboxHome, tmp, sharedCache string, gitRoots gitSandboxRoots, gitErr error) error {
 	canonWorktree, err := canonicalizeRoot(worktree)
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
@@ -390,7 +464,7 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
-	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, canonSharedCache, profilePath, gitRoots, gitOverlay)
+	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, canonSharedCache, profilePath, "", gitRoots, gitOverlay)
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
 		"git_metadata", cfg.sandbox.gitMetadata,
@@ -401,6 +475,93 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		"opencode_state", cfg.sandbox.opencodeState, "git_admin", cfg.sandbox.gitAdminDir,
 		"git_common", cfg.sandbox.gitCommonDir, "git_worktrees", cfg.sandbox.gitWorktrees,
 		"tool_cache", cfg.sandbox.toolCache, "profile", profilePath)
+	return nil
+}
+
+// injectReadOnlyProcessSandbox is injectProcessSandbox's variant for runs
+// whose cfg.Dir must stay read-only under enforce (RunConfig.ReadOnlyDir).
+// It grants the same sandbox-home/tmp/shared-cache write roots as the normal
+// path but never registers cfg.Dir, its .git metadata, or a git overlay as
+// one of those writable roots.
+//
+// That omission alone is not sufficient: tmp/sandboxHome/sharedCache are
+// broad roots (tmp in particular is the whole system temp dir) that can
+// legitimately contain cfg.Dir as a subdirectory — e.g. a manual-test rig
+// that stages every path under one /tmp/tmp.XXXXXX sandbox — and a bind
+// mount only shadows an ancestor's mount for paths bound *after* it. So
+// cfg.Dir is additionally canonicalized into sandbox.readOnlyDir and
+// re-bound read-only as the very last bind in wrapInvocation, overriding any
+// such accidental containment inside one of the writable roots.
+func (m *Manager) injectReadOnlyProcessSandbox(cfg *RunConfig, mode string) error {
+	dir := cfg.Dir
+	sandboxHome := cfg.resolvedSandboxHome
+	tmp := os.TempDir()
+	sharedCache := sharedBuildCacheDir()
+
+	if !sandboxExecAvailable() {
+		if mode == "enforce" {
+			err := fmt.Errorf("agent.Run: enforce sandbox mode requires %s, which is unavailable on this host", sandboxWrapperName())
+			m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+			return err
+		}
+		m.logger.Warn("agent.sandbox.report.unavailable", "task_id", cfg.TaskID)
+		cfg.sandbox = sandboxSpec{mode: "off"}
+		return nil
+	}
+	if mode != "enforce" {
+		m.logger.Info("agent.sandbox.report.readonly_dir", "task_id", cfg.TaskID, "dir", dir,
+			"sandbox_home", m.reportSandboxRoot(cfg.TaskID, "sandbox_home", sandboxHome),
+			"tmp", m.reportSandboxRoot(cfg.TaskID, "tmp", tmp),
+			"shared_cache", m.reportSandboxRoot(cfg.TaskID, "shared_cache", sharedCache))
+		cfg.sandbox = sandboxSpec{mode: "off"}
+		return nil
+	}
+	// sandboxHome must never fall back to dir here (unlike injectSandboxHome's
+	// general fallback elsewhere): dir is exactly the path this function
+	// exists to keep read-only, so defaulting sandboxHome to it would grant
+	// the write access ReadOnlyDir was set to deny.
+	if sandboxHome == "" {
+		err := fmt.Errorf("agent.Run: read-only-dir run %q has no resolved sandbox home", cfg.TaskID)
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return err
+	}
+	canonDir, err := canonicalizeRoot(dir)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox read-only dir: %w", err)
+	}
+	canonSandboxHome, err := canonicalizeRoot(sandboxHome)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox home root: %w", err)
+	}
+	canonTmp, err := canonicalizeRoot(tmp)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox tmp root: %w", err)
+	}
+	canonSharedCache, err := canonicalizeCreatedRoot(sharedCache, 0o755)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox shared-cache root: %w", err)
+	}
+	if canonDir == canonSandboxHome || canonDir == canonTmp || canonDir == canonSharedCache {
+		err := fmt.Errorf("agent.Run: read-only dir %q collides with a writable sandbox root", canonDir)
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return err
+	}
+	profilePath, err := materializeSandboxProfile()
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
+	}
+	cfg.sandbox = enforceSpec("", nil, canonSandboxHome, canonTmp, canonSharedCache, profilePath, canonDir, gitSandboxRoots{}, gitSandboxOverlay{})
+	m.logger.Info("agent.sandbox.enforce.readonly_dir", "task_id", cfg.TaskID,
+		"dir", canonDir, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
+		"shared_cache", canonSharedCache, "claude_state", cfg.sandbox.claudeState,
+		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
+		"opencode_state", cfg.sandbox.opencodeState, "tool_cache", cfg.sandbox.toolCache,
+		"profile", profilePath)
 	return nil
 }
 
@@ -435,7 +596,7 @@ func canonicalizeCreatedRoot(root string, perm os.FileMode) (string, error) {
 func enforceSpec(
 	worktree string,
 	gitMetadata []string,
-	sandboxHome, tmp, sharedCache, profilePath string,
+	sandboxHome, tmp, sharedCache, profilePath, readOnlyDir string,
 	gitRoots gitSandboxRoots,
 	gitOverlay gitSandboxOverlay,
 ) sandboxSpec {
@@ -449,6 +610,7 @@ func enforceSpec(
 		tmp:                    tmp,
 		sharedCache:            sharedCache,
 		profilePath:            profilePath,
+		readOnlyDir:            readOnlyDir,
 		gitAdminDir:            gitRoots.adminDir,
 		gitCommonDir:           gitRoots.commonDir,
 		gitWorktrees:           gitRoots.worktreesDir,
@@ -636,32 +798,48 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		ID:                      id,
 		TaskID:                  cfg.TaskID,
 		Name:                    cfg.Name,
+		Role:                    cfg.Role,
 		Mode:                    cfg.Mode,
 		Provider:                prov.Name(),
-		Model:                   prov.NormalizeModel(cfg.Model),
+		Model:                   cfg.resolvedModel,
+		RequestedModel:          cfg.Model,
 		ReasoningEffort:         cfg.ReasoningEffort,
 		RequestedSkill:          cfg.RequestedSkill,
 		SkillExecutionMode:      cfg.SkillExecutionMode,
 		ResolvedSkillSourceHash: cfg.ResolvedSkillSourceHash,
 		SkillConformance:        cfg.SkillConformance,
+		OutputSchema:            cfg.OutputSchema,
 		skillRecoveryAttempt:    cfg.SkillRecoveryAttempt,
-		Prompt:                  cfg.Prompt,
-		State:                   StateRunning,
-		StartedAt:               now,
-		LastEventAt:             now,
-		cancel:                  cancel,
-		sessionCWD:              cfg.Dir,
-		sandboxHomeDir:          cfg.resolvedSandboxHome,
-		MaxTurns:                cfg.MaxTurns,
-		oneShot:                 cfg.OneShot,
-		requirePermissions:      cfg.RequirePermissions,
-		sandboxMode:             cfg.SandboxMode,
-		headlessPermissionMode:  cfg.HeadlessPermissionMode,
+		// Only a provider that actually forwards OutputSchema to its CLI makes
+		// the conformance receipt unsatisfiable; copilot/opencode ignore it, so
+		// their runs still get (and must pass) receipt verification. Mirror the
+		// exact wantReceipt condition in resolveWorkflowSkillPrompt.
+		hasOutputSchema: cfg.OutputSchema != "" && prov.EnforcesOutputSchema(),
+		Prompt:          cfg.Prompt,
+		// Stamp the canonical dispatch prompt hash centrally for every run
+		// (all providers, all roles, both modes). cfg.Prompt is the fully
+		// prepared prompt (post NOTES.md/guardrail/skill preparation) — the
+		// same value recordImplAgentStart hashes. Stamping here (not only in
+		// the implementation-only dispatch path) is what lets completion emit
+		// agent.prompt_rendered for review/fix-review/pr-fix/human-review/
+		// workflow runs, which also record provider render summaries.
+		promptHash:             skillattr.HashSourceID(cfg.Prompt),
+		State:                  StateRunning,
+		StartedAt:              now,
+		LastEventAt:            now,
+		cancel:                 cancel,
+		sessionCWD:             cfg.Dir,
+		sandboxHomeDir:         cfg.resolvedSandboxHome,
+		MaxTurns:               cfg.MaxTurns,
+		oneShot:                cfg.OneShot,
+		requirePermissions:     cfg.RequirePermissions,
+		sandboxMode:            cfg.SandboxMode,
+		headlessPermissionMode: cfg.HeadlessPermissionMode,
 	}
 	if cfg.ResumeSessionID != "" {
 		a.SetSessionID(cfg.ResumeSessionID)
 	}
-	if cfg.Mode == "headless" || cfg.Mode == "interactive" {
+	if cfg.Mode == "headless" {
 		a.done = make(chan struct{})
 	}
 	if cfg.Mode == "headless" {
@@ -673,7 +851,11 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 
 func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.CancelFunc) error {
 	m.mu.Lock()
-	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.liveCount >= m.maxConcurrent {
+	reserved := false
+	if !cfg.IgnoreConcurrencyLimit && cfg.capacityReservation != nil && cfg.capacityReservation.manager == m {
+		reserved = cfg.capacityReservation.consumeLocked()
+	}
+	if !cfg.IgnoreConcurrencyLimit && !reserved && m.maxConcurrent > 0 && m.liveCount+m.reservedCount >= m.maxConcurrent {
 		m.mu.Unlock()
 		cancel()
 		return fmt.Errorf("%w (%d)", ErrMaxConcurrentReached, m.maxConcurrent)
@@ -700,17 +882,6 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 			return nil
 		}
 		go m.runHeadless(ctx, a, cfg)
-	case "interactive":
-		// codex, copilot, and opencode use the per-turn conversational runner (each turn
-		// spawns a fresh process); claude uses the persistent approval-hook
-		// runner. Copilot/OpenCode permission models are CLI-flag based (no HTTP
-		// approval hook), so the per-turn shape fits it like codex.
-		if prov.UsesPerTurnConvo() {
-			a.setPromptChannel(make(chan string, 1))
-			go m.runPerTurnConversational(ctx, a, cfg, false)
-		} else {
-			go m.runConversational(ctx, a, cfg)
-		}
 	default:
 		cancel()
 		return fmt.Errorf("unknown mode: %s", cfg.Mode)
@@ -793,7 +964,10 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	model := prov.NormalizeModel(cfg.Model)
+	model, err := resolvedModelForRun(cfg, prov)
+	if err != nil {
+		return "", err
+	}
 	if model != "" && !safeArgRe.MatchString(model) {
 		return "", fmt.Errorf("invalid model %q: must match %s", cfg.Model, safeArgRe)
 	}
@@ -816,7 +990,7 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 // though the two calls can in principle disagree if gate state changes in
 // between.
 func (m *Manager) ResolveProvider(cfg RunConfig) (string, error) {
-	resolved, _, err := m.resolveProviderDecision(cfg)
+	resolved, _, _, err := m.resolveProviderDecision(cfg)
 	return resolved, err
 }
 
@@ -840,7 +1014,7 @@ type providerGateEvent struct {
 // peer, the peer is returned. Otherwise returns a typed UnhealthyError so
 // callers can detect via errors.Is(err, provider.ErrProviderUnhealthy).
 func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
-	resolved, gateEvents, err := m.resolveProviderDecision(cfg)
+	resolved, _, gateEvents, err := m.resolveProviderDecision(cfg)
 	m.emitProviderGateEvents(gateEvents)
 	return resolved, err
 }
@@ -878,13 +1052,21 @@ func (m *Manager) emitProviderGateEvents(gateEvents []providerGateEvent) {
 // would dispatch to, applying health-gate / limit-gate failover logic. It is
 // side-effect free: metrics/log emissions are returned as providerGateEvent
 // values for the caller to apply (gateProvider) or discard (ResolveProvider).
-func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGateEvent, error) {
+func (m *Manager) resolveProviderDecision(cfg RunConfig) (resolvedProvider, routingReason string, gateEvents []providerGateEvent, err error) {
 	resolved, err := m.providerForRun(cfg.Provider)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
+	}
+	routingReason = cfg.RoutingReason
+	if routingReason == "" {
+		if strings.TrimSpace(cfg.Provider) == "" {
+			routingReason = "default"
+		} else {
+			routingReason = "explicit"
+		}
 	}
 	if cfg.IgnoreHealthGate {
-		return resolved, nil, nil
+		return resolved, routingReason, nil, nil
 	}
 	m.mu.RLock()
 	g := m.gate
@@ -899,13 +1081,12 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 	healthy := func(p string) bool {
 		return (g == nil || g.IsHealthy(p)) && underCap(p)
 	}
-	var gateEvents []providerGateEvent
 	candidateProviders := providerid.All()
 	if g != nil && !g.IsHealthy(resolved) {
 		if cfg.DisableProviderFailover {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, newProviderUnhealthy(resolved, reason)
+			return "", routingReason, gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 		alt := g.Failover(resolved)
 		if alt != "" && !underCap(alt) {
@@ -920,21 +1101,22 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		if alt != "" {
 			altProv, err := lookupProvider(alt)
 			if err != nil {
-				return "", gateEvents, err
+				return "", routingReason, gateEvents, err
 			}
 			gateEvents = append(gateEvents, providerGateEvent{
 				kind: "failover", from: resolved, to: altProv.Name(),
 				reason: g.Reason(resolved), logKey: "agent.run.failover", logLevel: "warn", taskID: cfg.TaskID,
 			})
 			resolved = altProv.Name()
+			routingReason = "failover"
 		} else {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, newProviderUnhealthy(resolved, reason)
+			return "", routingReason, gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 	}
 	if lg == nil {
-		return resolved, gateEvents, nil
+		return resolved, routingReason, gateEvents, nil
 	}
 	if ok, reason := lg.ProviderAvailable(resolved, lp); ok {
 		if !cfg.DisableProviderFailover {
@@ -951,24 +1133,24 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 					gateEvents = append(gateEvents, providerGateEvent{
 						kind: "failover", from: resolved, to: alt, logKey: "agent.run.cap_redirect", logLevel: "info", taskID: cfg.TaskID,
 					})
-					return alt, gateEvents, nil
+					return alt, "limit", gateEvents, nil
 				}
 			} else if lp.PreferUnderused {
 				if alt, altReason := lg.ChooseProvider(resolved, candidateProviders, healthy, lp); alt != "" {
 					gateEvents = append(gateEvents, providerGateEvent{
 						kind: "failover", from: resolved, to: alt, reason: altReason, logKey: "agent.run.limit_select", logLevel: "info", taskID: cfg.TaskID,
 					})
-					return alt, gateEvents, nil
+					return alt, "limit", gateEvents, nil
 				}
 			}
 		}
-		return resolved, gateEvents, nil
+		return resolved, routingReason, gateEvents, nil
 	} else if !cfg.DisableProviderFailover {
 		if alt, altReason := lg.ChooseProvider(resolved, candidateProviders, healthy, lp); alt != "" {
 			gateEvents = append(gateEvents, providerGateEvent{
 				kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.limit_failover", logLevel: "warn", taskID: cfg.TaskID,
 			})
-			return alt, gateEvents, nil
+			return alt, "limit", gateEvents, nil
 		}
 		// No fully available peer exists. Before failing closed, check
 		// whether a peer is only soft-threshold limited (e.g. near its
@@ -983,24 +1165,24 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 				gateEvents = append(gateEvents, providerGateEvent{
 					kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.soft_limit_peer_failover", logLevel: "warn", taskID: cfg.TaskID,
 				})
-				return alt, gateEvents, nil
+				return alt, "limit", gateEvents, nil
 			}
 		}
-		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
+		return m.softLimitLastResort(resolved, routingReason, reason, gateEvents, cfg.TaskID)
 	} else {
-		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
+		return m.softLimitLastResort(resolved, routingReason, reason, gateEvents, cfg.TaskID)
 	}
 }
 
-func (m *Manager) softLimitLastResort(resolved, reason string, gateEvents []providerGateEvent, taskID string) (string, []providerGateEvent, error) {
+func (m *Manager) softLimitLastResort(resolved, routingReason, reason string, gateEvents []providerGateEvent, taskID string) (selectedProvider, selectedRoutingReason string, updatedGateEvents []providerGateEvent, err error) {
 	if limits.IsSoftThresholdReason(reason) {
 		gateEvents = append(gateEvents, providerGateEvent{
 			kind: "soft_limit", provider: resolved, reason: reason, logKey: "agent.run.soft_limit_last_resort", taskID: taskID,
 		})
-		return resolved, gateEvents, nil
+		return resolved, routingReason, gateEvents, nil
 	}
 	gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-	return "", gateEvents, newProviderUnhealthy(resolved, reason)
+	return "", routingReason, gateEvents, newProviderUnhealthy(resolved, reason)
 }
 
 func newProviderUnhealthy(prov, reason string) *provider.UnhealthyError {
@@ -1011,20 +1193,25 @@ func newProviderUnhealthy(prov, reason string) *provider.UnhealthyError {
 	}
 }
 
-// firstHealthyProvider returns the first candidate (other than exclude) for
-// which healthy reports true, or "" if none qualify. Used for the in-flight
-// cap redirect, which must pick deterministically without consulting the
-// limits store's quota-pressure heuristics.
+// firstHealthyProvider returns a uniformly random candidate (other than
+// exclude) for which healthy reports true, or "" if none qualify. Used for
+// the in-flight cap redirect, which picks without consulting the limits
+// store's quota-pressure heuristics — but must still not always land on the
+// same peer, so no single provider is systematically favored or starved.
 func firstHealthyProvider(exclude string, candidates []string, healthy func(string) bool) string {
+	eligible := make([]string, 0, len(candidates))
 	for _, p := range candidates {
 		if p == exclude {
 			continue
 		}
 		if healthy(p) {
-			return p
+			eligible = append(eligible, p)
 		}
 	}
-	return ""
+	if len(eligible) == 0 {
+		return ""
+	}
+	return eligible[rand.IntN(len(eligible))]
 }
 
 func (m *Manager) providerForRun(name string) (string, error) {

@@ -1,6 +1,9 @@
 package agent
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Role identifies the purpose of an agent run.
 type Role string
@@ -10,13 +13,32 @@ const (
 	RolePlan           Role = "plan"
 	RolePlanCritic     Role = "plan-critic"
 	RoleEval           Role = "eval"
+	RoleLoop           Role = "loop"
+	RoleMonitor        Role = "monitor"
+	RoleOrchestrator   Role = "orchestrator"
 	RolePRFix          Role = "pr-fix"
 	RoleReview         Role = "review"
 	RoleFixReview      Role = "fix-review"
 	RoleTestRunner     Role = "test-runner"
 	RoleImplementation Role = "implementation"
 	RoleHumanReview    Role = "human-review"
+	// RoleTestFix is pr-fix's bounded follow-up: given the specific failing
+	// tests pr-fix already found (PRFixVerdictVar's sibling failing-tests
+	// var), fix only those and nothing else. Dispatched at most once per
+	// pr-fix run — see pr-fix.yaml's test_fix/route_test_fix_result steps.
+	RoleTestFix Role = "test-fix"
 )
+
+func (r Role) IsKnown() bool {
+	switch r {
+	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor, RoleOrchestrator,
+		RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation,
+		RoleHumanReview, RoleTestFix:
+		return true
+	default:
+		return false
+	}
+}
 
 // AgentName returns the prefixed name used when launching an agent
 // (e.g. "triage:My Task Title").
@@ -31,7 +53,7 @@ func (r Role) AgentName(title string) string { return string(r) + ":" + title }
 // implementation, matching RoleFromName.
 func (r Role) AuthorsCode() bool {
 	switch r {
-	case RoleImplementation, RoleFixReview, RolePRFix, "":
+	case RoleImplementation, RoleFixReview, RolePRFix, RoleTestFix, "":
 		return true
 	default:
 		return false
@@ -52,9 +74,15 @@ func (r Role) IsVerifier() bool {
 }
 
 // IsSystem returns true for roles whose agents should not trigger
-// user-facing notifications (triage, eval, plan-critic, human-review).
+// user-facing notifications (triage, eval, plan-critic, human-review,
+// monitor, loop, orchestrator).
 func (r Role) IsSystem() bool {
-	return r == RoleTriage || r == RoleEval || r == RolePlanCritic || r == RoleHumanReview
+	switch r {
+	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview, RoleMonitor, RoleLoop, RoleOrchestrator:
+		return true
+	default:
+		return false
+	}
 }
 
 // SupportsHeadlessSteer reports whether headless runs of this role should be
@@ -70,7 +98,15 @@ func (r Role) IsSystem() bool {
 // #1825: the process sat waiting on a FIFO no caller intended to feed.
 // Excluding these roles falls back to the plain one-shot `-p <prompt>`
 // invocation, which has no stdin dependency to hang on.
+//
+// RoleOrchestrator is the one system role exempted from that exclusion: it
+// is the long-lived brain session a human actively drives via SendMessage
+// (unlike the other system roles, which are dispatched unattended), so it
+// needs the steerable transport despite being IsSystem().
 func (r Role) SupportsHeadlessSteer() bool {
+	if r == RoleOrchestrator {
+		return true
+	}
 	if r.IsVerifier() || r.IsSystem() {
 		return false
 	}
@@ -85,19 +121,62 @@ func ParseRoleFromName(name string) (Role, bool) {
 		return RoleImplementation, false
 	}
 	r := Role(prefix)
-	switch r {
-	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation, RoleHumanReview:
+	if r.IsKnown() {
 		return r, true
-	default:
-		return RoleImplementation, false
 	}
+	return RoleImplementation, false
 }
 
 // RoleFromName extracts the Role from a prefixed agent name.
 // Returns RoleImplementation for names without a known prefix.
+// Legacy-only fallback: new dispatch paths should set RunConfig.Role.
 func RoleFromName(name string) Role {
 	r, _ := ParseRoleFromName(name)
 	return r
+}
+
+// ResolveRunRole returns the effective role for a newly dispatched run.
+// Explicit cfg.Role wins. Prefix parsing remains only as a compatibility path
+// for callers that still build Name-only configs.
+func ResolveRunRole(role Role, name string) (Role, error) {
+	if role != "" {
+		if role.IsKnown() {
+			return role, nil
+		}
+		return "", errUnknownRole(role)
+	}
+	if !strings.Contains(name, ":") {
+		return RoleImplementation, nil
+	}
+	if resolved, ok := ParseRoleFromName(name); ok {
+		return resolved, nil
+	}
+	prefix, _, _ := strings.Cut(name, ":")
+	if !looksLikeRoleToken(prefix) {
+		return RoleImplementation, nil
+	}
+	return "", errUnknownRolePrefix(name)
+}
+
+func looksLikeRoleToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func errUnknownRole(role Role) error {
+	return fmt.Errorf("unknown agent role %q", role)
+}
+
+func errUnknownRolePrefix(name string) error {
+	prefix, _, _ := strings.Cut(name, ":")
+	return fmt.Errorf("unknown agent role prefix %q in %q", prefix, name)
 }
 
 // DefaultReasoningEffort returns the built-in per-role reasoning-effort
@@ -109,9 +188,9 @@ func RoleFromName(name string) Role {
 // via the empty return.
 func (r Role) DefaultReasoningEffort() string {
 	switch r {
-	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview:
+	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview, RoleMonitor:
 		return "low"
-	case RoleImplementation, RoleFixReview, RolePRFix:
+	case RoleImplementation, RoleFixReview, RolePRFix, RoleTestFix:
 		return "high"
 	default:
 		return ""

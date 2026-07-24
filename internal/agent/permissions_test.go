@@ -13,14 +13,14 @@ func TestClaudePermissionArgs(t *testing.T) {
 		mode         string
 		want         []string
 	}{
-		{"allowlist wins over bypass", []string{"Bash", "Read"}, false, "bypass", []string{"--allowedTools", "Bash,Read"}},
-		{"allowlist wins over auto", []string{"Bash"}, false, "auto", []string{"--allowedTools", "Bash"}},
-		{"allowlist wins over requirePerms", []string{"Read"}, true, "auto", []string{"--allowedTools", "Read"}},
-		{"requirePerms → nil", nil, true, "bypass", nil},
-		{"requirePerms with auto → nil", nil, true, "auto", nil},
-		{"auto mode", nil, false, "auto", []string{"--permission-mode", "auto"}},
-		{"bypass mode", nil, false, "bypass", []string{"--dangerously-skip-permissions"}},
-		{"empty mode → bypass", nil, false, "", []string{"--dangerously-skip-permissions"}},
+		{"allowlist wins over bypass", []string{"Bash", "Read"}, false, "bypass", []string{"--allowedTools", "Bash,Read", "--disallowedTools", "ScheduleWakeup"}},
+		{"allowlist wins over auto", []string{"Bash"}, false, "auto", []string{"--allowedTools", "Bash", "--disallowedTools", "ScheduleWakeup"}},
+		{"allowlist wins over requirePerms", []string{"Read"}, true, "auto", []string{"--allowedTools", "Read", "--disallowedTools", "ScheduleWakeup"}},
+		{"requirePerms → disallow only", nil, true, "bypass", []string{"--disallowedTools", "ScheduleWakeup"}},
+		{"requirePerms with auto → disallow only", nil, true, "auto", []string{"--disallowedTools", "ScheduleWakeup"}},
+		{"auto mode", nil, false, "auto", []string{"--permission-mode", "auto", "--disallowedTools", "ScheduleWakeup"}},
+		{"bypass mode", nil, false, "bypass", []string{"--dangerously-skip-permissions", "--disallowedTools", "ScheduleWakeup"}},
+		{"empty mode → bypass", nil, false, "", []string{"--dangerously-skip-permissions", "--disallowedTools", "ScheduleWakeup"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

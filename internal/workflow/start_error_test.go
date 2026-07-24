@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/worktreeerr"
@@ -273,7 +275,7 @@ func TestSurfaceStartFailure_PermanentFlipsToHumanRequired(t *testing.T) {
 	}
 }
 
-func TestSurfaceStartFailure_RebaseFailedFlipsToHumanRequired(t *testing.T) {
+func TestSurfaceStartFailure_RebaseFailedFlipsToBlocked(t *testing.T) {
 	// Engine.surfaceStartFailure must classify ErrRebaseFailed as permanent
 	// too, as defense in depth: the three Engine-routed callers already flip
 	// to human-required via markRebaseBlocked before the error reaches here,
@@ -291,8 +293,11 @@ func TestSurfaceStartFailure_RebaseFailedFlipsToHumanRequired(t *testing.T) {
 	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
 
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Errorf("rebase failure should flip to human-required, got %q", got.Status)
+	if got.Status != "blocked" {
+		t.Errorf("rebase failure should flip to blocked, got %q", got.Status)
+	}
+	if got.Blocker.Kind != blocker.KindWorktreeRepair {
+		t.Errorf("blocker kind = %q, want %q", got.Blocker.Kind, blocker.KindWorktreeRepair)
 	}
 	reason := tasks.Reason("t1")
 	if !strings.Contains(reason, "branch stale") {
@@ -323,8 +328,11 @@ func TestSurfaceStartFailure_DiskSpaceErrorSkipsConflictRecovery(t *testing.T) {
 		t.Error("conflict recovery was invoked for a disk-space failure — a full disk is not a content conflict it can resolve")
 	}
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Errorf("disk-space failure should flip to human-required, got %q", got.Status)
+	if got.Status != "blocked" {
+		t.Errorf("disk-space failure should flip to blocked, got %q", got.Status)
+	}
+	if got.Blocker.Code != "disk_space" {
+		t.Errorf("blocker code = %q, want disk_space", got.Blocker.Code)
 	}
 	reason := tasks.Reason("t1")
 	if !strings.Contains(reason, "disk space exhausted") {
@@ -367,12 +375,12 @@ func TestSurfaceStartFailure_RebaseFailedRecoversInsteadOfHumanRequired(t *testi
 	}
 }
 
-// TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToHumanRequired
+// TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToBlocked
 // verifies the fallback: when branch-conflict-fix recovery declines (e.g. no
 // linked PR to fix, or its retry budget is spent), the task still lands
 // human-required with the original rebase-blocked reason — recovery is a
 // first attempt, not a silent swallow of a genuinely unrecoverable divergence.
-func TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToHumanRequired(t *testing.T) {
+func TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToBlocked(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
@@ -382,8 +390,8 @@ func TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToHumanRequire
 	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
 
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Errorf("status = %q, want human-required", got.Status)
+	if got.Status != "blocked" {
+		t.Errorf("status = %q, want blocked", got.Status)
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "branch stale") {
 		t.Errorf("reason %q missing rebase-failed classification", reason)
@@ -466,8 +474,8 @@ func TestSurfaceStartFailure_RebaseFailedDeferredDeclineKeepsOriginalReason(t *t
 	engine.drainPendingConflictRecovery("t1")
 
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", got.Status)
+	if got.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", got.Status)
 	}
 	reason := tasks.Reason("t1")
 	if !strings.Contains(reason, "branch stale") {
@@ -516,8 +524,8 @@ func TestSurfaceStartFailure_CircuitBreakerTripsAfterRepeatedFailures(t *testing
 		t.Errorf("wf.State = %q, want ExecFailed after %d failures", wf.State, maxCircuitBreakerFailures)
 	}
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Errorf("status = %q, want human-required", got.Status)
+	if got.Status != "blocked" {
+		t.Errorf("status = %q, want blocked", got.Status)
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "circuit breaker") {
 		t.Errorf("reason %q missing circuit-breaker classification", reason)
@@ -601,6 +609,125 @@ func TestSurfaceStartFailure_CircuitBreakerResetsAfterWindow(t *testing.T) {
 	}
 	if got := wf.Variables[circuitBreakerFailureKey("run_test")]; got != "1" {
 		t.Errorf("failure count = %q, want reset to 1", got)
+	}
+}
+
+// TestSurfaceStartFailure_ShutdownCancellationDoesNotTripBreaker is a
+// regression guard for sybra#2291: a graceful server shutdown cancels every
+// in-flight git/agent operation across every concurrently-dispatching task at
+// once, so a naive circuit breaker sees a burst of simultaneous "failures"
+// and mass-escalates unrelated, perfectly healthy tasks to human-required. A
+// context.Canceled error that traces back to the engine's own shutdown
+// context (bound via SetContext, mirroring App.Startup -> Engine.SetContext
+// -> agentorch.Orchestrator.SetContext all sharing one root context) must
+// never feed the breaker or touch the task, no matter how many times it
+// repeats — simulating several concurrently-dispatching tasks all hitting the
+// same shutdown-induced cancellation within the same circuit-breaker window.
+func TestSurfaceStartFailure_ShutdownCancellationDoesNotTripBreaker(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate the app context already cancelled by graceful shutdown
+	engine.SetContext(shutdownCtx)
+
+	wrapped := fmt.Errorf("worktree required for project task: %w",
+		fmt.Errorf("fetch origin: git fetch origin +refs/heads/*:refs/remotes/origin/*: %w", context.Canceled))
+	wf := &Execution{CurrentStep: "implement", State: ExecRunning, Variables: map[string]string{}}
+
+	for i := range maxCircuitBreakerFailures + 5 {
+		engine.surfaceStartFailure("t1", "in-progress", wrapped, wf, "implement")
+		if wf.State == ExecFailed {
+			t.Fatalf("shutdown cancellation tripped the breaker on attempt %d", i+1)
+		}
+	}
+	if _, recorded := wf.Variables[circuitBreakerFailureKey("implement")]; recorded {
+		t.Fatalf("shutdown cancellation recorded a breaker failure: %v", wf.Variables)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status == "human-required" {
+		t.Fatal("shutdown cancellation escalated task to human-required")
+	}
+	if reason := tasks.Reason("t1"); reason != "" {
+		t.Errorf("shutdown cancellation wrote status_reason %q, want none", reason)
+	}
+}
+
+// TestSurfaceStartFailure_ShutdownCancellationSkipsConflictRecoveryToo is a
+// regression guard for a gap an adversarial review found in the initial fix
+// for sybra#2291: reconcileAndRebase's ReconcileWithRemote step wraps a
+// shutdown-cancelled fetch in ErrRebaseFailed rather than ErrTransientFetch
+// (project.IsTransientNetworkError doesn't recognize "context canceled" as a
+// transient network blip). A shutdown-cancellation check placed only inside
+// surfaceStartFailureClassified would miss this shape entirely: the
+// ErrRebaseFailed match in surfaceStartFailure fires FIRST and dispatches a
+// real autonomous branch-conflict-recovery agent for a branch that has no
+// actual conflict — work that is itself guaranteed to be cancelled by the
+// same shutdown, on top of the circuit-breaker mass-trip the primary fix
+// targets. The shutdown-cancellation gate must run ahead of the
+// conflict-recovery branch so this shape is suppressed too.
+func TestSurfaceStartFailure_ShutdownCancellationSkipsConflictRecoveryToo(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate the app context already cancelled by graceful shutdown
+	engine.SetContext(shutdownCtx)
+
+	var recoveryCalled bool
+	engine.SetConflictRecovery(func(string) bool {
+		recoveryCalled = true
+		return true
+	})
+
+	// Same wrapping shape reconcileAndRebase produces when ReconcileWithRemote
+	// hits a shutdown-cancelled fetch: ErrRebaseFailed wrapping context.Canceled,
+	// not ErrTransientFetch.
+	wrapped := fmt.Errorf("%w: reconcile branch with remote: %w", worktreeerr.ErrRebaseFailed, context.Canceled)
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "implement")
+
+	if recoveryCalled {
+		t.Fatal("shutdown cancellation wrapped in ErrRebaseFailed triggered branch-conflict recovery")
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status == "human-required" {
+		t.Fatal("shutdown cancellation wrapped in ErrRebaseFailed escalated task to human-required")
+	}
+	if reason := tasks.Reason("t1"); reason != "" {
+		t.Errorf("shutdown cancellation wrote status_reason %q, want none", reason)
+	}
+}
+
+// TestSurfaceStartFailure_ContextCanceledStillTripsBreakerWhenNotShuttingDown
+// guards the flip side of the shutdown-cancellation suppression above: a
+// context.Canceled error must still feed the circuit breaker normally when
+// the engine's own context is healthy (not shutting down) — e.g. a per-call
+// timeout or an unrelated cancellation elsewhere in the chain. The
+// suppression is scoped to an actual shutdown, not to context.Canceled in
+// general.
+func TestSurfaceStartFailure_ContextCanceledStillTripsBreakerWhenNotShuttingDown(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine.SetContext(context.Background()) // healthy, not cancelled
+
+	wrapped := fmt.Errorf("fetch origin: %w", context.Canceled)
+	wf := &Execution{CurrentStep: "implement", State: ExecRunning, Variables: map[string]string{}}
+
+	for i := range maxCircuitBreakerFailures - 1 {
+		engine.surfaceStartFailure("t1", "todo", wrapped, wf, "implement")
+		if wf.State == ExecFailed {
+			t.Fatalf("breaker tripped early on attempt %d, want after %d", i+1, maxCircuitBreakerFailures)
+		}
+	}
+	engine.surfaceStartFailure("t1", "todo", wrapped, wf, "implement")
+
+	if wf.State != ExecFailed {
+		t.Errorf("wf.State = %q, want ExecFailed after %d failures", wf.State, maxCircuitBreakerFailures)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", got.Status)
 	}
 }
 

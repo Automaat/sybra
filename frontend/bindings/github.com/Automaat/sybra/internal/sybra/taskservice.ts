@@ -15,6 +15,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as artifact$0 from "../artifact/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as attachment$0 from "../attachment/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -56,7 +59,7 @@ export function CreateTask(title: string, body: string, mode: string): $Cancella
 
 /**
  * CreateTaskWithInit is CreateTask plus caller-supplied initial field
- * overrides (e.g. TodoistID) applied atomically in the same first-write as
+ * overrides (e.g. Issue) applied atomically in the same first-write as
  * task creation. Callers that need a dedupe key persisted alongside the task
  * — so a crash between create and a second update can never re-import the
  * same source item — should use this instead of CreateTask followed by a
@@ -68,6 +71,10 @@ export function CreateTaskWithInit(title: string, body: string, mode: string, in
     });
 }
 
+export function DeleteAttachment(taskID: string, attachmentID: string): $CancellablePromise<void> {
+    return $Call.ByID(737517256, taskID, attachmentID);
+}
+
 /**
  * DeleteTask removes a task file from disk and cleans up its worktree.
  */
@@ -77,12 +84,12 @@ export function DeleteTask(id: string): $CancellablePromise<void> {
 
 /**
  * DispatchFromHumanRequired flips a task parked in human-required to target
- * (one of in-progress/testing/ready-pr/in-review), recording reason as the
- * audit-visible status_reason. For dispatching targets it synchronously
- * re-enters the workflow via task.status_changed; on any failure to do so it
- * fails closed, reverting the task to human-required with an explanatory
- * status_reason so the operator is never left with a task silently stuck in
- * a target status with no workflow driving it.
+ * (one of in-progress/ready-review/testing/ready-pr/in-review), recording
+ * reason as the audit-visible status_reason. For dispatching targets it
+ * synchronously re-enters the workflow via task.status_changed; on any failure
+ * to do so it fails closed, reverting the task to human-required with an
+ * explanatory status_reason so the operator is never left with a task silently
+ * stuck in a target status with no workflow driving it.
  * 
  * The whole check-then-write sequence runs under the workflow engine's
  * per-task human-action lock (shared with plan-review's
@@ -93,6 +100,10 @@ export function DispatchFromHumanRequired(id: string, target: string, reason: st
     return $Call.ByID(3753750864, id, target, reason).then(($result: any) => {
         return $$createType0($result);
     });
+}
+
+export function GetAttachmentURL(taskID: string, attachmentID: string): $CancellablePromise<string> {
+    return $Call.ByID(3926233316, taskID, attachmentID);
 }
 
 /**
@@ -119,15 +130,21 @@ export function GetTaskSetupLog(taskID: string): $CancellablePromise<$models.Tas
     });
 }
 
+export function ListAttachments(taskID: string): $CancellablePromise<task$0.Attachment[]> {
+    return $Call.ByID(1026482144, taskID).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
 export function ListTaskArtifacts(taskID: string): $CancellablePromise<$models.TaskArtifactDTO[]> {
     return $Call.ByID(1612534482, taskID).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType6($result);
     });
 }
 
 export function ListTaskAuditEvents(taskID: string, days: number): $CancellablePromise<$models.TaskAuditEventDTO[]> {
     return $Call.ByID(1451731527, taskID, days).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType8($result);
     });
 }
 
@@ -137,17 +154,37 @@ export function ListTaskAuditEvents(taskID: string, days: number): $CancellableP
  */
 export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0.ProgressEntry[]> {
     return $Call.ByID(821819796, taskID).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType10($result);
     });
 }
 
 /**
- * ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
- * Chat tasks are surfaced exclusively through the Chats view.
+ * ListTasks returns all tasks from the store.
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType11($result);
+    });
+}
+
+/**
+ * ListTasksForNode returns the subset of the board relevant to a cluster
+ * follower's mirror: tasks assigned to that node, excluding terminal tasks
+ * closed longer than mirrorStaleTerminalWindow ago. Unlike ListTasks, this is
+ * sized for repeated polling rather than a one-off full board read.
+ * 
+ * Also includes tasks with no AssignedNode at all. This service call always
+ * runs against this instance's own store (the leader polls each follower's
+ * HTTP API individually), so an unassigned task here unambiguously lives on
+ * this node — e.g. created by this follower's own local umbrella expansion
+ * or triage, never routed by a leader. AssignedNode is leader-only metadata
+ * (see Assigner.route/stampNode); a follower has no way to stamp its own
+ * name onto a task it created itself, so without this, such a task is
+ * permanently invisible to the leader's mirror — see cluster.mirror.adopted.
+ */
+export function ListTasksForNode(node: string): $CancellablePromise<task$0.Task[]> {
+    return $Call.ByID(844621143, node).then(($result: any) => {
+        return $$createType11($result);
     });
 }
 
@@ -197,14 +234,22 @@ export function UpdateTask(id: string, updates: { [_ in string]?: any }): $Cance
     });
 }
 
+export function UploadAttachment(taskID: string, fileName: string, data: string): $CancellablePromise<task$0.Attachment> {
+    return $Call.ByID(1704419594, taskID, fileName, data).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
 // Private type creation functions
 const $$createType0 = task$0.Task.createFrom;
 const $$createType1 = $models.TamperReportDTO.createFrom;
 const $$createType2 = $models.TaskSetupLogDTO.createFrom;
-const $$createType3 = $models.TaskArtifactDTO.createFrom;
+const $$createType3 = attachment$0.Attachment.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = $models.TaskAuditEventDTO.createFrom;
+const $$createType5 = $models.TaskArtifactDTO.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = artifact$0.ProgressEntry.createFrom;
+const $$createType7 = $models.TaskAuditEventDTO.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = $Create.Array($$createType0);
+const $$createType9 = artifact$0.ProgressEntry.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = $Create.Array($$createType0);

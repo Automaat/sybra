@@ -214,9 +214,42 @@ func newGHRequestGate() *ghRequestGate {
 	}
 }
 
-func (g *ghRequestGate) execute(run func() ([]byte, error)) ([]byte, error) {
+// ctx is used only to scope the auth-health observation's own recovery work
+// (a force-refresh mint triggered by a failure seen here, see
+// ObserveCallResultCtx) — it is never passed to run, whose closure already
+// carries whatever context its own exec.CommandContext needs.
+func (g *ghRequestGate) execute(ctx context.Context, run func() ([]byte, error)) ([]byte, error) {
+	out, suppressed, retryAfter, err := g.runGated(run)
+	if suppressed {
+		RecordSuppressedCall()
+		return nil, NewAuthCircuitOpenError(retryAfter)
+	}
+
+	// Observe outside g.mu. On an auth-classified failure this synchronously
+	// force-refreshes a token mint under the mint client's 15s http timeout;
+	// holding g.mu — the sole process-wide gh serialization lock — across it
+	// would block every queued caller (including latency-sensitive ghRunCtx
+	// callers) for the full mint duration regardless of their own context
+	// deadline, defeating that mechanism's intent.
+	ObserveCallResultCtx(ctx, out, err)
+	return out, err
+}
+
+// runGated runs the gh invocation under g.mu (circuit check, request spacing,
+// rate-limit bookkeeping) and reports the result so execute can observe the
+// outcome — which may trigger a slow token mint — after the lock is released.
+func (g *ghRequestGate) runGated(run func() ([]byte, error)) (out []byte, suppressed bool, retryAfter time.Time, err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	// Circuit breaker: while GitHub auth is misconfigured, unavailable, or
+	// rate-limited, skip shelling out entirely rather than repeat a doomed
+	// request every ghRequestSpacing tick. AuthCircuitOpen re-opens the gate
+	// on its own backoff schedule, so ambient poll/task traffic naturally
+	// re-probes for recovery without a dedicated prober goroutine.
+	if open, ra := AuthCircuitOpen(); open {
+		return nil, true, ra, nil
+	}
 
 	waitUntil := g.notBefore
 	if next := g.lastRun.Add(ghRequestSpacing); next.After(waitUntil) {
@@ -226,12 +259,12 @@ func (g *ghRequestGate) execute(run func() ([]byte, error)) ([]byte, error) {
 		time.Sleep(sleep)
 	}
 
-	out, err := run()
+	out, err = run()
 	g.lastRun = time.Now()
 	if err != nil && isRateLimitedMessage(string(out)) {
 		g.bumpLocked(g.lastRun.Add(ghFallbackRateBackoff))
 	}
-	return out, err
+	return out, false, time.Time{}, err
 }
 
 func (g *ghRequestGate) observe(resp ghHTTPResponse, err error) {
@@ -443,6 +476,7 @@ var (
 	reviewSummaryCache   = newTTLCache[ReviewSummary]()
 	assignedIssuesCache  = newTTLCache[[]Issue]()
 	labeledIssuesCache   = newTTLCache[[]Issue]()
+	mentionedIssuesCache = newTTLCache[[]Issue]()
 	renovatePRsCache     = newTTLCache[[]RenovatePR]()
 	prCache              = newTTLCache[PullRequest]()
 	prStatsCache         = newTTLCache[PRStats]()

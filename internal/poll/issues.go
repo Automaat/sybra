@@ -41,19 +41,24 @@ type branchKey struct {
 
 // IssuesFetcher polls GitHub for assigned and labeled issues and syncs them to tasks.
 type IssuesFetcher struct {
-	tasks                 *task.Manager
-	projects              *project.Store
-	emit                  func(string, any)
-	logger                *slog.Logger
-	allowsType            func(project.ProjectType) bool
-	fetchAssigned         func() ([]github.Issue, error)
-	fetchLabeled          func(repos []string, label string) ([]github.Issue, error)
-	fetchSnapshot         func(repos []string, label string) (github.IssueSnapshot, error)
-	fetchIssueLinkedPRs   func(repo string, issueNumber int) ([]github.PullRequest, error)
-	viewerLogin           func() string
-	transientFetchFails   int
-	transientLabeledFails int
-	authCircuit           *AuthCircuit
+	tasks                   *task.Manager
+	projects                *project.Store
+	emit                    func(string, any)
+	logger                  *slog.Logger
+	allowsType              func(project.ProjectType) bool
+	fetchAssigned           func() ([]github.Issue, error)
+	fetchLabeled            func(repos []string, label string) ([]github.Issue, error)
+	fetchMentioned          func(repos []string, phrase string) ([]github.Issue, error)
+	fetchSnapshot           func(repos []string, label string) (github.IssueSnapshot, error)
+	fetchIssueLinkedPRs     func(repo string, issueNumber int) ([]github.PullRequest, error)
+	viewerLogin             func() string
+	transientFetchFails     int
+	transientLabeledFails   int
+	transientMentionedFails int
+	authCircuit             *AuthCircuit
+	// mentionTrigger is the phrase that, when found in an issue comment, marks
+	// the issue for task creation (e.g. "@sybra"). Empty disables the feature.
+	mentionTrigger string
 	// umbrellaExpand, when set, auto-expands a detected ☂️ umbrella issue into a
 	// gated task DAG instead of creating a flat task. nil = feature disabled.
 	umbrellaExpand func(issueURL string) (umbrella.Result, error)
@@ -83,6 +88,13 @@ func (f *IssuesFetcher) interval() time.Duration {
 // whose expansion failed.
 const umbrellaRetryCooldown = time.Hour
 
+// SetMentionTrigger sets the comment trigger phrase that marks an issue for
+// task creation (e.g. "@sybra"). An empty phrase (the default) leaves the
+// feature disabled — existing installs see no behavior change.
+func (f *IssuesFetcher) SetMentionTrigger(phrase string) {
+	f.mentionTrigger = phrase
+}
+
 // SetUmbrellaExpander enables auto-expansion of umbrella issues. fn typically
 // wraps umbrella.Expand bound to the task store and a planner runner. A nil fn
 // leaves the feature disabled.
@@ -111,6 +123,7 @@ func NewIssuesFetcher(
 		allowsType:          allowsType,
 		fetchAssigned:       github.FetchAssignedIssues,
 		fetchLabeled:        github.FetchLabeledIssuesForRepos,
+		fetchMentioned:      github.FetchMentionedIssuesForRepos,
 		fetchSnapshot:       github.FetchIssueSnapshot,
 		fetchIssueLinkedPRs: github.FetchIssueLinkedPRs,
 		viewerLogin:         github.ViewerLogin,
@@ -167,6 +180,7 @@ func (f *IssuesFetcher) Poll(ctx context.Context) time.Duration {
 	metrics.GitHubIssuesImported(ctx, len(issues))
 	f.syncIssuesToTasks(issues)
 	f.syncLabeledIssuesToTasks()
+	f.syncMentionedIssuesToTasks()
 	return f.interval()
 }
 
@@ -206,6 +220,48 @@ func (f *IssuesFetcher) pollSnapshot(ctx context.Context) {
 
 	f.logger.Debug("labeled-issues.poll", "count", len(snapshot.Labeled))
 	f.syncIssuesToTasks(snapshot.Labeled)
+
+	f.syncMentionedIssuesToTasks()
+}
+
+// syncMentionedIssuesToTasks fetches open issues whose comments contain the
+// configured mention trigger phrase across all registered pet projects and
+// creates tasks for any not yet tracked. A no-op while mentionTrigger is
+// empty (the default), so existing installs see no behavior change.
+func (f *IssuesFetcher) syncMentionedIssuesToTasks() {
+	if f.mentionTrigger == "" || f.fetchMentioned == nil {
+		return
+	}
+
+	projects, err := f.projects.List()
+	if err != nil {
+		f.logger.Error("mentioned-issues.list-projects", "err", err)
+		return
+	}
+
+	repos := f.allowedReposFrom(projects)
+	if len(repos) == 0 {
+		return
+	}
+
+	mentioned, err := f.fetchMentioned(repos, f.mentionTrigger)
+	if err != nil {
+		if github.IsTransientError(err) {
+			f.transientMentionedFails++
+			if f.transientMentionedFails < issuesTransientWarnThreshold {
+				f.logger.Info("mentioned-issues.fetch", "err", err)
+			} else {
+				f.logger.Warn("mentioned-issues.fetch", "err", err, "consecutive", f.transientMentionedFails)
+			}
+		} else {
+			f.transientMentionedFails = 0
+			f.logger.Warn("mentioned-issues.fetch", "err", err)
+		}
+		return
+	}
+	f.transientMentionedFails = 0
+	f.logger.Debug("mentioned-issues.poll", "count", len(mentioned))
+	f.syncIssuesToTasks(mentioned)
 }
 
 // syncLabeledIssuesToTasks fetches issues labeled 'sybra' across all registered

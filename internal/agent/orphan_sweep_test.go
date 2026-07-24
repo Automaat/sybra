@@ -183,6 +183,56 @@ func TestReapOrphanProviderProcesses_CanceledContextLinux(t *testing.T) {
 	}
 }
 
+func TestReapOrphanProviderProcesses_GlobRootMatchesDynamicSandbox(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only process enumeration test")
+	}
+
+	prevGrace := stopSIGINTGrace
+	stopSIGINTGrace = 20 * time.Millisecond
+	t.Cleanup(func() { stopSIGINTGrace = prevGrace })
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{})
+	tmp := t.TempDir()
+	// Mirrors the /sybra-test harness: a fresh, randomly-named sandbox dir
+	// per run, only discoverable via a glob against its shared parent.
+	root := filepath.Join(tmp, "sybra-test-2a220813-3sx9kb")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	proc := spawnProviderProcess(t, root)
+
+	glob := filepath.Join(tmp, "sybra-test-*")
+	if got := m.ReapOrphanProviderProcesses(context.Background(), []string{glob}); got != 1 {
+		t.Fatalf("reaped = %d, want 1", got)
+	}
+	waitForProcessExit(t, proc.Process.Pid)
+}
+
+func TestExpandRootGlobs(t *testing.T) {
+	tmp := t.TempDir()
+	match1 := filepath.Join(tmp, "sybra-test-aaa")
+	match2 := filepath.Join(tmp, "sybra-test-bbb")
+	for _, dir := range []string{match1, match2} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	literalOnly := filepath.Join(tmp, "does-not-exist")
+
+	got := expandRootGlobs([]string{filepath.Join(tmp, "sybra-test-*"), literalOnly, ""})
+
+	want := map[string]bool{match1: true, match2: true, literalOnly: true}
+	if len(got) != len(want) {
+		t.Fatalf("expandRootGlobs = %v, want matches for %v", got, want)
+	}
+	for _, root := range got {
+		if !want[root] {
+			t.Fatalf("unexpected root %q in %v", root, got)
+		}
+	}
+}
+
 func TestOrphanSweepRootsForAgent_UsesResolvedSandboxHome(t *testing.T) {
 	t.Parallel()
 
@@ -223,6 +273,7 @@ func spawnProviderProcess(t *testing.T, root string) *exec.Cmd {
 	}
 	cmd := exec.Command(link, "30")
 	cmd.Dir = cwd
+	cmd.Env = scrubAmbientOwnerEnv(os.Environ())
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start provider-shaped process: %v", err)
 	}
@@ -245,7 +296,7 @@ func spawnOwnedProviderDescendantProcess(t *testing.T, root string, owner proces
 	}
 	cmd := exec.Command(script)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), processOwnerAssignments(owner)...)
+	cmd.Env = append(scrubAmbientOwnerEnv(os.Environ()), processOwnerAssignments(owner)...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start provider script: %v", err)
 	}
@@ -279,7 +330,7 @@ func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner)
 	}
 	cmd := exec.Command(link, "30")
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), mcpOwnerAssignments(owner)...)
+	cmd.Env = append(scrubAmbientOwnerEnv(os.Environ()), mcpOwnerAssignments(owner)...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start owned helper: %v", err)
 	}
@@ -301,6 +352,7 @@ func spawnGenericProcess(t *testing.T, root, name string) (cmd *exec.Cmd, cwd st
 	}
 	cmd = exec.Command(bin, "30")
 	cmd.Dir = cwd
+	cmd.Env = scrubAmbientOwnerEnv(os.Environ())
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start generic process: %v", err)
 	}
@@ -351,4 +403,18 @@ func waitForProcessExit(t *testing.T, pid int) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("pid %d still alive after reap", pid)
+}
+
+func scrubAmbientOwnerEnv(env []string) []string {
+	return stripEnvKeys(
+		env,
+		processOwnerFlagEnv,
+		processAgentIDEnv,
+		processTaskIDEnv,
+		processAgentModeEnv,
+		mcpOwnerFlagEnv,
+		mcpAgentIDEnv,
+		mcpTaskIDEnv,
+		mcpAgentModeEnv,
+	)
 }

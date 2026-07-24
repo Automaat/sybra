@@ -7,6 +7,12 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as attachment$0 from "../attachment/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as blocker$0 from "../blocker/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as workflow$0 from "../workflow/models.js";
 
 /**
@@ -20,7 +26,7 @@ export class AgentRun {
     "agentId": string;
 
     /**
-     * triage, plan, eval, pr-fix, or "" for implementation
+     * explicit run role; legacy empty still means implementation
      */
     "role": string;
     "mode": string;
@@ -33,8 +39,10 @@ export class AgentRun {
      */
     "experimentId"?: string;
     "variantId"?: string;
+    "routingReason"?: string;
     "assignmentUnit"?: string;
     "assignmentKey"?: string;
+    "decisionVersion"?: number;
     "reasoningEffort"?: string;
     "requestedSkill"?: string;
 
@@ -129,11 +137,26 @@ export class AgentRun {
     "headSha"?: string;
 
     /**
+     * FinalCommitSource records who owned the branch head that verify_commits
+     * settled on: "agent" when the final head came from the agent-pushed remote
+     * commit, "fallback" when verify_commits had to auto-commit recovered work.
+     */
+    "finalCommitSource"?: string;
+
+    /**
      * SubagentCallCount is the number of distinct forked-Claude subagent calls
      * observed in the run. Zero for non-Claude runs and runs recorded before
      * fan-out counting existed.
      */
     "subagentCallCount"?: number;
+
+    /**
+     * ResumeZeroOutputStall marks a run whose zero-output watchdog stall fired
+     * (errorKind "rate_limit" + errorMsg watchdogreason.ZeroOutputBeforeStartup).
+     * It is the durable poison signal agentorch.PickImplementationResumeSession
+     * counts to detect a session stuck in a resume-stall loop.
+     */
+    "zeroOutputStall"?: boolean;
 
     /** Creates a new AgentRun instance. */
     constructor($$source: Partial<AgentRun> = {}) {
@@ -173,6 +196,16 @@ export class AgentRun {
         return new AgentRun($$parsedSource as Partial<AgentRun>);
     }
 }
+
+/**
+ * Attachment re-exports the persisted task attachment metadata type.
+ */
+export const Attachment = attachment$0.Attachment;
+
+/**
+ * Attachment re-exports the persisted task attachment metadata type.
+ */
+export type Attachment = attachment$0.Attachment;
 
 /**
  * Priority is a task's dispatch priority. PriorityNone (the empty string) is
@@ -302,6 +335,7 @@ export class Task {
      */
     "issue": string;
     "statusReason": string;
+    "blocker"?: blocker$0.State;
 
     /**
      * HandoffSourceProvider records which local agent provider produced the
@@ -362,8 +396,8 @@ export class Task {
     /**
      * ReviewPhase tracks where an inbound PR-review task (tag `review`) sits in
      * the review lifecycle: reviewing → drafted → awaiting-author →
-     * needs-approval → approved (plus `manual` for small PRs punted to the
-     * human). Computed by the PR poller; drives the board's PR Reviews lane.
+     * needs-approval → approved (plus `manual` for human follow-up). Computed by
+     * the PR poller; drives the board's PR Reviews lane.
      * Empty for non-review tasks.
      */
     "reviewPhase"?: string;
@@ -383,7 +417,6 @@ export class Task {
      * without an own PR (and for inbound review tasks, which use ReviewPhase).
      */
     "prPhase"?: string;
-    "todoistId": string;
     "priority"?: Priority;
     "dueDate"?: string | null;
     "closedAt"?: string | null;
@@ -454,6 +487,7 @@ export class Task {
      * and all test-runner runs count (correct for first-ever cycles).
      */
     "testingCycleStartedAt"?: string | null;
+    "attachments": Attachment[];
     "agentRuns": AgentRun[];
     "workflow"?: workflow$0.Execution | null;
     "createdAt": string;
@@ -554,8 +588,8 @@ export class Task {
         if (!("runRole" in $$source)) {
             this["runRole"] = "";
         }
-        if (!("todoistId" in $$source)) {
-            this["todoistId"] = "";
+        if (!("attachments" in $$source)) {
+            this["attachments"] = [];
         }
         if (!("agentRuns" in $$source)) {
             this["agentRuns"] = [];
@@ -588,10 +622,12 @@ export class Task {
     static createFrom($$source: any = {}): Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
-        const $$createField18_0 = $$createType0;
-        const $$createField39_0 = $$createType2;
-        const $$createField40_0 = $$createType4;
-        const $$createField56_0 = $$createType5;
+        const $$createField14_0 = $$createType1;
+        const $$createField19_0 = $$createType0;
+        const $$createField39_0 = $$createType3;
+        const $$createField40_0 = $$createType5;
+        const $$createField41_0 = $$createType7;
+        const $$createField57_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -599,42 +635,36 @@ export class Task {
         if ("tags" in $$parsedSource) {
             $$parsedSource["tags"] = $$createField7_0($$parsedSource["tags"]);
         }
+        if ("blocker" in $$parsedSource) {
+            $$parsedSource["blocker"] = $$createField14_0($$parsedSource["blocker"]);
+        }
         if ("dependsOn" in $$parsedSource) {
-            $$parsedSource["dependsOn"] = $$createField18_0($$parsedSource["dependsOn"]);
+            $$parsedSource["dependsOn"] = $$createField19_0($$parsedSource["dependsOn"]);
+        }
+        if ("attachments" in $$parsedSource) {
+            $$parsedSource["attachments"] = $$createField39_0($$parsedSource["attachments"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField39_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField40_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField40_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField41_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField56_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField57_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
 }
 
 /**
- * TaskType distinguishes a task's role for agents beyond its lifecycle
- * Status — e.g. TaskTypeChat and TaskTypeUmbrella are synthetic types that
- * run no agent of their own and are excluded from normal dispatch.
+ * TaskType is an internal marker for umbrella tracker tasks.
  */
 export enum TaskType {
     /**
      * The Go zero value for the underlying type of the enum.
      */
     $zero = "",
-
-    TaskTypeNormal = "normal",
-    TaskTypeDebug = "debug",
-    TaskTypeResearch = "research",
-
-    /**
-     * TaskTypeChat is a synthetic task created for interactive chat sessions.
-     * Hidden from the task list UI and skipped by restart-stale/watchdog.
-     */
-    TaskTypeChat = "chat",
 
     /**
      * TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.
@@ -654,6 +684,7 @@ export class Update {
     "Slug": string | null;
     "Status": Status | null;
     "StatusReason": string | null;
+    "Blocker": blocker$0.State | null;
     "BlockedByIssue": string | null;
     "UmbrellaIssue": string | null;
     "DependsOn": string[] | null;
@@ -675,7 +706,6 @@ export class Update {
     "ReviewedHeadSHA": string | null;
     "ReviewedHeadAttempts": number | null;
     "PRPhase": string | null;
-    "TodoistID": string | null;
     "Priority": Priority | null;
     "DueDate": string | null;
     "Workflow": workflow$0.Execution | null;
@@ -693,6 +723,7 @@ export class Update {
     "Outcome": string | null;
     "MergeCommit": string | null;
     "TestingCycleStartedAt": string | null;
+    "Attachments": Attachment[] | null;
 
     /** Creates a new Update instance. */
     constructor($$source: Partial<Update> = {}) {
@@ -707,6 +738,9 @@ export class Update {
         }
         if (!("StatusReason" in $$source)) {
             this["StatusReason"] = null;
+        }
+        if (!("Blocker" in $$source)) {
+            this["Blocker"] = null;
         }
         if (!("BlockedByIssue" in $$source)) {
             this["BlockedByIssue"] = null;
@@ -771,9 +805,6 @@ export class Update {
         if (!("PRPhase" in $$source)) {
             this["PRPhase"] = null;
         }
-        if (!("TodoistID" in $$source)) {
-            this["TodoistID"] = null;
-        }
         if (!("Priority" in $$source)) {
             this["Priority"] = null;
         }
@@ -825,6 +856,9 @@ export class Update {
         if (!("TestingCycleStartedAt" in $$source)) {
             this["TestingCycleStartedAt"] = null;
         }
+        if (!("Attachments" in $$source)) {
+            this["Attachments"] = null;
+        }
 
         Object.assign(this, $$source);
     }
@@ -833,18 +867,26 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField6_0 = $$createType6;
-        const $$createField10_0 = $$createType6;
-        const $$createField28_0 = $$createType7;
+        const $$createField4_0 = $$createType9;
+        const $$createField7_0 = $$createType10;
+        const $$createField11_0 = $$createType10;
+        const $$createField28_0 = $$createType11;
+        const $$createField43_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("Blocker" in $$parsedSource) {
+            $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
+        }
         if ("DependsOn" in $$parsedSource) {
-            $$parsedSource["DependsOn"] = $$createField6_0($$parsedSource["DependsOn"]);
+            $$parsedSource["DependsOn"] = $$createField7_0($$parsedSource["DependsOn"]);
         }
         if ("Tags" in $$parsedSource) {
-            $$parsedSource["Tags"] = $$createField10_0($$parsedSource["Tags"]);
+            $$parsedSource["Tags"] = $$createField11_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
             $$parsedSource["Workflow"] = $$createField28_0($$parsedSource["Workflow"]);
+        }
+        if ("Attachments" in $$parsedSource) {
+            $$parsedSource["Attachments"] = $$createField43_0($$parsedSource["Attachments"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
@@ -852,10 +894,15 @@ export class Update {
 
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = AgentRun.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = workflow$0.Execution.createFrom;
-const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = $Create.Map($Create.Any, $Create.Any);
-const $$createType6 = $Create.Nullable($$createType0);
-const $$createType7 = $Create.Nullable($$createType4);
+const $$createType1 = blocker$0.State.createFrom;
+const $$createType2 = attachment$0.Attachment.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = AgentRun.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = workflow$0.Execution.createFrom;
+const $$createType7 = $Create.Nullable($$createType6);
+const $$createType8 = $Create.Map($Create.Any, $Create.Any);
+const $$createType9 = $Create.Nullable($$createType1);
+const $$createType10 = $Create.Nullable($$createType0);
+const $$createType11 = $Create.Nullable($$createType7);
+const $$createType12 = $Create.Nullable($$createType3);

@@ -11,12 +11,20 @@ type PullRequest struct {
 	IsDraft          bool     `json:"isDraft"`
 	Labels           []string `json:"labels"`
 	HeadRefName      string   `json:"headRefName"`
+	HeadRepoOwner    string   `json:"headRepoOwner"`
 	HeadSHA          string   `json:"headSha"`
 	CIStatus         string   `json:"ciStatus"`         // SUCCESS, FAILURE, PENDING, or ""
 	HasPendingChecks bool     `json:"hasPendingChecks"` // true when any check is still in-progress/queued
-	ReviewDecision   string   `json:"reviewDecision"`   // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
-	Mergeable        string   `json:"mergeable"`        // MERGEABLE, CONFLICTING, UNKNOWN, or ""
-	UnresolvedCount  int      `json:"unresolvedCount"`
+	// CIFlaky reports whether every gating workflow/check in CIStatus's FAILURE
+	// verdict was superseded by a later Actions re-run attempt that succeeded
+	// (see flakyOnlyFailure) — an intermittent failure rather than a
+	// deterministic one. Same-name checks from distinct workflows are not
+	// treated as flaky. Only meaningful when CIStatus == "FAILURE"; zero value
+	// otherwise.
+	CIFlaky         bool   `json:"ciFlaky"`
+	ReviewDecision  string `json:"reviewDecision"` // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
+	Mergeable       string `json:"mergeable"`      // MERGEABLE, CONFLICTING, UNKNOWN, or ""
+	UnresolvedCount int    `json:"unresolvedCount"`
 	// ActionableCount is the subset of unresolved threads where a reviewer
 	// (human or bot) left the last comment — i.e. the ball is in the agent's
 	// court. A thread the fix agent already replied to is unresolved but NOT

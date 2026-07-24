@@ -6,13 +6,12 @@ import type { ReviewComment, Task } from '../../bindings/github.com/Automaat/syb
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, ClusterNodeDTO, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, ClusterNodeDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
 import type { Report as EvaluationReportData, PhaseReport as PhaseReportData } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
-import type { Project as TodoistProject } from '../../bindings/github.com/Automaat/sybra/internal/todoist/models.js'
 import type { Status } from '../../bindings/github.com/Automaat/sybra/internal/provider/models.js'
 import type { Digest, Status as LearningDigestStatus } from '../../bindings/github.com/Automaat/sybra/internal/learning/models.js'
 
@@ -99,16 +98,14 @@ export function ListNotifications(): Promise<Array<Notification>> { return call(
 export function RegisterSpotlightHotkey(): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 export function SetDesktopNotifications(arg1: boolean): Promise<void> { return call('App', 'SetDesktopNotifications', arg1) }
 export function StartAgent(arg1: string, arg2: string, arg3: string, arg4: boolean): Promise<Agent> { return call('App', 'StartAgent', arg1, arg2, arg3, arg4) }
-export function StartChat(arg1: string, arg2: string, arg3: string): Promise<Agent> { return call('App', 'StartChat', arg1, arg2, arg3) }
-export function StopChat(arg1: string): Promise<void> { return call('App', 'StopChat', arg1) }
 export function AgentQueueSnapshot(): Promise<AgentQueueSnapshotData> { return call('App', 'AgentQueueSnapshot') }
 export function StartK8sPocAgent(arg1: string): Promise<Agent> { return call('App', 'StartK8sPocAgent', arg1) }
 
 // ConfigService
 export function GetSettings(): Promise<AppSettings> { return call('ConfigService', 'GetSettings') }
+export function GetPathExplanations(): Promise<Array<ConfigPathExplanation>> { return call('ConfigService', 'GetPathExplanations') }
 export function GetDefaultSettings(): Promise<AppSettings> { return call('ConfigService', 'GetDefaultSettings') }
 export function UpdateSettings(arg1: AppSettings): Promise<void> { return call('ConfigService', 'UpdateSettings', arg1) }
-export function UpdateTodoistToken(arg1: string): Promise<void> { return call('ConfigService', 'UpdateTodoistToken', arg1) }
 export function GetRawConfig(): Promise<string> { return call('ConfigService', 'GetRawConfig') }
 export function SaveRawConfig(arg1: string): Promise<void> { return call('ConfigService', 'SaveRawConfig', arg1) }
 
@@ -124,14 +121,11 @@ export function FetchAssignedIssues(): Promise<Array<Issue>> { return call('Inte
 export function FetchRenovatePRs(): Promise<Array<RenovatePR>> { return call('IntegrationService', 'FetchRenovatePRs') }
 export function FixRenovateCI(arg1: string, arg2: number, arg3: string, arg4: string): Promise<void> { return call('IntegrationService', 'FixRenovateCI', arg1, arg2, arg3, arg4) }
 export function GetProviderHealth(): Promise<Array<Status>> { return call('IntegrationService', 'GetProviderHealth') }
-export function GetTodoistProjects(): Promise<Array<TodoistProject>> { return call('IntegrationService', 'GetTodoistProjects') }
 export function ProviderHealthEnabled(): Promise<boolean> { return call('IntegrationService', 'ProviderHealthEnabled') }
 export function MergeRenovatePR(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'MergeRenovatePR', arg1, arg2) }
 export function RerunRenovateChecks(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'RerunRenovateChecks', arg1, arg2) }
 export function SetProviderAutoFailover(arg1: boolean): Promise<void> { return call('IntegrationService', 'SetProviderAutoFailover', arg1) }
 export function SetProviderEnabled(arg1: string, arg2: boolean): Promise<void> { return call('IntegrationService', 'SetProviderEnabled', arg1, arg2) }
-export function SyncTodoist(): Promise<void> { return call('IntegrationService', 'SyncTodoist') }
-export function TodoistEnabled(): Promise<boolean> { return call('IntegrationService', 'TodoistEnabled') }
 
 // LoopAgentService
 export function CreateLoopAgent(arg1: LoopAgent): Promise<LoopAgent> { return call('LoopAgentService', 'CreateLoopAgent', arg1) }
@@ -192,14 +186,19 @@ export function GetLatestDigest(): Promise<[Digest, boolean]> { return call('Lea
 export function BlessTampering(arg1: string): Promise<Task> { return call('TaskService', 'BlessTampering', arg1) }
 export function CreateTask(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'CreateTask', arg1, arg2, arg3) }
 export function DeleteTask(arg1: string): Promise<void> { return call('TaskService', 'DeleteTask', arg1) }
+export function DeleteAttachment(arg1: string, arg2: string): Promise<void> { return call('TaskService', 'DeleteAttachment', arg1, arg2) }
 export function DispatchFromHumanRequired(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'DispatchFromHumanRequired', arg1, arg2, arg3) }
+export function GetAttachmentURL(arg1: string, arg2: string): Promise<string> { return call('TaskService', 'GetAttachmentURL', arg1, arg2) }
 export function ListTaskArtifacts(arg1: string): Promise<Array<TaskArtifactDTO>> { return call('TaskService', 'ListTaskArtifacts', arg1) }
+export function ListAttachments(arg1: string): Promise<Array<any>> { return call('TaskService', 'ListAttachments', arg1) }
 export function GetTaskSetupLog(arg1: string): Promise<TaskSetupLogDTO> { return call('TaskService', 'GetTaskSetupLog', arg1) }
 export function ListTaskAuditEvents(arg1: string, arg2: number): Promise<Array<TaskAuditEventDTO>> { return call('TaskService', 'ListTaskAuditEvents', arg1, arg2) }
 export function GetTamperReport(arg1: string): Promise<TamperReportDTO> { return call('TaskService', 'GetTamperReport', arg1) }
 export function GetTask(arg1: string): Promise<Task> { return call('TaskService', 'GetTask', arg1) }
 export function ListTasks(): Promise<Array<Task>> { return call('TaskService', 'ListTasks') }
+export function ListTasksForNode(arg1: string): Promise<Array<Task>> { return call('TaskService', 'ListTasksForNode', arg1) }
 export function ListTaskProgress(arg1: string): Promise<Array<ProgressEntry>> { return call('TaskService', 'ListTaskProgress', arg1) }
+export function UploadAttachment(arg1: string, arg2: string, arg3: Array<number>): Promise<any> { return call('TaskService', 'UploadAttachment', arg1, arg2, arg3) }
 export function UpdateTask(arg1: string, arg2: Record<string, unknown>): Promise<Task> { return call('TaskService', 'UpdateTask', arg1, arg2) }
 export function AssignTask(arg1: Task): Promise<void> { return call('TaskService', 'AssignTask', arg1) }
 export function RecoverLostAgent(arg1: string): Promise<void> { return call('TaskService', 'RecoverLostAgent', arg1) }

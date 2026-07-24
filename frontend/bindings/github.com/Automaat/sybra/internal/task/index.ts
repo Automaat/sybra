@@ -3,6 +3,7 @@
 
 export {
     AgentRun,
+    Attachment,
     Priority,
     ReviewComment,
     Status,

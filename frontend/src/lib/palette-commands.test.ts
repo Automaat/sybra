@@ -77,13 +77,6 @@ describe('buildCommands', () => {
       expect(openNewProject).toHaveBeenCalled()
     })
 
-    it('includes new-chat action that navigates to chats', () => {
-      const navigate = vi.fn()
-      const cmds = buildCommands(makeCtx({ navigate }))
-      cmds.find(c => c.id === 'action:new-chat')!.run()
-      expect(navigate).toHaveBeenCalledWith({ kind: 'chats' })
-    })
-
     it('includes keyboard-help action', () => {
       const openKeyboardHelp = vi.fn()
       const cmds = buildCommands(makeCtx({ openKeyboardHelp }))
@@ -115,7 +108,6 @@ describe('buildCommands', () => {
       expect(ids).toContain('page:reviews')
       expect(ids).toContain('page:stats')
       expect(ids).toContain('page:settings')
-      expect(ids).toContain('page:chats')
       expect(ids).toContain('page:workflows')
     })
 
@@ -131,13 +123,6 @@ describe('buildCommands', () => {
       const cmds = buildCommands(makeCtx({ navigate }))
       cmds.find(c => c.id === 'page:settings')!.run()
       expect(navigate).toHaveBeenCalledWith({ kind: 'settings' })
-    })
-
-    it('page:chats navigates to chats', () => {
-      const navigate = vi.fn()
-      const cmds = buildCommands(makeCtx({ navigate }))
-      cmds.find(c => c.id === 'page:chats')!.run()
-      expect(navigate).toHaveBeenCalledWith({ kind: 'chats' })
     })
   })
 

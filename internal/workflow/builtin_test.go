@@ -118,6 +118,66 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTask_PresentCritiqueRoutesThroughFlagStep pins that a
+// present (non-skipped) plan critique routes through flag_plan_critique_verdict
+// before review_plan, not directly to review_plan. A regression that
+// re-points require_plan_critique's default transition straight at
+// review_plan would silently disable the whole REFINE/REJECT-visibility
+// feature (issue #2222) while still passing every unit test against
+// execFlagPlanCritique itself, since those call it directly without going
+// through this wiring.
+func TestBuiltinSimpleTask_PresentCritiqueRoutesThroughFlagStep(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-plan" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-plan builtin definition not found")
+		return
+	}
+
+	require := simple.StepByID("require_plan_critique")
+	if require == nil {
+		t.Fatal("require_plan_critique step not found in simple-task-plan")
+		return
+	}
+	got, err := ResolveTransition(require.Next, map[string]string{
+		"vars.step.require_plan_critique.output": "plan critique present",
+		"task.status":                            "planning",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "flag_plan_critique_verdict" {
+		t.Fatalf("present critique next = %q, want flag_plan_critique_verdict", got)
+	}
+
+	flag := simple.StepByID("flag_plan_critique_verdict")
+	if flag == nil {
+		t.Fatal("flag_plan_critique_verdict step not found in simple-task-plan")
+		return
+	}
+	if flag.Type != StepFlagPlanCritique {
+		t.Fatalf("flag_plan_critique_verdict type = %q, want %q", flag.Type, StepFlagPlanCritique)
+	}
+	got, err = ResolveTransition(flag.Next, map[string]string{})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "review_plan" {
+		t.Fatalf("flag_plan_critique_verdict next = %q, want review_plan", got)
+	}
+}
+
 // TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects locks the replan
 // iteration cap: task.replan_count is start_replan's own step-history count
 // as of the current reject, so 0/1/2 still have budget for another full
@@ -390,8 +450,9 @@ func TestBuiltinPromptLabAuthor_OwnsPromptLabImplementation(t *testing.T) {
 
 // TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation pins the
 // implementation workflow ordering: verify_commits flows into codegen_gate,
-// which must run before detect_tampering and verify_checks so downstream
-// review/testing validate the final committed branch content.
+// then focused_checks, which must still run before detect_tampering and
+// verify_checks so downstream review/testing validate the final committed
+// branch content.
 func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	t.Parallel()
 
@@ -424,6 +485,20 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 		t.Fatalf("verify_commits clean goto = %q, err=%v; want codegen_gate", got, err)
 	}
 
+	focused := impl.StepByID("focused_checks")
+	if focused == nil {
+		t.Fatal("focused_checks step not found in simple-task-implement")
+	}
+	if focused.Type != StepFocusedChecks {
+		t.Fatalf("focused_checks type = %q, want %q", focused.Type, StepFocusedChecks)
+	}
+	if got, err := ResolveTransition(focused.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
+		t.Fatalf("focused_checks human-required goto = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(focused.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "detect_tampering" {
+		t.Fatalf("focused_checks clean goto = %q, err=%v; want detect_tampering", got, err)
+	}
+
 	codegen := impl.StepByID("codegen_gate")
 	if codegen == nil {
 		t.Fatal("codegen_gate step not found in simple-task-implement")
@@ -434,8 +509,8 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
 		t.Fatalf("codegen_gate human-required goto = %q, err=%v; want end", got, err)
 	}
-	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "detect_tampering" {
-		t.Fatalf("codegen_gate clean goto = %q, err=%v; want detect_tampering", got, err)
+	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "focused_checks" {
+		t.Fatalf("codegen_gate clean goto = %q, err=%v; want focused_checks", got, err)
 	}
 
 	detect := impl.StepByID("detect_tampering")
@@ -444,6 +519,54 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	}
 	if got, err := ResolveTransition(detect.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "verify_checks" {
 		t.Fatalf("detect_tampering clean goto = %q, err=%v; want verify_checks", got, err)
+	}
+}
+
+// TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview pins the fix for
+// a re-fix cycle orphaning at ready-review: simple-task-review's own trigger
+// refuses pr_number != "", so verify_checks must route a PR-having task to
+// in-review directly rather than a status nothing dispatches.
+func TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var impl *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-implement" {
+			impl = &defs[i]
+			break
+		}
+	}
+	if impl == nil {
+		t.Fatal("simple-task-implement builtin definition not found")
+	}
+	verifyChecks := impl.StepByID("verify_checks")
+	if verifyChecks == nil {
+		t.Fatal("verify_checks step not found in simple-task-implement")
+	}
+
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "set_ready_review" {
+		t.Fatalf("verify_checks no-PR goto = %q, err=%v; want set_ready_review", got, err)
+	}
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "in-progress", "task.pr_number": "17478"}); err != nil || got != "set_ready_pr_existing" {
+		t.Fatalf("verify_checks existing-PR goto = %q, err=%v; want set_ready_pr_existing", got, err)
+	}
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "blocked", "task.pr_number": "17478"}); err != nil || got != "" {
+		t.Fatalf("verify_checks blocked goto = %q, err=%v; want end (wins over PR routing)", got, err)
+	}
+	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "human-required", "task.pr_number": "17478"}); err != nil || got != "" {
+		t.Fatalf("verify_checks human-required goto = %q, err=%v; want end (wins over PR routing)", got, err)
+	}
+
+	existingPR := impl.StepByID("set_ready_pr_existing")
+	if existingPR == nil {
+		t.Fatal("set_ready_pr_existing step not found in simple-task-implement")
+	}
+	if existingPR.Type != StepSetStatus || existingPR.Config.Status != "in-review" {
+		t.Fatalf("set_ready_pr_existing = type %q status %q; want set_status in-review", existingPR.Type, existingPR.Config.Status)
 	}
 }
 
@@ -513,11 +636,12 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 	}
 }
 
-// TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting locks the trivial
-// escape hatch in simple-task-review's maybe_review transition table: a
-// trivial tag routes straight to done_review (skipping the code-review
-// agents), same as an already-reviewed task, while noreview and the normal
-// path are unaffected.
+// TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting locks the review
+// entry gate in simple-task-review: a trivial tag routes straight to
+// done_review (skipping the code-review agents), same as a CLEAN-reviewed
+// task, while noreview and the normal path are unaffected. A persisted
+// NEEDS_FIXES sidecar must override task.reviewed so the review-cap →
+// testing → reimplementation loop cannot skip the next code review.
 func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
 	t.Parallel()
 
@@ -551,6 +675,15 @@ func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
 			name:   "already_reviewed_wins_over_normal_path",
 			fields: map[string]string{"task.reviewed": "true", "task.tags": "backend,feature"},
 			want:   "done_review",
+		},
+		{
+			name: "needs_fixes_review_overrides_reviewed_flag",
+			fields: map[string]string{
+				"task.reviewed":    "true",
+				"task.tags":        "backend,feature",
+				"task.code_review": "Review Verdict: NEEDS_FIXES\n\nfoo.go:12: nil deref risk.\n",
+			},
+			want: "triage_review",
 		},
 	}
 
@@ -690,6 +823,121 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	}
 	if got, err := ResolveTransition(route.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "verify_commits" {
 		t.Fatalf("default route next = %q, err=%v; want verify_commits", got, err)
+	}
+}
+
+// TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired pins that
+// route_pr_fix_result's pr_fix_test_fix_eligible branch is checked before
+// its task.status==human-required branch — otherwise the eligibility var
+// would never get a chance to redirect to test_fix, since a real eligible
+// completion always has task.status still at in-progress (unset) rather
+// than human-required at this point, but a stale/misordered condition list
+// checked in the wrong order would silently never route there in practice
+// once a future edit changes what status looks like at this step.
+func TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired(t *testing.T) {
+	t.Parallel()
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var prfix *Definition
+	for i := range defs {
+		if defs[i].ID == "pr-fix" {
+			prfix = &defs[i]
+			break
+		}
+	}
+	if prfix == nil {
+		t.Fatal("pr-fix builtin definition not found")
+	}
+	route := prfix.StepByID("route_pr_fix_result")
+	if route == nil {
+		t.Fatal("route_pr_fix_result step missing from pr-fix")
+		return
+	}
+	got, err := ResolveTransition(route.Next, map[string]string{
+		"vars.step.route_pr_fix_result.pr_fix_test_fix_eligible": "true",
+		"task.status": "in-progress",
+	})
+	if err != nil || got != "test_fix" {
+		t.Fatalf("eligible route next = %q, err=%v; want test_fix", got, err)
+	}
+
+	testFix := prfix.StepByID("test_fix")
+	if testFix == nil {
+		t.Fatal("test_fix step missing from pr-fix")
+		return
+	}
+	if testFix.Type != StepRunAgent {
+		t.Fatalf("test_fix type = %q, want %q", testFix.Type, StepRunAgent)
+	}
+	if testFix.Config.Role != "test-fix" {
+		t.Fatalf("test_fix role = %q, want test-fix", testFix.Config.Role)
+	}
+	if got, err := ResolveTransition(testFix.Next, map[string]string{}); err != nil || got != "route_test_fix_result" {
+		t.Fatalf("test_fix next = %q, err=%v; want route_test_fix_result", got, err)
+	}
+
+	routeTestFix := prfix.StepByID("route_test_fix_result")
+	if routeTestFix == nil {
+		t.Fatal("route_test_fix_result step missing from pr-fix")
+		return
+	}
+	if routeTestFix.Type != StepRoutePRFixResult {
+		t.Fatalf("route_test_fix_result type = %q, want %q", routeTestFix.Type, StepRoutePRFixResult)
+	}
+	// route_test_fix_result must have no eligibility branch of its own — a
+	// human-required verdict here always parks, bounding the follow-up to
+	// exactly one attempt.
+	if got, err := ResolveTransition(routeTestFix.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
+		t.Fatalf("route_test_fix_result human-required next = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(routeTestFix.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "verify_commits" {
+		t.Fatalf("route_test_fix_result default next = %q, err=%v; want verify_commits", got, err)
+	}
+
+	// A pure wiring assertion can't catch a template syntax typo or a wrong
+	// getvar key, so render the real prompt string against realistic vars.
+	rendered, err := RenderTemplate(testFix.Config.Prompt, TemplateContext{
+		Task: TaskInfo{Branch: "chore/example-branch-1234abcd"},
+		Vars: map[string]string{
+			"step.fix.pr_fix_failing_tests": "pkg/a_test.go:1 TestA\npkg/b_test.go:2 TestB",
+			"step.fix.pr_fix_reason":        "targeted tests still fail after the merge",
+			// A stand-in for internal/sybra/review.PRFixResultContract
+			// (that package imports this one, so it can't be referenced
+			// directly here) — only its presence in the rendered output
+			// matters for this test, not its exact wording.
+			"pr_fix_result_contract": "SYBRA_PR_FIX_RESULT: <verdict>",
+			// Stand-in for project.CommitSignFlags(ctx) — dispatchPRIssueWithOptions
+			// (internal/sybra/review) computes the real value per-host so a
+			// keyless host never gets a hardcoded -S it can't satisfy.
+			"commit_sign_flags": "-s -S",
+		},
+	})
+	if err != nil {
+		t.Fatalf("render test_fix prompt: %v", err)
+	}
+	for _, want := range []string{
+		"pkg/a_test.go:1 TestA",
+		"pkg/b_test.go:2 TestB",
+		"targeted tests still fail after the merge",
+		"SYBRA_PR_FIX_RESULT",
+		// Without explicit push instructions naming the branch, a test_fix
+		// agent that fixes the tests but never pushes leaves the PR
+		// unchanged while the workflow proceeds as if it succeeded.
+		"git push",
+		"chore/example-branch-1234abcd",
+		"Do not force-push",
+		// Commit-sign flags must come from the templated var, not a
+		// hardcoded "-s -S" that fails on a keyless host.
+		"git commit -s -S",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered test_fix prompt missing %q; got:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(testFix.Config.Prompt, "-s -S") {
+		t.Fatalf("test_fix prompt hardcodes commit sign flags instead of templating commit_sign_flags:\n%s", testFix.Config.Prompt)
 	}
 }
 
@@ -1396,6 +1644,39 @@ func TestSimpleTaskReview_DoesNotMatchLinkedPRTask(t *testing.T) {
 	linkedPR := TaskInfo{ID: "linked-pr", Status: "ready-review", PRNumber: 1981}
 	if got := engine.MatchWorkflow(linkedPR, "task.status_changed"); got != nil {
 		t.Fatalf("linked-PR ready-review task matched %q, want no pre-PR review workflow", got.ID)
+	}
+}
+
+func TestSimpleTaskPR_SkipsReviewOnlyRoles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := SyncBuiltins(store); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	codeAuthor := TaskInfo{ID: "code-author", Status: "ready-pr"}
+	if got := engine.MatchWorkflow(codeAuthor, "task.status_changed"); got == nil || got.ID != "simple-task-pr" {
+		id := "<nil>"
+		if got != nil {
+			id = got.ID
+		}
+		t.Fatalf("code-author ready-pr task matched %q, want simple-task-pr", id)
+	}
+
+	for _, role := range []string{"review", "test-runner", "human-review"} {
+		t.Run(role, func(t *testing.T) {
+			if got := engine.MatchWorkflow(TaskInfo{ID: role, Status: "ready-pr", Role: role}, "task.status_changed"); got != nil {
+				t.Fatalf("%s ready-pr task matched %q, want no PR workflow", role, got.ID)
+			}
+		})
 	}
 }
 

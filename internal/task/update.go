@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -16,6 +17,7 @@ type Update struct {
 	Slug                  *string
 	Status                *Status
 	StatusReason          *string
+	Blocker               *blocker.State
 	BlockedByIssue        *string
 	UmbrellaIssue         *string
 	DependsOn             *[]string
@@ -37,7 +39,6 @@ type Update struct {
 	ReviewedHeadSHA       *string
 	ReviewedHeadAttempts  *int
 	PRPhase               *string
-	TodoistID             *string
 	Priority              *Priority
 	DueDate               **time.Time
 	Workflow              **workflow.Execution
@@ -55,6 +56,7 @@ type Update struct {
 	Outcome               *string
 	MergeCommit           *string
 	TestingCycleStartedAt *time.Time
+	Attachments           *[]Attachment
 }
 
 func (u Update) writesSidecar() bool {
@@ -90,7 +92,7 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
-		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "todoist_id", "plan", "plan_critique",
+		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "plan", "plan_critique",
 		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
 		"review_phase", "reviewed_head_sha", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
@@ -150,9 +152,76 @@ func applyMapField(u *Update, k string, v any) error {
 			return fmt.Errorf("field %q: want *workflow.Execution, got %T", k, v)
 		}
 		u.Workflow = &wf
+	case "blocker":
+		return applyBlockerField(u, v)
 	default:
 		return fmt.Errorf("unknown task field %q", k)
 	}
+	return nil
+}
+
+// applyBlockerField builds a full-replacement blocker.State from a
+// map[string]any (as opposed to a partial merge) — this matches how every
+// blocker producer in internal/workflow and internal/sybra/review already
+// writes the field: the whole state is authored together by whichever
+// subsystem classified the blocking condition. Callers that want to change
+// one attribute (e.g. flip Exhausted) must resend the full state, seeded from
+// the task's current blocker if needed.
+func applyBlockerField(u *Update, v any) error {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("field %q: want object, got %T", "blocker", v)
+	}
+	var st blocker.State
+	if raw, ok := m["kind"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", "blocker.kind", raw)
+		}
+		st.Kind = blocker.Kind(s)
+	}
+	if raw, ok := m["actor"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", "blocker.actor", raw)
+		}
+		st.Actor = blocker.Actor(s)
+	}
+	if raw, ok := m["code"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", "blocker.code", raw)
+		}
+		st.Code = s
+	}
+	if raw, ok := m["next_action"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", "blocker.next_action", raw)
+		}
+		st.NextAction = s
+	}
+	if raw, ok := m["retry_after"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", "blocker.retry_after", raw)
+		}
+		if s != "" {
+			parsed, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				return fmt.Errorf("field %q: %w", "blocker.retry_after", err)
+			}
+			st.RetryAfter = &parsed
+		}
+	}
+	if raw, ok := m["exhausted"]; ok {
+		b, ok := raw.(bool)
+		if !ok {
+			return fmt.Errorf("field %q: want bool, got %T", "blocker.exhausted", raw)
+		}
+		st.Exhausted = b
+	}
+	u.Blocker = &st
 	return nil
 }
 
@@ -188,8 +257,6 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.RunRole = &s
 	case "supervisor_steer":
 		u.SupervisorSteer = &s
-	case "todoist_id":
-		u.TodoistID = &s
 	case "plan":
 		u.Plan = &s
 	case "plan_contract":

@@ -28,7 +28,7 @@ import (
 func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
 	t.Parallel()
 
-	prompt := buildConflictPrompt(github.PullRequest{
+	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
 	}, "\n\nFiles changed in this PR:\n- internal/workflow/engine.go\n")
@@ -57,7 +57,7 @@ func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
 func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	t.Parallel()
 
-	prompt := buildConflictPrompt(github.PullRequest{
+	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
 	}, "")
@@ -85,7 +85,7 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
 	t.Parallel()
 
-	prompt := buildConflictPrompt(github.PullRequest{
+	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
 		BaseRefName: "master",
@@ -102,9 +102,76 @@ func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
 func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 	t.Parallel()
 
-	prompt := branchConflictPrompt(task.Task{Branch: "fix/example"}, "main")
+	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main")
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
+}
+
+func TestBranchConflictPrompt_AllowsRebaseBeforePRExists(t *testing.T) {
+	t.Parallel()
+
+	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main")
+
+	for _, want := range []string{
+		"git merge refs/remotes/origin/main",
+		"you may instead rebase onto",
+		"refs/remotes/origin/main, resolve the conflicts there",
+		"Prefer a merge; if you must rebase before the first PR exists, push the rewritten branch back with `--force-with-lease`",
+		"git push --force-with-lease \"$PUSH_REMOTE\" HEAD:fix/example",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("branch conflict prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Do not force-push or rewrite existing commits — this is a merge, never a rebase") {
+		t.Fatalf("branch conflict prompt still forbids rebase/force-push before PR creation:\n%s", prompt)
+	}
+}
+
+// A pr-fix agent that backgrounds its test run and then narrates "still
+// waiting" status messages instead of blocking on it trips the watchdog's
+// semantic-loop detector and burns the run for nothing. Both conflict
+// prompts must tell the agent to run tests as a single blocking foreground
+// command instead.
+func TestConflictPrompt_TestsRunSynchronously(t *testing.T) {
+	t.Parallel()
+
+	for _, prompt := range []string{
+		buildConflictPrompt(context.Background(), github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, ""),
+		branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main"),
+	} {
+		if !strings.Contains(prompt, "never background a test run or narrate/poll its progress") {
+			t.Fatalf("conflict prompt does not forbid backgrounding/narrating test runs:\n%s", prompt)
+		}
+	}
+}
+
+// A conflict-fix agent that hardcodes `git commit -s -S` fails outright on a
+// keyless host (gpg-agent absent, no user.signingkey) — see project.CommitSignFlags.
+// Both conflict prompts must interpolate the host-appropriate flags instead.
+func TestConflictPrompt_UsesHostCommitSignFlags(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	wantFlags := project.CommitSignFlags(ctx)
+
+	prPrompt := buildConflictPrompt(ctx, github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, "")
+	if !strings.Contains(prPrompt, "git add and git commit "+wantFlags+" to") {
+		t.Fatalf("PR conflict prompt missing host commit sign flags %q:\n%s", wantFlags, prPrompt)
+	}
+
+	branchPrompt := branchConflictPrompt(ctx, task.Task{Branch: "fix/example"}, "main")
+	if !strings.Contains(branchPrompt, "git add and git\n# commit "+wantFlags+" to") {
+		t.Fatalf("branch conflict prompt missing host commit sign flags %q:\n%s", wantFlags, branchPrompt)
+	}
+
+	if !project.GPGSigningAvailable(ctx) {
+		for _, prompt := range []string{prPrompt, branchPrompt} {
+			if strings.Contains(prompt, "git commit -s -S") {
+				t.Fatalf("conflict prompt hardcodes -S on a keyless host:\n%s", prompt)
+			}
+		}
+	}
 }
 
 func TestCIFailurePrompt_DetectsForkRemote(t *testing.T) {
@@ -193,7 +260,7 @@ func TestCommentsPrompt_DetectsForkRemote(t *testing.T) {
 func TestConflictPrompt_DetectsForkRemote(t *testing.T) {
 	t.Parallel()
 
-	prompt := buildConflictPrompt(github.PullRequest{
+	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
 	}, "")
@@ -215,8 +282,8 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 	for _, want := range []string{
 		"PUSH_REMOTE=origin",
 		"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi",
-		"PUSH_URL=$(git remote get-url --push \"$PUSH_REMOTE\")",
-		"case \"$PUSH_URL\" in https://github.com/*|http://github.com/*|https://github.com:[0-9]*/*|http://github.com:[0-9]*/*) gh auth status --hostname github.com >/dev/null ;; esac",
+		"PREFLIGHT_REF=HEAD:refs/heads/sybra-preflight/$(git rev-parse --verify HEAD)",
+		"git push --dry-run \"$PUSH_REMOTE\" \"$PREFLIGHT_REF\"",
 		"git push \"$PUSH_REMOTE\" HEAD:" + branch,
 	} {
 		if !strings.Contains(prompt, want) {
@@ -280,13 +347,17 @@ func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
 	}
 }
 
-func TestStaffCodeReviewPromptAuthorizesPostingReview(t *testing.T) {
+func TestStaffCodeReviewPromptAuthorizesPendingReview(t *testing.T) {
 	t.Parallel()
 
 	prompt := StaffCodeReviewPrompt("Automaat/example", 123)
 	for _, want := range []string{
 		"Run /staff-code-review on https://github.com/Automaat/example/pull/123",
 		"Do not ask the operator for confirmation",
+		"Create exactly one PENDING (draft) pull-request review",
+		"findings become inline comments",
+		"if a review for that head already contains the Sybra harness",
+		"Omit `event` so GitHub leaves the review PENDING",
 		"_Generated by Sybra harness_",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -299,12 +370,14 @@ func TestStaffCodeReviewPromptNeverAuthorizesApproval(t *testing.T) {
 	t.Parallel()
 
 	prompt := StaffCodeReviewPrompt("Automaat/example", 123)
-	if !strings.Contains(prompt, "NEVER submit an approving review") {
-		t.Fatalf("prompt does not withhold approval authority:\n%s", prompt)
+	if !strings.Contains(prompt, "NEVER submit any review event") {
+		t.Fatalf("prompt does not withhold submission authority:\n%s", prompt)
 	}
 	for _, banned := range []string{
 		"submit an approve review",
 		"If the PR is clean, submit an approve",
+		"submit a plain comment review",
+		"submit a review requesting changes",
 	} {
 		if strings.Contains(prompt, banned) {
 			t.Fatalf("prompt authorizes approval via %q:\n%s", banned, prompt)
@@ -434,8 +507,28 @@ func TestPRMonitorEligible(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "todo with PR — not eligible, not in monitored states",
+			name: "todo with PR — eligible; skipTaskCreatedWorkflow skips the fresh-implementation lane for this exact shape and pr-fix is the only other path",
 			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42},
+			want: true,
+		},
+		{
+			name: "todo with branch only — not eligible (avoid WIP false positives, same as in-progress)",
+			tk:   task.Task{Status: task.StatusTodo, Branch: "sybra/wip"},
+			want: false,
+		},
+		{
+			name: "todo with nothing — not eligible, a normal fresh-dispatch candidate",
+			tk:   task.Task{Status: task.StatusTodo},
+			want: false,
+		},
+		{
+			name: "todo with PR and review tag — excluded (inbound review task, not ours)",
+			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42, Tags: []string{"review"}},
+			want: false,
+		},
+		{
+			name: "todo with PR and handoff tag — excluded (handoff owns its own re-entry lane)",
+			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42, Tags: []string{"handoff", "handoff-ready-pr"}},
 			want: false,
 		},
 		{
@@ -491,14 +584,9 @@ func TestPrClosedEligible(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "human-required chat task — excluded",
-			tk:   task.Task{TaskType: task.TaskTypeChat, Status: task.StatusHumanRequired, PRNumber: 42},
-			want: false,
-		},
-		{
-			name: "todo with PR — not eligible",
+			name: "todo with PR — eligible (via prMonitorEligible)",
 			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42},
-			want: false,
+			want: true,
 		},
 		{
 			name: "done with PR — not eligible (terminal)",
@@ -567,17 +655,6 @@ func TestReviewClosedPREligible(t *testing.T) {
 				Status:    task.StatusInReview,
 				Tags:      []string{"review"},
 				ProjectID: "o/r",
-			},
-			want: false,
-		},
-		{
-			name: "chat task skipped",
-			tk: task.Task{
-				Status:    task.StatusInReview,
-				TaskType:  task.TaskTypeChat,
-				Tags:      []string{"review"},
-				ProjectID: "o/r",
-				PRNumber:  42,
 			},
 			want: false,
 		},
@@ -899,14 +976,12 @@ func TestOrphanPRAdoptionEligible(t *testing.T) {
 		{"watchdog stop not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "watchdog: runaway loop"}, false},
 		{"unrelated reason not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "needs design input"}, false},
 		{"review task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, Tags: []string{"review"}}, false},
-		{"chat task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, TaskType: task.TaskTypeChat}, false},
 		// in-review cases (no strand-reason gate: already in review with no PR is unambiguously an orphan)
 		{"in-review no PR — eligible", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r"}, true},
 		{"in-review with PR — not eligible (already linked)", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", PRNumber: 5}, false},
 		{"in-review no branch — not eligible", task.Task{Status: task.StatusInReview, ProjectID: "o/r"}, false},
 		{"in-review no project — not eligible", task.Task{Status: task.StatusInReview, Branch: "b"}, false},
 		{"in-review review tag excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", Tags: []string{"review"}}, false},
-		{"in-review chat task excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", TaskType: task.TaskTypeChat}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1421,7 +1496,7 @@ func TestIncludeKnownTaskPRsAddsLinkedPRsMissingFromSearch(t *testing.T) {
 		},
 	}
 
-	got := r.includeKnownTaskPRs([]task.Task{
+	got := r.includeKnownTaskPRs(context.Background(), []task.Task{
 		{
 			ID:        "already-search",
 			Status:    task.StatusInReview,
@@ -1453,43 +1528,137 @@ func TestIncludeKnownTaskPRsAddsLinkedPRsMissingFromSearch(t *testing.T) {
 	}
 }
 
-// TestTriageReviewSmall guards the reviewSmallAdditions (40) and
-// reviewSmallFiles (5) thresholds. Both conditions must hold for the PR to be
-// routed to human-required; if either meets or exceeds its limit the review
-// agent should be dispatched.
-func TestTriageReviewSmall(t *testing.T) {
+func TestTriageReviewStartsAgentAfterStatsRegardlessOfSize(t *testing.T) {
 	tests := []struct {
 		name      string
 		additions int
 		files     int
-		wantSmall bool
 	}{
-		// Both strictly below threshold → too small for agent
-		{"39 additions, 4 files — below both limits", 39, 4, true},
-		{"0 additions, 0 files — zero-sized PR", 0, 0, true},
-		{"1 addition, 1 file — minimal PR", 1, 1, true},
-
-		// additions at exact threshold → no longer small (dispatch agent)
-		{"40 additions, 4 files — additions at limit", 40, 4, false},
-		// files at exact threshold → no longer small (dispatch agent)
-		{"39 additions, 5 files — files at limit", 39, 5, false},
-		// both at threshold
-		{"40 additions, 5 files — both at limit", 40, 5, false},
-		// both above threshold
-		{"200 additions, 20 files — large PR", 200, 20, false},
-		// one well above, one below
-		{"100 additions, 1 file — additions above, files below", 100, 1, false},
-		{"1 addition, 10 files — additions below, files above", 1, 10, false},
+		{name: "zero-sized PR", additions: 0, files: 0},
+		{name: "tiny PR", additions: 1, files: 1},
+		{name: "large PR", additions: 200, files: 20},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := triageReviewSmall(tt.additions, tt.files)
-			if got != tt.wantSmall {
-				t.Errorf("triageReviewSmall(%d, %d) = %v, want %v",
-					tt.additions, tt.files, got, tt.wantSmall)
+			store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tasks := task.NewManager(store, nil)
+
+			tags := []string{"review"}
+			tk, err := tasks.CreateFull("Review: tiny change", "body", string(task.AgentModeHeadless), task.Update{
+				Tags:      &tags,
+				ProjectID: task.Ptr("owner/repo"),
+				PRNumber:  task.Ptr(42),
+			})
+			if err != nil {
+				t.Fatalf("CreateFull: %v", err)
+			}
+
+			started := false
+			r := &Handler{
+				logger: slog.New(slog.DiscardHandler),
+				tasks:  tasks,
+				fetchPRStatsFn: func(repo string, number int) (github.PRStats, error) {
+					if repo != "owner/repo" || number != 42 {
+						t.Fatalf("FetchPRStats repo/number = %s/%d, want owner/repo/42", repo, number)
+					}
+					return github.PRStats{Additions: tt.additions, ChangedFiles: tt.files}, nil
+				},
+				startReviewAgentFn: func(got task.Task, force bool) error {
+					started = true
+					if force {
+						t.Fatal("StartReviewAgent force = true, want false")
+					}
+					if got.ID != tk.ID {
+						t.Fatalf("StartReviewAgent task = %q, want %q", got.ID, tk.ID)
+					}
+					latest, err := tasks.Get(tk.ID)
+					if err != nil {
+						t.Fatalf("Get after triage: %v", err)
+					}
+					if latest.Status != task.StatusInReview {
+						t.Fatalf("status before StartReviewAgent = %q, want %q", latest.Status, task.StatusInReview)
+					}
+					return nil
+				},
+			}
+
+			r.triageReview(tk)
+
+			if !started {
+				t.Fatal("StartReviewAgent was not called")
+			}
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Status != task.StatusInReview {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
 			}
 		})
+	}
+}
+
+func TestTriageReviewStartsAgentWhenStatsFetchFails(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	tags := []string{"review"}
+	tk, err := tasks.CreateFull("Review: unknown size", "body", string(task.AgentModeHeadless), task.Update{
+		Tags:      &tags,
+		ProjectID: task.Ptr("owner/repo"),
+		PRNumber:  task.Ptr(42),
+	})
+	if err != nil {
+		t.Fatalf("CreateFull: %v", err)
+	}
+
+	started := false
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
+		fetchPRStatsFn: func(repo string, number int) (github.PRStats, error) {
+			if repo != "owner/repo" || number != 42 {
+				t.Fatalf("FetchPRStats repo/number = %s/%d, want owner/repo/42", repo, number)
+			}
+			return github.PRStats{}, errors.New("stats unavailable")
+		},
+		startReviewAgentFn: func(got task.Task, force bool) error {
+			started = true
+			if force {
+				t.Fatal("StartReviewAgent force = true, want false")
+			}
+			if got.ID != tk.ID {
+				t.Fatalf("StartReviewAgent task = %q, want %q", got.ID, tk.ID)
+			}
+			latest, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("Get after triage: %v", err)
+			}
+			if latest.Status != task.StatusInReview {
+				t.Fatalf("status before StartReviewAgent = %q, want %q", latest.Status, task.StatusInReview)
+			}
+			return nil
+		},
+	}
+
+	r.triageReview(tk)
+
+	if !started {
+		t.Fatal("StartReviewAgent was not called")
+	}
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
 	}
 }
 
@@ -1913,7 +2082,7 @@ func TestCloseFinishedReviewTasks(t *testing.T) {
 			wantStatus: task.StatusInReview,
 		},
 		{
-			// human-required tasks are eligible too (small PR punted to human).
+			// human-required review tasks are eligible too (draft/manual follow-up).
 			name:       "human-required review task with merged PR — advances to done",
 			taskStatus: task.StatusHumanRequired,
 			prState:    "MERGED",
@@ -2378,6 +2547,63 @@ func TestAdvanceClosedTaskPRs_ClosedUnmergedCancelsNotDone(t *testing.T) {
 	}
 }
 
+func TestAdvanceClosedTaskPR_EmitsTaskLanded(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.Create("Task whose PR was merged", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("waiting for review"),
+		PRNumber:     task.Ptr(1446),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	auditDir := filepath.Join(tmp, "audit")
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+	logger := slog.New(slog.DiscardHandler)
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	r := &Handler{
+		logger: logger, emit: func(string, any) {},
+		audit:  auditLog,
+		tasks:  tasks,
+		agents: agentMgr,
+	}
+
+	if err := r.AdvanceClosedTaskPR(context.Background(), created.ID, 1446, "MERGED"); err != nil {
+		t.Fatalf("AdvanceClosedTaskPR: %v", err)
+	}
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusDone || got.Outcome != "merged" || got.StatusReason != "" {
+		t.Fatalf("task = status %q outcome %q reason %q, want done/merged/empty", got.Status, got.Outcome, got.StatusReason)
+	}
+	events := readExperienceAuditEvents(t, auditDir)
+	var landed bool
+	for _, e := range events {
+		if e.Type == audit.EventTaskLanded && e.TaskID == created.ID {
+			landed = true
+			break
+		}
+	}
+	if !landed {
+		t.Fatalf("audit events = %+v, want task.landed", events)
+	}
+}
+
 func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
@@ -2428,7 +2654,11 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 		projects:  projects,
 		agents:    agentMgr,
 		prTracker: github.NewIssueTracker(0),
-		cfg:       &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}},
+		cfg: func() *config.Config {
+			gh := testGitHubConfig()
+			gh.PollerRole = "secondary"
+			return &config.Config{GitHub: gh}
+		}(),
 		fetchReviewsFn: func() (github.ReviewSummary, error) {
 			fetchReviewsCalled = true
 			return github.ReviewSummary{}, nil

@@ -10,54 +10,45 @@ import (
 )
 
 // GhShimReason is what the gh shim prints to stderr, and the agent reads, when
-// it refuses to submit a PR approval.
-const GhShimReason = "Blocked by Sybra: agents have no PR-approval authority. " +
-	"Submit a comment review (gh pr review --comment) or request changes " +
-	"(gh pr review --request-changes) instead; approval is a human decision."
+// it refuses to submit a PR review event.
+const GhShimReason = "Blocked by Sybra: agents may only create pending PR review drafts. " +
+	"Use gh api to create a pull-request review without an event; review submission is a human decision."
 
 const ghShimScript = `#!/bin/sh
 if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
-	skip=0
-	for arg in "$@"; do
-		if [ "$skip" = "1" ]; then
-			skip=0
-			continue
-		fi
-		case "$arg" in
-		-b|--body|-F|--body-file)
-			skip=1
-			;;
-		--approve|-a|--approve=*)
-			printf '%%s\n' '%[1]s' >&2
-			exit 1
-			;;
-		esac
-	done
+	printf '%%s\n' '%[1]s' >&2
+	exit 1
 fi
 if [ "$1" = "api" ]; then
-	sawinput=0
+	sawhidden=0
 	sawreviews=0
 	for arg in "$@"; do
 		case "$arg" in
-		*[Ee][Vv][Ee][Nn][Tt]*[Aa][Pp][Pp][Rr][Oo][Vv][Ee]*)
-			printf '%%s\n' '%[1]s' >&2
-			exit 1
-			;;
-		# The review mutation can carry its event in a GraphQL variable, so argv
-		# never sees APPROVE beside EVENT. Nothing legitimate needs the mutation:
-		# gh pr review --comment/--request-changes covers every sanctioned review.
-		*[Aa][Dd][Dd][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]*)
+		[Ee][Vv][Ee][Nn][Tt]=[Cc][Oo][Mm][Mm][Ee][Nn][Tt] | [Ee][Vv][Ee][Nn][Tt]=[Rr][Ee][Qq][Uu][Ee][Ss][Tt]_[Cc][Hh][Aa][Nn][Gg][Ee][Ss] | [Ee][Vv][Ee][Nn][Tt]=[Aa][Pp][Pp][Rr][Oo][Vv][Ee])
 			printf '%%s\n' '%[1]s' >&2
 			exit 1
 			;;
 		esac
-		# A payload read from stdin or a file is invisible to argv, so an approval
-		# can be posted with no matching arg at all. --input carries a whole
-		# body; -F/--field key=@path pulls a single value the same way, which is
-		# enough to hide a whole GraphQL mutation.
 		case "$arg" in
-		--input | --input=* | *=@*)
-			sawinput=1
+		# The review mutation can carry its event in a GraphQL variable, so argv
+		# never sees the submitted event beside EVENT. Agents have a sanctioned
+		# REST path for pending drafts, so block GraphQL review mutations.
+		*[Aa][Dd][Dd][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]* | *[Ss][Uu][Bb][Mm][Ii][Tt][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]*)
+			printf '%%s\n' '%[1]s' >&2
+			exit 1
+			;;
+		esac
+		# --input (or --input=path) swaps the whole request body for a file/stdin
+		# stream gh never parses, so an event field could ride along with nothing
+		# in argv to catch it. event=@path and, for graphql, query=@path are the
+		# same hole one field wide: gh api scopes a file value to exactly the
+		# named field, so body=@path or comments[][body]=@path can only ever
+		# become that field's string content — it cannot inject a sibling "event"
+		# key — but event=@path hides the submission verb itself, and query=@path
+		# hides a mutation that might embed one.
+		case "$arg" in
+		--input | --input=* | [Ee][Vv][Ee][Nn][Tt]=@* | [Qq][Uu][Ee][Rr][Yy]=@*)
+			sawhidden=1
 			;;
 		esac
 		# graphql counts as review-capable: addPullRequestReview reaches the same
@@ -69,7 +60,7 @@ if [ "$1" = "api" ]; then
 		esac
 	done
 	# Refuse a review payload we cannot inspect rather than assume it is benign.
-	[ "$sawinput$sawreviews" = "11" ] && printf '%%s\n' '%[1]s' >&2 && exit 1
+	[ "$sawhidden$sawreviews" = "11" ] && printf '%%s\n' '%[1]s' >&2 && exit 1
 fi
 exec '%[2]s' "$@"
 `
@@ -78,8 +69,9 @@ exec '%[2]s' "$@"
 // agent's PATH.
 //
 // This is the deterministic floor under the review-agent prompts: the prompts
-// tell agents never to approve (semantic ceiling), and this refuses the call
-// even if that instruction drifts or is dropped — a prompt is not a permission
+// tell agents to create pending drafts without submitting review events
+// (semantic ceiling), and this refuses direct submitted-review calls even if
+// that instruction drifts or is dropped — a prompt is not a permission
 // boundary.
 //
 // It matches on real argv, after the shell has already resolved quoting,

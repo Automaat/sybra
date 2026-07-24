@@ -2,10 +2,12 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -31,6 +33,561 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.TasksDir == "" {
 		t.Error("TasksDir should not be empty")
 	}
+	if cfg.Attachments.MaxSizeMB != DefaultAttachmentMaxSizeMB {
+		t.Errorf("Attachments.MaxSizeMB = %d, want %d", cfg.Attachments.MaxSizeMB, DefaultAttachmentMaxSizeMB)
+	}
+	if cfg.Triage.PollSeconds != 60 {
+		t.Errorf("Triage.PollSeconds = %d, want 60", cfg.Triage.PollSeconds)
+	}
+	if cfg.Monitor.DispatchLimit != cfg.Agent.MaxConcurrent {
+		t.Errorf("Monitor.DispatchLimit = %d, want Agent.MaxConcurrent %d", cfg.Monitor.DispatchLimit, cfg.Agent.MaxConcurrent)
+	}
+	if cfg.ABTesting.EnabledValue() {
+		t.Fatal("ABTesting.EnabledValue() = true, want false until explicitly opted in")
+	}
+}
+
+func TestDefaultConfigMatchesEmptyFileResolution(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DefaultConfig()
+	if diff := cmpConfigSubset(got, want); diff != "" {
+		t.Fatalf("LoadNoPersist(empty file) != DefaultConfig():\n%s", diff)
+	}
+}
+
+func TestParseFileConfigRejectsUnknownKeyWithFullPathAndSuggestion(t *testing.T) {
+	_, err := ParseFileConfig([]byte("monitor:\n  issue_reop: Automaat/sybra\n"))
+	if err == nil {
+		t.Fatal("expected unknown-key error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `unknown config key "monitor.issue_reop"`) {
+		t.Fatalf("error = %q, want full path", msg)
+	}
+	if !strings.Contains(msg, `did you mean "issue_repo"?`) {
+		t.Fatalf("error = %q, want suggestion", msg)
+	}
+}
+
+func TestParseFileConfigRejectsFutureSchemaVersion(t *testing.T) {
+	_, err := ParseFileConfig([]byte("schema_version: 99\n"))
+	if err == nil {
+		t.Fatal("expected future-version error, got nil")
+	}
+	if !strings.Contains(err.Error(), "schema_version 99 is newer") {
+		t.Fatalf("error = %q, want upgrade-oriented schema_version message", err.Error())
+	}
+}
+
+func TestResolveAppliesV2DurationAliases(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(
+		"schema_version: 2\n" +
+			"agent:\n  bash_timeout: 2m\n" +
+			"auto_update:\n  poll: 45s\n" +
+			"monitor:\n  stuck_human: 90m\n",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.BashTimeoutSeconds; got != 120 {
+		t.Fatalf("Agent.BashTimeoutSeconds = %d, want 120", got)
+	}
+	if got := resolved.Config.AutoUpdate.PollSeconds; got != 45 {
+		t.Fatalf("AutoUpdate.PollSeconds = %d, want 45", got)
+	}
+	if got := resolved.Config.Monitor.StuckHumanHours; got != 1.5 {
+		t.Fatalf("Monitor.StuckHumanHours = %v, want 1.5", got)
+	}
+
+	explanation, err := ExplainPath("execution.agent.bash_timeout", fileCfg, Environment{}, resolved.Config)
+	if err != nil {
+		t.Fatalf("ExplainPath: %v", err)
+	}
+	if explanation.Descriptor.RuntimePath != "agent.bash_timeout_seconds" {
+		t.Fatalf("runtime path = %q, want agent.bash_timeout_seconds", explanation.Descriptor.RuntimePath)
+	}
+	if explanation.Intent.Path != "agent.bash_timeout" {
+		t.Fatalf("intent path = %q, want agent.bash_timeout", explanation.Intent.Path)
+	}
+	if explanation.Intent.Value != "2m" {
+		t.Fatalf("intent value = %#v, want 2m", explanation.Intent.Value)
+	}
+	if explanation.Effective.Value != 120 {
+		t.Fatalf("effective value = %#v, want 120", explanation.Effective.Value)
+	}
+}
+
+func TestResolveRejectsNonIntegralDurationAliasForIntField(t *testing.T) {
+	_, err := ParseFileConfig([]byte("schema_version: 2\nsandbox:\n  retention: 90m\n"))
+	if err == nil {
+		t.Fatal("expected duration validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "sandbox.retention") || !strings.Contains(err.Error(), "whole hour") {
+		t.Fatalf("error = %q, want whole-hour validation on sandbox.retention", err.Error())
+	}
+}
+
+func TestResolveAcceptsLegacyGitHubPollingDurationAliases(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"github:",
+		"  enabled: true",
+		"  poller_role: secondary",
+		"  polling:",
+		"    issues:",
+		"      enabled: true",
+		"      interval: 11m",
+		"    sybra_prs:",
+		"      enabled: true",
+		"      active_interval: 2m",
+		"      idle_interval: 9m",
+		"    assigned_prs:",
+		"      enabled: false",
+		"      active_interval: 3m",
+		"      idle_interval: 8m",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolved.Config.GitHub.Polling.Issues.IntervalSeconds; got != 11*60 {
+		t.Fatalf("Issues.IntervalSeconds = %d, want %d", got, 11*60)
+	}
+	if got := resolved.Config.GitHub.Polling.SybraPRs.ActiveIntervalSeconds; got != 2*60 {
+		t.Fatalf("SybraPRs.ActiveIntervalSeconds = %d, want %d", got, 2*60)
+	}
+	if got := resolved.Config.GitHub.Polling.SybraPRs.IdleIntervalSeconds; got != 9*60 {
+		t.Fatalf("SybraPRs.IdleIntervalSeconds = %d, want %d", got, 9*60)
+	}
+	if got := resolved.Config.GitHub.Polling.AssignedPRs.ActiveIntervalSeconds; got != 3*60 {
+		t.Fatalf("AssignedPRs.ActiveIntervalSeconds = %d, want %d", got, 3*60)
+	}
+	if got := resolved.Config.GitHub.Polling.AssignedPRs.IdleIntervalSeconds; got != 8*60 {
+		t.Fatalf("AssignedPRs.IdleIntervalSeconds = %d, want %d", got, 8*60)
+	}
+}
+
+func TestResolveLoadsNamespacedV2Config(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"instance:",
+		"  project_types: [work]",
+		"execution:",
+		"  agent:",
+		"    provider: codex",
+		"    bash_timeout: 2m",
+		"integrations:",
+		"  github:",
+		"    review_hold:",
+		"      enabled: true",
+		"storage:",
+		"  sandboxes:",
+		"    retention: 48h",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.Provider; got != "codex" {
+		t.Fatalf("Agent.Provider = %q, want codex", got)
+	}
+	if got := resolved.Config.Agent.BashTimeoutSeconds; got != 120 {
+		t.Fatalf("Agent.BashTimeoutSeconds = %d, want 120", got)
+	}
+	if got := resolved.Config.Sandbox.RetentionHours; got != 48 {
+		t.Fatalf("Sandbox.RetentionHours = %d, want 48", got)
+	}
+	if !resolved.Config.ReviewHold.Enabled {
+		t.Fatal("ReviewHold.Enabled = false, want true")
+	}
+	if len(resolved.Config.ProjectTypes) != 1 || resolved.Config.ProjectTypes[0] != "work" {
+		t.Fatalf("ProjectTypes = %v, want [work]", resolved.Config.ProjectTypes)
+	}
+}
+
+func TestParseFileConfigRejectsMixedLegacyAndNamespacedV2Config(t *testing.T) {
+	_, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"agent:",
+		"  provider: claude",
+		"execution:",
+		"  agent:",
+		"    provider: codex",
+		"",
+	}, "\n")))
+	if err == nil {
+		t.Fatal("expected ambiguous-key error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "agent") {
+		t.Fatalf("error = %q, want ambiguous agent key error", err.Error())
+	}
+}
+
+func TestMigrateRawConfigToNamespacedV2IsIdempotent(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"agent:",
+		"  provider: codex",
+		"  bash_timeout_seconds: 120",
+		"review_hold:",
+		"  enabled: true",
+		"project_types: [work]",
+		"server:",
+		"  auth_token: super-secret",
+		"",
+	}, "\n"))
+
+	first, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Changed {
+		t.Fatal("first migration reported Changed=false")
+	}
+	text := string(first.MigratedRaw)
+	for _, want := range []string{
+		"schema_version: 2",
+		"instance:",
+		"  project_types:",
+		"execution:",
+		"  agent:",
+		"    provider: codex",
+		"    bash_timeout: 120s",
+		"integrations:",
+		"  github:",
+		"    review_hold:",
+		"      enabled: true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("migrated config missing %q:\n%s", want, text)
+		}
+	}
+	foundRedacted := false
+	for _, move := range first.Moves {
+		if move.From == "server.auth_token" {
+			foundRedacted = true
+			if move.ValueFrom != RedactedPlaceholder || move.ValueTo != RedactedPlaceholder {
+				t.Fatalf("secret move not redacted: %+v", move)
+			}
+		}
+	}
+	if !foundRedacted {
+		t.Fatal("migration moves missing server.auth_token")
+	}
+
+	second, err := MigrateRawConfig(first.MigratedRaw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Changed {
+		t.Fatalf("second migration reported Changed=true:\n%s", second.MigratedRaw)
+	}
+	if !bytes.Equal(normalizeYAMLBytes(first.MigratedRaw), normalizeYAMLBytes(second.MigratedRaw)) {
+		t.Fatal("second migration rewrote the canonical config")
+	}
+}
+
+func TestMigrateRawConfigKeepsCanonicalGitHubReviewHoldConfig(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"schema_version: 2",
+		"integrations:",
+		"  github:",
+		"    enabled: false",
+		"    review_hold:",
+		"      enabled: true",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatalf("canonical v2 config should be a no-op migration:\n%s", result.MigratedRaw)
+	}
+	if !bytes.Equal(normalizeYAMLBytes(raw), normalizeYAMLBytes(result.MigratedRaw)) {
+		t.Fatalf("migration rewrote canonical config:\nwant:\n%s\ngot:\n%s", raw, result.MigratedRaw)
+	}
+}
+
+// TestResolveSLOTargetExplicitZeroSurvives pins that an operator who sets a
+// zero-tolerance count/rate SLO cap keeps it: `max_identical_retry_cap: 0`
+// ("no repeated failures tolerated") and `max_restarts_per_hour: 0` ("any
+// automatic restart is a breach") must not be clobbered back to the shipped
+// defaults (3 / 1) on load.
+func TestResolveSLOTargetExplicitZeroSurvives(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"evaluation:",
+		"  slo:",
+		"    max_identical_retry_cap: 0",
+		"    max_restarts_per_hour: 0",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Evaluation.SLO.MaxIdenticalRetryCap; got != 0 {
+		t.Fatalf("MaxIdenticalRetryCap = %d, want 0 (explicit zero must survive)", got)
+	}
+	if got := resolved.Config.Evaluation.SLO.MaxRestartsPerHour; got != 0 {
+		t.Fatalf("MaxRestartsPerHour = %v, want 0 (explicit zero must survive)", got)
+	}
+	// Fraction targets left unset still default (0 is degenerate for those).
+	if got := resolved.Config.Evaluation.SLO.MinAutonomyRate; got != 0.80 {
+		t.Fatalf("MinAutonomyRate = %v, want 0.80 (unset fraction still defaults)", got)
+	}
+}
+
+// TestResolveSLOTargetUnsetGetsDefaults pins that a config that omits the SLO
+// count/rate caps entirely still receives the shipped defaults from the seed.
+func TestResolveSLOTargetUnsetGetsDefaults(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte("{}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DefaultSLOTargets()
+	if got := resolved.Config.Evaluation.SLO.MaxIdenticalRetryCap; got != want.MaxIdenticalRetryCap {
+		t.Fatalf("MaxIdenticalRetryCap = %d, want %d (unset must default)", got, want.MaxIdenticalRetryCap)
+	}
+	if got := resolved.Config.Evaluation.SLO.MaxRestartsPerHour; got != want.MaxRestartsPerHour {
+		t.Fatalf("MaxRestartsPerHour = %v, want %v (unset must default)", got, want.MaxRestartsPerHour)
+	}
+}
+
+func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"execution:",
+		"  agent:",
+		"    post_result_cost_usd: 7.5",
+		"    max_assistant_events: 42",
+		"    checkpoint_on_assistant_event_ceiling: false",
+		"    assistant_event_cost_fraction: 0.6",
+		"    assistant_event_multiplier: 3",
+		"    max_review_rounds: 4",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.MaxCostUSD; got != 7.5 {
+		t.Fatalf("Agent.MaxCostUSD = %v, want 7.5", got)
+	}
+	if got := resolved.Config.Agent.MaxTurns; got != 42 {
+		t.Fatalf("Agent.MaxTurns = %d, want 42", got)
+	}
+	if got := resolved.Config.Agent.TurnCostFraction; got != 0.6 {
+		t.Fatalf("Agent.TurnCostFraction = %v, want 0.6", got)
+	}
+	if got := resolved.Config.Agent.TurnMultiplier; got != 3 {
+		t.Fatalf("Agent.TurnMultiplier = %v, want 3", got)
+	}
+	if got := resolved.Config.MaxReviewRounds(); got != 4 {
+		t.Fatalf("MaxReviewRounds() = %d, want 4", got)
+	}
+	if resolved.Config.CheckpointOnTurnCeilingEnabled() {
+		t.Fatal("CheckpointOnTurnCeilingEnabled() = true, want false")
+	}
+}
+
+func TestResolveV2GuardrailAliasesWarnAndKeepBoundedReviewLoop(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"execution:",
+		"  agent:",
+		"    max_cost_usd: 8",
+		"    max_turns: 55",
+		"    turn_cost_fraction: 0.7",
+		"    turn_multiplier: 4",
+		"    review_until_clean: true",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnings := strings.Join(fileCfg.Warnings(), "\n")
+	for _, want := range []string{
+		"agent.max_cost_usd",
+		"agent.max_turns",
+		"agent.turn_cost_fraction",
+		"agent.turn_multiplier",
+	} {
+		if !strings.Contains(warnings, want) {
+			t.Fatalf("warnings missing %q:\n%s", want, warnings)
+		}
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.MaxCostUSD; got != 8 {
+		t.Fatalf("Agent.MaxCostUSD = %v, want 8", got)
+	}
+	if got := resolved.Config.Agent.MaxTurns; got != 55 {
+		t.Fatalf("Agent.MaxTurns = %d, want 55", got)
+	}
+	if got := resolved.Config.Agent.TurnCostFraction; got != 0.7 {
+		t.Fatalf("Agent.TurnCostFraction = %v, want 0.7", got)
+	}
+	if got := resolved.Config.Agent.TurnMultiplier; got != 4 {
+		t.Fatalf("Agent.TurnMultiplier = %v, want 4", got)
+	}
+	if !resolved.Config.ReviewUntilClean() {
+		t.Fatal("ReviewUntilClean() = false, want true")
+	}
+	if resolved.Config.AllowUnboundedReviewRounds() {
+		t.Fatal("AllowUnboundedReviewRounds() = true, want false for schema-v2 review_until_clean=true")
+	}
+}
+
+func TestResolveLegacyReviewUntilCleanPreservesUnboundedLoop(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"agent:",
+		"  review_until_clean: true",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved.Config.AllowUnboundedReviewRounds() {
+		t.Fatal("AllowUnboundedReviewRounds() = false, want true for schema-v1 review_until_clean=true")
+	}
+}
+
+func TestMigrateRawConfigRewritesGuardrailAliasesAndPreservesExplicitReviewLoop(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"agent:",
+		"  max_cost_usd: 9",
+		"  max_turns: 60",
+		"  review_until_clean: true",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(result.MigratedRaw)
+	for _, want := range []string{
+		"post_result_cost_usd: 9",
+		"max_assistant_events: 60",
+		"review_until_clean: true",
+		"allow_unbounded_review_rounds: true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("migrated config missing %q:\n%s", want, text)
+		}
+	}
+	for _, old := range []string{"max_cost_usd:", "max_turns:"} {
+		if strings.Contains(text, old) {
+			t.Fatalf("migrated config still contains %q:\n%s", old, text)
+		}
+	}
+}
+
+func TestMigrateRawConfigKeepsV2ReviewUntilCleanBounded(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"schema_version: 2",
+		"execution:",
+		"  agent:",
+		"    review_until_clean: true",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(result.MigratedRaw)
+	if strings.Contains(text, "allow_unbounded_review_rounds") {
+		t.Fatalf("migration opted v2 config into unbounded review rounds:\n%s", text)
+	}
+	if result.Changed {
+		t.Fatalf("canonical v2 config should be a no-op migration:\n%s", text)
+	}
+}
+
+func TestMigrateNodeToCanonicalPreservesNilAsYAMLNull(t *testing.T) {
+	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("got nil node, want YAML null scalar")
+	}
+	if got.Kind != yamlv3.ScalarNode || got.Tag != "!!null" || got.Value != "null" {
+		t.Fatalf("got node = %#v, want YAML null scalar", got)
+	}
+}
+
+func cmpConfigSubset(got, want *Config) string {
+	var diffs []string
+	if got.SchemaVersion != want.SchemaVersion {
+		diffs = append(diffs, fmt.Sprintf("SchemaVersion: got %d want %d", got.SchemaVersion, want.SchemaVersion))
+	}
+	if got.GitHub.Enabled != want.GitHub.Enabled {
+		diffs = append(diffs, fmt.Sprintf("GitHub.Enabled: got %v want %v", got.GitHub.Enabled, want.GitHub.Enabled))
+	}
+	if got.Triage.PollSeconds != want.Triage.PollSeconds {
+		diffs = append(diffs, fmt.Sprintf("Triage.PollSeconds: got %d want %d", got.Triage.PollSeconds, want.Triage.PollSeconds))
+	}
+	if got.Monitor.DispatchLimit != want.Monitor.DispatchLimit {
+		diffs = append(diffs, fmt.Sprintf("Monitor.DispatchLimit: got %d want %d", got.Monitor.DispatchLimit, want.Monitor.DispatchLimit))
+	}
+	if got.Monitor.Model != want.Monitor.Model {
+		diffs = append(diffs, fmt.Sprintf("Monitor.Model: got %q want %q", got.Monitor.Model, want.Monitor.Model))
+	}
+	if got.AutoUpdate.PollSeconds != want.AutoUpdate.PollSeconds {
+		diffs = append(diffs, fmt.Sprintf("AutoUpdate.PollSeconds: got %d want %d", got.AutoUpdate.PollSeconds, want.AutoUpdate.PollSeconds))
+	}
+	if got.SkillsDir != want.SkillsDir {
+		diffs = append(diffs, fmt.Sprintf("SkillsDir: got %q want %q", got.SkillsDir, want.SkillsDir))
+	}
+	if got.ProjectsDir != want.ProjectsDir {
+		diffs = append(diffs, fmt.Sprintf("ProjectsDir: got %q want %q", got.ProjectsDir, want.ProjectsDir))
+	}
+	if got.Attachments.MaxSizeMB != want.Attachments.MaxSizeMB {
+		diffs = append(diffs, fmt.Sprintf("Attachments.MaxSizeMB: got %d want %d", got.Attachments.MaxSizeMB, want.Attachments.MaxSizeMB))
+	}
+	return strings.Join(diffs, "\n")
 }
 
 func TestLoadFromYAML(t *testing.T) {
@@ -67,8 +624,8 @@ func TestInAppBrowserEnabled(t *testing.T) {
 		cfg  *Config
 		want bool
 	}{
-		{"nil config", nil, true},
-		{"nil field", &Config{}, true},
+		{"nil config", nil, false},
+		{"nil field", &Config{}, false},
 		{"explicit true", &Config{Browser: BrowserConfig{InApp: &truthy}}, true},
 		{"explicit false", &Config{Browser: BrowserConfig{InApp: &falsy}}, false},
 	}
@@ -106,6 +663,120 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	}
 	if reloaded.Agent.Provider != "codex" {
 		t.Fatalf("reloaded provider = %q, want codex", reloaded.Agent.Provider)
+	}
+}
+
+func TestLoadFreshInstallDoesNotPersistBuiltinABExperiments(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ABTesting.EnabledValue() {
+		t.Fatal("ABTesting.EnabledValue() = true, want false on a fresh install")
+	}
+	if len(cfg.ABTesting.Experiments) == 0 {
+		t.Fatal("ABTesting.Experiments = 0, want built-ins loaded in memory")
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "ab_testing:") {
+		t.Fatalf("fresh-install config.yaml should not materialize ab_testing defaults:\n%s", text)
+	}
+	for _, id := range abtest.BuiltinExperimentIDs {
+		if strings.Contains(text, id) {
+			t.Fatalf("fresh-install config.yaml persisted built-in experiment %q:\n%s", id, text)
+		}
+	}
+}
+
+func TestLoadABTestingOmittedEnabledStaysDisabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("ab_testing:\n  min_samples_per_variant: 11\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ABTesting.EnabledValue() {
+		t.Fatal("ABTesting.EnabledValue() = true, want false when enabled is omitted")
+	}
+}
+
+func TestLoadABTestingExplicitEnabledTrue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("ab_testing:\n  enabled: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ABTesting.EnabledValue() {
+		t.Fatal("ABTesting.EnabledValue() = false, want true for explicit enabled: true")
+	}
+}
+
+func TestLoadV2ObservabilityABTestingExplicitEnabledTrue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	raw := strings.Join([]string{
+		"schema_version: 2",
+		"observability:",
+		"  ab_testing:",
+		"    enabled: true",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ABTesting.EnabledValue() {
+		t.Fatal("ABTesting.EnabledValue() = false, want true for observability.ab_testing.enabled")
+	}
+}
+
+func TestWriteRawConfig_PreservesLastKnownGoodWithRestrictivePerms(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("logging:\n  level: info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRawConfig([]byte("logging:\n  level: debug\n")); err != nil {
+		t.Fatalf("WriteRawConfig: %v", err)
+	}
+
+	backupPath := LastKnownGoodConfigPath()
+	backup, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read last-known-good: %v", err)
+	}
+	if string(backup) != "logging:\n  level: info\n" {
+		t.Fatalf("last-known-good = %q, want previous config", string(backup))
+	}
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatalf("stat last-known-good: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("last-known-good perm = %o, want 0600", perm)
 	}
 }
 
@@ -255,6 +926,9 @@ func TestLoadAutoUpdateDefaults(t *testing.T) {
 	}
 	if cfg.AutoUpdate.Mode != "notify" {
 		t.Fatalf("auto_update.mode = %q, want notify", cfg.AutoUpdate.Mode)
+	}
+	if len(cfg.AutoUpdate.RequiredChecks) != 0 {
+		t.Fatalf("auto_update.required_checks = %v, want empty", cfg.AutoUpdate.RequiredChecks)
 	}
 	if cfg.AutoUpdate.PollSeconds != 300 {
 		t.Fatalf("auto_update.poll_seconds = %d, want 300", cfg.AutoUpdate.PollSeconds)
@@ -453,15 +1127,17 @@ func TestLoadPromptLabPreservesExplicitEnabled(t *testing.T) {
 
 func TestHumanReviewSybraBugAction(t *testing.T) {
 	cases := []struct {
-		name string
-		yaml string
-		want string
+		name    string
+		yaml    string
+		want    string
+		wantErr string
 	}{
-		{name: "empty defaults to file_issue", yaml: "human_review:\n  enabled: true\n", want: HumanReviewSybraBugActionFileIssue},
+		{name: "empty defaults to note_only", yaml: "human_review:\n  enabled: true\n", want: HumanReviewSybraBugActionNoteOnly},
+		{name: "legacy file_issue maps to note_only", yaml: "human_review:\n  sybra_bug_action: file_issue\n", want: HumanReviewSybraBugActionNoteOnly},
 		{name: "note only", yaml: "human_review:\n  sybra_bug_action: note_only\n", want: HumanReviewSybraBugActionNoteOnly},
 		{name: "block only", yaml: "human_review:\n  sybra_bug_action: block_only\n", want: HumanReviewSybraBugActionBlockOnly},
 		{name: "local task", yaml: "human_review:\n  sybra_bug_action: local_task\n", want: HumanReviewSybraBugActionLocalTask},
-		{name: "invalid falls back", yaml: "human_review:\n  sybra_bug_action: nope\n", want: HumanReviewSybraBugActionFileIssue},
+		{name: "invalid is rejected", yaml: "human_review:\n  sybra_bug_action: nope\n", wantErr: "human_review.sybra_bug_action"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -471,6 +1147,12 @@ func TestHumanReviewSybraBugAction(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg, err := Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load() error = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -487,7 +1169,7 @@ func TestHumanReviewModelDefault(t *testing.T) {
 		yaml string
 		want string
 	}{
-		{name: "empty defaults to haiku", yaml: "human_review:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "empty defaults to haiku", yaml: "human_review:\n  enabled: true\n", want: "haiku"},
 		{name: "explicit override preserved", yaml: "human_review:\n  model: opus\n", want: "opus"},
 	}
 	for _, tc := range cases {
@@ -514,7 +1196,7 @@ func TestMonitorModelDefault(t *testing.T) {
 		yaml string
 		want string
 	}{
-		{name: "empty defaults to haiku", yaml: "monitor:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "empty defaults to haiku", yaml: "monitor:\n  enabled: true\n", want: "haiku"},
 		{name: "explicit override preserved", yaml: "monitor:\n  model: sonnet\n", want: "sonnet"},
 	}
 	for _, tc := range cases {
@@ -542,6 +1224,7 @@ func TestReviewHoldDefaults(t *testing.T) {
 		wantEnabled bool
 		wantMode    string
 		wantNit     int
+		wantErr     string
 	}{
 		{
 			name:        "absent block is disabled",
@@ -558,11 +1241,9 @@ func TestReviewHoldDefaults(t *testing.T) {
 			wantNit:     DefaultReviewHoldNitMaxLines,
 		},
 		{
-			name:        "invalid mode falls back to push",
-			yaml:        "review_hold:\n  enabled: true\n  mode: bogus\n",
-			wantEnabled: true,
-			wantMode:    ReviewHoldModePush,
-			wantNit:     DefaultReviewHoldNitMaxLines,
+			name:    "invalid mode is rejected",
+			yaml:    "review_hold:\n  enabled: true\n  mode: bogus\n",
+			wantErr: "review_hold.mode",
 		},
 		{
 			name:        "push_nits mode preserves an explicit threshold",
@@ -587,6 +1268,12 @@ func TestReviewHoldDefaults(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg, err := Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load() error = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -616,14 +1303,14 @@ func TestLoadWatchdogDefaults(t *testing.T) {
 			yaml:          "agent:\n  max_concurrent: 10\n",
 			wantEnabled:   true,
 			wantThreshold: 6,
-			wantModel:     "claude-haiku-4-5-20251001",
+			wantModel:     "haiku",
 		},
 		{
 			name:          "explicit loop_threshold 0 disables loop detection",
 			yaml:          "watchdog:\n  enabled: true\n  loop_threshold: 0\n",
 			wantEnabled:   true,
 			wantThreshold: 0,
-			wantModel:     "claude-haiku-4-5-20251001",
+			wantModel:     "haiku",
 		},
 		{
 			name:          "explicit overrides preserved",
@@ -827,17 +1514,20 @@ func TestAllowsProjectType(t *testing.T) {
 	}
 }
 
-func TestDefaultGitHubOptIn(t *testing.T) {
+func TestDefaultConfigMatchesLegacyEmptyFileGitHubBehavior(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
-	if cfg.GitHub.Enabled {
-		t.Error("default GitHub.Enabled should be false for first-run opt-in")
+	if !cfg.GitHub.Enabled {
+		t.Error("DefaultConfig GitHub.Enabled should match legacy empty-file resolution")
 	}
-	if !cfg.GitHub.IssuesEnabled {
-		t.Error("default GitHub.IssuesEnabled should be true so github.enabled=true enables issues")
+	if !cfg.GitHub.Polling.Issues.Enabled {
+		t.Error("default GitHub polling.issues.enabled should be true so github.enabled=true enables issues")
 	}
-	if !cfg.GitHub.ReviewsEnabled {
-		t.Error("default GitHub.ReviewsEnabled should be true so github.enabled=true enables reviews")
+	if !cfg.GitHub.Polling.SybraPRs.Enabled {
+		t.Error("default GitHub polling.sybra_prs.enabled should be true so github.enabled=true enables Sybra PR monitoring")
+	}
+	if !cfg.GitHub.Polling.AssignedPRs.Enabled {
+		t.Error("default GitHub polling.assigned_prs.enabled should be true so github.enabled=true enables assigned PR discovery")
 	}
 	if cfg.GitHub.NativeAutoMerge {
 		t.Error("default GitHub.NativeAutoMerge should be false (kill-switch, opt-in)")
@@ -873,6 +1563,29 @@ func TestLoadMissingConfigCreatesGitHubOptOut(t *testing.T) {
 	}
 	if reloaded.GitHub.Enabled {
 		t.Fatal("GitHub.Enabled reloaded as true; fresh explicit opt-out must persist")
+	}
+}
+
+func TestLoadNoPersistMissingConfigDoesNotCreateConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GitHub.Enabled {
+		t.Fatal("GitHub.Enabled = true, want false for read-only default resolution")
+	}
+	if cfg.Server.AuthToken != "" {
+		t.Fatalf("Server.AuthToken = %q, want empty for read-only load", cfg.Server.AuthToken)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("LoadNoPersist should not create config.yaml, stat err = %v", err)
+	}
+	if _, err := os.Stat(AuthTokenPath()); !os.IsNotExist(err) {
+		t.Fatalf("LoadNoPersist should not create AuthTokenPath(), stat err = %v", err)
 	}
 }
 
@@ -924,44 +1637,74 @@ func TestLoadLegacyConfigWithoutGitHubEnabledKeepsGitHubOn(t *testing.T) {
 
 func TestLoadGitHubSubToggleOverrides(t *testing.T) {
 	tests := []struct {
-		name           string
-		yaml           string
-		wantIssues     bool
-		wantReviews    bool
-		wantRunsIssues bool
-		wantRunsRevs   bool
+		name             string
+		yaml             string
+		wantIssues       bool
+		wantSybraPRs     bool
+		wantAssignedPRs  bool
+		wantRunsIssues   bool
+		wantRunsSybraPRs bool
+		wantRunsAssigned bool
 	}{
 		{
-			name:           "no overrides keep default-true sub-toggles",
-			yaml:           "github:\n  enabled: true\n",
-			wantIssues:     true,
-			wantReviews:    true,
-			wantRunsIssues: true,
-			wantRunsRevs:   true,
+			name:             "no overrides keep default-true sub-toggles",
+			yaml:             "github:\n  enabled: true\n",
+			wantIssues:       true,
+			wantSybraPRs:     true,
+			wantAssignedPRs:  true,
+			wantRunsIssues:   true,
+			wantRunsSybraPRs: true,
+			wantRunsAssigned: true,
 		},
 		{
-			name:           "issues_enabled false overrides only issues",
-			yaml:           "github:\n  enabled: true\n  issues_enabled: false\n",
-			wantIssues:     false,
-			wantReviews:    true,
-			wantRunsIssues: false,
-			wantRunsRevs:   true,
+			name:             "issues_enabled false overrides only issues",
+			yaml:             "github:\n  enabled: true\n  issues_enabled: false\n",
+			wantIssues:       false,
+			wantSybraPRs:     true,
+			wantAssignedPRs:  true,
+			wantRunsIssues:   false,
+			wantRunsSybraPRs: true,
+			wantRunsAssigned: true,
 		},
 		{
-			name:           "reviews_enabled false overrides only reviews",
-			yaml:           "github:\n  enabled: true\n  reviews_enabled: false\n",
-			wantIssues:     true,
-			wantReviews:    false,
-			wantRunsIssues: true,
-			wantRunsRevs:   false,
+			name:             "reviews_enabled false overrides both pr streams",
+			yaml:             "github:\n  enabled: true\n  reviews_enabled: false\n",
+			wantIssues:       true,
+			wantSybraPRs:     false,
+			wantAssignedPRs:  false,
+			wantRunsIssues:   true,
+			wantRunsSybraPRs: false,
+			wantRunsAssigned: false,
 		},
 		{
-			name:           "top-level enabled false forces both off regardless of sub-toggles",
-			yaml:           "github:\n  enabled: false\n  issues_enabled: true\n  reviews_enabled: true\n",
-			wantIssues:     true,
-			wantReviews:    true,
-			wantRunsIssues: false,
-			wantRunsRevs:   false,
+			name:             "explicit new assigned stream overrides legacy reviews_enabled false",
+			yaml:             "github:\n  enabled: true\n  reviews_enabled: false\n  polling:\n    assigned_prs:\n      enabled: true\n",
+			wantIssues:       true,
+			wantSybraPRs:     false,
+			wantAssignedPRs:  true,
+			wantRunsIssues:   true,
+			wantRunsSybraPRs: false,
+			wantRunsAssigned: true,
+		},
+		{
+			name:             "explicit new issues stream overrides legacy issues_enabled false",
+			yaml:             "github:\n  enabled: true\n  issues_enabled: false\n  polling:\n    issues:\n      enabled: true\n",
+			wantIssues:       true,
+			wantSybraPRs:     true,
+			wantAssignedPRs:  true,
+			wantRunsIssues:   true,
+			wantRunsSybraPRs: true,
+			wantRunsAssigned: true,
+		},
+		{
+			name:             "top-level enabled false forces every stream off regardless of sub-toggles",
+			yaml:             "github:\n  enabled: false\n  issues_enabled: true\n  reviews_enabled: true\n  polling:\n    issues:\n      enabled: true\n    sybra_prs:\n      enabled: true\n    assigned_prs:\n      enabled: true\n",
+			wantIssues:       true,
+			wantSybraPRs:     true,
+			wantAssignedPRs:  true,
+			wantRunsIssues:   false,
+			wantRunsSybraPRs: false,
+			wantRunsAssigned: false,
 		},
 	}
 
@@ -978,17 +1721,23 @@ func TestLoadGitHubSubToggleOverrides(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.GitHub.IssuesEnabled != tt.wantIssues {
-				t.Errorf("IssuesEnabled = %v, want %v", cfg.GitHub.IssuesEnabled, tt.wantIssues)
+			if cfg.GitHub.Polling.Issues.Enabled != tt.wantIssues {
+				t.Errorf("Polling.Issues.Enabled = %v, want %v", cfg.GitHub.Polling.Issues.Enabled, tt.wantIssues)
 			}
-			if cfg.GitHub.ReviewsEnabled != tt.wantReviews {
-				t.Errorf("ReviewsEnabled = %v, want %v", cfg.GitHub.ReviewsEnabled, tt.wantReviews)
+			if cfg.GitHub.Polling.SybraPRs.Enabled != tt.wantSybraPRs {
+				t.Errorf("Polling.SybraPRs.Enabled = %v, want %v", cfg.GitHub.Polling.SybraPRs.Enabled, tt.wantSybraPRs)
+			}
+			if cfg.GitHub.Polling.AssignedPRs.Enabled != tt.wantAssignedPRs {
+				t.Errorf("Polling.AssignedPRs.Enabled = %v, want %v", cfg.GitHub.Polling.AssignedPRs.Enabled, tt.wantAssignedPRs)
 			}
 			if got := cfg.GitHub.RunsIssuesFetcher(); got != tt.wantRunsIssues {
 				t.Errorf("RunsIssuesFetcher() = %v, want %v", got, tt.wantRunsIssues)
 			}
-			if got := cfg.GitHub.RunsReviewer(); got != tt.wantRunsRevs {
-				t.Errorf("RunsReviewer() = %v, want %v", got, tt.wantRunsRevs)
+			if got := cfg.GitHub.RunsSybraPRs(); got != tt.wantRunsSybraPRs {
+				t.Errorf("RunsSybraPRs() = %v, want %v", got, tt.wantRunsSybraPRs)
+			}
+			if got := cfg.GitHub.RunsAssignedPRs(); got != tt.wantRunsAssigned {
+				t.Errorf("RunsAssignedPRs() = %v, want %v", got, tt.wantRunsAssigned)
 			}
 		})
 	}
@@ -998,16 +1747,73 @@ func TestGitHubRunsHelpers(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		cfg         GitHubConfig
-		wantIssues  bool
-		wantReviews bool
+		name            string
+		cfg             GitHubConfig
+		wantIssues      bool
+		wantSybraPRs    bool
+		wantAssignedPRs bool
+		wantReviewer    bool
 	}{
-		{"all enabled", GitHubConfig{Enabled: true, IssuesEnabled: true, ReviewsEnabled: true}, true, true},
-		{"top-level disabled forces both off", GitHubConfig{Enabled: false, IssuesEnabled: true, ReviewsEnabled: true}, false, false},
-		{"issues off, reviews on", GitHubConfig{Enabled: true, IssuesEnabled: false, ReviewsEnabled: true}, false, true},
-		{"issues on, reviews off", GitHubConfig{Enabled: true, IssuesEnabled: true, ReviewsEnabled: false}, true, false},
-		{"both sub-toggles off", GitHubConfig{Enabled: true, IssuesEnabled: false, ReviewsEnabled: false}, false, false},
+		{
+			name: "all enabled",
+			cfg: GitHubConfig{
+				Enabled: true,
+				Polling: GitHubPollingConfig{
+					Issues:      GitHubPollingStreamConfig{Enabled: true},
+					SybraPRs:    GitHubPRPollingConfig{Enabled: true},
+					AssignedPRs: GitHubPRPollingConfig{Enabled: true},
+				},
+			},
+			wantIssues: true, wantSybraPRs: true, wantAssignedPRs: true, wantReviewer: true,
+		},
+		{
+			name: "top-level disabled forces all off",
+			cfg: GitHubConfig{
+				Enabled: false,
+				Polling: GitHubPollingConfig{
+					Issues:      GitHubPollingStreamConfig{Enabled: true},
+					SybraPRs:    GitHubPRPollingConfig{Enabled: true},
+					AssignedPRs: GitHubPRPollingConfig{Enabled: true},
+				},
+			},
+			wantIssues: false, wantSybraPRs: false, wantAssignedPRs: false, wantReviewer: false,
+		},
+		{
+			name: "issues off, pr streams on",
+			cfg: GitHubConfig{
+				Enabled: true,
+				Polling: GitHubPollingConfig{
+					Issues:      GitHubPollingStreamConfig{Enabled: false},
+					SybraPRs:    GitHubPRPollingConfig{Enabled: true},
+					AssignedPRs: GitHubPRPollingConfig{Enabled: true},
+				},
+			},
+			wantIssues: false, wantSybraPRs: true, wantAssignedPRs: true, wantReviewer: true,
+		},
+		{
+			name: "sybra prs on, assigned off",
+			cfg: GitHubConfig{
+				Enabled: true,
+				Polling: GitHubPollingConfig{
+					Issues:      GitHubPollingStreamConfig{Enabled: true},
+					SybraPRs:    GitHubPRPollingConfig{Enabled: true},
+					AssignedPRs: GitHubPRPollingConfig{Enabled: false},
+				},
+			},
+			wantIssues: true, wantSybraPRs: true, wantAssignedPRs: false, wantReviewer: true,
+		},
+		{
+			name: "all pr streams off",
+			cfg: GitHubConfig{
+				Enabled: true,
+				Polling: GitHubPollingConfig{
+					Issues:      GitHubPollingStreamConfig{Enabled: true},
+					SybraPRs:    GitHubPRPollingConfig{Enabled: false},
+					AssignedPRs: GitHubPRPollingConfig{Enabled: false},
+				},
+			},
+			wantIssues: true, wantSybraPRs: false, wantAssignedPRs: false, wantReviewer: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1016,8 +1822,14 @@ func TestGitHubRunsHelpers(t *testing.T) {
 			if got := tt.cfg.RunsIssuesFetcher(); got != tt.wantIssues {
 				t.Errorf("RunsIssuesFetcher() = %v, want %v", got, tt.wantIssues)
 			}
-			if got := tt.cfg.RunsReviewer(); got != tt.wantReviews {
-				t.Errorf("RunsReviewer() = %v, want %v", got, tt.wantReviews)
+			if got := tt.cfg.RunsSybraPRs(); got != tt.wantSybraPRs {
+				t.Errorf("RunsSybraPRs() = %v, want %v", got, tt.wantSybraPRs)
+			}
+			if got := tt.cfg.RunsAssignedPRs(); got != tt.wantAssignedPRs {
+				t.Errorf("RunsAssignedPRs() = %v, want %v", got, tt.wantAssignedPRs)
+			}
+			if got := tt.cfg.RunsReviewer(); got != tt.wantReviewer {
+				t.Errorf("RunsReviewer() = %v, want %v", got, tt.wantReviewer)
 			}
 		})
 	}
@@ -1064,6 +1876,60 @@ func TestLoadGitHubAutoResolveCleanMerges(t *testing.T) {
 	}
 	if !cfg.GitHub.AutoResolveCleanMerges {
 		t.Error("AutoResolveCleanMerges = false, want true after round-tripping through yaml")
+	}
+}
+
+func TestDefaultGitHubFlakyDetection(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	if cfg.GitHub.FlakyDetection {
+		t.Error("default GitHub.FlakyDetection should be false (kill-switch, opt-in)")
+	}
+	if got := cfg.GitHub.FlakyThreshold(); got != DefaultFlakySuccessThreshold {
+		t.Errorf("default FlakyThreshold() = %v, want %v", got, DefaultFlakySuccessThreshold)
+	}
+}
+
+func TestLoadGitHubFlakyDetection(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("github:\n  flaky_detection: true\n  flaky_success_threshold: 0.6\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.GitHub.FlakyDetection {
+		t.Error("FlakyDetection = false, want true after round-tripping through yaml")
+	}
+	if got := cfg.GitHub.FlakyThreshold(); got != 0.6 {
+		t.Errorf("FlakyThreshold() = %v, want 0.6", got)
+	}
+}
+
+func TestGitHubConfig_FlakyThreshold(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cfg  GitHubConfig
+		want float64
+	}{
+		{"unset falls back to default", GitHubConfig{}, DefaultFlakySuccessThreshold},
+		{"zero falls back to default", GitHubConfig{FlakySuccessThreshold: 0}, DefaultFlakySuccessThreshold},
+		{"negative falls back to default", GitHubConfig{FlakySuccessThreshold: -0.1}, DefaultFlakySuccessThreshold},
+		{"explicit override", GitHubConfig{FlakySuccessThreshold: 0.5}, 0.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.FlakyThreshold(); got != tt.want {
+				t.Errorf("FlakyThreshold() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1618,15 +2484,17 @@ func oldShapeABTestingExperiments() []abtest.Experiment {
 func writeOldShapeConfig(t *testing.T, dir string) {
 	t.Helper()
 	enabled := true
-	cfg := &Config{
-		ABTesting: abtest.Config{
-			Enabled:              &enabled,
-			MinSamplesPerVariant: 20,
-			Experiments:          oldShapeABTestingExperiments(),
-			// BuiltinVersion deliberately left at zero: simulates a config
-			// persisted before builtin_version existed.
-		},
+	cfg := DefaultConfig()
+	cfg.SchemaVersion = 0 // omit to simulate a pre-versioned config file
+	cfg.ABTesting = abtest.Config{
+		Enabled:              &enabled,
+		MinSamplesPerVariant: 20,
+		Experiments:          oldShapeABTestingExperiments(),
+		// BuiltinVersion deliberately left at zero: simulates a config
+		// persisted before builtin_version existed.
 	}
+	// Pinned so Load() never generates a server auth token as unrelated state.
+	cfg.Server = ServerConfig{AuthToken: "test-token"}
 	data, err := yamlv3.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1681,107 +2549,66 @@ func TestLoadReconcilesStaleBuiltinABExperiments(t *testing.T) {
 	}
 }
 
-// TestLoadReconcilePersistsBackupBeforeOverwrite proves a one-generation
-// backup of the prior experiment list is written to disk before the stale
-// same-ID built-in is overwritten, so a hand-tuned built-in is recoverable.
-func TestLoadReconcilePersistsBackupBeforeOverwrite(t *testing.T) {
+// TestLoadReconcileDoesNotRewriteConfigFile proves the ab_testing builtin
+// reconcile is in-memory only. This is the fix for #2180: any tool that
+// renders config.yaml declaratively (Ansible, Nix, Chezmoi) previously lost a
+// fight for ownership of the file against Sybra's own reconcile-then-Save on
+// every restart. Repeated Load() calls against a config whose builtin_version
+// perpetually lags the code default must (a) never touch config.yaml on disk
+// and (b) still reconcile the builtins into the in-memory result every time.
+func TestLoadReconcileDoesNotRewriteConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
 	writeOldShapeConfig(t, dir)
 
-	if _, err := Load(); err != nil {
-		t.Fatal(err)
-	}
-
-	backupPath := filepath.Join(dir, "config.ab_testing.backup.v0.yaml")
-	data, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatalf("backup file not written: %v", err)
-	}
-	var backup struct {
-		PriorBuiltinVersion int                 `yaml:"prior_builtin_version"`
-		Experiments         []abtest.Experiment `yaml:"experiments"`
-	}
-	if err := yamlv3.Unmarshal(data, &backup); err != nil {
-		t.Fatalf("backup file unreadable: %v", err)
-	}
-	if backup.PriorBuiltinVersion != 0 {
-		t.Fatalf("PriorBuiltinVersion = %d, want 0", backup.PriorBuiltinVersion)
-	}
-	var recovered *abtest.Experiment
-	for i := range backup.Experiments {
-		if backup.Experiments[i].ID == "code-author-cheap" {
-			recovered = &backup.Experiments[i]
-		}
-	}
-	if recovered == nil {
-		t.Fatal("backup does not contain the prior code-author-cheap experiment")
-		return
-	}
-	found := false
-	for _, v := range recovered.Variants {
-		if v.ID == "claude-sonnet" && v.Weight == 99 {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("backup lost the hand-tuned claude-sonnet weight — same-ID built-in is not recoverable")
-	}
-}
-
-// TestLoadReconcilePersistsToDisk proves the reconciled config is written
-// back to config.yaml immediately, so the refresh survives a process
-// restart rather than living only in the in-memory Load() result.
-func TestLoadReconcilePersistsToDisk(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("SYBRA_HOME", dir)
-	writeOldShapeConfig(t, dir)
-
-	if _, err := Load(); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	before, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var onDisk Config
-	if err := yamlv3.Unmarshal(data, &onDisk); err != nil {
-		t.Fatal(err)
-	}
-	if got := onDisk.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
-		t.Fatalf("persisted BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
-	}
-	foundCustom := false
-	for _, exp := range onDisk.ABTesting.Experiments {
-		if exp.ID == "my-custom-experiment" {
-			foundCustom = true
+
+	for i := range 2 {
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+			t.Fatalf("iteration %d: in-memory BuiltinVersion = %d, want %d", i, got, abtest.CurrentBuiltinVersion)
+		}
+		foundCustom := false
+		for _, exp := range cfg.ABTesting.Experiments {
+			if exp.ID == "my-custom-experiment" {
+				foundCustom = true
+			}
+		}
+		if !foundCustom {
+			t.Fatalf("iteration %d: reconciled in-memory config lost the user-authored experiment", i)
 		}
 	}
-	if !foundCustom {
-		t.Fatal("persisted config.yaml lost the user-authored experiment")
+
+	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Load rewrote an externally-managed config.yaml during ab_testing builtin reconcile")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.ab_testing.backup.v0.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("Load should not write an ab_testing backup file, stat err = %v", err)
 	}
 }
 
-// TestLoadDoesNotReconcileUpToDateBuiltins proves a config already stamped at
-// the current builtin version is left alone — no repeat backup/rewrite work
-// on every Load (e.g. every hot reload).
-func TestLoadDoesNotReconcileUpToDateBuiltins(t *testing.T) {
+func TestLoadReconcilePatchesOnlyABTestingConfig(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
-	enabled := true
-	cfg := &Config{
+
+	minimal := struct {
+		ABTesting abtest.Config `yaml:"ab_testing"`
+	}{
 		ABTesting: abtest.Config{
-			Enabled:              &enabled,
-			MinSamplesPerVariant: 20,
-			BuiltinVersion: func() *int {
-				v := abtest.CurrentBuiltinVersion
-				return &v
-			}(),
-			Experiments: abtest.DefaultConfig().Experiments,
+			Experiments: oldShapeABTestingExperiments(),
 		},
 	}
-	data, err := yamlv3.Marshal(cfg)
+	data, err := yamlv3.Marshal(minimal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1793,8 +2620,66 @@ func TestLoadDoesNotReconcileUpToDateBuiltins(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "config.ab_testing.backup.v0.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("backup file should not be written when already at current builtin version, stat err = %v", err)
+	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := yamlv3.Unmarshal(after, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("config keys = %v, want only ab_testing", raw)
+	}
+	if _, ok := raw["ab_testing"]; !ok {
+		t.Fatalf("config.yaml missing ab_testing after reconcile: %s", after)
+	}
+	if strings.Contains(string(after), "logging:") || strings.Contains(string(after), "server:") {
+		t.Fatalf("Load expanded unrelated defaults into config.yaml:\n%s", after)
+	}
+}
+
+// TestLoadDoesNotReconcileUpToDateBuiltins proves a config already stamped at
+// the current builtin version is left alone.
+func TestLoadDoesNotReconcileUpToDateBuiltins(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	enabled := true
+	cfg := DefaultConfig()
+	cfg.SchemaVersion = 0
+	cfg.ABTesting = abtest.Config{
+		Enabled:              &enabled,
+		MinSamplesPerVariant: 20,
+		BuiltinVersion: func() *int {
+			v := abtest.CurrentBuiltinVersion
+			return &v
+		}(),
+		Experiments: abtest.DefaultConfig().Experiments,
+	}
+	cfg.Server = ServerConfig{AuthToken: "test-token"}
+	data, err := yamlv3.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Load rewrote a config.yaml already at the current builtin version")
 	}
 }
 
@@ -1845,47 +2730,191 @@ func TestLoadNoPersistLeavesStaleConfigUntouched(t *testing.T) {
 	}
 }
 
-func TestLoadReconcileKeepsVersionedBackupsPerPriorBuiltinVersion(t *testing.T) {
+// TestLoadReconcileSurvivesExternalToolReRenderingStaleVersion reproduces the
+// home-nas deploy flap from #2180: an external tool (Ansible) re-renders
+// config.yaml on every deploy at a builtin_version that never advances (it
+// only knows what's checked into its own template), and Sybra restarts on
+// every deploy. Before the fix, each restart expanded the operator's file and
+// the next deploy's re-render was reported as drift; the loop never settled.
+// Each Load() must reconcile in memory without ever mutating the file that
+// the external tool owns.
+func TestLoadReconcileSurvivesExternalToolReRenderingStaleVersion(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
 	writeOldShapeConfig(t, dir)
 
-	if _, err := Load(); err != nil {
+	rendered, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	firstBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v0.yaml"))
+	if regexp.MustCompile(`builtin_version:`).Match(rendered) {
+		t.Fatal("fixture config.yaml unexpectedly declares builtin_version (should be absent, simulating a pre-builtin_version persisted config)")
+	}
+
+	for deploy := range 3 {
+		// Simulate the external tool re-rendering its owned file exactly as
+		// authored, every deploy, regardless of what Sybra did last restart.
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), rendered, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("deploy %d: %v", deploy, err)
+		}
+		if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+			t.Fatalf("deploy %d: in-memory BuiltinVersion = %d, want %d", deploy, got, abtest.CurrentBuiltinVersion)
+		}
+	}
+
+	afterAllDeploys, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterAllDeploys, rendered) {
+		t.Fatal("config.yaml drifted from what the external tool rendered across repeated restarts")
+	}
+}
+
+// TestLoadPersistsTokenWithoutReconciledBuiltins is the real upgrade case the
+// headline fix must hold on: an existing config with stale ab_testing builtins
+// and NO server.auth_token. Load() legitimately generates+persists a token to
+// AuthTokenPath(), but config.yaml itself — including the operator's
+// ab_testing block — must stay byte-for-byte untouched: a generated secret
+// and reconciled-in-memory builtins are both derived state, never written
+// into the file the operator owns (see #2180).
+func TestLoadPersistsTokenWithoutReconciledBuiltins(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	enabled := true
+	// Old-shape config WITHOUT a pinned auth token, so Load() must generate one.
+	fixture := DefaultConfig()
+	fixture.SchemaVersion = 0
+	fixture.Server = ServerConfig{}
+	fixture.ABTesting = abtest.Config{
+		Enabled:              &enabled,
+		MinSamplesPerVariant: 20,
+		Experiments:          oldShapeABTestingExperiments(),
+		// BuiltinVersion intentionally absent: pre-builtin_version config.
+	}
+	data, err := yamlv3.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	rewritten := regexp.MustCompile(`builtin_version: \d+`).ReplaceAllString(string(data), "builtin_version: 1")
-	if rewritten == string(data) {
-		t.Fatal("failed to downgrade builtin_version in persisted config")
+	// In memory, the reconcile still took effect.
+	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+		t.Fatalf("in-memory BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(rewritten), 0o644); err != nil {
+	if cfg.Server.AuthToken == "" {
+		t.Fatal("Load did not generate a server auth token")
+	}
+
+	// The generated token must land at AuthTokenPath(), not config.yaml.
+	tokenFile, err := os.ReadFile(AuthTokenPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(tokenFile)) != cfg.Server.AuthToken {
+		t.Fatal("Load did not persist the generated server auth token to AuthTokenPath()")
+	}
+
+	persisted, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(persisted, data) {
+		t.Fatalf("Load rewrote config.yaml while only persisting a generated token; diff:\nbefore:\n%s\nafter:\n%s", data, persisted)
+	}
+}
+
+// TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults is the #2180 repro:
+// an externally-rendered config.yaml with no server.auth_token must stay
+// byte-for-byte unchanged on disk — the generated token belongs at
+// AuthTokenPath(), never mixed into the operator's file alongside every other
+// default Load() fills in in-memory (logging, agent, providers, ...).
+func TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	minimal := []byte("ab_testing:\n  enabled: true\n  min_samples_per_variant: 20\n  experiments:\n    - id: my-custom-experiment\n      enabled: true\n      assignment_unit: stage\n      roles: [implementation]\n      variants:\n        - id: custom-v1\n          provider: claude\n          model: sonnet\n          weight: 1\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), minimal, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := Load(); err != nil {
-		t.Fatal(err)
-	}
-	secondBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v1.yaml"))
+	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	stillFirstBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v0.yaml"))
+	if cfg.Server.AuthToken == "" {
+		t.Fatal("Load did not generate a server auth token")
+	}
+
+	persisted, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(stillFirstBackup, firstBackup) {
-		t.Fatal("v0 backup was overwritten by a later reconcile")
+	if !bytes.Equal(persisted, minimal) {
+		t.Fatalf("Load rewrote an externally-rendered config.yaml while persisting a generated token; diff:\nbefore:\n%s\nafter:\n%s", minimal, persisted)
 	}
-	if len(secondBackup) == 0 {
-		t.Fatal("v1 backup should not be empty")
+
+	tokenFile, err := os.ReadFile(AuthTokenPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(tokenFile)) != cfg.Server.AuthToken {
+		t.Fatalf("persisted AuthTokenPath() missing the generated auth token:\n%s", tokenFile)
+	}
+}
+
+// TestLoadRerenderedConfigStaysByteStableAcrossRestarts is the exact
+// adversarial-test repro from #2180: an external tool re-renders config.yaml
+// on every deploy without ever learning the generated server.auth_token, and
+// Sybra restarts on every deploy. Because the token now lives at
+// AuthTokenPath() instead of config.yaml, the second (and every subsequent)
+// restart must reuse the same token without touching config.yaml at all.
+func TestLoadRerenderedConfigStaysByteStableAcrossRestarts(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+
+	rendered := []byte("ab_testing:\n  enabled: true\n  min_samples_per_variant: 20\n  experiments:\n    - id: my-custom-experiment\n      enabled: true\n      assignment_unit: stage\n      roles: [implementation]\n      variants:\n        - id: custom-v1\n          provider: claude\n          model: sonnet\n          weight: 1\n")
+
+	var firstToken string
+	for restart := range 2 {
+		// Simulate the external tool re-rendering its owned file exactly as
+		// authored, every restart, unaware server.auth_token even exists.
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), rendered, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("restart %d: %v", restart, err)
+		}
+		if cfg.Server.AuthToken == "" {
+			t.Fatalf("restart %d: no server auth token resolved", restart)
+		}
+		if restart == 0 {
+			firstToken = cfg.Server.AuthToken
+		} else if cfg.Server.AuthToken != firstToken {
+			t.Fatalf("restart %d: auth token rotated (%q != %q)", restart, cfg.Server.AuthToken, firstToken)
+		}
+	}
+
+	afterAllRestarts, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterAllRestarts, rendered) {
+		t.Fatal("config.yaml drifted from what the external tool rendered across repeated restarts")
 	}
 }
 

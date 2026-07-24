@@ -17,20 +17,22 @@ import (
 // dead code, since its "project.type" condition had no populating caller.
 var KnownTriggerFields = map[string]bool{
 	// Populated by engine.taskFields for every dispatch/transition.
-	"task.id":                      true,
-	"task.title":                   true,
-	"task.status":                  true,
-	"task.status_reason":           true,
-	"task.tags":                    true,
-	"task.agent_mode":              true,
-	"task.project_id":              true,
-	"task.handoff_source_provider": true,
-	"task.branch":                  true,
-	"task.pr_number":               true,
-	"task.reviewed":                true,
-	"task.plan_critique":           true,
-	"task.code_review":             true,
-	"task.replan_count":            true,
+	"task.id":                         true,
+	"task.title":                      true,
+	"task.status":                     true,
+	"task.status_reason":              true,
+	"task.role":                       true,
+	"task.tags":                       true,
+	"task.agent_mode":                 true,
+	"task.project_id":                 true,
+	"task.handoff_source_provider":    true,
+	"task.branch":                     true,
+	"task.pr_number":                  true,
+	"task.reviewed":                   true,
+	"task.review_round_limit_reached": true,
+	"task.plan_critique":              true,
+	"task.code_review":                true,
+	"task.replan_count":               true,
 	// Supplied as extras by DispatchEvent("pr.event", ...) callers in
 	// app_reviews.go and svc_integrations.go.
 	"pr.issue_kind": true,
@@ -81,7 +83,7 @@ var FieldAllowedValues = map[string]map[string]bool{
 		"done": true, "cancelled": true,
 	},
 	"task.task_type": {
-		"normal": true, "debug": true, "research": true, "chat": true, "umbrella": true,
+		"umbrella": true,
 	},
 	"pr.issue_kind": {
 		"conflict": true, "ci_failure": true, "comments": true, "ready_to_merge": true,

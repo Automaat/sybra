@@ -85,7 +85,7 @@ func TestStoreProviderAvailableAndChooseProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 	policy := DefaultPolicy()
 
@@ -185,7 +185,7 @@ func TestStoreProviderAvailable_IgnoresExpiredQuotaCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderCodex,
@@ -221,7 +221,7 @@ func TestChooseProvider_SkipsPolicyDisabledCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderClaude,
@@ -254,6 +254,43 @@ func TestChooseProvider_NoDataDoesNotStealRequested(t *testing.T) {
 	alt, _ := s.ChooseProvider(ProviderClaude, []string{ProviderClaude, ProviderCodex}, func(string) bool { return true }, DefaultPolicy())
 	if alt != "" {
 		t.Fatalf("alternative = %q, want none without quota pressure", alt)
+	}
+}
+
+// TestChooseProvider_DistributesAcrossEligiblePeers guards against
+// re-introducing a fixed-priority pick: with PreferUnderused off and no
+// quantitative reason to prefer one equally-eligible peer over another,
+// ChooseProvider must not always land on the same candidate.
+func TestChooseProvider_DistributesAcrossEligiblePeers(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:             ProviderClaude,
+		Source:               SourceStream,
+		Confidence:           ConfidenceExact,
+		CapturedAt:           now,
+		RateLimitReachedType: "rate_limit_reached",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	policy := DefaultPolicy()
+	policy.PreferUnderused = false
+
+	seen := map[string]bool{}
+	for range 200 {
+		alt, _ := s.ChooseProvider(ProviderClaude, []string{ProviderClaude, ProviderCodex, ProviderCopilot}, func(string) bool {
+			return true
+		}, policy)
+		seen[alt] = true
+	}
+	for _, want := range []string{ProviderCodex, ProviderCopilot} {
+		if !seen[want] {
+			t.Errorf("ChooseProvider never picked %q across 200 trials: %v", want, seen)
+		}
 	}
 }
 
@@ -317,12 +354,47 @@ func TestChooseSoftLimitedPeer_SkipsHardBlockedPeer(t *testing.T) {
 	}
 }
 
+// TestChooseSoftLimitedPeer_DistributesAcrossEligiblePeers guards against a
+// fixed-priority pick among multiple equally-eligible soft-limited peers.
+func TestChooseSoftLimitedPeer_DistributesAcrossEligiblePeers(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	for _, p := range []string{ProviderCodex, ProviderCopilot} {
+		if err := s.UpdateSnapshot(Snapshot{
+			Provider:   p,
+			Source:     SourceStream,
+			Confidence: ConfidenceExact,
+			CapturedAt: now,
+			Primary:    &CycleSnapshot{UsedPercent: 90, WindowMinutes: 300, ResetsAt: now.Add(time.Hour)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	seen := map[string]bool{}
+	for range 200 {
+		alt, _ := s.ChooseSoftLimitedPeer(ProviderClaude, []string{ProviderClaude, ProviderCodex, ProviderCopilot}, func(string) bool {
+			return true
+		}, DefaultPolicy())
+		seen[alt] = true
+	}
+	for _, want := range []string{ProviderCodex, ProviderCopilot} {
+		if !seen[want] {
+			t.Errorf("ChooseSoftLimitedPeer never picked %q across 200 trials: %v", want, seen)
+		}
+	}
+}
+
 func TestSummary_PrefersSessionFileUsageCountersButKeepsRunSpend(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 
 	if err := s.RecordUsage(UsageEvent{
@@ -380,7 +452,13 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	// A hardcoded calendar date here is a time bomb: reopening below builds a
+	// second Store whose clock is the real wall clock (nothing overrides it
+	// before its own reloadLocked prunes on construction), so once real time
+	// drifts eventMaxAge past a fixed date the just-persisted events get
+	// pruned as stale on reload. Anchor to the real clock instead so the
+	// fixture stays valid indefinitely.
+	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 
 	if err := s.Import(
@@ -410,6 +488,10 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 
 	reopened, err := NewStore(path)
 	if err != nil {
+		t.Fatal(err)
+	}
+	reopened.now = func() time.Time { return now }
+	if err := reopened.reloadLocked(); err != nil {
 		t.Fatal(err)
 	}
 	if len(reopened.events) != 2 {
@@ -457,7 +539,7 @@ func TestRecordUsageCrossProcessSimulatesConcurrentWriters(t *testing.T) {
 }
 
 func TestSessionImport_DedupesEventsAndKeepsLatestSnapshot(t *testing.T) {
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	batch := newSessionImport()
 
 	batch.addEvent(UsageEvent{ID: "event-1", Provider: ProviderClaude, Source: SourceSessionFiles, InputTokens: 1})

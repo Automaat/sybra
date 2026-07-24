@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
 const (
@@ -60,8 +61,26 @@ func hardDeadlineBreach(ag *agent.Agent, stall, total, stallLim, budget time.Dur
 	}
 }
 
+// testRunnerStallLimit and testRunnerBudget give RoleTestRunner its own
+// event-gap and total-runtime ceilings, independent of the task's size tag.
+// Test-runner's job — start a real server, drive targeted + adversarial
+// probes, restore the worktree — is inherently slower and burstier than
+// other roles: long stretches of tool use can produce no new stream events
+// while still making real progress (a `go run ./cmd/sybra-server` + curl
+// probe loop, or a single long-running verify command). A "small" task's
+// 10m stall/budget ceiling fires on this legitimate work before it ever
+// reaches a verdict, killing it mid-investigation and burning the retry
+// budget on a from-scratch redispatch instead of letting it finish (#1664).
+const (
+	testRunnerStallLimit = 45 * time.Minute
+	testRunnerBudget     = 90 * time.Minute
+)
+
 // stallLimit returns the max event-gap before triggering inspection.
-func stallLimit(tags []string) time.Duration {
+func stallLimit(role agent.Role, tags []string) time.Duration {
+	if role == agent.RoleTestRunner {
+		return testRunnerStallLimit
+	}
 	switch {
 	case slices.Contains(tags, "large"):
 		return 45 * time.Minute
@@ -73,8 +92,12 @@ func stallLimit(tags []string) time.Duration {
 }
 
 // sizeBudget returns the maximum total runtime for a headless agent based on
-// its task's size tag. Trigger inspection once total runtime exceeds this.
-func sizeBudget(tags []string) time.Duration {
+// its task's size tag (or its role, for RoleTestRunner). Trigger inspection
+// once total runtime exceeds this.
+func sizeBudget(role agent.Role, tags []string) time.Duration {
+	if role == agent.RoleTestRunner {
+		return testRunnerBudget
+	}
 	switch {
 	case slices.Contains(tags, "large"):
 		return 3 * time.Hour
@@ -211,7 +234,9 @@ type Watchdog struct {
 
 	// verifyNow re-runs a task's verify suite before applyVerdict escalates an
 	// ambiguous loop-stop, so a stale judge verdict doesn't strand honest work
-	// (#2155). Nil falls through to unconditional escalation.
+	// (#2155). The injected verifier owns its command timeout; this layer must
+	// not impose a smaller generic cap than the workflow check budget. Nil
+	// falls through to unconditional escalation.
 	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
 }
 
@@ -319,14 +344,15 @@ func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time,
 	stall := now.Sub(ag.GetLastEventAt())
 	total := now.Sub(ag.StartedAt)
 
+	role := ag.EffectiveRole()
 	t, err := w.tasks.Get(ag.TaskID)
 	var budget, sl time.Duration
 	if err == nil {
-		budget = sizeBudget(t.Tags)
-		sl = stallLimit(t.Tags)
+		budget = sizeBudget(role, t.Tags)
+		sl = stallLimit(role, t.Tags)
 	} else {
-		budget = sizeBudget(nil)
-		sl = stallLimit(nil)
+		budget = sizeBudget(role, nil)
+		sl = stallLimit(role, nil)
 	}
 
 	if reason := hardDeadlineBreach(ag, stall, total, sl, budget); reason != "" {
@@ -466,10 +492,10 @@ func (w *Watchdog) reapTaskAgentForStatus(ag *agent.Agent) bool {
 	if err != nil {
 		return false
 	}
-	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+	if t.TaskType == task.TaskTypeUmbrella {
 		return false
 	}
-	if !shouldReleaseTaskAgentForStatus(t.Status) {
+	if !shouldReleaseTaskAgentForStatus(t.Status) || isHumanReviewAgent(ag) {
 		return false
 	}
 	w.logger.Warn("agent.watchdog.status_release",
@@ -488,10 +514,10 @@ func (w *Watchdog) reapIdleInteractive(ag *agent.Agent, now time.Time) {
 	if err != nil {
 		return
 	}
-	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+	if t.TaskType == task.TaskTypeUmbrella {
 		return
 	}
-	if shouldReleaseTaskAgentForStatus(t.Status) {
+	if shouldReleaseTaskAgentForStatus(t.Status) && !isHumanReviewAgent(ag) {
 		w.logger.Warn("agent.watchdog.status_release",
 			"id", ag.ID, "task_id", ag.TaskID, "status", t.Status)
 		if err := w.stopForRelease(ag); err != nil {
@@ -501,13 +527,29 @@ func (w *Watchdog) reapIdleInteractive(ag *agent.Agent, now time.Time) {
 	}
 	stall := now.Sub(ag.GetLastEventAt())
 	total := now.Sub(ag.StartedAt)
-	if reason := hardDeadlineBreach(ag, stall, total, stallLimit(t.Tags), sizeBudget(t.Tags)); reason != "" {
+	role := ag.EffectiveRole()
+	if reason := hardDeadlineBreach(ag, stall, total, stallLimit(role, t.Tags), sizeBudget(role, t.Tags)); reason != "" {
 		w.hardStop(ag, reason, stall, total)
 	}
 }
 
 func shouldReleaseTaskAgentForStatus(status task.Status) bool {
 	return status == task.StatusHumanRequired || task.IsTerminalStatus(status)
+}
+
+// isHumanReviewAgent reports whether ag is the human-review agent
+// (internal/sybra/app_human_review.go), which app.go dispatches the moment a
+// task transitions to human-required specifically to diagnose and unblock
+// it. The status-release reapers above must not kill it just because the
+// task's status is — by design — human-required; if it gets stuck itself,
+// the normal stall/budget/loop triggers in inspectHeadless still apply. This
+// mirrors the same exclusion App.releaseTaskAgents already applies at the
+// point of the status transition (internal/sybra/app_init.go) — a role-based
+// check, not a timing-based one, so it can't be widened by a future status
+// change to spare an unrelated agent that raced onto an already-terminal
+// task, which is unconditionally an orphan under this reaper's contract.
+func isHumanReviewAgent(ag *agent.Agent) bool {
+	return ag.EffectiveRole() == agent.RoleHumanReview
 }
 
 func (w *Watchdog) stopForRelease(ag *agent.Agent) error {
@@ -667,7 +709,20 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 			return
 		}
 		if ag.TaskID != "" && (trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "" {
-			w.stopAndVerifyAmbiguousLoop(ctx, ag, verdict)
+			w.stopAndVerifyAmbiguousLoop(ctx, ag, trigger, verdict)
+			return
+		}
+		// #2229: a reward_hacking stop on a fix-review agent that still has a
+		// concrete, unaddressed review finding to anchor a retry on (the
+		// "stalled re-reading instead of editing the file the reviewer already
+		// named" pattern) is retried once via the workflow engine's own
+		// reward-hacking retry budget, instead of escalating immediately. Any
+		// other reward_hacking stop — a different role, or no finding to point
+		// the retry at — falls through to the unconditional escalation below,
+		// preserving the cautious default.
+		if ag.TaskID != "" && verdict.ReasonKind == "reward_hacking" && (trigger == "loop" || trigger == "budget") &&
+			w.retriableRewardHackingFixReview(ag) {
+			w.stopForRewardHackingRetry(ag, verdict)
 			return
 		}
 		// Set the task state before stopping so the completion callback sees the
@@ -678,18 +733,32 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 		// command-repetition or long-running-verify-poll flake, not
 		// reward-hacking) gets the same retryable treatment — see #1456.
 		// Reward-hacking loops (and any other non-rate_limit reason_kind on a
-		// budget trigger) remain immediate human-required escalations.
+		// budget trigger) remain immediate human-required escalations, unless
+		// the fix-review carve-out above already retried them.
 		if ag.TaskID != "" {
 			reason := "watchdog stop"
-			if verdict.Reason != "" {
-				reason = "watchdog: " + verdict.Reason
-			}
 			status := task.StatusHumanRequired
 			if trigger == "stall" || ((trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "generic_stall") {
 				status = task.StatusInProgress
 				reason = "watchdog hang"
 				if verdict.Reason != "" {
 					reason = "watchdog hang: " + verdict.Reason
+				}
+			} else {
+				switch {
+				case verdict.ReasonKind == "reward_hacking":
+					reason = watchdogreason.RewardHacking(verdict.Reason)
+				case verdict.ReasonKind != "":
+					reason = "watchdog: " + verdict.ReasonKind
+					if verdict.Reason != "" {
+						reason += ": " + verdict.Reason
+					}
+				case trigger == "loop":
+					reason = watchdogreason.LoopStop(verdict.Reason)
+				case trigger == "budget":
+					reason = watchdogreason.BudgetStop(verdict.Reason)
+				case verdict.Reason != "":
+					reason = "watchdog: " + verdict.Reason
 				}
 			}
 			if _, err := w.tasks.Update(ag.TaskID, task.Update{
@@ -738,12 +807,6 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 	}
 }
 
-// verifyNowTimeout bounds a single on-demand verify re-run triggered by an
-// ambiguous loop/budget stop verdict — generous enough for a real test suite,
-// short enough that a hung verify command cannot indefinitely delay the
-// escalation decision it exists to inform.
-const verifyNowTimeout = 5 * time.Minute
-
 // killForVerifyTimeout bounds how long stopAndVerifyAmbiguousLoop waits for
 // the stopped agent's process to actually exit before re-running verify in
 // its worktree, matching the existing KillAgentsForTask convention used
@@ -765,10 +828,10 @@ const killForVerifyTimeout = 10 * time.Second
 // so the completion callback sees an intended recovery path immediately,
 // matching the stall/generic_stall convention, rather than leaving the task
 // on its pre-stop status for the duration of the verify re-run.
-func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Agent, verdict agent.InspectorVerdict) {
-	judgeReason := "watchdog stop"
-	if verdict.Reason != "" {
-		judgeReason = "watchdog: " + verdict.Reason
+func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
+	judgeReason := watchdogreason.LoopStop(verdict.Reason)
+	if trigger == "budget" {
+		judgeReason = watchdogreason.BudgetStop(verdict.Reason)
 	}
 	if _, err := w.tasks.Update(ag.TaskID, task.Update{
 		Status:       task.Ptr(task.StatusInProgress),
@@ -807,9 +870,7 @@ func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeRea
 	if w.verifyNow == nil {
 		return task.StatusHumanRequired, judgeReason
 	}
-	vctx, cancel := context.WithTimeout(ctx, verifyNowTimeout)
-	defer cancel()
-	verified, passed, failedCmd, output, err := w.verifyNow(vctx, taskID)
+	verified, passed, failedCmd, output, err := w.verifyNow(ctx, taskID)
 	if !verified || err != nil {
 		return task.StatusHumanRequired, judgeReason
 	}
@@ -843,10 +904,7 @@ func trimTail(failedCmd, output string, n int) string {
 // left in-progress — human-required is reserved for genuine reward-hacking
 // loops per #1310's scoping.
 func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
-	reason := "watchdog: rate limit"
-	if verdict.Reason != "" {
-		reason = "watchdog: rate limit: " + verdict.Reason
-	}
+	reason := watchdogreason.RateLimit(verdict.Reason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.rate_limit.untracked",
 			"id", ag.ID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
@@ -866,11 +924,71 @@ func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict age
 		"id", ag.ID, "task_id", ag.TaskID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
 }
 
+// retriableRewardHackingFixReview reports whether a reward_hacking "stop"
+// verdict for ag should be retried instead of escalated. Scoped narrowly to
+// fix-review agents (see agent.RoleFixReview) whose task still carries a
+// code-review sidecar naming a concrete, unaddressed finding location — the
+// exact "stalled re-reading instead of editing the file the reviewer already
+// named" pattern from #2229. A fix-review agent with no such anchor, or any
+// other role, still escalates immediately: retrying blind would just burn
+// budget on a genuinely stuck loop.
+func (w *Watchdog) retriableRewardHackingFixReview(ag *agent.Agent) bool {
+	if ag.EffectiveRole() != agent.RoleFixReview {
+		return false
+	}
+	t, err := w.tasks.Get(ag.TaskID)
+	if err != nil {
+		return false
+	}
+	return hasUnaddressedReviewFinding(t.CodeReview)
+}
+
+// hasUnaddressedReviewFinding reports whether a code-review sidecar still
+// names a concrete file:line finding for a fix-review agent to act on. The
+// adversarial-review skill (internal/skills/data/adversarial-review.md) emits
+// every finding with a "*Location:* `path:line`" line, so its presence is a
+// cheap, reliable signal that the sidecar has somewhere concrete to point a
+// retry at rather than being empty or purely prose.
+func hasUnaddressedReviewFinding(codeReview string) bool {
+	return strings.Contains(codeReview, "Location:")
+}
+
+// stopForRewardHackingRetry handles a "stop" verdict whose ReasonKind is
+// "reward_hacking" on a fix-review agent that retriableRewardHackingFixReview
+// has already confirmed has a concrete review finding to retry against. The
+// task is left in-progress (not human-required) with a distinct status-reason
+// prefix the workflow engine's handleWatchdogRewardHackingRetry recognizes on
+// the next ResumeStalled tick: it re-dispatches the fix_review step once more
+// with a steer pointing at the sidecar's named location, before falling back
+// to human-required if that retry also stalls.
+func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.InspectorVerdict) {
+	reason := rewardHackingRetryStatusReason
+	if verdict.Reason != "" {
+		reason = rewardHackingRetryStatusReason + ": " + verdict.Reason
+	}
+	if _, err := w.tasks.Update(ag.TaskID, task.Update{
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
+	}
+	if err := w.stopAgent(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
+	}
+	w.logger.Info("agent.watchdog.reward_hacking.retry", "id", ag.ID, "task_id", ag.TaskID, "reason", verdict.Reason)
+}
+
+// rewardHackingRetryStatusReason must stay in sync with
+// internal/workflow/engine_events.go's watchdogRewardHackingStatusPrefix —
+// that constant is what handleWatchdogRewardHackingRetry pattern-matches on
+// to recognize and bound this specific retry path.
+const rewardHackingRetryStatusReason = "watchdog: reward-hacking retry"
+
 // zeroOutputReason is the provider-health detail recorded for a zero-output
 // startup hang (see inspectHeadless). Kept distinct from the generic
 // "rate_limited" reason so provider health status/logs can tell the two
 // apart even though both share the SignalRateLimit health-gate bucket.
-const zeroOutputReason = "zero output before startup timeout"
+const zeroOutputReason = watchdogreason.ZeroOutputBeforeStartup
 
 // handleZeroOutputStall handles a "stall" trigger on a headless agent that
 // never produced any output at all. This reuses stopForRateLimit's recovery
@@ -886,7 +1004,7 @@ func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Dura
 	w.logger.Warn("agent.watchdog.zero_output_stall",
 		"id", ag.ID, "task_id", ag.TaskID, "provider", ag.Provider,
 		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
-	reason := "watchdog: rate limit: " + zeroOutputReason
+	reason := watchdogreason.RateLimit(zeroOutputReason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.zero_output_stall.untracked", "id", ag.ID, "provider", ag.Provider)
 	} else if _, err := w.tasks.Update(ag.TaskID, task.Update{

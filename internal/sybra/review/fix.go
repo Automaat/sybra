@@ -13,8 +13,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/executil"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
@@ -24,8 +26,9 @@ import (
 )
 
 // branchConflictFixWorkflowID is the builtin workflow started directly (by
-// ID, via StartWorkflowWithVars) to recover a no-PR branch conflict. It is
-// never reached via DispatchEvent/trigger matching — see
+// ID, via StartWorkflowWithVars) to recover a task-branch conflict without
+// going through the ordinary PR-fix dispatch path. It is never reached via
+// DispatchEvent/trigger matching — see
 // internal/workflow/builtin/branch-conflict-fix.yaml.
 const branchConflictFixWorkflowID = "branch-conflict-fix"
 
@@ -37,6 +40,7 @@ const branchConflictFixWorkflowID = "branch-conflict-fix"
 const prFixWorkflowID = "pr-fix"
 
 const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
+const sameBranchConflictRetryKind = github.PRIssueTaskBranchConflict
 const branchRecreateKind = github.PRIssueBranchRecreate
 const ciInfraRerunKind = github.PRIssueKind("ci_infra_rerun")
 
@@ -61,6 +65,14 @@ type branchConflictResumeState struct {
 	prior        *workflow.Execution
 }
 
+type taskBranchConflictRecoverySpec struct {
+	retryKind      github.PRIssueKind
+	branchOverride string
+	remoteOverride string
+	allowRecreate  bool
+	prompt         func(context.Context, task.Task, string) string
+}
+
 type dispatchFixOptions struct {
 	replaceActiveWorkflow bool
 	cancelReason          string
@@ -75,7 +87,12 @@ const PRFixResultContract = "\n\nBefore your final response, decide the outcome:
 	"evidence is a complete and successful outcome. It is always the right answer " +
 	"over inventing a change you cannot causally justify.\n" +
 	"- If you intentionally stopped because the PR needs a human, end with " +
-	"`SYBRA_PR_FIX_RESULT: human-required` and `SYBRA_PR_FIX_REASON: <short reason>`."
+	"`SYBRA_PR_FIX_RESULT: human-required` and `SYBRA_PR_FIX_REASON: <short reason>`. " +
+	"If the reason is specific test failures you already found while " +
+	"investigating (not e.g. a missing credential or an ambiguous scope " +
+	"decision), also emit one `SYBRA_PR_FIX_FAILING_TEST: <package/file:line " +
+	"test-name>` line per failing test, so the next agent to pick this up " +
+	"gets exact repro info instead of having to rediscover it."
 
 // readyForCopilotAutoMerge reports whether a pet PR satisfies the Copilot
 // auto-merge policy: mechanically mergeable, CI green (or no checks), GitHub
@@ -119,6 +136,28 @@ func readyForOwnBotAutoMerge(pr github.PullRequest) bool {
 		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
 		pr.UnresolvedCount == 0 &&
 		pr.ReviewDecision != "CHANGES_REQUESTED"
+}
+
+func autoMergeStateSignature(pr github.PullRequest) string {
+	return fmt.Sprintf("%s|%t|%s|%s|%s|%d|%t|%t|%s|%t|%t",
+		pr.UpdatedAt,
+		pr.IsDraft,
+		pr.CIStatus,
+		pr.Mergeable,
+		pr.ReviewDecision,
+		pr.UnresolvedCount,
+		pr.CopilotReviewed,
+		pr.AutoMergeEnabled,
+		pr.RESTMergeableState,
+		pr.RESTCIFetched,
+		pr.RESTApproved,
+	)
+}
+
+type nativeAutoMergeAttemptResult struct {
+	armed     bool
+	attempted bool
+	err       error
 }
 
 // readyToArmNativeAutoMerge reports whether a PR is ready to have GitHub's
@@ -168,7 +207,43 @@ func restRenovateGreen(pr github.PullRequest) bool {
 		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "")
 }
 
-func (r *Handler) handleAutoMerge(issue github.PRIssue) {
+// preflightArmNativeAutoMerge prefers arming GitHub's native auto-merge over
+// Sybra's own squash merge when it's available and the PR is otherwise ready
+// — it's cheaper (REST poll on GitHub's side) than Sybra's GraphQL merge-gate
+// polling. Only tried once the CI-green-gated legacy path in handleAutoMerge
+// would otherwise fire, so this never delays a merge; it just lets GitHub
+// finish the last mile. Returns true once armed, so the caller can stop
+// without falling through to the direct-merge path.
+//
+// Gated on the same backoff as the direct-merge path: an arm attempt that
+// itself keeps failing (bad credentials, a transient API error) must not be
+// retried every poll tick either (#2450).
+func (r *Handler) preflightArmNativeAutoMerge(ctx context.Context, t task.Task, issue github.PRIssue, backoff *github.AutoMergeBackoff, stateSig string) bool {
+	if !r.nativeAutoMergeEnabled() || !readyToArmNativeAutoMerge(issue.PR) {
+		return false
+	}
+	if !backoff.ShouldAttempt(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig) {
+		metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(issue.PR.Repository, issue.PR.Number)))
+		return false
+	}
+	res := r.tryArmNativeAutoMerge(t, issue, "")
+	if res.armed {
+		r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
+		metrics.AutoMergeAttempt(ctx, "armed", "")
+		r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
+		return true
+	}
+	if res.err != nil {
+		metrics.AutoMergeAttempt(ctx, "attempted", "")
+		class := github.ClassifyMergeError(res.err)
+		if backoff.RecordFailure(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig, class) {
+			metrics.AutoMergeAttempt(ctx, "terminal", string(class))
+		}
+	}
+	return false
+}
+
+func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 	t, err := r.tasks.Get(issue.TaskID)
 	if err != nil {
 		return
@@ -189,37 +264,11 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 		return
 	}
 
-	// Prefer arming GitHub's native auto-merge over Sybra's own squash merge
-	// when it's available and the PR is otherwise ready — it's cheaper (REST
-	// poll on GitHub's side) than Sybra's GraphQL merge-gate polling. Only
-	// tried once the CI-green-gated legacy path would otherwise fire, so this
-	// never delays a merge; it just lets GitHub finish the last mile.
-	if r.cfg != nil && r.cfg.GitHub.NativeAutoMerge && readyToArmNativeAutoMerge(issue.PR) {
-		supportsFn := r.supportsAutoMergeFn
-		if supportsFn == nil {
-			supportsFn = github.SupportsNativeAutoMerge
-		}
-		ok, serr := supportsFn(issue.PR.Repository, issue.PR.BaseRefName)
-		if serr != nil {
-			r.logger.Error("auto-merge.native-support-check-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", serr)
-		}
-		if serr == nil && ok {
-			enableFn := r.enableAutoMergeFn
-			if enableFn == nil {
-				enableFn = github.EnableAutoMerge
-			}
-			if aerr := enableFn(issue.PR.Repository, issue.PR.Number); aerr != nil {
-				r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", aerr)
-			} else {
-				r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
-				r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
-				r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", map[string]any{
-					"pr": issue.PR.Number, "repo": issue.PR.Repository,
-				})
-				r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", issue.PR.Number)
-				return
-			}
-		}
+	backoff := r.mergeBackoff()
+	stateSig := autoMergeStateSignature(issue.PR)
+
+	if r.preflightArmNativeAutoMerge(ctx, t, issue, backoff, stateSig) {
+		return
 	}
 
 	renovateFix := slices.Contains(t.Tags, "renovate-fix")
@@ -255,6 +304,16 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 		return
 	}
 
+	// Reprobe before spending another attempt: hold off on a direct-merge
+	// retry against the same head SHA until this class's backoff window has
+	// elapsed, instead of hammering an unresolved failure every poll tick
+	// (#2450). A new push (different head SHA) always reprobes immediately.
+	if !backoff.ShouldAttempt(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig) {
+		metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(issue.PR.Repository, issue.PR.Number)))
+		return
+	}
+	metrics.AutoMergeAttempt(ctx, "attempted", "")
+
 	var mergeErr error
 	if issue.PR.SourcedViaREST {
 		merge := r.mergePRViaREST
@@ -271,10 +330,22 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	}
 	r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
 	if mergeErr != nil {
-		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", mergeErr)
+		if r.nativeAutoMergeEnabled() && !issue.PR.SourcedViaREST && requiresNativeAutoMerge(mergeErr) {
+			if res := r.tryArmNativeAutoMerge(t, issue, "direct_merge_rejected"); res.armed {
+				r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
+				metrics.AutoMergeAttempt(ctx, "armed", "")
+				return
+			}
+		}
+		class := github.ClassifyMergeError(mergeErr)
+		if backoff.RecordFailure(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig, class) {
+			metrics.AutoMergeAttempt(ctx, "terminal", string(class))
+		}
+		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", mergeErr, "class", string(class))
 		return
 	}
 
+	r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
 	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
 	auditData := map[string]any{
 		"pr": issue.PR.Number, "repo": issue.PR.Repository,
@@ -286,6 +357,83 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 	}
 	r.logAudit(audit.EventPRAutoMerged, t.ID, "", auditData)
 	r.logger.Info("auto-merge.merged", "task_id", t.ID, "pr", issue.PR.Number)
+	if r.onAutoMergeApplied != nil {
+		r.onAutoMergeApplied()
+	}
+}
+
+// mergeBackoff lazily initializes the handler's auto-merge backoff tracker.
+// Mirrors readyPRCache/prPollState's lazy-init pattern so tests that
+// construct a bare Handler{} literal work without a dedicated constructor.
+func (r *Handler) mergeBackoff() *github.AutoMergeBackoff {
+	if r.autoMergeBackoff == nil {
+		r.autoMergeBackoff = github.NewAutoMergeBackoff()
+	}
+	return r.autoMergeBackoff
+}
+
+// clearMergeBackoff drops backoff state for repo#number and, when a prior
+// failure had been recorded there, records a "recovered" metric — a
+// suppressed/failing PR that just succeeded, not a routine first-attempt
+// merge.
+func (r *Handler) clearMergeBackoff(ctx context.Context, repo string, number int) {
+	if r.mergeBackoff().Clear(repo, number) {
+		metrics.AutoMergeAttempt(ctx, "recovered", "")
+	}
+}
+
+func (r *Handler) nativeAutoMergeEnabled() bool {
+	return r.cfg != nil && r.cfg.GitHub.NativeAutoMerge
+}
+
+// tryArmNativeAutoMerge attempts to arm GitHub's native auto-merge. attempted
+// reports whether a real GitHub call ran, while err carries the failure to
+// classify/back off. Unsupported repo/branch stays a nil error so callers do
+// not back it off like a genuine API failure.
+func (r *Handler) tryArmNativeAutoMerge(t task.Task, issue github.PRIssue, fallback string) nativeAutoMergeAttemptResult {
+	supportsFn := r.supportsAutoMergeFn
+	if supportsFn == nil {
+		supportsFn = github.SupportsNativeAutoMerge
+	}
+	ok, serr := supportsFn(issue.PR.Repository, issue.PR.BaseRefName)
+	if serr != nil {
+		r.logger.Error("auto-merge.native-support-check-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", serr)
+		return nativeAutoMergeAttemptResult{attempted: true, err: serr}
+	}
+	if !ok {
+		return nativeAutoMergeAttemptResult{}
+	}
+
+	enableFn := r.enableAutoMergeFn
+	if enableFn == nil {
+		enableFn = github.EnableAutoMerge
+	}
+	if aerr := enableFn(issue.PR.Repository, issue.PR.Number); aerr != nil {
+		r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", aerr)
+		return nativeAutoMergeAttemptResult{attempted: true, err: aerr}
+	}
+
+	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
+	auditData := map[string]any{"pr": issue.PR.Number, "repo": issue.PR.Repository}
+	if fallback != "" {
+		auditData["fallback"] = fallback
+	}
+	r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", auditData)
+	if fallback != "" {
+		r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", issue.PR.Number, "fallback", fallback)
+	} else {
+		r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", issue.PR.Number)
+	}
+	return nativeAutoMergeAttemptResult{armed: true, attempted: true}
+}
+
+func requiresNativeAutoMerge(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "base branch policy prohibits the merge") &&
+		strings.Contains(msg, "--auto")
 }
 
 // escalateExhaustedFix parks a task whose pr-fix retry budget is spent. Trying
@@ -308,8 +456,11 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 	if issue.Kind == github.PRIssueReadyToMerge {
 		return
 	}
+	if r.exhaustedFixIsFlaky(issue) {
+		return
+	}
 	t, err := r.tasks.Get(issue.TaskID)
-	if err != nil || t.Status == task.StatusHumanRequired {
+	if err != nil || t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked {
 		return
 	}
 	reason := exhaustedFixReason(github.MaxRetries, issue.Kind)
@@ -317,9 +468,16 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 		return tag == reconciledLatchTag
 	})
 	if _, err := r.tasks.Update(issue.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
+		Status:       task.Ptr(task.StatusBlocked),
 		StatusReason: task.Ptr(reason),
-		Tags:         task.Ptr(tags),
+		Blocker: &blocker.State{
+			Kind:       blocker.KindReviewFixExhausted,
+			Actor:      blocker.ActorReview,
+			Code:       string(issue.Kind),
+			NextAction: "reprobe_pr",
+			Exhausted:  true,
+		},
+		Tags: task.Ptr(tags),
 	}); err != nil {
 		r.logger.Error("pr-monitor.fix-exhausted.escalate", "task_id", issue.TaskID, "err", err)
 		return
@@ -334,6 +492,123 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 		"kind", string(issue.Kind), "attempts", github.MaxRetries)
 }
 
+// exhaustedFixIsFlaky reports whether an exhausted ci_failure issue should
+// stay in-review instead of parking human-required: flaky detection is
+// enabled and ClassifyCIFlakiness attributes every currently-failing gating
+// check on the head commit to flakiness rather than a deterministic bug.
+// Logs EventPRCIFlakeDetected (cooldown-gated via prTracker's PRIssueCIFlake
+// kind, so a still-flaky PR doesn't spam the audit log every poll cycle) as
+// the observable record of why escalation was skipped. Only ci_failure
+// carries a same-commit check history to classify — conflict/comments
+// exhaustion always escalates. Fails closed: disabled detection, a missing
+// PR repo/SHA, or a classifier error/deterministic verdict all return false.
+func (r *Handler) exhaustedFixIsFlaky(issue github.PRIssue) bool {
+	if issue.Kind != github.PRIssueCIFailure || r.cfg == nil || !r.cfg.GitHub.FlakyDetection {
+		return false
+	}
+	if r.prTracker == nil || issue.PR.Repository == "" || issue.PR.HeadSHA == "" {
+		return false
+	}
+	classify := r.classifyFlakiness
+	if classify == nil {
+		classify = github.ClassifyCIFlakiness
+	}
+	allFlaky, flakyChecks, err := classify(issue.PR.Repository, issue.PR.HeadSHA, r.cfg.GitHub.FlakyThreshold())
+	if err != nil || !allFlaky {
+		return false
+	}
+	if r.prTracker.ShouldHandle(issue.TaskID, github.PRIssueCIFlake, issue.PR.HeadSHA) {
+		r.prTracker.MarkHandled(issue.TaskID, github.PRIssueCIFlake, issue.PR.HeadSHA)
+		r.logAudit(audit.EventPRCIFlakeDetected, issue.TaskID, "", map[string]any{
+			"pr": issue.PR.Number, "repo": issue.PR.Repository, "checks": flakyChecks, "exhausted": true,
+		})
+		r.logger.Info("pr-monitor.ci-flake.exhausted-not-escalated",
+			"task_id", issue.TaskID, "pr", issue.PR.Number, "checks", flakyChecks)
+	}
+	return true
+}
+
+// dispatchFlakyRerun classifies a lone ci_failure's gating checks against the
+// head commit's full check-run history and, when every currently-failing
+// gating check is flaky, triggers the same deterministic infra-rerun
+// rerunCIFailure already performs (reusing its ciInfraRerunKind budget) but
+// additionally records a distinct audit event so a flaky classification is
+// observable separately from a blind rerun attempt. Returns false — a no-op —
+// when flaky detection is disabled, the classifier errors or reports a
+// deterministic failure, or the shared rerun budget for this head SHA is
+// already spent; the caller then falls through to the ordinary
+// rerun-then-fixer path unchanged, which is exactly today's behavior when
+// this feature is off (the default).
+func (r *Handler) dispatchFlakyRerun(t task.Task, issue github.PRIssue) bool {
+	if r.cfg == nil || !r.cfg.GitHub.FlakyDetection || issue.PR.Repository == "" || issue.PR.HeadSHA == "" {
+		return false
+	}
+	classify := r.classifyFlakiness
+	if classify == nil {
+		classify = github.ClassifyCIFlakiness
+	}
+	allFlaky, flakyChecks, err := classify(issue.PR.Repository, issue.PR.HeadSHA, r.cfg.GitHub.FlakyThreshold())
+	if err != nil || !allFlaky {
+		return false
+	}
+	if !r.rerunCIFailure(t, issue) {
+		return false
+	}
+	r.prTracker.MarkHandled(t.ID, github.PRIssueCIFlake, issue.PR.HeadSHA)
+	r.logAudit(audit.EventPRCIFlakeDetected, t.ID, "", map[string]any{
+		"pr": issue.PR.Number, "repo": issue.PR.Repository, "checks": flakyChecks,
+	})
+	r.logger.Info("pr-monitor.ci-flake.detected", "task_id", t.ID, "pr", issue.PR.Number, "checks", flakyChecks)
+	return true
+}
+
+// handleFlakyCI handles a ci_failure issue classified as flaky (see
+// github.flakyOnlyFailure: every failing workflow/check also shows a later
+// successful rerun outcome on the same head SHA). It never dispatches a fix
+// agent, since code changes do not fix noise, and never touches the
+// deterministic ci_failure retry budget (handleTaskPRIssues routes a flaky
+// issue around that budget entirely). It logs the pattern, then gives the
+// check another shot through the same ci-infra rerun budget a deterministic
+// ci_failure's first attempt uses (rerunCIFailure / ciInfraRerunKind). Only
+// once that budget itself is exhausted, meaning reruns alone never cleared it,
+// does it escalate to human-required, with a reason distinct from
+// exhaustedFixReason so a human can tell "the fix agent gave up" apart from
+// "this looks like a genuinely unstable test."
+func (r *Handler) handleFlakyCI(issue github.PRIssue) {
+	r.logAudit(audit.EventPRCIFlakyDetected, issue.TaskID, "", map[string]any{
+		"pr": issue.PR.Number, "repo": issue.PR.Repository, "head_sha": issue.PR.HeadSHA,
+	})
+	r.logger.Info("pr-monitor.ci-flaky-detected", "task_id", issue.TaskID, "pr", issue.PR.Number)
+
+	t, err := r.tasks.Get(issue.TaskID)
+	if err != nil || t.Status == task.StatusHumanRequired {
+		return
+	}
+
+	if r.prTracker != nil && r.prTracker.AtCap(t.ID, ciInfraRerunKind) {
+		tags := slices.DeleteFunc(slices.Clone(t.Tags), func(tag string) bool {
+			return tag == reconciledLatchTag
+		})
+		if _, err := r.tasks.Update(t.ID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(persistentFlakyCIReason),
+			Tags:         task.Ptr(tags),
+		}); err != nil {
+			r.logger.Error("pr-monitor.ci-flaky.escalate", "task_id", t.ID, "err", err)
+			return
+		}
+		r.prTracker.Clear(t.ID, ciInfraRerunKind)
+		r.logAudit(audit.EventPRFixExhausted, t.ID, "", map[string]any{
+			"pr": issue.PR.Number, "repo": issue.PR.Repository,
+			"kind": string(ciInfraRerunKind), "attempts": github.MaxRetries,
+		})
+		r.logger.Warn("pr-monitor.ci-flaky.exhausted", "task_id", t.ID, "pr", issue.PR.Number)
+		return
+	}
+
+	r.rerunCIFailure(t, issue)
+}
+
 // ciFailurePrompt is the pr-fix agent prompt for a failing-CI issue.
 func ciFailurePrompt(pr github.PullRequest) string {
 	return fmt.Sprintf(
@@ -344,7 +619,7 @@ func ciFailurePrompt(pr github.PullRequest) string {
 		pr.HeadRefName, pr.Number,
 		ciFailureDiagnosisRules(pr.BaseRefName),
 		prFixTamperingRules,
-		prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true),
+		prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
 	)
 }
 
@@ -384,9 +659,17 @@ const prFixTamperingRules = "Never weaken, skip, delete, or hardcode tests, " +
 
 // prFixPushPrompt renders the create-pr-equivalent push snippet for a pr-fix
 // agent. When fenced is true it emits a standalone ```sh block (optionally
-// preceded by intro); when false it emits only the three command lines so the
-// caller can splice them into an already-open code fence without nesting.
-func prFixPushPrompt(branch, intro string, fenced bool) string {
+// preceded by intro); when false it emits only the command lines so the caller
+// can splice them into an already-open code fence without nesting.
+//
+// allowHistoryRewrite is only for no-PR recovery paths, where a rebase and
+// force-with-lease are safe because no external PR depends on the branch shape
+// yet.
+func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) string {
+	return prFixPushPromptWithRemote(branch, intro, fenced, allowHistoryRewrite, "")
+}
+
+func prFixPushPromptWithRemote(branch, intro string, fenced, allowHistoryRewrite bool, remote string) string {
 	var b strings.Builder
 	if fenced && intro != "" {
 		b.WriteString(intro)
@@ -395,11 +678,18 @@ func prFixPushPrompt(branch, intro string, fenced bool) string {
 	if fenced {
 		b.WriteString("```sh\n")
 	}
-	b.WriteString("PUSH_REMOTE=origin\n")
-	b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
-	b.WriteString("PUSH_URL=$(git remote get-url --push \"$PUSH_REMOTE\")\n")
-	b.WriteString("case \"$PUSH_URL\" in https://github.com/*|http://github.com/*|https://github.com:[0-9]*/*|http://github.com:[0-9]*/*) gh auth status --hostname github.com >/dev/null ;; esac\n")
+	if remote == "" {
+		b.WriteString("PUSH_REMOTE=origin\n")
+		b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
+	} else {
+		fmt.Fprintf(&b, "PUSH_REMOTE=%s\n", remote)
+	}
+	b.WriteString("PREFLIGHT_REF=HEAD:refs/heads/sybra-preflight/$(git rev-parse --verify HEAD)\n")
+	b.WriteString("git push --dry-run \"$PUSH_REMOTE\" \"$PREFLIGHT_REF\"\n")
 	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
+	if allowHistoryRewrite {
+		fmt.Fprintf(&b, "\n# If you rebased or otherwise rewrote this branch's history, use lease-protected force-push instead.\ngit push --force-with-lease \"$PUSH_REMOTE\" HEAD:%s", branch)
+	}
 	if fenced {
 		b.WriteString("\n```")
 	}
@@ -412,7 +702,7 @@ func prFixPushPrompt(branch, intro string, fenced bool) string {
 func prIssueBody(ctx context.Context, issue github.PRIssue) (string, bool) {
 	switch issue.Kind {
 	case github.PRIssueConflict:
-		return conflictPrompt(issue.PR), true
+		return conflictPrompt(ctx, issue.PR), true
 	case github.PRIssueCIFailure:
 		return ciFailurePrompt(issue.PR), true
 	case github.PRIssueComments:
@@ -565,7 +855,7 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	if !opts.replaceActiveWorkflow &&
 		len(handle) == 1 &&
 		primary.Kind == github.PRIssueCIFailure &&
-		r.rerunCIFailure(t, primary) {
+		(r.dispatchFlakyRerun(t, primary) || r.rerunCIFailure(t, primary)) {
 		return true
 	}
 
@@ -597,7 +887,7 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// e.ctx field (Engine.SetContext), not an explicit parameter threaded here.
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
-	return r.dispatchPRIssueWithOptions(t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
+	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
 }
 
 func prHasCurrentApproval(pr github.PullRequest) bool {
@@ -647,7 +937,12 @@ func (r *Handler) rerunCIFailure(t task.Task, issue github.PRIssue) bool {
 	if _, err := r.projects.Get(t.ProjectID); err != nil {
 		return false
 	}
-	if !r.prTracker.ShouldHandle(t.ID, ciInfraRerunKind, issue.PR.HeadSHA) {
+	shaGate := issue.PR.HeadSHA
+	if issue.PR.CIFlaky {
+		// Flaky reruns do not produce a new commit; cap by attempt count, not SHA.
+		shaGate = ""
+	}
+	if !r.prTracker.ShouldHandle(t.ID, ciInfraRerunKind, shaGate) {
 		return false
 	}
 
@@ -710,6 +1005,22 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 		return false
 	}
 
+	branch, err := project.CurrentBranch(ctx, dir)
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.branch", "task_id", t.ID, "pr", pr.Number, "err", err)
+		return false
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		r.logger.Warn("pr-monitor.auto-resolve.branch-empty", "task_id", t.ID, "pr", pr.Number)
+		return false
+	}
+
+	if err := project.ReconcileWithRemote(ctx, dir, branch); err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.branch-preflight", "task_id", t.ID, "pr", pr.Number, "branch", branch, "err", err)
+		return false
+	}
+
 	preMergeHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		r.logger.Warn("pr-monitor.auto-resolve.pre-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
@@ -746,19 +1057,6 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 	if mergedHead == "" {
 		r.logger.Warn("pr-monitor.auto-resolve.post-merge-head-empty", "task_id", t.ID, "pr", pr.Number)
 		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "post-merge-head-empty")
-		return false
-	}
-
-	branch, err := project.CurrentBranch(ctx, dir)
-	if err != nil {
-		r.logger.Warn("pr-monitor.auto-resolve.branch", "task_id", t.ID, "pr", pr.Number, "err", err)
-		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "branch")
-		return false
-	}
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		r.logger.Warn("pr-monitor.auto-resolve.branch-empty", "task_id", t.ID, "pr", pr.Number)
-		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "branch-empty")
 		return false
 	}
 
@@ -819,7 +1117,7 @@ func (r *Handler) rollbackAutoResolvedMerge(ctx context.Context, taskID string, 
 // next cycle. The primary kind is authoritative for the workflow's
 // pr_issue_kind var (cancel and phase reconciliation key on it); handle
 // carries the full set for the retry tracker.
-func (r *Handler) dispatchPRIssueWithOptions(t task.Task, primary github.PRIssue, handle []github.PRIssue, prompt, dir string, opts dispatchFixOptions) bool {
+func (r *Handler) dispatchPRIssueWithOptions(ctx context.Context, t task.Task, primary github.PRIssue, handle []github.PRIssue, prompt, dir string, opts dispatchFixOptions) bool {
 	if r.WorkflowEngine == nil {
 		r.logger.Error("pr-monitor.no-workflow-engine", "task_id", t.ID)
 		return false
@@ -837,6 +1135,15 @@ func (r *Handler) dispatchPRIssueWithOptions(t task.Task, primary github.PRIssue
 		"pr_issue_kind":         string(primary.Kind),
 		"pr_issue_kinds":        strings.Join(kinds, ","),
 		workflow.WorkflowVarDir: dir,
+		// Exposed separately (not just baked into fullPrompt above) so the
+		// test_fix step's own YAML-authored prompt can reuse the identical
+		// result contract instead of duplicating it as a second copy that
+		// could drift out of sync.
+		"pr_fix_result_contract": PRFixResultContract,
+		// Same reasoning: the test_fix step's static YAML prompt needs the
+		// host-appropriate commit flags (-s vs -s -S) for its own commit
+		// instruction, computed once here rather than hardcoded in the YAML.
+		"commit_sign_flags": project.CommitSignFlags(ctx),
 	}
 	// Deterministic backstop for review-hold: when the hold is active and this
 	// fix touches review comments, the agent drafted its replies into a pending
@@ -864,6 +1171,11 @@ func (r *Handler) dispatchPRIssueWithOptions(t task.Task, primary github.PRIssue
 			r.logger.Info("pr-monitor.workflow-already-active",
 				"task_id", t.ID, "kind", string(primary.Kind))
 			return false
+		}
+		if r.recoverRetryablePRFixDispatch(t.ID, err) {
+			r.logger.Info("pr-monitor.workflow-dispatch-parked-retry",
+				"task_id", t.ID, "kind", string(primary.Kind), "err", err)
+			return true
 		}
 		r.logger.Error("pr-monitor.workflow-dispatch", "task_id", t.ID, "err", err)
 		return false
@@ -1001,11 +1313,10 @@ func (r *Handler) prFixParkedOnConflict(taskID string) bool {
 // recoverBranchConflictNoPR is the no-PR sibling of RecoverStaleBranchConflict:
 // the task has no linked PR yet (still in implementation/review/testing, or
 // at create_pr), so there is no PR head to check out. Instead it resolves the
-// task's OWN branch by name (PrepareForBranchFix), merges base into it via a
-// bounded headless pr-fix sub-run (branch-conflict-fix workflow — a merge,
-// never a rebase, so a plain push always succeeds), and on success resumes
-// the task's original interrupted workflow/stage rather than jumping to a
-// terminal status.
+// task's OWN branch by name (PrepareForBranchFix), resolves the branch via a
+// bounded headless pr-fix sub-run (branch-conflict-fix workflow), and on
+// success resumes the task's original interrupted workflow/stage rather than
+// jumping to a terminal status.
 //
 // Guards fail closed exactly like the PR-numbered path: a missing dependency,
 // an exhausted no-PR branch-conflict retry budget, or an already-in-flight
@@ -1018,15 +1329,65 @@ func (r *Handler) prFixParkedOnConflict(taskID string) bool {
 // synchronously start to finish) makes the re-entrant call bail out
 // immediately.
 func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
+	return r.recoverTaskBranchConflict(context.Background(), t, taskBranchConflictRecoverySpec{
+		retryKind:     branchConflictRetryKind,
+		allowRecreate: true,
+		prompt:        branchConflictPrompt,
+	})
+}
+
+func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, branch, remote string) bool {
+	if remote == "" {
+		remote = "origin"
+	}
+	return r.recoverTaskBranchConflict(ctx, t, taskBranchConflictRecoverySpec{
+		retryKind:      sameBranchConflictRetryKind,
+		branchOverride: branch,
+		remoteOverride: remote,
+		prompt: func(ctx context.Context, t task.Task, _ string) string {
+			return sameBranchConflictPrompt(ctx, t, remote)
+		},
+	})
+}
+
+func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task, pr github.PullRequest) string {
+	baseOwner := ""
+	if pr.Repository != "" {
+		baseOwner, _, _ = strings.Cut(pr.Repository, "/")
+	}
+	if baseOwner == "" && t.ProjectID != "" {
+		baseOwner, _, _ = strings.Cut(t.ProjectID, "/")
+	}
+	if pr.HeadRepoOwner == "" || strings.EqualFold(pr.HeadRepoOwner, baseOwner) {
+		return "origin"
+	}
+	if r.projects == nil || t.ProjectID == "" {
+		return "origin"
+	}
+	proj, err := r.projects.Get(t.ProjectID)
+	if err != nil || proj.ClonePath == "" {
+		return "origin"
+	}
+	return project.PushRemote(ctx, proj.ClonePath)
+}
+
+func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, spec taskBranchConflictRecoverySpec) bool {
 	taskID := t.ID
 	if r.worktreeSkip(taskID) {
 		return false
 	}
-	if r.prTracker.AtCap(taskID, branchConflictRetryKind) {
-		if r.recreateExhaustedNoPRBranch(t) {
+	if spec.branchOverride != "" && t.Branch != spec.branchOverride {
+		if _, err := r.tasks.Update(taskID, task.Update{Branch: task.Ptr(spec.branchOverride)}); err != nil {
+			r.logger.Warn("pr-monitor.branch-conflict.branch-override", "task_id", taskID, "branch", spec.branchOverride, "err", err)
+			return false
+		}
+		t.Branch = spec.branchOverride
+	}
+	if r.prTracker.AtCap(taskID, spec.retryKind) {
+		if spec.allowRecreate && r.recreateExhaustedNoPRBranch(ctx, t) {
 			return true
 		}
-		r.markConflictRecoveryExhausted(taskID, branchConflictRetryKind)
+		r.markConflictRecoveryExhausted(taskID, spec.retryKind)
 		return false
 	}
 
@@ -1051,7 +1412,6 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		r.logger.Warn("pr-monitor.branch-conflict.project", "task_id", taskID, "err", err)
 		return false
 	}
-	ctx := context.Background()
 	base, err := project.DefaultBranch(ctx, proj.ClonePath)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.base", "task_id", taskID, "err", err)
@@ -1063,7 +1423,7 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		return false
 	}
 
-	dir, err := r.worktrees.PrepareForBranchFix(ctx, t)
+	dir, err := r.worktrees.PrepareForBranchConflictFromRemote(ctx, t, spec.remoteOverride)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.prepare", "task_id", taskID, "err", err)
 		return r.parkOrEscalateBranchFixFailure(taskID, err)
@@ -1087,10 +1447,10 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	if shaErr != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
-	return r.dispatchBranchConflictRecovery(taskID, dir, base, t, headSHA, resume, hadActiveWorkflow)
+	return r.dispatchBranchConflictRecovery(ctx, taskID, dir, spec.prompt(ctx, t, base), t, headSHA, resume, hadActiveWorkflow, spec.retryKind)
 }
 
-func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
+func (r *Handler) recreateExhaustedNoPRBranch(ctx context.Context, t task.Task) bool {
 	taskID := t.ID
 	if r.worktrees == nil || r.WorkflowEngine == nil {
 		return false
@@ -1098,7 +1458,7 @@ func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
 	if r.prTracker.AtCap(taskID, branchRecreateKind) {
 		return false
 	}
-	if err := r.worktrees.RecreateFromBase(context.Background(), t); err != nil {
+	if err := r.worktrees.RecreateFromBase(ctx, t); err != nil {
 		r.logger.Warn("pr-monitor.branch-recreate.failed", "task_id", taskID, "err", err)
 		return false
 	}
@@ -1144,6 +1504,41 @@ func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictRe
 	return state
 }
 
+func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) bool {
+	failure := workflow.ClassifyAgentStartFailure(startErr)
+	if failure.Permanent {
+		return false
+	}
+	fresh, err := r.tasks.Get(taskID)
+	if err != nil {
+		r.logger.Warn("pr-monitor.workflow-dispatch-retry.get", "task_id", taskID, "err", err)
+		return false
+	}
+	if fresh.Status != task.StatusHumanRequired || fresh.Workflow == nil {
+		return false
+	}
+	if fresh.Workflow.WorkflowID != prFixWorkflowID || fresh.Workflow.CurrentStep != "fix" {
+		return false
+	}
+	switch fresh.Workflow.State {
+	case workflow.ExecCompleted, workflow.ExecFailed:
+		return false
+	case workflow.ExecRunning, workflow.ExecWaiting:
+	}
+
+	update := task.Update{Status: task.Ptr(task.StatusInReview)}
+	if failure.Reason != "" {
+		update.StatusReason = task.Ptr(failure.Reason)
+	} else {
+		update.StatusReason = task.Ptr("")
+	}
+	if _, err := r.tasks.Update(taskID, update); err != nil {
+		r.logger.Error("pr-monitor.workflow-dispatch-retry.status", "task_id", taskID, "err", err)
+		return false
+	}
+	return true
+}
+
 // dispatchBranchConflictRecovery starts the branch-conflict-fix workflow,
 // replacing the task's current workflow when hadActiveWorkflow is true.
 //
@@ -1155,9 +1550,9 @@ func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictRe
 // rather than a separate CancelWorkflow + StartWorkflowWithVars pair — is
 // what avoids a guaranteed reentrant "start in progress" failure there (see
 // workflow.Engine.ReplaceWorkflow's doc).
-func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool) bool {
+func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, dir, prompt string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool, retryKind github.PRIssueKind) bool {
 	vars := map[string]string{
-		"prompt":                branchConflictPrompt(t, base) + PRFixResultContract,
+		"prompt":                prompt + PRFixResultContract,
 		workflow.WorkflowVarDir: dir,
 		"resume_status":         resume.status,
 		"resume_status_reason":  resume.statusReason,
@@ -1219,7 +1614,7 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 	}
 
 	r.clearDispatchFailure(taskID)
-	r.prTracker.MarkHandled(taskID, branchConflictRetryKind, headSHA)
+	r.prTracker.MarkHandled(taskID, retryKind, headSHA)
 	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{})
 	r.logger.Info("pr-monitor.branch-conflict.recovered", "task_id", taskID)
 	return true
@@ -1231,6 +1626,19 @@ func isTransientBranchConflictDispatchFailure(err error) bool {
 		return false
 	}
 	return ue.RateLimited || ue.Reason == provider.RateLimitReason || !ue.Until.IsZero()
+}
+
+// dispatchFailureIsRateLimited reports whether a branch-conflict dispatch
+// failure is specifically a provider rate limit (as opposed to an ambiguous
+// cooldown). A rate limit always recovers, so this class parks indefinitely
+// instead of consuming the escalation budget — see
+// parkOrEscalateBranchConflictDispatchFailure.
+func dispatchFailureIsRateLimited(err error) bool {
+	var ue *provider.UnhealthyError
+	if !errors.As(err, &ue) {
+		return false
+	}
+	return ue.RateLimited || ue.Reason == provider.RateLimitReason
 }
 
 // parkOrEscalateBranchConflictDispatchFailure handles a transient
@@ -1246,6 +1654,17 @@ func isTransientBranchConflictDispatchFailure(err error) bool {
 // convention MarkRebaseBlocked relies on to avoid overwriting a specific
 // reason with its generic one.
 func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dispatchErr error) bool {
+	if dispatchFailureIsRateLimited(dispatchErr) {
+		// A rate limit always recovers on its own, so park and retry each poll
+		// until a provider is healthy rather than consuming the escalation
+		// budget: a human cannot un-rate-limit a provider, and 5 rapid retries
+		// inside a multi-minute cooldown otherwise exhaust the budget before
+		// recovery (2026-07-24 kuma 5be87222). Mirrors sybra#1585's reschedule
+		// park-don't-burn policy.
+		r.logger.Info("pr-monitor.branch-conflict.dispatch-parked-cooldown",
+			"task_id", taskID, "err", dispatchErr)
+		return true
+	}
 	attempts := r.recordDispatchFailure(taskID)
 	if attempts < branchConflictDispatchFailureLimit {
 		r.logger.Info("pr-monitor.branch-conflict.dispatch-parked-retry",
@@ -1415,9 +1834,10 @@ func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 
 // branchConflictPrompt is the no-PR analog of buildConflictPrompt: there is no
 // PR head to reference, so it resolves the task's own branch (t.Branch, set
-// by PrepareForBranchFix before this is called) and instructs a plain merge
-// (never a rebase, so a plain push is always expected to succeed).
-func branchConflictPrompt(t task.Task, base string) string {
+// by PrepareForBranchFix before this is called). Unlike the PR-backed conflict
+// prompt, this path may allow a rebase plus force-with-lease because no PR
+// exists yet.
+func branchConflictPrompt(ctx context.Context, t task.Task, base string) string {
 	branch := t.Branch
 	if branch == "" {
 		branch = "the task's current branch"
@@ -1430,22 +1850,58 @@ func branchConflictPrompt(t task.Task, base string) string {
 			"git fetch origin\n"+
 			"git merge refs/remotes/origin/%s\n"+
 			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
-			"# this branch's intent and the upstream changes, run targeted tests for\n"+
-			"# touched code, then git add and git commit to complete the merge.\n"+
+			"# this branch's intent and the upstream changes, then git add and git\n"+
+			"# commit %s to complete the merge.\n"+
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
-			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
+			"# will fail with \"nothing to commit\".\n"+
+			"# If a merge becomes too tangled, you may instead rebase onto\n"+
+			"# refs/remotes/origin/%s, resolve the conflicts there, and finish with a\n"+
+			"# lease-protected force-push because no PR exists yet.\n"+
 			"%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
 			"- Use `refs/remotes/origin/%s` (not `origin/%s`) to avoid ambiguous refs\n"+
 			"- Push to `fork` (not `origin`) when a `fork` remote exists — the branch was opened from the fork\n"+
-			"- Do not force-push or rewrite existing commits — this is a merge, never a rebase; a plain push is always expected to succeed\n"+
+			"- Prefer a merge; if you must rebase before the first PR exists, push the rewritten branch back with `--force-with-lease`\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
+			"- Before pushing, run tests for touched code as a single blocking foreground command (e.g. `go test ./pkg/foo/...`) and wait for it to exit — never background a test run or narrate/poll its progress; if it has not finished within a couple of minutes, stop and report a blocker instead of waiting indefinitely\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes",
-		branch, base, prFixPushPrompt(branch, "", false), base, base,
+		branch, base, project.CommitSignFlags(ctx), base, prFixPushPrompt(branch, "", false, true), base, base,
+	)
+}
+
+func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) string {
+	branch := t.Branch
+	if branch == "" {
+		branch = "the task's current branch"
+	}
+	if remote == "" {
+		remote = "origin"
+	}
+	prCtx := ""
+	if t.PRNumber > 0 {
+		prCtx = fmt.Sprintf(" backing PR #%d", t.PRNumber)
+	}
+	return fmt.Sprintf(
+		"Resolve the content conflict between the LOCAL copy of branch `%s` and the already-pushed REMOTE copy of that SAME branch%s.\n"+
+			"This is not a base-branch rebase conflict; preserve both lines of work with an additive merge.\n\n"+
+			"Steps:\n"+
+			"```bash\n"+
+			"git fetch %s +refs/heads/%s:refs/remotes/%s/%s\n"+
+			"git merge refs/remotes/%s/%s\n"+
+			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
+			"# both the local follow-up commits and the already-pushed remote commits,\n"+
+			"# then git add and git commit %s to finish the merge.\n"+
+			"# If the merge already completed on its own (clean/no-op), do not run git\n"+
+			"# commit again.\n"+
+			"# Do NOT rebase, amend, or force-push: this branch already backs a live PR.\n"+
+			"%s\n"+
+			"```\n\n"+
+			"After pushing, summarize what conflicted and how you resolved it.",
+		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx), prFixPushPromptWithRemote(branch, "", false, false, remote),
 	)
 }
 
@@ -1478,6 +1934,12 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		if errors.Is(wtErr, worktree.ErrAgentRunning) {
 			r.logger.Warn("pr-monitor.worktree.agent-running", "task_id", t.ID, "err", wtErr)
 			return "", false
+		}
+		if errors.Is(wtErr, project.ErrBranchDiverged) {
+			remote := r.sameBranchConflictRemote(ctx, t, issue.PR)
+			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName, remote) {
+				return "", false
+			}
 		}
 		// A conflict fix already operates on the non-rebasing PrepareForFix path,
 		// so a rebase failure here can only come from the CI-fix PrepareForTask
@@ -1520,11 +1982,11 @@ func commentsPrompt(ctx context.Context, pr github.PullRequest) string {
 			"`fix(review): address PR review comments` (type(scope) required by "+
 			"repo hooks). Sign the commit with `git commit %s`.\n\n"+
 			"%s",
-		pr.URL, pr.Number, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true),
+		pr.URL, pr.Number, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
 	)
 }
 
-func conflictPrompt(pr github.PullRequest) string {
+func conflictPrompt(ctx context.Context, pr github.PullRequest) string {
 	var filesCtx string
 	if files, err := github.FetchPRFiles(pr.Repository, pr.Number); err == nil && len(files) > 0 {
 		var sb strings.Builder
@@ -1537,10 +1999,10 @@ func conflictPrompt(pr github.PullRequest) string {
 		filesCtx = sb.String()
 	}
 
-	return buildConflictPrompt(pr, filesCtx)
+	return buildConflictPrompt(ctx, pr, filesCtx)
 }
 
-func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
+func buildConflictPrompt(ctx context.Context, pr github.PullRequest, filesCtx string) string {
 	base := pr.BaseRefName
 	if base == "" {
 		base = "main"
@@ -1554,11 +2016,11 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"git fetch origin\n"+
 			"git merge %s\n"+
 			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
-			"# the PR intent and upstream changes, run targeted tests for touched code,\n"+
-			"# then git add and git commit to complete the merge.\n"+
+			"# the PR intent and upstream changes, then git add and git commit %s to\n"+
+			"# complete the merge.\n"+
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
-			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
+			"# will fail with \"nothing to commit\".\n"+
 			"%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
@@ -1567,9 +2029,10 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"- Do not force-push or rewrite existing commits — the merge commit and any conflict-resolution commits must be purely additive, and a plain push is expected to succeed\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
+			"- Before pushing, run tests for touched code as a single blocking foreground command (e.g. `go test ./pkg/foo/...`) and wait for it to exit — never background a test run or narrate/poll its progress; if it has not finished within a couple of minutes, stop and report a blocker instead of waiting indefinitely\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
-		pr.HeadRefName, pr.Number, baseRef, prFixPushPrompt(pr.HeadRefName, "", false), baseRef, filesCtx,
+		pr.HeadRefName, pr.Number, baseRef, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "", false, false), baseRef, filesCtx,
 	)
 }

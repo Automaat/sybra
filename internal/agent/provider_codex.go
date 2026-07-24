@@ -17,6 +17,19 @@ func init() {
 
 func (codexProvider) Name() string { return "codex" }
 
+// HonorsAllowedTools is false: the codex CLI has no per-tool allowlist. Its
+// only containment is -s/--sandbox, which is filesystem-level and unrelated to
+// which tools the model may call, so allowed_tools cannot be mapped onto it.
+func (codexProvider) HonorsAllowedTools() bool { return false }
+
+// SupportsOutputSchema is true: codex receives OutputSchema as a temp file via
+// --output-schema (OutputSchemaAsFile), forcing schema-valid JSON output.
+func (codexProvider) SupportsOutputSchema() bool { return true }
+
+// EnforcesOutputSchema mirrors SupportsOutputSchema: codex forwards
+// OutputSchema to the CLI, forcing schema-valid JSON output.
+func (codexProvider) EnforcesOutputSchema() bool { return true }
+
 func (codexProvider) NormalizeModel(model string) string {
 	// Codex models come from `codex debug models` and never carry a [1m]
 	// suffix — a stray suffix stays untouched and is rejected by safeArgRe.
@@ -33,6 +46,8 @@ func (p codexProvider) BuildCommand(cfg RunConfig, model string) string {
 func (p codexProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
 	skillNames := discoverCodexSkills()
 	prompt := rewriteSkillInvocations(cfg.Prompt, skillNames)
+	rendered, unrendered := computeSkillRender(cfg.Prompt, skillNames)
+	a.SetPromptRender("slash-to-dollar", rendered, unrendered)
 	args := codexExecBaseArgs(prompt != cfg.Prompt)
 	// headless=true: --sandbox workspace-write requires approval prompts
 	// which auto-reject in headless mode (no TTY/UI). Always bypass.
@@ -100,20 +115,6 @@ func (codexProvider) SandboxArgs(requirePerms, headless bool) []string {
 }
 
 func (codexProvider) OutputSchemaAsFile() bool { return true }
-
-func (codexProvider) UsesPerTurnConvo() bool { return true }
-
-func (p codexProvider) BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation {
-	return perTurnConvoInvocation{bin: "codex", args: buildCodexConvoArgsWithProvider(a, cfg, prompt, p)}
-}
-
-func (codexProvider) ParseConvoLine(line []byte) (ConvoEvent, error) {
-	ce, err := ParseCodexLine(line)
-	if err != nil {
-		return ConvoEvent{}, err
-	}
-	return codexEventToConvoEvent(ce), nil
-}
 
 func (codexProvider) SessionFilePath(sessionID string) string {
 	return resolveCodexSessionFile(sessionID)

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/runacct"
+	"github.com/Automaat/sybra/internal/runoutcome"
 )
 
 const (
@@ -28,8 +30,8 @@ var statusDwellThresholds = map[string]float64{
 // emits failures as agent.completed with state != "stopped"; the legacy
 // agent.failed type is also accepted for forward/test compatibility.
 func isAgentFailure(e audit.Event) bool {
-	runs := audit.NormalizeAgentRuns([]audit.Event{e})
-	return len(runs) == 1 && runs[0].Terminal && runs[0].Failed
+	counts := runacct.Count(audit.RunRecords([]audit.Event{e}), nil, runacct.CountConfig{})
+	return counts.Failures == 1
 }
 
 // checkAgentRetryLoops flags tasks that have 2+ failed agent runs in the
@@ -38,15 +40,15 @@ func isAgentFailure(e audit.Event) bool {
 func checkAgentRetryLoops(events []audit.Event, now time.Time) []Finding {
 	failuresPerTask := make(map[string]int)
 	lastRole := make(map[string]string)
-	runs := audit.NormalizeAgentRuns(events)
-	for i := range runs {
-		run := &runs[i]
-		if !run.Terminal || !run.Failed || run.TaskID == "" {
+	records := audit.RunRecords(events)
+	for i := range records {
+		rec := records[i]
+		if rec.TaskID == "" || rec.Outcome != runoutcome.Failed {
 			continue
 		}
-		failuresPerTask[run.TaskID]++
-		if role, ok := run.TerminalEvent.Data["role"].(string); ok {
-			lastRole[run.TaskID] = role
+		failuresPerTask[rec.TaskID]++
+		if rec.Role != "" {
+			lastRole[rec.TaskID] = rec.Role
 		}
 	}
 
@@ -162,6 +164,85 @@ func checkGHIssueAuthFailure(events []audit.Event, now time.Time) []Finding {
 		},
 		DetectedAt: now,
 	}}
+}
+
+// checkGHPushAuthFailure flags git push credential preflight failures
+// (project.PreflightPushCredentials, see internal/audit.EventGHPushAuthFailed).
+// Unlike GH issue filing, the push path has no durable outbox — a failed
+// preflight parks its task in human-required immediately — so this is the
+// only host-level signal beyond a per-task status_reason string. Severity is
+// critical (not warning, unlike checkGHIssueAuthFailure) because a blocked
+// push halts the task outright rather than degrading to a queued retry.
+func checkGHPushAuthFailure(events []audit.Event, now time.Time) []Finding {
+	var lastErr string
+	count := 0
+	for _, e := range events {
+		if e.Type != audit.EventGHPushAuthFailed {
+			continue
+		}
+		count++
+		if errStr, ok := e.Data["err"].(string); ok && errStr != "" {
+			lastErr = errStr
+		}
+	}
+	if count == 0 {
+		return nil
+	}
+
+	return []Finding{{
+		Category:    CatGHPushAuthFailure,
+		Severity:    SeverityCritical,
+		Title:       "git push credential preflight is failing",
+		Description: fmt.Sprintf("Git push credential preflight failed %d time(s) in the last 24h, parking task(s) in human-required — configure github.app or run `gh auth login` on the host.", count),
+		Evidence: map[string]any{
+			"count":      count,
+			"last_error": lastErr,
+		},
+		DetectedAt: now,
+	}}
+}
+
+// ghAuthStateMisconfigured mirrors github.AuthMisconfigured
+// (internal/github/authhealth.go) by value. This package intentionally
+// doesn't import internal/github — health analyzes state handed to it, it
+// doesn't couple to service internals — so the string is duplicated here
+// rather than referencing the typed constant.
+const ghAuthStateMisconfigured = "misconfigured"
+
+// checkGHAuthUnavailable turns a proactive gh-auth probe result into a
+// finding — the periodic counterpart to checkGHPushAuthFailure/
+// checkGHIssueAuthFailure, which only fire after a real push or issue-filing
+// attempt has already failed. authenticated is the live result of
+// github.Authenticated(), sampled once per health tick (see
+// Checker.ghAuthProbe); a nil probe (the default) means this check never
+// runs. state is the paired github.AuthHealthSnapshot().State, used to tell
+// a permanent credential misconfiguration — which needs a human to rotate
+// credentials and gets a single actionable critical finding — apart from a
+// transient mint/network failure that the circuit breaker and force-refresh
+// are already retrying on their own, which is downgraded to a warning so it
+// doesn't page for something expected to self-heal. See #2453.
+func checkGHAuthUnavailable(authenticated bool, state string, now time.Time) []Finding {
+	if authenticated {
+		return nil
+	}
+	f := Finding{
+		Category: CatGHAuthUnavailable,
+		Evidence: map[string]any{
+			"probe": "gh api rate_limit",
+			"state": state,
+		},
+		DetectedAt: now,
+	}
+	if state == ghAuthStateMisconfigured {
+		f.Severity = SeverityCritical
+		f.Title = "GitHub credentials are misconfigured"
+		f.Description = "Periodic gh auth probe failed with a permanent credential problem (revoked key, suspended App, removed installation) that will not resolve by retrying. Rotate credentials: reconfigure github.app or run `gh auth login` on the host."
+	} else {
+		f.Severity = SeverityWarning
+		f.Title = "GitHub credentials are temporarily unavailable"
+		f.Description = "Periodic gh auth probe failed with a transient error (network blip, GitHub outage, or a force-refresh in flight) — the circuit breaker is suppressing repeat calls and will retry on its own backoff. No action needed unless this persists."
+	}
+	return []Finding{f}
 }
 
 func isExpectedHumanRequired(e audit.Event) bool {

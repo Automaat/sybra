@@ -7,9 +7,10 @@ Runs `sybra-server` directly on the dedicated **sybra LXC** (CT 114,
    the main server process; the detached (`setsid`) claude/codex agent
    subprocesses keep running and are re-adopted by the next start's
    `ReattachAll` — no interrupted turn, no `--resume`, no redone tokens.
-2. **New `main` auto-deploys.** Sybra's built-in `autoupdate` fast-forwards a
-   git checkout to `origin/main`, rebuilds, and restarts itself — turning every
-   merge to `main` into a lossless rolling deploy.
+2. **New CI-green `main` auto-deploys.** Sybra's built-in `autoupdate`
+   resolves the exact `origin/main` SHA, waits until the configured required
+   checks for that SHA are green, then fast-forwards, rebuilds, and restarts
+   itself — turning each safe merge to `main` into a lossless rolling deploy.
 
 The LXC is single-tenant (only `deploy-sybra.yml` targets it), so dropping the
 container removes a redundant isolation layer — the LXC itself remains the
@@ -28,14 +29,15 @@ Sybra already ships the whole mechanism; Docker just defeated it.
   namespace — so a `docker` container recreate SIGKILLs every agent regardless.
   A `systemctl restart` under `KillMode=process` keeps them in the same host PID
   + mount namespace, so reattach actually reattaches.
-- **autoupdate** (`internal/autoupdate`): polls a git repo, `git merge
-  --ff-only origin/main`, then calls `RequestRestart()` → the server exits with
-  code **42** (`autoupdate.RestartExitCode`). It updates **source only** — it
-  does **not** rebuild the binary. In the immutable prebuilt Docker image there
-  was nothing to rebuild and no git checkout to advance, so autoupdate was inert
-  and deploys were manual image-tag bumps. Under systemd, `ExecStartPre` rebuilds
-  from the freshly-merged source and the supervisor honors exit 42 — the feature
-  comes alive.
+- **autoupdate** (`internal/autoupdate`): polls a git repo, resolves the exact
+  remote branch SHA without moving the local checkout, queries GitHub check-runs
+  + commit statuses for that SHA, and only then `git merge --ff-only <sha>` +
+  `RequestRestart()` when every configured required check is green. It updates
+  **source only** — it does **not** rebuild the binary. In the immutable
+  prebuilt Docker image there was nothing to rebuild and no git checkout to
+  advance, so autoupdate was inert and deploys were manual image-tag bumps.
+  Under systemd, `ExecStartPre` rebuilds from the freshly-merged source and the
+  supervisor honors exit 42 — the feature comes alive.
 
 ## The one directive that matters: `KillMode=process`
 
@@ -59,12 +61,29 @@ Layout on the box:
 
 ```
 /opt/sybra/
-  src/     git checkout of Automaat/sybra on main   (autoupdate RepoDir)
-  bin/     sybra-build.sh, sybra-run.sh
-  build/   sybra-server (running binary) + web/ (static bundle)
+  src/         git checkout of Automaat/sybra on main   (autoupdate RepoDir)
+  review-src/  second, independent checkout for human-review's fallback dir
+  bin/         sybra-build.sh, sybra-run.sh
+  build/       sybra-server (running binary) + web/ (static bundle)
 /etc/sybra/sybra.env
 /data/sybra/home  →  HOME=/home/sybra/.sybra  (config, tasks, worktrees, agent registry)
 ```
+
+`review-src/` exists so `human_review.sybra_repo_dir` never resolves to the
+same directory `auto_update.repo_dir` builds and ff-merges from (#1925) —
+see the config section below.
+
+autoupdate also persists state under `~/.sybra/autoupdate-state.json`,
+including the last restart time, so **restart coalescing** survives a process
+restart: in `mode: auto`, a newly-approved candidate only triggers a merge +
+restart once `auto_update.coalesce` (default 1h) has elapsed since the last
+restart. Polls inside that window keep resolving the newest CI-green
+candidate and hold it — a burst of merges to `main` produces at most one
+restart per interval instead of one per merge. The manual emergency bypass is
+a one-shot marker file at `~/.sybra/autoupdate-override`: create it to let the
+next poll deploy the current remote SHA immediately, bypassing both the CI
+gate and the coalescing window, and autoupdate deletes it after a successful
+apply.
 
 ## Build-safety contract
 
@@ -94,7 +113,7 @@ echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://
   > /etc/apt/sources.list.d/github-cli.list
 apt-get update && apt-get install -y gh
 
-install -d -o sybra -g sybra /opt/sybra /opt/sybra/bin /opt/sybra/build /etc/sybra
+install -d -o sybra -g sybra /opt/sybra /opt/sybra/bin /opt/sybra/build /opt/sybra/review-src /etc/sybra
 ```
 
 As the `sybra` user:
@@ -106,6 +125,12 @@ export PATH="$HOME/.local/bin:$PATH"
 
 git clone https://github.com/Automaat/sybra /opt/sybra/src
 cd /opt/sybra/src && mise install
+
+# Second, independent checkout for human_review.sybra_repo_dir — never point
+# this at /opt/sybra/src (see "Config changes" below). It only needs to stay
+# roughly current for diagnosis, so a periodic `git -C /opt/sybra/review-src
+# pull` (e.g. a daily cron) is enough; it does not need mise/toolchain install.
+git clone https://github.com/Automaat/sybra /opt/sybra/review-src
 
 # claude + codex CLIs as npm globals, then reshim so mise exposes them on PATH
 mise exec -- npm install -g @anthropic-ai/claude-code @openai/codex
@@ -136,12 +161,29 @@ auto_update:
     repo_dir: /opt/sybra/src
     remote: origin
     branch: main
+    required_checks:
+      - lint-go / lint
+      - test-go / test
+      - build / build
     mode: notify               # start here; flip to auto once validated
     poll_seconds: 300
+    coalesce_seconds: 3600     # min gap between restarts in auto mode
 ```
 
-Also drop `human_review.sybra_repo_dir: /app/src` → `/opt/sybra/src` (the old
-value was the in-image source copy).
+`required_checks` must list the exact GitHub check/status names that gate a
+deploy on this box. `mode: auto` fails closed when the list is empty, when a
+required check is missing, or when GitHub App auth cannot fetch the SHA's
+status cleanly.
+
+Also drop `human_review.sybra_repo_dir: /app/src` → `/opt/sybra/review-src` —
+**not** `/opt/sybra/src`. The old `/app/src` value was the in-image source
+copy; the replacement must be the dedicated `review-src` checkout provisioned
+above, never the live deploy checkout `auto_update.repo_dir` builds and
+ff-merges from. The review agent is dispatched with a read-only process
+sandbox whenever it falls back to `sybra_repo_dir` (no task worktree), so a
+misconfigured value here can't actually be written to — but pointing both
+keys at the same directory still means the diagnostic agent's `git`/`grep`
+reads race the autoupdate loop's concurrent merges into that tree (#1925).
 
 ## home-nas ansible changes (`deploy-sybra.yml`)
 
@@ -195,7 +237,7 @@ cluster:
   bind_addr: ":8080"          # or bind_addrs: [...] to lock down interfaces
 ```
 
-A follower hard-disables every poller (Todoist/GitHub/Renovate) regardless of its
+A follower hard-disables every poller (GitHub/Renovate) regardless of its
 own feature flags, so no `project_types` juggling is needed — the leader is the
 only ingress.
 
@@ -243,14 +285,23 @@ leader, `sybra-cli cluster nodes` lists the roster with its resolved
 
 ## How a deploy happens
 
-- **Automatic:** merge to `main` → within `poll_seconds` autoupdate ff-merges +
-  requests restart → exit 42 → systemd reruns `ExecStartPre` (rebuild) → new
-  binary starts → agents reattach.
+- **Automatic:** merge to `main` → within `poll_seconds` autoupdate resolves the
+  exact remote SHA and waits for the configured required checks on that SHA to
+  turn green. Once approved, the merge + restart itself is deferred until at
+  least `coalesce_seconds` has passed since the last restart — so a burst of
+  merges within that window still produces exactly one ff-merge + restart, for
+  the newest approved SHA at the time the window elapses → exit 42 → systemd
+  reruns `ExecStartPre` (rebuild) → new binary starts → agents reattach.
 - **Manual:** `systemctl restart sybra` (rebuilds current `/opt/sybra/src` HEAD).
 - **Pin/rollback:** `git -C /opt/sybra/src checkout <good-sha>` then
   `systemctl restart sybra`. (While pinned to a non-HEAD SHA, autoupdate's
   ff-only check blocks further auto-updates until you return to `main` — it
   refuses to update a diverged/ahead checkout.)
+- **Emergency bypass:** `sudo -u sybra touch /data/sybra/home/autoupdate-override`
+  to let the next poll apply the current remote SHA once even if CI is still
+  red/pending, skipping the coalescing window too. The marker is deleted after
+  a successful apply; this is for operator intervention only, never normal
+  automation.
 
 ## Validation checklist (do this before trusting it)
 
@@ -263,19 +314,36 @@ leader, `sybra-cli cluster nodes` lists the roster with its resolved
    (`ps -o pid,ppid,cmd -p <pid>`), and the sybra log shows `agent.reattach`
    for it (not `agent.reattach.dead`). If the PID is gone, `KillMode=process`
    isn't taking effect — fix before enabling auto-update.
-3. **Build fallback:** push a deliberately-broken commit to a test branch,
+3. **CI gate:** with `mode: notify`, land a trivial `main` change and confirm
+   the log reports `autoupdate.check status=waiting|approved` for the exact
+   candidate SHA instead of merging immediately; a missing/failed required check
+   must stay unapplied.
+4. **Build fallback:** push a deliberately-broken commit to a test branch,
    point `repo_dir` at it, restart — the service must come up on the last-good
    binary (`journalctl -u sybra` shows `keeping last-good build`).
-4. **Exit-42 loop:** with `mode: auto`, land a trivial `main` change and confirm
-   `autoupdate.restart.requested` → rebuild → `Started sybra` in the journal.
+5. **Exit-42 loop:** with `mode: auto`, land a trivial green `main` change and
+   confirm `autoupdate.restart.requested` → rebuild → `Started sybra` in the
+   journal.
+6. **Coalescing:** with `mode: auto`, land two green `main` changes a few
+   minutes apart, both inside `coalesce_seconds`. The log should show
+   `autoupdate.check status=coalesced ... coalesced_count=1` for the second one
+   instead of a second restart; only one `autoupdate.restart.requested` fires,
+   for the newer SHA, once the window elapses.
 
 ## Caveats / decisions to make
 
-- **Broken `main` auto-deploys.** autoupdate is ff-only and 5-min-batched, and
-  the build-swap keeps the service up — but it does **not** check the SHA passed
-  CI. If you want "only deploy green SHAs," gate autoupdate on a status check
-  (small follow-up) or switch to Design B (CI builds the artifact, box pulls).
-  Until then, run `mode: notify` and promote to `auto` deliberately.
+- **Required-check names are configuration, not discovery.** If branch
+  protection changes, update `auto_update.required_checks` to match or
+  autoupdate will fail closed on "missing required checks".
+- **Broken `main` no longer auto-deploys by default.** A red/pending/missing
+  required check leaves the candidate unapplied. The emergency bypass marker is
+  the explicit operator escape hatch when you intentionally want to deploy a red
+  SHA.
+- **A green merge can wait up to `coalesce_seconds` (default 1h) for its
+  restart.** This is the point of coalescing — restart churn was the reported
+  incident — but it means a legitimate hotfix landed just after a restart sits
+  approved-but-unapplied until the window elapses, unless you use the
+  emergency bypass marker.
 - **On-box build time** (~1–2 min Go + frontend) is the restart window. Agents
   survive it; the HTTP endpoint is down for it. Fine for a home deployment.
 - **No `restart: unless-stopped` auto-heal** — replaced by systemd

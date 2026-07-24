@@ -63,13 +63,15 @@ func runShim(t *testing.T, shimDir string, args ...string) (stdout, stderr strin
 // trailing separators, subshells, command substitution, quoted flags — reduces
 // to the same argv here. These are the reproductions that broke the previous
 // approach, expressed as the shell would actually deliver them.
-func TestGhShim_BlocksApproval(t *testing.T) {
+func TestGhShim_BlocksSubmittedReviews(t *testing.T) {
 	shimDir := newShim(t)
 
 	tests := []struct {
 		name string
 		args []string
 	}{
+		{"comment review", []string{"pr", "review", "--comment", "-b", "summary", "1"}},
+		{"request changes", []string{"pr", "review", "--request-changes", "-b", "fix this", "1"}},
 		{"long flag", []string{"pr", "review", "--approve", "1"}},
 		{"short flag", []string{"pr", "review", "-a", "1"}},
 		{"flag after number", []string{"pr", "review", "1", "--approve"}},
@@ -79,8 +81,10 @@ func TestGhShim_BlocksApproval(t *testing.T) {
 		{"approve after a body-file flag", []string{"pr", "review", "-F", "notes.md", "--approve", "1"}},
 		{"approve after an inline body", []string{"pr", "review", "--body=lgtm", "--approve", "1"}},
 		{"repo flag first", []string{"pr", "review", "-R", "owner/repo", "--approve", "1"}},
-		{"rest event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=APPROVE"}},
-		{"rest pending submit", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews/99/events", "-f", "event=APPROVE"}},
+		{"rest comment event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=COMMENT"}},
+		{"rest request changes event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=REQUEST_CHANGES"}},
+		{"rest approve event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=APPROVE"}},
+		{"rest pending submit", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews/99/events", "-f", "event=COMMENT"}},
 		{"graphql add review", []string{"api", "graphql", "-f", `query=mutation { addPullRequestReview(input: {event: APPROVED}) { id } }`}},
 		{"graphql submit review", []string{"api", "graphql", "-f", `query=mutation { submitPullRequestReview(input: {event: APPROVE}) { id } }`}},
 	}
@@ -94,7 +98,7 @@ func TestGhShim_BlocksApproval(t *testing.T) {
 			if strings.Contains(stdout, "REAL-GH") {
 				t.Fatalf("shim executed real gh for %v: %s", tc.args, stdout)
 			}
-			if !strings.Contains(stderr, "no PR-approval authority") {
+			if !strings.Contains(stderr, "pending PR review drafts") {
 				t.Fatalf("shim stderr missing reason for %v: %q", tc.args, stderr)
 			}
 		})
@@ -102,27 +106,34 @@ func TestGhShim_BlocksApproval(t *testing.T) {
 }
 
 // A false deny is as damaging as a bypass: it blocks the exact action the deny
-// reason tells the agent to retry. Bodies arrive as one argv element, so text
-// mentioning a flag can never be read as one.
-func TestGhShim_AllowsLegitimateReviews(t *testing.T) {
+// reason tells the agent to retry.
+func TestGhShim_AllowsPendingDraftReviews(t *testing.T) {
 	shimDir := newShim(t)
 
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{"comment review", []string{"pr", "review", "--comment", "-b", "summary", "1"}},
-		{"request changes", []string{"pr", "review", "--request-changes", "-b", "fix this", "1"}},
-		{"body mentions short flag", []string{"pr", "review", "--request-changes", "-b", "use -a instead of --all", "1"}},
-		{"body mentions approve flag", []string{"pr", "review", "--comment", "-b", "do not --approve this", "1"}},
-		{"body quotes approve command", []string{"pr", "review", "--comment", "-b", "never run gh pr review --approve", "1"}},
-		{"body has apostrophe", []string{"pr", "review", "--request-changes", "-b", "Don't use -a here", "1"}},
-		{"body mentions approve event", []string{"pr", "review", "--comment", "-b", "event: APPROVED is banned", "1"}},
-		{"body is exactly the approve flag", []string{"pr", "review", "--comment", "-b", "--approve", "1"}},
-		{"body is exactly the short flag", []string{"pr", "review", "--request-changes", "-b", "-a", "1"}},
-		{"long body flag value is the approve flag", []string{"pr", "review", "--comment", "--body", "--approve", "1"}},
-		{"body file named like the approve flag", []string{"pr", "review", "--comment", "-F", "--approve", "1"}},
-		{"body-file flag value is the short flag", []string{"pr", "review", "--comment", "--body-file", "-a", "1"}},
+		{"clean pending review", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "body=clean"}},
+		{"pending review with inline comment", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "body=needs work", "-f", "comments[][path]=main.go", "-f", "comments[][line]=12", "-f", "comments[][side]=RIGHT", "-f", "comments[][body]=fix this"}},
+		{"pending review path contains event comment", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "body=summary", "-f", "comments[][path]=internal/event/comment.go", "-f", "comments[][line]=12", "-f", "comments[][side]=RIGHT", "-f", "comments[][body]=fix this"}},
+		{"body mentions approve event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "body=event: APPROVED is banned"}},
+		{
+			// A multi-paragraph markdown body with a footer is impractical to
+			// pass inline (quoting), so gh api's own docs recommend @file for it.
+			// gh api scopes a file value to exactly the named field, so this
+			// cannot smuggle a sibling "event" key the way --input/query=@ can.
+			name: "pending review with file-sourced body",
+			args: []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "commit_id=abc123", "-F", "body=@review_body.txt"},
+		},
+		{
+			name: "pending review with file-sourced inline comment bodies",
+			args: []string{
+				"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews",
+				"-f", "commit_id=abc123", "-F", "body=@review_body.txt",
+				"-f", "comments[][path]=main.go", "-F", "comments[][line]=12", "-f", "comments[][side]=RIGHT", "-F", "comments[][body]=@c1.txt",
+			},
+		},
 		{"reading reviews", []string{"pr", "view", "1", "--json", "reviews"}},
 		{"listing approved reviews", []string{"api", "graphql", "-f", `query=query { reviews(states: APPROVED) { id } }`}},
 		{"merge is gated elsewhere", []string{"pr", "merge", "1", "--squash"}},
@@ -148,11 +159,11 @@ func TestGhShim_ForwardsArgvVerbatim(t *testing.T) {
 	shimDir := newShim(t)
 
 	stdout, _, code := runShim(t, shimDir,
-		"pr", "review", "--comment", "-b", "two  spaces and 'quotes' and $VAR", "1")
+		"api", "repos/o/r/pulls/1/reviews", "--method", "POST", "-f", "body=two  spaces and 'quotes' and $VAR")
 	if code != 0 {
 		t.Fatalf("unexpected block: exit=%d", code)
 	}
-	want := "REAL-GH: [pr] [review] [--comment] [-b] [two  spaces and 'quotes' and $VAR] [1]"
+	want := "REAL-GH: [api] [repos/o/r/pulls/1/reviews] [--method] [POST] [-f] [body=two  spaces and 'quotes' and $VAR]"
 	if strings.TrimSpace(stdout) != want {
 		t.Fatalf("argv not forwarded verbatim:\n got %q\nwant %q", strings.TrimSpace(stdout), want)
 	}
@@ -192,7 +203,7 @@ func TestWriteGhShim_RewriteIsAtomicAndIdempotent(t *testing.T) {
 
 	_, _, code := runShim(t, dir, "pr", "review", "--approve", "1")
 	if code == 0 {
-		t.Fatal("rewritten shim allowed an approval")
+		t.Fatal("rewritten shim allowed a submitted review")
 	}
 }
 
@@ -234,13 +245,10 @@ func TestPrependPATH(t *testing.T) {
 	}
 }
 
-// The bypasses that let 28 approvals onto Automaat/lightroom-mcp#151 while the
-// shim was on PATH for every run (agent.gh-shim.ready, never unguarded).
-//
-// Both defeat argv scanning the same way — they move APPROVE somewhere argv
-// cannot see it. The shim cannot read a request body, so a payload it cannot
-// inspect on a reviews endpoint is refused rather than assumed benign.
-func TestGhShim_BlocksApprovalsInvisibleToArgv(t *testing.T) {
+// Review submission bypasses defeat argv scanning the same way: they move EVENT
+// somewhere argv cannot see it. The shim cannot read a request body, so a payload
+// it cannot inspect on a reviews endpoint is refused rather than assumed benign.
+func TestGhShim_BlocksReviewEventsInvisibleToArgv(t *testing.T) {
 	shim := newShim(t)
 	tests := []struct {
 		name string
@@ -277,6 +285,15 @@ func TestGhShim_BlocksApprovalsInvisibleToArgv(t *testing.T) {
 			},
 		},
 		{
+			name: "graphql submit mutation with the event in a variable",
+			args: []string{
+				"api", "graphql",
+				"-f", "query=mutation($id:ID!,$e:PullRequestReviewEvent!){submitPullRequestReview(input:{pullRequestReviewId:$id,event:$e}){pullRequestReview{id}}}",
+				"-f", "id=PRR_kwDO",
+				"-f", "e=APPROVE",
+			},
+		},
+		{
 			// -F key=@path reads the value from a file, so the whole mutation
 			// stays out of argv — the same hole as --input, one field wide.
 			name: "graphql query read from a file",
@@ -295,7 +312,7 @@ func TestGhShim_BlocksApprovalsInvisibleToArgv(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, stderr, code := runShim(t, shim, tt.args...)
 			if code == 0 {
-				t.Fatalf("shim allowed an approval it could not inspect: %v", tt.args)
+				t.Fatalf("shim allowed a review event it could not inspect: %v", tt.args)
 			}
 			if !strings.Contains(stderr, GhShimReason) {
 				t.Errorf("stderr = %q, want the shim's refusal reason", stderr)
@@ -304,7 +321,7 @@ func TestGhShim_BlocksApprovalsInvisibleToArgv(t *testing.T) {
 	}
 }
 
-// The tightening must not cost the agent the reviews it is supposed to post.
+// The tightening must not cost the agent the draft reviews it is supposed to post.
 // A guard that blocks legitimate work gets routed around by the next person.
 func TestGhShim_AllowsInspectableAndUnrelatedCalls(t *testing.T) {
 	shim := newShim(t)
@@ -312,12 +329,15 @@ func TestGhShim_AllowsInspectableAndUnrelatedCalls(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"comment review", []string{"pr", "review", "151", "--comment", "-b", "looks good"}},
-		{"request changes", []string{"pr", "review", "151", "--request-changes", "-b", "fix this"}},
 		{
-			// The body is prose; "approve" and "event" in it mean nothing.
-			name: "body that merely mentions approving an event",
-			args: []string{"pr", "review", "151", "--comment", "-b", "I approve of this event handler"},
+			name: "pending review draft",
+			args: []string{"api", "repos/o/r/pulls/151/reviews", "--method", "POST", "-f", "body=looks good"},
+		},
+		{
+			// The body is prose; "approve" and "event" in it mean nothing as
+			// long as no review event field is present.
+			name: "draft body that merely mentions approving an event",
+			args: []string{"api", "repos/o/r/pulls/151/reviews", "--method", "POST", "-f", "body=I approve of this event handler"},
 		},
 		{"reading reviews", []string{"api", "repos/o/r/pulls/151/reviews"}},
 		{

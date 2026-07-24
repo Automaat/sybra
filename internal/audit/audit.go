@@ -25,13 +25,19 @@ const (
 	EventOrchestratorStop     = "orchestrator.stopped"
 	EventPRConflictDetected   = "pr_monitor.conflict_detected"
 	EventPRCIFailureDetected  = "pr_monitor.ci_failure_detected"
-	EventPRCommentsDetected   = "pr_monitor.comments_detected"
-	EventPRFixAgentStarted    = "pr_monitor.fix_agent_started"
-	EventPRFixExhausted       = "pr_monitor.fix_exhausted"
-	EventPRCIFailureRerun     = "pr_monitor.ci_failure_rerun"
-	EventPRMerged             = "pr_monitor.merged"
-	EventPRClosed             = "pr_monitor.closed"
-	EventPRAutoMerged         = "pr_monitor.auto_merged"
+	// EventPRCIFlakyDetected records that a ci_failure issue's failing check
+	// names all also show a passing outcome for the same head commit (see
+	// github.flakyOnlyFailure) — noise, not a deterministic regression. The
+	// task is not escalated to human-required on this signal; a rerun is
+	// attempted instead (see EventPRCIFailureRerun).
+	EventPRCIFlakyDetected  = "pr_monitor.ci_flaky_detected"
+	EventPRCommentsDetected = "pr_monitor.comments_detected"
+	EventPRFixAgentStarted  = "pr_monitor.fix_agent_started"
+	EventPRFixExhausted     = "pr_monitor.fix_exhausted"
+	EventPRCIFailureRerun   = "pr_monitor.ci_failure_rerun"
+	EventPRMerged           = "pr_monitor.merged"
+	EventPRClosed           = "pr_monitor.closed"
+	EventPRAutoMerged       = "pr_monitor.auto_merged"
 	// EventAutoMergeEnabled records that GitHub's native auto-merge was armed
 	// on a PR (the pr_monitor.merged/auto_merged events cover the eventual
 	// terminal merge itself, whichever path lands it).
@@ -57,22 +63,28 @@ const (
 	// outside Sybra). Data carries the prior status_reason and the probe
 	// result, never PR titles or agent output.
 	EventPRBlockerReconciled = "pr_monitor.blocker_reconciled"
-	EventReviewStarted       = "review.agent_started"
-	EventFixReviewStarted    = "fix_review.agent_started"
-	EventReviewPublished     = "review.published"
-	EventTodoistImported     = "todoist.imported"
-	EventTodoistCompleted    = "todoist.completed"
-	EventRenovateCIFix       = "renovate.ci_fix_started"
-	EventHealthReport        = "health.report"
-	EventAgentStartFailed    = "agent.start_failed"
-	EventProviderGateBlocked = "provider.gate_blocked"
-	EventHumanReviewSpawned  = "human_review.spawned"
-	EventHumanReviewVerdict  = "human_review.verdict"
-	EventHumanReviewIssue    = "human_review.issue_filed"
-	EventHumanReviewSkipped  = "human_review.skipped"
-	EventExperienceRecorded  = "experience.recorded"
-	EventExperienceSkipped   = "experience.skipped"
-	EventExperienceInjected  = "experience.injected"
+	// EventPRCIFlakeDetected records that a lone ci_failure issue was
+	// classified flaky: the head commit's check-run history (all attempts,
+	// not just the latest) shows the same gating check both passing and
+	// failing at or above the configured success-rate threshold. Logged
+	// instead of dispatching a fix agent or escalating to human-required.
+	// Data carries pr, repo, and the flaky check names — never agent output.
+	EventPRCIFlakeDetected         = "pr_monitor.ci_flake_detected"
+	EventReviewStarted             = "review.agent_started"
+	EventFixReviewStarted          = "fix_review.agent_started"
+	EventReviewPublished           = "review.published"
+	EventRenovateCIFix             = "renovate.ci_fix_started"
+	EventHealthReport              = "health.report"
+	EventAgentStartFailed          = "agent.start_failed"
+	EventProviderGateBlocked       = "provider.gate_blocked"
+	EventProviderModelIncompatible = "provider.model_incompatible"
+	EventHumanReviewSpawned        = "human_review.spawned"
+	EventHumanReviewVerdict        = "human_review.verdict"
+	EventHumanReviewIssue          = "human_review.issue_filed"
+	EventHumanReviewSkipped        = "human_review.skipped"
+	EventExperienceRecorded        = "experience.recorded"
+	EventExperienceSkipped         = "experience.skipped"
+	EventExperienceInjected        = "experience.injected"
 
 	// EventTaskLanded records a task's terminal outcome (merged/closed) with
 	// queue-inclusive and work-based timing for the evaluation scorecard.
@@ -106,6 +118,13 @@ const (
 	// Data.reason distinguishes a committed handoff ("checkpoint") from a
 	// failed commit ("checkpoint_failed").
 	EventAgentCheckpoint = "agent.checkpoint"
+	// EventAgentPromptRendered records, at completion, how a headless run's
+	// canonical prompt was rendered for its provider (rewritten skill
+	// syntax, invoked skills the rewriter recognized vs. left untouched).
+	// Data.prompt_hash matches the same field on that run's agent.started
+	// event, correlating dispatch and completion without ever persisting
+	// prompt text in either.
+	EventAgentPromptRendered = "agent.prompt_rendered"
 
 	// Codex lifecycle hook events — emitted by the sybra-cli hook fast-path
 	// when codex fires its session/subagent lifecycle hooks. Distinct from the
@@ -120,6 +139,16 @@ const (
 	// raw error message — so failures are observable without exposing content.
 	EventCodexHookFailed = "codex.hook.failed"
 
+	// EventRoutingReweighted records one adaptive-routing tick (internal/routing)
+	// that produced a changed weight plan: a new overlay generation, the
+	// per-experiment/variant weights it set, and the score inputs that drove
+	// them. Emitted every generation, including shadow-mode (routing.enabled:
+	// false) ticks that compute and audit but never apply — so the audit log
+	// stays the full explainability trail regardless of rollout posture. Data
+	// carries only experiment/variant IDs and numeric score inputs — never
+	// prompts, provider CLI arguments, or task content.
+	EventRoutingReweighted = "routing.reweighted"
+
 	// EventLearningDigest records a successful Learning Digest generation
 	// (internal/learning) with provider/model/duration/cost in Data.
 	EventLearningDigest = "learning.digest"
@@ -127,6 +156,10 @@ const (
 	// Data.reason carries an actionable, categorical explanation; the
 	// previous digest is left intact.
 	EventLearningDigestFailed = "learning.digest_failed"
+	// EventAutoUpdateTransition records one autoupdate candidate transition:
+	// seen, waiting, rejected, approved, applied, or superseded. Data carries
+	// only SHAs/reasons for deployment state explainability.
+	EventAutoUpdateTransition = "autoupdate.transition"
 
 	// EventUmbrellaRecovery records one outcome of the async degraded-umbrella
 	// auto-recovery pass (internal/umbrella.RecoverDegraded): attempted,
@@ -140,6 +173,16 @@ const (
 	// finding. Data carries "sink" (e.g. "monitor", "human-review") and a
 	// secrets-redacted "err"; never issue titles/bodies.
 	EventGHIssueAuthFailed = "gh_issue.auth_failed"
+	// EventGHPushAuthFailed records a git push credential preflight failure
+	// (project.PreflightPushCredentials, called before every agent-authored
+	// push) — see internal/health's checkGHPushAuthFailure, which surfaces
+	// this as an actionable health finding instead of only the per-task
+	// status_reason preflightPushCredentials also sets. Data carries a
+	// secrets-redacted "err"; never worktree paths or credentials. Unlike
+	// EventGHIssueAuthFailed there is no durable outbox on this path — a
+	// failed preflight parks the task in human-required immediately, so this
+	// event fires on every occurrence, not just the first.
+	EventGHPushAuthFailed = "gh_push.auth_failed"
 )
 
 type Event struct {

@@ -15,11 +15,6 @@ type headlessInvocation struct {
 	command string
 }
 
-type perTurnConvoInvocation struct {
-	bin  string
-	args []string
-}
-
 type Provider interface {
 	Name() string
 	NormalizeModel(model string) string
@@ -28,32 +23,50 @@ type Provider interface {
 	ParseHeadlessLine(line []byte) (StreamEvent, error)
 	SandboxArgs(requirePerms, headless bool) []string
 	OutputSchemaAsFile() bool
-	UsesPerTurnConvo() bool
-	BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation
-	ParseConvoLine(line []byte) (ConvoEvent, error)
+	// EnforcesOutputSchema reports whether this provider actually passes
+	// RunConfig.OutputSchema to the spawned CLI so the model is forced to emit
+	// schema-valid JSON. Only such providers make a trailing conformance
+	// receipt unsatisfiable — copilot/opencode silently ignore the schema, so a
+	// receipt must still be appended and verified for them.
+	EnforcesOutputSchema() bool
 	SessionFilePath(sessionID string) string
 	ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration)
+	// HonorsAllowedTools reports whether this provider actually enforces
+	// RunConfig.AllowedTools on the spawned CLI. False means the list is
+	// silently ignored and the agent runs with the provider's own default
+	// reach — see warnUnenforceableAllowedTools.
+	HonorsAllowedTools() bool
+	// SupportsOutputSchema reports whether this provider actually applies
+	// RunConfig.OutputSchema to the spawned CLI. False means the schema is
+	// silently ignored and the run falls back to whatever plain-text contract
+	// the step's own prompt anticipates — see resolveWorkflowSkillPrompt's
+	// schemaEnforced check.
+	SupportsOutputSchema() bool
 }
 
 type baseProvider struct{}
 
 func (baseProvider) SandboxArgs(bool, bool) []string { return nil }
 
+// HonorsAllowedTools defaults to false so a provider only claims to enforce the
+// list by saying so. codex has no per-tool allowlist at all (only --sandbox,
+// which is filesystem-level), and copilot's --allow-tool vocabulary is
+// unrelated to claude's tool names — a guessed mapping would manufacture a
+// boundary that does not hold, which is worse than an honest gap.
+func (baseProvider) HonorsAllowedTools() bool { return false }
+
+// SupportsOutputSchema defaults to false for the same reason
+// HonorsAllowedTools does — a provider only claims to enforce the schema by
+// saying so, rather than assuming support and finding out via a silently
+// unverifiable run.
+func (baseProvider) SupportsOutputSchema() bool { return false }
+
+// EnforcesOutputSchema defaults to false for the same reason
+// SupportsOutputSchema does — only a provider that actually forwards the
+// schema flag to its CLI overrides this to true.
+func (baseProvider) EnforcesOutputSchema() bool { return false }
+
 func (baseProvider) OutputSchemaAsFile() bool { return false }
-
-func (baseProvider) UsesPerTurnConvo() bool { return false }
-
-func (baseProvider) BuildPerTurnConvoInvocation(a *Agent, _ RunConfig, _ string) perTurnConvoInvocation {
-	bin := strings.ToLower(strings.TrimSpace(a.Provider))
-	if bin == "" {
-		bin = "claude"
-	}
-	return perTurnConvoInvocation{bin: bin}
-}
-
-func (baseProvider) ParseConvoLine([]byte) (ConvoEvent, error) {
-	return ConvoEvent{}, fmt.Errorf("provider does not support per-turn conversational parsing")
-}
 
 func (baseProvider) SessionFilePath(string) string { return "" }
 

@@ -19,6 +19,14 @@ type Config struct {
 	// up to CurrentBuiltinVersion, leaving any other (user-authored) experiment
 	// untouched.
 	BuiltinVersion *int `yaml:"builtin_version,omitempty" json:"builtinVersion,omitempty"`
+	// WeightsVersion stamps the routing-service generation that produced this
+	// config's variant weights — nil for a plain operator-authored config
+	// (weights come straight from config.yaml, no overlay applied). Copied
+	// onto every Assignment as DecisionVersion so a run record can be joined
+	// back to the routing.reweighted audit event that set its weights. Never
+	// persisted to config.yaml — internal/routing sets it only on the
+	// in-memory merged config it pushes to selection sites.
+	WeightsVersion *int `yaml:"-" json:"weightsVersion,omitempty"`
 }
 
 // CurrentBuiltinVersion is the version stamp for the built-in experiment set
@@ -143,6 +151,7 @@ type Assignment struct {
 	ExperimentID    string
 	Kind            string
 	VariantID       string
+	RoutingReason   string
 	Provider        string
 	Model           string
 	ReasoningEffort string
@@ -150,6 +159,11 @@ type Assignment struct {
 	AssignmentKey   string
 	PromptTransform *PromptTransform
 	SkillAliases    map[string]string
+	// DecisionVersion mirrors the Config's WeightsVersion at selection time
+	// (0 when the config carries no routing overlay), so downstream run
+	// records can be attributed to the routing generation that set this
+	// variant's weight.
+	DecisionVersion int
 }
 
 // DefaultConfig returns the default A/B suite split by price bracket: code
@@ -164,7 +178,7 @@ type Assignment struct {
 // per-provider breakdown after rollout — a provider that regresses a role can
 // be down-weighted here without code changes.
 func DefaultConfig() Config {
-	enabled := true
+	enabled := false
 	expEnabled := true
 	builtinVersion := CurrentBuiltinVersion
 	cheap := modeltier.Models(modeltier.Cheap)
@@ -305,7 +319,7 @@ func (c Config) Validate() error {
 
 // EnabledValue reports whether A/B assignment should run.
 func (c Config) EnabledValue() bool {
-	return c.Enabled == nil || *c.Enabled
+	return c.Enabled != nil && *c.Enabled
 }
 
 func (c Config) BuiltinVersionValue() int {

@@ -118,8 +118,16 @@ export class RunRecord {
     "reasoningEffort"?: string;
     "experimentId"?: string;
     "variantId"?: string;
+    "routingReason"?: string;
     "assignmentUnit"?: string;
     "assignmentKey"?: string;
+
+    /**
+     * RoutingDecisionVersion is the internal/routing overlay generation (if
+     * any) that set this run's variant weight — 0 for a run assigned under
+     * plain operator-configured weights with no routing overlay applied.
+     */
+    "routingDecisionVersion"?: number;
     "requestedSkill"?: string;
     "skillExecutionMode"?: string;
     "resolvedSkillSourceHash"?: string;

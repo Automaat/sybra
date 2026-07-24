@@ -121,9 +121,10 @@ export class AppSettings {
     "orchestrator": config$0.OrchestratorConfig;
     "logging": LoggingSettings;
     "audit": config$0.AuditConfig;
-    "todoist": config$0.TodoistConfig;
+    "attachments": config$0.AttachmentConfig;
     "renovate": config$0.RenovateConfig;
     "providers": config$0.ProvidersConfig;
+    "providerRouting": ProviderRoutingSettings;
     "github": config$0.GitHubConfig;
     "monitor": config$0.MonitorConfig;
     "selfMonitor": config$0.SelfMonitorConfig;
@@ -135,14 +136,6 @@ export class AppSettings {
     "browser": config$0.BrowserConfig;
     "projectTypes": string[];
     "directories": { [_ in string]?: string };
-
-    /**
-     * TodoistTokenSet reports whether a Todoist API token is stored, without
-     * leaking the token itself (which GetSettings always redacts). The UI uses
-     * this to show a "token set" state and route rotation through
-     * UpdateTodoistToken rather than the generic UpdateSettings payload.
-     */
-    "todoistTokenSet": boolean;
 
     /** Creates a new AppSettings instance. */
     constructor($$source: Partial<AppSettings> = {}) {
@@ -161,14 +154,17 @@ export class AppSettings {
         if (!("audit" in $$source)) {
             this["audit"] = (new config$0.AuditConfig());
         }
-        if (!("todoist" in $$source)) {
-            this["todoist"] = (new config$0.TodoistConfig());
+        if (!("attachments" in $$source)) {
+            this["attachments"] = (new config$0.AttachmentConfig());
         }
         if (!("renovate" in $$source)) {
             this["renovate"] = (new config$0.RenovateConfig());
         }
         if (!("providers" in $$source)) {
             this["providers"] = (new config$0.ProvidersConfig());
+        }
+        if (!("providerRouting" in $$source)) {
+            this["providerRouting"] = (new ProviderRoutingSettings());
         }
         if (!("github" in $$source)) {
             this["github"] = (new config$0.GitHubConfig());
@@ -203,9 +199,6 @@ export class AppSettings {
         if (!("directories" in $$source)) {
             this["directories"] = {};
         }
-        if (!("todoistTokenSet" in $$source)) {
-            this["todoistTokenSet"] = false;
-        }
 
         Object.assign(this, $$source);
     }
@@ -233,6 +226,7 @@ export class AppSettings {
         const $$createField16_0 = $$createType18;
         const $$createField17_0 = $$createType19;
         const $$createField18_0 = $$createType20;
+        const $$createField19_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("agent" in $$parsedSource) {
             $$parsedSource["agent"] = $$createField0_0($$parsedSource["agent"]);
@@ -249,8 +243,8 @@ export class AppSettings {
         if ("audit" in $$parsedSource) {
             $$parsedSource["audit"] = $$createField4_0($$parsedSource["audit"]);
         }
-        if ("todoist" in $$parsedSource) {
-            $$parsedSource["todoist"] = $$createField5_0($$parsedSource["todoist"]);
+        if ("attachments" in $$parsedSource) {
+            $$parsedSource["attachments"] = $$createField5_0($$parsedSource["attachments"]);
         }
         if ("renovate" in $$parsedSource) {
             $$parsedSource["renovate"] = $$createField6_0($$parsedSource["renovate"]);
@@ -258,38 +252,41 @@ export class AppSettings {
         if ("providers" in $$parsedSource) {
             $$parsedSource["providers"] = $$createField7_0($$parsedSource["providers"]);
         }
+        if ("providerRouting" in $$parsedSource) {
+            $$parsedSource["providerRouting"] = $$createField8_0($$parsedSource["providerRouting"]);
+        }
         if ("github" in $$parsedSource) {
-            $$parsedSource["github"] = $$createField8_0($$parsedSource["github"]);
+            $$parsedSource["github"] = $$createField9_0($$parsedSource["github"]);
         }
         if ("monitor" in $$parsedSource) {
-            $$parsedSource["monitor"] = $$createField9_0($$parsedSource["monitor"]);
+            $$parsedSource["monitor"] = $$createField10_0($$parsedSource["monitor"]);
         }
         if ("selfMonitor" in $$parsedSource) {
-            $$parsedSource["selfMonitor"] = $$createField10_0($$parsedSource["selfMonitor"]);
+            $$parsedSource["selfMonitor"] = $$createField11_0($$parsedSource["selfMonitor"]);
         }
         if ("triage" in $$parsedSource) {
-            $$parsedSource["triage"] = $$createField11_0($$parsedSource["triage"]);
+            $$parsedSource["triage"] = $$createField12_0($$parsedSource["triage"]);
         }
         if ("umbrella" in $$parsedSource) {
-            $$parsedSource["umbrella"] = $$createField12_0($$parsedSource["umbrella"]);
+            $$parsedSource["umbrella"] = $$createField13_0($$parsedSource["umbrella"]);
         }
         if ("testing" in $$parsedSource) {
-            $$parsedSource["testing"] = $$createField13_0($$parsedSource["testing"]);
+            $$parsedSource["testing"] = $$createField14_0($$parsedSource["testing"]);
         }
         if ("experience" in $$parsedSource) {
-            $$parsedSource["experience"] = $$createField14_0($$parsedSource["experience"]);
+            $$parsedSource["experience"] = $$createField15_0($$parsedSource["experience"]);
         }
         if ("metrics" in $$parsedSource) {
-            $$parsedSource["metrics"] = $$createField15_0($$parsedSource["metrics"]);
+            $$parsedSource["metrics"] = $$createField16_0($$parsedSource["metrics"]);
         }
         if ("browser" in $$parsedSource) {
-            $$parsedSource["browser"] = $$createField16_0($$parsedSource["browser"]);
+            $$parsedSource["browser"] = $$createField17_0($$parsedSource["browser"]);
         }
         if ("projectTypes" in $$parsedSource) {
-            $$parsedSource["projectTypes"] = $$createField17_0($$parsedSource["projectTypes"]);
+            $$parsedSource["projectTypes"] = $$createField18_0($$parsedSource["projectTypes"]);
         }
         if ("directories" in $$parsedSource) {
-            $$parsedSource["directories"] = $$createField18_0($$parsedSource["directories"]);
+            $$parsedSource["directories"] = $$createField19_0($$parsedSource["directories"]);
         }
         return new AppSettings($$parsedSource as Partial<AppSettings>);
     }
@@ -351,12 +348,157 @@ export class CodexModel {
      * Creates a new CodexModel instance from a string or object.
      */
     static createFrom($$source: any = {}): CodexModel {
-        const $$createField2_0 = $$createType19;
+        const $$createField2_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("supported_reasoning_levels" in $$parsedSource) {
             $$parsedSource["supported_reasoning_levels"] = $$createField2_0($$parsedSource["supported_reasoning_levels"]);
         }
         return new CodexModel($$parsedSource as Partial<CodexModel>);
+    }
+}
+
+export class ConfigMutationResult {
+    "applied": string[];
+    "restartRequired": string[];
+    "unchanged": string[];
+    "rejected": string[];
+    "recovery"?: ConfigRecovery | null;
+
+    /** Creates a new ConfigMutationResult instance. */
+    constructor($$source: Partial<ConfigMutationResult> = {}) {
+        if (!("applied" in $$source)) {
+            this["applied"] = [];
+        }
+        if (!("restartRequired" in $$source)) {
+            this["restartRequired"] = [];
+        }
+        if (!("unchanged" in $$source)) {
+            this["unchanged"] = [];
+        }
+        if (!("rejected" in $$source)) {
+            this["rejected"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConfigMutationResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ConfigMutationResult {
+        const $$createField0_0 = $$createType20;
+        const $$createField1_0 = $$createType20;
+        const $$createField2_0 = $$createType20;
+        const $$createField3_0 = $$createType20;
+        const $$createField4_0 = $$createType23;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("applied" in $$parsedSource) {
+            $$parsedSource["applied"] = $$createField0_0($$parsedSource["applied"]);
+        }
+        if ("restartRequired" in $$parsedSource) {
+            $$parsedSource["restartRequired"] = $$createField1_0($$parsedSource["restartRequired"]);
+        }
+        if ("unchanged" in $$parsedSource) {
+            $$parsedSource["unchanged"] = $$createField2_0($$parsedSource["unchanged"]);
+        }
+        if ("rejected" in $$parsedSource) {
+            $$parsedSource["rejected"] = $$createField3_0($$parsedSource["rejected"]);
+        }
+        if ("recovery" in $$parsedSource) {
+            $$parsedSource["recovery"] = $$createField4_0($$parsedSource["recovery"]);
+        }
+        return new ConfigMutationResult($$parsedSource as Partial<ConfigMutationResult>);
+    }
+}
+
+export class ConfigPathExplanation {
+    "descriptor": config$0.PathDescriptor;
+    "default": config$0.PathValue;
+    "intent": config$0.PathValue;
+    "effective": config$0.PathValue;
+    "override"?: config$0.PathValue | null;
+    "reloadPolicy": configReloadPolicy;
+    "visibility": configVisibility;
+    "pendingRestart": boolean;
+
+    /** Creates a new ConfigPathExplanation instance. */
+    constructor($$source: Partial<ConfigPathExplanation> = {}) {
+        if (!("descriptor" in $$source)) {
+            this["descriptor"] = (new config$0.PathDescriptor());
+        }
+        if (!("default" in $$source)) {
+            this["default"] = (new config$0.PathValue());
+        }
+        if (!("intent" in $$source)) {
+            this["intent"] = (new config$0.PathValue());
+        }
+        if (!("effective" in $$source)) {
+            this["effective"] = (new config$0.PathValue());
+        }
+        if (!("reloadPolicy" in $$source)) {
+            this["reloadPolicy"] = configReloadPolicy.$zero;
+        }
+        if (!("visibility" in $$source)) {
+            this["visibility"] = configVisibility.$zero;
+        }
+        if (!("pendingRestart" in $$source)) {
+            this["pendingRestart"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConfigPathExplanation instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ConfigPathExplanation {
+        const $$createField0_0 = $$createType24;
+        const $$createField1_0 = $$createType25;
+        const $$createField2_0 = $$createType25;
+        const $$createField3_0 = $$createType25;
+        const $$createField4_0 = $$createType26;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("descriptor" in $$parsedSource) {
+            $$parsedSource["descriptor"] = $$createField0_0($$parsedSource["descriptor"]);
+        }
+        if ("default" in $$parsedSource) {
+            $$parsedSource["default"] = $$createField1_0($$parsedSource["default"]);
+        }
+        if ("intent" in $$parsedSource) {
+            $$parsedSource["intent"] = $$createField2_0($$parsedSource["intent"]);
+        }
+        if ("effective" in $$parsedSource) {
+            $$parsedSource["effective"] = $$createField3_0($$parsedSource["effective"]);
+        }
+        if ("override" in $$parsedSource) {
+            $$parsedSource["override"] = $$createField4_0($$parsedSource["override"]);
+        }
+        return new ConfigPathExplanation($$parsedSource as Partial<ConfigPathExplanation>);
+    }
+}
+
+export class ConfigRecovery {
+    "restoredLastKnownGood": boolean;
+    "message": string;
+
+    /** Creates a new ConfigRecovery instance. */
+    constructor($$source: Partial<ConfigRecovery> = {}) {
+        if (!("restoredLastKnownGood" in $$source)) {
+            this["restoredLastKnownGood"] = false;
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConfigRecovery instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ConfigRecovery {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ConfigRecovery($$parsedSource as Partial<ConfigRecovery>);
     }
 }
 
@@ -496,12 +638,45 @@ export class MonitorReportBinding {
      * Creates a new MonitorReportBinding instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorReportBinding {
-        const $$createField2_0 = $$createType21;
+        const $$createField2_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("report" in $$parsedSource) {
             $$parsedSource["report"] = $$createField2_0($$parsedSource["report"]);
         }
         return new MonitorReportBinding($$parsedSource as Partial<MonitorReportBinding>);
+    }
+}
+
+export class ProviderRoutingSettings {
+    "abTestingEnabled": boolean | null;
+    "abTestingMinSamplesPerVariant": number;
+    "summary": config$0.RoutingSummary;
+
+    /** Creates a new ProviderRoutingSettings instance. */
+    constructor($$source: Partial<ProviderRoutingSettings> = {}) {
+        if (!("abTestingEnabled" in $$source)) {
+            this["abTestingEnabled"] = null;
+        }
+        if (!("abTestingMinSamplesPerVariant" in $$source)) {
+            this["abTestingMinSamplesPerVariant"] = 0;
+        }
+        if (!("summary" in $$source)) {
+            this["summary"] = (new config$0.RoutingSummary());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderRoutingSettings instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProviderRoutingSettings {
+        const $$createField2_0 = $$createType28;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("summary" in $$parsedSource) {
+            $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
+        }
+        return new ProviderRoutingSettings($$parsedSource as Partial<ProviderRoutingSettings>);
     }
 }
 
@@ -516,6 +691,7 @@ export class RuntimeInfo {
     "version"?: string;
     "error"?: string;
     "informationalOnly"?: boolean;
+    "attachmentSupport"?: string;
 
     /** Creates a new RuntimeInfo instance. */
     constructor($$source: Partial<RuntimeInfo> = {}) {
@@ -614,8 +790,8 @@ export class TamperReportDTO {
      * Creates a new TamperReportDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TamperReportDTO {
-        const $$createField4_0 = $$createType19;
-        const $$createField5_0 = $$createType23;
+        const $$createField4_0 = $$createType20;
+        const $$createField5_0 = $$createType30;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField4_0($$parsedSource["files"]);
@@ -705,7 +881,7 @@ export class TaskAuditEventDTO {
      * Creates a new TaskAuditEventDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskAuditEventDTO {
-        const $$createField4_0 = $$createType24;
+        const $$createField4_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("data" in $$parsedSource) {
             $$parsedSource["data"] = $$createField4_0($$parsedSource["data"]);
@@ -766,6 +942,28 @@ export class VersionInfo {
     }
 }
 
+export enum configReloadPolicy {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    configPolicyHot = "hot",
+    configPolicyRestart = "restart",
+    configPolicyImmutable = "immutable",
+};
+
+export enum configVisibility {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    configVisibilityUI = "ui",
+    configVisibilityRaw = "raw",
+    configVisibilitySecret = "secret",
+};
+
 // Private type creation functions
 const $$createType0 = AgentQueueSnapshotItem.createFrom;
 const $$createType1 = $Create.Array($$createType0);
@@ -774,21 +972,28 @@ const $$createType3 = config$0.NotificationConfig.createFrom;
 const $$createType4 = config$0.OrchestratorConfig.createFrom;
 const $$createType5 = LoggingSettings.createFrom;
 const $$createType6 = config$0.AuditConfig.createFrom;
-const $$createType7 = config$0.TodoistConfig.createFrom;
+const $$createType7 = config$0.AttachmentConfig.createFrom;
 const $$createType8 = config$0.RenovateConfig.createFrom;
 const $$createType9 = config$0.ProvidersConfig.createFrom;
-const $$createType10 = config$0.GitHubConfig.createFrom;
-const $$createType11 = config$0.MonitorConfig.createFrom;
-const $$createType12 = config$0.SelfMonitorConfig.createFrom;
-const $$createType13 = config$0.TriageConfig.createFrom;
-const $$createType14 = config$0.UmbrellaConfig.createFrom;
-const $$createType15 = config$0.TestingConfig.createFrom;
-const $$createType16 = config$0.ExperienceConfig.createFrom;
-const $$createType17 = config$0.MetricsConfig.createFrom;
-const $$createType18 = config$0.BrowserConfig.createFrom;
-const $$createType19 = $Create.Array($Create.Any);
-const $$createType20 = $Create.Map($Create.Any, $Create.Any);
-const $$createType21 = monitor$0.Report.createFrom;
-const $$createType22 = TamperFindingDTO.createFrom;
-const $$createType23 = $Create.Array($$createType22);
-const $$createType24 = $Create.Map($Create.Any, $Create.Any);
+const $$createType10 = ProviderRoutingSettings.createFrom;
+const $$createType11 = config$0.GitHubConfig.createFrom;
+const $$createType12 = config$0.MonitorConfig.createFrom;
+const $$createType13 = config$0.SelfMonitorConfig.createFrom;
+const $$createType14 = config$0.TriageConfig.createFrom;
+const $$createType15 = config$0.UmbrellaConfig.createFrom;
+const $$createType16 = config$0.TestingConfig.createFrom;
+const $$createType17 = config$0.ExperienceConfig.createFrom;
+const $$createType18 = config$0.MetricsConfig.createFrom;
+const $$createType19 = config$0.BrowserConfig.createFrom;
+const $$createType20 = $Create.Array($Create.Any);
+const $$createType21 = $Create.Map($Create.Any, $Create.Any);
+const $$createType22 = ConfigRecovery.createFrom;
+const $$createType23 = $Create.Nullable($$createType22);
+const $$createType24 = config$0.PathDescriptor.createFrom;
+const $$createType25 = config$0.PathValue.createFrom;
+const $$createType26 = $Create.Nullable($$createType25);
+const $$createType27 = monitor$0.Report.createFrom;
+const $$createType28 = config$0.RoutingSummary.createFrom;
+const $$createType29 = TamperFindingDTO.createFrom;
+const $$createType30 = $Create.Array($$createType29);
+const $$createType31 = $Create.Map($Create.Any, $Create.Any);

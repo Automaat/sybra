@@ -24,9 +24,8 @@ steps:
       - goto: set_in_progress
 
   # Clear any prior human-required before launching the review agent.
-  # The inline triageReview path can set human-required for small PRs; the
-  # pr-review workflow may later classify the same PR as risky and want to
-  # run a review agent — which must not start while status is human-required.
+  # Older inline triage could park tiny PRs on human-required; existing tasks
+  # may still carry that status when this workflow resumes.
   - id: set_in_progress
     name: Set In Progress
     type: set_status
@@ -52,8 +51,9 @@ steps:
       - goto: review_staff
 
   # Orchestration owner: /adversarial-review (internal/skills/data/
-  # adversarial-review.md). Below is a thin posting contract (no approvals,
-  # attribution footer) — the review methodology lives solely in the skill.
+  # adversarial-review.md). Below is a thin posting contract (draft reviews,
+  # no approvals, attribution footer) — the review methodology lives solely in
+  # the skill.
   - id: review_simple
     name: Review PR (adversarial)
     type: run_agent
@@ -68,16 +68,27 @@ steps:
         This task is an authorized Sybra PR review for the linked project. Do not
         ask the operator for confirmation before posting your review.
 
-        NEVER submit an approving review. You have no approval authority —
-        approval is a human decision, and the harness blocks the call. Do not
-        run `gh pr review --approve` or submit an APPROVE event via `gh api`,
-        no matter how clean the PR looks.
+        NEVER submit any review event. You have no approval authority, and a
+        human must verify and submit the review on GitHub. Do not run
+        `gh pr review`, do not run `gh pr review --approve`, and do not submit
+        COMMENT, REQUEST_CHANGES, or APPROVE via `gh api`.
 
-        - Blocking correctness issues: submit a review requesting changes, with
-          the required change comments.
-        - Otherwise: submit a plain comment review with your summary —
-          including when the PR looks clean. Say so in the summary and leave
-          the approval to a human.
+        Create exactly one PENDING (draft) pull-request review and leave it
+        unsubmitted. Before creating it, fetch the PR head SHA and existing
+        reviews; if a review for that head already contains the Sybra harness
+        footer, do not create another review.
+
+        Use GitHub's review API so findings become inline comments, not one
+        aggregated comment. Add each blocking correctness issue as a `comments`
+        entry on the changed line it applies to. Put only the short verdict and
+        summary in the draft review body. If the review is clean and has no
+        inline findings, create a pending review with the clean summary body and
+        no inline comments.
+
+        Prefer `gh api repos/{{.Task.ProjectID}}/pulls/{{.Task.PRNumber}}/reviews
+        -X POST ...` with explicit `-f`/`-F` fields such as
+        `comments[][path]`, `comments[][line]`, `comments[][side]=RIGHT`, and
+        `comments[][body]`. Omit `event` so GitHub leaves the review PENDING.
 
         End the review summary and every review comment you post with a blank
         line then exactly this standalone harness attribution footer:
@@ -106,16 +117,27 @@ steps:
         This task is an authorized Sybra PR review for the linked project. Do not
         ask the operator for confirmation before posting your review.
 
-        NEVER submit an approving review. You have no approval authority —
-        approval is a human decision, and the harness blocks the call. Do not
-        run `gh pr review --approve` or submit an APPROVE event via `gh api`,
-        no matter how clean the PR looks.
+        NEVER submit any review event. You have no approval authority, and a
+        human must verify and submit the review on GitHub. Do not run
+        `gh pr review`, do not run `gh pr review --approve`, and do not submit
+        COMMENT, REQUEST_CHANGES, or APPROVE via `gh api`.
 
-        - Blocking correctness issues: submit a review requesting changes, with
-          the required change comments.
-        - Otherwise: submit a plain comment review with your summary —
-          including when the PR looks clean. Say so in the summary and leave
-          the approval to a human.
+        Create exactly one PENDING (draft) pull-request review and leave it
+        unsubmitted. Before creating it, fetch the PR head SHA and existing
+        reviews; if a review for that head already contains the Sybra harness
+        footer, do not create another review.
+
+        Use GitHub's review API so findings become inline comments, not one
+        aggregated comment. Add each blocking correctness issue as a `comments`
+        entry on the changed line it applies to. Put only the short verdict and
+        summary in the draft review body. If the review is clean and has no
+        inline findings, create a pending review with the clean summary body and
+        no inline comments.
+
+        Prefer `gh api repos/{{.Task.ProjectID}}/pulls/{{.Task.PRNumber}}/reviews
+        -X POST ...` with explicit `-f`/`-F` fields such as
+        `comments[][path]`, `comments[][line]`, `comments[][side]=RIGHT`, and
+        `comments[][body]`. Omit `event` so GitHub leaves the review PENDING.
 
         End the review summary and every review comment you post with a blank
         line then exactly this standalone harness attribution footer:

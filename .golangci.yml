@@ -212,6 +212,13 @@ linters:
           - gosec
         path: cmd/sybra-cli/httpclient\.go
         text: "G704"
+      # KindCredentialRequired is a blocker-kind enum label ("credential_required"),
+      # not a secret value — gosec's G101 heuristic flags any const/var whose
+      # name and string literal both match its credential-name regex.
+      - linters:
+          - gosec
+        path: internal/blocker/blocker\.go
+        text: "G101"
 
 formatters:
   enable:

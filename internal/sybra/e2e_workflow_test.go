@@ -5,6 +5,7 @@ package sybra
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -87,11 +88,17 @@ var (
 // TestMain tears down the shared binary directory after all tests complete.
 // SYBRA_HOME is seeded by the package-level init in main_test.go before
 // this runs.
+// e2eSuiteStart anchors the binary's -timeout budget. Waits are clamped against
+// the time left in it (clampToReportingDeadline), so a hung wait fails its own
+// test instead of panicking the process with no evidence.
+var e2eSuiteStart = time.Now()
+
 func TestMain(m *testing.M) {
 	if _, err := exec.LookPath("git"); err != nil {
 		fmt.Fprintln(os.Stderr, "internal/sybra e2e tests require git on PATH:", err)
 		os.Exit(1)
 	}
+	e2eSuiteStart = time.Now()
 	code := m.Run()
 	if testBinDir != "" {
 		_ = os.RemoveAll(testBinDir)
@@ -137,8 +144,87 @@ func buildTestBinaries(t *testing.T) string {
 	return testBinDir
 }
 
-func e2eLogger() *slog.Logger {
-	return slog.New(slog.DiscardHandler)
+// e2eLogTailBytes caps what a failing test prints. A hung run's last few
+// hundred lines carry the agent/workflow transitions that explain it; the
+// megabytes before that are startup noise.
+const e2eLogTailBytes = 64 << 10
+
+// e2eLogBuffer is a concurrency-safe ring buffer over the tail of a log stream.
+// The app writes from many goroutines (runners, engine, pollers) while the test
+// body reads on failure, so every access is locked.
+type e2eLogBuffer struct {
+	mu     sync.Mutex
+	buf    []byte
+	dumped atomic.Bool
+}
+
+func (b *e2eLogBuffer) Write(p []byte) (int, error) {
+	written := len(p) // io.Writer must report the caller's length, not the kept tail
+	// Discard before allocating, not after. Appending first and trimming the
+	// length afterwards leaves the grown capacity in place for the rest of the
+	// test, so one oversized record would hold megabytes to show 64KB.
+	if len(p) > e2eLogTailBytes {
+		p = p[len(p)-e2eLogTailBytes:]
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if drop := len(b.buf) + len(p) - e2eLogTailBytes; drop > 0 {
+		kept := copy(b.buf, b.buf[drop:])
+		b.buf = b.buf[:kept]
+	}
+	b.buf = append(b.buf, p...)
+	return written, nil
+}
+
+func (b *e2eLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
+// dump prints the captured tail. Safe to call more than once — the binary
+// deadline guard and the per-test cleanup can race for the same buffer, and
+// printing the same evidence twice beats printing it never.
+func (b *e2eLogBuffer) dump(tb testing.TB) {
+	tb.Helper()
+	if !b.dumped.CompareAndSwap(false, true) {
+		return
+	}
+	if s := b.String(); s != "" {
+		tb.Logf("--- app log tail (what the app was doing) ---\n%s", s)
+	}
+}
+
+// e2eLogBuffers holds one buffer per test, keyed by name.
+//
+// A test builds several loggers (setup, the completion handler, engine
+// rebuilds), and the lines that explain a hang span them: the agent's
+// headless.done and the handler's OnComplete must be read against each other.
+// Per-call buffers would print those as separate tails for the reader to merge
+// by timestamp, so every component of one test shares a stream.
+var e2eLogBuffers sync.Map // test name -> *e2eLogBuffer
+
+// e2eLogger returns the app logger for an e2e test, capturing its output and
+// printing the tail only when the test fails.
+//
+// This used to be slog.DiscardHandler, which is why the CI-only e2e hangs have
+// never been root-caused: each occurrence destroyed its own evidence, leaving a
+// bare "timeout waiting for X" and a goroutine dump full of parked tests. The
+// tail is printed on failure only — on success it would bury the suite.
+func e2eLogger(tb testing.TB) *slog.Logger {
+	tb.Helper()
+	v, loaded := e2eLogBuffers.LoadOrStore(tb.Name(), &e2eLogBuffer{})
+	buf, _ := v.(*e2eLogBuffer)
+	if !loaded {
+		tb.Cleanup(func() {
+			e2eLogBuffers.Delete(tb.Name())
+			if !tb.Failed() {
+				return
+			}
+			buf.dump(tb)
+		})
+	}
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 // setupE2E wires up real task store, workflow engine, agent manager with fake claude.
@@ -246,7 +332,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	taskMgr := task.NewManager(store, nil)
 	artifactStore := artifact.New(config.ArtifactsDir())
 
-	logger := e2eLogger()
+	logger := e2eLogger(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 
@@ -254,7 +340,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
+	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
 	var env *e2eEnv
 	var engine *workflow.Engine
@@ -375,13 +461,13 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 }
 
 // waitFor polls a condition with timeout. The timeout is scaled by
-// e2eTimeoutScale so CI runners (slow fork/exec, container I/O variance)
-// don't have to be defended against per-test. Local runs see the unscaled
-// deadline.
+// e2eTimeoutScale so CI runners (slow fork/exec, container I/O variance) and
+// locally-loaded hosts (e.g. a fleet of concurrent agents) don't have to be
+// defended against per-test.
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
 	scale := e2eTimeoutScale()
-	scaled := time.Duration(int64(timeout) * scale)
+	scaled := clampToReportingDeadline(time.Duration(int64(timeout) * scale))
 	deadline := time.After(scaled)
 	for {
 		select {
@@ -395,15 +481,115 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	}
 }
 
+// keepAgentLogsOnFailure deletes the agent log dir only when the test passed.
+//
+// The provider subprocess writes its stdout/stderr there, and the app log's
+// chain runs agent.headless.start pid=… → agent.headless.result. A hang between
+// those two leaves the subprocess's own output as the only remaining evidence
+// of what it did, so deleting it unread on failure discards exactly what a
+// reader needs. On a pass it is noise, and the suite should not hoard temp dirs.
+func keepAgentLogsOnFailure(tb testing.TB, logDir string) {
+	tb.Helper()
+	if !tb.Failed() {
+		_ = os.RemoveAll(logDir)
+		return
+	}
+	entries, err := os.ReadDir(logDir)
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	tb.Logf("--- agent logs kept for inspection: %s (%s)", logDir, strings.Join(names, ", "))
+}
+
+// e2eReportReserve is how much of the binary's remaining budget a wait leaves
+// behind so its own failure can be printed: the Fatalf, the filtered goroutine
+// dump, and the log tail.
+const e2eReportReserve = 20 * time.Second
+
+// clampToReportingDeadline shortens a wait that would outlive the test binary.
+//
+// go test's -timeout panics the whole process, and that panic runs no
+// t.Cleanup and no t.Fatalf — so a wait allowed to exceed it produces none of
+// the evidence this file exists to capture. CI runs -timeout 20m while the CI
+// scale is 12-20x, which makes waitFor(t, 90*time.Second) an 18-30 minute
+// deadline: structurally incapable of ever reporting. Clamping cannot lose a
+// pass that would otherwise have happened — the binary would have died first
+// either way — it only converts a silent process panic into a test failure that
+// names its cause.
+func clampToReportingDeadline(scaled time.Duration) time.Duration {
+	budget := e2eBinaryTimeout()
+	if budget <= 0 {
+		return scaled // no -timeout set: nothing to outlive
+	}
+	remaining := budget - time.Since(e2eSuiteStart) - e2eReportReserve
+	if remaining <= 0 {
+		// The reserve itself is now the only budget left, so fail at once while
+		// there is still time to print. Flooring to something larger would hand
+		// back a deadline that outlives the binary — the panic this exists to
+		// prevent, in the window where it is most likely.
+		return time.Millisecond
+	}
+	return min(scaled, remaining)
+}
+
+// e2eBinaryTimeout reads the -timeout the binary was started with, or 0 when
+// unset (go test's own default is 10m, but an unset flag reports 0s here).
+func e2eBinaryTimeout() time.Duration {
+	f := flag.Lookup("test.timeout")
+	if f == nil {
+		return 0
+	}
+	g, ok := f.Value.(flag.Getter)
+	if !ok {
+		return 0
+	}
+	d, _ := g.Get().(time.Duration)
+	return d
+}
+
 func e2eGoroutineDump() string {
 	buf := make([]byte, 1<<20)
 	for {
 		n := runtime.Stack(buf, true)
 		if n < len(buf) {
-			return "--- goroutine dump at e2e timeout (what was blocked) ---\n" + string(buf[:n])
+			return "--- goroutine dump at e2e timeout (what was blocked) ---\n" + dropParkedTestGoroutines(string(buf[:n]))
 		}
 		buf = make([]byte, 2*len(buf))
 	}
+}
+
+// dropParkedTestGoroutines removes goroutines parked in testing.(*T).Parallel
+// from a dump, keeping a count of what it dropped.
+//
+// A parallel test parks until the sequential phase finishes and does nothing
+// while parked, so it can never be what a sequential test is blocked on. This
+// package compiles its unit tests into the e2e binary, and they contribute ~165
+// such goroutines: a real dump ran 197 entries of which every single one was
+// parked or the dumper itself, burying the handful that mattered. The header
+// says "what was blocked" — this is what makes that true.
+func dropParkedTestGoroutines(dump string) string {
+	blocks := strings.Split(dump, "\n\n")
+	kept := make([]string, 0, len(blocks))
+	parked := 0
+	for _, b := range blocks {
+		if strings.TrimSpace(b) == "" {
+			continue
+		}
+		if strings.Contains(b, "testing.(*T).Parallel(") {
+			parked++
+			continue
+		}
+		kept = append(kept, b)
+	}
+	out := strings.Join(kept, "\n\n")
+	if parked > 0 {
+		out += fmt.Sprintf("\n\n(%d goroutines parked in t.Parallel omitted — they hold nothing)\n", parked)
+	}
+	return out
 }
 
 func e2eTimeoutScale() int64 {
@@ -421,10 +607,16 @@ func e2eTimeoutScaleResolve() int64 {
 			return n
 		}
 	}
+	factor := loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
+	// CI runners carry a known-bad baseline (slow fork/exec, container I/O
+	// variance) even when the load average looks idle, so they get a fixed
+	// floor on top of the measured factor. Local/dev runs (including a fleet
+	// of concurrent agents on darwin/linux) have no such baseline — they
+	// scale purely off measured host load, same as CI does above the floor.
 	if os.Getenv("CI") == "" && os.Getenv("GITHUB_ACTIONS") == "" {
-		return 1
+		return factor
 	}
-	scaled := e2eCITimeoutScaleFloor * loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
+	scaled := e2eCITimeoutScaleFloor * factor
 	if scaled < e2eCITimeoutScaleFloor {
 		return e2eCITimeoutScaleFloor
 	}
@@ -639,9 +831,9 @@ func TestE2E_HeadlessAgent_SignalKill_DoesNotAdvanceWorkflow(t *testing.T) {
 
 	// Wire production completion.Handler so the signal kill guard fires.
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -698,9 +890,9 @@ func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
 
 	// Wire production completion.Handler so the signal kill guard fires.
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -756,9 +948,9 @@ func TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath(t *testing.T) {
 	env.agents.SetGuardrails(agent.Guardrails{MaxCostUSD: 10.0})
 
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -793,9 +985,9 @@ func TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow(t *testing.T) {
 	env := setupE2EMulti(t, []string{"success_then_hang", "triage"})
 
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -928,9 +1120,9 @@ func TestE2E_MalformedToolCall_RecoversInSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -971,9 +1163,9 @@ func TestE2E_MalformedToolCall_RepeatedFailsOverProvider(t *testing.T) {
 	}
 	env.agents.SetHealthGate(newCooldownGate())
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 	})
 	env.onAgentComplete = h.OnComplete
@@ -1003,6 +1195,101 @@ func TestE2E_MalformedToolCall_RepeatedFailsOverProvider(t *testing.T) {
 	}
 	if tk.Status == task.StatusHumanRequired {
 		t.Fatal("task escalated to human-required; want automatic provider fallback")
+	}
+}
+
+func TestE2E_HumanReview_StructuredFallbackUnblocksTask(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{
+		"human_review_invalid_structured",
+		"human_review_unblocked_ready_pr",
+	})
+	recoveryWorkflow := `id: human-review-recovery
+name: Human Review Recovery
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: in-progress
+steps:
+  - id: resume_verification
+    name: Resume Verification
+    type: set_status
+    config:
+      status: ready-review
+    next:
+      - goto: ""
+`
+	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "human-review-recovery.yaml"), []byte(recoveryWorkflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{}
+	cfg.HumanReview.Enabled = true
+	cfg.HumanReview.SybraRepoDir = env.agentDir
+	cfg.HumanReview.MaxPerHour = 3
+	h := newHumanReviewHandler(cfg, env.tasks, env.agents, nil, e2eLogger(t), config.HomeDir(), "", nil)
+	taskSvc := &TaskService{
+		tasks:          env.tasks,
+		agents:         env.agents,
+		workflowEngine: env.engine,
+		logger:         e2eLogger(t),
+	}
+	h.dispatchFromHumanRequired = func(id, target, reason, completingAgentID string) (task.Task, error) {
+		return taskSvc.dispatchFromHumanRequiredAllowingAgent(id, target, reason, completingAgentID)
+	}
+	env.onAgentComplete = h.onComplete
+
+	created, err := env.tasks.Create("human review structured fallback", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		ProjectID:    task.Ptr("owner/repo"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if spawned := h.maybeSpawn(created.ID, string(task.StatusTodo)); !spawned {
+		t.Fatal("expected initial human-review spawn")
+	}
+
+	waitFor(t, 20*time.Second, "human-review fallback unblocks task", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil &&
+			tk.Status == task.StatusReadyReview &&
+			tk.Workflow != nil &&
+			tk.Workflow.WorkflowID == "human-review-recovery" &&
+			len(tk.AgentRuns) == 2 &&
+			tk.AgentRuns[0].VerdictRendered &&
+			tk.AgentRuns[1].VerdictRendered
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", tk.Status, task.StatusReadyReview)
+	}
+	if len(tk.AgentRuns) != 2 {
+		t.Fatalf("AgentRuns len = %d, want 2", len(tk.AgentRuns))
+	}
+	if tk.AgentRuns[0].Provider != "claude" || tk.AgentRuns[1].Provider != "codex" {
+		t.Fatalf("AgentRun providers = [%s %s], want [claude codex]", tk.AgentRuns[0].Provider, tk.AgentRuns[1].Provider)
+	}
+	if tk.AgentRuns[1].Model != "gpt-5.4-mini" {
+		t.Fatalf("fallback model = %q, want gpt-5.4-mini", tk.AgentRuns[1].Model)
+	}
+	if !strings.Contains(tk.Body, "Auto-review: unblocked") {
+		t.Fatalf("body missing unblocked note:\n%s", tk.Body)
+	}
+	if !slices.Contains(tk.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("tags = %v, want %q", tk.Tags, workflow.TamperBlessedTag)
+	}
+	if tk.Workflow == nil || tk.Workflow.WorkflowID != "human-review-recovery" {
+		t.Fatalf("workflow = %+v, want human-review-recovery", tk.Workflow)
 	}
 }
 
@@ -1118,89 +1405,6 @@ func TestE2E_ProviderMatrix_ModelAliasMapping(t *testing.T) {
 			t.Fatalf("expected %q in args:\n%s", want, args)
 		}
 	})
-}
-
-// TestE2E_CodexInteractiveAgent_RunsAsConversational verifies that Codex
-// interactive agents use the goroutine-based conversational runner (like
-// Claude) via stdin/stdout. The agent should produce ConvoEvents,
-// have a done channel, and reach StatePaused after the first turn.
-func TestE2E_CodexInteractiveAgent_RunsAsConversational(t *testing.T) {
-	env := setupE2EProvider(t, "codex", "interactive_implement")
-
-	ag, err := env.agents.Run(agent.RunConfig{
-		TaskID:   "task-codex-int",
-		Name:     "codex interactive",
-		Mode:     "interactive",
-		Provider: "codex",
-		Model:    "gpt-5.4-mini",
-		Prompt:   "Inspect repo",
-		OneShot:  true,
-		Dir:      t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// One-shot: agent exits after turn.completed → StateStopped.
-	waitFor(t, 10*time.Second, "codex interactive agent stops", func() bool {
-		return ag.GetState() == agent.StateStopped
-	})
-
-	out, err := env.agents.GetConvoOutput(ag.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hasResult := false
-	for _, ev := range out {
-		if ev.Type == "result" {
-			hasResult = true
-		}
-	}
-	if !hasResult {
-		t.Error("expected result ConvoEvent from codex conversational runner")
-	}
-}
-
-// TestE2E_CodexInteractiveAgent_StopTransitionsToStopped verifies that
-// StopAgent correctly terminates a running Codex conversational agent.
-func TestE2E_CodexInteractiveAgent_StopTransitionsToStopped(t *testing.T) {
-	env := setupE2EProvider(t, "codex", "interactive_implement")
-
-	ag, err := env.agents.Run(agent.RunConfig{
-		TaskID:   "task-codex-stop",
-		Name:     "codex interactive stop",
-		Mode:     "interactive",
-		Provider: "codex",
-		Model:    "gpt-5.4-mini",
-		Prompt:   "Inspect repo",
-		Dir:      t.TempDir(),
-		// No OneShot: agent stays paused after first turn, waiting for prompt.
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Wait until the agent is live (running or paused after first turn).
-	waitFor(t, 10*time.Second, "codex agent becomes live", func() bool {
-		s := ag.GetState()
-		return s == agent.StateRunning || s == agent.StatePaused
-	})
-
-	if err := env.agents.StopAgent(ag.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	waitFor(t, 5*time.Second, "codex agent stopped", func() bool {
-		return ag.GetState() == agent.StateStopped
-	})
-
-	got, err := env.agents.GetAgent(ag.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.GetState() != agent.StateStopped {
-		t.Fatalf("state = %q, want stopped", got.GetState())
-	}
 }
 
 // TestE2E_Codex_HeadlessRetry_Overloaded verifies that a Codex headless agent
@@ -1333,29 +1537,23 @@ func TestE2E_ProviderMatrix_NoResult_DoesNotStall(t *testing.T) {
 	})
 }
 
-// TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate locks in the fix
-// for interactive implement steps stalling the workflow. Before the fix, a
-// conversational claude agent would emit its result event, flip to
-// StatePaused, and sit forever waiting for more stdin — cmd.Wait() never
-// returned, onComplete never fired, and the workflow was stranded on
-// `implement` with the task pinned at in-progress. Tasks never reached
-// the evaluator, so in-review was unreachable.
-//
-// The fix makes interactive run_agent steps (no reuse_agent, no
-// wait_for_status) one-shot: the runner closes stdin after the first
-// `result` event so the claude process exits naturally, onComplete fires,
-// and the workflow advances to evaluate. The `interactive_implement`
-// scenario in fake-claude blocks on stdin until EOF, faithfully
-// reproducing real conversational behavior.
-func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
-	// triage (sets status=todo) → interactive_implement (conversational,
-	// blocks on stdin for Claude / exits naturally for Codex) → evaluate
-	// (mechanical, flips to human-required since test-simple.yaml has no
-	// link_pr_and_review chain).
+// TestE2E_LegacyInteractiveTask_ImplementDispatchesHeadless locks in
+// backward compatibility for a task file carrying the legacy
+// agent_mode: interactive value (task.AgentModeInteractive stays a valid,
+// load-only value — see task.validAgentModes). simple-task-implement's
+// `implement` step templates its mode off {{.Task.AgentMode}}, so without
+// normalization such a task would try to dispatch RunConfig{Mode:
+// "interactive"} and fail outright now that mode no longer exists
+// (resolveRunAgentMode coerces it to headless instead, the same as every
+// other task).
+func TestE2E_LegacyInteractiveTask_ImplementDispatchesHeadless(t *testing.T) {
+	// triage (sets status=todo) → implement (headless, coerced from the
+	// task's legacy interactive AgentMode) → evaluate (mechanical, flips to
+	// human-required since test-simple.yaml has no link_pr_and_review chain).
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
-		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "interactive_implement"})
+		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "success"})
 
-		created, err := env.tasks.Create("interactive one-shot task", "", "interactive")
+		created, err := env.tasks.Create("legacy interactive task", "", "interactive")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1364,10 +1562,7 @@ func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Without the one-shot fix this wait would time out — the implement
-		// agent would sit paused forever and the workflow would never reach
-		// evaluate. 30s is plenty; the full path is < 1s when healthy.
-		waitFor(t, 30*time.Second, "workflow completes after interactive implement", func() bool {
+		waitFor(t, 30*time.Second, "workflow completes after legacy interactive implement", func() bool {
 			tk, err := env.tasks.Get(created.ID)
 			if err != nil {
 				return false
@@ -1381,15 +1576,13 @@ func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
 				tk.Workflow.State, tk.Workflow.CurrentStep)
 		}
 		// Mechanical evaluate flips to human-required ("commits pushed but no
-		// PR created"); the original assertion was in-review when the LLM
-		// eval set the status itself. The point of this test is that
-		// interactive tasks now advance past implement at all — the exact
-		// terminal status is now decided by the mechanical eval.
+		// PR created"); the point of this test is that a legacy interactive
+		// task advances past implement at all — the exact terminal status is
+		// decided by the mechanical eval.
 		if tk.Status != task.StatusHumanRequired {
 			t.Errorf("task status = %q, want human-required", tk.Status)
 		}
 
-		// Verify both the interactive implement and the headless evaluate ran.
 		seen := map[string]bool{}
 		for _, r := range tk.Workflow.StepHistory {
 			seen[r.StepID] = true
@@ -1514,7 +1707,18 @@ func TestE2E_ResumeStalled(t *testing.T) {
 // TestE2E_ResumeStalled_SkipsTaskWithRunningAgent verifies ResumeStalled does
 // not spawn duplicate work when a live agent is already attached to the task.
 func TestE2E_ResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
-	env := setupE2EProvider(t, "claude", "interactive_implement")
+	// block_silent (not interactive_implement): a steerable headless run
+	// closes its stdin and finalizes as soon as it completes a turn with no
+	// steer message already queued (drainOrCloseHeadlessSteer), so only a
+	// scenario that never completes a turn stays observably live for this
+	// test's duration.
+	env := setupE2EProvider(t, "claude", "block_silent")
+	if err := env.agents.ReplaceRuntimeConfig(agent.ManagerRuntimeConfig{
+		DefaultProvider:   "claude",
+		HeadlessSteerable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	created, err := env.tasks.Create("stalled but live agent task", "", "interactive")
 	if err != nil {
@@ -1537,7 +1741,7 @@ func TestE2E_ResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 	_, err = env.agents.Run(agent.RunConfig{
 		TaskID:   created.ID,
 		Name:     "implementation",
-		Mode:     "interactive",
+		Mode:     "headless",
 		Provider: "claude",
 		Model:    "sonnet",
 		Prompt:   "Implement task",
@@ -2556,6 +2760,10 @@ func TestE2E_TestingTaskWorkflow_InfraFailureEscalatesWhenOpenPRDisabled(t *test
 // the real builtin test-runner schema so e2e coverage cannot drift from the
 // production structured evidence contract.
 func testingTaskWithOutputSchemaYAML(t *testing.T) string {
+	return testingTaskWithOutputSchemaPromptYAML(t, "Test {{.Task.ID}}")
+}
+
+func testingTaskWithOutputSchemaPromptYAML(t *testing.T, prompt string) string {
 	t.Helper()
 
 	def := workflow.Definition{
@@ -2579,7 +2787,7 @@ func testingTaskWithOutputSchemaYAML(t *testing.T) string {
 					Mode:         "headless",
 					Model:        "sonnet",
 					OutputSchema: testingTaskOutputSchema(t),
-					Prompt:       "Test {{.Task.ID}}",
+					Prompt:       prompt,
 				},
 				Next: []workflow.Transition{{GoTo: "route_test"}},
 			},
@@ -2623,9 +2831,14 @@ func testingTaskOutputSchema(t *testing.T) string {
 // output_schema into the engine's workflow store.
 func installTestingTaskWithOutputSchemaWorkflow(t *testing.T, env *e2eEnv) {
 	t.Helper()
+	installTestingTaskWithOutputSchemaPromptWorkflow(t, env, "Test {{.Task.ID}}")
+}
+
+func installTestingTaskWithOutputSchemaPromptWorkflow(t *testing.T, env *e2eEnv, prompt string) {
+	t.Helper()
 	if err := os.WriteFile(
 		filepath.Join(env.wfStore.Dir(), "testing-task.yaml"),
-		[]byte(testingTaskWithOutputSchemaYAML(t)), 0o644,
+		[]byte(testingTaskWithOutputSchemaPromptYAML(t, prompt)), 0o644,
 	); err != nil {
 		t.Fatalf("write testing-task.yaml: %v", err)
 	}
@@ -2680,6 +2893,35 @@ func TestE2E_Codex_TestVerdict_Pass_JSON(t *testing.T) {
 	}
 }
 
+func TestE2E_Codex_TestVerdict_Pass_JSON_WithTrailingEmptyItem(t *testing.T) {
+	env := setupE2EMultiProvider(t, "codex", []string{"test_verdict_pass_trailing_empty_item"})
+	installTestingTaskWithOutputSchemaWorkflow(t, env)
+
+	created, err := env.tasks.Create("codex json verdict pass with trailing item", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusReadyPR {
+		t.Errorf("status after trailing empty item = %q, want %q", tk.Status, task.StatusReadyPR)
+	}
+}
+
 // TestE2E_Codex_TestVerdict_Fail_JSON verifies that a JSON FAIL verdict from
 // codex routes the task back to in-progress (re-implement path).
 func TestE2E_Codex_TestVerdict_Fail_JSON(t *testing.T) {
@@ -2708,6 +2950,84 @@ func TestE2E_Codex_TestVerdict_Fail_JSON(t *testing.T) {
 	tk, _ := env.tasks.Get(created.ID)
 	if tk.Status != task.StatusInProgress {
 		t.Errorf("status after JSON FAIL = %q, want %q", tk.Status, task.StatusInProgress)
+	}
+}
+
+// TestE2E_Codex_TestVerdict_Fail_JSON_WithTrailingReasoningItem reproduces
+// #1665: Codex can emit a trailing non-message item after the structured FAIL
+// verdict. The completion fallback must skip that empty assistant tail and
+// still route on the earlier JSON verdict.
+func TestE2E_Codex_TestVerdict_Fail_JSON_WithTrailingReasoningItem(t *testing.T) {
+	env := setupE2EMultiProvider(t, "codex", []string{"test_verdict_fail_with_trailing_reasoning_item"})
+	installTestingTaskWithOutputSchemaWorkflow(t, env)
+
+	created, err := env.tasks.Create("codex json verdict fail trailing reasoning item", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusInProgress {
+		t.Errorf("status after JSON FAIL with trailing reasoning item = %q, want %q", tk.Status, task.StatusInProgress)
+	}
+}
+
+func TestE2E_Codex_TestVerdict_Pass_JSON_WithMandatorySkillReceiptPreamble(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSkillFixture(t, home, ".codex", "sybra-test")
+
+	env := setupE2EMultiProvider(t, "codex", []string{"test_verdict_pass_with_receipt_preamble"})
+	installTestingTaskWithOutputSchemaPromptWorkflow(t, env, "Test {{.Task.ID}} with /sybra-test")
+
+	created, err := env.tasks.Create("codex json verdict pass with skill receipt", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Status != task.StatusReadyPR {
+		t.Fatalf("status after JSON PASS + receipt preamble = %q, want %q", tk.Status, task.StatusReadyPR)
+	}
+	if len(tk.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns len = %d, want 1", len(tk.AgentRuns))
+	}
+	if tk.AgentRuns[0].SkillExecutionMode != "native" {
+		t.Fatalf("SkillExecutionMode = %q, want native", tk.AgentRuns[0].SkillExecutionMode)
+	}
+	if tk.AgentRuns[0].SkillConformance != "exact" {
+		t.Fatalf("SkillConformance = %q, want exact", tk.AgentRuns[0].SkillConformance)
 	}
 }
 
@@ -2794,7 +3114,7 @@ func TestE2E_TestingTaskWorkflow_RefusedWhenWorkflowActive(t *testing.T) {
 		tasks:          env.tasks,
 		workflowEngine: env.engine,
 		wg:             &sync.WaitGroup{},
-		logger:         e2eLogger(),
+		logger:         e2eLogger(t),
 	}
 
 	_, err = svc.UpdateTask(created.ID, map[string]any{"status": string(task.StatusTesting)})
@@ -3758,9 +4078,9 @@ func TestE2E_WorkflowMandatorySkill_MissingReceiptRetriesInjectedAndPreservesDia
 	env := setupE2EMultiProvider(t, "codex", []string{"write_sidecar_success_no_receipt", "write_sidecar_success"})
 	writeWorkflowFixture(t, env, "test-mandatory-skill-sidecar", testMandatorySkillSidecarWorkflowYAML)
 	h := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
-		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
 		WorkflowEngine: env.engine,
 		Artifacts:      env.artifacts,
 	})
@@ -3958,6 +4278,17 @@ func runCmd(t *testing.T, dir, name string, args ...string) {
 	}
 }
 
+func readCommandOutput(t *testing.T, dir, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
+	}
+	return string(out)
+}
+
 func initRepoWithOriginMain(t *testing.T, dir string) {
 	t.Helper()
 	runCmd(t, dir, "git", "init")
@@ -4125,9 +4456,14 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	logDir := t.TempDir()
+	logDir, err := os.MkdirTemp("", "sybra-e2e-logs-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
+
 	var engine *workflow.Engine
-	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, e2eLogger(), logDir, agent.ManagerConfig{
+	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, e2eLogger(t), logDir, agent.ManagerConfig{
 		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: env.provider},
 		Artifacts:   env.artifacts,
 		ControlHome: env.taskDir,
@@ -4151,14 +4487,14 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: env.worktreesDir,
 		Tasks:        taskMgr,
-		Logger:       e2eLogger(),
+		Logger:       e2eLogger(t),
 		AgentChecker: agentMgr.HasRunningAgentForTask,
 	})
-	agentOrch := agentorch.New(taskMgr, nil, agentMgr, nil, e2eLogger(), wm, nil)
+	agentOrch := agentorch.New(taskMgr, nil, agentMgr, nil, e2eLogger(t), wm, nil)
 
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
-	engine = workflow.NewEngine(env.wfStore, ta, aa, e2eLogger())
+	engine = workflow.NewEngine(env.wfStore, ta, aa, e2eLogger(t))
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 	engine.SetPRLinker(nil)
 	if env.classifier != nil {
@@ -4326,46 +4662,6 @@ func TestE2E_WaitForStatus_ExactAdvancesOnce(t *testing.T) {
 	if len(tkAfter.Workflow.StepHistory) != recordsBefore {
 		t.Fatalf("duplicate advancement on repeated status: before=%d after=%d", recordsBefore, len(tkAfter.Workflow.StepHistory))
 	}
-}
-
-func TestE2E_ReuseAgent_ContinuesWithSameAgent(t *testing.T) {
-	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
-	writeWorkflowFixture(t, env, "test-reuse-agent", testReuseAgentWorkflowYAML)
-
-	created, err := env.tasks.Create("reuse agent same", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := env.startWorkflow(created.ID, "test-reuse-agent"); err != nil {
-		t.Fatal(err)
-	}
-
-	waitFor(t, 10*time.Second, "phase1 waiting", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "phase1" && tk.Workflow.State == workflow.ExecWaiting && len(tk.AgentRuns) == 1
-	})
-	tk1, _ := env.tasks.Get(created.ID)
-	firstAgentID := tk1.AgentRuns[0].AgentID
-
-	env.engine.HandleStatusChange(created.ID, "phase1")
-	waitFor(t, 10*time.Second, "phase2 waiting", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "phase2" && tk.Workflow.State == workflow.ExecWaiting
-	})
-
-	tk2, _ := env.tasks.Get(created.ID)
-	if len(tk2.AgentRuns) != 1 {
-		t.Fatalf("agent runs = %d, want 1 (reuse)", len(tk2.AgentRuns))
-	}
-	if tk2.AgentRuns[0].AgentID != firstAgentID {
-		t.Fatalf("agent id changed: %s -> %s", firstAgentID, tk2.AgentRuns[0].AgentID)
-	}
-
-	env.engine.HandleStatusChange(created.ID, "phase2")
-	waitFor(t, 10*time.Second, "workflow completes", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
-	})
 }
 
 func TestE2E_ReuseAgent_FallbackStartsNewWhenDead(t *testing.T) {
@@ -4593,6 +4889,76 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	}
 }
 
+func TestE2E_VerifyCommits_AdoptsEquivalentRemoteCommit(t *testing.T) {
+	env := setupE2EProvider(t, "claude", "verify_commits_remote_race")
+	writeWorkflowFixture(t, env, "test-verify-commits-remote-race", testVerifyCommitsRemoteRaceWorkflowYAML)
+
+	created, err := env.tasks.Create("verify commits remote race", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const branch = "feat/verify-commits-race"
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"branch": branch}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktreePath := filepath.Join(env.worktreesDir, current.DirName())
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initRepoWithOriginMain(t, worktreePath)
+	runCmd(t, worktreePath, "git", "checkout", "-b", branch)
+	runCmd(t, worktreePath, "git", "push", "-u", "origin", branch)
+
+	if err := env.engine.StartWorkflowWithVars(created.ID, "test-verify-commits-remote-race", map[string]string{
+		workflow.WorkflowVarDir: worktreePath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "remote-race workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	runCmd(t, worktreePath, "git", "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
+	localHead := strings.TrimSpace(readCommandOutput(t, worktreePath, "git", "rev-parse", "HEAD"))
+	remoteHead := strings.TrimSpace(readCommandOutput(t, worktreePath, "git", "rev-parse", "refs/remotes/origin/"+branch))
+	if localHead != remoteHead {
+		t.Fatalf("local HEAD %q != remote HEAD %q; verify_commits should adopt the agent-pushed commit, not keep a duplicate fallback commit", localHead, remoteHead)
+	}
+	if got := strings.TrimSpace(readCommandOutput(t, worktreePath, "git", "rev-list", "--count", "origin/main..HEAD")); got != "1" {
+		t.Fatalf("origin/main..HEAD commit count = %q, want 1 implementation lineage", got)
+	}
+	if status := strings.TrimSpace(readCommandOutput(t, worktreePath, "git", "status", "--porcelain")); status != "" {
+		t.Fatalf("worktree dirty after verify_commits reconcile: %q", status)
+	}
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Status != task.StatusDone {
+		t.Fatalf("status = %q, want done", tk.Status)
+	}
+	if len(tk.AgentRuns) != 1 {
+		t.Fatalf("agent runs = %d, want 1", len(tk.AgentRuns))
+	}
+	if tk.AgentRuns[0].HeadSHA != localHead {
+		t.Fatalf("agent run head_sha = %q, want final head %q", tk.AgentRuns[0].HeadSHA, localHead)
+	}
+	if tk.AgentRuns[0].FinalCommitSource != "agent" {
+		t.Fatalf("final_commit_source = %q, want agent", tk.AgentRuns[0].FinalCommitSource)
+	}
+	stepIDs := stepIDsFromHistory(tk.Workflow)
+	if !slices.Contains(stepIDs, "verify_commits") {
+		t.Fatalf("verify_commits missing from history: %v", stepIDs)
+	}
+}
+
 func TestE2E_LinkPRAndReview_PrefersExistingTaskPRNumber(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"pr_created"})
 	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-eval-chain.yaml"), []byte(testEvalChainWorkflowYAML), 0o644); err != nil {
@@ -4621,7 +4987,17 @@ func TestE2E_LinkPRAndReview_PrefersExistingTaskPRNumber(t *testing.T) {
 }
 
 func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
-	env := setupE2EProvider(t, "claude", "interactive_implement")
+	// block_silent (not interactive_implement): the run must still be live
+	// when the completion callback fires below, and a steerable headless run
+	// finalizes at its first completed turn (drainOrCloseHeadlessSteer), so
+	// only a scenario that never completes a turn stays live long enough.
+	env := setupE2EProvider(t, "claude", "block_silent")
+	if err := env.agents.ReplaceRuntimeConfig(agent.ManagerRuntimeConfig{
+		DefaultProvider:   "claude",
+		HeadlessSteerable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	created, err := env.tasks.Create("delete during run", "", "interactive")
 	if err != nil {
 		t.Fatal(err)
@@ -4630,7 +5006,7 @@ func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
 	ag, err := env.agents.Run(agent.RunConfig{
 		TaskID:   created.ID,
 		Name:     "manual-agent",
-		Mode:     "interactive",
+		Mode:     "headless",
 		Provider: "claude",
 		Model:    "sonnet",
 		Prompt:   "run",
@@ -4692,6 +5068,32 @@ steps:
       mode: interactive
       wait_for_status: plan-review
       prompt: "Plan {{.Task.ID}}"
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testVerifyCommitsRemoteRaceWorkflowYAML = `id: test-verify-commits-remote-race
+name: Test Verify Commits Remote Race
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: verify_commits
+  - id: verify_commits
+    name: Verify Commits
+    type: verify_commits
     next:
       - goto: set_done
   - id: set_done
@@ -5874,11 +6276,22 @@ func TestE2E_LinkPRAndReview_GHAmbiguous_NoAutoLink(t *testing.T) {
 }
 
 func TestE2E_InteractivePromptQueuePressure_NoDropOrCrash(t *testing.T) {
-	env := setupE2EProvider(t, "claude", "interactive_implement")
+	// block_silent (not interactive_implement): the agent must stay live
+	// (non-finalizing) across all 50 concurrent SendPromptToAgent calls, and
+	// a steerable headless run finalizes at its first completed turn
+	// (drainOrCloseHeadlessSteer), so only a scenario that never completes a
+	// turn stays available to queue against for the whole test.
+	env := setupE2EProvider(t, "claude", "block_silent")
+	if err := env.agents.ReplaceRuntimeConfig(agent.ManagerRuntimeConfig{
+		DefaultProvider:   "claude",
+		HeadlessSteerable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	ag, err := env.agents.Run(agent.RunConfig{
 		TaskID:   "prompt-pressure",
 		Name:     "prompt pressure",
-		Mode:     "interactive",
+		Mode:     "headless",
 		Provider: "claude",
 		Model:    "sonnet",
 		Prompt:   "start",

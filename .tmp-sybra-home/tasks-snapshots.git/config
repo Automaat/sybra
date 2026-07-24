@@ -1,0 +1,11 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+	worktree = /data/sybra/home/worktrees/fix-workflow-promote-resumestalled-skip-57ca928d/.tmp-sybra-home/tasks
+[user]
+	name = Sybra Snapshotter
+	email = sybra-snapshotter@localhost
+[gc]
+	auto = 0

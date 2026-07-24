@@ -111,26 +111,16 @@ func TestManualProbe_NestedFixDispatchActuallyStarts(t *testing.T) {
 	var nestedErr error
 	var nestedAgentStarted bool
 	o.SetConflictRecovery(func(taskID string) bool {
-		// Flip the task to TaskTypeResearch so the nested dispatch's own
-		// resolveDispatchDir call skips worktree prep (skipWT=true) instead of
-		// re-hitting the same unresolved conflict — isolating exactly what the
-		// fix under test guards: whether the nested same-task dispatch call
-		// observes the outer claim as free. In production the real "fix" step
-		// prepares via PrepareForFix (no rebase), which is the analogous
-		// conflict-free path for a same-task nested dispatch.
-		if _, err := tasks.Update(taskID, task.Update{TaskType: task.Ptr(task.TaskTypeResearch)}); err != nil {
-			t.Fatalf("flip task to research type: %v", err)
-		}
 		// Re-enter the SAME choke point for the SAME task — this mirrors the
 		// production "fix" step's own StartAgentWithAssignment call nested
 		// inside the still-executing outer call.
-		ag, _, err := o.StartAgentWithAssignment(taskID, "headless", "fix it", false, true, "", workflow.AgentAssignment{})
+		ag, _, err := o.StartAgentWithAssignment(taskID, "headless", "fix it", false, true, "", "", workflow.AgentAssignment{})
 		nestedErr = err
 		nestedAgentStarted = ag != nil
 		return err == nil
 	})
 
-	_, _, err = o.StartAgentWithAssignment(tk.ID, "headless", "prompt", false, false, "", workflow.AgentAssignment{})
+	_, _, err = o.StartAgentWithAssignment(tk.ID, "headless", "prompt", false, false, "", "", workflow.AgentAssignment{})
 	t.Logf("outer StartAgentWithAssignment err = %v", err)
 	t.Logf("nested (fix-step) dispatch err = %v, agentStarted = %v", nestedErr, nestedAgentStarted)
 

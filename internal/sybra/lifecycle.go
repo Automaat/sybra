@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
@@ -21,6 +22,7 @@ import (
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/routing"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdog"
@@ -31,7 +33,7 @@ import (
 //
 // Phase order (called from App.Startup after all init* methods complete):
 //
-//	lm.StartManagers(ctx, emit)  — watchdog, health, monitors, maintenance
+//	lm.StartManagers(ctx, emit)  — GitHub auth, watchdog, health, monitors, maintenance
 //	lm.StartPollers(ctx, emit, issuesFetcher)  — pollers, orchestrator loop
 //	lm.StartWatchers(ctx)  — config-file watcher
 type LifecycleManager struct {
@@ -42,10 +44,12 @@ func newLifecycleManager(app *App) *LifecycleManager {
 	return &LifecycleManager{app: app}
 }
 
-// StartManagers launches watchdog, health-check, monitor/self-monitor services,
-// maintenance loops, and OTel metrics observers.
+// StartManagers launches GitHub auth, watchdog, health-check,
+// monitor/self-monitor services, maintenance loops, and OTel metrics observers.
 func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string, any)) {
 	a := lm.app
+
+	lm.startAppAuthLoop(ctx)
 
 	if a.cfg.Watchdog.Enabled {
 		verifyNow := func(vctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
@@ -86,11 +90,28 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	if a.sandboxes != nil {
 		hcheck.SetSandboxQuarantine(a.sandboxes.QuarantinedEntries)
 	}
+	hcheck.SetPressureStatus(a.healthPressureStatus)
+	if a.cfg.GitHub.Enabled {
+		// Proactive counterpart to checkGHPushAuthFailure/checkGHIssueAuthFailure
+		// (both reactive, only firing after a push/issue-filing attempt has
+		// already failed): samples live gh-auth health every health tick so
+		// credential loss (an expired interactive `gh auth login` session,
+		// see #2315) is caught before it blocks the next push, not after.
+		// The paired state comes from AuthHealthSnapshot, which every real gh
+		// invocation (ghGate.execute, internal/monitor's issue-filing execer)
+		// already keeps fresh via ObserveCallResult — it's what lets
+		// checkGHAuthUnavailable tell a permanent misconfiguration (needs a
+		// human) apart from a transient blip the circuit breaker is already
+		// retrying (see #2453).
+		hcheck.SetGHAuthProbe(func() (bool, string) {
+			ok := github.Authenticated()
+			return ok, string(github.AuthHealthSnapshot().State)
+		})
+	}
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
 	lm.startMonitorService(ctx, emit)
 	lm.startSelfMonitorService(ctx, emit)
-	lm.startEvaluationService(ctx, emit)
 	lm.startLearningDigestService(ctx, emit)
 	lm.startPromptLabService(ctx, emit)
 	lm.startAutoUpdate(ctx)
@@ -110,10 +131,8 @@ func (lm *LifecycleManager) StartPollers(ctx context.Context, emit func(string, 
 	if a.clusterRoster != nil {
 		a.wg.Go(func() { a.clusterHealthLoop(ctx) })
 	}
-	lm.startAppAuthLoop(ctx)
 	lm.startRateBudgetLoop(ctx)
 	lm.startPollHub(ctx, issuesFetcher)
-	a.startTodoistLoop(ctx)
 }
 
 // appTokenRefreshInterval is how often the GitHub App installation token is
@@ -139,16 +158,12 @@ func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
 		return
 	}
 	a.logger.Info("github.app.enabled", "app_id", app.AppID, "installation_id", app.InstallationID)
+	lm.refreshAppToken(ctx)
 	a.wg.Go(func() {
 		ticker := time.NewTicker(appTokenRefreshInterval)
 		defer ticker.Stop()
 		for {
-			if err := github.RefreshAppToken(ctx); err != nil {
-				a.logger.Warn("github.app.token.refresh", "err", err)
-			} else if tok := github.CurrentAppToken(); tok != "" {
-				_ = os.Setenv("GH_TOKEN", tok)
-				_ = os.Setenv("GITHUB_TOKEN", tok)
-			}
+			lm.refreshAppToken(ctx)
 			select {
 			case <-ctx.Done():
 				return
@@ -156,6 +171,13 @@ func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
 			}
 		}
 	})
+}
+
+func (lm *LifecycleManager) refreshAppToken(ctx context.Context) {
+	a := lm.app
+	if err := github.RefreshAppTokenEnv(ctx); err != nil {
+		a.logger.Warn("github.app.token.refresh", "err", err)
+	}
 }
 
 // rateBudgetRefreshInterval is how often the free GET /rate_limit endpoint is
@@ -192,13 +214,46 @@ func runsGitHubRateBudgetLoop(cfg *config.Config) bool {
 	if cfg == nil {
 		return false
 	}
-	if cfg.GitHub.RunsReviewer() {
+	if cfg.GitHub.RunsSybraPRs() {
 		return true
 	}
 	if !cfg.GitHub.RunsSearchPollers() {
 		return false
 	}
-	return cfg.GitHub.RunsIssuesFetcher() || cfg.Renovate.Enabled
+	return cfg.GitHub.RunsIssuesFetcher() || cfg.GitHub.RunsAssignedPRs() || cfg.Renovate.Enabled
+}
+
+func (a *App) healthPressureStatus() *health.PressureStatus {
+	gate := a.getPressureGate()
+	status := &health.PressureStatus{
+		DiskFreePct:     -1,
+		MemAvailablePct: -1,
+		LoadPerCPU:      -1,
+	}
+	if gate != nil {
+		sample := gate.Status()
+		warning, critical := gate.Thresholds()
+		status.DiskFreePct = sample.DiskFreePct
+		status.MemAvailablePct = sample.MemAvailablePct
+		status.LoadPerCPU = sample.LoadPerCPU
+		status.WarningDiskFreePct = warning
+		status.CriticalDiskFreePct = critical
+	}
+	if reclaimer := a.getDiskReclaimer(); reclaimer != nil {
+		outcome := reclaimer.LastOutcome()
+		if !outcome.RanAt.IsZero() || outcome.ReclaimedBytes != 0 || outcome.UnreclaimableBytes != 0 || outcome.Errors != 0 {
+			status.LastReclaim = &health.ReclaimStatus{
+				RanAt:              outcome.RanAt,
+				ReclaimedBytes:     outcome.ReclaimedBytes,
+				UnreclaimableBytes: outcome.UnreclaimableBytes,
+				Errors:             outcome.Errors,
+			}
+		}
+	}
+	if gate == nil && status.LastReclaim == nil {
+		return nil
+	}
+	return status
 }
 
 // StartWatchers launches the config-file hot-reload watcher.
@@ -206,13 +261,13 @@ func (lm *LifecycleManager) StartWatchers(ctx context.Context) {
 	a := lm.app
 	cfgPath := filepath.Join(config.HomeDir(), "config.yaml")
 	cw := confighot.New(cfgPath, func() {
-		changed, err := a.configSvc.ReloadFromDisk()
+		result, err := a.configSvc.ReloadFromDisk()
 		if err != nil {
 			a.logger.Error("config.reload.failed", "err", err)
 			return
 		}
-		if len(changed) > 0 {
-			a.logger.Info("config.reloaded", "changed", changed)
+		if len(result.Applied) > 0 || len(result.RestartRequired) > 0 {
+			a.logger.Info("config.reloaded", "applied", result.Applied, "restart_required", result.RestartRequired)
 		}
 	}, a.logger)
 	if err := cw.Start(ctx); err != nil {
@@ -240,14 +295,24 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 		return
 	}
 	runner := autoupdate.New(autoupdate.Config{
-		Enabled:        a.cfg.AutoUpdate.Enabled,
-		RepoDir:        repoDir,
-		Remote:         a.cfg.AutoUpdate.Remote,
-		Branch:         a.cfg.AutoUpdate.Branch,
-		Mode:           a.cfg.AutoUpdate.Mode,
-		PollInterval:   time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
-		RequestRestart: a.requestRestart,
+		Enabled:          a.cfg.AutoUpdate.Enabled,
+		RepoDir:          repoDir,
+		Remote:           a.cfg.AutoUpdate.Remote,
+		Branch:           a.cfg.AutoUpdate.Branch,
+		Mode:             a.cfg.AutoUpdate.Mode,
+		RequiredChecks:   a.cfg.AutoUpdate.RequiredChecks,
+		PollInterval:     time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
+		CoalesceInterval: time.Duration(a.cfg.AutoUpdate.CoalesceSeconds) * time.Second,
+		StateFile:        filepath.Join(config.HomeDir(), "autoupdate-state.json"),
+		OverrideFile:     filepath.Join(config.HomeDir(), "autoupdate-override"),
+		RequestRestart:   a.requestRestart,
+		AuditTransition: func(data map[string]any) {
+			a.logAudit(audit.EventAutoUpdateTransition, "", "", data)
+		},
 	}, a.logger)
+	if a.reviewer != nil {
+		a.reviewer.SetAutoMergeAppliedHook(runner.TriggerCheck)
+	}
 	a.wg.Go(func() { runner.Run(ctx) })
 }
 
@@ -394,6 +459,24 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 		}
 		return out
 	})
+	metrics.RegisterGHAuthState(func() map[string]int64 {
+		state := github.AuthHealthSnapshot().State
+		out := map[string]int64{
+			string(github.AuthHealthy):       0,
+			string(github.AuthRefreshing):    0,
+			string(github.AuthRateLimited):   0,
+			string(github.AuthMisconfigured): 0,
+			string(github.AuthUnavailable):   0,
+		}
+		out[string(state)] = 1
+		return out
+	})
+	metrics.RegisterGHAuthTransitions(func() int64 {
+		return github.AuthHealthSnapshot().Transitions
+	})
+	metrics.RegisterGHAuthSuppressedCalls(func() int64 {
+		return github.AuthHealthSnapshot().SuppressedCalls
+	})
 }
 
 func providerHealthMetrics(
@@ -416,6 +499,42 @@ func providerHealthMetrics(
 		}
 	}
 	return alertHealth, rawHealth
+}
+
+// buildMonitorIssueSink builds the monitor's GH issue sink, wrapped in a
+// durable on-disk outbox when it can be constructed. The durable sink is
+// wired to replay pending filings on GitHub auth recovery and to report its
+// depth/replay/age metrics — split out of startMonitorService to keep that
+// function under the linter's length ceiling.
+func (lm *LifecycleManager) buildMonitorIssueSink(ctx context.Context) monitor.IssueSink {
+	a := lm.app
+	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
+	durableSink, err := monitor.NewDurableGHIssueSink(innerSink, filepath.Join(config.GHIssueOutboxDir(), "monitor"), "monitor", a.logger, a.audit)
+	if err != nil {
+		a.logger.Error("monitor.issue_outbox.init_failed", "err", err)
+		return innerSink
+	}
+	// Drain the outbox as soon as GitHub auth health reports recovery,
+	// instead of waiting for this sink's next natural SubmitIssue call
+	// (which for a rare anomaly kind could be hours away). Handed off to
+	// its own goroutine because OnAuthRecovered callbacks run
+	// synchronously on the goroutine that observed the recovery — often
+	// while internal/github's request gate still holds its own mutex —
+	// so calling back into a gh invocation here directly would deadlock.
+	// See #2453.
+	github.OnAuthRecovered(func() {
+		a.wg.Go(func() { durableSink.ReplayPending(ctx) })
+	})
+	metrics.RegisterGHIssueOutboxPending(func() map[string]int64 {
+		return map[string]int64{"monitor": durableSink.Depth()}
+	})
+	metrics.RegisterGHIssueOutboxReplayed(func() map[string]int64 {
+		return map[string]int64{"monitor": durableSink.ReplayedTotal()}
+	})
+	metrics.RegisterGHIssueOutboxOldestAgeSeconds(func() map[string]int64 {
+		return map[string]int64{"monitor": int64(durableSink.OldestPendingAge(time.Now()).Seconds())}
+	})
+	return durableSink
 }
 
 // startMonitorService wires the in-process monitor loop when enabled.
@@ -455,16 +574,7 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 	// DowngradeLLMForTask closure forces work-typed LLM anomalies through the
 	// deterministic path so they hit this sink (and get scrubbed) rather than
 	// being dispatched to an agent that would file an issue itself.
-	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
-	durableSink, err := monitor.NewDurableGHIssueSink(innerSink, filepath.Join(config.GHIssueOutboxDir(), "monitor"), "monitor", a.logger, a.audit)
-	if err != nil {
-		a.logger.Error("monitor.issue_outbox.init_failed", "err", err)
-		durableSink = nil
-	}
-	var sink monitor.IssueSink = innerSink
-	if durableSink != nil {
-		sink = durableSink
-	}
+	sink := lm.buildMonitorIssueSink(ctx)
 	// This callback's DispatchEvent -> execShell eventually derives its
 	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
 	// not an explicit parameter threaded through the closure. contextcheck no
@@ -488,6 +598,9 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			}
 		})
 	}, a.logger)
+	if a.mirror != nil {
+		a.mirror.SetAnomalySink(routingSink)
+	}
 	svc := monitor.NewService(monitor.Deps{
 		Cfg:          a.cfg.Monitor,
 		Tasks:        a.tasks,
@@ -521,6 +634,12 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			a.wg.Go(func() {
 				a.recoverLostAgentTask(ctx, taskID)
 			})
+		},
+		LandClosedPR: func(ctx context.Context, taskID string, prNumber int, state string) error {
+			if a.reviewer == nil {
+				return errors.New("review handler unavailable")
+			}
+			return a.reviewer.AdvanceClosedTaskPR(ctx, taskID, prNumber, state)
 		},
 	})
 	a.monitorSvc = svc
@@ -581,11 +700,20 @@ func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit fun
 	a := lm.app
 	deps := evaluation.Deps{
 		Cfg:        a.cfg.Evaluation,
-		ABTesting:  a.cfg.ABTesting,
+		ABTesting:  a.abTestingConfig(),
 		Audit:      evaluation.AuditDirReader(a.cfg.AuditDir()),
 		Emit:       emit,
 		Logger:     a.logger,
 		ReportPath: config.EvaluationReportPath(),
+		// OnSLOReport feeds agentorch's default-off concurrency throttle
+		// (agent.evaluation.slo.throttle_on_budget_exhausted). Nil-guarded:
+		// this service starts before app.go finishes wiring a.agentOrch, and
+		// the ticker's first tick can in principle race that assignment.
+		OnSLOReport: func(r evaluation.SLOReport) {
+			if a.agentOrch != nil {
+				a.agentOrch.SetSLOReport(r)
+			}
+		},
 	}
 	if a.stats != nil {
 		deps.Stats = a.stats
@@ -603,7 +731,7 @@ func (lm *LifecycleManager) startLearningDigestService(ctx context.Context, emit
 	a := lm.app
 	deps := learning.Deps{
 		Cfg:       a.cfg.LearningDigest,
-		ABTesting: a.cfg.ABTesting,
+		ABTesting: a.abTestingConfig(),
 		Audit:     learning.AuditDirReader(a.cfg.AuditDir()),
 		AuditLog:  a.audit,
 		Store:     a.learning,
@@ -635,6 +763,48 @@ func (lm *LifecycleManager) startPromptLabService(ctx context.Context, _ func(st
 	a.wg.Go(func() { a.promptLab.run(ctx) })
 }
 
+// startRoutingService constructs the adaptive provider-routing service and
+// launches its ticker. Built and run even when disabled (Deps below apply
+// nothing in that case — see routing.Service): this keeps the shadow-mode
+// audit trail live for every install, matching startEvaluationService's
+// "build always, gate behavior on Cfg.Enabled" pattern. Startup calls this
+// synchronously before returning so routing version 1 exists before the first
+// workflow dispatch on a fresh enabled home.
+func (lm *LifecycleManager) startRoutingService(ctx context.Context, emit func(string, any)) {
+	a := lm.app
+	store, err := routing.NewStore(config.RoutingDir())
+	if err != nil {
+		a.logger.Warn("routing.store.init_failed", "err", err)
+		return
+	}
+	deps := routing.Deps{
+		Cfg:  a.cfg.Routing,
+		Base: a.baseABTestingConfig,
+		Report: func() (evaluation.Report, bool) {
+			if a.evaluationSvc == nil {
+				return evaluation.Report{}, false
+			}
+			return a.evaluationSvc.LastReport()
+		},
+		Store: store,
+		Apply: a.applyRoutingWeights,
+		AuditLog: func(e audit.Event) error {
+			if a.audit == nil {
+				return nil
+			}
+			return a.audit.Log(e)
+		},
+		Emit:   emit,
+		Logger: a.logger,
+	}
+	svc := routing.NewService(deps)
+	a.routingSvc = svc
+	// Prime before Startup returns so persisted overlays are live immediately
+	// and a fresh enabled home bootstraps version 1 before the first dispatch.
+	svc.Prime()
+	a.wg.Go(func() { svc.Run(ctx) })
+}
+
 // pollRegistrar is the subset of *poll.Hub used by registerPollHandlers,
 // extracted so tests can substitute a fake and assert on which fetchers were
 // registered without inspecting poll.Hub's private fields.
@@ -659,12 +829,14 @@ func registerPollHandlers(a *App, reg pollRegistrar, issuesFetcher *poll.IssuesF
 		a.logger.Info("github.pollers.secondary", "reason", "poller_role=secondary; skipping reviews/issues/renovate searches")
 	}
 	if a.reviewer != nil {
-		if a.cfg.GitHub.RunsReviewer() {
+		if a.cfg.GitHub.RunsSybraPRs() || a.cfg.GitHub.RunsAssignedPRSearches() {
 			reg.Register(a.reviewer, 10*time.Second)
 		} else {
 			a.logger.Info("github.reviews.disabled",
 				"github_enabled", a.cfg.GitHub.Enabled,
-				"reviews_enabled", a.cfg.GitHub.ReviewsEnabled,
+				"github_sybra_prs_enabled", a.cfg.GitHub.RunsSybraPRs(),
+				"github_assigned_prs_enabled", a.cfg.GitHub.RunsAssignedPRs(),
+				"search_owner", runSearch,
 			)
 		}
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -73,13 +74,13 @@ func TestRunOutcome(t *testing.T) {
 			want:          "failed",
 		},
 		{
-			// #2149: the ~96% codex stall case. The workflow engine retries
-			// this run, so recording it as "failed" is what drove the reported
-			// 92.3% implementation failure rate over runs that never resolved.
-			name:    "signal_killed_run_is_a_stall_not_a_failure",
+			// A process killed by an external shutdown signal is not a resolved
+			// run, but we now preserve that sharper cause instead of flattening
+			// it into the generic stalled bucket.
+			name:    "signal_killed_run_is_cancelled_shutdown_not_failure",
 			role:    agent.RoleImplementation,
 			exitErr: sigkillErr(t),
-			want:    "stalled",
+			want:    "cancelled_shutdown",
 		},
 		{
 			name: "stopped_before_result_is_a_stall",
@@ -135,7 +136,7 @@ func TestRunOutcome(t *testing.T) {
 			if tc.agent != nil {
 				ag = tc.agent()
 			}
-			if got := runOutcome(ag, tc.role, tc.exitErr, tc.resultContent); got != tc.want {
+			if got := (&Handler{}).runOutcome(ag, tc.role, tc.exitErr, tc.resultContent); got != tc.want {
 				t.Errorf("runOutcome(%v, %v, %q) = %q, want %q", tc.role, tc.exitErr, tc.resultContent, got, tc.want)
 			}
 		})
@@ -209,6 +210,63 @@ func TestBuildRunPatchIncludesSkillAttributionMetadata(t *testing.T) {
 	}
 }
 
+// TestBuildRunPatchMarksResumeZeroOutputStall covers the circuit-breaker
+// marker (see agentorch.PickImplementationResumeSession): buildRunPatch must
+// set ResumeZeroOutputStall only for the specific errorKind/errorMsg pair the
+// watchdog's zero-output-stall path records, never for a generic rate limit
+// or any other terminal state.
+func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
+	t.Parallel()
+
+	t.Run("zero-output stall sets the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-1", TaskID: "task-1"}
+		ag.SetError("rate_limit", watchdogreason.ZeroOutputBeforeStartup)
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall == nil || !*patch.ResumeZeroOutputStall {
+			t.Fatalf("ResumeZeroOutputStall = %v, want true", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("generic rate limit does not set the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-2", TaskID: "task-1"}
+		ag.SetError("rate_limit", "rate_limited")
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall != nil {
+			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("wrapped zero-output reason (task status_reason form) does not set the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-3", TaskID: "task-1"}
+		ag.SetError("rate_limit", watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup))
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall != nil {
+			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("zero-output message without rate_limit kind does not set the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-4", TaskID: "task-1"}
+		ag.SetError("crash", watchdogreason.ZeroOutputBeforeStartup)
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall != nil {
+			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+		}
+	})
+}
+
 // TestBuildRunPatchDowngradesConformanceWhenReceiptMissing covers #2009: a
 // process can exit cleanly and produce a plausible result without the
 // mandatory workflow skill's transcript ever proving it was followed. The
@@ -246,6 +304,75 @@ func TestBuildRunPatchDowngradesConformanceWhenReceiptMissing(t *testing.T) {
 	}
 }
 
+// TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema is the regression
+// guard for #2235: a step enforcing OutputSchema constrains the agent's
+// final response to a structured payload with no room for a trailing
+// receipt line, so resolveWorkflowSkillPrompt never asks for one there. A
+// result with no receipt marker must not be downgraded to
+// ConformanceUnverified in that case — the schema enforcement itself stands
+// in as the conformance signal. Provider is pinned to "claude" explicitly
+// (rather than left empty) so this asserts the real provider-capability
+// gate rather than incidentally passing via lookupProvider's unrelated
+// empty-defaults-to-claude fallback — see
+// TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema for the
+// sibling case that would catch a provider actually ignoring the schema.
+func TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		conformance string
+	}{
+		{"exact_without_receipt", skillattr.ConformanceExact},
+		{"fallback_without_receipt", skillattr.ConformanceFallback},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ag := &agent.Agent{
+				ID:                      "ag-1",
+				TaskID:                  "task-1",
+				Name:                    agent.RoleTestRunner.AgentName("Test"),
+				Provider:                "claude",
+				RequestedSkill:          "sybra-test",
+				ResolvedSkillSourceHash: "deadbeefcafebabe",
+				SkillConformance:        tc.conformance,
+				OutputSchema:            `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+			}
+			patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS"}`, nil)
+			if patch.SkillConformance == nil || *patch.SkillConformance != tc.conformance {
+				t.Fatalf("SkillConformance = %v, want unchanged %q", patch.SkillConformance, tc.conformance)
+			}
+		})
+	}
+}
+
+// TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema guards the
+// adversarial-review follow-up to #2235: copilot never applies
+// RunConfig.OutputSchema, so a run routed to it under cross-provider
+// failover still got the receipt instruction (resolveWorkflowSkillPrompt)
+// and must still be verified here. Gating on OutputSchema's mere presence
+// instead of the real provider would wrongly skip the downgrade and record a
+// copilot run that ignored the skill as falsely conformant.
+func TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleTestRunner.AgentName("Test"),
+		Provider:                "copilot",
+		RequestedSkill:          "sybra-test",
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceFallback,
+		OutputSchema:            `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
+	}
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "TEST_VERDICT: PASS", nil)
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceUnverified {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceUnverified)
+	}
+}
+
 func TestBuildRunPatchMarksVerifiedRecoveryAsRecovered(t *testing.T) {
 	t.Parallel()
 
@@ -263,6 +390,33 @@ func TestBuildRunPatchMarksVerifiedRecoveryAsRecovered(t *testing.T) {
 	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, result, nil)
 	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceRecovered {
 		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceRecovered)
+	}
+}
+
+func TestBuildRunPatchFindsReceiptInEarlierAssistantMessage(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleTestRunner.AgentName("Test"),
+		RequestedSkill:          "sybra-test",
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceExact,
+	}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: "Followed the skill.\n" + skillattr.ReceiptMarker("sybra-test", "deadbeefcafebabe"),
+	})
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"verdict":"PASS","outcome":"pass"}`,
+	})
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: ""})
+
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS","outcome":"pass"}`, nil)
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceExact {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceExact)
 	}
 }
 
@@ -548,7 +702,7 @@ func TestSalvageInterruptedReviewKeepsExistingReview(t *testing.T) {
 }
 
 // TestLastAssistantText verifies that lastAssistantText returns the last
-// assistant-typed event's content without sybra-verdict gating, and that
+// non-empty assistant event's content without sybra-verdict gating, and that
 // a populated result event is preferred when present (guards against the
 // fallback overriding a real result).
 func TestLastAssistantText(t *testing.T) {
@@ -573,6 +727,29 @@ func TestLastAssistantText(t *testing.T) {
 		}
 	})
 
+	t.Run("skips_trailing_empty_assistant", func(t *testing.T) {
+		ag := makeAgent(
+			agent.StreamEvent{Type: "assistant", Content: `{"verdict":"PASS"}`},
+			agent.StreamEvent{Type: "assistant", Content: ""},
+		)
+		got := lastAssistantText(ag)
+		if got != `{"verdict":"PASS"}` {
+			t.Errorf("lastAssistantText = %q, want JSON verdict", got)
+		}
+	})
+
+	t.Run("terminal_result_fallback_skips_trailing_empty_assistant", func(t *testing.T) {
+		ag := makeAgent(
+			agent.StreamEvent{Type: "assistant", Content: `{"verdict":"PASS"}`},
+			agent.StreamEvent{Type: "assistant", Content: ""},
+			agent.StreamEvent{Type: "result", Content: ""},
+		)
+		got := terminalResultContent(ag)
+		if got != `{"verdict":"PASS"}` {
+			t.Errorf("terminalResultContent = %q, want JSON verdict", got)
+		}
+	})
+
 	t.Run("no_assistant_events_returns_empty", func(t *testing.T) {
 		ag := makeAgent(
 			agent.StreamEvent{Type: "result", Content: "some result"},
@@ -587,6 +764,17 @@ func TestLastAssistantText(t *testing.T) {
 		ag := &agent.Agent{}
 		if got := lastAssistantText(ag); got != "" {
 			t.Errorf("lastAssistantText = %q, want empty", got)
+		}
+	})
+
+	t.Run("skips_trailing_empty_assistant", func(t *testing.T) {
+		ag := makeAgent(
+			agent.StreamEvent{Type: "assistant", Content: `{"verdict":"FAIL"}`},
+			agent.StreamEvent{Type: "assistant", Content: ""},
+		)
+		got := lastAssistantText(ag)
+		if got != `{"verdict":"FAIL"}` {
+			t.Errorf("lastAssistantText = %q, want JSON verdict", got)
 		}
 	})
 

@@ -364,18 +364,18 @@ func TestSkipTaskCreatedWorkflow_PRLinkedHandoffExceptions(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "ordinary linked PR review skips task.created",
-			task: task.Task{PRNumber: 42, Tags: []string{"review"}},
-			want: true,
+			name: "new inbound review task may enter task.created",
+			task: task.Task{Status: task.StatusTodo, PRNumber: 42, Tags: []string{"review"}},
+			want: false,
 		},
 		{
 			name: "legacy handoff-pr task cannot enter external pr-review lane",
-			task: task.Task{PRNumber: 42, Tags: []string{"review", "handoff-pr"}},
+			task: task.Task{Status: task.StatusTodo, PRNumber: 42, Tags: []string{"review", "handoff-pr"}},
 			want: true,
 		},
 		{
 			name: "ready-pr worktree handoff may enter task.created lane with known PR",
-			task: task.Task{PRNumber: 42, Tags: []string{"handoff", "handoff-ready-pr"}},
+			task: task.Task{Status: task.StatusTodo, PRNumber: 42, Tags: []string{"handoff", "handoff-ready-pr"}},
 			want: false,
 		},
 		{

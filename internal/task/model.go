@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Automaat/sybra/internal/attachment"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -91,18 +93,10 @@ func ValidatePriority(s string) (Priority, error) {
 	return p, nil
 }
 
-// TaskType distinguishes a task's role for agents beyond its lifecycle
-// Status — e.g. TaskTypeChat and TaskTypeUmbrella are synthetic types that
-// run no agent of their own and are excluded from normal dispatch.
+// TaskType is an internal marker for umbrella tracker tasks.
 type TaskType string
 
 const (
-	TaskTypeNormal   TaskType = "normal"
-	TaskTypeDebug    TaskType = "debug"
-	TaskTypeResearch TaskType = "research"
-	// TaskTypeChat is a synthetic task created for interactive chat sessions.
-	// Hidden from the task list UI and skipped by restart-stale/watchdog.
-	TaskTypeChat TaskType = "chat"
 	// TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.
 	// It runs no agent: it rolls up the status of its child tasks and is the
 	// task the dependency gate flips to human-required on a dependency cycle.
@@ -110,13 +104,13 @@ const (
 )
 
 var validTaskTypes = map[TaskType]bool{
-	TaskTypeNormal: true, TaskTypeDebug: true, TaskTypeResearch: true,
-	TaskTypeChat: true, TaskTypeUmbrella: true,
+	"": true, TaskTypeUmbrella: true,
 }
 
-// AllTaskTypes returns every valid task type in display order.
+// AllTaskTypes returns explicit task_type values in display order. The empty
+// string is also accepted as the implicit default but is not returned here.
 func AllTaskTypes() []TaskType {
-	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch, TaskTypeChat, TaskTypeUmbrella}
+	return []TaskType{TaskTypeUmbrella}
 }
 
 // ValidateTaskType parses s into a TaskType, returning an error naming every
@@ -124,7 +118,7 @@ func AllTaskTypes() []TaskType {
 func ValidateTaskType(s string) (TaskType, error) {
 	tt := TaskType(s)
 	if !validTaskTypes[tt] {
-		return "", fmt.Errorf("invalid task_type %q (valid: %v)", s, AllTaskTypes())
+		return "", fmt.Errorf("invalid task_type %q (valid: empty or %v)", s, AllTaskTypes())
 	}
 	return tt, nil
 }
@@ -205,7 +199,7 @@ const (
 // Task.AgentRuns across its lifetime, most-recent last.
 type AgentRun struct {
 	AgentID  string `json:"agentId"`
-	Role     string `json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
+	Role     string `json:"role"` // explicit run role; legacy empty still means implementation
 	Mode     string `json:"mode"`
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
@@ -213,8 +207,10 @@ type AgentRun struct {
 	// before the run started.
 	ExperimentID    string `json:"experimentId,omitempty"`
 	VariantID       string `json:"variantId,omitempty"`
+	RoutingReason   string `json:"routingReason,omitempty"`
 	AssignmentUnit  string `json:"assignmentUnit,omitempty"`
 	AssignmentKey   string `json:"assignmentKey,omitempty"`
+	DecisionVersion int    `json:"decisionVersion,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	RequestedSkill  string `json:"requestedSkill,omitempty"`
 	// SkillExecutionMode records how a mandatory workflow skill actually ran:
@@ -274,11 +270,23 @@ type AgentRun struct {
 	// agent left on the branch. Compared against the merged PR head to detect
 	// human edits after the agent (merged_with_edits) and measure edit distance.
 	HeadSHA string `json:"headSha,omitempty"`
+	// FinalCommitSource records who owned the branch head that verify_commits
+	// settled on: "agent" when the final head came from the agent-pushed remote
+	// commit, "fallback" when verify_commits had to auto-commit recovered work.
+	FinalCommitSource string `json:"finalCommitSource,omitempty"`
 	// SubagentCallCount is the number of distinct forked-Claude subagent calls
 	// observed in the run. Zero for non-Claude runs and runs recorded before
 	// fan-out counting existed.
 	SubagentCallCount int `json:"subagentCallCount,omitempty"`
+	// ResumeZeroOutputStall marks a run whose zero-output watchdog stall fired
+	// (errorKind "rate_limit" + errorMsg watchdogreason.ZeroOutputBeforeStartup).
+	// It is the durable poison signal agentorch.PickImplementationResumeSession
+	// counts to detect a session stuck in a resume-stall loop.
+	ResumeZeroOutputStall bool `json:"zeroOutputStall,omitempty"`
 }
+
+// Attachment re-exports the persisted task attachment metadata type.
+type Attachment = attachment.Attachment
 
 // Task is the in-memory representation of a task markdown file: YAML
 // frontmatter (everything but Body) plus the GFM markdown Body. Store parses
@@ -310,8 +318,9 @@ type Task struct {
 	// append "Closes <url>" to the task's PR body, by findActiveDuplicate for
 	// dedup, and by the umbrella gate/DAG for state tracking. Never overwrite
 	// this after creation to attach an unrelated reference — use RefIssue.
-	Issue        string `json:"issue"`
-	StatusReason string `json:"statusReason"`
+	Issue        string        `json:"issue"`
+	StatusReason string        `json:"statusReason"`
+	Blocker      blocker.State `json:"blocker,omitzero"`
 	// HandoffSourceProvider records which local agent provider produced the
 	// work before a handoff skipped directly into review/testing/PR. Workflow
 	// steps with provider=cross use it when there is no Sybra-authored run
@@ -348,8 +357,8 @@ type Task struct {
 	SupervisorSteer string `json:"supervisorSteer,omitempty"`
 	// ReviewPhase tracks where an inbound PR-review task (tag `review`) sits in
 	// the review lifecycle: reviewing → drafted → awaiting-author →
-	// needs-approval → approved (plus `manual` for small PRs punted to the
-	// human). Computed by the PR poller; drives the board's PR Reviews lane.
+	// needs-approval → approved (plus `manual` for human follow-up). Computed by
+	// the PR poller; drives the board's PR Reviews lane.
 	// Empty for non-review tasks.
 	ReviewPhase string `json:"reviewPhase,omitempty"`
 	// Bounds automated re-review per PR commit: the durable backstop against a
@@ -361,11 +370,10 @@ type Task struct {
 	// changes-requested → awaiting-approval → approved. Computed by the PR poller;
 	// drives the phase glyph on the board's In Review cards. Empty for tasks
 	// without an own PR (and for inbound review tasks, which use ReviewPhase).
-	PRPhase   string     `json:"prPhase,omitempty"`
-	TodoistID string     `json:"todoistId"`
-	Priority  Priority   `json:"priority,omitempty"`
-	DueDate   *time.Time `json:"dueDate,omitempty"`
-	ClosedAt  *time.Time `json:"closedAt,omitempty"`
+	PRPhase  string     `json:"prPhase,omitempty"`
+	Priority Priority   `json:"priority,omitempty"`
+	DueDate  *time.Time `json:"dueDate,omitempty"`
+	ClosedAt *time.Time `json:"closedAt,omitempty"`
 	// Outcome records how a task's own PR concluded: "merged", "merged_with_edits",
 	// "closed", or "reverted". Stamped by the PR monitor when the task auto-advances
 	// to done (and updated to "reverted" by the revert scanner). Empty for tasks
@@ -406,6 +414,7 @@ type Task struct {
 	// counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
 	// and all test-runner runs count (correct for first-ever cycles).
 	TestingCycleStartedAt *time.Time          `json:"testingCycleStartedAt,omitempty"`
+	Attachments           []Attachment        `json:"attachments"`
 	AgentRuns             []AgentRun          `json:"agentRuns"`
 	Workflow              *workflow.Execution `json:"workflow,omitempty"`
 	CreatedAt             time.Time           `json:"createdAt"`

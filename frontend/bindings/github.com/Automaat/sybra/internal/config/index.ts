@@ -3,11 +3,15 @@
 
 export {
     AgentDefaults,
+    AttachmentConfig,
     AuditConfig,
     BrowserConfig,
     ExperienceConfig,
     GitHubAppConfig,
     GitHubConfig,
+    GitHubPRPollingConfig,
+    GitHubPollingConfig,
+    GitHubPollingStreamConfig,
     K8sJobEnvVar,
     K8sJobSecretEnvVar,
     K8sJobVolume,
@@ -16,6 +20,8 @@ export {
     MonitorConfig,
     NotificationConfig,
     OrchestratorConfig,
+    PathDescriptor,
+    PathValue,
     PlaywrightMCPConfig,
     PressureConfig,
     ProviderEntryConfig,
@@ -24,9 +30,12 @@ export {
     ProvidersConfig,
     QueueConfig,
     RenovateConfig,
+    RoutingEligibleVariant,
+    RoutingSummary,
+    SLOTargets,
     SelfMonitorConfig,
     TestingConfig,
-    TodoistConfig,
     TriageConfig,
-    UmbrellaConfig
+    UmbrellaConfig,
+    ValueSource
 } from "./models.js";

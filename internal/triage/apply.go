@@ -14,8 +14,32 @@ import (
 // preservedTags are tags never emitted by the classifier vocabulary but that
 // must survive a wholesale tag-replacement in Apply because dropping them
 // would silently break routing the task depends on: escape-hatch opt-outs
-// (see escapeHatchTags) and the umbrella dependency gate marker.
-var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.GatedTag)
+// (see escapeHatchTags), the umbrella dependency gate marker, and local
+// Sybra-bug tracker routing markers.
+var preservedTags = append(append([]string{}, escapeHatchTags...),
+	umbrella.GatedTag,
+	"sybra-bug",
+	"scrubbed",
+	"local",
+	"issue-filing-failed",
+)
+
+const defaultSybraBugProjectID = "Automaat/sybra"
+
+// ApplyOptions tunes deterministic routing decisions that come from app
+// configuration rather than classifier output.
+type ApplyOptions struct {
+	// SybraBugProjectID is the local tracking project for tasks tagged
+	// sybra-bug. Empty falls back to the package default.
+	SybraBugProjectID string
+}
+
+func (o ApplyOptions) sybraBugProjectID() string {
+	if id := strings.TrimSpace(o.SybraBugProjectID); id != "" {
+		return id
+	}
+	return defaultSybraBugProjectID
+}
 
 const umbrellaNormalTypeStatusReason = "☂️-titled task has task_type=normal, not umbrella — " +
 	"guard blocked dispatch to avoid a wasted implement run; " +
@@ -34,6 +58,12 @@ const umbrellaGuardOptOutTag = "notumbrella"
 // projects is used to look up the project type after ProjectID is matched,
 // which feeds into routing rules (work projects force interactive mode).
 func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project) (task.Task, error) {
+	return ApplyWithOptions(mgr, t, v, projects, ApplyOptions{})
+}
+
+// ApplyWithOptions writes the classifier verdict to the task with explicit
+// deterministic routing options supplied by the caller.
+func ApplyWithOptions(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project, opts ApplyOptions) (task.Task, error) {
 	updates := make(map[string]any, 8)
 
 	// A prompt-lab proposal is owned by PromptLabService, not triage. It may
@@ -61,6 +91,13 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	stale := projectID != "" && !resolved
 	if !resolved {
 		projectID = MatchProjectFromIssue(t.Issue, projects)
+		if projectID == "" && isSybraBugTask(t, v) {
+			if id := opts.sybraBugProjectID(); id != "" {
+				if _, ok := projectTypeFor(id, projects); ok {
+					projectID = id
+				}
+			}
+		}
 		if projectID == "" {
 			guess := strings.TrimSpace(v.ProjectID)
 			if _, ok := projectTypeFor(guess, projects); ok {
@@ -149,6 +186,10 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 
 func isPRFixTask(t task.Task) bool {
 	return t.RunRole == "pr-fix" || t.PRNumber > 0
+}
+
+func isSybraBugTask(t task.Task, v Verdict) bool {
+	return slices.Contains(t.Tags, "sybra-bug") || slices.Contains(v.Tags, "sybra-bug")
 }
 
 // projectTypeFor returns the registered project type for id and whether id

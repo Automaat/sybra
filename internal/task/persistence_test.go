@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -22,7 +23,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		Slug:                   "task-slug",
 		Title:                  "Task title",
 		Status:                 StatusTesting,
-		TaskType:               TaskTypeResearch,
+		TaskType:               TaskTypeUmbrella,
 		AgentMode:              AgentModeHeadless,
 		AllowedTools:           []string{"Read", "Write"},
 		Tags:                   []string{"backend", "refactor"},
@@ -44,7 +45,6 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		ReviewedHeadSHA:        "e57e4b5db72c55ba7610140631a80946a7edddf0",
 		ReviewedHeadAttempts:   2,
 		PRPhase:                "fixing",
-		TodoistID:              "todoist-1",
 		Priority:               PriorityHigh,
 		DueDate:                &dueDate,
 		ClosedAt:               &closedAt,
@@ -57,6 +57,14 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		Sandbox:                &sandbox,
 		ReasoningEffort:        "xhigh",
 		TestingCycleStartedAt:  &testingCycleStartedAt,
+		Attachments: []Attachment{{
+			ID:          "att-1",
+			FileName:    "evidence.txt",
+			ContentType: "text/plain",
+			SizeBytes:   5,
+			Path:        "/tmp/attachments/task1234/att-1/evidence.txt",
+			CreatedAt:   now.Add(-30 * time.Minute),
+		}},
 		AgentRuns: []AgentRun{{
 			AgentID:                 "agent-1",
 			Role:                    "test-runner",
@@ -67,6 +75,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 			VariantID:               "variant",
 			AssignmentUnit:          "task",
 			AssignmentKey:           "task1234",
+			DecisionVersion:         7,
 			ReasoningEffort:         "high",
 			RequestedSkill:          "sybra-test",
 			SkillExecutionMode:      "native",
@@ -208,7 +217,7 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 	case "Status":
 		task.Status = StatusTesting
 	case "TaskType":
-		task.TaskType = TaskTypeResearch
+		task.TaskType = TaskTypeUmbrella
 	case "AgentMode":
 		task.AgentMode = AgentModeHeadless
 	case "AllowedTools":
@@ -229,6 +238,14 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.RefIssue = "owner/repo#999"
 	case "StatusReason":
 		task.StatusReason = "testing"
+	case "Blocker":
+		task.Blocker = blocker.State{
+			Kind:       blocker.KindWorktreeRepair,
+			Actor:      blocker.ActorWorkflow,
+			Code:       "rebase_failed",
+			NextAction: "repair_worktree",
+			Exhausted:  true,
+		}
 	case "HandoffSourceProvider":
 		task.HandoffSourceProvider = "codex"
 	case "BlockedByIssue":
@@ -251,8 +268,6 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.ReviewedHeadAttempts = 2
 	case "PRPhase":
 		task.PRPhase = "fixing"
-	case "TodoistID":
-		task.TodoistID = "todoist-123"
 	case "Priority":
 		task.Priority = PriorityHigh
 	case "DueDate":
@@ -277,6 +292,15 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.ReasoningEffort = "xhigh"
 	case "TestingCycleStartedAt":
 		task.TestingCycleStartedAt = &later
+	case "Attachments":
+		task.Attachments = []Attachment{{
+			ID:          "att-1",
+			FileName:    "log.txt",
+			ContentType: "text/plain",
+			SizeBytes:   123,
+			Path:        "/tmp/attachments/task-persist/att-1/log.txt",
+			CreatedAt:   later,
+		}}
 	case "AgentRuns":
 		task.AgentRuns = []AgentRun{{
 			AgentID:                 "agent-1",

@@ -1,13 +1,16 @@
 package review
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -24,7 +27,7 @@ const reconciledLatchTag = "monitor:reconciled"
 // task (status in-review/ready-review, not tag `review`) from the live
 // monitored PRs and persists any delta. The phase is a pure overlay on the In
 // Review column — it never changes task.Status.
-func (r *Handler) reconcilePRPhases(tasks []task.Task, monitoredPRs []github.PullRequest) {
+func (r *Handler) reconcilePRPhases(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest) {
 	byNumber, byBranch := indexMonitoredPRs(monitoredPRs)
 
 	for i := range tasks {
@@ -51,7 +54,7 @@ func (r *Handler) reconcilePRPhases(tasks []task.Task, monitoredPRs []github.Pul
 		}
 
 		r.applyPRPhase(t, computePRPhase(prSignals{
-			AgentRunning:     r.agents.HasRunningAgentForTask(t.ID),
+			AgentRunning:     r.hasBlockingAgentForTask(ctx, t.ID),
 			IsDraft:          pr.IsDraft,
 			CIStatus:         pr.CIStatus,
 			HasPendingChecks: pr.HasPendingChecks,
@@ -61,6 +64,171 @@ func (r *Handler) reconcilePRPhases(tasks []task.Task, monitoredPRs []github.Pul
 			ActionableCount:  pr.ActionableCount,
 		}))
 	}
+}
+
+// cancelSettledImplementationWorkflows terminates a stale simple-task-implement
+// workflow once the task's branch already has an open, green PR. Without this,
+// ResumeStalled keeps re-dispatching the implement step even though ownership
+// of the work already moved to the PR monitor / in-review lane.
+//
+// Intentionally scoped to the implement step itself. A workflow parked on later
+// deterministic gates (verify_checks, etc.) still owns meaningful work and must
+// not be short-circuited just because an older PR snapshot looks green.
+func (r *Handler) cancelSettledImplementationWorkflows(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest) {
+	if r.WorkflowEngine == nil {
+		return
+	}
+	byNumber, byBranch := indexMonitoredPRs(monitoredPRs)
+
+	for i := range tasks {
+		t := &tasks[i]
+		if !staleImplementationWorkflowEligible(t) {
+			continue
+		}
+		if r.hasRunningAgentForTask(ctx, t.ID) {
+			continue
+		}
+		pr := matchingPR(t, byNumber, byBranch)
+		if pr == nil || !settledOwnPR(*pr) {
+			continue
+		}
+
+		step, err := r.WorkflowEngine.CancelWorkflow(t.ID, "pr-monitor: implementation superseded by settled PR")
+		if err != nil {
+			r.logger.Error("pr-monitor.cancel-implement", "task_id", t.ID, "pr", pr.Number, "err", err)
+			continue
+		}
+
+		upd := task.Update{
+			Status:       task.Ptr(task.StatusInReview),
+			StatusReason: task.Ptr(""),
+		}
+		if t.PRNumber == 0 && pr.Number > 0 {
+			upd.PRNumber = task.Ptr(pr.Number)
+		}
+		updated, err := r.tasks.Update(t.ID, upd)
+		if err != nil {
+			r.logger.Error("pr-monitor.cancel-implement.status", "task_id", t.ID, "pr", pr.Number, "err", err)
+			continue
+		}
+		tasks[i] = updated
+		r.logger.Info("pr-monitor.cancel-implement", "task_id", t.ID, "pr", pr.Number, "step", step)
+	}
+}
+
+func (r *Handler) settledImplementationFetchMatchers(ctx context.Context, tasks []task.Task) []github.TaskMatcher {
+	matchers := make([]github.TaskMatcher, 0)
+	for i := range tasks {
+		t := &tasks[i]
+		if !staleImplementationWorkflowEligible(t) || t.ProjectID == "" {
+			continue
+		}
+		if r.hasRunningAgentForTask(ctx, t.ID) {
+			continue
+		}
+		m := github.TaskMatcher{
+			ID:        t.ID,
+			PRNumber:  t.PRNumber,
+			Branch:    t.Branch,
+			ProjectID: t.ProjectID,
+		}
+		if m.PRNumber != 0 {
+			matchers = append(matchers, m)
+			continue
+		}
+		if m.Branch == "" {
+			continue
+		}
+		head, ok := r.settledImplementationPRHead(ctx, t)
+		if !ok {
+			continue
+		}
+		number, found, err := r.findOpenPRForBranch(ctx, m.ProjectID, head)
+		if err != nil {
+			if r.logger != nil {
+				r.logger.Warn("pr-monitor.cancel-implement.find-pr", "task_id", m.ID, "repo", m.ProjectID, "head", head, "err", err)
+			}
+			continue
+		}
+		if !found {
+			continue
+		}
+		m.PRNumber = number
+		matchers = append(matchers, m)
+	}
+	return matchers
+}
+
+func (r *Handler) settledImplementationPRHead(ctx context.Context, t *task.Task) (string, bool) {
+	if t == nil || strings.TrimSpace(t.Branch) == "" {
+		return "", false
+	}
+	if r.worktrees == nil {
+		return t.Branch, true
+	}
+	if !r.worktrees.Exists(*t) {
+		if r.logger != nil {
+			r.logger.Warn("pr-monitor.cancel-implement.no-worktree", "task_id", t.ID, "branch", t.Branch)
+		}
+		return "", false
+	}
+	head, err := project.HeadArg(ctx, r.worktrees.PathFor(*t), t.Branch)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("pr-monitor.cancel-implement.head", "task_id", t.ID, "branch", t.Branch, "err", err)
+		}
+		return "", false
+	}
+	return head, true
+}
+
+func (r *Handler) findOpenPRForBranch(ctx context.Context, repo, branch string) (number int, found bool, err error) {
+	if r.findOpenPRForBranchFn != nil {
+		return r.findOpenPRForBranchFn(ctx, repo, branch)
+	}
+	return github.FindPRForBranch(ctx, repo, branch)
+}
+
+func (r *Handler) hasRunningAgentForTask(ctx context.Context, taskID string) bool {
+	return r.hasBlockingAgentForTask(ctx, taskID)
+}
+
+func (r *Handler) hasBlockingAgentForTask(ctx context.Context, taskID string) bool {
+	if r == nil || r.agents == nil {
+		return false
+	}
+	if !r.agents.HasRunningAgentForTask(taskID) {
+		return false
+	}
+	releasedAgents := r.agents.ReleaseStaleStoppedAgentsForTask(ctx, taskID, stalePRDispatchGateAge)
+	releasedClaim := r.agents.ReleaseStaleTaskDispatch(taskID, stalePRDispatchGateAge)
+	if releasedAgents > 0 || releasedClaim {
+		if r.logger != nil {
+			r.logger.Warn("reviews.dispatch.gate.stale-released",
+				"task_id", taskID, "agents", releasedAgents, "dispatch_claim", releasedClaim)
+		}
+		return r.agents.HasRunningAgentForTask(taskID)
+	}
+	return true
+}
+
+func (r *Handler) hasBlockingAgentForTaskAllowingAgent(ctx context.Context, taskID, exceptAgentID string) bool {
+	if r == nil || r.agents == nil {
+		return false
+	}
+	if !r.agents.HasOtherRunningAgentForTask(taskID, exceptAgentID) {
+		return false
+	}
+	releasedAgents := r.agents.ReleaseStaleStoppedAgentsForTask(ctx, taskID, stalePRDispatchGateAge)
+	releasedClaim := r.agents.ReleaseStaleTaskDispatch(taskID, stalePRDispatchGateAge)
+	if releasedAgents > 0 || releasedClaim {
+		if r.logger != nil {
+			r.logger.Warn("reviews.dispatch.gate.stale-released",
+				"task_id", taskID, "agents", releasedAgents, "dispatch_claim", releasedClaim)
+		}
+		return r.agents.HasOtherRunningAgentForTask(taskID, exceptAgentID)
+	}
+	return true
 }
 
 // indexMonitoredPRs builds the by-number and by-branch lookup maps shared by
@@ -125,7 +293,7 @@ func (r *Handler) reactivateLinkedOwnPR(t *task.Task, livePR bool) *task.Task {
 }
 
 func linkedOwnPRHumanRequiredDrift(t *task.Task, livePR bool) bool {
-	if t == nil || t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if t == nil || slices.Contains(t.Tags, "review") {
 		return false
 	}
 	if !livePR || t.Status != task.StatusHumanRequired || t.PRNumber == 0 || strings.TrimSpace(t.StatusReason) != "" {
@@ -144,10 +312,35 @@ func linkedOwnPRHumanRequiredDrift(t *task.Task, livePR bool) bool {
 	return completedAt.Sub(t.UpdatedAt) <= linkedPRDriftWindow
 }
 
+func staleImplementationWorkflowEligible(t *task.Task) bool {
+	if t == nil || t.Workflow == nil {
+		return false
+	}
+	switch t.Status {
+	case task.StatusInProgress, task.StatusInReview, task.StatusReadyReview:
+	default:
+		return false
+	}
+	return t.Workflow.WorkflowID == "simple-task-implement" &&
+		t.Workflow.CurrentStep == "implement" &&
+		t.Workflow.State != workflow.ExecCompleted &&
+		t.Workflow.State != workflow.ExecFailed
+}
+
+func settledOwnPR(pr github.PullRequest) bool {
+	if pr.IsDraft || pr.Mergeable != "MERGEABLE" || pr.HasPendingChecks {
+		return false
+	}
+	if pr.SourcedViaREST && !pr.RESTCIFetched {
+		return false
+	}
+	return pr.CIStatus == "SUCCESS" || pr.CIStatus == ""
+}
+
 // ownPRColumnTask reports whether a task is one of the user's own PRs shown in
 // the In Review column — the set reconcilePRPhases assigns a PR phase to.
 func ownPRColumnTask(t *task.Task) bool {
-	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if slices.Contains(t.Tags, "review") {
 		return false
 	}
 	if t.Status != task.StatusInReview && t.Status != task.StatusReadyReview {
@@ -179,6 +372,14 @@ func (r *Handler) applyPRPhase(t *task.Task, phase string) {
 const exhaustedFixReasonPrefix = "pr-monitor: auto-fix exhausted after "
 const ciInfraRerunPermissionReason = "CI failure rerun requires higher GitHub permissions"
 
+// persistentFlakyCIReason parks a task whose ci_failure kept classifying as
+// flaky (see flakyOnlyFailure) across every rerun attempt in the ci-infra
+// rerun budget — distinct from exhaustedFixReason so a human can tell "the
+// fix agent gave up on a deterministic failure" from "reruns alone never
+// cleared this, worth a closer look at test stability" at a glance.
+const persistentFlakyCIReason = "pr-monitor: CI failure kept classifying as flaky after " +
+	"repeated reruns — needs a human"
+
 // exhaustedFixReason renders the StatusReason escalateExhaustedFix parks a task
 // with. It is the sole producer of the string exhaustedFixReasonKind parses back
 // into a PRIssueKind — deriving both from exhaustedFixReasonPrefix keeps them in
@@ -209,27 +410,35 @@ func exhaustedFixReasonKind(reason string) (github.PRIssueKind, bool) {
 	return github.PRIssueKind(kind), true
 }
 
-// humanRequiredBlockerReconcilable reports whether t is a human-required task
-// parked solely by a PR blocker a live PR probe can decide resolved itself.
+// humanRequiredBlockerReconcilable reports whether t is a blocked or
+// human-required task parked solely by a PR blocker a live PR probe can decide
+// resolved itself.
 // Excludes watchdog stops, tamper flags, comment-review exhaustion (no CI-state
 // probe can tell whether reviewer feedback was actually addressed),
 // human-authored reasons, and tasks already reconciled once (latch tag present,
 // to prevent flip-flopping).
 func humanRequiredBlockerReconcilable(t *task.Task) (kind github.PRIssueKind, ok bool) {
-	if t == nil || t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if t == nil || slices.Contains(t.Tags, "review") {
 		return "", false
 	}
-	if t.Status != task.StatusHumanRequired || t.PRNumber == 0 {
+	if (t.Status != task.StatusHumanRequired && t.Status != task.StatusBlocked) || t.PRNumber == 0 {
 		return "", false
 	}
 	if slices.Contains(t.Tags, reconciledLatchTag) {
+		return "", false
+	}
+	if t.Blocker.Kind == blocker.KindReviewFixExhausted && t.Blocker.Actor == blocker.ActorReview {
+		kind := github.PRIssueKind(t.Blocker.Code)
+		if kind == github.PRIssueCIFailure || kind == github.PRIssueConflict {
+			return kind, true
+		}
 		return "", false
 	}
 	reason := strings.TrimSpace(t.StatusReason)
 	if workflow.IsTamperFlaggedReason(reason) {
 		return "", false
 	}
-	if reason == ciInfraRerunPermissionReason {
+	if reason == ciInfraRerunPermissionReason || reason == persistentFlakyCIReason {
 		return github.PRIssueCIFailure, true
 	}
 	kind, ok = exhaustedFixReasonKind(reason)
@@ -260,9 +469,10 @@ func hasFixableIssue(issues []github.PRIssue) bool {
 		switch issues[i].Kind {
 		case github.PRIssueConflict, github.PRIssueCIFailure, github.PRIssueComments:
 			return true
-		case github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueReadyToMerge:
-			// branch_conflict_no_pr is tracker-only (never emitted by
-			// MatchTaskPRs); ready_to_merge is not a blocker.
+		case github.PRIssueBranchConflictNoPR, github.PRIssueTaskBranchConflict, github.PRIssueBranchRecreate, github.PRIssueReadyToMerge, github.PRIssueCIFlake:
+			// branch_conflict_no_pr, task_branch_conflict, and ci_flake
+			// are tracker-only (never emitted by MatchTaskPRs);
+			// ready_to_merge is not a blocker.
 		}
 	}
 	return false
@@ -275,13 +485,17 @@ func hasFixableIssue(issues []github.PRIssue) bool {
 // PR is now clearly open, mergeable, green, and free of every fixable issue
 // kind, the blocker cleared, so the task is reconciled back to in-review,
 // latched against repeat flip-flops, and its retry-tracker entry is cleared so
-// a fresh pr-fix budget is available should the same kind recur.
-func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs []github.PullRequest) {
+// a fresh pr-fix budget is available should the same kind recur. When the live
+// monitored snapshot already carries the PR, return a same-cycle ready_to_merge
+// follow-up so the post-reconcile poll can reuse handleAutoMerge immediately
+// instead of leaving a green reviewed pet PR open until the next tick.
+func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs []github.PullRequest) []github.PRIssue {
 	byNumber, byBranch := indexMonitoredPRs(monitoredPRs)
 	fetchFn := github.FetchPRState
 	if r.fetchPRStateFn != nil {
 		fetchFn = r.fetchPRStateFn
 	}
+	var followups []github.PRIssue
 
 	for i := range tasks {
 		t := &tasks[i]
@@ -346,5 +560,13 @@ func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs
 		})
 		r.logger.Info("pr-monitor.reconcile-blocker",
 			"task_id", t.ID, "pr", t.PRNumber, "kind", kind, "prior_reason", priorReason)
+		if pr := matchingPR(t, byNumber, byBranch); pr != nil {
+			followups = append(followups, github.PRIssue{
+				Kind:   github.PRIssueReadyToMerge,
+				TaskID: t.ID,
+				PR:     *pr,
+			})
+		}
 	}
+	return followups
 }

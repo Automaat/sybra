@@ -446,6 +446,30 @@ func TestRequestReviewersWith_passesArgs(t *testing.T) {
 	}
 }
 
+func TestRequestCopilotReview_RequestsCopilotBot(t *testing.T) {
+	orig := defaultExecer
+	fe := &recordingExecer{output: []byte("HTTP/2.0 201 Created\n\n{}")}
+	defaultExecer = fe
+	t.Cleanup(func() { defaultExecer = orig })
+
+	if err := RequestCopilotReview("owner/repo", 42); err != nil {
+		t.Fatalf("RequestCopilotReview: %v", err)
+	}
+	want := []string{
+		"api", "--include", "--method", "POST",
+		"repos/owner/repo/pulls/42/requested_reviewers",
+		"-f", "reviewers[]=copilot-pull-request-reviewer[bot]",
+	}
+	if len(fe.lastArgs) != len(want) {
+		t.Fatalf("args = %v, want %v", fe.lastArgs, want)
+	}
+	for i, a := range fe.lastArgs {
+		if a != want[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, a, want[i])
+		}
+	}
+}
+
 func TestRequestReviewersWith_emptySkips(t *testing.T) {
 	t.Parallel()
 	fe := &recordingExecer{}
@@ -642,6 +666,38 @@ func TestEnableAutoMerge(t *testing.T) {
 		}
 		if _, ok := prStateCache.Get(key); !ok {
 			t.Error("cache entry was invalidated by a non-default execer, want untouched")
+		}
+	})
+}
+
+func TestClosePRWith(t *testing.T) {
+	t.Parallel()
+	t.Run("success passes args with comment", func(t *testing.T) {
+		t.Parallel()
+		fe := &recordingExecer{}
+		if err := closePRWith(t.Context(), fe, "owner/repo", 42, "Superseded by #43."); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"pr", "close", "42", "--repo", "owner/repo", "--comment", "Superseded by #43."}
+		if len(fe.lastArgs) != len(want) {
+			t.Fatalf("args = %v, want %v", fe.lastArgs, want)
+		}
+		for i, a := range fe.lastArgs {
+			if a != want[i] {
+				t.Errorf("arg[%d] = %q, want %q", i, a, want[i])
+			}
+		}
+	})
+
+	t.Run("gh error passthrough", func(t *testing.T) {
+		t.Parallel()
+		fe := &fakeExecer{output: []byte("not authorized"), err: fmt.Errorf("exit 1")}
+		err := closePRWith(t.Context(), fe, "owner/repo", 42, "Superseded")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "gh pr close 42") {
+			t.Errorf("error = %v, want it to mention 'gh pr close 42'", err)
 		}
 	})
 }

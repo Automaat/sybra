@@ -14,11 +14,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
@@ -27,12 +29,9 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-const (
-	reviewSmallAdditions = 40
-	reviewSmallFiles     = 5
-)
-
 const TransientFetchWarnThreshold = 3
+
+const stalePRDispatchGateAge = 15 * time.Minute
 
 // readyPRState is a cached "confirmed ready to merge" snapshot for a task's
 // linked PR, keyed by "repo#number". fetchKnownTaskPRs reuses it across poll
@@ -65,6 +64,7 @@ type Handler struct {
 	worktrees      *worktree.Manager
 	WorkflowEngine *workflow.Engine
 	cfg            *config.Config
+	abTesting      func() abtest.Config
 	experience     *experience.Store
 	// renovatePRsFn returns Renovate-bot PRs to fold into the monitor pass.
 	// FetchReviews uses author:@me which excludes bot-authored PRs, so without
@@ -98,6 +98,11 @@ type Handler struct {
 	// rerunFailedChecks requests a rerun of the failed checks on a PR;
 	// overridable in tests. nil falls back to github.RerunFailedChecks.
 	rerunFailedChecks func(repo string, number int) error
+	// classifyFlakiness classifies whether a lone ci_failure's gating checks
+	// are all flaky on the head commit; overridable in tests. nil falls back
+	// to github.ClassifyCIFlakiness. Only consulted when
+	// cfg.GitHub.FlakyDetection is enabled.
+	classifyFlakiness func(repo, sha string, threshold float64) (allFlaky bool, flakyChecks []string, err error)
 	// enableAutoMergeFn arms GitHub's native auto-merge on a PR; overridable in
 	// tests. nil falls back to github.EnableAutoMerge.
 	enableAutoMergeFn func(repo string, number int) error
@@ -109,6 +114,9 @@ type Handler struct {
 	// with the observed head SHA); overridable in tests. nil falls back to
 	// github.MergePRViaREST.
 	mergePRViaREST func(repo string, number int, headSHA string) error
+	// onAutoMergeApplied fires after a successful Sybra-authored merge so
+	// callers can react immediately (for example, wake self-autoupdate).
+	onAutoMergeApplied func()
 	// fetchThreads / resolveThread back the Copilot-thread auto-resolver;
 	// overridable in tests. nil falls back to the github package functions.
 	fetchThreads  func(repo string, number int) ([]github.ReviewThread, error)
@@ -138,6 +146,9 @@ type Handler struct {
 	// search polling to the primary instance. Overridable in tests; nil falls
 	// back to github.FetchPRsForMonitor.
 	fetchKnownPRsFn func(refs []github.PRRef) []github.MonitorPRResult
+	// fetchPRStatsFn reads the linked PR's size stats for inbound review triage.
+	// Overridable in tests; nil falls back to github.FetchPRStats.
+	fetchPRStatsFn func(repo string, number int) (github.PRStats, error)
 	// fetchHeadStateFn cheaply probes a PR's current head SHA, open/closed
 	// state, and updatedAt timestamp, used to validate (or invalidate) a
 	// readyPRCache entry without doing a full per-PR fetch. Overridable in
@@ -149,9 +160,21 @@ type Handler struct {
 	// prPollState tracks stable linked PRs across poll cycles so the known-PR
 	// fetch path can defer unchanged PRs with exponential backoff.
 	prPollState map[string]prPollEntry
+	// autoMergeBackoff persists a retry fingerprint (repo, PR, head SHA,
+	// error class) for failed auto-merge/arm attempts so handleAutoMerge
+	// backs off exponentially instead of re-attempting unchanged state every
+	// poll tick (#2450). Lazily initialized by mergeBackoff().
+	autoMergeBackoff *github.AutoMergeBackoff
 	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
 	// falls back to github.FetchReviews.
 	fetchReviewsFn func() (github.ReviewSummary, error)
+	// fetchCreatedByMePRsFn fetches the self-authored PR search leg only.
+	// Overridable in tests; nil falls back to github.FetchCreatedByMePRs.
+	fetchCreatedByMePRsFn func() ([]github.PullRequest, error)
+	// fetchAssignedReviewSummaryFn fetches only the inbound review discovery
+	// legs (review-requested / reviewed-by). Overridable in tests; nil falls
+	// back to github.FetchAssignedReviewSummary.
+	fetchAssignedReviewSummaryFn func() (github.ReviewSummary, error)
 	// fetchMyReviewStateFn reads the viewer's own review state on a PR — the
 	// signal that decides whether a review task still needs an agent.
 	// Overridable in tests; nil falls back to github.FetchMyReviewState.
@@ -164,10 +187,17 @@ type Handler struct {
 	// Returns the PR number (0 = none or ambiguous). nil falls back to gh-based implementation.
 	// Overridable in tests.
 	findMergedPRFn func(repo, branch string) (int, error)
+	// findOpenPRForBranchFn looks up an open PR by head branch in a project repo.
+	// Used only to reconcile stale branch-only implementation workflows into
+	// the linked-PR lane. Overridable in tests; nil falls back to github.FindPRForBranch.
+	findOpenPRForBranchFn func(ctx context.Context, repo, branch string) (int, bool, error)
 	// triageReviewFn dispatches a review agent for a newly-created review task
-	// (or routes it to human-required for small PRs). Overridable in tests;
-	// nil falls back to r.triageReview.
+	// after any inbound setup. Overridable in tests; nil falls back to
+	// r.triageReview.
 	triageReviewFn func(task.Task)
+	// startReviewAgentFn launches the inbound review agent. Overridable in
+	// tests; nil falls back to r.StartReviewAgent.
+	startReviewAgentFn func(task.Task, bool) error
 	// lastRevertScan rate-limits the default-branch revert scan (revertScanInterval).
 	lastRevertScan time.Time
 	// tryCleanMergeFn attempts the deterministic clean-merge fast-path before a
@@ -193,19 +223,78 @@ func (r *Handler) agentLogin(ctx context.Context) string {
 
 // pollFast/pollSlow resolve the review poll cadence from config (github.*),
 // falling back to the raised defaults, then scaled by GitHub budget pressure.
-// nil cfg (test construction) uses defaults too.
+// nil cfg (test construction) uses defaults too. These are the Sybra PR stream
+// intervals; assigned-review discovery has its own pair below.
 func (r *Handler) pollFast() time.Duration {
 	if r.cfg == nil {
 		return github.ScaleInterval(config.DefaultReviewsFastSeconds * time.Second)
 	}
-	return github.ScaleInterval(r.cfg.GitHub.ReviewsFast())
+	return github.ScaleInterval(r.cfg.GitHub.SybraPRsActive())
 }
 
 func (r *Handler) pollSlow() time.Duration {
 	if r.cfg == nil {
 		return github.ScaleInterval(config.DefaultReviewsSlowSeconds * time.Second)
 	}
-	return github.ScaleInterval(r.cfg.GitHub.ReviewsSlow())
+	return github.ScaleInterval(r.cfg.GitHub.SybraPRsIdle())
+}
+
+func (r *Handler) assignedPollFast() time.Duration {
+	if r.cfg == nil {
+		return github.ScaleInterval(config.DefaultReviewsFastSeconds * time.Second)
+	}
+	return github.ScaleInterval(r.cfg.GitHub.AssignedPRsActive())
+}
+
+func (r *Handler) assignedPollSlow() time.Duration {
+	if r.cfg == nil {
+		return github.ScaleInterval(config.DefaultReviewsSlowSeconds * time.Second)
+	}
+	return github.ScaleInterval(r.cfg.GitHub.AssignedPRsIdle())
+}
+
+func (r *Handler) runsSearchPollers() bool {
+	return r.cfg == nil || r.cfg.GitHub.RunsSearchPollers()
+}
+
+func (r *Handler) runsSybraPRs() bool {
+	return r.cfg == nil || r.cfg.GitHub.RunsSybraPRs()
+}
+
+func (r *Handler) runsSybraPRSearches() bool {
+	return r.cfg == nil || r.cfg.GitHub.RunsSybraPRSearches()
+}
+
+func (r *Handler) runsAssignedPRSearches() bool {
+	return r.cfg == nil || r.cfg.GitHub.RunsAssignedPRSearches()
+}
+
+func (r *Handler) nextInterval(sybraAttention, assignedAttention bool) time.Duration {
+	var choices []time.Duration
+	if r.runsSybraPRs() {
+		if sybraAttention {
+			choices = append(choices, r.pollFast())
+		} else {
+			choices = append(choices, r.pollSlow())
+		}
+	}
+	if r.runsAssignedPRSearches() {
+		if assignedAttention {
+			choices = append(choices, r.assignedPollFast())
+		} else {
+			choices = append(choices, r.assignedPollSlow())
+		}
+	}
+	if len(choices) == 0 {
+		return r.pollSlow()
+	}
+	next := choices[0]
+	for _, d := range choices[1:] {
+		if d < next {
+			next = d
+		}
+	}
+	return next
 }
 
 func New(
@@ -236,6 +325,7 @@ func New(
 		authCircuit:         poll.NewAuthCircuit("reviews", logger),
 		mergePR:             github.MergePR,
 		rerunFailedChecks:   github.RerunFailedChecks,
+		classifyFlakiness:   github.ClassifyCIFlakiness,
 		enableAutoMergeFn:   github.EnableAutoMerge,
 		supportsAutoMergeFn: github.SupportsNativeAutoMerge,
 		mergePRViaREST:      github.MergePRViaREST,
@@ -259,24 +349,45 @@ func (r *Handler) logAudit(eventType, taskID, agentID string, data map[string]an
 
 func (r *Handler) Name() string { return "reviews" }
 
+func (r *Handler) SetAutoMergeAppliedHook(fn func()) {
+	r.onAutoMergeApplied = fn
+}
+
+func (r *Handler) SetABTestingSource(fn func() abtest.Config) {
+	r.abTesting = fn
+}
+
+func (r *Handler) abTestingConfig() abtest.Config {
+	if r.abTesting != nil {
+		return r.abTesting()
+	}
+	if r.cfg == nil {
+		return abtest.Config{}
+	}
+	return abtest.CloneConfig(r.cfg.ABTesting)
+}
+
 // AuthCircuitOpen reports whether repeated GitHub auth failures have
 // tripped this poller's circuit breaker (see poll.AuthCircuit).
 func (r *Handler) AuthCircuitOpen() bool { return r.authCircuit.Open() }
 
 func (r *Handler) Poll(ctx context.Context) time.Duration {
-	if r.cfg != nil && !r.cfg.GitHub.RunsSearchPollers() {
+	if !r.runsSearchPollers() {
 		return r.pollKnownTaskPRs(ctx)
 	}
 	return r.pollAndMonitorPRs(ctx)
 }
 
 func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
+	if !r.runsSybraPRs() {
+		return r.nextInterval(false, false)
+	}
 	tasks, err := r.tasks.List()
 	if err != nil {
-		return r.pollSlow()
+		return r.nextInterval(false, false)
 	}
 
-	selection := r.selectKnownPRPoll(tasks)
+	selection := r.selectKnownPRPoll(ctx, tasks)
 	r.logger.Info("reviews.poll.bounded",
 		"selected", selection.selectedPRs,
 		"deferred", selection.deferredPRs,
@@ -313,6 +424,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	if len(reconcileMatchers) > 0 {
 		fetchMatchers = append(fetchMatchers, reconcileMatchers...)
 	}
+	fetchMatchers = append(fetchMatchers, r.settledImplementationFetchMatchers(ctx, selection.tasks)...)
 	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers)
 	// fetchKnownTaskPRs records auth failures on the shared circuit. Once it
 	// trips, back off like pollAndMonitorPRs instead of re-hammering a dead
@@ -321,15 +433,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	if r.authCircuit.Open() {
 		return poll.AuthCircuitBackoff
 	}
-	var issues []github.PRIssue
-	if len(matchers) > 0 {
-		issues = github.MatchTaskPRs(monitoredPRs, matchers)
-		if r.prTracker != nil {
-			r.prTracker.Cleanup()
-		}
-		r.cancelResolvedPRFixWorkflows(tasks, issues, github.MatchTaskPRIndex(monitoredPRs, matchers))
-		r.handleMatchedPRIssues(ctx, issues)
-	}
+	issues := r.handleMatchedOwnPRs(ctx, tasks, monitoredPRs, matchers)
 
 	r.logPollSummary(monitoredPRs, len(matchers), len(issues))
 
@@ -339,15 +443,45 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 
 	r.scanForReverts(ctx, tasks)
 	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
-	r.reconcilePRPhases(tasks, monitoredPRs)
-	r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
+	r.reconcilePRPhases(ctx, tasks, monitoredPRs)
+	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
+	issues = r.mergeReconciledReady(ctx, reconciledReady, issues)
 	r.closeFinishedReviewTasks(tasks, nil)
-	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
+	r.maybeArmNativeAutoMerge(ctx, tasks, monitoredPRs, issues)
 
-	if prNeedsAttention(monitoredPRs) {
-		return r.pollFast()
+	return r.nextInterval(prNeedsAttention(monitoredPRs), false)
+}
+
+// mergeReconciledReady runs handleAutoMerge for every same-cycle
+// ready_to_merge followup reconcileHumanRequiredBlockers returns, then folds
+// them into issues so downstream stages (native auto-merge arming, poll
+// summary) see them too — shared by both pollers so a reconciled reviewed pet
+// PR merges in the same cycle regardless of which one observed it. No-op
+// when project routing isn't configured (handleAutoMerge needs it to gate).
+// Applies the same running-agent/active-workflow gates handleTaskPRIssues
+// uses for every other issue kind (Copilot review on #2292): the task just
+// flipped human-required -> in-review in this same tick, but a concurrent
+// dispatch (e.g. a second poller instance) could already have a workflow or
+// agent live against it by the time this runs — merging out from under that
+// would race the in-flight run.
+func (r *Handler) mergeReconciledReady(ctx context.Context, reconciledReady, issues []github.PRIssue) []github.PRIssue {
+	if r.projects == nil {
+		return issues
 	}
-	return r.pollSlow()
+	for i := range reconciledReady {
+		issue := reconciledReady[i]
+		if r.hasBlockingAgentForTask(ctx, issue.TaskID) {
+			r.logger.Info("reviews.dispatch.gate", "task_id", issue.TaskID, "gate", "running_agent", "kind", issue.Kind)
+			continue
+		}
+		if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(issue.TaskID) {
+			r.logger.Info("reviews.dispatch.gate", "task_id", issue.TaskID, "gate", "active_workflow", "kind", issue.Kind)
+			continue
+		}
+		r.handleAutoMerge(ctx, issue)
+		issues = append(issues, issue)
+	}
+	return issues
 }
 
 func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
@@ -355,64 +489,135 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	// when FetchReviews fails (transient errors, rate limits, etc.).
 	tasks, err := r.tasks.List()
 	if err != nil {
-		return r.pollSlow()
+		return r.nextInterval(false, false)
 	}
 
-	fetchFn := github.FetchReviews
-	if r.fetchReviewsFn != nil {
-		fetchFn = r.fetchReviewsFn
-	}
-	summary, fetchErr := fetchFn()
+	summary, runSybraSearch, runAssignedSearch, fetchErr := r.fetchReviewSummary()
 	if fetchErr != nil {
-		switch {
-		case github.IsTransientError(fetchErr):
-			r.transientFetchFails++
-			if r.transientFetchFails < TransientFetchWarnThreshold {
-				r.logger.Info("pr-monitor.fetch", "err", fetchErr)
-			} else {
-				r.logger.Warn("pr-monitor.fetch", "err", fetchErr, "consecutive", r.transientFetchFails)
-			}
-			// GraphQL budget exhausted: the per-PR fetch falls back to the idle
-			// REST bucket, so keep conflict/CI handling moving instead of stalling
-			// until the hourly reset. Thread-driven kinds are skipped (REST lacks
-			// thread data) and resume when GraphQL recovers.
-			if errors.Is(fetchErr, github.ErrBudgetExhausted) {
-				r.handleKnownPRConflictsViaREST(ctx, tasks)
-				fetchState := github.FetchPRStateViaREST
-				if r.fetchPRStateFn != nil {
-					fetchState = r.fetchPRStateFn
-				}
-				r.closeFinishedReviewTasksWithFetch(tasks, nil, fetchState)
-			} else {
-				// Reconcile stale review tasks on transient failures only.
-				// Non-transient errors (auth, 4xx) mean the per-task FetchPRState
-				// calls will also fail or be wasted, compounding backoff under an
-				// already-throttled API. Budget exhaustion uses the REST fallback
-				// above instead of this GraphQL-backed path.
-				r.closeFinishedReviewTasks(tasks, nil)
-			}
-		case github.IsAuthError(fetchErr):
-			r.transientFetchFails = 0
-			r.authCircuit.RecordFailure(fetchErr)
-			if r.authCircuit.Open() {
-				return poll.AuthCircuitBackoff
-			}
-			// Pre-trip: log at Info so the up-to-threshold auth failures don't
-			// flood at WARN before the circuit's single ERROR trip line.
-			r.logger.Info("pr-monitor.fetch", "err", fetchErr)
-		default:
-			r.transientFetchFails = 0
-			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
-		}
-		return r.pollSlow()
+		return r.handleReviewSummaryFetchError(ctx, tasks, fetchErr)
 	}
 	r.transientFetchFails = 0
 	r.authCircuit.RecordSuccess()
 
-	r.emit("reviews:updated", summary)
+	if runSybraSearch || runAssignedSearch {
+		r.emit("reviews:updated", summary)
+	}
 
+	sybraAttention := false
+	if r.runsSybraPRs() {
+		sybraAttention = r.processSybraPRPoll(ctx, tasks, summary)
+	}
+
+	assignedAttention := false
+	if r.runsAssignedPRSearches() {
+		assignedAttention = r.processAssignedPRPoll(ctx, tasks, summary)
+	}
+
+	return r.nextInterval(sybraAttention, assignedAttention)
+}
+
+func (r *Handler) fetchReviewSummary() (summary github.ReviewSummary, runSybraSearch, runAssignedSearch bool, err error) {
+	runSybraSearch = r.runsSybraPRSearches()
+	runAssignedSearch = r.runsAssignedPRSearches()
+
+	switch {
+	case runSybraSearch && runAssignedSearch && r.fetchReviewsFn != nil &&
+		r.fetchCreatedByMePRsFn == nil && r.fetchAssignedReviewSummaryFn == nil:
+		summary, err = r.fetchReviewsFn()
+		return summary, runSybraSearch, runAssignedSearch, err
+	default:
+		return r.fetchSplitReviewSummary(runSybraSearch, runAssignedSearch)
+	}
+}
+
+func (r *Handler) fetchSplitReviewSummary(runSybraSearch, runAssignedSearch bool) (summary github.ReviewSummary, sybraSearchEnabled, assignedSearchEnabled bool, err error) {
+	sybraSearchEnabled = runSybraSearch
+	assignedSearchEnabled = runAssignedSearch
+	if runSybraSearch {
+		fetchCreated := github.FetchCreatedByMePRs
+		if r.fetchCreatedByMePRsFn != nil {
+			fetchCreated = r.fetchCreatedByMePRsFn
+		}
+		var created []github.PullRequest
+		created, err = fetchCreated()
+		if err != nil {
+			return summary, sybraSearchEnabled, assignedSearchEnabled, err
+		}
+		summary.CreatedByMe = created
+	}
+	if runAssignedSearch {
+		fetchAssigned := github.FetchAssignedReviewSummary
+		if r.fetchAssignedReviewSummaryFn != nil {
+			fetchAssigned = r.fetchAssignedReviewSummaryFn
+		}
+		var assigned github.ReviewSummary
+		assigned, err = fetchAssigned()
+		if err != nil {
+			return summary, sybraSearchEnabled, assignedSearchEnabled, err
+		}
+		summary.ReviewRequested = assigned.ReviewRequested
+		summary.ReviewedByMe = assigned.ReviewedByMe
+	}
+	return summary, sybraSearchEnabled, assignedSearchEnabled, nil
+}
+
+func (r *Handler) handleReviewSummaryFetchError(ctx context.Context, tasks []task.Task, fetchErr error) time.Duration {
+	switch {
+	case github.IsTransientError(fetchErr):
+		r.handleTransientReviewFetchError(ctx, tasks, fetchErr)
+	case github.IsAuthError(fetchErr):
+		r.transientFetchFails = 0
+		r.authCircuit.RecordFailure(fetchErr)
+		if r.authCircuit.Open() {
+			return poll.AuthCircuitBackoff
+		}
+		// Pre-trip: log at Info so the up-to-threshold auth failures don't
+		// flood at WARN before the circuit's single ERROR trip line.
+		r.logger.Info("pr-monitor.fetch", "err", fetchErr)
+	default:
+		r.transientFetchFails = 0
+		r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
+	}
+	return r.nextInterval(false, false)
+}
+
+func (r *Handler) handleTransientReviewFetchError(ctx context.Context, tasks []task.Task, fetchErr error) {
+	r.transientFetchFails++
+	if r.transientFetchFails < TransientFetchWarnThreshold {
+		r.logger.Info("pr-monitor.fetch", "err", fetchErr)
+	} else {
+		r.logger.Warn("pr-monitor.fetch", "err", fetchErr, "consecutive", r.transientFetchFails)
+	}
+	// GraphQL budget exhausted: the per-PR fetch falls back to the idle
+	// REST bucket, so keep conflict/CI handling moving instead of stalling
+	// until the hourly reset. Thread-driven kinds are skipped (REST lacks
+	// thread data) and resume when GraphQL recovers.
+	if errors.Is(fetchErr, github.ErrBudgetExhausted) {
+		if r.runsSybraPRs() {
+			r.handleKnownPRConflictsViaREST(ctx, tasks)
+		}
+		if r.runsAssignedPRSearches() {
+			fetchState := github.FetchPRStateViaREST
+			if r.fetchPRStateFn != nil {
+				fetchState = r.fetchPRStateFn
+			}
+			r.closeFinishedReviewTasksWithFetch(tasks, nil, fetchState)
+		}
+		return
+	}
+
+	// Reconcile stale review tasks on transient failures only. Non-transient
+	// errors (auth, 4xx) mean the per-task FetchPRState calls will also fail or
+	// be wasted, compounding backoff under an already-throttled API. Budget
+	// exhaustion uses the REST fallback above instead of this GraphQL path.
+	if r.runsAssignedPRSearches() {
+		r.closeFinishedReviewTasks(tasks, nil)
+	}
+}
+
+func (r *Handler) processSybraPRPoll(ctx context.Context, tasks []task.Task, summary github.ReviewSummary) bool {
 	monitoredPRs := r.monitoredPRs(summary)
-	monitoredPRs = r.includeKnownTaskPRs(tasks, monitoredPRs)
+	monitoredPRs = r.includeKnownTaskPRs(ctx, tasks, monitoredPRs)
 
 	// Recover PRs orphaned by a workflow that exited before linking — e.g. a
 	// task stranded in human-required while a late-finishing agent opened the
@@ -422,10 +627,42 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	r.adoptOrphanPRs(ctx, tasks, monitoredPRs)
 	r.adoptTasklessPRs(tasks, monitoredPRs)
 
-	var (
-		matchers       []github.TaskMatcher
-		closedMatchers []github.TaskMatcher
-	)
+	matchers, closedMatchers := buildOutboundMatchers(tasks)
+	issues := r.handleMatchedOwnPRs(ctx, tasks, monitoredPRs, matchers)
+
+	r.logPollSummary(monitoredPRs, len(matchers), len(issues))
+	if len(closedMatchers) > 0 {
+		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
+	}
+
+	r.scanForReverts(ctx, tasks)
+	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
+	r.reconcilePRPhases(ctx, tasks, monitoredPRs)
+	// monitoredPRs here is the author:@me search result (r.monitoredPRs), which
+	// already spans every open PR the user authored regardless of task status —
+	// no separate fetch is needed to reach a human-required task's own PR.
+	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
+	issues = r.mergeReconciledReady(ctx, reconciledReady, issues)
+	r.maybeArmNativeAutoMerge(ctx, tasks, monitoredPRs, issues)
+
+	return prNeedsAttention(monitoredPRs)
+}
+
+func (r *Handler) processAssignedPRPoll(ctx context.Context, tasks []task.Task, summary github.ReviewSummary) bool {
+	_ = ctx
+	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
+	// reconcileReviewTask's gh calls (FetchMyReviewState, FetchPRState,
+	// FetchPRHeadSHA) use the package's legacy ctx-less runGHAPIWith path,
+	// shared by many other github package callers; re-plumbing ctx through
+	// that whole package is out of scope for this pass.
+	r.reconcileReviewPhases(tasks, summary) //nolint:contextcheck // github package's legacy ctx-less gh path, see comment above
+	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
+	return reviewNeedsAttention(summary)
+}
+
+// buildOutboundMatchers builds the pr-fix dispatch and closed-task matcher
+// sets pollAndMonitorPRs needs from its task list.
+func buildOutboundMatchers(tasks []task.Task) (matchers, closedMatchers []github.TaskMatcher) {
 	for i := range tasks {
 		m := github.TaskMatcher{
 			ID:        tasks[i].ID,
@@ -442,43 +679,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 			closedMatchers = append(closedMatchers, m)
 		}
 	}
-
-	var issues []github.PRIssue
-	if len(matchers) > 0 {
-		issues = github.MatchTaskPRs(monitoredPRs, matchers)
-		if r.prTracker != nil {
-			r.prTracker.Cleanup()
-		}
-		r.cancelResolvedPRFixWorkflows(tasks, issues, github.MatchTaskPRIndex(monitoredPRs, matchers))
-		r.handleMatchedPRIssues(ctx, issues)
-	}
-
-	r.logPollSummary(monitoredPRs, len(matchers), len(issues))
-
-	if len(closedMatchers) > 0 {
-		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
-	}
-
-	r.scanForReverts(ctx, tasks)
-	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
-	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
-	// reconcileReviewTask's gh calls (FetchMyReviewState, FetchPRState,
-	// FetchPRHeadSHA) use the package's legacy ctx-less runGHAPIWith path,
-	// shared by many other github package callers; re-plumbing ctx through
-	// that whole package is out of scope for this pass.
-	r.reconcileReviewPhases(tasks, summary) //nolint:contextcheck // github package's legacy ctx-less gh path, see comment above
-	r.reconcilePRPhases(tasks, monitoredPRs)
-	// monitoredPRs here is the author:@me search result (r.monitoredPRs), which
-	// already spans every open PR the user authored regardless of task status —
-	// no separate fetch is needed to reach a human-required task's own PR.
-	r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
-	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
-	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
-
-	if prNeedsAttention(monitoredPRs) {
-		return r.pollFast()
-	}
-	return r.pollSlow()
+	return matchers, closedMatchers
 }
 
 // handleKnownPRConflictsViaREST runs a REST-only conflict/CI/ready-to-merge
@@ -492,7 +693,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 // gates a SourcedViaREST PR on the strict REST readiness check
 // (readyForRESTAutoMerge) rather than the Copilot/thread-based gate.
 func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []task.Task) {
-	selection := r.selectKnownPRPoll(tasks)
+	selection := r.selectKnownPRPoll(ctx, tasks)
 	r.logger.Info("reviews.poll.bounded",
 		"selected", selection.selectedPRs,
 		"deferred", selection.deferredPRs,
@@ -513,11 +714,14 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 			closedMatchers = append(closedMatchers, m)
 		}
 	}
-	if len(matchers) == 0 && len(closedMatchers) == 0 {
+	settledImplementMatchers := r.settledImplementationFetchMatchers(ctx, selection.tasks)
+	if len(matchers) == 0 && len(closedMatchers) == 0 && len(settledImplementMatchers) == 0 {
 		return
 	}
 
-	monitoredPRs := r.fetchKnownTaskPRs(matchers)
+	fetchMatchers := append([]github.TaskMatcher{}, matchers...)
+	fetchMatchers = append(fetchMatchers, settledImplementMatchers...)
+	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers)
 	if len(matchers) > 0 {
 		var handled []github.PRIssue
 		matched := github.MatchTaskPRs(monitoredPRs, matchers)
@@ -525,9 +729,11 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 			switch matched[i].Kind {
 			case github.PRIssueConflict, github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueCIFailure, github.PRIssueReadyToMerge:
 				handled = append(handled, matched[i])
-			case github.PRIssueComments:
+			case github.PRIssueComments, github.PRIssueTaskBranchConflict, github.PRIssueCIFlake:
 				// REST exposes no thread-resolution data; comments stay
-				// dropped until GraphQL recovers.
+				// dropped until GraphQL recovers. task_branch_conflict and
+				// ci_flake are tracker-only and are never emitted by
+				// MatchTaskPRs.
 			}
 		}
 		if r.prTracker != nil {
@@ -535,6 +741,7 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 		}
 		r.handleMatchedPRIssues(ctx, handled)
 	}
+	r.cancelSettledImplementationWorkflows(ctx, tasks, monitoredPRs)
 	if len(closedMatchers) > 0 {
 		fetchState := github.FetchPRStateViaREST
 		if r.fetchPRStateFn != nil {
@@ -542,6 +749,20 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 		}
 		r.advanceClosedTaskPRsWithFetch(ctx, monitoredPRs, closedMatchers, fetchState)
 	}
+}
+
+func (r *Handler) handleMatchedOwnPRs(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest, matchers []github.TaskMatcher) []github.PRIssue {
+	var issues []github.PRIssue
+	if len(matchers) > 0 {
+		issues = github.MatchTaskPRs(monitoredPRs, matchers)
+		if r.prTracker != nil {
+			r.prTracker.Cleanup()
+		}
+		r.cancelResolvedPRFixWorkflows(tasks, issues, github.MatchTaskPRIndex(monitoredPRs, matchers))
+		r.handleMatchedPRIssues(ctx, issues)
+	}
+	r.cancelSettledImplementationWorkflows(ctx, tasks, monitoredPRs)
+	return issues
 }
 
 func (r *Handler) handleMatchedPRIssues(ctx context.Context, issues []github.PRIssue) {
@@ -581,7 +802,7 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 		kinds = append(kinds, string(issues[i].Kind))
 	}
 	r.logger.Info("reviews.task-issues", "task_id", taskID, "kinds", kinds)
-	if r.agents.HasRunningAgentForTask(taskID) {
+	if r.hasBlockingAgentForTask(ctx, taskID) {
 		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "running_agent")
 		return
 	}
@@ -599,9 +820,21 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	var (
 		toHandle  []github.PRIssue
 		exhausted *github.PRIssue
+		flaky     *github.PRIssue
 		merge     *github.PRIssue
 	)
 	for i := range issues {
+		// A ci_failure whose failing checks are flaky (mixed pass/fail on this
+		// head SHA) never touches the deterministic ci_failure retry budget —
+		// it is handled separately (log + rerun, escalate only once the
+		// rerun budget itself is exhausted) so it can never be mistaken for a
+		// deterministic regression and burn the fix-agent budget below.
+		if issues[i].Kind == github.PRIssueCIFailure && issues[i].PR.CIFlaky {
+			if flaky == nil {
+				flaky = &issues[i]
+			}
+			continue
+		}
 		// Only the comments kind carries a feedback fingerprint; conflict,
 		// ci_failure, and ready_to_merge fall back to SHA-only gating.
 		var sig string
@@ -632,18 +865,24 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	// Prefer making progress: dispatch every handleable fix in one agent. Only
 	// escalate when nothing is handleable and a fix budget is spent — escalating
 	// flips the task to human-required and would strand a still-fixable sibling.
+	// A flaky ci_failure is lower priority than any deterministic work: it
+	// never blocks progress on a sibling issue, and only gets its own dispatch
+	// turn once there is nothing else to do.
 	r.logger.Info("reviews.dispatch.decision",
 		"task_id", taskID,
 		"to_handle", len(toHandle),
 		"exhausted", exhausted != nil,
+		"flaky", flaky != nil,
 		"merge", merge != nil)
 	switch {
 	case len(toHandle) > 0:
 		r.dispatchFixIssues(ctx, taskID, toHandle)
 	case exhausted != nil:
 		r.escalateExhaustedFix(*exhausted)
+	case flaky != nil:
+		r.handleFlakyCI(*flaky)
 	case merge != nil:
-		r.handleAutoMerge(*merge)
+		r.handleAutoMerge(ctx, *merge)
 	}
 }
 
@@ -791,63 +1030,101 @@ func (r *Handler) advanceClosedTaskPRs(ctx context.Context, monitoredPRs []githu
 func (r *Handler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher, fetchFn func(repo string, number int) (github.PRState, error)) {
 	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, fetchFn)
 	for _, c := range closedPRs {
-		if r.agents.HasRunningAgentForTask(c.TaskID) {
-			r.logger.Info("pr-monitor.closed-stop-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
+		if err := r.advanceClosedTaskPR(ctx, c, ""); err != nil {
+			r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
+		}
+	}
+}
+
+// AdvanceClosedTaskPR runs the same landing pipeline used by the PR monitor
+// for a task whose linked PR has already reached a terminal GitHub state.
+func (r *Handler) AdvanceClosedTaskPR(ctx context.Context, taskID string, prNumber int, state string) error {
+	return r.AdvanceClosedTaskPRAllowingAgent(ctx, taskID, prNumber, state, "")
+}
+
+// AdvanceClosedTaskPRAllowingAgent is AdvanceClosedTaskPR from an agent
+// completion callback. The completing agent is excluded from the stop/wait
+// phase because its done channel closes only after the callback returns.
+func (r *Handler) AdvanceClosedTaskPRAllowingAgent(ctx context.Context, taskID string, prNumber int, state, completingAgentID string) error {
+	if taskID == "" {
+		return fmt.Errorf("task id is required")
+	}
+	if prNumber == 0 {
+		return fmt.Errorf("pr number is required")
+	}
+	if state != "MERGED" && state != "CLOSED" {
+		return fmt.Errorf("unsupported closed PR state %q", state)
+	}
+	return r.advanceClosedTaskPR(ctx, github.ClosedPR{TaskID: taskID, PRNumber: prNumber, State: state}, completingAgentID)
+}
+
+func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, completingAgentID string) error {
+	var hasRunning bool
+	if completingAgentID != "" {
+		hasRunning = r.hasBlockingAgentForTaskAllowingAgent(ctx, c.TaskID, completingAgentID)
+	} else {
+		hasRunning = r.hasBlockingAgentForTask(ctx, c.TaskID)
+	}
+	if hasRunning {
+		r.logger.Info("pr-monitor.closed-stop-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
+		if completingAgentID != "" {
+			r.agents.KillOtherAgentsForTask(c.TaskID, completingAgentID, 10*time.Second)
+		} else {
 			r.agents.KillAgentsForTask(c.TaskID, 10*time.Second)
 		}
-		// Flip to done immediately with the base outcome — the status transition
-		// must never wait on GitHub enrichment.
-		base := classifyLandingOutcome(c.State)
-		landedStatus := task.StatusDone
-		if c.State == "CLOSED" {
-			landedStatus = task.StatusCancelled
-		}
-		if _, err := r.tasks.Update(c.TaskID, task.Update{
-			Status:  task.Ptr(landedStatus),
-			Outcome: task.Ptr(base),
-		}); err != nil {
-			r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
-			continue
-		}
-		// The task just landed; any still-Running/Waiting workflow (e.g.
-		// paused at code_review_staff) is now stale. Cancel it so
-		// Engine.ResumeStalled doesn't pick the done task back up and rebase
-		// its already-merged branch against origin/main, which self-conflicts
-		// and flips the task back to human-required.
-		if r.WorkflowEngine != nil {
-			if _, cancelErr := r.WorkflowEngine.CancelWorkflow(c.TaskID, "pr-monitor: task landed ("+base+")"); cancelErr != nil {
-				r.logger.Error("pr-monitor.closed-cancel-workflow", "task_id", c.TaskID, "err", cancelErr)
-			}
-		}
-		eventType := audit.EventPRMerged
-		if c.State == "CLOSED" {
-			eventType = audit.EventPRClosed
-		}
-		r.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State})
-		// Enrich (bounded GitHub I/O); refine the outcome if a human edited the PR
-		// and persist the merge commit for later revert detection.
-		outcome, landData := r.computeLanding(ctx, c.TaskID, c.PRNumber, c.State, base)
-		upd := task.Update{}
-		refine := false
-		if outcome != base {
-			upd.Outcome = task.Ptr(outcome)
-			refine = true
-		}
-		if mc, ok := landData["merge_commit"].(string); ok && mc != "" {
-			upd.MergeCommit = task.Ptr(mc)
-			refine = true
-		}
-		if refine {
-			if _, err := r.tasks.Update(c.TaskID, upd); err != nil {
-				r.logger.Warn("pr-monitor.outcome-refine", "task_id", c.TaskID, "err", err)
-			}
-		}
-		if t, err := r.tasks.Get(c.TaskID); err == nil {
-			r.recordExperienceOnLanding(t)
-		}
-		r.logAudit(audit.EventTaskLanded, c.TaskID, "", landData)
-		r.logger.Info("pr-monitor.auto-done", "task_id", c.TaskID, "pr", c.PRNumber, "state", c.State, "outcome", outcome)
 	}
+	// Flip to done immediately with the base outcome — the status transition
+	// must never wait on GitHub enrichment.
+	base := classifyLandingOutcome(c.State)
+	landedStatus := task.StatusDone
+	if c.State == "CLOSED" {
+		landedStatus = task.StatusCancelled
+	}
+	if _, err := r.tasks.Update(c.TaskID, task.Update{
+		Status:  task.Ptr(landedStatus),
+		Outcome: task.Ptr(base),
+	}); err != nil {
+		return err
+	}
+	// The task just landed; any still-Running/Waiting workflow (e.g.
+	// paused at code_review_staff) is now stale. Cancel it so
+	// Engine.ResumeStalled doesn't pick the done task back up and rebase
+	// its already-merged branch against origin/main, which self-conflicts
+	// and flips the task back to human-required.
+	if r.WorkflowEngine != nil {
+		if _, cancelErr := r.WorkflowEngine.CancelWorkflow(c.TaskID, "pr-monitor: task landed ("+base+")"); cancelErr != nil {
+			r.logger.Error("pr-monitor.closed-cancel-workflow", "task_id", c.TaskID, "err", cancelErr)
+		}
+	}
+	eventType := audit.EventPRMerged
+	if c.State == "CLOSED" {
+		eventType = audit.EventPRClosed
+	}
+	r.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State})
+	// Enrich (bounded GitHub I/O); refine the outcome if a human edited the PR
+	// and persist the merge commit for later revert detection.
+	outcome, landData := r.computeLanding(ctx, c.TaskID, c.PRNumber, c.State, base)
+	upd := task.Update{}
+	refine := false
+	if outcome != base {
+		upd.Outcome = task.Ptr(outcome)
+		refine = true
+	}
+	if mc, ok := landData["merge_commit"].(string); ok && mc != "" {
+		upd.MergeCommit = task.Ptr(mc)
+		refine = true
+	}
+	if refine {
+		if _, err := r.tasks.Update(c.TaskID, upd); err != nil {
+			r.logger.Warn("pr-monitor.outcome-refine", "task_id", c.TaskID, "err", err)
+		}
+	}
+	if t, err := r.tasks.Get(c.TaskID); err == nil {
+		r.recordExperienceOnLanding(t)
+	}
+	r.logAudit(audit.EventTaskLanded, c.TaskID, "", landData)
+	r.logger.Info("pr-monitor.auto-done", "task_id", c.TaskID, "pr", c.PRNumber, "state", c.State, "outcome", outcome)
+	return nil
 }
 
 // classifyLandingOutcome maps a terminal PR state to a task outcome label.
@@ -1301,6 +1578,10 @@ func anyKindIndeterminate(pr github.PullRequest, kinds []string) bool {
 	return false
 }
 
+func reviewNeedsAttention(summary github.ReviewSummary) bool {
+	return len(summary.ReviewRequested) > 0 || len(summary.ReviewedByMe) > 0
+}
+
 // monitoredPRs returns the union of user-authored PRs (from FetchReviews) and
 // Renovate-bot PRs (from renovatePRsFn). Renovate's PRs aren't in author:@me,
 // so without folding them in here the pr-fix monitor would never re-spawn an
@@ -1323,8 +1604,8 @@ func (r *Handler) monitoredPRs(summary github.ReviewSummary) []github.PullReques
 // result. FetchReviews is intentionally search-based and can miss PRs created
 // by another machine/account in the cluster; linked task metadata is the
 // canonical fallback for those outbound PRs.
-func (r *Handler) includeKnownTaskPRs(tasks []task.Task, monitoredPRs []github.PullRequest) []github.PullRequest {
-	selection := r.selectKnownPRPoll(tasks)
+func (r *Handler) includeKnownTaskPRs(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest) []github.PullRequest {
+	selection := r.selectKnownPRPoll(ctx, tasks)
 	if r.logger != nil {
 		r.logger.Info("reviews.poll.bounded",
 			"selected", selection.selectedPRs,
@@ -1385,14 +1666,20 @@ func (r *Handler) includeKnownTaskPRs(tasks []task.Task, monitoredPRs []github.P
 // agent that opened a PR outside of any workflow). Those tasks would render
 // a red ✗ in the kanban UI forever and never get picked up for pr-fix.
 //
-// Now we also include in-progress tasks that carry an explicit PR number.
+// Now we also include in-progress and todo tasks that carry an explicit PR
+// number. todo joined for the identical reason: skipTaskCreatedWorkflow
+// (workflow_dispatch.go) deliberately skips a fresh task.created dispatch for
+// any todo task with a PRNumber (starting a brand-new implementation
+// workflow would be wrong), on the assumption that "status-specific lanes"
+// resume it instead — but this was the only such lane, and it excluded todo,
+// so a task recovered to todo with its PR still open (e.g. a human-review
+// unblock, or an operator requeue) had no dispatch path at all and sat there
+// indefinitely even with a live, fixable (e.g. conflicting) PR. handoff-tagged
+// todo tasks are excluded (see the todo case below): they already have their
+// own re-entry lane and must not also become a pr-fix candidate.
 // Branch-only matching stays gated on in-review to avoid false positives
 // from tasks that pushed a WIP branch without opening a PR yet.
 func prMonitorEligible(t *task.Task) bool {
-	if t.TaskType == task.TaskTypeChat {
-		// Chat tasks are ephemeral and never have PRs — exclude from PR monitoring.
-		return false
-	}
 	if slices.Contains(t.Tags, "review") {
 		// Review tasks are inbound (reviewing someone else's PR), not tasks
 		// whose own PR is being tracked. They're handled separately.
@@ -1402,10 +1689,18 @@ func prMonitorEligible(t *task.Task) bool {
 	case task.StatusInReview:
 		return t.PRNumber != 0 || t.Branch != ""
 	case task.StatusInProgress:
-		// Only in-progress tasks that already have a PR — a branch alone
-		// isn't enough, we don't want to treat mid-implementation tasks
-		// as candidates for pr-fix dispatch.
+		// Only tasks that already have a PR — a branch alone isn't enough,
+		// still mid-implementation.
 		return t.PRNumber != 0
+	case task.StatusTodo:
+		// A handoff-tagged task is exempted from skipTaskCreatedWorkflow's
+		// skip (allowsTaskCreatedWorkflowWithPR, workflow_dispatch.go) so its
+		// own task.created lane can re-fire regardless of PRNumber — pr-fix
+		// must stay out of that lane's way, the same way it stays out of an
+		// inbound review task's, or the two could pick a conflicting action
+		// (reimplement from scratch vs. patch the existing PR) for the same
+		// task on the same tick.
+		return t.PRNumber != 0 && !slices.Contains(t.Tags, "handoff")
 	default:
 		return false
 	}
@@ -1419,7 +1714,7 @@ func prClosedEligible(t *task.Task) bool {
 	if prMonitorEligible(t) {
 		return true
 	}
-	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if slices.Contains(t.Tags, "review") {
 		return false
 	}
 	return t.Status == task.StatusHumanRequired && t.PRNumber != 0
@@ -1453,10 +1748,10 @@ func hasOrphanStrandReason(reason string) bool {
 // For human-required tasks the strand-reason gate prevents resurrecting a task
 // that a human or the watchdog deliberately stopped. For in-review tasks no
 // reason gate is needed — a task already in review with no PR is unambiguously
-// an orphan regardless of how it got there. Chat tasks and inbound review tasks
-// are never own-PR tasks.
+// an orphan regardless of how it got there. Inbound review tasks are never
+// own-PR tasks.
 func orphanPRAdoptionEligible(t *task.Task) bool {
-	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+	if slices.Contains(t.Tags, "review") {
 		return false
 	}
 	if t.PRNumber != 0 || t.Branch == "" || t.ProjectID == "" {
@@ -1657,6 +1952,7 @@ func findMergedPRByBranch(repo, branch string) (int, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
 		"--repo", repo, "--head", branch, "--state", "merged", "--json", "number", "--limit", "2")
+	cmd.Env = github.GHEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, out)
@@ -1679,10 +1975,11 @@ func findMergedPRByBranch(repo, branch string) (int, error) {
 // handleAutoMerge's own gate already decided on) — e.g. a PR still waiting on
 // CI to go green, which produces no PRIssue at all. Reuses monitoredPRs
 // already fetched this cycle rather than issuing fresh GraphQL calls.
-func (r *Handler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []github.PullRequest, issues []github.PRIssue) {
+func (r *Handler) maybeArmNativeAutoMerge(ctx context.Context, tasks []task.Task, monitoredPRs []github.PullRequest, issues []github.PRIssue) {
 	if r.cfg == nil || !r.cfg.GitHub.NativeAutoMerge {
 		return
 	}
+	backoff := r.mergeBackoff()
 	handled := make(map[string]bool, len(issues))
 	for i := range issues {
 		handled[issues[i].TaskID] = true
@@ -1725,27 +2022,30 @@ func (r *Handler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []gith
 			continue
 		}
 
-		supportsFn := r.supportsAutoMergeFn
-		if supportsFn == nil {
-			supportsFn = github.SupportsNativeAutoMerge
-		}
-		ok, serr := supportsFn(pr.Repository, pr.BaseRefName)
-		if serr != nil || !ok {
+		stateSig := autoMergeStateSignature(*pr)
+		if !backoff.ShouldAttempt(pr.Repository, pr.Number, pr.HeadSHA, stateSig) {
+			metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(pr.Repository, pr.Number)))
 			continue
 		}
-
-		enableFn := r.enableAutoMergeFn
-		if enableFn == nil {
-			enableFn = github.EnableAutoMerge
-		}
-		if aerr := enableFn(pr.Repository, pr.Number); aerr != nil {
-			r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", pr.Number, "err", aerr)
+		res := r.tryArmNativeAutoMerge(*t, github.PRIssue{
+			Kind:   github.PRIssueReadyToMerge,
+			TaskID: t.ID,
+			PR:     *pr,
+		}, "")
+		if res.armed {
+			r.clearMergeBackoff(ctx, pr.Repository, pr.Number)
+			metrics.AutoMergeAttempt(ctx, "armed", "")
+			r.evictReadyPRCache(pr.Repository, pr.Number)
 			continue
 		}
-		r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", map[string]any{
-			"pr": pr.Number, "repo": pr.Repository,
-		})
-		r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", pr.Number)
+		if res.err == nil {
+			continue
+		}
+		metrics.AutoMergeAttempt(ctx, "attempted", "")
+		class := github.ClassifyMergeError(res.err)
+		if backoff.RecordFailure(pr.Repository, pr.Number, pr.HeadSHA, stateSig, class) {
+			metrics.AutoMergeAttempt(ctx, "terminal", string(class))
+		}
 	}
 }
 

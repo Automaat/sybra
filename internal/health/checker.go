@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/procstat"
+	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -35,6 +37,17 @@ type Checker struct {
 	// failures (see sandbox.Manager.QuarantinedEntries). nil disables the
 	// check — set only when a sandbox.Manager is wired in (see New).
 	sandboxQuarantine func() []sandbox.QuarantineEntry
+	pressure          func() *PressureStatus
+	// ghAuthProbe, when set, is called once per tick with a live
+	// github.Authenticated() result plus the shared auth-health state
+	// (github.AuthHealthSnapshot().State, passed as a plain string so this
+	// package doesn't need to import internal/github) so credential loss is
+	// caught proactively (checkGHAuthUnavailable) instead of only after a
+	// push/issue-filing attempt has already failed, and a permanent
+	// misconfiguration can be told apart from a transient blip. nil disables
+	// the check — set only when GitHub integration is enabled (see
+	// SetGHAuthProbe).
+	ghAuthProbe func() (authenticated bool, state string)
 
 	mu     sync.RWMutex
 	report *Report
@@ -65,6 +78,21 @@ func New(
 // manager).
 func (c *Checker) SetSandboxQuarantine(f func() []sandbox.QuarantineEntry) {
 	c.sandboxQuarantine = f
+}
+
+// SetPressureStatus wires in the current pressure/reclaim telemetry source.
+// Optional — omit to leave pressure telemetry out of the report.
+func (c *Checker) SetPressureStatus(f func() *PressureStatus) {
+	c.pressure = f
+}
+
+// SetGHAuthProbe wires in a live GitHub-auth probe (typically
+// github.Authenticated paired with github.AuthHealthSnapshot().State),
+// enabling checkGHAuthUnavailable. Optional — omit when GitHub integration is
+// disabled, so an install with no gh CLI/token configured at all doesn't get
+// a spurious critical finding every tick.
+func (c *Checker) SetGHAuthProbe(f func() (authenticated bool, state string)) {
+	c.ghAuthProbe = f
 }
 
 // OwnedProcesses separates exact Sybra PIDs from process groups Sybra created.
@@ -140,6 +168,11 @@ func (c *Checker) check(ctx context.Context) {
 	findings = append(findings, checkTriageMismatch(weekEvents, now)...)
 	findings = append(findings, checkStatusBottleneck(weekEvents, now)...)
 	findings = append(findings, checkGHIssueAuthFailure(dayEvents, now)...)
+	findings = append(findings, checkGHPushAuthFailure(dayEvents, now)...)
+	if c.ghAuthProbe != nil {
+		authenticated, state := c.ghAuthProbe()
+		findings = append(findings, checkGHAuthUnavailable(authenticated, state, now)...)
+	}
 	docker := sampleDockerDisk(ctx, c.docker, now)
 	findings = append(findings, checkDockerReclaimable(docker, now)...)
 	if c.sandboxQuarantine != nil {
@@ -156,6 +189,10 @@ func (c *Checker) check(ctx context.Context) {
 		owned = c.owned()
 	}
 	processes := procstat.Sample(5, owned.Owns)
+	var pressure *PressureStatus
+	if c.pressure != nil {
+		pressure = sanitizePressureStatus(c.pressure())
+	}
 
 	report := &Report{
 		GeneratedAt: now,
@@ -164,6 +201,7 @@ func (c *Checker) check(ctx context.Context) {
 		Score:       RollupScore(findings),
 		Findings:    findings,
 		Stats:       stats,
+		Pressure:    pressure,
 		Processes:   &processes,
 	}
 	if docker.Available {
@@ -187,26 +225,61 @@ func (c *Checker) check(ctx context.Context) {
 		"total_cost", stats.TotalCostUSD, "failure_rate", stats.FailureRate)
 }
 
+// sanitizePressureStatus clamps NaN/Inf sample readings to -1 ("signal
+// unreadable" — DiskFreePct/MemAvailablePct/LoadPerCPU are never legitimately
+// negative). pressure.Gate.Status legitimately returns NaN for a signal it
+// could not sample (see internal/pressure's allSignalsUnreadable and the CLI's
+// own math.IsNaN-aware formatHealthPercent/formatHealthNumber), but
+// encoding/json refuses to marshal NaN/Inf anywhere in the object graph —
+// unsanitized, one unreadable sample would silently fail persist's
+// MarshalIndent call and blackhole the *entire* report (score, findings,
+// stats, docker, processes — not just pressure).
+func sanitizePressureStatus(p *PressureStatus) *PressureStatus {
+	if p == nil {
+		return nil
+	}
+	sanitized := *p
+	sanitized.DiskFreePct = safeFloat(p.DiskFreePct)
+	sanitized.MemAvailablePct = safeFloat(p.MemAvailablePct)
+	sanitized.LoadPerCPU = safeFloat(p.LoadPerCPU)
+	return &sanitized
+}
+
+func safeFloat(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return -1
+	}
+	return v
+}
+
+// BuildStats computes run/failure/cost stats from an audit event stream —
+// the same accounting internal/evaluation.Compute uses for its own run
+// totals (runacct.Count with CountsTowardCodeAuthorFailureRate), exported so
+// evaluation.ReconcileReports can prove the two agree over the same event
+// window instead of re-deriving an equivalent computation that could drift
+// from this one silently.
+func BuildStats(events []audit.Event) Stats {
+	return buildStats(events)
+}
+
 func buildStats(events []audit.Event) Stats {
 	s := Stats{CostByRole: make(map[string]float64)}
-	runs := audit.NormalizeAgentRuns(events)
-	for i := range runs {
-		run := &runs[i]
-		if !run.Terminal {
-			continue
-		}
-		s.TotalAgentRuns++
-		if run.Failed {
-			s.FailedAgentRuns++
-		}
-		cost, _ := run.TerminalEvent.Data["cost_usd"].(float64)
-		s.TotalCostUSD += cost
-		role, _ := run.TerminalEvent.Data["role"].(string)
-		s.CostByRole[roleLabel(role)] += cost
+	records := audit.RunRecords(events)
+	counts := runacct.Count(records, nil, runacct.CountConfig{
+		CountsTowardFailure: runacct.CountsTowardCodeAuthorFailureRate,
+	})
+	s.TotalAgentRuns = counts.Runs
+	s.ResolvedRuns = counts.Resolved
+	s.StalledRuns = counts.Stalled
+	s.UnknownRuns = counts.Unknown
+	s.FailedAgentRuns = counts.Failures
+	for i := range records {
+		s.TotalCostUSD += records[i].CostUSD
+		s.CostByRole[roleLabel(records[i].Role)] += records[i].CostUSD
 	}
 
-	if s.TotalAgentRuns > 0 {
-		s.FailureRate = round2(float64(s.FailedAgentRuns) / float64(s.TotalAgentRuns))
+	if s.ResolvedRuns > 0 {
+		s.FailureRate = round2(float64(s.FailedAgentRuns) / float64(s.ResolvedRuns))
 	}
 	s.TotalCostUSD = round2(s.TotalCostUSD)
 	for k, v := range s.CostByRole {

@@ -7,10 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
 // umbrellaGatedTag is the tag the expander sets on a gate-blocked child; the
@@ -26,16 +29,16 @@ const umbrellaSettleDelay = 2 * time.Minute
 
 // umbrellaState aggregates one umbrella's tracker and children for a gate tick.
 type umbrellaState struct {
-	tracker      *task.Task
-	cap          int // max children running at once
-	total        int // child task count
-	doneCount    int
-	active       int // children occupying a parallelism slot
-	anyHR        bool
-	anyCancelled bool
-	anyBlocked   bool // non-gated child stuck in `blocked` (e.g. human-review flip)
-	released     int  // children released so far this tick (counts toward the cap)
-	children     []umbrellaProgressChild
+	tracker    *task.Task
+	cap        int // max children running at once
+	total      int // child task count
+	doneCount  int
+	active     int // children occupying a parallelism slot
+	anyHR      bool
+	anyBlocked bool // non-gated child stuck in `blocked` (e.g. human-review flip)
+	expanding  bool
+	released   int // children released so far this tick (counts toward the cap)
+	children   []umbrellaProgressChild
 }
 
 type umbrellaProgressChild struct {
@@ -55,7 +58,7 @@ const (
 // umbrella's max-parallel cap — and rolls each umbrella tracker's status up
 // from its children (cycle or a stuck child → human-required; all done →
 // done + close the umbrella issue). No-op when no umbrella tasks exist.
-func (a *App) releaseUnblockedChildren() {
+func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	a.recoverDegradedUmbrellas()
 
 	tasks, err := a.tasks.List()
@@ -87,10 +90,22 @@ func (a *App) releaseUnblockedChildren() {
 			st := stateFor(t.Issue)
 			st.tracker = t
 			st.cap = umbrella.ParseMaxParallel(t.Tags)
+			st.expanding = umbrella.HasActiveExpandPhase(t.Tags) || slices.Contains(t.Tags, umbrella.ExpandingTag)
 		}
 		if t.UmbrellaIssue != "" {
 			hasUmbrella = true
 			accumulateChild(stateFor(t.UmbrellaIssue), t)
+		}
+	}
+	if !hasUmbrella {
+		return
+	}
+
+	for i := range tasks {
+		t := &tasks[i]
+		expanding := false
+		if t.UmbrellaIssue != "" {
+			expanding = stateFor(t.UmbrellaIssue).expanding
 		}
 		nodes[i] = umbrella.Node{
 			ID:        t.ID,
@@ -101,18 +116,24 @@ func (a *App) releaseUnblockedChildren() {
 			// Gate-marked todo children (current model) and legacy
 			// blocked+gated children (tasks created before this change)
 			// are both eligible for release. Never release a task that is
-			// blocked without the gating tag (contained Sybra bug). A child
-			// whose umbrella is currently mid-recovery is held regardless —
-			// RecoverDegraded may be mutating this same umbrella's children
-			// concurrently, so this tick must not release from a partial graph.
+			// blocked without the gating tag (contained Sybra bug), one the
+			// workflow engine itself parked blocked (e.g. a watchdog-exhausted
+			// retry, see isWorkflowOwnedBlock), or one that already ran an
+			// implementation agent — none of these holds is the umbrella
+			// gate's own, and releasing one would discard the child's
+			// in-flight workflow (#2538), even if it still carries the gating
+			// tag. A child whose umbrella is currently mid-recovery is held
+			// regardless — RecoverDegraded may be mutating this same
+			// umbrella's children concurrently, so this tick must not
+			// release from a partial graph.
 			Awaiting: t.UmbrellaIssue != "" &&
 				!inFlight[umbrella.NormalizeIssueRef(t.UmbrellaIssue)] &&
+				!expanding &&
 				(t.Status == task.StatusTodo || t.Status == task.StatusBlocked) &&
+				!isWorkflowOwnedBlock(t) &&
+				!hasStartedImplementation(t) &&
 				slices.Contains(t.Tags, umbrellaGatedTag),
 		}
-	}
-	if !hasUmbrella {
-		return
 	}
 
 	g := umbrella.Build(nodes)
@@ -121,18 +142,41 @@ func (a *App) releaseUnblockedChildren() {
 		cyclic[umbrella.NormalizeIssueRef(umb)] = true
 	}
 
+	for ref, st := range states {
+		if st.expanding {
+			delete(states, ref)
+		}
+	}
+	for ref := range inFlight {
+		delete(states, ref)
+	}
+
 	// A blocked tracker pauses only tracker rollup/issue close; dependency-ready
 	// children still release so independent work under the umbrella can proceed.
-	a.releaseCapped(g.ReadyToRelease(), byID, states)
+	// Expanding/recovering trackers are removed from states above, so release
+	// and rollup both hold until the complete DAG is visible.
+	a.releaseCapped(ctx, g.ReadyToRelease(), byID, states)
 
 	// An in-flight recovery run owns this umbrella's tracker/children this
 	// tick; skip its rollup entirely rather than computing status from a
 	// snapshot RecoverDegraded may be mutating underneath. Unrelated
 	// umbrellas continue rolling up normally.
-	for ref := range inFlight {
-		delete(states, ref)
-	}
 	a.rollupTrackers(states, cyclic)
+}
+
+// hasStartedImplementation reports whether t has ever run an implementation
+// agent. A dependency-gated child that never left blocked-awaiting-deps has
+// none; the umbrella gate must never release one that does, since a blocked
+// status on a child that already ran implementation means a watchdog
+// exhaustion, not an unmet dependency (sybra#2538).
+func hasStartedImplementation(t *task.Task) bool {
+	for i := range slices.Backward(t.AgentRuns) {
+		role := t.AgentRuns[i].Role
+		if role == "" || role == string(agent.RoleImplementation) {
+			return true
+		}
+	}
+	return false
 }
 
 // accumulateChild folds one child task's status into its umbrella's tally.
@@ -150,13 +194,26 @@ func accumulateChild(st *umbrellaState, t *task.Task) {
 	case task.StatusDone:
 		st.doneCount++
 	case task.StatusCancelled:
-		// A cancelled prerequisite is a deliberate abandonment — surface it for
-		// a human rather than silently completing the umbrella or proceeding on
-		// the cancelled work (its dependents stay held; see depsSatisfied).
-		st.anyCancelled = true
+		// No side effect here: whether a cancelled child blocks rollup depends
+		// on whether a sibling still covers its issue (a cancelled duplicate
+		// from an umbrella-expansion race vs. a genuine abandonment), which
+		// needs the full child set — see unresolvedCancellation, called from
+		// trackerRollup once every child has been folded in.
 	case task.StatusHumanRequired:
+		if watchdogreason.IsRetryableStop(t.StatusReason) {
+			st.active++
+			return
+		}
 		st.anyHR = true
 	case task.StatusBlocked:
+		if isWorkflowOwnedBlock(t) {
+			// The workflow engine parked this itself (e.g. a watchdog-exhausted
+			// retry) — never the umbrella gate's own hold, even if it still
+			// carries the gating tag. Surface it like any other stuck child
+			// below rather than silently treating it as dependency-awaiting.
+			st.anyBlocked = true
+			return
+		}
 		if slices.Contains(t.Tags, umbrellaGatedTag) {
 			// Gate-blocked, awaiting its dependencies — not stuck, handled by
 			// ReadyToRelease/depsSatisfied.
@@ -177,6 +234,21 @@ func accumulateChild(st *umbrellaState, t *task.Task) {
 	}
 }
 
+// isWorkflowOwnedBlock reports whether t's `blocked` status is held by the
+// workflow engine itself — e.g. handleWatchdogRateLimitRetry's zero-output
+// exhaustion path, or canRetryWorktreeRepair's disk/rebase repair hold —
+// rather than the umbrella dependency gate. The gate never sets Blocker on a
+// child it releases or holds, so a non-zero blocker.ActorWorkflow is an
+// authoritative, structured signal that this `blocked` predates (and is
+// unrelated to) any umbrella-gated tag the task happens to still carry.
+// Checked ahead of the tag in both Awaiting and accumulateChild so a tag that
+// reappears through any means (stale client round-trip, future bug) can never
+// again cause the gate to mistake a workflow-owned hold for its own and
+// re-release a child mid-implementation into a fresh triage cycle (#2538).
+func isWorkflowOwnedBlock(t *task.Task) bool {
+	return t.Blocker.Actor == blocker.ActorWorkflow
+}
+
 // isRunningChild reports whether a child status occupies a parallelism slot —
 // i.e. it has been released and is somewhere in the pipeline but not finished.
 func isRunningChild(s task.Status) bool {
@@ -191,7 +263,7 @@ func isRunningChild(s task.Status) bool {
 // releaseCapped releases ready children to `todo`, but no more than each
 // umbrella's remaining parallelism budget (cap - active). Strips the gating
 // marker on release so a later re-block cannot retrigger it.
-func (a *App) releaseCapped(ready []string, byID map[string]*task.Task, states map[string]*umbrellaState) {
+func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string]*task.Task, states map[string]*umbrellaState) {
 	for _, id := range ready {
 		t, ok := byID[id]
 		if !ok || t == nil {
@@ -201,6 +273,7 @@ func (a *App) releaseCapped(ready []string, byID map[string]*task.Task, states m
 		if st == nil || st.active+st.released >= st.cap {
 			continue // at the umbrella's parallelism cap for this tick
 		}
+		prevTags, prevStatus, prevReason := t.Tags, t.Status, t.StatusReason
 		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
 			return s == umbrellaGatedTag
 		})
@@ -213,10 +286,100 @@ func (a *App) releaseCapped(ready []string, byID map[string]*task.Task, states m
 			a.logger.Error("umbrella.release.failed", "task_id", id, "err", err)
 			continue
 		}
+		pushed, err := a.pushReleaseToHomeNode(ctx, updated)
+		if err != nil {
+			a.logger.Error("umbrella.release.push_failed", "task_id", id, "err", err)
+			// The follower never saw the release, so it must not look released
+			// here either — restore the pre-release state so ReadyToRelease
+			// picks this child up again next tick instead of leaving the
+			// leader's board silently diverged from the follower forever.
+			if _, rerr := a.tasks.Update(id, task.Update{
+				Status:       task.Ptr(prevStatus),
+				Tags:         &prevTags,
+				StatusReason: task.Ptr(prevReason),
+			}); rerr != nil {
+				a.logger.Error("umbrella.release.rollback_failed", "task_id", id, "err", rerr)
+			}
+			continue
+		}
+		if !pushed {
+			// No transport error, but the release did not reach the follower
+			// and, unlike a failed push, retrying it would not help — e.g.
+			// Assigner declined for confidentiality and has already moved the
+			// task to its own terminal blocked state with an operator-facing
+			// reason (clusterlead.blockForConfidentiality). Rolling back here
+			// would stomp that reason with a generic "gated" state and retry
+			// forever against a follower that will never accept the push.
+			// Leave whatever state the push path already applied alone and
+			// just decline to report a release that never happened.
+			a.logger.Warn("umbrella.release.not_pushed", "task_id", id)
+			continue
+		}
 		st.setChildStatus(id, updated.Status)
 		st.released++
 		a.logger.Info("umbrella.child.released", "task_id", id)
 	}
+}
+
+// pushReleaseTimeout bounds pushReleaseToHomeNode's remote call well under the
+// cluster client's own 30s default so one unreachable follower can delay the
+// single-threaded dispatch tick — and every other umbrella's local-only
+// releases queued behind it in the same releaseCapped loop — by at most this
+// long rather than up to 30s per stuck release.
+const pushReleaseTimeout = 5 * time.Second
+
+// pushReleaseToHomeNode forwards a just-released child's new state to its
+// home follower when the task isn't homed locally. The local a.tasks.Update
+// above only ever touches this leader's own canonical copy; Mirror only pulls
+// follower state up to the leader; and the assigner's normal Route/Tick push
+// a task to its follower once, at first assignment, then never again. Without
+// this forward, a follower-homed task released by this leader's umbrella gate
+// would carry the release in the leader's mirror forever while the follower —
+// the node that actually dispatches it — stays stuck on its pre-release copy.
+// Released children are always still-gated/todo, so pushing them verbatim can
+// never roll back a follower's in-progress execution state (see
+// Assigner.PushUpdate).
+//
+// Returns pushed=true, err=nil when the task is homed locally (nothing to
+// push), the assigner/config aren't wired up (test doubles), or the push
+// reached the follower — PushUpdate's own routed/pushed return is the
+// authority on that even when it also reports an error: AssignTask lands
+// before PushUpdate's trailing local bookkeeping write (re-stamping
+// AssignedNode, already-correct here), so a failure in that last step must
+// not be read as "the follower never got it" — the caller must not roll back
+// a release the follower already holds, or leader and follower go split
+// brain (leader thinks gated, follower thinks released).
+//
+// Returns pushed=false, err=nil when PushUpdate declined to push without any
+// transport error — currently only the confidentiality gate
+// (clusterlead.blockForConfidentiality), which already moves the task to its
+// own terminal blocked state — so the caller must not treat that as either a
+// release or a transient failure to retry.
+//
+// Returns pushed=false, err!=nil only when the push itself never reached the
+// follower (network/timeout/remote error); the caller should roll back and
+// let the next tick retry.
+func (a *App) pushReleaseToHomeNode(ctx context.Context, t task.Task) (pushed bool, err error) {
+	if a.assigner == nil || a.cfg == nil {
+		return true, nil
+	}
+	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
+	if home.Local {
+		return true, nil
+	}
+	pushCtx, cancel := context.WithTimeout(ctx, pushReleaseTimeout)
+	defer cancel()
+	ok, err := a.assigner.PushUpdate(pushCtx, t)
+	if ok {
+		if err != nil {
+			a.logger.Warn("umbrella.release.push_bookkeeping_failed", "task_id", t.ID, "node", home.Name, "err", err)
+		}
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("push release to %q: %w", home.Name, err)
+	}
+	return false, nil
 }
 
 func (st *umbrellaState) setChildStatus(id string, status task.Status) {
@@ -343,20 +506,65 @@ func umbrellaProgressIssueSuffix(ref string) string {
 	return " (" + ref + ")"
 }
 
+// resolveCancellations classifies every cancelled child in children against
+// its siblings. An umbrella-expansion race can materialize the same sub-issue
+// as two tasks; cleanup cancels the loser in favor of its live twin (see
+// releaseUnblockedChildren's dedup path and #2294's post-mortem). That
+// cancellation is not an abandonment — the issue is still covered — and must
+// not permanently gate the umbrella to human-required. Only a cancellation
+// with no live (non-cancelled) sibling for its issue is a genuine deliberate
+// abandonment worth surfacing (dependents on that issue would otherwise stall
+// forever with no escalation; see depsSatisfied): unresolved reports whether
+// any such abandonment exists. resolved counts the opposite case — a
+// cancelled duplicate whose issue is covered by a live sibling — which the
+// caller must exclude from a total/doneCount completion check, or an umbrella
+// with a resolved duplicate could never satisfy doneCount == total (a
+// cancelled task never becomes done) and would sit at in-progress forever
+// with no signal at all once it stops being surfaced as human-required.
+func resolveCancellations(children []umbrellaProgressChild) (unresolved bool, resolved int) {
+	liveIssue := make(map[string]bool, len(children))
+	for _, c := range children {
+		if c.status == task.StatusCancelled {
+			continue
+		}
+		if key := umbrella.NormalizeIssueRef(c.issue); key != "" {
+			liveIssue[key] = true
+		}
+	}
+	for _, c := range children {
+		if c.status != task.StatusCancelled {
+			continue
+		}
+		key := umbrella.NormalizeIssueRef(c.issue)
+		if key == "" || !liveIssue[key] {
+			unresolved = true
+			continue
+		}
+		resolved++
+	}
+	return unresolved, resolved
+}
+
 // trackerRollup decides an umbrella tracker's status from its children. A
-// cycle, a stuck (human-required) child, a non-gated blocked child, or a
-// cancelled child surfaces as human-required (halting only that chain);
-// all-done closes the umbrella. A
-// tracker with no children (every sub-issue was already closed at expansion)
-// is vacuously complete, but only once `settled` (so a tracker observed while
-// its children are still being materialized is not closed prematurely) and
-// only when expansion isn't currently failing — a tracker carrying
-// umbrella.ExpandFailTagPrefix (see internal/umbrella.recordExpandFailure)
-// never had a chance to materialize its children in the first place, and
-// closing it would silently drop the umbrella issue while sub-issues remain
-// open on GitHub (#1570).
+// cycle, a stuck (human-required) child, a non-gated blocked child, or an
+// unresolved cancellation (see resolveCancellations) surfaces as
+// human-required (halting only that chain); all-done closes the umbrella. A
+// resolved cancellation (a cancelled duplicate whose issue has a live
+// sibling) counts against neither total nor doneCount, so it can never block
+// completion the way a cancelled child that never reaches Done otherwise
+// would. A tracker with no children (every sub-issue was already closed at
+// expansion) is vacuously complete, but only once `settled` (so a tracker
+// observed while its children are still being materialized is not closed
+// prematurely) and only when expansion isn't currently failing — a tracker
+// carrying umbrella.ExpandFailTagPrefix (see
+// internal/umbrella.recordExpandFailure) never had a chance to materialize
+// its children in the first place, and closing it would silently drop the
+// umbrella issue while sub-issues remain open on GitHub (#1570).
 func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status, reason string, doClose bool) {
 	expandFailing := st.tracker != nil && umbrella.ParseExpandFailCount(st.tracker.Tags) > 0
+	expandActive := st.tracker != nil && umbrella.HasActiveExpandPhase(st.tracker.Tags)
+	unresolvedCancellation, resolvedCancellations := resolveCancellations(st.children)
+	effectiveTotal := st.total - resolvedCancellations
 	switch {
 	case cyclic:
 		return task.StatusHumanRequired, "umbrella dependency cycle detected", false
@@ -364,7 +572,7 @@ func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status,
 		return task.StatusHumanRequired, "umbrella child needs attention", false
 	case st.anyBlocked:
 		return task.StatusHumanRequired, "umbrella child is blocked", false
-	case st.anyCancelled:
+	case unresolvedCancellation:
 		return task.StatusHumanRequired, "umbrella child was cancelled", false
 	case expandFailing:
 		// Defer entirely to internal/umbrella.recordExpandFailure, which owns
@@ -372,9 +580,9 @@ func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status,
 		// must not overwrite that state just because the tracker already has
 		// children or all currently-materialized children happen to be done.
 		return st.tracker.Status, st.tracker.StatusReason, false
-	case st.total > 0 && st.doneCount == st.total:
+	case effectiveTotal > 0 && st.doneCount == effectiveTotal:
 		return task.StatusDone, "all umbrella children complete", true
-	case st.total == 0 && settled:
+	case effectiveTotal == 0 && settled && !expandActive:
 		return task.StatusDone, "umbrella has no open sub-issues", true
 	default:
 		return task.StatusInProgress, "umbrella in progress", false

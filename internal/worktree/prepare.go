@@ -338,16 +338,24 @@ func (m *Manager) reconcileAndRebase(ctx context.Context, wtPath, wtBranch, base
 		}
 		return fmt.Errorf("%w: reconcile %s with remote: %w", ErrRebaseFailed, wtBranch, err)
 	}
-	callPhase(onPhase, "Rebasing onto origin…")
+	// Rebasing rewrites SHAs, so rebasing an already-pushed branch diverges it
+	// from the remote; Sybra never force-pushes, so that loops through conflict
+	// recovery forever (the recurring "branch diverged from remote" that stalls
+	// autonomy). Merge base into a pushed branch instead — it keeps the pushed
+	// SHAs and stays fast-forwardable; only a genuine conflict escalates.
+	if project.BranchPushed(ctx, wtPath, wtBranch) {
+		callPhase(onPhase, "Merging base into pushed branch…")
+		if mergeErr := project.MergeOnto(ctx, wtPath, baseRef); mergeErr != nil {
+			return fmt.Errorf("%w: merge %s into pushed branch %s: %w", ErrRebaseFailed, baseRef, wtBranch, mergeErr)
+		}
+		m.logger.Info("worktree.pushed-branch-merged-base", "branch", wtBranch, "base", baseRef)
+		return nil
+	}
+	callPhase(onPhase, fmt.Sprintf("Rebasing onto %s…", baseRef))
 	if rebaseErr := project.RebaseOnto(ctx, wtPath, baseRef); rebaseErr != nil {
-		// A rebase failure here is very often not a genuine content conflict —
-		// under concurrent agents, base moves quickly and the branch's own
-		// history is otherwise clean. Try an additive merge before giving up:
-		// unlike rebase, it never rewrites existing commits, so recovery never
-		// needs a force-push (see MergeOnto). Only when the merge also fails
-		// (a real conflict) does this still surface ErrRebaseFailed for the
-		// caller to escalate — ordinarily to human-required, or to the PR-fix
-		// conflict-recovery agent when a PR is already open.
+		// A rebase failure on an unpushed branch is usually base moving under
+		// concurrent agents, not a content conflict. Try an additive merge
+		// before giving up; only a real conflict surfaces ErrRebaseFailed.
 		callPhase(onPhase, "Rebase failed, trying merge…")
 		if mergeErr := project.MergeOnto(ctx, wtPath, baseRef); mergeErr != nil {
 			return fmt.Errorf("%w: rebase %s onto %s: %w (merge fallback also failed: %w)",
@@ -442,10 +450,16 @@ func (m *Manager) adoptWorktree(ctx context.Context, t task.Task, onPhase func(s
 // already checked out on the right branch just needs its remote fast-forwarded.
 // Returns (true, nil) when wtPath is now healthy, on wantBranch, and synced to
 // the latest remote head — the caller can skip setup entirely, mirroring
-// PrepareForTask's genuine-reuse path. Returns (false, nil) when there was
-// nothing to reuse (no worktree, unhealthy, wrong branch, or the remote sync
-// hit a conflict) — in every such case wtPath has already been removed, so
-// the caller's normal create-fresh path runs unmodified.
+// PrepareForTask's genuine-reuse path. Also true when the branch had diverged
+// from its own remote head and MergeDivergedRemote deterministically
+// reconciled it with a real merge. Returns (false, nil) when there was
+// nothing to reuse (no worktree, unhealthy, wrong branch, or a non-diverged
+// remote sync failure) — in every such case wtPath has already been removed,
+// so the caller's normal create-fresh path runs unmodified. Returns a non-nil
+// error (wtPath removed) when the branch diverged from its own remote head
+// AND reconciling that with a real merge hit a genuine content conflict — a
+// recreate cannot paper over that, so the caller must surface it rather than
+// silently continue (see #2347).
 func (m *Manager) reuseFixWorktree(ctx context.Context, taskID, clonePath, wtPath, wantBranch string) (bool, error) {
 	if _, statErr := os.Stat(wtPath); statErr != nil {
 		if os.IsNotExist(statErr) {
@@ -466,13 +480,40 @@ func (m *Manager) reuseFixWorktree(ctx context.Context, taskID, clonePath, wtPat
 	// Fast-forward the branch to the live remote head (e.g. a fix pushed from
 	// another clone/machine since this worktree was last used). Unlike
 	// PrepareForTask's reused path there is no rebase here — fix worktrees
-	// check out the PR/task branch directly. Any failure (dirty, diverged,
-	// transient network) falls back to a clean recreate rather than risk
-	// handing the fixer a stale or half-synced checkout; the reused worktree
-	// was always freshly recreated before this change, so recreation on
-	// failure is strictly no worse than the prior behavior.
+	// check out the PR/task branch directly. Any failure other than a genuine
+	// divergence (dirty, transient network) falls back to a clean recreate
+	// rather than risk handing the fixer a stale or half-synced checkout; the
+	// reused worktree was always freshly recreated before this change, so
+	// recreation on failure is strictly no worse than the prior behavior.
 	if err := project.ReconcileWithRemote(ctx, wtPath, wantBranch); err != nil {
-		m.logger.Warn("fix.worktree.reconcile-failed-recreate", "task_id", taskID, "branch", wantBranch, "err", err)
+		if errors.Is(err, project.ErrBranchDiverged) {
+			// A plain recreate here would just re-check-out the same diverged
+			// local branch and reproduce the bug this guards against (#2347)
+			// — the recreated worktree still starts ahead of, and behind, its
+			// own remote head. Deterministically reconcile it with a real
+			// merge first instead.
+			merged, mergeErr := project.MergeDivergedRemote(ctx, wtPath, wantBranch)
+			switch {
+			case mergeErr != nil:
+				m.logger.Warn("fix.worktree.reconcile-diverged-merge-failed", "task_id", taskID, "branch", wantBranch, "err", mergeErr)
+			case merged:
+				m.logger.Info("fix.worktree.reconcile-diverged-merged", "task_id", taskID, "branch", wantBranch)
+				return true, nil
+			default:
+				// Genuine content conflict merging the branch's own remote
+				// head into local — a real semantic blocker between two
+				// copies of the same branch, not something a recreate can
+				// paper over. Stop here rather than silently dispatching the
+				// fix agent against an unreconciled worktree.
+				m.logger.Warn("fix.worktree.reconcile-diverged-conflict", "task_id", taskID, "branch", wantBranch)
+				if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
+					return false, fmt.Errorf("remove worktree after diverged-branch conflict: %w", rerr)
+				}
+				return false, fmt.Errorf("%w: branch %s has a genuine content conflict against its own remote head", project.ErrBranchDiverged, wantBranch)
+			}
+		} else {
+			m.logger.Warn("fix.worktree.reconcile-failed-recreate", "task_id", taskID, "branch", wantBranch, "err", err)
+		}
 		if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
 			return false, fmt.Errorf("remove worktree after reconcile failure: %w", rerr)
 		}
@@ -481,88 +522,91 @@ func (m *Manager) reuseFixWorktree(ctx context.Context, taskID, clonePath, wtPat
 	return true, nil
 }
 
+func (m *Manager) reuseBranchConflictWorktree(ctx context.Context, taskID, clonePath, wtPath, wantBranch string) (bool, error) {
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat worktree %s: %w", wtPath, statErr)
+	}
+	usable, err := m.healOrRecreate(ctx, taskID, clonePath, wtPath, wantBranch)
+	if err != nil {
+		return false, err
+	}
+	if !usable {
+		return false, nil
+	}
+	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
+		m.logger.Warn("branch-conflict.worktree.sanitize", "task_id", taskID, "err", err)
+	}
+	return true, nil
+}
+
+type freshFixReconcileTarget struct {
+	remote string
+	ref    string
+}
+
+// reconcileFreshFixWorktree ensures a newly created fix/branch-fix worktree is
+// normalized to a single branch head before dispatch. A recreated worktree can
+// still start from a stale local branch ref in the bare clone; if that branch
+// had unpushed local commits and the remote also advanced, simply re-checking
+// it out reproduces the same ahead/behind divergence that forced recovery.
+func (m *Manager) reconcileFreshFixWorktree(ctx context.Context, taskID, clonePath, wtPath, branch string, target freshFixReconcileTarget) error {
+	if target.remote == "" && target.ref == "" {
+		return nil
+	}
+
+	reconcile := func() error {
+		if target.ref != "" {
+			return project.ReconcileWithRef(ctx, wtPath, target.ref)
+		}
+		return project.ReconcileWithNamedRemote(ctx, wtPath, target.remote, branch)
+	}
+	merge := func() (bool, error) {
+		if target.ref != "" {
+			return project.MergeDivergedRef(ctx, wtPath, target.ref)
+		}
+		return project.MergeDivergedNamedRemote(ctx, wtPath, target.remote, branch)
+	}
+
+	if err := reconcile(); err != nil {
+		if errors.Is(err, project.ErrBranchDiverged) {
+			merged, mergeErr := merge()
+			switch {
+			case mergeErr != nil:
+				if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
+					m.logger.Warn("fix.worktree.cleanup-after-diverged-merge-failed", "task_id", taskID, "branch", branch, "err", rerr)
+				}
+				return fmt.Errorf("reconcile fresh %s with remote: %w", branch, mergeErr)
+			case merged:
+				m.logger.Info("fix.worktree.reconcile-fresh-diverged-merged", "task_id", taskID, "branch", branch)
+				return nil
+			default:
+				m.logger.Warn("fix.worktree.reconcile-fresh-diverged-conflict", "task_id", taskID, "branch", branch)
+				if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
+					m.logger.Warn("fix.worktree.cleanup-after-diverged-conflict", "task_id", taskID, "branch", branch, "err", rerr)
+				}
+				return fmt.Errorf("%w: branch %s has a genuine content conflict against its own remote head", project.ErrBranchDiverged, branch)
+			}
+		}
+		if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
+			m.logger.Warn("fix.worktree.cleanup-after-fresh-reconcile-failed", "task_id", taskID, "branch", branch, "err", rerr)
+		}
+		if project.IsTransientNetworkError(err) {
+			return fmt.Errorf("%w: reconcile %s with remote: %w", ErrTransientFetch, branch, err)
+		}
+		return fmt.Errorf("reconcile fresh %s with remote: %w", branch, err)
+	}
+	return nil
+}
+
 // finalizeWorktree runs post-checkout hooks shared by the "reuse existing
 // worktree" and "checkout existing branch" fast-paths in PrepareForTask.
 func (m *Manager) finalizeWorktree(ctx context.Context, t task.Task, wtPath, wtBranch string, proj project.Project) (string, error) {
 	m.installChecks(ctx, wtPath, proj)
 	m.ensureBranch(t, wtBranch)
 	m.seedWorktree(ctx, t, wtPath, wtBranch)
-	return wtPath, nil
-}
-
-// PrepareForChat creates a worktree for an ephemeral chat session. Same as
-// PrepareForTask but skips the upstream push — chat branches are local-only
-// and deleted with the worktree when the chat ends.
-// onPhase is an optional callback for phase labels; pass nil when not needed.
-func (m *Manager) PrepareForChat(ctx context.Context, t task.Task, onPhase func(string)) (string, error) {
-	proj, err := m.projects.Get(t.ProjectID)
-	if err != nil {
-		return "", fmt.Errorf("get project: %w", err)
-	}
-	callPhase(onPhase, "Fetching origin…")
-	if err := project.FetchOrigin(ctx, proj.ClonePath); err != nil {
-		return "", fmt.Errorf("fetch origin: %w", err)
-	}
-
-	branch, err := project.DefaultBranch(ctx, proj.ClonePath)
-	if err != nil {
-		return "", fmt.Errorf("default branch: %w", err)
-	}
-
-	if proj.WorktreeBaseRef == project.WorktreeBaseRefHead {
-		if err := project.SyncLocalBranch(ctx, proj.ClonePath, branch); err != nil {
-			m.logger.Warn("worktree.sync-local-branch", "task_id", t.ID, "branch", branch, "err", err)
-		}
-	}
-
-	wtPath := m.PathFor(t)
-	wtBranch := branchNameForTask(t)
-	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
-
-	wtBranch = m.resolveTaskBranch(ctx, t, proj.ClonePath, wtPath, wtBranch)
-	if _, statErr := os.Stat(wtPath); statErr == nil {
-		usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath, wtBranch)
-		if err != nil {
-			return "", err
-		}
-		if usable {
-			m.logger.Info("chat.worktree.reused", "task_id", t.ID, "path", wtPath)
-			m.ensureBranch(t, wtBranch)
-			if err := writeContextFile(ctx, t, wtPath, wtBranch); err != nil {
-				m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
-			}
-			return wtPath, nil
-		}
-		// Worktree was wiped — fall through.
-	}
-
-	callPhase(onPhase, "Creating worktree…")
-	if project.BranchExists(ctx, proj.ClonePath, wtBranch) {
-		if err := project.CreateWorktreeExisting(ctx, proj.ClonePath, wtPath, wtBranch); err != nil {
-			return "", fmt.Errorf("checkout existing branch %s: %w", wtBranch, err)
-		}
-		m.logger.Info("chat.worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
-		if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
-			return "", fmt.Errorf("chat setup on reused branch: %w", err)
-		}
-		m.ensureBranch(t, wtBranch)
-		if err := writeContextFile(ctx, t, wtPath, wtBranch); err != nil {
-			m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
-		}
-		return wtPath, nil
-	}
-
-	if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, wtBranch, baseRef); err != nil {
-		return "", fmt.Errorf("create chat worktree: %w", err)
-	}
-	m.logger.Info("chat.worktree.created", "task_id", t.ID, "path", wtPath)
-	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
-		return "", fmt.Errorf("chat setup on new worktree: %w", err)
-	}
-	m.ensureBranch(t, wtBranch)
-	if err := writeContextFile(ctx, t, wtPath, wtBranch); err != nil {
-		m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
-	}
 	return wtPath, nil
 }
 
@@ -682,6 +726,12 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
 		m.logger.Warn("branch-fix.worktree.sanitize", "task_id", t.ID, "err", err)
 	}
+	if project.RemoteConfigured(ctx, wtPath, "origin") {
+		target := freshFixReconcileTarget{remote: "origin"}
+		if err := m.reconcileFreshFixWorktree(ctx, t.ID, proj.ClonePath, wtPath, branch, target); err != nil {
+			return "", fmt.Errorf("reconcile fresh branch-fix worktree: %w", err)
+		}
+	}
 	m.ensureBranch(t, branch)
 	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
 		m.logger.Warn("branch-fix.worktree.signoff-hook", "task_id", t.ID, "err", err)
@@ -700,6 +750,103 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	if t.RunRole != "pr-fix" {
 		if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
 			m.logger.Warn("branch-fix.worktree.fork-only-push", "task_id", t.ID, "err", err)
+		}
+	}
+	return wtPath, nil
+}
+
+// PrepareForBranchConflict prepares a worktree for the dedicated
+// branch-conflict recovery workflow. Unlike PrepareForBranchFix, it
+// intentionally does NOT auto-reconcile the branch with origin: this path is
+// entered precisely because that reconciliation already hit a real content
+// conflict, so repeating it here would just fail before the fixer agent gets a
+// chance to resolve the branch manually.
+func (m *Manager) PrepareForBranchConflict(ctx context.Context, t task.Task) (string, error) {
+	return m.PrepareForBranchConflictFromRemote(ctx, t, "origin")
+}
+
+// PrepareForBranchConflictFromRemote prepares a branch-conflict recovery
+// worktree whose remote side lives on remote, e.g. fork-backed PR heads.
+func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task.Task, remote string) (string, error) {
+	if t.WorktreeDir != "" {
+		return m.adoptWorktree(ctx, t, nil)
+	}
+
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("get project: %w", err)
+	}
+	if remote == "" {
+		remote = "origin"
+	}
+	var fetchErr error
+	if fetchErr = project.FetchOrigin(ctx, proj.ClonePath); fetchErr != nil {
+		m.logger.Warn("branch-conflict.worktree.fetch", "project", proj.ID, "err", fetchErr)
+	}
+
+	branch := branchNameForTask(t)
+	targetFetchErr := fetchErr
+	if remote != "origin" {
+		targetFetchErr = nil
+		if !project.RemoteConfigured(ctx, proj.ClonePath, remote) {
+			targetFetchErr = fmt.Errorf("remote %s is not configured", remote)
+		} else if err := project.FetchRemoteBranch(ctx, proj.ClonePath, remote, branch); err != nil {
+			targetFetchErr = err
+		}
+		if targetFetchErr != nil {
+			m.logger.Warn("branch-conflict.worktree.fetch-remote", "project", proj.ID, "remote", remote, "branch", branch, "err", targetFetchErr)
+		}
+	}
+	wtPath := m.PathFor(t)
+
+	reused, err := m.reuseBranchConflictWorktree(ctx, t.ID, proj.ClonePath, wtPath, branch)
+	if err != nil {
+		return "", fmt.Errorf("reuse branch-conflict worktree: %w", err)
+	}
+	if reused {
+		m.ensureBranch(t, branch)
+		if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+			m.logger.Warn("branch-conflict.worktree.signoff-hook", "task_id", t.ID, "err", err)
+		}
+		m.logger.Info("branch-conflict.worktree.reused", "task_id", t.ID, "path", wtPath, "branch", branch)
+		if t.RunRole != "pr-fix" {
+			if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
+				m.logger.Warn("branch-conflict.worktree.fork-only-push", "task_id", t.ID, "err", err)
+			}
+		}
+		return wtPath, nil
+	}
+
+	remoteRef := "refs/remotes/" + remote + "/" + branch
+	switch {
+	case project.BranchExists(ctx, proj.ClonePath, branch):
+		if err := project.CreateWorktreeExisting(ctx, proj.ClonePath, wtPath, branch); err != nil {
+			return "", fmt.Errorf("checkout task branch %s: %w", branch, err)
+		}
+	case project.RefExists(ctx, proj.ClonePath, remoteRef):
+		if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, branch, remoteRef); err != nil {
+			return "", fmt.Errorf("create branch-conflict worktree: %w", err)
+		}
+	default:
+		if targetFetchErr != nil {
+			return "", fmt.Errorf("fetch %s for task branch %s: %w", remote, branch, targetFetchErr)
+		}
+		return "", fmt.Errorf("%w: %s", ErrTaskBranchMissing, branch)
+	}
+	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
+		m.logger.Warn("branch-conflict.worktree.sanitize", "task_id", t.ID, "err", err)
+	}
+	m.ensureBranch(t, branch)
+	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+		m.logger.Warn("branch-conflict.worktree.signoff-hook", "task_id", t.ID, "err", err)
+	}
+	m.logger.Info("branch-conflict.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
+	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
+		return "", fmt.Errorf("branch-conflict setup: %w", err)
+	}
+	if t.RunRole != "pr-fix" {
+		if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
+			m.logger.Warn("branch-conflict.worktree.fork-only-push", "task_id", t.ID, "err", err)
 		}
 	}
 	return wtPath, nil
@@ -794,10 +941,18 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 	}
 
 	originRef := "refs/remotes/origin/" + branch
+	reconcileTarget := freshFixReconcileTarget{remote: "origin"}
 	switch {
 	case project.BranchExists(ctx, proj.ClonePath, branch):
 		if err := project.CreateWorktreeExisting(ctx, proj.ClonePath, wtPath, branch); err != nil {
 			return "", fmt.Errorf("checkout fix branch %s: %w", branch, err)
+		}
+		if !project.RefExists(ctx, proj.ClonePath, originRef) {
+			prHeadRef, err := project.FetchPRHead(ctx, proj.ClonePath, prNumber)
+			if err != nil {
+				return "", fmt.Errorf("fetch pr head: %w", err)
+			}
+			reconcileTarget = freshFixReconcileTarget{ref: prHeadRef}
 		}
 	case project.RefExists(ctx, proj.ClonePath, originRef):
 		if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, branch, originRef); err != nil {
@@ -815,9 +970,13 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, branch, prHeadRef); err != nil {
 			return "", fmt.Errorf("create fix worktree: %w", err)
 		}
+		reconcileTarget = freshFixReconcileTarget{ref: prHeadRef}
 	}
 	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
 		m.logger.Warn("fix.worktree.sanitize", "task_id", t.ID, "err", err)
+	}
+	if err := m.reconcileFreshFixWorktree(ctx, t.ID, proj.ClonePath, wtPath, branch, reconcileTarget); err != nil {
+		return "", fmt.Errorf("reconcile fresh fix worktree: %w", err)
 	}
 	m.ensureBranch(t, branch)
 	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {

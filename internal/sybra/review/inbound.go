@@ -44,21 +44,23 @@ func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID st
 	go triage(t)
 }
 
-// triageReviewSmall returns true when the PR is below both size thresholds and
-// should be routed to human-required rather than dispatched to a review agent.
-func triageReviewSmall(additions, changedFiles int) bool {
-	return additions < reviewSmallAdditions && changedFiles < reviewSmallFiles
-}
-
 func (r *Handler) triageReview(t task.Task) {
-	stats, err := github.FetchPRStats(t.ProjectID, t.PRNumber)
+	start := r.startReviewAgentFn
+	if start == nil {
+		start = r.StartReviewAgent
+	}
+	statsFn := r.fetchPRStatsFn
+	if statsFn == nil {
+		statsFn = github.FetchPRStats
+	}
+	stats, err := statsFn(t.ProjectID, t.PRNumber)
 	if err != nil {
 		r.logger.Warn("review.triage.stats", "task_id", t.ID, "err", err)
 		// fallback: start agent when we can't determine size
 		if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 			r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 		}
-		if err := r.StartReviewAgent(t, false); err != nil {
+		if err := start(t, false); err != nil {
 			r.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
 		}
 		return
@@ -66,22 +68,10 @@ func (r *Handler) triageReview(t task.Task) {
 
 	r.logger.Info("review.triage", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
 
-	if triageReviewSmall(stats.Additions, stats.ChangedFiles) {
-		reason := fmt.Sprintf("PR too small for agent review (%d additions, %d files)", stats.Additions, stats.ChangedFiles)
-		if _, err := r.tasks.Update(t.ID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: &reason,
-		}); err != nil {
-			r.logger.Error("review.triage.human", "task_id", t.ID, "err", err)
-		}
-		r.logger.Info("review.triage.small", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
-		return
-	}
-
 	if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 		r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 	}
-	if err := r.StartReviewAgent(t, false); err != nil {
+	if err := start(t, false); err != nil {
 		r.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
 	}
 }
@@ -115,6 +105,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	ag, err := r.agents.Run(agent.RunConfig{
 		TaskID:                 t.ID,
 		Name:                   agent.RoleFixReview.AgentName(t.Title),
+		Role:                   agent.RoleFixReview,
 		Mode:                   "headless",
 		Prompt:                 prompt,
 		Dir:                    dir,
@@ -132,7 +123,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	}); err != nil {
 		r.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
-	r.logAudit(audit.EventFixReviewStarted, t.ID, ag.ID, map[string]any{"pr": t.PRNumber})
+	r.logAudit(audit.EventFixReviewStarted, t.ID, ag.ID, map[string]any{"pr": t.PRNumber, "prompt_hash": ag.GetPromptHash()})
 	r.logger.Info("fix-review.agent-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
 	return nil
 }
@@ -184,14 +175,26 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 
 	prompt := StaffCodeReviewPrompt(current.ProjectID, current.PRNumber)
 
-	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.cfg.ABTesting, current.ID, string(agent.RoleReview))
+	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.abTestingConfig(), current.ID, string(agent.RoleReview))
 	ag, err := r.agents.Run(cfg)
 	if err != nil {
 		return err
 	}
 	if err := r.tasks.AddRun(current.ID, task.AgentRun{
-		AgentID: ag.ID, Role: string(agent.RoleReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
-		Prompt: cfg.Prompt,
+		AgentID:         ag.ID,
+		Role:            string(agent.RoleReview),
+		Mode:            "headless",
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		ExperimentID:    ag.ExperimentID,
+		VariantID:       ag.VariantID,
+		RoutingReason:   ag.RoutingReason,
+		AssignmentUnit:  ag.AssignmentUnit,
+		AssignmentKey:   ag.AssignmentKey,
+		DecisionVersion: ag.DecisionVersion,
+		State:           string(agent.StateRunning),
+		StartedAt:       ag.StartedAt,
+		Prompt:          cfg.Prompt,
 	}); err != nil {
 		r.logger.Error("task.add-run", "task_id", current.ID, "err", err)
 		if stopErr := r.agents.StopAgent(ag.ID); stopErr != nil {
@@ -199,7 +202,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		}
 		return fmt.Errorf("record review run: %w", err)
 	}
-	r.logAudit(audit.EventReviewStarted, current.ID, ag.ID, map[string]any{"pr": current.PRNumber})
+	r.logAudit(audit.EventReviewStarted, current.ID, ag.ID, map[string]any{"pr": current.PRNumber, "prompt_hash": ag.GetPromptHash()})
 	r.logger.Info("review.agent-started", "task_id", current.ID, "agent_id", ag.ID, "pr", current.PRNumber)
 	return nil
 }
@@ -215,6 +218,7 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 	return agent.RunConfig{
 		TaskID:                 t.ID,
 		Name:                   agent.RoleReview.AgentName(t.Title),
+		Role:                   agent.RoleReview,
 		Mode:                   "headless",
 		Prompt:                 prompt,
 		Dir:                    dir,
@@ -224,25 +228,29 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 }
 
 // StaffCodeReviewPrompt returns the direct PR-review prompt shared by inbound
-// review automation and task enrichment. It authorizes posting a non-approving
-// review so headless agents do not stop to ask the operator, while withholding
-// approval authority: these PRs are other people's work, and an approval from
-// the operator's account can satisfy a required-reviewer gate. Kept in lockstep
-// with the pr-review builtin workflow prompts and backed by the gh PATH shim
-// (agent.writeGhShim), which refuses the call if this instruction ever drifts.
+// review automation and task enrichment. It authorizes creating an unsubmitted
+// pending review so headless agents do not stop to ask the operator, while
+// withholding submission and approval authority: these PRs are other people's
+// work, and an approval from the operator's account can satisfy a
+// required-reviewer gate. Kept in lockstep with the pr-review builtin workflow
+// prompts and backed by the gh PATH shim (agent.writeGhShim), which refuses
+// submitted review events if this instruction ever drifts.
 func StaffCodeReviewPrompt(projectID string, prNumber int) string {
 	return fmt.Sprintf(`Run /staff-code-review on https://github.com/%s/pull/%d
 
 This task is an authorized Sybra PR review for the linked project. Do not ask the operator for confirmation before posting your review.
 
-NEVER submit an approving review. You have no approval authority — approval is a human decision, and the harness blocks the call. Do not run `+"`gh pr review --approve`"+` or submit an APPROVE event via `+"`gh api`"+`, no matter how clean the PR looks.
+NEVER submit any review event. You have no approval authority, and a human must verify and submit the review on GitHub. Do not run `+"`gh pr review`"+`, do not run `+"`gh pr review --approve`"+`, and do not submit COMMENT, REQUEST_CHANGES, or APPROVE via `+"`gh api`"+`.
 
-- Blocking correctness issues: submit a review requesting changes, with the required change comments.
-- Otherwise: submit a plain comment review with your summary — including when the PR looks clean. Say so in the summary and leave the approval to a human.
+Create exactly one PENDING (draft) pull-request review and leave it unsubmitted. Before creating it, fetch the PR head SHA and existing reviews; if a review for that head already contains the Sybra harness footer, do not create another review.
+
+Use GitHub's review API so findings become inline comments, not one aggregated comment. Add each blocking correctness issue as a `+"`comments`"+` entry on the changed line it applies to. Put only the short verdict and summary in the draft review body. If the review is clean and has no inline findings, create a pending review with the clean summary body and no inline comments.
+
+Prefer `+"`gh api repos/%s/pulls/%d/reviews -X POST ...`"+` with explicit `+"`-f`"+`/`+"`-F`"+` fields such as `+"`comments[][path]`"+`, `+"`comments[][line]`"+`, `+"`comments[][side]=RIGHT`"+`, and `+"`comments[][body]`"+`. Omit `+"`event`"+` so GitHub leaves the review PENDING.
 
 End the review summary and every review comment you post with a blank line then exactly this standalone harness attribution footer:
 
-_Generated by Sybra harness_`, projectID, prNumber)
+_Generated by Sybra harness_`, projectID, prNumber, projectID, prNumber)
 }
 
 func reviewAgentAlreadyRan(t task.Task) bool {
@@ -586,8 +594,7 @@ func indexPRsByKey(prs []github.PullRequest) map[string]github.PullRequest {
 }
 
 func reviewClosedPREligible(t *task.Task) bool {
-	return t.TaskType != task.TaskTypeChat &&
-		!task.IsTerminalStatus(t.Status) &&
+	return !task.IsTerminalStatus(t.Status) &&
 		slices.Contains(t.Tags, "review") &&
 		t.ProjectID != "" &&
 		t.PRNumber != 0

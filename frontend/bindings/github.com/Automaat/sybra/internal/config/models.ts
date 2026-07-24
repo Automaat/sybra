@@ -11,44 +11,58 @@ export class AgentDefaults {
     "mode": string;
     "maxConcurrent": number;
     "researchMachineDir": string;
-    "maxCostUsd": number;
-    "maxTurns": number;
+
+    /**
+     * PostResultCostUSD is a reactive per-run USD circuit breaker: Sybra checks
+     * it only when the provider emits a terminal result event, after that spend
+     * is already incurred. 0 (default in raw zero values, 5 in fresh installs)
+     * disables the breaker.
+     */
+    "postResultCostUsd": number;
+
+    /**
+     * MaxAssistantEvents caps top-level assistant stream events per run, not
+     * provider CLI turns. 0 disables the ceiling.
+     */
+    "maxAssistantEvents": number;
 
     /**
      * MaxCheckpoints bounds how many times a single workflow step may
-     * checkpoint-and-handoff after hitting the per-run turn ceiling. 0 means
-     * use DefaultMaxCheckpoints (3).
+     * checkpoint-and-handoff after hitting the per-run assistant-event ceiling.
+     * 0 means use DefaultMaxCheckpoints (3).
      */
     "maxCheckpoints": number;
 
     /**
-     * CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
-     * a checkpoint-and-handoff to a fresh run when an eligible code-author
-     * headless run hits its per-run turn ceiling. nil means not configured
-     * (defaults to true). Set false to restore the legacy in-process
-     * auto-continue behavior with no code revert.
+     * CheckpointOnTurnCeiling swaps the legacy raise-the-assistant-event-ceiling
+     * auto-continue for a checkpoint-and-handoff to a fresh run when an
+     * eligible code-author headless run hits its per-run assistant-event
+     * ceiling. nil means not configured (defaults to true). Set false to
+     * restore the legacy in-process auto-continue behavior with no code revert.
      */
     "checkpointOnTurnCeiling": boolean | null;
 
     /**
      * MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
-     * has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
-     * where each retry stays under the per-run cap but the task's total spend
-     * still balloons unbounded. Checked once per dispatch, before an agent is
-     * started — StartAgentWithAssignment refuses to start and flips the task
-     * to human-required when the task's already-recorded AgentRuns.CostUSD sum
-     * meets or exceeds this. 0 (default) disables the check.
+     * has ever had (unlike PostResultCostUSD, which resets every run). Closes
+     * the gap where each retry stays under the per-run cap but the task's total
+     * spend still balloons unbounded. Checked once per dispatch, before an
+     * agent is started — StartAgentWithAssignment refuses to start and flips
+     * the task to human-required when the task's already-recorded
+     * AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the
+     * check.
      */
     "maxTaskCostUsd": number;
 
     /**
-     * TurnCostFraction is the fraction of MaxCostUSD below which a turns
-     * escalation is auto-continued. Default 0.8 when unset.
+     * TurnCostFraction is the fraction of PostResultCostUSD below which an
+     * assistant-event escalation is auto-continued. Default 0.8 when unset.
      */
     "turnCostFraction": number;
 
     /**
-     * TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset.
+     * TurnMultiplier scales the assistant-event ceiling on each
+     * auto-continuation. Default 2 when unset.
      */
     "turnMultiplier": number;
 
@@ -62,14 +76,26 @@ export class AgentDefaults {
     /**
      * ReviewUntilClean keeps simple-task-review cycling review→fix→review
      * until the reviewer returns a CLEAN verdict, so the fix agent's diff is
-     * never the last word. nil means not configured (falls back to true).
-     * The cycle is uncapped by design — a round cap would censor the
-     * review-rounds distribution the stats page reports — and is bounded only
-     * by MaxTaskCostUSD, which is enforced before every dispatch. false falls
-     * back to a single review pass per task: cheaper and more predictable when
-     * no per-task budget is configured.
+     * never the last word. nil means not configured (falls back to true). false
+     * falls back to a single review pass per task: cheaper and more
+     * predictable when no per-task budget is configured.
      */
     "reviewUntilClean": boolean | null;
+
+    /**
+     * MaxReviewRounds bounds how many automated review rounds a single
+     * simple-task-review execution may spend before Sybra parks the task
+     * blocked. 0 means use DefaultMaxReviewRounds (3). Ignored when
+     * ReviewUntilClean is false or AllowUnboundedReviewRounds is true.
+     */
+    "maxReviewRounds": number;
+
+    /**
+     * AllowUnboundedReviewRounds restores the legacy "loop until CLEAN with no
+     * review-round cap" posture. nil means not configured (defaults to false).
+     * Use only with a deliberate MaxTaskCostUSD backstop.
+     */
+    "allowUnboundedReviewRounds": boolean | null;
 
     /**
      * BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
@@ -249,11 +275,11 @@ export class AgentDefaults {
         if (!("researchMachineDir" in $$source)) {
             this["researchMachineDir"] = "";
         }
-        if (!("maxCostUsd" in $$source)) {
-            this["maxCostUsd"] = 0;
+        if (!("postResultCostUsd" in $$source)) {
+            this["postResultCostUsd"] = 0;
         }
-        if (!("maxTurns" in $$source)) {
-            this["maxTurns"] = 0;
+        if (!("maxAssistantEvents" in $$source)) {
+            this["maxAssistantEvents"] = 0;
         }
         if (!("maxCheckpoints" in $$source)) {
             this["maxCheckpoints"] = 0;
@@ -275,6 +301,12 @@ export class AgentDefaults {
         }
         if (!("reviewUntilClean" in $$source)) {
             this["reviewUntilClean"] = null;
+        }
+        if (!("maxReviewRounds" in $$source)) {
+            this["maxReviewRounds"] = 0;
+        }
+        if (!("allowUnboundedReviewRounds" in $$source)) {
+            this["allowUnboundedReviewRounds"] = null;
         }
         if (!("bashTimeoutSeconds" in $$source)) {
             this["bashTimeoutSeconds"] = 0;
@@ -338,24 +370,52 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField28_0 = $$createType0;
-        const $$createField29_0 = $$createType1;
-        const $$createField30_0 = $$createType2;
-        const $$createField31_0 = $$createType3;
+        const $$createField30_0 = $$createType0;
+        const $$createField31_0 = $$createType1;
+        const $$createField32_0 = $$createType2;
+        const $$createField33_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField28_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField30_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField29_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField31_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField30_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField32_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField31_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField33_0($$parsedSource["queue"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
+    }
+}
+
+/**
+ * AttachmentConfig controls local task attachment uploads.
+ */
+export class AttachmentConfig {
+    /**
+     * MaxSizeMB caps a single uploaded attachment's raw byte size before it is
+     * written to disk. 0 falls back to DefaultAttachmentMaxSizeMB.
+     */
+    "maxSizeMB": number;
+
+    /** Creates a new AttachmentConfig instance. */
+    constructor($$source: Partial<AttachmentConfig> = {}) {
+        if (!("maxSizeMB" in $$source)) {
+            this["maxSizeMB"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AttachmentConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AttachmentConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AttachmentConfig($$parsedSource as Partial<AttachmentConfig>);
     }
 }
 
@@ -393,8 +453,9 @@ export class BrowserConfig {
     /**
      * InApp opens links in an in-app Sybra Browser webview window backed by a
      * persistent, app-wide cookie store, so a login is reused across windows
-     * and survives restarts. Nil/unset defaults to true (current behavior).
-     * Set to false to always open links in the default system browser instead.
+     * and survives restarts. Nil/unset defaults to false, so the built-in
+     * browser stays opt-in. Set to true to use the Sybra browser instead of the
+     * default system browser.
      */
     "inApp": boolean | null;
 
@@ -500,17 +561,23 @@ export class GitHubConfig {
     "enabled": boolean;
 
     /**
+     * Polling is the primary stream-level control surface for GitHub polling.
+     * The legacy fields below remain as compatibility inputs during load but new
+     * code should read this block through the effective helper methods.
+     */
+    "polling": GitHubPollingConfig;
+
+    /**
      * IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to
-     * true (see DefaultConfig). Effective state is Enabled && IssuesEnabled —
-     * use RunsIssuesFetcher() rather than reading this field directly.
+     * true for legacy configs. Deprecated compatibility input for
+     * github.polling.issues.enabled.
      */
     "issuesEnabled": boolean;
 
     /**
      * ReviewsEnabled gates PR reviewer poll registration specifically.
-     * Defaults to true (see DefaultConfig). Effective state is
-     * Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this
-     * field directly.
+     * Deprecated compatibility input for both github.polling.sybra_prs.enabled
+     * and github.polling.assigned_prs.enabled.
      */
     "reviewsEnabled": boolean;
 
@@ -527,6 +594,7 @@ export class GitHubConfig {
      * Poll-interval overrides in seconds. Zero falls back to the built-in
      * default. Raised defaults (vs. the original 1m/5m) cut steady-state request
      * volume; lower them only on a high-limit (App-token) instance.
+     * Deprecated compatibility input for both PR streams' active intervals.
      */
     "reviewsFastSeconds": number;
 
@@ -539,6 +607,10 @@ export class GitHubConfig {
      * ~5/hour for 23 hours).
      */
     "reviewRoundsPerHour": number;
+
+    /**
+     * Deprecated compatibility input for both PR streams' idle intervals.
+     */
     "reviewsSlowSeconds": number;
 
     /**
@@ -555,7 +627,20 @@ export class GitHubConfig {
      * backoff entirely.
      */
     "reviewsStableBackoffMaxTicks": number;
+
+    /**
+     * Deprecated compatibility input for github.polling.issues.interval.
+     */
     "issuesSeconds": number;
+
+    /**
+     * MentionTriggerPhrase, when set, gates a comment-mention search alongside
+     * the existing assigned/labeled issue paths: an open issue whose comments
+     * contain this phrase (e.g. "@sybra") gets a task via the same
+     * dedup/creation path. Empty (default) disables the feature — existing
+     * installs see no behavior change.
+     */
+    "mentionTriggerPhrase": string;
     "renovateFastSeconds": number;
     "renovateSlowSeconds": number;
 
@@ -587,10 +672,32 @@ export class GitHubConfig {
      */
     "autoResolveCleanMerges": boolean;
 
+    /**
+     * FlakyDetection is a kill-switch for same-commit CI flakiness
+     * classification. When true, a lone ci_failure issue is classified via
+     * ClassifyCIFlakiness (the head commit's full check-run history, not just
+     * the latest attempt) before it is escalated to a fix agent or a human: a
+     * check that both passed and failed on the same SHA at or above
+     * FlakySuccessThreshold is flaky, and gets a targeted rerun plus a
+     * distinct audit event instead. Default off (zero value = false).
+     */
+    "flakyDetection": boolean;
+
+    /**
+     * FlakySuccessThreshold is the minimum same-check success rate (0-1) for
+     * a currently-failing gating check to be classified flaky rather than
+     * deterministic. Zero falls back to the built-in default; see
+     * GitHubConfig.FlakyThreshold().
+     */
+    "flakySuccessThreshold": number;
+
     /** Creates a new GitHubConfig instance. */
     constructor($$source: Partial<GitHubConfig> = {}) {
         if (!("enabled" in $$source)) {
             this["enabled"] = false;
+        }
+        if (!("polling" in $$source)) {
+            this["polling"] = (new GitHubPollingConfig());
         }
         if (!("issuesEnabled" in $$source)) {
             this["issuesEnabled"] = false;
@@ -619,6 +726,9 @@ export class GitHubConfig {
         if (!("issuesSeconds" in $$source)) {
             this["issuesSeconds"] = 0;
         }
+        if (!("mentionTriggerPhrase" in $$source)) {
+            this["mentionTriggerPhrase"] = "";
+        }
         if (!("renovateFastSeconds" in $$source)) {
             this["renovateFastSeconds"] = 0;
         }
@@ -634,6 +744,12 @@ export class GitHubConfig {
         if (!("autoResolveCleanMerges" in $$source)) {
             this["autoResolveCleanMerges"] = false;
         }
+        if (!("flakyDetection" in $$source)) {
+            this["flakyDetection"] = false;
+        }
+        if (!("flakySuccessThreshold" in $$source)) {
+            this["flakySuccessThreshold"] = 0;
+        }
 
         Object.assign(this, $$source);
     }
@@ -642,12 +758,111 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField12_0 = $$createType4;
+        const $$createField1_0 = $$createType4;
+        const $$createField14_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("polling" in $$parsedSource) {
+            $$parsedSource["polling"] = $$createField1_0($$parsedSource["polling"]);
+        }
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField12_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField14_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
+    }
+}
+
+export class GitHubPRPollingConfig {
+    "enabled": boolean;
+    "activeIntervalSeconds": number;
+    "idleIntervalSeconds": number;
+
+    /** Creates a new GitHubPRPollingConfig instance. */
+    constructor($$source: Partial<GitHubPRPollingConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("activeIntervalSeconds" in $$source)) {
+            this["activeIntervalSeconds"] = 0;
+        }
+        if (!("idleIntervalSeconds" in $$source)) {
+            this["idleIntervalSeconds"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubPRPollingConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubPRPollingConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitHubPRPollingConfig($$parsedSource as Partial<GitHubPRPollingConfig>);
+    }
+}
+
+export class GitHubPollingConfig {
+    "issues": GitHubPollingStreamConfig;
+    "sybraPrs": GitHubPRPollingConfig;
+    "assignedPrs": GitHubPRPollingConfig;
+
+    /** Creates a new GitHubPollingConfig instance. */
+    constructor($$source: Partial<GitHubPollingConfig> = {}) {
+        if (!("issues" in $$source)) {
+            this["issues"] = (new GitHubPollingStreamConfig());
+        }
+        if (!("sybraPrs" in $$source)) {
+            this["sybraPrs"] = (new GitHubPRPollingConfig());
+        }
+        if (!("assignedPrs" in $$source)) {
+            this["assignedPrs"] = (new GitHubPRPollingConfig());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubPollingConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubPollingConfig {
+        const $$createField0_0 = $$createType6;
+        const $$createField1_0 = $$createType7;
+        const $$createField2_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("issues" in $$parsedSource) {
+            $$parsedSource["issues"] = $$createField0_0($$parsedSource["issues"]);
+        }
+        if ("sybraPrs" in $$parsedSource) {
+            $$parsedSource["sybraPrs"] = $$createField1_0($$parsedSource["sybraPrs"]);
+        }
+        if ("assignedPrs" in $$parsedSource) {
+            $$parsedSource["assignedPrs"] = $$createField2_0($$parsedSource["assignedPrs"]);
+        }
+        return new GitHubPollingConfig($$parsedSource as Partial<GitHubPollingConfig>);
+    }
+}
+
+export class GitHubPollingStreamConfig {
+    "enabled": boolean;
+    "intervalSeconds": number;
+
+    /** Creates a new GitHubPollingStreamConfig instance. */
+    constructor($$source: Partial<GitHubPollingStreamConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("intervalSeconds" in $$source)) {
+            this["intervalSeconds"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubPollingStreamConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubPollingStreamConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitHubPollingStreamConfig($$parsedSource as Partial<GitHubPollingStreamConfig>);
     }
 }
 
@@ -746,6 +961,16 @@ export class K8sJobsConfig {
     "image": string;
     "command": string[];
     "ttlSecondsAfterFinished": number;
+
+    /**
+     * FailedTTL overrides TTL for a Job that finishes Failed rather than
+     * Succeeded, via a post-completion patch once the runner observes the
+     * failure — Kubernetes' own ttlSecondsAfterFinished is a single value
+     * that cannot vary by outcome at creation time. Defaults much longer
+     * than TTL's own default so a failed run's logs survive long enough for
+     * an operator to pull them before Kubernetes garbage-collects the Pod.
+     */
+    "failedTtlSecondsAfterFinished": number;
     "mode": string;
 
     /**
@@ -778,6 +1003,9 @@ export class K8sJobsConfig {
         if (!("ttlSecondsAfterFinished" in $$source)) {
             this["ttlSecondsAfterFinished"] = 0;
         }
+        if (!("failedTtlSecondsAfterFinished" in $$source)) {
+            this["failedTtlSecondsAfterFinished"] = 0;
+        }
         if (!("mode" in $$source)) {
             this["mode"] = "";
         }
@@ -801,22 +1029,22 @@ export class K8sJobsConfig {
      * Creates a new K8sJobsConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): K8sJobsConfig {
-        const $$createField3_0 = $$createType5;
-        const $$createField7_0 = $$createType7;
-        const $$createField8_0 = $$createType9;
-        const $$createField9_0 = $$createType11;
+        const $$createField3_0 = $$createType8;
+        const $$createField8_0 = $$createType10;
+        const $$createField9_0 = $$createType12;
+        const $$createField10_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("command" in $$parsedSource) {
             $$parsedSource["command"] = $$createField3_0($$parsedSource["command"]);
         }
         if ("env" in $$parsedSource) {
-            $$parsedSource["env"] = $$createField7_0($$parsedSource["env"]);
+            $$parsedSource["env"] = $$createField8_0($$parsedSource["env"]);
         }
         if ("secretEnv" in $$parsedSource) {
-            $$parsedSource["secretEnv"] = $$createField8_0($$parsedSource["secretEnv"]);
+            $$parsedSource["secretEnv"] = $$createField9_0($$parsedSource["secretEnv"]);
         }
         if ("volumes" in $$parsedSource) {
-            $$parsedSource["volumes"] = $$createField9_0($$parsedSource["volumes"]);
+            $$parsedSource["volumes"] = $$createField10_0($$parsedSource["volumes"]);
         }
         return new K8sJobsConfig($$parsedSource as Partial<K8sJobsConfig>);
     }
@@ -915,7 +1143,7 @@ export class MonitorConfig {
      * Creates a new MonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorConfig {
-        const $$createField9_0 = $$createType12;
+        const $$createField9_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bottleneckHours" in $$parsedSource) {
             $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
@@ -1042,12 +1270,91 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
-        const $$createField6_0 = $$createType13;
+        const $$createField6_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
             $$parsedSource["pressure"] = $$createField6_0($$parsedSource["pressure"]);
         }
         return new OrchestratorConfig($$parsedSource as Partial<OrchestratorConfig>);
+    }
+}
+
+export class PathDescriptor {
+    "path": string;
+    "runtimePath": string;
+    "queryPaths"?: string[];
+    "legacyPaths"?: string[];
+    "envVars"?: string[];
+    "secret": boolean;
+    "unit"?: string;
+    "constraints"?: string[];
+
+    /** Creates a new PathDescriptor instance. */
+    constructor($$source: Partial<PathDescriptor> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("runtimePath" in $$source)) {
+            this["runtimePath"] = "";
+        }
+        if (!("secret" in $$source)) {
+            this["secret"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PathDescriptor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PathDescriptor {
+        const $$createField2_0 = $$createType8;
+        const $$createField3_0 = $$createType8;
+        const $$createField4_0 = $$createType8;
+        const $$createField7_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("queryPaths" in $$parsedSource) {
+            $$parsedSource["queryPaths"] = $$createField2_0($$parsedSource["queryPaths"]);
+        }
+        if ("legacyPaths" in $$parsedSource) {
+            $$parsedSource["legacyPaths"] = $$createField3_0($$parsedSource["legacyPaths"]);
+        }
+        if ("envVars" in $$parsedSource) {
+            $$parsedSource["envVars"] = $$createField4_0($$parsedSource["envVars"]);
+        }
+        if ("constraints" in $$parsedSource) {
+            $$parsedSource["constraints"] = $$createField7_0($$parsedSource["constraints"]);
+        }
+        return new PathDescriptor($$parsedSource as Partial<PathDescriptor>);
+    }
+}
+
+export class PathValue {
+    "declared": boolean;
+    "present": boolean;
+    "redacted"?: boolean;
+    "source"?: ValueSource;
+    "path"?: string;
+    "value"?: any;
+
+    /** Creates a new PathValue instance. */
+    constructor($$source: Partial<PathValue> = {}) {
+        if (!("declared" in $$source)) {
+            this["declared"] = false;
+        }
+        if (!("present" in $$source)) {
+            this["present"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PathValue instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PathValue {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PathValue($$parsedSource as Partial<PathValue>);
     }
 }
 
@@ -1085,7 +1392,7 @@ export class PlaywrightMCPConfig {
      * Creates a new PlaywrightMCPConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): PlaywrightMCPConfig {
-        const $$createField1_0 = $$createType5;
+        const $$createField1_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("extraArgs" in $$parsedSource) {
             $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
@@ -1132,6 +1439,26 @@ export class PressureConfig {
     "maxLoadPerCpu": number;
 
     /**
+     * WarningDiskFreePercent is the free-disk-space percentage at which
+     * Sybra automatically runs a safe-cache reclaim pass (internal/cleanup's
+     * RiskSafe buckets, via internal/diskreclaim), before disk free space
+     * reaches MinDiskFreePercent and dispatch starts being deferred. Must be
+     * set higher than MinDiskFreePercent for cleanup to get a chance to run
+     * first; the gate still triggers cleanup even once MinDiskFreePercent has
+     * also been crossed. <=0 disables the warning-triggered cleanup entirely.
+     * Default 15.
+     */
+    "warningDiskFreePercent": number;
+
+    /**
+     * ReclaimCooldownSeconds rate-limits how often the warning-triggered safe
+     * cleanup pass may run, so a host hovering right at the watermark doesn't
+     * re-scan/re-delete on every dispatch tick. <=0 falls back to
+     * diskreclaim.DefaultCooldown (5 minutes). Default 300.
+     */
+    "reclaimCooldownSeconds": number;
+
+    /**
      * SampleIntervalSeconds is both the resource-sample cache TTL and the
      * deny-log throttle window. <=0 falls back to
      * pressure.DefaultSampleIntervalSeconds (15). Default 15.
@@ -1151,6 +1478,12 @@ export class PressureConfig {
         }
         if (!("maxLoadPerCpu" in $$source)) {
             this["maxLoadPerCpu"] = 0;
+        }
+        if (!("warningDiskFreePercent" in $$source)) {
+            this["warningDiskFreePercent"] = 0;
+        }
+        if (!("reclaimCooldownSeconds" in $$source)) {
+            this["reclaimCooldownSeconds"] = 0;
         }
         if (!("sampleIntervalSeconds" in $$source)) {
             this["sampleIntervalSeconds"] = 0;
@@ -1321,12 +1654,12 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType14;
-        const $$createField1_0 = $$createType15;
-        const $$createField2_0 = $$createType15;
-        const $$createField3_0 = $$createType15;
-        const $$createField4_0 = $$createType15;
-        const $$createField5_0 = $$createType16;
+        const $$createField0_0 = $$createType17;
+        const $$createField1_0 = $$createType18;
+        const $$createField2_0 = $$createType18;
+        const $$createField3_0 = $$createType18;
+        const $$createField4_0 = $$createType18;
+        const $$createField5_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -1402,6 +1735,184 @@ export class RenovateConfig {
     static createFrom($$source: any = {}): RenovateConfig {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new RenovateConfig($$parsedSource as Partial<RenovateConfig>);
+    }
+}
+
+export class RoutingEligibleVariant {
+    "experimentId": string;
+    "variantId": string;
+    "provider": string;
+    "model": string;
+    "eligible": boolean;
+    "reason"?: string;
+
+    /** Creates a new RoutingEligibleVariant instance. */
+    constructor($$source: Partial<RoutingEligibleVariant> = {}) {
+        if (!("experimentId" in $$source)) {
+            this["experimentId"] = "";
+        }
+        if (!("variantId" in $$source)) {
+            this["variantId"] = "";
+        }
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+        if (!("eligible" in $$source)) {
+            this["eligible"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RoutingEligibleVariant instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RoutingEligibleVariant {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RoutingEligibleVariant($$parsedSource as Partial<RoutingEligibleVariant>);
+    }
+}
+
+export class RoutingSummary {
+    "providerPreference": string;
+    "abTestingEnabled": boolean;
+    "abTestingExplicit": boolean;
+    "adaptiveRoutingEnabled": boolean;
+    "autoFailoverEnabled": boolean;
+    "providerLimitsEnabled": boolean;
+    "precedence": string[];
+    "eligibleVariants"?: RoutingEligibleVariant[];
+    "warnings"?: string[];
+
+    /** Creates a new RoutingSummary instance. */
+    constructor($$source: Partial<RoutingSummary> = {}) {
+        if (!("providerPreference" in $$source)) {
+            this["providerPreference"] = "";
+        }
+        if (!("abTestingEnabled" in $$source)) {
+            this["abTestingEnabled"] = false;
+        }
+        if (!("abTestingExplicit" in $$source)) {
+            this["abTestingExplicit"] = false;
+        }
+        if (!("adaptiveRoutingEnabled" in $$source)) {
+            this["adaptiveRoutingEnabled"] = false;
+        }
+        if (!("autoFailoverEnabled" in $$source)) {
+            this["autoFailoverEnabled"] = false;
+        }
+        if (!("providerLimitsEnabled" in $$source)) {
+            this["providerLimitsEnabled"] = false;
+        }
+        if (!("precedence" in $$source)) {
+            this["precedence"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RoutingSummary instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RoutingSummary {
+        const $$createField6_0 = $$createType8;
+        const $$createField7_0 = $$createType21;
+        const $$createField8_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("precedence" in $$parsedSource) {
+            $$parsedSource["precedence"] = $$createField6_0($$parsedSource["precedence"]);
+        }
+        if ("eligibleVariants" in $$parsedSource) {
+            $$parsedSource["eligibleVariants"] = $$createField7_0($$parsedSource["eligibleVariants"]);
+        }
+        if ("warnings" in $$parsedSource) {
+            $$parsedSource["warnings"] = $$createField8_0($$parsedSource["warnings"]);
+        }
+        return new RoutingSummary($$parsedSource as Partial<RoutingSummary>);
+    }
+}
+
+/**
+ * SLOTargets are the rolling autonomy/reliability targets Sybra holds
+ * itself to (see #2441). Defined here rather than in internal/evaluation
+ * because config cannot import evaluation (evaluation already imports
+ * config); internal/evaluation/slo.go aliases this type so evaluation code
+ * reads naturally as evaluation.SLOTargets.
+ */
+export class SLOTargets {
+    /**
+     * MinAutonomyRate is the minimum fraction of landed tasks that must
+     * reach done without a human in the loop.
+     */
+    "minAutonomyRate": number;
+
+    /**
+     * MinCIFirstPassRate is the minimum fraction of landed tasks that must
+     * pass CI on the first push (no CI-fix agent needed).
+     */
+    "minCiFirstPassRate": number;
+
+    /**
+     * MaxReworkRate is the maximum fraction of landed tasks allowed to
+     * bounce between statuses (a repeated status transition).
+     */
+    "maxReworkRate": number;
+
+    /**
+     * MaxIdenticalRetryCap is the maximum number of failed agent runs a
+     * single task may accumulate in-window before it counts as a breach.
+     */
+    "maxIdenticalRetryCap": number;
+
+    /**
+     * MaxRestartsPerHour is the maximum rate of automatic human-required
+     * recovery restarts (monitor auto-retry, PR-monitor blocker
+     * reconciliation) the fleet may sustain.
+     */
+    "maxRestartsPerHour": number;
+
+    /**
+     * ThrottleOnBudgetExhausted enables a default-off dispatch clamp
+     * (internal/sybra/agentorch.effectiveMaxConcurrent) that narrows the
+     * concurrency ceiling for new workflow-driven implementation dispatch
+     * while the SLO error budget is exhausted. Recovery and
+     * interactive/operator dispatch are never throttled by this flag.
+     */
+    "throttleOnBudgetExhausted": boolean;
+
+    /** Creates a new SLOTargets instance. */
+    constructor($$source: Partial<SLOTargets> = {}) {
+        if (!("minAutonomyRate" in $$source)) {
+            this["minAutonomyRate"] = 0;
+        }
+        if (!("minCiFirstPassRate" in $$source)) {
+            this["minCiFirstPassRate"] = 0;
+        }
+        if (!("maxReworkRate" in $$source)) {
+            this["maxReworkRate"] = 0;
+        }
+        if (!("maxIdenticalRetryCap" in $$source)) {
+            this["maxIdenticalRetryCap"] = 0;
+        }
+        if (!("maxRestartsPerHour" in $$source)) {
+            this["maxRestartsPerHour"] = 0;
+        }
+        if (!("throttleOnBudgetExhausted" in $$source)) {
+            this["throttleOnBudgetExhausted"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SLOTargets instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SLOTargets {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SLOTargets($$parsedSource as Partial<SLOTargets>);
     }
 }
 
@@ -1482,7 +1993,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType5;
+        const $$createField6_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -1548,43 +2059,6 @@ export class TestingConfig {
     static createFrom($$source: any = {}): TestingConfig {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new TestingConfig($$parsedSource as Partial<TestingConfig>);
-    }
-}
-
-export class TodoistConfig {
-    "enabled": boolean;
-    "apiToken": string;
-    "projectId": string;
-    "defaultProjectId": string;
-    "pollSeconds": number;
-
-    /** Creates a new TodoistConfig instance. */
-    constructor($$source: Partial<TodoistConfig> = {}) {
-        if (!("enabled" in $$source)) {
-            this["enabled"] = false;
-        }
-        if (!("apiToken" in $$source)) {
-            this["apiToken"] = "";
-        }
-        if (!("projectId" in $$source)) {
-            this["projectId"] = "";
-        }
-        if (!("defaultProjectId" in $$source)) {
-            this["defaultProjectId"] = "";
-        }
-        if (!("pollSeconds" in $$source)) {
-            this["pollSeconds"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new TodoistConfig instance from a string or object.
-     */
-    static createFrom($$source: any = {}): TodoistConfig {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new TodoistConfig($$parsedSource as Partial<TodoistConfig>);
     }
 }
 
@@ -1676,21 +2150,38 @@ export class UmbrellaConfig {
     }
 }
 
+export enum ValueSource {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    ValueSourceDefault = "default",
+    ValueSourceFile = "file",
+    ValueSourceEnv = "env",
+    ValueSourceGenerated = "generated",
+};
+
 // Private type creation functions
 const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = PlaywrightMCPConfig.createFrom;
 const $$createType2 = K8sJobsConfig.createFrom;
 const $$createType3 = QueueConfig.createFrom;
-const $$createType4 = GitHubAppConfig.createFrom;
-const $$createType5 = $Create.Array($Create.Any);
-const $$createType6 = K8sJobEnvVar.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = K8sJobSecretEnvVar.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = K8sJobVolume.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = $Create.Map($Create.Any, $Create.Any);
-const $$createType13 = PressureConfig.createFrom;
-const $$createType14 = ProviderHealthCheckConfig.createFrom;
-const $$createType15 = ProviderEntryConfig.createFrom;
-const $$createType16 = ProviderLimitsConfig.createFrom;
+const $$createType4 = GitHubPollingConfig.createFrom;
+const $$createType5 = GitHubAppConfig.createFrom;
+const $$createType6 = GitHubPollingStreamConfig.createFrom;
+const $$createType7 = GitHubPRPollingConfig.createFrom;
+const $$createType8 = $Create.Array($Create.Any);
+const $$createType9 = K8sJobEnvVar.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = K8sJobSecretEnvVar.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = K8sJobVolume.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = $Create.Map($Create.Any, $Create.Any);
+const $$createType16 = PressureConfig.createFrom;
+const $$createType17 = ProviderHealthCheckConfig.createFrom;
+const $$createType18 = ProviderEntryConfig.createFrom;
+const $$createType19 = ProviderLimitsConfig.createFrom;
+const $$createType20 = RoutingEligibleVariant.createFrom;
+const $$createType21 = $Create.Array($$createType20);

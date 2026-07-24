@@ -181,6 +181,7 @@ func (s *Scheduler) tick(ctx context.Context, loopID string) time.Duration {
 func (s *Scheduler) fire(la LoopAgent) (string, error) {
 	cfg := agent.RunConfig{
 		Name:                   la.AgentName(),
+		Role:                   agent.RoleLoop,
 		Mode:                   "headless",
 		Prompt:                 la.Prompt,
 		Dir:                    s.homeDir,

@@ -15,8 +15,10 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/config"
 	eventnames "github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
@@ -145,14 +147,13 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 	}
 }
 
-func createResearchTaskWithPriority(t *testing.T, tasks *task.Manager, title string, priority task.Priority) task.Task {
+func createTaskWithPriority(t *testing.T, tasks *task.Manager, title string, priority task.Priority) task.Task {
 	t.Helper()
 	created, err := tasks.Create(title, "", "headless")
 	if err != nil {
 		t.Fatalf("task Create(%q): %v", title, err)
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
-		TaskType: task.Ptr(task.TaskTypeResearch),
 		Priority: task.Ptr(priority),
 	})
 	if err != nil {
@@ -300,6 +301,16 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 		wg:             &wg,
 		logger:         a.logger,
 	}
+	attachments, err := attachment.NewStore(t.TempDir(), int64(config.DefaultAttachmentMaxSizeMB)*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.attachments = attachments
+	a.tasks.SetDeleteHook(func(id string) {
+		if err := attachments.DeleteTask(id); err != nil {
+			t.Fatalf("attachments.DeleteTask(%s): %v", id, err)
+		}
+	})
 	return svc, a
 }
 
@@ -345,6 +356,128 @@ func TestNewApp(t *testing.T) {
 	}
 	if a.tasksDir != cfg.TasksDir {
 		t.Errorf("tasksDir = %q, want %q", a.tasksDir, cfg.TasksDir)
+	}
+}
+
+func TestGetPressureGateWiresDiskReclaimer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	a := setupApp(t)
+	cfg := config.DefaultConfig()
+	cfg.Logging.Dir = filepath.Join(home, "logs")
+	cfg.TasksDir = filepath.Join(home, "tasks")
+	cfg.SkillsDir = filepath.Join(home, "skills")
+	cfg.ProjectsDir = filepath.Join(home, "projects")
+	cfg.ClonesDir = filepath.Join(home, "clones")
+	cfg.WorktreesDir = filepath.Join(home, "worktrees")
+	a.cfg = cfg
+	if gate := a.getPressureGate(); gate == nil {
+		t.Fatal("getPressureGate() = nil, want gate")
+	}
+	if a.diskReclaimer == nil {
+		t.Fatal("diskReclaimer = nil, want shared reclaimer wired with pressure gate")
+	}
+}
+
+// TestPressureGateReclaimSurfacesInHealthTelemetry drives the full loop the
+// acceptance criterion "Health reports reclaimed and unreclaimable space"
+// depends on: a dispatch-time Admit() call crossing the warning watermark
+// must fire the wired diskreclaim.Reclaimer (see getPressureGate), and once
+// that pass completes, healthPressureStatus (wired to health.Checker via
+// SetPressureStatus in lifecycle.go) must surface it. The two isolated unit
+// suites in internal/pressure and internal/health each cover their own half
+// of this; only this test exercises the App-level wiring connecting them.
+func TestPressureGateReclaimSurfacesInHealthTelemetry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	a := setupApp(t)
+	cfg := config.DefaultConfig()
+	cfg.Logging.Dir = filepath.Join(home, "logs")
+	cfg.TasksDir = filepath.Join(home, "tasks")
+	cfg.SkillsDir = filepath.Join(home, "skills")
+	cfg.ProjectsDir = filepath.Join(home, "projects")
+	cfg.ClonesDir = filepath.Join(home, "clones")
+	cfg.WorktreesDir = filepath.Join(home, "worktrees")
+	// Force the warning watermark to trip regardless of the host's actual
+	// free disk space, and shrink the reclaim cooldown so TryRun's
+	// background pass has no rate-limit reason to no-op.
+	cfg.Orchestrator.Pressure.Enabled = true
+	cfg.Orchestrator.Pressure.WarningDiskFreePercent = 100
+	cfg.Orchestrator.Pressure.MinDiskFreePercent = 1
+	cfg.Orchestrator.Pressure.SampleIntervalSeconds = 1
+	cfg.Orchestrator.Pressure.ReclaimCooldownSeconds = 1
+	a.cfg = cfg
+
+	gate := a.getPressureGate()
+	if gate == nil {
+		t.Fatal("getPressureGate() = nil, want gate")
+	}
+	if ok, reason := gate.Admit(); !ok {
+		t.Fatalf("Admit() = false (%q), want true (critical threshold not crossed)", reason)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var status *health.PressureStatus
+	for time.Now().Before(deadline) {
+		if s := a.healthPressureStatus(); s != nil && s.LastReclaim != nil {
+			status = s
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if status == nil {
+		t.Fatal("healthPressureStatus() never surfaced LastReclaim after Admit() triggered a reclaim pass")
+	}
+	if status.LastReclaim.RanAt.IsZero() {
+		t.Error("LastReclaim.RanAt is zero, want the reclaim pass's timestamp")
+	}
+}
+
+func TestHealthPressureStatusSurfacesLastReclaimWithoutGate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	a := setupApp(t)
+	cfg := config.DefaultConfig()
+	cfg.Logging.Dir = filepath.Join(home, "logs")
+	cfg.TasksDir = filepath.Join(home, "tasks")
+	cfg.SkillsDir = filepath.Join(home, "skills")
+	cfg.ProjectsDir = filepath.Join(home, "projects")
+	cfg.ClonesDir = filepath.Join(home, "clones")
+	cfg.WorktreesDir = filepath.Join(home, "worktrees")
+	cfg.Orchestrator.Pressure.Enabled = false
+	a.cfg = cfg
+
+	reclaimer := a.getDiskReclaimer()
+	if reclaimer == nil {
+		t.Fatal("getDiskReclaimer() = nil, want reclaimer")
+	}
+	if !reclaimer.TryRun() {
+		t.Fatal("TryRun() = false, want first reclaim pass to start")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var status *health.PressureStatus
+	for time.Now().Before(deadline) {
+		if s := a.healthPressureStatus(); s != nil && s.LastReclaim != nil {
+			status = s
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if status == nil {
+		t.Fatal("healthPressureStatus() = nil, want last reclaim telemetry even without a pressure gate")
+	}
+	if status.DiskFreePct != -1 || status.MemAvailablePct != -1 || status.LoadPerCPU != -1 {
+		t.Fatalf("pressure sample = %+v, want unavailable sentinels without a gate", *status)
+	}
+	if status.WarningDiskFreePct != 0 || status.CriticalDiskFreePct != 0 {
+		t.Fatalf("thresholds = (%v, %v), want 0/0 without a gate", status.WarningDiskFreePct, status.CriticalDiskFreePct)
+	}
+	if status.LastReclaim.RanAt.IsZero() {
+		t.Error("LastReclaim.RanAt is zero, want the reclaim pass timestamp")
 	}
 }
 
@@ -464,14 +597,14 @@ func TestStartAgentTaskNotFound(t *testing.T) {
 func TestStartAgentQueuedManualDoesNotRegisterLiveAgent(t *testing.T) {
 	a := setupManualQueueApp(t, "", "", 1)
 
-	blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+	blocker := createTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
 	blockerAgent, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
 	}
 	t.Cleanup(func() { _ = a.agents.StopAgent(blockerAgent.ID) })
 
-	queuedTask := createResearchTaskWithPriority(t, a.tasks, "queued manual", task.PriorityHigh)
+	queuedTask := createTaskWithPriority(t, a.tasks, "queued manual", task.PriorityHigh)
 	queued, err := a.StartAgent(queuedTask.ID, "headless", "ship it", true)
 	if err != nil {
 		t.Fatalf("StartAgent(queuedTask): %v", err)
@@ -512,21 +645,21 @@ func TestManualQueueDrainPriorityAndWorkflowPreservation(t *testing.T) {
 		<-done
 	}()
 
-	blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+	blocker := createTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
 	_, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
 	}
 
-	high := createResearchTaskWithPriority(t, a.tasks, "manual high", task.PriorityHigh)
-	low := createResearchTaskWithPriority(t, a.tasks, "manual low", task.PriorityLow)
+	high := createTaskWithPriority(t, a.tasks, "manual high", task.PriorityHigh)
+	low := createTaskWithPriority(t, a.tasks, "manual low", task.PriorityLow)
 	if _, err := a.StartAgent(high.ID, "headless", "high", false); err != nil {
 		t.Fatalf("StartAgent(high): %v", err)
 	}
 	if _, err := a.StartAgent(low.ID, "headless", "low", false); err != nil {
 		t.Fatalf("StartAgent(low): %v", err)
 	}
-	workflowTask := createResearchTaskWithPriority(t, a.tasks, "workflow token", task.PriorityUrgent)
+	workflowTask := createTaskWithPriority(t, a.tasks, "workflow token", task.PriorityUrgent)
 	a.agentQueue.Offer(agentqueue.Item{
 		TaskID:   workflowTask.ID,
 		Role:     string(agent.RoleImplementation),
@@ -570,12 +703,12 @@ func TestManualQueueReloadDrainsAfterRestart(t *testing.T) {
 	queueDir := t.TempDir()
 
 	first := setupManualQueueApp(t, taskDir, queueDir, 1)
-	blocker := createResearchTaskWithPriority(t, first.tasks, "blocker", task.PriorityMedium)
+	blocker := createTaskWithPriority(t, first.tasks, "blocker", task.PriorityMedium)
 	blockerAgent, err := first.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
 	}
-	queuedTask := createResearchTaskWithPriority(t, first.tasks, "restart queued", task.PriorityHigh)
+	queuedTask := createTaskWithPriority(t, first.tasks, "restart queued", task.PriorityHigh)
 	if _, err := first.StartAgent(queuedTask.ID, "headless", "after restart", false); err != nil {
 		t.Fatalf("StartAgent(queuedTask): %v", err)
 	}
@@ -733,12 +866,11 @@ func TestResolvePermission(t *testing.T) {
 	}
 }
 
-func TestResolveExecutionDebugAlwaysRequiresPermissions(t *testing.T) {
+func TestResolveExecutionUsesExplicitPermissionOverride(t *testing.T) {
 	t.Parallel()
-	tk := task.Task{TaskType: task.TaskTypeDebug, RequirePermissions: task.Ptr(false)}
-	// TaskTypeDebug hardcodes requirePerm=true regardless of task field.
+	tk := task.Task{RequirePermissions: task.Ptr(false)}
 	_, _, requirePerm, _ := agentorch.ResolveExecution(tk, "headless", "", nil)
-	if !requirePerm {
-		t.Error("debug task should always require permissions")
+	if requirePerm {
+		t.Error("task-level permission override should be honored")
 	}
 }

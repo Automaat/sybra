@@ -878,12 +878,13 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 	}
 
 	run := AgentRun{
-		AgentID:  "agent-payload",
-		Role:     "implementation",
-		Mode:     "headless",
-		State:    "running",
-		Provider: "claude",
-		Model:    "old-model",
+		AgentID:         "agent-payload",
+		Role:            "implementation",
+		Mode:            "headless",
+		State:           "running",
+		Provider:        "claude",
+		Model:           "old-model",
+		DecisionVersion: 7,
 	}
 	if err := store.AddRun(created.ID, run); err != nil {
 		t.Fatal(err)
@@ -915,7 +916,9 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		TestOutcome:             Ptr("product_bug"),
 		TestFailureFingerprint:  Ptr("fingerprint-123"),
 		HeadSHA:                 Ptr("0123456789abcdef0123456789abcdef01234567"),
+		FinalCommitSource:       Ptr("fallback"),
 		SubagentCallCount:       Ptr(3),
+		ResumeZeroOutputStall:   Ptr(true),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 
@@ -945,6 +948,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		VariantID:               "variant-b",
 		AssignmentUnit:          "task",
 		AssignmentKey:           "task-abc123",
+		DecisionVersion:         7,
 		ReasoningEffort:         "high",
 		RequestedSkill:          "sybra-test",
 		SkillExecutionMode:      "injected",
@@ -964,7 +968,9 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		TestOutcome:             "product_bug",
 		TestFailureFingerprint:  "fingerprint-123",
 		HeadSHA:                 "0123456789abcdef0123456789abcdef01234567",
+		FinalCommitSource:       "fallback",
 		SubagentCallCount:       3,
+		ResumeZeroOutputStall:   true,
 	})
 }
 
@@ -1066,8 +1072,14 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	if got.HeadSHA != want.HeadSHA {
 		t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, want.HeadSHA)
 	}
+	if got.FinalCommitSource != want.FinalCommitSource {
+		t.Errorf("FinalCommitSource = %q, want %q", got.FinalCommitSource, want.FinalCommitSource)
+	}
 	if got.SubagentCallCount != want.SubagentCallCount {
 		t.Errorf("SubagentCallCount = %d, want %d", got.SubagentCallCount, want.SubagentCallCount)
+	}
+	if got.ResumeZeroOutputStall != want.ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %t, want %t", got.ResumeZeroOutputStall, want.ResumeZeroOutputStall)
 	}
 }
 
@@ -1151,6 +1163,88 @@ func TestStoreUpdateRunSessionID(t *testing.T) {
 	}
 	if reloaded.AgentRuns[0].SessionID != "ses-abc123" {
 		t.Errorf("reloaded SessionID = %q, want %q", reloaded.AgentRuns[0].SessionID, "ses-abc123")
+	}
+}
+
+func TestStoreUpdateRunResumeZeroOutputStall(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Zero output stall task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-z", Mode: "headless", State: "running"}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun(created.ID, "agent-z", RunPatch{
+		State:                 Ptr("done"),
+		ResumeZeroOutputStall: Ptr(true),
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %v, want true", got.AgentRuns[0].ResumeZeroOutputStall)
+	}
+
+	// Verify YAML round-trip persists the marker.
+	reloaded, err := Parse(got.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("reloaded ResumeZeroOutputStall = %v, want true", reloaded.AgentRuns[0].ResumeZeroOutputStall)
+	}
+}
+
+// TestStoreUpdateRunResumeZeroOutputStallFalseNeverClears mirrors the
+// SessionID/HeadSHA "empty means unchanged" guard: RunPatch.ResumeZeroOutputStall
+// is a latch like VerdictRendered — a false pointer must never clear an
+// already-set marker, since applyRunLifecycle only ever sets it true.
+func TestStoreUpdateRunResumeZeroOutputStallFalseNeverClears(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Zero output stall latch task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{
+		AgentID:               "agent-latch",
+		Mode:                  "headless",
+		State:                 "running",
+		ResumeZeroOutputStall: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun(created.ID, "agent-latch", RunPatch{
+		State:                 Ptr("done"),
+		ResumeZeroOutputStall: Ptr(false),
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %v, want true (latch must not clear)", got.AgentRuns[0].ResumeZeroOutputStall)
 	}
 }
 
@@ -1293,8 +1387,8 @@ func TestStoreCreateDefaultMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.AgentMode != "interactive" {
-		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "interactive")
+	if created.AgentMode != "headless" {
+		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "headless")
 	}
 }
 
@@ -1433,6 +1527,98 @@ func TestStoreListInvalidatePathRefreshesJSONSidecar(t *testing.T) {
 	}
 }
 
+func TestStoreListDetectsExternalTaskFileChangeWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("Original", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	created.Title = "Edited on disk"
+	data, err := Marshal(created)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
+		t.Fatalf("write edited task: %v", err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("list after external edit: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].Title != "Edited on disk" {
+		t.Fatalf("Title = %q, want external edit", tasks[0].Title)
+	}
+}
+
+func TestStoreListDetectsExternalTaskDeleteWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("Deleted", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	if err := os.Remove(created.FilePath); err != nil {
+		t.Fatalf("remove task: %v", err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("list after external delete: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("got %d tasks, want deleted task gone", len(tasks))
+	}
+}
+
+func TestStoreListDetectsExternalSidecarChangeWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("Task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	planPath := filepath.Join(dir, created.ID+".plan.md")
+	if err := os.WriteFile(planPath, []byte("# refreshed plan"), 0o644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("list after external sidecar write: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].Plan != "# refreshed plan" {
+		t.Fatalf("Plan = %q, want external sidecar", tasks[0].Plan)
+	}
+}
+
 func TestStoreListReturnedSliceDoesNotMutateCache(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
@@ -1461,6 +1647,203 @@ func TestStoreListReturnedSliceDoesNotMutateCache(t *testing.T) {
 	}
 	if len(got.Tags) != 0 {
 		t.Fatalf("Tags = %v, want empty", got.Tags)
+	}
+}
+
+func TestStoreListRebuildsWarmCacheAfterExternalDeleteWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := store.Create("Alpha", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.Create("Bravo", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	if err := os.Remove(a.FilePath); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("want 1 task remaining after external delete, got %d", len(tasks))
+	}
+	if tasks[0].ID != b.ID {
+		t.Fatalf("remaining task = %q, want %q", tasks[0].ID, b.ID)
+	}
+}
+
+func TestStoreListRebuildsWarmCacheAfterExternalUpdateWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := store.Create("Alpha", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat tasks dir: %v", err)
+	}
+
+	a.Status = StatusHumanRequired
+	a.UpdatedAt = a.UpdatedAt.Add(time.Second)
+	a.StatusChangedAt = a.UpdatedAt
+	data, err := Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(a.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(dir, dirInfo.ModTime(), dirInfo.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("want 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Status != StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", tasks[0].Status, StatusHumanRequired)
+	}
+}
+
+func TestStoreListCacheSkipsSnapshotWhenFilesChangedDuringBuild(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := store.Create("Alpha", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleTasks, err := store.List()
+	if err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startSnapshot, ok := store.listSnapshotFromEntries(entries)
+	if !ok {
+		t.Fatal("snapshot tasks dir")
+	}
+
+	now := time.Now().UTC()
+	external := Task{
+		ID:              "extern01",
+		Slug:            "external",
+		Title:           "External",
+		Status:          StatusTodo,
+		AgentMode:       AgentModeHeadless,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		StatusChangedAt: now,
+		FilePath:        filepath.Join(dir, "extern01.md"),
+	}
+	data, err := Marshal(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(external.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if store.storeListCacheIfSnapshotFresh(staleTasks, startSnapshot) {
+		t.Fatal("stale snapshot was stored as a valid list cache")
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tk := range tasks {
+		seen[tk.ID] = true
+	}
+	if !seen[a.ID] || !seen[external.ID] {
+		t.Fatalf("List IDs = %v, want %q and %q", seen, a.ID, external.ID)
+	}
+}
+
+func TestStoreCreateInvalidatesWarmCacheAfterExternalAddWithoutInvalidate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := store.Create("Alpha", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	now := time.Now().UTC()
+	external := Task{
+		ID:              "extern02",
+		Slug:            "external",
+		Title:           "External",
+		Status:          StatusTodo,
+		AgentMode:       AgentModeHeadless,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		StatusChangedAt: now,
+		FilePath:        filepath.Join(dir, "extern02.md"),
+	}
+	data, err := Marshal(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(external.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := store.Create("Charlie", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tk := range tasks {
+		seen[tk.ID] = true
+	}
+	if !seen[a.ID] || !seen[external.ID] || !seen[c.ID] {
+		t.Fatalf("List IDs = %v, want %q, %q, and %q", seen, a.ID, external.ID, c.ID)
 	}
 }
 
@@ -2821,34 +3204,6 @@ func TestStoreDelete_RenameFailureLeavesTaskIntact(t *testing.T) {
 	}
 	if _, err := store.Get(created.ID); err != nil {
 		t.Errorf("task should still be gettable after a failed delete: %v", err)
-	}
-}
-
-func TestStoreGcOrphanChatInteraction_TrashesInsteadOfUnlinking(t *testing.T) {
-	t.Parallel()
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	chat, err := store.CreateChat("owner/repo")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// gcOrphanChats (internal/recovery) deletes orphaned chat tasks through
-	// Manager.Delete → Store.Delete; assert that path now trashes the chat
-	// task rather than unlinking it outright, so a wrongly-GC'd chat is
-	// still recoverable.
-	if err := store.Delete(chat.ID); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := store.ListTrash()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].ID != chat.ID {
-		t.Fatalf("ListTrash() = %+v, want the trashed chat task", entries)
 	}
 }
 

@@ -62,12 +62,12 @@ func SelectEligibleForContext(cfg Config, ctx SelectionContext, providerAllowed 
 		if !exp.EnabledValue() || !roleMatches(exp.Roles, ctx.Role) || !subjectMatches(exp.Subject, ctx) {
 			continue
 		}
-		return selectFromExperiment(exp, ctx.TaskID, ctx.Role, ctx.StepID, providerAllowed, evalPassed)
+		return selectFromExperiment(exp, ctx.TaskID, ctx.Role, ctx.StepID, providerAllowed, evalPassed, cfg.WeightsVersion)
 	}
 	return Assignment{}, false, nil
 }
 
-func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerAllowed func(string) bool, evalPassed EvalPassed) (Assignment, bool, error) {
+func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerAllowed func(string) bool, evalPassed EvalPassed, weightsVersion *int) (Assignment, bool, error) {
 	if err := validateExperiment(exp, providerAllowed); err != nil {
 		return Assignment{}, false, err
 	}
@@ -103,10 +103,15 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 		// #nosec G115 -- positive weights are validated above; uint64 cannot overflow.
 		acc += uint64(v.Weight)
 		if pick < acc {
+			decisionVersion := 0
+			if weightsVersion != nil {
+				decisionVersion = *weightsVersion
+			}
 			return Assignment{
 				ExperimentID:    exp.ID,
 				Kind:            exp.KindValue(),
 				VariantID:       v.ID,
+				RoutingReason:   "ab",
 				Provider:        v.Provider,
 				Model:           v.Model,
 				ReasoningEffort: v.ReasoningEffort,
@@ -114,6 +119,7 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 				AssignmentKey:   key,
 				PromptTransform: clonePromptTransform(v.PromptTransform),
 				SkillAliases:    cloneSkillAliases(v.SkillAliases),
+				DecisionVersion: decisionVersion,
 			}, true, nil
 		}
 	}

@@ -13,8 +13,8 @@ function buildSettings() {
       requirePermissions: null,
       surviveRestart: null,
       fallbackModel: '',
-      maxCostUsd: 0,
-      maxTurns: 0,
+      postResultCostUsd: 0,
+      maxAssistantEvents: 0,
       bashTimeoutSeconds: 0,
       retryWatchdog: 0,
       dispatchJitterMs: 0,
@@ -29,17 +29,19 @@ function buildSettings() {
 
 describe('AgentPanel', () => {
   it('renders detected runtimes with installed, missing, and probe-error states', () => {
+    const runtimes = [
+      { id: 'claude', name: 'Claude Code', installed: true, path: '/tmp/claude', version: 'Claude 1.2.3', attachmentSupport: 'supported' },
+      { id: 'codex', name: 'Codex', installed: false, path: '', version: '', error: '' },
+      { id: 'opencode', name: 'OpenCode', installed: true, path: '/tmp/opencode', version: '', error: 'version probe timed out after 1.5s', attachmentSupport: 'unsupported' },
+      { id: 'hermes', name: 'Hermes', installed: true, path: '/tmp/hermes', version: 'Hermes 0.8.0', informationalOnly: true },
+    ] as never
+
     render(AgentPanel, {
       props: {
         settings: buildSettings(),
         defaults: buildSettings(),
         modelOptions: [{ value: 'sonnet', label: 'Sonnet' }],
-        runtimes: [
-          { id: 'claude', name: 'Claude Code', installed: true, path: '/tmp/claude', version: 'Claude 1.2.3' },
-          { id: 'codex', name: 'Codex', installed: false, path: '', version: '', error: '' },
-          { id: 'opencode', name: 'OpenCode', installed: true, path: '/tmp/opencode', version: '', error: 'version probe timed out after 1.5s' },
-          { id: 'hermes', name: 'Hermes', installed: true, path: '/tmp/hermes', version: 'Hermes 0.8.0', informationalOnly: true },
-        ],
+        runtimes,
       },
     })
 
@@ -52,6 +54,8 @@ describe('AgentPanel', () => {
     expect(screen.getByText('Version: Claude 1.2.3')).toBeDefined()
     expect(screen.getByText('Not found on PATH')).toBeDefined()
     expect(screen.getByText('Probe: version probe timed out after 1.5s')).toBeDefined()
+    expect(screen.getByText('attachments')).toBeDefined()
+    expect(screen.getByText('no attachments')).toBeDefined()
     expect(screen.getByText('info only')).toBeDefined()
   })
 })

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
 )
 
@@ -57,6 +58,75 @@ func TestRegisterMarkAgentDone_ProviderAccountingInvariant(t *testing.T) {
 	if got := m.InFlightByProvider(); len(got) != 0 {
 		t.Fatalf("expected empty in-flight map, got %+v", got)
 	}
+}
+
+func TestReleaseStaleStoppedAgentsForTask_ReleasesDoneGate(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.deadAgentRetention = 0
+	stale := &Agent{
+		ID:          "stale-stopped",
+		TaskID:      "task-1",
+		Provider:    "claude",
+		State:       StateStopped,
+		LastEventAt: time.Now().Add(-30 * time.Minute),
+		done:        make(chan struct{}),
+	}
+	if err := m.registerRunningAgent(stale, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("precondition: stopped agent with open done channel should still gate liveness")
+	}
+
+	if got := m.ReleaseStaleStoppedAgentsForTask(context.Background(), "task-1", 15*time.Minute); got != 1 {
+		t.Fatalf("released = %d, want 1", got)
+	}
+	if m.HasRunningAgentForTask("task-1") {
+		t.Fatal("stale stopped agent should no longer gate dispatch")
+	}
+}
+
+func TestReleaseStaleStoppedAgentsForTask_KeepsFreshStopRace(t *testing.T) {
+	m, _ := newTestManager(t)
+	fresh := &Agent{
+		ID:          "fresh-stopped",
+		TaskID:      "task-1",
+		Provider:    "claude",
+		State:       StateStopped,
+		LastEventAt: time.Now().Add(-30 * time.Minute),
+		done:        make(chan struct{}),
+	}
+	fresh.MarkStopped()
+	if err := m.registerRunningAgent(fresh, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	t.Cleanup(func() { m.markAgentDone(context.Background(), fresh) })
+
+	if got := m.ReleaseStaleStoppedAgentsForTask(context.Background(), "task-1", 15*time.Minute); got != 0 {
+		t.Fatalf("released = %d, want 0", got)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("fresh stopped agent should still gate until its runner exits")
+	}
+}
+
+func TestClaimTaskDispatch_ExpiresLeakedClaim(t *testing.T) {
+	m, _ := newTestManager(t)
+	if !m.ClaimTaskDispatch("task-1") {
+		t.Fatal("initial claim failed")
+	}
+	if m.ClaimTaskDispatch("task-1") {
+		t.Fatal("fresh duplicate claim should be rejected")
+	}
+
+	m.mu.Lock()
+	m.dispatchClaims["task-1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.mu.Unlock()
+
+	if !m.ClaimTaskDispatch("task-1") {
+		t.Fatal("stale leaked claim should be released and reacquired")
+	}
+	m.ReleaseTaskDispatch("task-1")
 }
 
 // TestMarkAgentDone_EvictsFromRegistry locks in that a finished agent is
@@ -253,26 +323,6 @@ func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
 	}
 }
 
-// TestRun_JitterSkippedForInteractiveMode verifies jitter is applied only to
-// headless dispatch — interactive/chat must never be delayed.
-func TestRun_JitterSkippedForInteractiveMode(t *testing.T) {
-	m, _ := newTestManager(t)
-	m.mu.Lock()
-	m.dispatchJitterMs = 5_000
-	m.mu.Unlock()
-
-	dir := t.TempDir()
-	start := time.Now()
-	a, err := m.Run(RunConfig{TaskID: "t1", Mode: "interactive", Dir: dir, OneShot: true})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	t.Cleanup(func() { _ = m.StopAgent(a.ID) })
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("interactive Run must skip jitter, took %s", elapsed)
-	}
-}
-
 func TestNewProviderUnhealthy_RateLimitedFlag(t *testing.T) {
 	cases := []struct {
 		reason string
@@ -293,6 +343,89 @@ func TestNewProviderUnhealthy_RateLimitedFlag(t *testing.T) {
 			t.Errorf("newProviderUnhealthy dropped fields: %+v", ue)
 		}
 	}
+}
+
+func TestResolveProviderDecision_ComputesRoutingReason(t *testing.T) {
+	t.Run("default provider when request omitted", func(t *testing.T) {
+		m, _ := newTestManager(t)
+		m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true}})
+
+		got, reason, _, err := m.resolveProviderDecision(RunConfig{})
+		if err != nil {
+			t.Fatalf("resolveProviderDecision: %v", err)
+		}
+		if got != "claude" {
+			t.Fatalf("provider = %q, want claude", got)
+		}
+		if reason != "default" {
+			t.Fatalf("routing reason = %q, want default", reason)
+		}
+	})
+
+	t.Run("explicit provider stays explicit when healthy", func(t *testing.T) {
+		m, _ := newTestManager(t)
+		m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true}})
+
+		got, reason, _, err := m.resolveProviderDecision(RunConfig{Provider: "codex"})
+		if err != nil {
+			t.Fatalf("resolveProviderDecision: %v", err)
+		}
+		if got != "codex" {
+			t.Fatalf("provider = %q, want codex", got)
+		}
+		if reason != "explicit" {
+			t.Fatalf("routing reason = %q, want explicit", reason)
+		}
+	})
+
+	t.Run("health failover marks failover", func(t *testing.T) {
+		m, _ := newTestManager(t)
+		m.SetHealthGate(&fakeGate{
+			healthy:  map[string]bool{"claude": false, "codex": true},
+			failover: map[string]string{"claude": "codex"},
+			reasons:  map[string]string{"claude": "rate_limited"},
+		})
+
+		got, reason, _, err := m.resolveProviderDecision(RunConfig{Provider: "claude"})
+		if err != nil {
+			t.Fatalf("resolveProviderDecision: %v", err)
+		}
+		if got != "codex" {
+			t.Fatalf("provider = %q, want codex", got)
+		}
+		if reason != "failover" {
+			t.Fatalf("routing reason = %q, want failover", reason)
+		}
+	})
+
+	t.Run("limit redirect marks limit", func(t *testing.T) {
+		m, _ := newTestManager(t)
+		m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+		if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+			DefaultProvider: "claude",
+			LimitGate:       &fakeLimitGate{chooseReason: "lower quota pressure"},
+			LimitPolicy:     providerLimitTestPolicy(true),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		got, reason, _, err := m.resolveProviderDecision(RunConfig{Provider: "claude"})
+		if err != nil {
+			t.Fatalf("resolveProviderDecision: %v", err)
+		}
+		if got != "codex" {
+			t.Fatalf("provider = %q, want codex", got)
+		}
+		if reason != "limit" {
+			t.Fatalf("routing reason = %q, want limit", reason)
+		}
+	})
+}
+
+func providerLimitTestPolicy(preferUnderused bool) limits.Policy {
+	policy := limits.DefaultPolicy()
+	policy.PreferUnderused = preferUnderused
+	return policy
 }
 
 func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {
@@ -348,6 +481,63 @@ func TestTryReserveSlot(t *testing.T) {
 	m.mu.Unlock()
 	if !m.TryReserveSlot() {
 		t.Fatal("expected maxConcurrent<=0 to always report a slot available")
+	}
+}
+
+func TestTryHoldCapacity(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 1
+	m.mu.Unlock()
+
+	reservation, ok := m.TryHoldCapacity()
+	if !ok || reservation == nil {
+		t.Fatal("expected reservation under the cap")
+	}
+	if m.TryReserveSlot() {
+		t.Fatal("held reservation must consume visible capacity")
+	}
+	if _, ok := m.TryHoldCapacity(); ok {
+		t.Fatal("second reservation at cap must fail")
+	}
+
+	reservation.Release()
+	if !m.TryReserveSlot() {
+		t.Fatal("released reservation must free capacity")
+	}
+}
+
+// TestTryHoldCapacityWithLimit proves the SLO throttle's admission hold is
+// reservation-aware: a burst of concurrent holds against a limit below the raw
+// pool cap cannot collectively overshoot the limit, because outstanding
+// reservations (not just live agents) are counted under the lock. This is the
+// TOCTOU gap the earlier live-only precheck left open.
+func TestTryHoldCapacityWithLimit(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 10
+	m.mu.Unlock()
+
+	// Halved ceiling of 5 against a raw cap of 10: exactly 5 holds succeed even
+	// though none has converted to a live agent yet (liveCount stays 0).
+	var held []*CapacityReservation
+	for i := range 5 {
+		res, ok := m.TryHoldCapacityWithLimit(5)
+		if !ok {
+			t.Fatalf("hold %d under limit 5 must succeed (reserved=%d)", i, len(held))
+		}
+		held = append(held, res)
+	}
+	if _, ok := m.TryHoldCapacityWithLimit(5); ok {
+		t.Fatal("6th hold must fail: reservations count toward the limit even with liveCount==0")
+	}
+	// Raw pool still has room (5 of 10 reserved), so a non-throttled hold (no
+	// extra limit) still admits.
+	if _, ok := m.TryHoldCapacityWithLimit(0); !ok {
+		t.Fatal("un-throttled hold must still claim the raw pool's free capacity")
+	}
+	for _, res := range held {
+		res.Release()
 	}
 }
 
@@ -510,4 +700,65 @@ func TestTryReserveSlot_RegisterNoDoubleCount(t *testing.T) {
 		t.Fatalf("claude in-flight = %d, want 1", got)
 	}
 	assertAccountingInvariant(t, m)
+}
+
+func TestRunWithCapacityReservation_ConsumesHeldSlot(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 1
+	m.mu.Unlock()
+
+	reservation, ok := m.TryHoldCapacity()
+	if !ok || reservation == nil {
+		t.Fatal("expected reservation under the cap")
+	}
+
+	a := &Agent{ID: "held-slot", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{capacityReservation: reservation}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent with reservation: %v", err)
+	}
+	if got := m.RunningCount(); got != 1 {
+		t.Fatalf("RunningCount = %d, want 1", got)
+	}
+	if m.TryReserveSlot() {
+		t.Fatal("live agent should still occupy the only slot after reservation consumption")
+	}
+
+	// Consumed reservation is already inactive; a deferred caller Release must
+	// be a no-op rather than freeing the live agent's slot.
+	reservation.Release()
+	if m.TryReserveSlot() {
+		t.Fatal("Release after consumption must not free a live agent slot")
+	}
+	assertAccountingInvariant(t, m)
+}
+
+// TestFirstHealthyProvider_DistributesAcrossEligiblePeers guards against
+// re-introducing a fixed-order pick: with several equally-eligible
+// candidates, firstHealthyProvider must not always land on the same one.
+func TestFirstHealthyProvider_DistributesAcrossEligiblePeers(t *testing.T) {
+	candidates := []string{"claude", "codex", "copilot"}
+	healthy := func(string) bool { return true }
+
+	seen := map[string]bool{}
+	for range 200 {
+		seen[firstHealthyProvider("opencode", candidates, healthy)] = true
+	}
+	for _, want := range candidates {
+		if !seen[want] {
+			t.Errorf("firstHealthyProvider never picked %q across 200 trials: %v", want, seen)
+		}
+	}
+}
+
+func TestFirstHealthyProvider_ExcludesAndFiltersUnhealthy(t *testing.T) {
+	candidates := []string{"claude", "codex", "copilot"}
+	healthy := func(p string) bool { return p == "codex" }
+
+	if got := firstHealthyProvider("claude", candidates, healthy); got != "codex" {
+		t.Errorf("got %q, want codex (only healthy candidate)", got)
+	}
+	if got := firstHealthyProvider("codex", candidates, healthy); got != "" {
+		t.Errorf("got %q, want none (only healthy candidate is excluded)", got)
+	}
 }

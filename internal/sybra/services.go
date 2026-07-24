@@ -42,6 +42,14 @@ func ServiceRegistry(a *App) map[string]httpapi.Service {
 }
 
 func (a *App) coreHTTPServices() map[string]httpapi.Service {
+	out := make(map[string]httpapi.Service)
+	maps.Copy(out, a.coreAppHTTPServices())
+	maps.Copy(out, a.coreTaskHTTPServices())
+	maps.Copy(out, a.coreInfraHTTPServices())
+	return out
+}
+
+func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 	return map[string]httpapi.Service{
 		"App": httpapi.NewService(a,
 			"GetMonitorReport",
@@ -53,12 +61,19 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"StartAgent",
 			"StartK8sPocAgent",
 			"AgentQueueSnapshot",
-			"StartChat",
-			"StopChat",
 			"ListBackgroundOps",
 			"ListNotifications",
 			"SetDesktopNotifications",
+		).WithReadOnly(
+			"GetMonitorReport",
+			"GetEvaluationReport",
+			"GetLifecyclePhases",
+			"GetLearningDigestStatus",
+			"AgentQueueSnapshot",
+			"ListBackgroundOps",
+			"ListNotifications",
 		),
+		// OpenWorktree opens a local GUI app and stays off HTTP.
 		"AgentService": httpapi.NewService(a.agentSvc,
 			"StopAgent",
 			"ListAgents",
@@ -71,26 +86,48 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"GetAgentRunConvoLog",
 			"RespondEscalation",
 			"GetAgentDiff",
-			// OpenWorktree opens a local GUI app.
+		).WithReadOnly(
+			"ListAgents",
+			"GetAgentOutput",
+			"GetConvoOutput",
+			"GetAgentRunLog",
+			"GetAgentRunConvoLog",
+			"GetAgentDiff",
 		),
 		"ConfigService": httpapi.NewService(a.configSvc,
 			"GetSettings",
+			"GetPathExplanations",
 			"GetDefaultSettings",
-			"UpdateTodoistToken",
 			"UpdateSettings",
 			"GetRawConfig",
 			"SaveRawConfig",
+		).WithReadOnly(
+			"GetSettings",
+			"GetPathExplanations",
+			"GetDefaultSettings",
+			"GetRawConfig",
 		),
 		"InfoService": httpapi.NewService(a.infoSvc,
 			"GetVersion",
 			"GetCodexModels",
 			"GetCopilotModels",
 			"GetAvailableRuntimes",
+		).WithReadOnly(
+			"GetVersion",
+			"GetCodexModels",
+			"GetCopilotModels",
+			"GetAvailableRuntimes",
 		),
+	}
+}
+
+func (a *App) coreTaskHTTPServices() map[string]httpapi.Service {
+	return map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(a.taskSvc,
 			"AssignTask",
 			"BlessTampering",
 			"ListTasks",
+			"ListTasksForNode",
 			"ListTaskArtifacts",
 			"GetTaskSetupLog",
 			"ListTaskAuditEvents",
@@ -100,21 +137,45 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"CreateTask",
 			"UpdateTask",
 			"DeleteTask",
+			"UploadAttachment",
+			"ListAttachments",
+			"DeleteAttachment",
+			"GetAttachmentURL",
 			"DispatchFromHumanRequired",
 			"ListTaskProgress",
+		).WithReadOnly(
+			"ListTasks",
+			"ListTasksForNode",
+			"ListTaskArtifacts",
+			"GetTaskSetupLog",
+			"ListTaskAuditEvents",
+			"GetTamperReport",
+			"GetTask",
+			"ListAttachments",
+			"GetAttachmentURL",
+			"ListTaskProgress",
 		),
+		"ClusterAttachmentService": httpapi.NewService(&ClusterAttachmentService{tasks: a.tasks, attachments: a.attachments, logger: a.logger},
+			"ExportAttachment",
+			"ImportAttachment",
+		).WithReadOnly("ExportAttachment"),
 		"StatsService": httpapi.NewService(a.statsSvc,
 			"GetStats",
-		),
+		).WithReadOnly("GetStats"),
 		"LearningService": httpapi.NewService(a.learningSvc,
 			"ListDigests",
 			"GetLatestDigest",
 			// StoreDigest excluded: the raw store is never scrubbed at write
 			// time (see internal/learning package doc) — Wails/local-only.
-		),
+		).WithReadOnly("ListDigests", "GetLatestDigest"),
+	}
+}
+
+func (a *App) coreInfraHTTPServices() map[string]httpapi.Service {
+	return map[string]httpapi.Service{
 		"QueueService": httpapi.NewService(a.queueSvc,
 			"SnapshotDepth",
-		),
+		).WithReadOnly("SnapshotDepth"),
 		"ClusterService": httpapi.NewService(a.clusterSvc,
 			"GetNodes",
 			"ListNodeAgents",
@@ -126,6 +187,11 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"RespondApprovalOnNode",
 			"ApprovePlanOnNode",
 			"RejectPlanOnNode",
+		).WithReadOnly(
+			"GetNodes",
+			"ListNodeAgents",
+			"GetAgentOutputOnNode",
+			"GetConvoOutputOnNode",
 		),
 	}
 }
@@ -139,7 +205,7 @@ func (a *App) planningHTTPServices() map[string]httpapi.Service {
 			"RejectPlan",
 			"SendPlanMessage",
 			"HasLivePlanAgent",
-		),
+		).WithReadOnly("HasLivePlanAgent"),
 		"ReviewService": httpapi.NewService(a.reviewSvc,
 			"StartReview",
 			"StartFixReview",
@@ -149,13 +215,13 @@ func (a *App) planningHTTPServices() map[string]httpapi.Service {
 			"DeleteReviewComment",
 			"FetchReviews",
 			"MarkPRReady",
-		),
+		).WithReadOnly("ListReviewComments", "FetchReviews"),
 		"OrchestratorService": httpapi.NewService(a.orchSvc,
 			"StartOrchestrator",
 			"StopOrchestrator",
 			"IsOrchestratorRunning",
 			"GetOrchestratorAgentID",
-		),
+		).WithReadOnly("IsOrchestratorRunning", "GetOrchestratorAgentID"),
 		"WorkflowService": httpapi.NewService(a.workflowSvc,
 			"ListWorkflows",
 			"GetWorkflow",
@@ -164,7 +230,7 @@ func (a *App) planningHTTPServices() map[string]httpapi.Service {
 			"ResetBuiltin",
 			"StartWorkflow",
 			"HandleHumanAction",
-		),
+		).WithReadOnly("ListWorkflows", "GetWorkflow"),
 		"PromptLabService": httpapi.NewService(a.promptLabSvc,
 			"ApproveProposal",
 			"RejectProposal",
@@ -188,11 +254,8 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			// k8s sandbox and Docker build/compose paths accept attacker-controlled
 			// filesystem paths — Wails IPC only.
 			// OpenInTerminal and OpenInEditor open local GUI apps.
-		),
+		).WithReadOnly("ListProjects", "GetProject", "ListWorktrees"),
 		"IntegrationService": httpapi.NewService(a.intgSvc,
-			"SyncTodoist",
-			"GetTodoistProjects",
-			"TodoistEnabled",
 			"FetchRenovatePRs",
 			"MergeRenovatePR",
 			"ApproveRenovatePR",
@@ -203,6 +266,11 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			"ProviderHealthEnabled",
 			"SetProviderAutoFailover",
 			"SetProviderEnabled",
+		).WithReadOnly(
+			"FetchRenovatePRs",
+			"FetchAssignedIssues",
+			"GetProviderHealth",
+			"ProviderHealthEnabled",
 		),
 		"LoopAgentService": httpapi.NewService(a.loopAgentSvc,
 			"ListLoopAgents",
@@ -212,6 +280,6 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			"DeleteLoopAgent",
 			"RunLoopAgentNow",
 			"ListLoopAgentRuns",
-		),
+		).WithReadOnly("ListLoopAgents", "GetLoopAgent", "ListLoopAgentRuns"),
 	}
 }

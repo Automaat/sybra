@@ -20,6 +20,12 @@ import (
 // EmitFunc emits a Wails event to the frontend.
 type EmitFunc func(event string, data any)
 
+// SLOReportFunc receives the freshly computed SLOReport at the end of every
+// tick — wired to internal/sybra/agentorch.Orchestrator.SetSLOReport so the
+// default-off concurrency throttle sees the current error budget without the
+// orchestrator needing its own audit/stats readers.
+type SLOReportFunc func(SLOReport)
+
 type statsReader interface{ All() []stats.RunRecord }
 
 type auditReader interface {
@@ -45,19 +51,23 @@ type Deps struct {
 	Logger     *slog.Logger
 	Now        func() time.Time
 	ReportPath string
+	// OnSLOReport, when set, is invoked at the end of every tick with the
+	// freshly computed SLOReport. Optional — nil is a no-op.
+	OnSLOReport SLOReportFunc
 }
 
 // Service periodically computes a fleet scorecard from stats + audit data.
 // Read-only: it never dispatches agents or files issues.
 type Service struct {
-	cfg        config.EvaluationConfig
-	abTesting  abtest.Config
-	stats      statsReader
-	audit      auditReader
-	emit       EmitFunc
-	logger     *slog.Logger
-	now        func() time.Time
-	reportPath string
+	cfg         config.EvaluationConfig
+	abTesting   abtest.Config
+	stats       statsReader
+	audit       auditReader
+	emit        EmitFunc
+	logger      *slog.Logger
+	now         func() time.Time
+	reportPath  string
+	onSLOReport SLOReportFunc
 
 	mu   sync.RWMutex
 	last *Report
@@ -75,14 +85,15 @@ func NewService(d Deps) *Service {
 		d.Emit = func(string, any) {}
 	}
 	return &Service{
-		cfg:        d.Cfg,
-		abTesting:  d.ABTesting,
-		stats:      d.Stats,
-		audit:      d.Audit,
-		emit:       d.Emit,
-		logger:     d.Logger,
-		now:        d.Now,
-		reportPath: d.ReportPath,
+		cfg:         d.Cfg,
+		abTesting:   d.ABTesting,
+		stats:       d.Stats,
+		audit:       d.Audit,
+		emit:        d.Emit,
+		logger:      d.Logger,
+		now:         d.Now,
+		reportPath:  d.ReportPath,
+		onSLOReport: d.OnSLOReport,
 	}
 }
 
@@ -125,7 +136,11 @@ func (s *Service) tickAndLog(ctx context.Context) {
 		s.logger.Warn("evaluation.persist", "err", err)
 	}
 	s.emit(events.EvaluationReport, rep)
-	s.logger.Info("evaluation.tick", "landed", rep.Overall.TasksLanded, "autonomy_rate", rep.Overall.AutonomyRate)
+	s.logger.Info("evaluation.tick", "landed", rep.Overall.TasksLanded, "autonomy_rate", rep.Overall.AutonomyRate,
+		"slo_compliant", rep.SLO.Compliant, "slo_error_budget", rep.SLO.ErrorBudgetRemaining)
+	if s.onSLOReport != nil {
+		s.onSLOReport(rep.SLO)
+	}
 }
 
 // Scan computes a fresh report over the configured window without side effects.
@@ -151,13 +166,14 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 	if s.stats != nil {
 		recs = s.stats.All()
 	}
+	abTesting := s.abTestingSnapshot()
 	byVariant := compareVariantsByAttribution(recs, evts, since, now, CompareOptions{
-		MinSamples:  s.abTesting.MinSamplesPerVariant,
-		Experiments: s.abTesting.Experiments,
+		MinSamples:  abTesting.MinSamplesPerVariant,
+		Experiments: abTesting.Experiments,
 	}, ComparisonAttributionLatestAuthor)
 	byVariantContribution := compareVariantsByAttribution(recs, evts, since, now, CompareOptions{
-		MinSamples:  s.abTesting.MinSamplesPerVariant,
-		Experiments: s.abTesting.Experiments,
+		MinSamples:  abTesting.MinSamplesPerVariant,
+		Experiments: abTesting.Experiments,
 	}, ComparisonAttributionAnyContribution)
 	rep := Report{
 		GeneratedAt: now,
@@ -169,22 +185,17 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		BySkillExecutionMode: BreakdownBy(recs, since, now, func(r stats.RunRecord) string {
 			return skillattr.NormalizeExecutionMode(r.SkillExecutionMode)
 		}),
-		ByAgentModel: CompareByLatestAuthor(recs, evts, since, now, 20, func(r stats.RunRecord) string {
-			if r.Provider == "" || r.Model == "" {
-				return ""
-			}
-			return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
-		}),
-		ByAgentModelContribution: CompareByContribution(recs, evts, since, now, 20, func(r stats.RunRecord) string {
-			if r.Provider == "" || r.Model == "" {
-				return ""
-			}
-			return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
-		}),
-		ByExperimentKind: GroupByKind(byVariant, byVariantContribution, s.abTesting.Experiments),
-		Notes:            reportNotes(recs, since, now),
+		ByAgentModel:             CompareByLatestAuthor(recs, evts, since, now, 20, agentModelCohortKey),
+		ByAgentModelContribution: CompareByContribution(recs, evts, since, now, 20, agentModelCohortKey),
+		ByExperimentKind:         GroupByKind(byVariant, byVariantContribution, abTesting.Experiments),
+		Notes:                    reportNotes(recs, since, now),
 	}
-	rep.Weaknesses = Weaknesses(rep)
+	sloTargets := s.cfg.SLO
+	if sloTargets == (config.SLOTargets{}) {
+		sloTargets = DefaultSLOTargets()
+	}
+	rep.SLO = EvaluateSLOs(rep.Overall, ComputeSLOSignals(evts, since, now), sloTargets)
+	rep.Weaknesses = Weaknesses(rep, sloTargets)
 	return rep, nil
 }
 
@@ -221,6 +232,27 @@ func (s *Service) PhaseReport(_ context.Context) (PhaseReport, error) {
 		return PhaseReport{}, err
 	}
 	return ComputePhaseDurations(evts, since, now, 10), nil
+}
+
+// SetABTesting swaps the A/B config used by CompareVariants/GroupByKind on
+// the next Scan — wired from internal/routing's WeightApplier so a routing
+// overlay tick updates the evaluation report's variant readiness/min-sample
+// view without waiting for a process restart. Config.yaml edits made through
+// the settings UI do not call this today (see the ab_testing hot-reload gap
+// noted in internal/sybra/config_registry.go); it exists for the routing
+// push path specifically.
+func (s *Service) SetABTesting(cfg abtest.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.abTesting = cfg
+}
+
+// abTestingSnapshot reads the current A/B config under s.mu so a concurrent
+// SetABTesting cannot race Scan's read of the Experiments slice.
+func (s *Service) abTestingSnapshot() abtest.Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.abTesting
 }
 
 // LastReport returns the cached report and whether one exists.

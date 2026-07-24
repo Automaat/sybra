@@ -40,7 +40,10 @@ func (copilotProvider) BuildCommand(cfg RunConfig, model string) string {
 func (copilotProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
 	// --allow-all-tools is required for non-interactive mode; --no-ask-user
 	// stops the agent blocking on questions (no TTY/UI to answer them).
-	prompt := stripSkillInvocations(cfg.Prompt, discoverCopilotSkills())
+	skillNames := discoverCopilotSkills()
+	prompt := stripSkillInvocations(cfg.Prompt, skillNames)
+	rendered, unrendered := computeSkillRender(cfg.Prompt, skillNames)
+	a.SetPromptRender("slash-stripped", rendered, unrendered)
 	args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
 	args = append(args, effortArgs(a.ReasoningEffort)...)
 	if a.Model != "" {
@@ -78,20 +81,6 @@ func (copilotProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 		return StreamEvent{}, err
 	}
 	return copilotEventToStreamEvent(ce), nil
-}
-
-func (copilotProvider) UsesPerTurnConvo() bool { return true }
-
-func (copilotProvider) BuildPerTurnConvoInvocation(a *Agent, _ RunConfig, prompt string) perTurnConvoInvocation {
-	return perTurnConvoInvocation{bin: "copilot", args: buildCopilotConvoArgs(a, prompt)}
-}
-
-func (copilotProvider) ParseConvoLine(line []byte) (ConvoEvent, error) {
-	ce, err := ParseCopilotLine(line)
-	if err != nil {
-		return ConvoEvent{}, err
-	}
-	return copilotEventToConvoEvent(ce), nil
 }
 
 func (copilotProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {

@@ -8,27 +8,35 @@ import (
 )
 
 func TestOrchestratorReplaceable(t *testing.T) {
+	now := time.Now()
 	tests := []struct {
 		name      string
 		state     agent.State
 		sessionID string
+		startedAt time.Time
 		want      bool
 	}{
-		{"stopped is replaceable", agent.StateStopped, "", true},
-		{"stopped with session is replaceable", agent.StateStopped, "sess-1", true},
-		{"paused with no session is the wedged brain", agent.StatePaused, "", true},
-		{"paused with session is healthy between turns", agent.StatePaused, "sess-1", false},
-		{"running is healthy", agent.StateRunning, "", false},
-		{"idle is healthy", agent.StateIdle, "sess-1", false},
+		{"stopped is replaceable", agent.StateStopped, "", now, true},
+		{"stopped with session is replaceable", agent.StateStopped, "sess-1", now, true},
+		{"paused with no session is the wedged brain", agent.StatePaused, "", now, true},
+		{"paused with session is healthy between turns", agent.StatePaused, "sess-1", now, false},
+		// A steerable headless run stays StateRunning for its whole life —
+		// see orchestratorReplaceable — so "just started" and "wedged" are
+		// both StateRunning with no session; only elapsed time (past
+		// orchestratorWedgeGrace) tells them apart.
+		{"running just started is healthy", agent.StateRunning, "", now, false},
+		{"running past grace with no session is the wedged brain", agent.StateRunning, "", now.Add(-orchestratorWedgeGrace - time.Second), true},
+		{"running past grace with a session is healthy", agent.StateRunning, "sess-1", now.Add(-orchestratorWedgeGrace - time.Second), false},
+		{"idle is healthy", agent.StateIdle, "sess-1", now, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := &agent.Agent{}
+			a := &agent.Agent{StartedAt: tt.startedAt}
 			a.SetState(tt.state)
 			a.SetSessionID(tt.sessionID)
 			if got := orchestratorReplaceable(a); got != tt.want {
-				t.Errorf("orchestratorReplaceable(state=%s, session=%q) = %v, want %v",
-					tt.state, tt.sessionID, got, tt.want)
+				t.Errorf("orchestratorReplaceable(state=%s, session=%q, startedAt=%s) = %v, want %v",
+					tt.state, tt.sessionID, tt.startedAt, got, tt.want)
 			}
 		})
 	}

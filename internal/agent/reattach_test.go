@@ -30,13 +30,11 @@ func assertAccountingInvariant(t *testing.T, m *Manager) {
 	}
 }
 
-// TestReattachAccountingInvariant exercises all three restart-reattach code
-// paths (headless via ReattachAll, reattachInteractive, reattachPerTurnConvo)
-// and asserts liveByProvider never drifts from liveCount. Each of these
-// paths increments liveCount directly (mirroring registerRunningAgent) and
-// must co-locate a matching liveByProvider increment, or the soft
-// per-provider dispatch cap silently desyncs after every restart that finds
-// in-flight agents.
+// TestReattachAccountingInvariant exercises the headless ReattachAll path
+// and asserts liveByProvider never drifts from liveCount. Reattach
+// increments liveCount directly (mirroring registerRunningAgent) and must
+// co-locate a matching liveByProvider increment, or the soft per-provider
+// dispatch cap silently desyncs after a restart that finds in-flight agents.
 func TestReattachAccountingInvariant(t *testing.T) {
 	prev := reattachPIDPoll.Load()
 	reattachPIDPoll.Store((50 * time.Millisecond).Nanoseconds())
@@ -66,8 +64,8 @@ func TestReattachAccountingInvariant(t *testing.T) {
 		return cmd
 	}
 
-	// --- Headless path: registered via the registry and reattached through
-	// the full ReattachAll sweep (mirrors app startup). ---
+	// Headless path: registered via the registry and reattached through the
+	// full ReattachAll sweep (mirrors app startup).
 	headlessLog := filepath.Join(agentsLogDir, "h1.ndjson")
 	if err := os.WriteFile(headlessLog, nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -92,47 +90,9 @@ func TestReattachAccountingInvariant(t *testing.T) {
 	}
 	assertAccountingInvariant(t, m)
 
-	// --- Interactive path: reattachInteractive directly (line ~225 site). ---
-	interactiveLog := filepath.Join(agentsLogDir, "i1.ndjson")
-	if err := os.WriteFile(interactiveLog, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	interactiveCmd := spawnSleeper(t)
-	reg := m.registry()
-	interactiveAgent := m.reattachInteractive(Record{
-		ID:            "i1",
-		TaskID:        "task-i",
-		Mode:          "interactive",
-		Provider:      "claude",
-		PID:           interactiveCmd.Process.Pid,
-		LogPath:       interactiveLog,
-		StartedAt:     time.Now().UTC(),
-		ProcStartedAt: processStartString(context.Background(), interactiveCmd.Process.Pid),
-	}, reg)
-	if interactiveAgent == nil {
-		t.Fatal("reattachInteractive returned nil, expected a live agent")
-	}
-	assertAccountingInvariant(t, m)
-
-	// --- Per-turn-convo path: reattachPerTurnConvo directly (line ~291 site). ---
-	perTurnAgent := m.reattachPerTurnConvo(Record{
-		ID:       "p1",
-		TaskID:   "task-p",
-		Mode:     "interactive",
-		Provider: "codex",
-		OneShot:  false,
-	}, reg)
-	if perTurnAgent == nil {
-		t.Fatal("reattachPerTurnConvo returned nil, expected a live agent")
-		return
-	}
-	assertAccountingInvariant(t, m)
-
-	// Kill the live helpers so every agent runs to completion, then confirm
-	// the invariant still holds once liveCount/liveByProvider both drain.
+	// Kill the live helper so the agent runs to completion, then confirm the
+	// invariant still holds once liveCount/liveByProvider both drain.
 	_ = headlessCmd.Process.Kill()
-	_ = interactiveCmd.Process.Kill()
-	_ = m.StopAgent(perTurnAgent.ID)
 
 	deadline := time.After(5 * time.Second)
 	for m.RunningCount() > 0 {
@@ -149,7 +109,14 @@ func TestReattachAccountingInvariant(t *testing.T) {
 	}
 }
 
-func TestReattachReapsStaleInteractiveTaskAgent(t *testing.T) {
+// TestReattachReapsStaleHeadlessTaskAgentButKeepsOrchestrator guards the
+// RoleOrchestrator carve-out in reattachStaleReason: the orchestrator brain
+// is a deliberately taskless, long-lived headless agent (svc_orchestrator.go
+// dispatches it with Mode: "headless" and no TaskID) and must survive a
+// restart like any live process, while a stale ordinary headless task agent
+// (empty TaskID would otherwise read as "no_task", or here a StartedAt past
+// reattachMaxAge reads as "deadline") is still reaped.
+func TestReattachReapsStaleHeadlessTaskAgentButKeepsOrchestrator(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	prevGrace := stopSIGINTGrace
 	stopSIGINTGrace = 30 * time.Millisecond
@@ -189,13 +156,13 @@ func TestReattachReapsStaleInteractiveTaskAgent(t *testing.T) {
 	orchCmd := spawnSleeper(t)
 	records := []Record{
 		{
-			ID: "task-agent", TaskID: "task-x", Mode: "interactive", Provider: "claude",
+			ID: "task-agent", TaskID: "task-x", Mode: "headless", Provider: "claude",
 			PID: staleCmd.Process.Pid, LogPath: logFor("task-agent"),
 			StartedAt:     time.Now().Add(-24 * time.Hour).UTC(),
 			ProcStartedAt: processStartString(context.Background(), staleCmd.Process.Pid),
 		},
 		{
-			ID: "orchestrator", Mode: "interactive", Provider: "claude",
+			ID: "orchestrator", Mode: "headless", Provider: "claude", Role: RoleOrchestrator,
 			PID: orchCmd.Process.Pid, LogPath: logFor("orchestrator"),
 			StartedAt:     time.Now().Add(-24 * time.Hour).UTC(),
 			ProcStartedAt: processStartString(context.Background(), orchCmd.Process.Pid),
@@ -218,7 +185,7 @@ func TestReattachReapsStaleInteractiveTaskAgent(t *testing.T) {
 		present[r.ID] = true
 	}
 	if present["task-agent"] {
-		t.Errorf("stale interactive task agent must be reaped, but its record survives")
+		t.Errorf("stale headless task agent must be reaped, but its record survives")
 	}
 	if !present["orchestrator"] {
 		t.Errorf("taskless orchestrator must NOT be reaped, but its record is gone")
@@ -286,6 +253,13 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
 			},
 			status: map[string]string{"task-x": "human-required"},
+		},
+		{
+			name: "blocked task still has live agent",
+			record: func(pid int) Record {
+				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
+			},
+			status: map[string]string{"task-x": "blocked"},
 		},
 		{
 			name: "done task still has live agent",

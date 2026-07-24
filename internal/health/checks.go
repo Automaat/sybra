@@ -6,16 +6,18 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/task"
 )
 
 // costThresholds per agent role. Empty string key covers implementation agents.
 var costThresholds = map[string]float64{
-	"eval":   0.50,
-	"triage": 0.50,
-	"plan":   2.00,
-	"":       15.00,
-	"pr-fix": 5.00,
+	"eval":     0.50,
+	"triage":   0.50,
+	"plan":     2.00,
+	"":         15.00,
+	"pr-fix":   5.00,
+	"test-fix": 5.00,
 }
 
 const (
@@ -30,26 +32,14 @@ const (
 
 // checkFailureRate flags when agent failure rate exceeds 30% with 5+ runs.
 func checkFailureRate(events []audit.Event, now time.Time) []Finding {
-	var completed, failed int
-	runs := audit.NormalizeAgentRuns(events)
-	for i := range runs {
-		run := &runs[i]
-		if !run.Terminal {
-			continue
-		}
-		if run.Failed {
-			failed++
-		} else {
-			completed++
-		}
-	}
-
-	total := completed + failed
-	if total < minRunsForAlert {
+	counts := runacct.Count(audit.RunRecords(events), nil, runacct.CountConfig{
+		CountsTowardFailure: runacct.CountsTowardCodeAuthorFailureRate,
+	})
+	if counts.Resolved < minRunsForAlert {
 		return nil
 	}
 
-	rate := float64(failed) / float64(total)
+	rate := float64(counts.Failures) / float64(counts.Resolved)
 	if rate <= failureRateLimit {
 		return nil
 	}
@@ -57,11 +47,13 @@ func checkFailureRate(events []audit.Event, now time.Time) []Finding {
 	return []Finding{{
 		Category:    CatFailureRate,
 		Severity:    SeverityCritical,
-		Title:       fmt.Sprintf("agent failure rate %.0f%% (%d/%d)", rate*100, failed, total),
-		Description: fmt.Sprintf("%d agents failed out of %d total runs in the last 24h", failed, total),
+		Title:       fmt.Sprintf("agent failure rate %.0f%% (%d/%d)", rate*100, counts.Failures, counts.Resolved),
+		Description: fmt.Sprintf("%d code-author runs failed out of %d resolved code-author runs in the last 24h", counts.Failures, counts.Resolved),
 		Evidence: map[string]any{
-			"completed":    completed,
-			"failed":       failed,
+			"resolved":     counts.Resolved,
+			"failed":       counts.Failures,
+			"stalled":      counts.Stalled,
+			"unknown":      counts.Unknown,
 			"failure_rate": round2(rate),
 		},
 		DetectedAt: now,
@@ -74,38 +66,31 @@ func checkCostOutliers(events []audit.Event, now time.Time) []Finding {
 	var findings []Finding
 	var dailyTotal float64
 
-	runs := audit.NormalizeAgentRuns(events)
-	for i := range runs {
-		run := &runs[i]
-		if !run.Terminal {
-			continue
-		}
-		cost, _ := run.TerminalEvent.Data["cost_usd"].(float64)
-		role, _ := run.TerminalEvent.Data["role"].(string)
-		dailyTotal += cost
+	records := audit.RunRecords(events)
+	for i := range records {
+		rec := records[i]
+		dailyTotal += rec.CostUSD
 
-		threshold, ok := costThresholds[role]
+		threshold, ok := costThresholds[rec.Role]
 		if !ok {
 			threshold = costThresholds[""]
 		}
-		if cost <= threshold {
+		if rec.CostUSD <= threshold {
 			continue
 		}
 
-		logFile, _ := run.TerminalEvent.Data["log_file"].(string)
 		findings = append(findings, Finding{
 			Category:    CatCostOutlier,
 			Severity:    SeverityWarning,
-			Title:       fmt.Sprintf("%s agent cost $%.2f (threshold $%.2f)", roleLabel(role), cost, threshold),
-			Description: fmt.Sprintf("Agent run on task %s cost $%.2f, exceeding the $%.2f threshold for %s agents", run.TaskID, cost, threshold, roleLabel(role)),
-			TaskID:      run.TaskID,
-			AgentID:     run.AgentID,
-			Role:        role,
-			LogFile:     logFile,
+			Title:       fmt.Sprintf("%s agent cost $%.2f (threshold $%.2f)", roleLabel(rec.Role), rec.CostUSD, threshold),
+			Description: fmt.Sprintf("Agent run on task %s cost $%.2f, exceeding the $%.2f threshold for %s agents", rec.TaskID, rec.CostUSD, threshold, roleLabel(rec.Role)),
+			TaskID:      rec.TaskID,
+			AgentID:     rec.ID,
+			Role:        rec.Role,
 			Evidence: map[string]any{
-				"cost_usd":  cost,
+				"cost_usd":  rec.CostUSD,
 				"threshold": threshold,
-				"role":      role,
+				"role":      rec.Role,
 			},
 			DetectedAt: now,
 		})
@@ -132,20 +117,16 @@ func checkCostOutliers(events []audit.Event, now time.Time) []Finding {
 func checkStuckTasks(events []audit.Event, tasks []task.Task, now time.Time) []Finding {
 	// Build set of tasks that had a completion/failure event.
 	resolved := make(map[string]bool)
-	runs := audit.NormalizeAgentRuns(events)
-	for i := range runs {
-		run := &runs[i]
-		if run.Terminal && run.TaskID != "" {
-			resolved[run.TaskID] = true
+	records := audit.RunRecords(events)
+	for i := range records {
+		if records[i].TaskID != "" {
+			resolved[records[i].TaskID] = true
 		}
 	}
 
 	var findings []Finding
 	for i := range tasks {
 		t := &tasks[i]
-		if t.TaskType == task.TaskTypeChat {
-			continue
-		}
 		if t.Status != task.StatusInProgress {
 			continue
 		}
@@ -290,16 +271,10 @@ func checkCostDrift(todayEvents, weekEvents []audit.Event, now time.Time) []Find
 func avgCost(events []audit.Event) (avg float64, n int) {
 	var total float64
 	var count int
-	runs := audit.NormalizeAgentRuns(events)
-	for i := range runs {
-		run := &runs[i]
-		if !run.Terminal {
-			continue
-		}
-		if cost, ok := run.TerminalEvent.Data["cost_usd"].(float64); ok {
-			total += cost
-			count++
-		}
+	records := audit.RunRecords(events)
+	for i := range records {
+		total += records[i].CostUSD
+		count++
 	}
 	if count == 0 {
 		return 0, 0

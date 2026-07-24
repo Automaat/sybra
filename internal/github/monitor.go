@@ -12,10 +12,22 @@ const (
 	// matching and exists only to keep its retry budget separate from PR-backed
 	// conflicts.
 	PRIssueBranchConflictNoPR PRIssueKind = "branch_conflict_no_pr"
+	// PRIssueTaskBranchConflict is a tracker-only kind for recovering a task's
+	// own branch when the local branch and the pushed copy of that SAME branch
+	// diverged and the clean merge hit content conflicts. It is never emitted by
+	// PR monitor matching; handlers use it only for the dedicated same-branch
+	// recovery workflow budget.
+	PRIssueTaskBranchConflict PRIssueKind = "task_branch_conflict"
 	PRIssueBranchRecreate     PRIssueKind = "branch_recreate"
 	PRIssueCIFailure          PRIssueKind = "ci_failure"
 	PRIssueComments           PRIssueKind = "comments"
 	PRIssueReadyToMerge       PRIssueKind = "ready_to_merge"
+	// PRIssueCIFlake is a tracker-only kind for flaky-CI observability. It is
+	// never emitted by MatchTaskPRs and exists only to record, via the same
+	// IssueTracker MarkHandled/Retries machinery as every other kind, that a
+	// ci_failure was classified flaky (ClassifyCIFlakiness) rather than
+	// dispatching a fix agent or escalating.
+	PRIssueCIFlake PRIssueKind = "ci_flake"
 )
 
 // PRIssue represents a detected problem on a PR linked to a task.

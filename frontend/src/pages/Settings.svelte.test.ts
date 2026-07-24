@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 
 const mockGetSettings = vi.fn()
+const mockGetPathExplanations = vi.fn()
 const mockGetDefaultSettings = vi.fn()
 const mockUpdateSettings = vi.fn()
-const mockUpdateTodoistToken = vi.fn()
 const mockGetRawConfig = vi.fn()
 const mockSaveRawConfig = vi.fn()
 const mockGetVersion = vi.fn()
@@ -19,9 +19,9 @@ const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 
 vi.mock('$lib/api', () => ({
   GetSettings: (...args: unknown[]) => mockGetSettings(...args),
+  GetPathExplanations: (...args: unknown[]) => mockGetPathExplanations(...args),
   GetDefaultSettings: (...args: unknown[]) => mockGetDefaultSettings(...args),
   UpdateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
-  UpdateTodoistToken: (...args: unknown[]) => mockUpdateTodoistToken(...args),
   GetRawConfig: (...args: unknown[]) => mockGetRawConfig(...args),
   SaveRawConfig: (...args: unknown[]) => mockSaveRawConfig(...args),
   GetVersion: (...args: unknown[]) => mockGetVersion(...args),
@@ -51,7 +51,7 @@ function uninstallNotification() {
   delete (window as unknown as { Notification?: unknown }).Notification
 }
 
-function baseSettings() {
+function baseSettings(): any {
   return {
     agent: {
       provider: 'claude',
@@ -66,14 +66,36 @@ function baseSettings() {
     orchestrator: { dispatchIntervalSeconds: 10, maintenanceIntervalSeconds: 60 },
     logging: { level: 'info', maxSizeMB: 100, maxFiles: 10 },
     audit: { retentionDays: 30, enabled: true },
-    todoist: { enabled: false, apiToken: '', projectId: '', pollSeconds: 300 },
     renovate: { enabled: false, author: 'app/renovate' },
     providers: {
       claude: { enabled: true },
       codex: { enabled: false },
       copilot: { enabled: true },
+      opencode: { enabled: false },
+      limits: {
+        enabled: true,
+        sessionThresholdPercent: 85,
+        weeklyThresholdPercent: 90,
+        preferUnderused: true,
+        backfillDays: 14,
+      },
       autoFailover: false,
       healthCheck: { intervalSeconds: 30 },
+    },
+    providerRouting: {
+      abTestingEnabled: false,
+      abTestingMinSamplesPerVariant: 20,
+      summary: {
+        providerPreference: 'claude',
+        abTestingEnabled: false,
+        abTestingExplicit: false,
+        adaptiveRoutingEnabled: false,
+        autoFailoverEnabled: false,
+        providerLimitsEnabled: true,
+        precedence: ['agent.provider', 'providers.limits'],
+        eligibleVariants: [],
+        warnings: [],
+      },
     },
     github: { enabled: false, app: {} },
     monitor: { enabled: false },
@@ -85,7 +107,6 @@ function baseSettings() {
     metrics: { enabled: false },
     browser: { inApp: null },
     projectTypes: [],
-    todoistTokenSet: false,
     directories: {
       tasks: '/home/.sybra/tasks',
       skills: '/home/.sybra/skills',
@@ -99,13 +120,34 @@ async function goTo(name: string) {
   await fireEvent.click(screen.getByRole('button', { name }))
 }
 
+async function waitForSettingsLoaded() {
+  await goTo('Defaults')
+  await vi.waitFor(() => expect((screen.getByLabelText('Max concurrent') as HTMLInputElement).value).toBe('3'))
+  await goTo('Appearance')
+}
+
+function getCheckboxByLabelText(text: string): HTMLInputElement {
+  const label = getLabelByText(text)
+  if (!label) throw new Error(`label not found for ${text}`)
+  const input = label.querySelector('input[type="checkbox"]')
+  if (!(input instanceof HTMLInputElement)) throw new Error(`checkbox not found for ${text}`)
+  return input
+}
+
+function getLabelByText(text: string): HTMLLabelElement {
+  const label = screen.getByText(text).closest('label')
+  if (!(label instanceof HTMLLabelElement)) throw new Error(`label not found for ${text}`)
+  return label
+}
+
 describe('Settings', () => {
   beforeEach(() => {
     mockGetSettings.mockReset()
+    mockGetPathExplanations.mockReset()
+    mockGetPathExplanations.mockResolvedValue([])
     mockGetDefaultSettings.mockReset()
     mockGetDefaultSettings.mockResolvedValue(baseSettings())
     mockUpdateSettings.mockReset()
-    mockUpdateTodoistToken.mockResolvedValue(undefined)
     mockGetRawConfig.mockResolvedValue('agent:\n  provider: claude\n')
     mockSaveRawConfig.mockResolvedValue(undefined)
     mockGetVersion.mockResolvedValue({ server: 'v1.0.0', client: 'v1.0.0' })
@@ -215,10 +257,11 @@ describe('Settings', () => {
       ['Triage & Umbrella', 'Triage'],
       ['GitHub', 'GitHub'],
       ['Monitor', 'Monitor'],
-      ['Todoist', 'Todoist'],
       ['Renovate', 'Renovate'],
-      ['Machine & Testing', 'Machine routing'],
+      ['Machine routing', 'Machine routing'],
+      ['Testing', 'Testing'],
       ['Logging & Audit', 'Logging & audit'],
+      ['Experience & Metrics', 'Experience memory & metrics'],
       ['Version', 'Version'],
       ['Directories', 'Directories'],
     ]
@@ -297,25 +340,6 @@ describe('Settings', () => {
     })
   })
 
-  it('renders Todoist pane when selected', async () => {
-    mockGetSettings.mockResolvedValue(baseSettings())
-    render(Settings)
-    await vi.waitFor(() => screen.getByRole('button', { name: 'Todoist' }))
-    await goTo('Todoist')
-    await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Todoist' })).toBeDefined())
-  })
-
-  it('shows Todoist fields when Todoist enabled', async () => {
-    mockGetSettings.mockResolvedValue({ ...baseSettings(), todoist: { enabled: true, apiToken: '', projectId: '', pollSeconds: 300 } })
-    render(Settings)
-    await vi.waitFor(() => screen.getByRole('button', { name: 'Todoist' }))
-    await goTo('Todoist')
-    await vi.waitFor(() => {
-      expect(screen.getByLabelText('API token')).toBeDefined()
-      expect(screen.getByLabelText('Project ID')).toBeDefined()
-    })
-  })
-
   it('renders Renovate pane when selected', async () => {
     mockGetSettings.mockResolvedValue(baseSettings())
     render(Settings)
@@ -340,6 +364,52 @@ describe('Settings', () => {
     expect(screen.getByRole('group', { name: 'Color scheme' })).toBeDefined()
   })
 
+  it('shows the in-app browser toggle as inherited-disabled when browser.inApp is omitted', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false))
+  })
+
+  it('shows the in-app browser toggle as enabled when browser.inApp is explicitly true', async () => {
+    const settings = baseSettings()
+    settings.browser.inApp = true
+    mockGetSettings.mockResolvedValue(settings)
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(true))
+  })
+
+  it('saves browser.inApp=true when enabling the in-app browser toggle', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    mockUpdateSettings.mockResolvedValue(undefined)
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false))
+    await fireEvent.click(getLabelByText('Open links in-app'))
+    await fireEvent.click(screen.getByText('Save'))
+    await vi.waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalled()
+      expect(mockUpdateSettings.mock.calls.at(-1)?.[0]?.browser?.inApp).toBe(true)
+      expect(localStorage.getItem('inAppBrowser')).toBe('true')
+    })
+  })
+
+  it('Reset restores the inherited-disabled browser state', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false))
+    await fireEvent.click(getLabelByText('Open links in-app'))
+    await vi.waitFor(() => expect(screen.getByText('Reset')).toBeDefined())
+    await fireEvent.click(screen.getByText('Reset'))
+    await vi.waitFor(() => {
+      expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false)
+      expect(localStorage.getItem('inAppBrowser')).toBe('false')
+      expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(true)
+    })
+  })
+
   it('shows Providers pane when providerHealthEnabled is true', async () => {
     mockGetSettings.mockResolvedValue(baseSettings())
     mockProviderHealthEnabled.mockResolvedValue(true)
@@ -350,6 +420,9 @@ describe('Settings', () => {
     await vi.waitFor(() => screen.getByRole('button', { name: 'Providers' }))
     await goTo('Providers')
     await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Providers' })).toBeDefined())
+    expect(screen.getByText('A/B provider routing opt-in')).toBeDefined()
+    expect(screen.getByText(/Provider preference:/)).toBeDefined()
+    expect(screen.getByText(/Precedence:/)).toBeDefined()
   })
 
   it('hides the Providers rail entry when provider health is disabled', async () => {

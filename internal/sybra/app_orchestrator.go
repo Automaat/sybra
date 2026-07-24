@@ -63,7 +63,7 @@ func (a *App) dispatchPass(ctx context.Context) {
 	if !a.runsScheduler() {
 		return
 	}
-	a.releaseUnblockedChildren()
+	a.releaseUnblockedChildren(ctx)
 	a.reconcileRunnableBoardTasks(ctx)
 	if a.assigner != nil {
 		a.assigner.Tick(ctx)
@@ -142,7 +142,7 @@ func (a *App) maintenancePass(ctx context.Context) {
 	// raw-URL title) forever and never dispatch a workflow. The eventual
 	// agent.Manager dispatch chain uses its own m.ctx field, same pattern.
 	if a.taskSvc != nil {
-		a.taskSvc.ReconcilePendingEnrichment() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see comment above
+		a.taskSvc.ReconcilePendingEnrichment()
 	}
 	a.worktrees.CleanupOrphaned(ctx)
 	if a.sandboxes != nil && a.tasks != nil {
@@ -185,7 +185,7 @@ func (a *App) reconcileRunnableBoardTasks(ctx context.Context) {
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+		if t.TaskType == task.TaskTypeUmbrella {
 			continue
 		}
 		if !a.runsTaskLocally(t) {
@@ -572,9 +572,6 @@ func (a *App) maybeStartOrchestrator(ctx context.Context) {
 
 	hasActive := false
 	for i := range tasks {
-		if tasks[i].TaskType == task.TaskTypeChat {
-			continue
-		}
 		switch tasks[i].Status {
 		case task.StatusPlanning, task.StatusPlanReview, task.StatusInProgress, task.StatusInReview:
 			hasActive = true

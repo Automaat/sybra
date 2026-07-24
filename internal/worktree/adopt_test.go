@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -457,6 +458,368 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	}
 	if gotBranch := strings.TrimSpace(string(headBranch)); gotBranch != branch {
 		t.Errorf("worktree branch = %q, want %q", gotBranch, branch)
+	}
+}
+
+// TestPrepareForFix_ReconcilesDivergedTaskBranch is the regression test for
+// issue #2347: a fix worktree whose local branch is both ahead of and behind
+// its own remote head (ahead > 0 && behind > 0 — e.g. an unpushed local fix
+// commit left behind by a prior run, plus a fix pushed independently from
+// another clone/machine) must be deterministically reconciled with a real
+// merge. The prior behavior discarded and recreated the worktree from the
+// same diverged local branch, which does not fix anything — the recreated
+// worktree still started ahead 2, behind 1.
+func TestPrepareForFix_ReconcilesDivergedTaskBranch(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	const prNumber = 21
+	const branch = "fix/diverged"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "initial fix commit")
+	srcGit("checkout", "main")
+
+	h.m.prBranch = func(_ string, _ int) (string, error) { return branch, nil }
+
+	tk, err := h.tasks.Create("reconcile diverged fix worktree", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix (initial): %v", err)
+	}
+
+	// Simulate an unpushed local fix commit left behind in the worktree from a
+	// prior run — local is now "ahead" of the branch's own remote head.
+	if err := os.WriteFile(filepath.Join(wtPath, "local-fix.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "add", "local-fix.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "unpushed local fix").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+
+	// Independently, the branch advances on the remote (e.g. pushed from
+	// another clone/machine) on a different file — local is now also "behind".
+	srcGit("checkout", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "remote-fix.txt"), []byte("remote"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "remote fix pushed independently")
+	srcGit("checkout", "main")
+
+	got, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix (diverged reconcile): %v", err)
+	}
+	if got != wtPath {
+		t.Fatalf("reconciled path = %q, want the same worktree %q (reconciled in place, not recreated)", got, wtPath)
+	}
+
+	if _, err := os.Stat(filepath.Join(got, "local-fix.txt")); err != nil {
+		t.Errorf("reconciled worktree missing local-only commit: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(got, "remote-fix.txt")); err != nil {
+		t.Errorf("reconciled worktree missing remote-only commit: %v", err)
+	}
+
+	statusOut, statusErr := exec.Command("git", "-C", got, "status", "--porcelain").CombinedOutput()
+	if statusErr != nil {
+		t.Fatalf("git status: %v: %s", statusErr, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("reconciled worktree not clean: %q", statusOut)
+	}
+
+	// The branch's own remote head must now be an ancestor of local HEAD —
+	// no longer "behind" — proving the reconcile actually merged it in rather
+	// than just re-checking-out the same diverged local branch.
+	remoteHead, err := exec.Command("git", "-C", got, "rev-parse", "origin/"+branch).Output()
+	if err != nil {
+		t.Fatalf("resolve origin/%s: %v", branch, err)
+	}
+	if out, err := exec.Command("git", "-C", got, "merge-base", "--is-ancestor", strings.TrimSpace(string(remoteHead)), "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("remote head not an ancestor of reconciled HEAD (still diverged): %v: %s", err, out)
+	}
+}
+
+// TestPrepareForFix_RecreatedWorktreeReconcilesDivergedTaskBranch covers the
+// recreate path from #2347: when the previous fix worktree is gone but the
+// bare clone still retains the stale local branch ref, a fresh prepare must
+// reconcile that local branch against origin/<branch> before dispatching.
+func TestPrepareForFix_RecreatedWorktreeReconcilesDivergedTaskBranch(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	const prNumber = 23
+	const branch = "fix/diverged-recreated"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "initial fix commit")
+	srcGit("checkout", "main")
+
+	h.m.prBranch = func(_ string, _ int) (string, error) { return branch, nil }
+
+	tk, err := h.tasks.Create("recreate diverged fix worktree", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix (initial): %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "local-fix.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "add", "local-fix.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "unpushed local fix").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+
+	srcGit("checkout", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "remote-fix.txt"), []byte("remote"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "remote fix pushed independently")
+	srcGit("checkout", "main")
+
+	if err := project.RemoveWorktreeReconcile(context.Background(), h.proj.ClonePath, wtPath); err != nil {
+		t.Fatalf("remove old worktree: %v", err)
+	}
+
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "init", "--bare", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("init fork bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+
+	got, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix (recreated diverged reconcile): %v", err)
+	}
+	if got != wtPath {
+		t.Fatalf("recreated path = %q, want %q", got, wtPath)
+	}
+
+	if _, err := os.Stat(filepath.Join(got, "local-fix.txt")); err != nil {
+		t.Errorf("recreated worktree missing local-only commit: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(got, "remote-fix.txt")); err != nil {
+		t.Errorf("recreated worktree missing remote-only commit: %v", err)
+	}
+
+	statusOut, statusErr := exec.Command("git", "-C", got, "status", "--porcelain").CombinedOutput()
+	if statusErr != nil {
+		t.Fatalf("git status: %v: %s", statusErr, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("recreated worktree not clean: %q", statusOut)
+	}
+
+	remoteHead, err := exec.Command("git", "-C", got, "rev-parse", "origin/"+branch).Output()
+	if err != nil {
+		t.Fatalf("resolve origin/%s: %v", branch, err)
+	}
+	if out, err := exec.Command("git", "-C", got, "merge-base", "--is-ancestor", strings.TrimSpace(string(remoteHead)), "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("remote head not an ancestor of recreated HEAD (still diverged): %v: %s", err, out)
+	}
+}
+
+// TestPrepareForFix_PRHeadFallbackIgnoresSameNamedForkBranch covers PR-fix
+// worktrees created from refs/pull/<N>/head while a configured fork remote has
+// a same-named branch. Fresh preflight must compare against the fetched PR head,
+// not PushRemote's fork/<branch>.
+func TestPrepareForFix_PRHeadFallbackIgnoresSameNamedForkBranch(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	const prNumber = 24
+	const branch = "fix/fork-name-collision"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "pr-head.txt"), []byte("pr"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "pr head")
+	shaOut, err := exec.Command("git", "-C", h.src, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse pr head: %v: %s", err, shaOut)
+	}
+	prSHA := strings.TrimSpace(string(shaOut))
+	srcGit("update-ref", "refs/pull/24/head", prSHA)
+	srcGit("checkout", "main")
+	srcGit("branch", "-D", branch)
+
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "init", "--bare", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("init fork bare: %v: %s", err, out)
+	}
+	forkSrc := filepath.Join(t.TempDir(), "fork-src")
+	if out, err := exec.Command("git", "clone", h.src, forkSrc).CombinedOutput(); err != nil {
+		t.Fatalf("clone fork source: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "checkout", "-b", branch).CombinedOutput(); err != nil {
+		t.Fatalf("checkout fork branch: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(forkSrc, "fork-only.txt"), []byte("fork"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "add", ".").CombinedOutput(); err != nil {
+		t.Fatalf("git add fork: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "same named fork branch").CombinedOutput(); err != nil {
+		t.Fatalf("git commit fork: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "push", forkBare, branch).CombinedOutput(); err != nil {
+		t.Fatalf("push fork branch: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+
+	h.m.prBranch = func(_ string, _ int) (string, error) { return branch, nil }
+
+	tk, err := h.tasks.Create("fix fork collision pr", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+	headSHA, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v: %s", err, headSHA)
+	}
+	if got := strings.TrimSpace(string(headSHA)); got != prSHA {
+		t.Fatalf("worktree HEAD = %q, want PR head %q", got, prSHA)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "fork-only.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree unexpectedly merged fork branch file: %v", err)
+	}
+}
+
+// TestPrepareForFix_DivergedTaskBranchConflictEscalates covers the other half
+// of #2347's contract: when the diverged local and remote copies of the same
+// branch genuinely conflict (both edit the same file differently), that is a
+// real semantic blocker a recreate cannot paper over. PrepareForFix must
+// surface an error and clean up the worktree rather than silently continuing.
+func TestPrepareForFix_DivergedTaskBranchConflictEscalates(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	const prNumber = 22
+	const branch = "fix/diverged-conflict"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "shared.txt"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "initial fix commit")
+	srcGit("checkout", "main")
+
+	h.m.prBranch = func(_ string, _ int) (string, error) { return branch, nil }
+
+	tk, err := h.tasks.Create("diverged conflict fix worktree", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix (initial): %v", err)
+	}
+
+	// Local edits shared.txt one way (unpushed)...
+	if err := os.WriteFile(filepath.Join(wtPath, "shared.txt"), []byte("local-edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "local edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+
+	// ...while the remote edits it a conflicting way.
+	srcGit("checkout", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "shared.txt"), []byte("remote-edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "remote edit")
+	srcGit("checkout", "main")
+
+	_, err = h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err == nil {
+		t.Fatal("PrepareForFix (diverged conflict) = nil error, want a genuine-conflict error")
+	}
+	if !errors.Is(err, project.ErrBranchDiverged) {
+		t.Errorf("PrepareForFix (diverged conflict) err = %v, want wrapping project.ErrBranchDiverged", err)
+	}
+
+	if _, statErr := os.Stat(wtPath); !os.IsNotExist(statErr) {
+		t.Errorf("worktree not cleaned up after unresolved divergence conflict: stat err = %v", statErr)
 	}
 }
 

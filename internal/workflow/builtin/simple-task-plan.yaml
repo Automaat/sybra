@@ -232,6 +232,10 @@ steps:
                     {"path": "repo/relative/path.go", "purpose": "inspect|edit", "symbols": ["optionalSymbol"]}
                   ],
                   "steps": ["ordered implementation step"],
+                  "expected_deletions": [
+                    "internal/foo/legacy_test.go",
+                    "testdata/*.golden"
+                  ],
                   "verification": [
                     {"command": "go test ./...", "expected": "tests pass"},
                     {"manual": "manual inspection or smoke test", "expected": "observable result"}
@@ -243,18 +247,21 @@ steps:
                 }
 
                 File paths MUST be repository-relative clean paths, not absolute
-                paths and not ../ escapes. Verification and acceptance arrays
-                must be non-empty. Each verification item needs command and/or
-                manual plus expected. Supplemental fields are accepted only for
-                forward compatibility, are not instructions, and are stripped
-                before implementation agents see the contract. Keep the full
-                contract under 64 KiB. If the task body has a "## Acceptance
-                Criteria" section, copy every criterion from that section into
-                acceptance_criteria verbatim (wrapped lines joined). Do not
-                silently drop, narrow, defer, or mark any source criterion out
-                of scope; if a source criterion needs a human scope decision,
-                record that in .sybra-plan-decisions and keep it in the
-                contract.
+                paths and not ../ escapes. `expected_deletions` is optional:
+                omit it or write `[]` when no verification-file deletions are planned;
+                otherwise list clean repo-relative paths or slash-separated
+                conservative glob patterns only. Verification and acceptance
+                arrays must be non-empty. Each verification item needs command
+                and/or manual plus expected. Supplemental fields are accepted
+                only for forward compatibility, are not instructions, and are
+                stripped before implementation agents see the contract. Keep
+                the full contract under 64 KiB. If the task body has a
+                "## Acceptance Criteria" section, copy every criterion from
+                that section into acceptance_criteria verbatim (wrapped lines
+                joined). Do not silently drop, narrow, defer, or mark any
+                source criterion out of scope; if a source criterion needs a
+                human scope decision, record that in .sybra-plan-decisions and
+                keep it in the contract.
 
         Do NOT call sybra-cli update — Sybra will ingest your file as the
         task sidecars after you exit. Do NOT modify task fields directly.
@@ -480,6 +487,13 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: flag_plan_critique_verdict
+
+  # Non-blocking by design — see StepFlagPlanCritique's doc comment for why.
+  - id: flag_plan_critique_verdict
+    name: Flag Plan Critique Verdict
+    type: flag_plan_critique
+    next:
       - goto: review_plan
 
   - id: review_plan
@@ -546,4 +560,37 @@ steps:
     config:
       status: planning
     next:
+      - goto: clear_plan_artifacts
+
+  # A replan reuses the same worktree, and .sybra-plan-* is git-excluded rather
+  # than deleted, so without this cycle 2 re-imports cycle 1's bytes as though
+  # the current planner had just written them. The require_sidecar guards can't
+  # catch that — they assert non-empty, and stale content is non-empty. Worst
+  # case is a fail-open: a stale "No open decisions" from a plan the human
+  # already rejected lets shouldAutoApprovePlanReview approve cycle 2 with no
+  # human at all.
+  - id: clear_plan_artifacts
+    name: Clear Previous Plan Artifacts
+    type: clear_plan_artifacts
+    config:
+      clear_sidecars:
+        - plan
+        - plan_research
+        - plan_decisions
+        - plan_brief
+        - plan_contract
+        - plan_critique
+      # Every cleared sidecar needs its file listed, or the survivor is read
+      # straight back in. plan_critique's file does not share the plan prefix.
+      clear_worktree_globs:
+        - '.sybra-plan-*'
+        - '.sybra-critique-*'
+    next:
+      # Anything it could not clear escalates rather than replanning onto the
+      # previous cycle's content — same halt the require_* guards use.
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: plan

@@ -1,19 +1,29 @@
 package sybra
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -45,7 +55,7 @@ func TestReleaseUnblockedChildren_RespectsMaxParallel(t *testing.T) {
 	c2 := mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusTodo)
 	c3 := mkChild(t, m, "c3", "Automaat/sybra#3", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	released, held := 0, 0
 	for _, id := range []string{c1.ID, c2.ID, c3.ID} {
@@ -74,7 +84,7 @@ func TestReleaseUnblockedChildren_HaltChainFlagsTracker(t *testing.T) {
 	stuck := mkChild(t, m, "stuck", "Automaat/sybra#1", umb, nil, task.StatusHumanRequired)
 	indep := mkChild(t, m, "indep", "Automaat/sybra#2", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker = %q, want human-required on stuck child", got)
@@ -104,7 +114,7 @@ func TestReleaseUnblockedChildren_StuckChildDoesNotConsumeParallelSlot(t *testin
 	}
 	ready := mkChild(t, m, "ready", "Automaat/sybra#2", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker = %q, want human-required on stuck child", got)
@@ -115,6 +125,37 @@ func TestReleaseUnblockedChildren_StuckChildDoesNotConsumeParallelSlot(t *testin
 	readyTask := mustTask(t, m, ready.ID)
 	if readyTask.Status != task.StatusTodo || slices.Contains(readyTask.Tags, umbrellaGatedTag) {
 		t.Fatalf("ready child was not released despite free slot: status=%q tags=%v", readyTask.Status, readyTask.Tags)
+	}
+}
+
+func TestReleaseUnblockedChildren_RetryableWatchdogStopKeepsTrackerInProgress(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 2)
+
+	stopped, err := m.CreateFull("stopped", "", task.AgentModeHeadless, task.Update{
+		Issue:         task.Ptr("Automaat/sybra#1"),
+		UmbrellaIssue: task.Ptr(umb),
+		Status:        task.Ptr(task.StatusHumanRequired),
+		StatusReason:  task.Ptr("watchdog: loop stop: Agent re-running failing test `go test ./cmd/sybra-cli` despite no code change"),
+	})
+	if err != nil {
+		t.Fatalf("create stopped child: %v", err)
+	}
+	ready := mkChild(t, m, "ready", "Automaat/sybra#2", umb, nil, task.StatusTodo)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusInProgress {
+		t.Fatalf("tracker = %q, want in-progress while watchdog-stopped child is still recoverable", got)
+	}
+	if got := mustStatus(t, m, stopped.ID); got != task.StatusHumanRequired {
+		t.Fatalf("stopped child = %q, want human-required until workflow requeues it", got)
+	}
+	readyTask := mustTask(t, m, ready.ID)
+	if readyTask.Status != task.StatusTodo || slices.Contains(readyTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("ready child was not released alongside retryable watchdog stop: status=%q tags=%v", readyTask.Status, readyTask.Tags)
 	}
 }
 
@@ -141,7 +182,7 @@ func TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates(t *testing.T) {
 	}
 	dependent := mkChild(t, m, "dependent", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusBlocked)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker = %q, want human-required on non-gated blocked child", got)
@@ -151,6 +192,93 @@ func TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates(t *testing.T) {
 	}
 	if got := mustStatus(t, m, dependent.ID); got != task.StatusBlocked {
 		t.Fatalf("dependent child = %q, want to stay held (dep never reached done)", got)
+	}
+}
+
+// TestReleaseUnblockedChildren_WatchdogExhaustedBlockedChildNotReleased covers
+// #2538: a child deep into implementation that watchdog rate-limit retries
+// exhaust is parked `blocked` by handleWatchdogRateLimitRetry with a
+// workflow-owned Blocker (blocker.KindWatchdogRateLimitExhausted,
+// ActorWorkflow). Even though it still carries the umbrella-gated tag and has
+// no dependencies to wait on, the gate must never treat this as its own
+// dependency hold and release it — doing so discards the child's in-flight
+// implementation workflow and re-triages it from scratch.
+func TestReleaseUnblockedChildren_WatchdogExhaustedBlockedChildNotReleased(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+
+	// CreateFull's initial-field application does not carry Blocker (only
+	// Update does — mirroring the real handleWatchdogRateLimitRetry escalation,
+	// which always flips an already-running child from in-progress via a
+	// single UpdateTaskBlocker call, never at creation).
+	stalled, err := m.CreateFull("stalled", "", task.AgentModeHeadless, task.Update{
+		Issue:         task.Ptr("Automaat/sybra#1"),
+		UmbrellaIssue: task.Ptr(umb),
+		Status:        task.Ptr(task.StatusInProgress),
+		Tags:          task.Ptr([]string{umbrellaGatedTag}),
+	})
+	if err != nil {
+		t.Fatalf("create stalled child: %v", err)
+	}
+	if _, err := m.Update(stalled.ID, task.Update{
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr("watchdog: zero-output startup retry budget exhausted after 2 identical attempts"),
+		Blocker: task.Ptr(blocker.State{
+			Kind:      blocker.KindWatchdogRateLimitExhausted,
+			Actor:     blocker.ActorWorkflow,
+			Exhausted: true,
+		}),
+	}); err != nil {
+		t.Fatalf("escalate stalled child to blocked: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	stalledTask := mustTask(t, m, stalled.ID)
+	if stalledTask.Status != task.StatusBlocked {
+		t.Fatalf("stalled child = %q, want to stay blocked (workflow-owned hold, not the gate's)", stalledTask.Status)
+	}
+	if !slices.Contains(stalledTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("stalled child tags = %v, want the gating tag left untouched since the gate never released it", stalledTask.Tags)
+	}
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
+		t.Fatalf("tracker = %q, want human-required to surface the stalled child", got)
+	}
+}
+
+// TestReleaseUnblockedChildren_WatchdogBlockedChildWithImplementationHistoryNotReleased
+// is the regression guard for sybra#2538: a child that already ran an
+// implementation agent and later hit `blocked` via watchdog exhaustion must
+// never be re-released as though it were still awaiting its dependencies,
+// even if it still (or once again) carries the gating tag.
+func TestReleaseUnblockedChildren_WatchdogBlockedChildWithImplementationHistoryNotReleased(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	mkTracker(t, m, umb, 5)
+
+	started := mkChild(t, m, "started", "Automaat/sybra#1", umb, nil, task.StatusBlocked)
+	if err := m.AddRun(started.ID, task.AgentRun{
+		AgentID: "a1",
+		Role:    string(agent.RoleImplementation),
+	}); err != nil {
+		t.Fatalf("add implementation run: %v", err)
+	}
+	neverStarted := mkChild(t, m, "never-started", "Automaat/sybra#2", umb, nil, task.StatusBlocked)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	startedTask := mustTask(t, m, started.ID)
+	if startedTask.Status != task.StatusBlocked || !slices.Contains(startedTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("started child = %q tags=%v, want to stay blocked+gated (already implemented, not dependency-gated)",
+			startedTask.Status, startedTask.Tags)
+	}
+	neverStartedTask := mustTask(t, m, neverStarted.ID)
+	if neverStartedTask.Status != task.StatusTodo || slices.Contains(neverStartedTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("never-started child = %q tags=%v, want released to todo (dependency-gated with no history)",
+			neverStartedTask.Status, neverStartedTask.Tags)
 	}
 }
 
@@ -168,7 +296,7 @@ func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
 	mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusDone)
 	mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusDone)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusDone {
 		t.Fatalf("tracker = %q, want done when all children done", got)
@@ -189,7 +317,7 @@ func TestReleaseUnblockedChildren_UpdatesTrackerProgressChecklist(t *testing.T) 
 	mkChild(t, m, "done child", "Automaat/sybra#1", umb, nil, task.StatusDone)
 	mkChild(t, m, "blocked child", "Automaat/sybra#2", umb, nil, task.StatusHumanRequired)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	body := mustTask(t, m, tracker.ID).Body
 	for _, want := range []string{
@@ -202,6 +330,29 @@ func TestReleaseUnblockedChildren_UpdatesTrackerProgressChecklist(t *testing.T) 
 		if !strings.Contains(body, want) {
 			t.Fatalf("tracker body missing %q:\n%s", want, body)
 		}
+	}
+}
+
+func TestReleaseUnblockedChildren_ActiveExpansionPhaseHoldsReadyChild(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	if _, err := m.Update(tracker.ID, task.Update{
+		Tags: task.Ptr([]string{"umbrella", umbrella.MaxParallelTag(5), umbrella.ExpandPhaseTag(umbrella.ExpandPhasePlanned)}),
+	}); err != nil {
+		t.Fatalf("mark tracker expanding: %v", err)
+	}
+	root := mkChild(t, m, "root", "Automaat/sybra#1", umb, nil, task.StatusTodo)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	got := mustTask(t, m, root.ID)
+	if got.Status != task.StatusTodo {
+		t.Fatalf("root status = %q, want todo while expansion is still active", got.Status)
+	}
+	if !slices.Contains(got.Tags, umbrellaGatedTag) {
+		t.Fatalf("root tags = %v, want child to stay gated until the full DAG is durable", got.Tags)
 	}
 }
 
@@ -276,11 +427,47 @@ func TestTrackerRollup(t *testing.T) {
 		{"cycle", umbrellaState{total: 2}, true, true, task.StatusHumanRequired, false},
 		{"stuck child", umbrellaState{total: 2, anyHR: true}, false, true, task.StatusHumanRequired, false},
 		{"blocked child", umbrellaState{total: 2, anyBlocked: true}, false, true, task.StatusHumanRequired, false},
-		{"cancelled child", umbrellaState{total: 2, anyCancelled: true}, false, true, task.StatusHumanRequired, false},
+		{
+			"cancelled child with no live sibling",
+			umbrellaState{total: 2, children: []umbrellaProgressChild{
+				{id: "a", issue: "Automaat/sybra#1", status: task.StatusCancelled},
+				{id: "b", issue: "Automaat/sybra#2", status: task.StatusDone},
+			}},
+			false, true, task.StatusHumanRequired, false,
+		},
+		{
+			// A cancelled task can never reach Done, so it must not count
+			// against total — otherwise doneCount == total is impossible
+			// forever, and the umbrella sits at in-progress with no signal.
+			"cancelled duplicate with a live sibling on the same issue completes",
+			umbrellaState{total: 2, doneCount: 1, children: []umbrellaProgressChild{
+				{id: "a", issue: "Automaat/sybra#1", status: task.StatusCancelled},
+				{id: "b", issue: "Automaat/sybra#1", status: task.StatusDone},
+			}},
+			false, true, task.StatusDone, true,
+		},
+		{
+			// Excluding the resolved duplicate from total must not mask a
+			// genuinely unfinished sibling under the same umbrella.
+			"cancelled duplicate does not mask other still-running work",
+			umbrellaState{total: 3, doneCount: 1, children: []umbrellaProgressChild{
+				{id: "a", issue: "Automaat/sybra#1", status: task.StatusCancelled},
+				{id: "b", issue: "Automaat/sybra#1", status: task.StatusDone},
+				{id: "c", issue: "Automaat/sybra#2", status: task.StatusInProgress},
+			}},
+			false, true, task.StatusInProgress, false,
+		},
 		{"all done", umbrellaState{total: 2, doneCount: 2}, false, true, task.StatusDone, true},
 		{"in progress", umbrellaState{total: 2, doneCount: 1}, false, true, task.StatusInProgress, false},
 		{"zero children settled completes", umbrellaState{total: 0}, false, true, task.StatusDone, true},
 		{"zero children not settled holds", umbrellaState{total: 0}, false, false, task.StatusInProgress, false},
+		{
+			"zero children settled with active expansion holds",
+			umbrellaState{total: 0, tracker: &task.Task{
+				Tags: []string{"umbrella", umbrella.ExpandPhaseTag(umbrella.ExpandPhaseMaterializing)},
+			}},
+			false, true, task.StatusInProgress, false,
+		},
 		{
 			"zero children expand-failing below threshold never auto-closes",
 			umbrellaState{total: 0, tracker: &task.Task{
@@ -353,7 +540,7 @@ func TestReleaseUnblockedChildren_ExpandFailingTrackerNeverAutoCloses(t *testing
 		t.Fatalf("create failure tracker: %v", err)
 	}
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker = %q, want to stay human-required (never auto-closed)", got)
@@ -372,7 +559,7 @@ func TestReleaseUnblockedChildren_EmptyTrackerHeldUntilSettled(t *testing.T) {
 	// Tracker with no children, created just now → not yet settled.
 	tracker := mkTracker(t, m, umb, 5)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	// A freshly-created childless tracker must not be closed — its children may
 	// still be materializing in the same expansion.
@@ -394,7 +581,7 @@ func TestReleaseUnblockedChildren_CancelledChildSurfaces(t *testing.T) {
 	mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusDone)
 	mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusCancelled)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	// A cancelled child must surface for a human, never silently complete/close.
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
@@ -431,7 +618,7 @@ func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
 			}
 			mkChild(t, m, "child", "Automaat/sybra#1", umb, nil, tt.childStatus)
 
-			app.releaseUnblockedChildren()
+			app.releaseUnblockedChildren(context.Background())
 
 			got := mustTask(t, m, tracker.ID)
 			if got.Status != task.StatusBlocked {
@@ -461,7 +648,7 @@ func TestReleaseUnblockedChildren_BlockedTrackerStillReleasesReadyChildren(t *te
 	}
 	child := mkChild(t, m, "ready", "Automaat/sybra#1", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	gotTracker := mustTask(t, m, tracker.ID)
 	if gotTracker.Status != task.StatusBlocked {
@@ -490,7 +677,7 @@ func TestReleaseUnblockedChildren_CloseFailureDefersDone(t *testing.T) {
 	tracker := mkTracker(t, m, umb, 5)
 	mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusDone)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	// Close failed transiently → tracker must NOT flip to done (so the close
 	// retries next tick rather than orphaning the open issue).
@@ -549,7 +736,7 @@ func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
 
 	root := mkChild(t, m, "root", "Automaat/sybra#1", umb, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	released, err := m.Get(root.ID)
 	if err != nil {
@@ -562,6 +749,407 @@ func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
 	// retrigger a release.
 	if slices.Contains(released.Tags, umbrellaGatedTag) {
 		t.Fatalf("gating tag not stripped on release: tags=%v", released.Tags)
+	}
+}
+
+func TestReleaseUnblockedChildren_HoldsWhileUmbrellaExpanding(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+
+	tracker := mkTracker(t, m, umb, 5)
+	if _, err := m.Update(tracker.ID, task.Update{
+		Tags: task.Ptr(append(slices.Clone(tracker.Tags), umbrella.ExpandingTag)),
+	}); err != nil {
+		t.Fatalf("mark tracker expanding: %v", err)
+	}
+	root := mkChild(t, m, "root", "Automaat/sybra#1", umb, nil, task.StatusTodo)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	held := mustTask(t, m, root.ID)
+	if held.Status != task.StatusTodo || !slices.Contains(held.Tags, umbrellaGatedTag) {
+		t.Fatalf("root released while umbrella is expanding: status=%q tags=%v", held.Status, held.Tags)
+	}
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusInProgress {
+		t.Fatalf("tracker status = %q, want unchanged while expanding", got)
+	}
+}
+
+// TestReleaseUnblockedChildren_PushesReleaseToRemoteHomeNode reproduces the
+// 2026-07-19 incident: a child already stamped AssignedNode by a prior
+// Assigner.Tick (i.e. routed once, same as every real gated child) gets
+// released locally by the umbrella gate, but without pushReleaseToHomeNode
+// that release only ever lands in the leader's own canonical copy — the
+// follower that actually dispatches the task never sees it.
+func TestReleaseUnblockedChildren_PushesReleaseToRemoteHomeNode(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var assigned []task.Task
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/TaskService/AssignTask" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var args []task.Task
+		_ = json.Unmarshal(body, &args)
+		if len(args) == 1 {
+			mu.Lock()
+			assigned = append(assigned, args[0])
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role: config.ClusterRoleLeader,
+		Followers: []config.Follower{{
+			Name:      "home-nas",
+			Endpoints: []string{srv.URL},
+			Homes:     []string{"Automaat/sybra"},
+		}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+
+	app, m := newUmbrellaGateApp(t)
+	app.cfg = cfg
+	app.ctx = context.Background()
+	app.assigner = clusterlead.NewAssigner(cfg, m, roster, func(string) bool { return false }, nil, nil)
+
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	child, _, err := m.Put(task.Task{
+		ID:            "task-remote",
+		Title:         "remote child",
+		Status:        task.StatusTodo,
+		ProjectID:     "Automaat/sybra",
+		Issue:         "Automaat/sybra#1",
+		UmbrellaIssue: umb,
+		Tags:          []string{umbrellaGatedTag},
+		AssignedNode:  "home-nas",
+	})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	released, err := m.Get(child.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if slices.Contains(released.Tags, umbrellaGatedTag) {
+		t.Fatalf("gating tag not stripped locally: tags=%v", released.Tags)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(assigned) != 1 {
+		t.Fatalf("follower received %d pushes, want 1 — the release must reach the remote home node", len(assigned))
+	}
+	if assigned[0].Status != task.StatusTodo || slices.Contains(assigned[0].Tags, umbrellaGatedTag) {
+		t.Errorf("pushed task = %+v, want released (todo, gate tag stripped)", assigned[0])
+	}
+}
+
+// TestReleaseUnblockedChildren_RollsBackReleaseOnPushFailure covers the
+// adversarial-review blocker on the fix above: if the remote push fails, the
+// leader must not report the child as released while the follower — the node
+// that actually dispatches it — never saw the change. Without the rollback,
+// the gating tag/status only ever get stripped once, so a failed push
+// permanently strands the follower with no way for the next tick to retry.
+func TestReleaseUnblockedChildren_RollsBackReleaseOnPushFailure(t *testing.T) {
+	t.Parallel()
+	var failing atomic.Bool
+	failing.Store(true)
+	var attempts atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/TaskService/AssignTask" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		attempts.Add(1)
+		if failing.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role: config.ClusterRoleLeader,
+		Followers: []config.Follower{{
+			Name:      "home-nas",
+			Endpoints: []string{srv.URL},
+			Homes:     []string{"Automaat/sybra"},
+		}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+
+	app, m := newUmbrellaGateApp(t)
+	app.cfg = cfg
+	app.ctx = context.Background()
+	app.assigner = clusterlead.NewAssigner(cfg, m, roster, func(string) bool { return false }, nil, nil)
+
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	child, _, err := m.Put(task.Task{
+		ID:            "task-remote",
+		Title:         "remote child",
+		Status:        task.StatusBlocked,
+		ProjectID:     "Automaat/sybra",
+		Issue:         "Automaat/sybra#1",
+		UmbrellaIssue: umb,
+		Tags:          []string{umbrellaGatedTag},
+		AssignedNode:  "home-nas",
+	})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	if attempts.Load() != 1 {
+		t.Fatalf("push attempts = %d, want 1", attempts.Load())
+	}
+	afterFailedPush, err := m.Get(child.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !slices.Contains(afterFailedPush.Tags, umbrellaGatedTag) {
+		t.Fatalf("gating tag stripped despite failed push: tags=%v", afterFailedPush.Tags)
+	}
+	if afterFailedPush.Status != task.StatusBlocked {
+		t.Fatalf("status = %q after failed push, want rolled back to %q", afterFailedPush.Status, task.StatusBlocked)
+	}
+
+	// Next tick, the follower is healthy again — the rolled-back state must
+	// still be eligible for release rather than permanently stranded.
+	failing.Store(false)
+	app.releaseUnblockedChildren(context.Background())
+
+	if attempts.Load() != 2 {
+		t.Fatalf("push attempts after recovery = %d, want 2", attempts.Load())
+	}
+	afterRetry, err := m.Get(child.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if slices.Contains(afterRetry.Tags, umbrellaGatedTag) {
+		t.Fatalf("gating tag still present after a successful retry: tags=%v", afterRetry.Tags)
+	}
+	if afterRetry.Status != task.StatusTodo {
+		t.Fatalf("status = %q after successful retry, want %q", afterRetry.Status, task.StatusTodo)
+	}
+}
+
+// TestReleaseUnblockedChildren_ConfidentialityDeclineDoesNotConsumeCap covers
+// an adversarial-review finding: PushUpdate can decline to push (pushed=false)
+// with no error at all — Assigner's confidentiality gate refuses to send a
+// work-typed task to an untrusted/unencrypted follower and moves the task to
+// its own Blocked+reason state instead. If releaseCapped read that nil-error
+// as "released" (ignoring the pushed=false signal), it would count a task
+// that never reached any follower against the umbrella's parallelism cap,
+// starving a sibling that was genuinely ready. Cap=1 with a declined remote
+// child and a releasable local child makes that starvation observable: the
+// local child must still get the slot.
+func TestReleaseUnblockedChildren_ConfidentialityDeclineDoesNotConsumeCap(t *testing.T) {
+	t.Parallel()
+	var attempts atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux) // plain HTTP: Encrypted() is false, same as an unconfigured follower
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role: config.ClusterRoleLeader,
+		Followers: []config.Follower{{
+			Name:      "home-nas",
+			Endpoints: []string{srv.URL},
+			Homes:     []string{"Automaat/sybra"},
+			// Trusted defaults to false.
+		}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+
+	app, m := newUmbrellaGateApp(t)
+	app.cfg = cfg
+	app.ctx = context.Background()
+	app.assigner = clusterlead.NewAssigner(cfg, m, roster, func(string) bool { return true }, nil, nil)
+
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	mkTracker(t, m, umb, 1) // cap=1: only one real release should fit this tick
+
+	// IDs are ordered so os.ReadDir's lexical sort (Store.List's iteration
+	// order, and thus ReadyToRelease's) puts the declined task first — the
+	// scenario that actually exercises the cap-consumption bug. If the local
+	// task were processed first it would legitimately take the cap=1 slot
+	// before the declined task is even reached, masking the defect.
+	declined, _, err := m.Put(task.Task{
+		ID:            "task-a-declined",
+		Title:         "remote child",
+		Status:        task.StatusBlocked,
+		ProjectID:     "Automaat/sybra", // homes to the untrusted follower above
+		Issue:         "Automaat/sybra#1",
+		UmbrellaIssue: umb,
+		Tags:          []string{umbrellaGatedTag},
+		AssignedNode:  "home-nas",
+	})
+	if err != nil {
+		t.Fatalf("Put(declined): %v", err)
+	}
+	// Not in any follower's Homes list, so HomeNodeFor resolves it Local —
+	// genuinely releasable this tick if the cap isn't wrongly consumed above.
+	local, _, err := m.Put(task.Task{
+		ID:            "task-b-local",
+		Title:         "local child",
+		Status:        task.StatusTodo,
+		ProjectID:     "Automaat/other",
+		Issue:         "Automaat/sybra#2",
+		UmbrellaIssue: umb,
+		Tags:          []string{umbrellaGatedTag},
+	})
+	if err != nil {
+		t.Fatalf("Put(local): %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	if attempts.Load() != 0 {
+		t.Fatalf("follower endpoint was hit %d times, want 0 — a work task must never reach an untrusted follower", attempts.Load())
+	}
+	gotDeclined, err := m.Get(declined.ID)
+	if err != nil {
+		t.Fatalf("Get(declined): %v", err)
+	}
+	if gotDeclined.Status != task.StatusBlocked {
+		t.Fatalf("declined child status = %q, want %q (confidentiality-blocked, not released)", gotDeclined.Status, task.StatusBlocked)
+	}
+	if !strings.Contains(gotDeclined.StatusReason, "withheld") {
+		t.Fatalf("declined child status reason = %q, want the confidentiality block's own reason", gotDeclined.StatusReason)
+	}
+	gotLocal, err := m.Get(local.ID)
+	if err != nil {
+		t.Fatalf("Get(local): %v", err)
+	}
+	if gotLocal.Status != task.StatusTodo || slices.Contains(gotLocal.Tags, umbrellaGatedTag) {
+		t.Fatalf("local child = status=%q tags=%v, want released — the confidentiality decline must not have consumed cap=1's only slot", gotLocal.Status, gotLocal.Tags)
+	}
+}
+
+// TestReleaseUnblockedChildren_SurvivesPostPushBookkeepingFailure covers a
+// second adversarial-review finding: Assigner.route's local bookkeeping write
+// after a successful AssignTask (re-stamping AssignedNode) can itself fail,
+// in which case PushUpdate reports routed=true *and* a non-nil error. If
+// releaseCapped read any non-nil error as "the follower never got it" and
+// rolled back, the leader's local copy would revert to gated while the
+// follower already holds the release — a split brain, and the exact silent
+// divergence #2349 exists to close. The follower's AssignTask handler here
+// deletes the task's on-disk file the instant it receives the push (after
+// already recording receipt), deterministically forcing route()'s trailing
+// a.tasks.Get to fail without relying on OS-specific permission semantics.
+func TestReleaseUnblockedChildren_SurvivesPostPushBookkeepingFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
+	var logBuf bytes.Buffer
+	app := &App{tasks: tasks, logger: slog.New(slog.NewTextHandler(&logBuf, nil)), umbrellaRecoveryInFlight: make(map[string]bool)}
+
+	const childID = "task-remote"
+	var received atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/TaskService/AssignTask" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		received.Add(1)
+		// Simulate the push having already landed on the follower, then a
+		// local-store fault on the leader before it finishes stamping
+		// AssignedNode — the exact fault window route() documents handling.
+		if err := os.Remove(filepath.Join(dir, childID+".md")); err != nil {
+			t.Errorf("remove task file to force post-push bookkeeping failure: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role: config.ClusterRoleLeader,
+		Followers: []config.Follower{{
+			Name:      "home-nas",
+			Endpoints: []string{srv.URL},
+			Homes:     []string{"Automaat/sybra"},
+		}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	app.cfg = cfg
+	app.ctx = context.Background()
+	app.assigner = clusterlead.NewAssigner(cfg, tasks, roster, func(string) bool { return false }, nil, nil)
+
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	if _, _, err := tasks.Put(task.Task{
+		ID:            childID,
+		Title:         "remote child",
+		Status:        task.StatusBlocked,
+		ProjectID:     "Automaat/sybra",
+		Issue:         "Automaat/sybra#1",
+		UmbrellaIssue: umb,
+		Tags:          []string{umbrellaGatedTag},
+		AssignedNode:  "home-nas",
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	if received.Load() != 1 {
+		t.Fatalf("follower received %d pushes, want 1", received.Load())
+	}
+	// The handler deletes the task file the instant it receives the push, so
+	// route()'s trailing a.tasks.Get is guaranteed to fail — confirming the
+	// fault actually fired before asserting on how releaseCapped handled it.
+	if _, err := os.Stat(filepath.Join(dir, childID+".md")); err == nil {
+		t.Fatalf("task file unexpectedly still present — fault injection did not fire as intended")
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "umbrella.child.released") {
+		t.Errorf("logs missing umbrella.child.released — a follower-acknowledged push must still count as a real release:\n%s", logs)
+	}
+	if !strings.Contains(logs, "umbrella.release.push_bookkeeping_failed") {
+		t.Errorf("logs missing umbrella.release.push_bookkeeping_failed — the trailing local-write error must still be surfaced:\n%s", logs)
+	}
+	if strings.Contains(logs, "umbrella.release.push_failed") {
+		t.Errorf("logs contain umbrella.release.push_failed — a push the follower already acknowledged must not be reported as a transport failure:\n%s", logs)
+	}
+	if strings.Contains(logs, "umbrella.release.rollback_failed") || strings.Contains(logs, "umbrella.release.rollback") {
+		t.Errorf("logs show a rollback attempt — rolling back a release the follower already holds would split-brain leader and follower:\n%s", logs)
 	}
 }
 
@@ -586,7 +1174,7 @@ func TestReleaseUnblockedChildren_IgnoresSybraBugBlock(t *testing.T) {
 		t.Fatalf("create buggy: %v", err)
 	}
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, bug.ID); got != task.StatusBlocked {
 		t.Fatalf("sybra-bug-blocked child was released to %q, want blocked", got)
@@ -602,7 +1190,7 @@ func TestReleaseUnblockedChildren_HoldsThenReleasesChain(t *testing.T) {
 	dep := mkChild(t, m, "dep", "Automaat/sybra#1", umb, nil, task.StatusInProgress)
 	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 	childTask := mustTask(t, m, child.ID)
 	if childTask.Status != task.StatusTodo || !slices.Contains(childTask.Tags, umbrellaGatedTag) {
 		t.Fatalf("child released early: status = %q tags = %v, want todo+%s", childTask.Status, childTask.Tags, umbrellaGatedTag)
@@ -612,7 +1200,7 @@ func TestReleaseUnblockedChildren_HoldsThenReleasesChain(t *testing.T) {
 	if _, err := m.Update(dep.ID, task.Update{Status: task.Ptr(task.StatusDone)}); err != nil {
 		t.Fatalf("finish dep: %v", err)
 	}
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 	if got := mustStatus(t, m, child.ID); got != task.StatusTodo {
 		t.Fatalf("child status = %q, want %q after dep done", got, task.StatusTodo)
 	}
@@ -627,7 +1215,7 @@ func TestReleaseUnblockedChildren_CrossFormDependencyResolves(t *testing.T) {
 	mkChild(t, m, "dep", "https://github.com/Automaat/sybra/issues/1", umb, nil, task.StatusDone)
 	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 	if got := mustStatus(t, m, child.ID); got != task.StatusTodo {
 		t.Fatalf("child status = %q, want %q (cross-form dep should resolve)", got, task.StatusTodo)
 	}
@@ -652,7 +1240,7 @@ func TestReleaseUnblockedChildren_CycleFlagsTracker(t *testing.T) {
 	x := mkChild(t, m, "x", "Automaat/sybra#1", umb, []string{"Automaat/sybra#2"}, task.StatusTodo)
 	y := mkChild(t, m, "y", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker status = %q, want %q on cycle", got, task.StatusHumanRequired)
@@ -679,7 +1267,7 @@ func TestReleaseUnblockedChildren_NoUmbrellaNoOp(t *testing.T) {
 		t.Fatalf("create plain: %v", err)
 	}
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 	if got := mustStatus(t, m, tk.ID); got != task.StatusBlocked {
 		t.Fatalf("plain blocked task changed to %q, want blocked", got)
 	}
@@ -785,7 +1373,7 @@ func TestReleaseUnblockedChildren_InFlightUmbrellaSkipsReleaseAndRollup(t *testi
 
 	app.umbrellaRecoveryInFlight[umbrella.NormalizeIssueRef(umb)] = true
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	got := mustTask(t, m, child.ID)
 	if got.Status != task.StatusTodo || !slices.Contains(got.Tags, umbrellaGatedTag) {
@@ -812,7 +1400,7 @@ func TestReleaseUnblockedChildren_InFlightUmbrellaDoesNotBlockUnrelated(t *testi
 
 	app.umbrellaRecoveryInFlight[umbrella.NormalizeIssueRef(umbA)] = true
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	gotA := mustTask(t, m, childA.ID)
 	if gotA.Status != task.StatusTodo || !slices.Contains(gotA.Tags, umbrellaGatedTag) {
@@ -855,7 +1443,7 @@ func TestReleaseUnblockedChildren_AsyncRecoveryDoesNotBlockUnrelatedRelease(t *t
 	mkTracker(t, tasks, umbB, 5)
 	childB := mkChild(t, tasks, "b", "Automaat/sybra#1", umbB, nil, task.StatusTodo)
 
-	app.releaseUnblockedChildren()
+	app.releaseUnblockedChildren(context.Background())
 
 	if !app.umbrellaRecoveryInFlightSnapshot()[umbrella.NormalizeIssueRef(umbA)] {
 		t.Fatal("degraded umbrella ref not marked in-flight")
