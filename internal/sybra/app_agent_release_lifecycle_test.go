@@ -16,8 +16,8 @@ import (
 // newFakeInteractiveClaudeApp builds a real *App (unmocked taskAgentReleaser)
 // backed by a real agent.Manager with restart-survival enabled, and installs
 // a fake `claude` binary on PATH that blocks reading its never-EOF FIFO
-// stdin — the same shape a live, idle (StatePaused) interactive session has
-// in production.
+// stdin — the same shape a live, detached steerable-headless session
+// mid-turn has in production.
 func newFakeInteractiveClaudeApp(t *testing.T) *App {
 	t.Helper()
 
@@ -44,7 +44,7 @@ func newFakeInteractiveClaudeApp(t *testing.T) *App {
 
 	logger := discardLogger()
 	mgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir(), agent.ManagerConfig{
-		Runtime:           agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
+		Runtime:           agent.ManagerRuntimeConfig{DefaultProvider: "claude", HeadlessSteerable: true},
 		SurviveRestartDir: t.TempDir(),
 		SandboxHome:       func(string) (string, error) { return t.TempDir(), nil },
 	})
@@ -70,29 +70,31 @@ func newFakeInteractiveClaudeApp(t *testing.T) *App {
 	return a
 }
 
-// startIdleInteractiveAgent runs a detached interactive "claude" session for
-// taskID and waits for it to settle into StatePaused (idle, awaiting the
-// next turn — a live process holding an agent.max_concurrent slot). Returns
-// the agent and its OS pid.
+// startIdleInteractiveAgent runs a detached steerable-headless "claude"
+// session for taskID and waits for its subprocess to come up and block on
+// its never-EOF FIFO stdin (mid-turn, awaiting the next turn boundary — a
+// live process holding an agent.max_concurrent slot). Returns the agent and
+// its OS pid.
 func startIdleInteractiveAgent(t *testing.T, a *App, taskID string) (ag *agent.Agent, pid int) {
 	t.Helper()
 	ag, err := a.agents.Run(agent.RunConfig{
-		TaskID:   taskID,
-		Name:     "implementation",
-		Mode:     "interactive",
-		Provider: "claude",
-		Dir:      t.TempDir(),
+		TaskID:            taskID,
+		Name:              "implementation",
+		Mode:              "headless",
+		HeadlessSteerable: true,
+		Provider:          "claude",
+		Dir:               t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && ag.GetState() != agent.StatePaused {
+	for time.Now().Before(deadline) && ag.GetPID() <= 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if ag.GetState() != agent.StatePaused {
-		t.Fatalf("agent did not settle into paused state, got %s", ag.GetState())
+	if st := ag.GetState(); st != agent.StateRunning {
+		t.Fatalf("agent did not settle into running state, got %s", st)
 	}
 	pid = ag.GetPID()
 	if pid <= 0 {
@@ -119,12 +121,13 @@ func processAliveForTest(pid int) bool {
 }
 
 // TestApp_TaskTerminal_AsksLiveInteractiveAgentToExit is the regression test
-// for #2290: an interactive-mode agent process has no lifecycle tie-back to
-// its owning task, so it survives task completion indefinitely, permanently
-// holding an agent.max_concurrent slot. It reproduces the exact production
-// shape — a detached (restart-surviving) interactive claude session idling
-// on a never-EOF stdin FIFO — and asserts that moving the owning task to a
-// terminal status asks the real OS process to exit within a bounded time.
+// for #2290: a live agent process has no lifecycle tie-back to its owning
+// task, so it survives task completion indefinitely, permanently holding an
+// agent.max_concurrent slot. It reproduces the exact production shape — a
+// detached (restart-surviving) steerable-headless claude session blocked
+// mid-turn on a never-EOF stdin FIFO — and asserts that moving the owning
+// task to a terminal status asks the real OS process to exit within a
+// bounded time.
 func TestApp_TaskTerminal_AsksLiveInteractiveAgentToExit(t *testing.T) {
 	for _, target := range []task.Status{task.StatusDone, task.StatusCancelled} {
 		t.Run(string(target), func(t *testing.T) {
@@ -147,7 +150,7 @@ func TestApp_TaskTerminal_AsksLiveInteractiveAgentToExit(t *testing.T) {
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
-			t.Fatalf("interactive agent process (pid %d) still alive 5s after task reached %s", pid, target)
+			t.Fatalf("agent process (pid %d) still alive 5s after task reached %s", pid, target)
 		})
 	}
 }

@@ -576,16 +576,12 @@ func (m *Manager) survives() bool {
 	return m.surviveRestart && m.reg != nil
 }
 
-// willDetach reports whether a run survives a restart. Headless and
-// interactive Claude survive as detached processes (Claude one-shot passes
-// its prompt as an argument, no stdin). Interactive codex "survives" by
-// recreate-on-restart: it has no persistent process between its independent
-// per-turn `codex exec` invocations, so the agent record persists and the
-// idle agent is rebuilt on the next startup. Single source of truth
-// mirrored by the runner branches.
+// willDetach reports whether a run survives a restart. Headless runs survive
+// as detached processes (the process runs independent of the parent once
+// spawned). Single source of truth mirrored by the runner branches.
 func willDetach(cfg RunConfig) bool {
 	switch cfg.Mode {
-	case "headless", "interactive":
+	case "headless":
 		return true
 	default:
 		return false

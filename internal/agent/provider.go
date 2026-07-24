@@ -15,11 +15,6 @@ type headlessInvocation struct {
 	command string
 }
 
-type perTurnConvoInvocation struct {
-	bin  string
-	args []string
-}
-
 type Provider interface {
 	Name() string
 	NormalizeModel(model string) string
@@ -34,9 +29,6 @@ type Provider interface {
 	// receipt unsatisfiable — copilot/opencode silently ignore the schema, so a
 	// receipt must still be appended and verified for them.
 	EnforcesOutputSchema() bool
-	UsesPerTurnConvo() bool
-	BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation
-	ParseConvoLine(line []byte) (ConvoEvent, error)
 	SessionFilePath(sessionID string) string
 	ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration)
 	// HonorsAllowedTools reports whether this provider actually enforces
@@ -75,20 +67,6 @@ func (baseProvider) SupportsOutputSchema() bool { return false }
 func (baseProvider) EnforcesOutputSchema() bool { return false }
 
 func (baseProvider) OutputSchemaAsFile() bool { return false }
-
-func (baseProvider) UsesPerTurnConvo() bool { return false }
-
-func (baseProvider) BuildPerTurnConvoInvocation(a *Agent, _ RunConfig, _ string) perTurnConvoInvocation {
-	bin := strings.ToLower(strings.TrimSpace(a.Provider))
-	if bin == "" {
-		bin = "claude"
-	}
-	return perTurnConvoInvocation{bin: bin}
-}
-
-func (baseProvider) ParseConvoLine([]byte) (ConvoEvent, error) {
-	return ConvoEvent{}, fmt.Errorf("provider does not support per-turn conversational parsing")
-}
 
 func (baseProvider) SessionFilePath(string) string { return "" }
 

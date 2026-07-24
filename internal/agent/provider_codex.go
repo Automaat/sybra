@@ -116,20 +116,6 @@ func (codexProvider) SandboxArgs(requirePerms, headless bool) []string {
 
 func (codexProvider) OutputSchemaAsFile() bool { return true }
 
-func (codexProvider) UsesPerTurnConvo() bool { return true }
-
-func (p codexProvider) BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation {
-	return perTurnConvoInvocation{bin: "codex", args: buildCodexConvoArgsWithProvider(a, cfg, prompt, p)}
-}
-
-func (codexProvider) ParseConvoLine(line []byte) (ConvoEvent, error) {
-	ce, err := ParseCodexLine(line)
-	if err != nil {
-		return ConvoEvent{}, err
-	}
-	return codexEventToConvoEvent(ce), nil
-}
-
 func (codexProvider) SessionFilePath(sessionID string) string {
 	return resolveCodexSessionFile(sessionID)
 }

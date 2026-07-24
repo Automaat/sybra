@@ -98,7 +98,7 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	if !restored.isDetached() {
 		t.Fatal("fromRecord must mark the skeleton agent detached")
 	}
-	if restored.cancel != nil || restored.done != nil || restored.hasPromptChannel() || restored.GetCmd() != nil {
+	if restored.cancel != nil || restored.done != nil || restored.convo.hasStdinPipe() || restored.GetCmd() != nil {
 		t.Fatal("fromRecord must leave live runtime wiring to reattach callers")
 	}
 

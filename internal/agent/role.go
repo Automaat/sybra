@@ -98,7 +98,15 @@ func (r Role) IsSystem() bool {
 // #1825: the process sat waiting on a FIFO no caller intended to feed.
 // Excluding these roles falls back to the plain one-shot `-p <prompt>`
 // invocation, which has no stdin dependency to hang on.
+//
+// RoleOrchestrator is the one system role exempted from that exclusion: it
+// is the long-lived brain session a human actively drives via SendMessage
+// (unlike the other system roles, which are dispatched unattended), so it
+// needs the steerable transport despite being IsSystem().
 func (r Role) SupportsHeadlessSteer() bool {
+	if r == RoleOrchestrator {
+		return true
+	}
 	if r.IsVerifier() || r.IsSystem() {
 		return false
 	}

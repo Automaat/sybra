@@ -10,8 +10,6 @@ import (
 
 var ErrProviderModelIncompatible = errors.New("provider/model incompatible after failover")
 
-const providerModelIncompatibleErrorKind = "provider_model_incompatible"
-
 type ProviderModelIncompatibleError struct {
 	RequestedProvider string
 	SelectedProvider  string

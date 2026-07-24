@@ -114,7 +114,7 @@ updated_at: 2025-01-01T00:00:00Z
 	_ = os.MkdirAll(logDir, 0o755)
 
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, logDir, agent.ManagerConfig{
-		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude", HeadlessSteerable: true},
 	})
 
 	wm := worktree.New(worktree.Config{
@@ -170,7 +170,7 @@ updated_at: 2025-01-01T00:00:00Z
 		t.Fatal(err)
 	}
 
-	if _, err := orch.StartAgent(created.ID, "interactive", "Implement the feature.", false, true); err != nil {
+	if _, err := orch.StartAgent(created.ID, "headless", "Implement the feature.", false, true); err != nil {
 		t.Fatalf("orchestrator StartAgent: %v", err)
 	}
 
@@ -191,7 +191,7 @@ updated_at: 2025-01-01T00:00:00Z
 	}
 	args := string(data)
 	if !strings.Contains(args, "--input-format") {
-		t.Fatalf("args log does not look like an interactive claude invocation; got:\n%s", args)
+		t.Fatalf("args log does not look like a steerable headless claude invocation; got:\n%s", args)
 	}
 	if strings.Contains(args, staleSession) {
 		t.Fatalf("implement agent resumed stale cross-workflow session %q. argv:\n%s", staleSession, args)
