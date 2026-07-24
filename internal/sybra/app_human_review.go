@@ -1626,13 +1626,19 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScru
 	return b.String()
 }
 
-// finalAssistantText walks the assistant turns backward and returns the
-// first one that actually decodes via verdict.Parse — this avoids selecting
-// an earlier turn that merely echoes the schema or discusses "the decision"
-// in prose that happens to parse as JSON. If no turn parses (e.g. the run
-// produced no valid verdict at all), it falls back to the last turn that at
-// least looks verdict-shaped, then the last result turn, purely so callers
-// have raw text to surface for diagnostics.
+// finalAssistantText walks the agent's aggregated stream events backward and
+// returns the text most likely to hold the structured-output verdict.
+//
+// A tool_use assistant event never carries its JSON input in Content (see
+// formatHeadlessAssistant), so the real --json-schema payload only ever
+// shows up in the terminal result event. Tiers therefore go: (1) an assistant
+// turn that itself decodes via verdict.Parse (covers providers/prompts that
+// echo the verdict as prose), (2) the terminal result event's Content when it
+// decodes via verdict.Parse — the schema-enforced payload, checked before any
+// unvalidated guess so it can never be shadowed by earlier self-correction
+// prose, (3) the last assistant turn that merely looks verdict-shaped (legacy
+// fallback predating --json-schema), (4) the last result turn's raw Content,
+// purely so callers have something to surface for diagnostics.
 func finalAssistantText(ag *agent.Agent) string {
 	out := ag.Output()
 	for i := range slices.Backward(out) {
@@ -1642,6 +1648,15 @@ func finalAssistantText(ag *agent.Agent) string {
 		if _, _, err := verdict.Parse(out[i].Content); err == nil {
 			return out[i].Content
 		}
+	}
+	for i := range slices.Backward(out) {
+		if out[i].Type != "result" {
+			continue
+		}
+		if _, _, err := verdict.Parse(out[i].Content); err == nil {
+			return out[i].Content
+		}
+		break
 	}
 	for i := range slices.Backward(out) {
 		if out[i].Type == "assistant" && (strings.Contains(out[i].Content, "sybra-verdict") || strings.Contains(out[i].Content, "\"decision\"")) {

@@ -489,6 +489,55 @@ func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 	}
 }
 
+// TestOnComplete_UnblockedVerdict_TerminalResultWinsOverFuzzyAssistantProse
+// reproduces the reported bug: an earlier assistant turn second-guesses
+// itself in prose that happens to contain the substring "decision" (but does
+// not parse as a verdict), followed by a tool_use turn (rendered as
+// "[ToolName]" with no JSON body — see formatHeadlessAssistant) that actually
+// invoked the structured-output tool. The real, schema-conformant payload
+// only shows up in the terminal result event. The fuzzy substring tier must
+// not shadow it.
+func TestOnComplete_UnblockedVerdict_TerminalResultWinsOverFuzzyAssistantProse(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Fix flaky test", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusReadyPR)}); err != nil {
+		t.Fatalf("advance to ready-pr: %v", err)
+	}
+
+	ag := &agent.Agent{ID: "agent-1", TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: "Wait, let me double check whether I already reported the decision before calling the tool.",
+	})
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: "[StructuredOutput]",
+	})
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "result",
+		Content: `{"decision":"unblocked","reason":"fixed lint, pushed, advanced to ready-pr","recoverable_action":"none","confidence":"high"}`,
+	})
+	h.inflight[tk.ID] = "agent-1"
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusReadyPR {
+		t.Errorf("status: got %q want ready-pr (unblocked must not re-block or revert the agent's advance)", got.Status)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Errorf("expected unblocked note in body; got:\n%s", got.Body)
+	}
+}
+
 func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
