@@ -61,6 +61,13 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 	for i := range recs {
 		r := recs[i]
 		if r.Mode != "headless" {
+			// Legacy interactive/per-turn-convo records can only exist for an
+			// agent that was mid-flight when this steerable-headless-only binary
+			// was deployed. Their runner no longer exists, so the record can
+			// never be reattached — reap the orphaned process (which still holds
+			// the worktree lock/FIFO) and drop the record instead of skipping it
+			// silently and leaking it forever.
+			m.reapStaleSurvivor(r, reg, "legacy_mode_"+r.Mode)
 			continue
 		}
 		if !reattachAlive(r) { //nolint:contextcheck // liveness probe is context-free process inspection
