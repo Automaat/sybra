@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
@@ -1947,13 +1946,16 @@ func (r *Handler) adoptOrphanMergedPR(ctx context.Context, t *task.Task) {
 
 // findMergedPRByBranch queries GitHub for a merged PR matching the given head
 // branch in the repository. Returns the PR number, or 0 if none or ambiguous.
+//
+// Routes through github.Run — the shared request gate (pacing, rate-limit
+// bookkeeping, auth-circuit breaker) every other gh call in the process
+// gets — instead of shelling out directly, so this traffic isn't invisible to
+// the shared rate budget. See #2496.
 func findMergedPRByBranch(repo, branch string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+	out, err := github.Run(ctx, "pr", "list",
 		"--repo", repo, "--head", branch, "--state", "merged", "--json", "number", "--limit", "2")
-	cmd.Env = github.GHEnv()
-	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, out)
 	}

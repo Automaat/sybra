@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,45 +25,29 @@ type IssueSink interface {
 	Submit(ctx context.Context, a Anomaly, body string) (created bool, err error)
 }
 
-// ghExecer abstracts gh invocation for tests. The default impl shells out via
-// exec.CommandContext. Mirrors the pattern in internal/github/client.go.
+// ghExecer abstracts gh invocation for tests. The default impl routes through
+// github.RunWithEnv. Mirrors the pattern in internal/github/client.go.
 type ghExecer interface {
 	run(ctx context.Context, args ...string) ([]byte, error)
 }
 
 type defaultGHExecer struct{}
 
-var (
-	ghEnv = github.GHEnv
-	// authCircuitOpen/observeGHResult mirror the centralized GitHub
-	// auth-health circuit breaker (internal/github/authhealth.go) the same
-	// way ghEnv already mirrors credential injection — this sink shells out
-	// directly instead of going through internal/github's request gate, so
-	// without this it would keep hammering `gh` during an auth outage the
-	// rest of the process has already backed off from, and would never
-	// report its own failures into the shared state for other callers (or
-	// the health/metrics surfaces) to see. See #2453.
-	authCircuitOpen = github.AuthCircuitOpen
-	observeGHResult = github.ObserveCallResultCtx
-)
+// ghEnv is indirected (rather than calling github.GHEnv directly) so tests
+// can inject a synthetic token without a real App-auth mint. Share the same
+// credential source as every other gh call in the process (internal/github's
+// ghExecer/ghRunCtx): the cached GitHub App installation token when one is
+// configured, so this sink isn't silently dependent on an ambient `gh auth
+// login`/GH_TOKEN that the App-auth setup was specifically meant to replace.
+// See #2032.
+var ghEnv = github.GHEnv
 
+// run routes through github.RunWithEnv — the same request gate (pacing,
+// rate-limit bookkeeping, auth-circuit breaker) every other gh call in the
+// process gets — instead of shelling out directly, so this sink's traffic
+// isn't invisible to the shared rate budget. See #2496.
 func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) {
-	if open, retryAfter := authCircuitOpen(); open {
-		github.RecordSuppressedCall()
-		return nil, github.NewAuthCircuitOpenError(retryAfter)
-	}
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	// Share the same credential source as every other gh call in the
-	// process (internal/github's ghExecer/ghRunCtx): inject the cached
-	// GitHub App installation token when one is configured, so this sink
-	// isn't silently dependent on an ambient `gh auth login`/GH_TOKEN that
-	// the App-auth setup was specifically meant to replace. See #2032.
-	if env := ghEnv(); env != nil {
-		cmd.Env = env
-	}
-	out, err := cmd.CombinedOutput()
-	observeGHResult(ctx, out, err)
-	return out, err
+	return github.RunWithEnv(ctx, ghEnv(), args...)
 }
 
 // GHIssueSink is the production IssueSink: searches by title, comments on hit,

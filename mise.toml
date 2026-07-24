@@ -78,6 +78,7 @@ run = [
   "bash scripts/check-api-shim-sync.sh",
   "bash scripts/check-no-home-fallback.sh",
   "bash scripts/check-no-viewer-user-endpoint.sh",
+  "bash scripts/check-gh-exec-gate.sh",
   "bash scripts/check-autonomy-slo.sh",
   "bash scripts/resolve-release-version.test.sh",
   "bash scripts/generate-release-notes.test.sh",
