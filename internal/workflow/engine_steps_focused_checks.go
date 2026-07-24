@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path"
 	"slices"
 	"strings"
@@ -126,15 +125,9 @@ func changedFilesSinceProjectBase(parentCtx context.Context, wtPath, worktreeBas
 	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
 	defer cancel()
 	base := resolveProjectBase(ctx, wtPath, worktreeBaseRef)
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", base+"...HEAD")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	out, err := gitCombinedOutput(ctx, wtPath, "diff", "--name-only", base+"...HEAD")
 	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			return nil, fmt.Errorf("git diff --name-only %s...HEAD: %w", base, err)
-		}
-		return nil, fmt.Errorf("git diff --name-only %s...HEAD: %w: %s", base, err, detail)
+		return nil, err
 	}
 	var changed []string
 	seen := map[string]bool{}
@@ -160,10 +153,8 @@ func resolveProjectBase(ctx context.Context, wtPath, worktreeBaseRef string) str
 
 func resolveLocalDefaultBranchBase(ctx context.Context, wtPath string) string {
 	branches := []string{}
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-	cmd.Dir = wtPath
-	if out, err := cmd.Output(); err == nil {
-		branch := strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
+	if out, err := gitStdout(ctx, wtPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		branch := strings.TrimPrefix(out, "origin/")
 		if branch != "" {
 			branches = append(branches, branch)
 		}
@@ -171,9 +162,7 @@ func resolveLocalDefaultBranchBase(ctx context.Context, wtPath string) string {
 	branches = append(branches, "master", "main")
 	for _, branch := range branches {
 		candidate := "refs/heads/" + branch
-		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", candidate)
-		cmd.Dir = wtPath
-		if cmd.Run() == nil {
+		if gitOK(ctx, wtPath, "rev-parse", "--verify", candidate) {
 			return candidate
 		}
 	}
