@@ -100,8 +100,11 @@ func TestReconcileAndRebase_PushedBranchMergesNotRebases(t *testing.T) {
 				t.Fatalf("pre-reconcile commit %s ancestor-of-HEAD = %v, want %v (pushed=%v)", featSHA, got, tc.wantOrigPreset, tc.push)
 			}
 			if tc.push {
-				if err := project.PushSync(ctx, wt, "feat"); errors.Is(err, project.ErrDivergedNeedsResolve) {
-					t.Fatalf("PushSync reported divergence after merging a pushed branch: %v", err)
+				// The local bare remote makes the post-merge push deterministic:
+				// a clean fast-forward returns nil. Any error (divergence or
+				// otherwise) is a regression.
+				if err := project.PushSync(ctx, wt, "feat"); err != nil {
+					t.Fatalf("PushSync after merging a pushed branch = %v, want nil (clean fast-forward)", err)
 				}
 			}
 		})

@@ -351,7 +351,7 @@ func (m *Manager) reconcileAndRebase(ctx context.Context, wtPath, wtBranch, base
 		m.logger.Info("worktree.pushed-branch-merged-base", "branch", wtBranch, "base", baseRef)
 		return nil
 	}
-	callPhase(onPhase, "Rebasing onto origin…")
+	callPhase(onPhase, fmt.Sprintf("Rebasing onto %s…", baseRef))
 	if rebaseErr := project.RebaseOnto(ctx, wtPath, baseRef); rebaseErr != nil {
 		// A rebase failure on an unpushed branch is usually base moving under
 		// concurrent agents, not a content conflict. Try an additive merge
