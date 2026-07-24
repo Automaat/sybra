@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -833,30 +832,28 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
 		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
 	}
-	key := "step." + step.ID + ".auto_fix"
-	attempts := parseWorkflowInt(wfExec.Variables[key])
-	if attempts >= verifyChecksAutoFixCeiling {
+	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
+		counterKey: "step." + step.ID + ".auto_fix",
+		max:        verifyChecksAutoFixCeiling,
+		rewindStep: verifyChecksImplStepID,
+		backoff:    autoFixBackoff,
+		onArm: func(wfExec *Execution, attempt int) {
+			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
+		},
+		reason: func(attempt int) string {
+			return fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s", attempt, trimDiffLine(failedCmd))
+		},
+	})
+	if err != nil {
+		return StepOutput{}, fmt.Errorf("verify-checks: rewind to implement: %w", err)
+	}
+	if !armed {
 		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
 			reason, verifyChecksAutoFixCeiling)
 		return e.flagVerifyChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
-
-	wfExec.SetVar(key, strconv.Itoa(attempts+1))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(autoFixBackoff(attempts)).Format(time.RFC3339))
-	wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
-	wfExec.ClearStepRecords(verifyChecksImplStepID)
-	wfExec.CurrentStep = verifyChecksImplStepID
-	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return StepOutput{}, fmt.Errorf("verify-checks: rewind to implement: %w", err)
-	}
-	retryReason := fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s",
-		attempts+1, trimDiffLine(failedCmd))
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, retryReason); err != nil {
-		return StepOutput{}, err
-	}
 	e.logger.Info("workflow.verify-checks.auto-fix",
-		"task_id", taskID, "attempt", attempts+1, "cmd", trimDiffLine(failedCmd))
+		"task_id", taskID, "attempt", attempt, "cmd", trimDiffLine(failedCmd))
 	return StepOutput{}, errStepParked
 }
 
