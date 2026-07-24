@@ -1172,6 +1172,13 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 			// workflow already no longer owns a task file to update.
 			return
 		}
+		// Not just lost history: reviewbudget.Budget (#2499) counts Role=="review"
+		// AgentRuns to bound the automated review loop, so a silently dropped
+		// write here under-counts that durable budget for this task, same as
+		// #2199 named. Logged at Error rather than escalated to human-required
+		// directly — ag is already a live, running process, and flipping every
+		// role's dispatch to a hard failure here risks a duplicate dispatch on
+		// retry, which is worse than an undercounted budget.
 		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
 	}
 }

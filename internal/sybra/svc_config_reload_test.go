@@ -192,9 +192,6 @@ func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 	next := *svc.cfg
 	disabled := false
 	next.Agent.ReviewUntilClean = &disabled
-	next.Agent.MaxReviewRounds = 1
-	unbounded := true
-	next.Agent.AllowUnboundedReviewRounds = &unbounded
 	next.Agent.MaxCheckpoints = 9
 	writeConfigYAML(t, cfgPath, &next)
 
@@ -208,14 +205,27 @@ func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 	if !workflowBoolField(t, svc.workflowEngine, "reviewLoopDisabled") {
 		t.Error("workflow reviewLoopDisabled = false, want true")
 	}
-	if got := workflowIntField(t, svc.workflowEngine, "maxReviewRounds"); got != 1 {
-		t.Errorf("workflow maxReviewRounds = %d, want 1", got)
-	}
-	if !workflowBoolField(t, svc.workflowEngine, "allowUnboundedReviewRounds") {
-		t.Error("workflow allowUnboundedReviewRounds = false, want true")
-	}
 	if got := workflowIntField(t, svc.workflowEngine, "maxCheckpoints"); got != 9 {
 		t.Errorf("workflow maxCheckpoints = %d, want 9", got)
+	}
+}
+
+// TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour locks in that the
+// engine's rolling-hour review budget is wired from
+// GitHub.ReviewRoundsPerHourLimit — a restart-required field (unlike the
+// deleted Agent.MaxReviewRounds knob it replaced), so this is exercised
+// directly against applyWorkflowGuardrails rather than through
+// ReloadFromDisk's hot-apply path.
+func TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour(t *testing.T) {
+	svc, _ := setupConfigSvc(t)
+	svc.workflowEngine = workflow.NewEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
+
+	cfg := *svc.cfg
+	cfg.GitHub.ReviewRoundsPerHour = 7
+	svc.applyWorkflowGuardrails(cfg)
+
+	if got := workflowIntField(t, svc.workflowEngine, "reviewRoundsPerHour"); got != 7 {
+		t.Errorf("workflow reviewRoundsPerHour = %d, want 7", got)
 	}
 }
 
