@@ -786,10 +786,16 @@ func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt
 	// (App.StartAgent, recovery.RestartStaleInProgress) never sets
 	// admissionGate, so recovery and manual operator dispatch are exempt by
 	// construction, not by a special case here.
-	if !opts.admissionGate || !o.sloThrottled() {
-		if reservation, ok := o.agents.TryHoldCapacity(); ok {
-			return reservation, nil, "", nil, false
-		}
+	// Reserve capacity against the SLO-throttled ceiling (0 = no extra
+	// ceiling) so the reservation is reservation-aware and atomic: a burst of
+	// concurrent admission-gated dispatches can no longer each observe a stale
+	// live-only count and collectively overshoot the halved ceiling.
+	sloLimit := 0
+	if opts.admissionGate {
+		sloLimit = o.sloConcurrencyLimit()
+	}
+	if reservation, ok := o.agents.TryHoldCapacityWithLimit(sloLimit); ok {
+		return reservation, nil, "", nil, false
 	}
 	if o.queue == nil {
 		return nil, nil, "", nil, false
@@ -805,26 +811,29 @@ func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt
 	}
 }
 
-// sloThrottled reports whether workflow-driven implementation dispatch
-// should be treated as saturated even though the raw agent pool has room,
-// because the autonomy SLO error budget is exhausted and the operator has
-// opted into agent.evaluation.slo.throttle_on_budget_exhausted. Default-off:
-// a nil sloReport (SLO service disabled, or no tick has run yet) or the flag
-// unset never throttles.
-func (o *Orchestrator) sloThrottled() bool {
+// sloConcurrencyLimit returns the concurrency ceiling workflow-driven
+// implementation dispatch must be held to right now, or 0 when the SLO
+// throttle imposes no extra ceiling. The throttle engages only when the
+// operator has opted into agent.evaluation.slo.throttle_on_budget_exhausted
+// AND the autonomy SLO error budget is exhausted. Default-off: a nil
+// sloReport (SLO service disabled, or no tick has run yet) or the flag unset
+// returns 0. A caller passes the result to TryHoldCapacityWithLimit so the
+// halved ceiling is enforced reservation-aware and atomically, closing the
+// TOCTOU gap between a live-only precheck and the reservation-counting hold.
+func (o *Orchestrator) sloConcurrencyLimit() int {
 	if o.cfg == nil || !o.cfg.Evaluation.SLO.ThrottleOnBudgetExhausted {
-		return false
+		return 0
 	}
 	report := o.sloReport.Load()
 	if report == nil || report.ErrorBudgetRemaining > 0 {
-		return false
+		return 0
 	}
 	ceiling := effectiveMaxConcurrent(o.cfg.Agent.MaxConcurrent, true, true)
 	if ceiling <= 0 {
 		// Unlimited configured pool: nothing to narrow against.
-		return false
+		return 0
 	}
-	return o.agents.RunningCount() >= ceiling
+	return ceiling
 }
 
 // effectiveMaxConcurrent returns the concurrency ceiling workflow-driven

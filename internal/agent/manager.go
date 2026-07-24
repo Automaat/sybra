@@ -944,12 +944,27 @@ func (m *Manager) RunningCount() int {
 // TryHoldCapacity reserves one slot in the global agent pool until the caller
 // releases it or converts it into a live agent registration.
 func (m *Manager) TryHoldCapacity() (*CapacityReservation, bool) {
+	return m.TryHoldCapacityWithLimit(0)
+}
+
+// TryHoldCapacityWithLimit reserves one slot in the global agent pool, but
+// against a ceiling of min(maxConcurrent, extraLimit) instead of the raw pool
+// cap. extraLimit <= 0 means "no extra ceiling" and behaves exactly like
+// TryHoldCapacity. Both liveCount and reservedCount are counted under the lock,
+// so a burst of concurrent callers cannot each observe a stale live-only count
+// and collectively overshoot extraLimit — the SLO throttle relies on this to
+// hold admission at the halved ceiling atomically.
+func (m *Manager) TryHoldCapacityWithLimit(extraLimit int) (*CapacityReservation, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.maxConcurrent <= 0 {
+	ceiling := m.maxConcurrent
+	if extraLimit > 0 && (ceiling <= 0 || extraLimit < ceiling) {
+		ceiling = extraLimit
+	}
+	if ceiling <= 0 {
 		return &CapacityReservation{manager: m}, true
 	}
-	if m.liveCount+m.reservedCount >= m.maxConcurrent {
+	if m.liveCount+m.reservedCount >= ceiling {
 		return nil, false
 	}
 	m.reservedCount++
