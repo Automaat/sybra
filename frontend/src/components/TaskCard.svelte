@@ -2,6 +2,7 @@
   import { timeAgo } from '$lib/dates.js'
   import { CheckCircle, XCircle, Clock, GitPullRequest, GitPullRequestDraft, CircleDot, AlertTriangle, MoreHorizontal, Eye, PenLine, Hourglass, ShieldCheck, Loader, Wrench, MessageSquare, Hash } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+  import { ExecState, StepType } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
@@ -35,6 +36,22 @@
   const evaluating = $derived(agentStatus?.evaluating ?? false)
   const planning = $derived(agentStatus?.planning ?? false)
   const agentRunning = $derived(agentStatus?.running ?? false)
+
+  // Steps that run as a plain subprocess on the server (test/lint/build gates),
+  // never an agent — the fleet view shows nothing running while these are live,
+  // so the card needs its own badge or the task looks stalled.
+  const DETERMINISTIC_CHECK_LABELS: Partial<Record<StepType, string>> = {
+    [StepType.StepVerifyCommits]: 'Verifying commits',
+    [StepType.StepCodegenGate]: 'Codegen gate',
+    [StepType.StepFocusedChecks]: 'Focused checks',
+    [StepType.StepDetectTampering]: 'Tamper check',
+    [StepType.StepVerifyChecks]: 'Verify checks',
+  }
+  const checkStepLabel = $derived(
+    !agentRunning && t.workflow?.state === ExecState.ExecRunning
+      ? DETERMINISTIC_CHECK_LABELS[t.workflow.currentStep as StepType]
+      : undefined,
+  )
 
   const linkedPRs = $derived(reviewStore.byTask(t))
   const topPR = $derived(linkedPRs.length > 0 ? linkedPRs[0] : null)
@@ -237,6 +254,14 @@
       <span class="inline-flex items-center gap-1 rounded bg-success-200 px-1.5 py-0.5 text-success-800 dark:bg-success-700 dark:text-success-200">
         <span class="h-1.5 w-1.5 rounded-full bg-success-500"></span>
         Agent
+      </span>
+    {:else if checkStepLabel}
+      <span
+        class="inline-flex items-center gap-1 rounded bg-surface-200 px-1.5 py-0.5 text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+        title="{checkStepLabel} running on the server (no agent — deterministic check)"
+      >
+        <span class="h-1.5 w-1.5 rounded-full bg-surface-500 animate-pulse"></span>
+        {checkStepLabel}
       </span>
     {/if}
 
