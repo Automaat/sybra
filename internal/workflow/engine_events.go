@@ -29,6 +29,14 @@ const (
 	watchdogRateLimitStatusPrefix   = "watchdog: rate limit"
 	watchdogRateLimitRetryVarPrefix = "watchdog.rate_limit_retry."
 	maxWatchdogRateLimitRetries     = 2
+	// watchdogZeroOutputFreshRetryVarPrefix records that a zero-output stall was
+	// already granted its one fresh-session round. A zero-output stall is a
+	// poisoned resume, not a real rate limit; sybra#2542's StartedAt fence makes
+	// a fresh dispatch succeed, but parking straight to blocked meant that fresh
+	// retry never ran and a transient stall latched a permanent deadlock
+	// (2026-07-23 board freeze). We fence, reset the budget, retry fresh once,
+	// and only park blocked if the fresh round also exhausts.
+	watchdogZeroOutputFreshRetryVarPrefix = "watchdog.rate_limit_fresh_retry."
 	// watchdogRewardHackingStatusPrefix must stay in sync with
 	// internal/watchdog/agent.go's rewardHackingRetryStatusReason — the
 	// watchdog writes this exact status-reason prefix when it retries a
@@ -1660,6 +1668,26 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 	retryKey := watchdogRateLimitRetryKey(step.ID)
 	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
 	if attempts >= maxWatchdogRateLimitRetries {
+		freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
+		if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) &&
+			parseWorkflowInt(t.Workflow.Variables[freshKey]) == 0 {
+			// Resume-attempt budget exhausted on a poisoned session. Fence it
+			// (fresh dispatch next time), reset the budget, and retry once fresh
+			// rather than parking blocked — see watchdogZeroOutputFreshRetryVarPrefix.
+			t.Workflow.StartedAt = time.Now().UTC()
+			t.Workflow.SetVar(freshKey, "1")
+			t.Workflow.SetVar(retryKey, "0")
+			if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+				e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
+				return true
+			}
+			e.logger.Warn("workflow.watchdog-rate-limit.fresh-session-recovery",
+				"task_id", t.ID, "step", step.ID, "resume_attempts", attempts+1)
+			// Consume this tick: the reset budget + fence are now persisted, so the
+			// next ResumeStalled dispatches a clean session from stored state
+			// rather than resuming the poisoned one via the in-flight copy.
+			return true
+		}
 		targetStatus, reason, terminalState := watchdogRateLimitExhaustionResolution(*t, step, attempts)
 		t.Workflow.State = terminalState
 		if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) {
@@ -1920,6 +1948,10 @@ func watchdogHangCleanRetryKey(stepID string) string {
 
 func watchdogRateLimitRetryKey(stepID string) string {
 	return watchdogRateLimitRetryVarPrefix + stepID
+}
+
+func watchdogZeroOutputFreshRetryKey(stepID string) string {
+	return watchdogZeroOutputFreshRetryVarPrefix + stepID
 }
 
 func worktreeRepairRetryKey(stepID string) string {
