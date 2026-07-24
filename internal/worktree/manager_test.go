@@ -429,6 +429,118 @@ func TestRunSetup_FailureBlocks(t *testing.T) {
 	}
 }
 
+// TestRunSetup_CacheHitSkipsRerun proves a reused worktree whose commands
+// and lockfiles are unchanged since the last successful setup run skips
+// re-running setup entirely (issue #2505), and that the skip is recorded in
+// the setup log so a stale-cache suspicion is diagnosable.
+func TestRunSetup_CacheHitSkipsRerun(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	marker := filepath.Join(wtDir, "ran-count")
+	cmds := []string{"printf x >> " + marker}
+
+	if err := m.runSetup(context.Background(), "task-cache", wtDir, cmds); err != nil {
+		t.Fatalf("first runSetup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wtDir, setupCacheMarkerName)); err != nil {
+		t.Fatalf("expected cache marker after successful run: %v", err)
+	}
+
+	if err := m.runSetup(context.Background(), "task-cache", wtDir, cmds); err != nil {
+		t.Fatalf("second runSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if got := string(data); got != "x" {
+		t.Errorf("setup command ran again on an unchanged reuse (want cache hit); marker=%q", got)
+	}
+
+	setupLog, err := os.ReadFile(filepath.Join(logsDir, "worktrees", "task-cache-setup.log"))
+	if err != nil {
+		t.Fatalf("read setup log: %v", err)
+	}
+	if !strings.Contains(string(setupLog), "reason=cache-hit") {
+		t.Errorf("setup log missing cache-hit record:\n%s", setupLog)
+	}
+}
+
+// TestRunSetup_LockfileChangeForcesRerun proves editing a lockfile
+// invalidates the cache even though the setup command list itself is
+// unchanged — a dependency bump must always re-run setup.
+func TestRunSetup_LockfileChangeForcesRerun(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	lockfile := filepath.Join(wtDir, "go.sum")
+	if err := os.WriteFile(lockfile, []byte("v1\n"), 0o644); err != nil {
+		t.Fatalf("seed go.sum: %v", err)
+	}
+	marker := filepath.Join(wtDir, "ran-count")
+	cmds := []string{"printf x >> " + marker}
+
+	if err := m.runSetup(context.Background(), "task-lock", wtDir, cmds); err != nil {
+		t.Fatalf("first runSetup: %v", err)
+	}
+
+	if err := os.WriteFile(lockfile, []byte("v2\n"), 0o644); err != nil {
+		t.Fatalf("edit go.sum: %v", err)
+	}
+
+	if err := m.runSetup(context.Background(), "task-lock", wtDir, cmds); err != nil {
+		t.Fatalf("second runSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if got := string(data); got != "xx" {
+		t.Errorf("lockfile edit did not force a rerun; marker=%q, want \"xx\"", got)
+	}
+}
+
+// TestRunSetup_FailedRunNeverRecordsCacheKey proves a failed setup run never
+// writes a cache marker, so the identical (still-failing) command set is
+// retried on the next attempt rather than being treated as a cache hit.
+func TestRunSetup_FailedRunNeverRecordsCacheKey(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	marker := filepath.Join(wtDir, "ran-count")
+	cmds := []string{"printf x >> " + marker, "exit 1"}
+
+	if err := m.runSetup(context.Background(), "task-fail-cache", wtDir, cmds); err == nil {
+		t.Fatal("expected error from failing command")
+	}
+	if _, statErr := os.Stat(filepath.Join(wtDir, setupCacheMarkerName)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no cache marker after a failed run, stat err: %v", statErr)
+	}
+
+	if err := m.runSetup(context.Background(), "task-fail-cache", wtDir, cmds); err == nil {
+		t.Fatal("expected second run with the same failing command to fail too")
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if got := string(data); got != "xx" {
+		t.Errorf("a failed run was treated as a cache hit; marker=%q, want \"xx\" (ran twice)", got)
+	}
+}
+
 // TestRunSetupNonGating_FailureDoesNotBlock proves the fix-role setup path
 // (issue #1454) never returns an error on a failing setup command — a fixer
 // worktree must always be creatable even when the PR under repair broke the
@@ -971,7 +1083,13 @@ func TestPrepareForTask_RebranchesOnBranchCollision(t *testing.T) {
 	}
 }
 
-func TestPrepareForTask_RerunsBootstrapOnExistingWorktreeReuse(t *testing.T) {
+// TestPrepareForTask_SkipsBootstrapOnUnchangedWorktreeReuse proves that
+// reusing an existing task worktree with unchanged setup commands and
+// lockfiles skips re-running setup (issue #2505) rather than re-running the
+// full bootstrap on every reuse — restart churn and fix/review/conflict
+// worktree reuse otherwise burn minutes of redundant toolchain work per
+// cycle for no reason.
+func TestPrepareForTask_SkipsBootstrapOnUnchangedWorktreeReuse(t *testing.T) {
 	counterPath := filepath.Join(t.TempDir(), "setup-count")
 	h := prepareHarness(t, []string{fmt.Sprintf("printf x >> %s", strconv.Quote(counterPath))}, 30*time.Second)
 
@@ -1003,8 +1121,51 @@ func TestPrepareForTask_RerunsBootstrapOnExistingWorktreeReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read setup counter: %v", err)
 	}
-	if got, want := string(count), "xx"; got != want {
-		t.Fatalf("setup command ran %d times, want 2 (counter %q)", len(got), got)
+	if got, want := string(count), "x"; got != want {
+		t.Fatalf("setup command ran %d times, want 1 (unchanged reuse should be a cache hit): counter %q", len(got), got)
+	}
+}
+
+// TestPrepareForTask_RerunsBootstrapWhenSetupCommandsChange proves the
+// reuse-path cache (issue #2505) is not a blanket skip: changing the
+// project's setup commands between two PrepareForTask calls on the same
+// worktree still forces a full rerun.
+func TestPrepareForTask_RerunsBootstrapWhenSetupCommandsChange(t *testing.T) {
+	counterPath := filepath.Join(t.TempDir(), "setup-count")
+	h := prepareHarness(t, []string{fmt.Sprintf("printf x >> %s", strconv.Quote(counterPath))}, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("reuse bootstrap task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+
+	if _, err := h.store.SetSetupCommands(h.proj.ID, []string{
+		fmt.Sprintf("printf xx >> %s", strconv.Quote(counterPath)),
+	}); err != nil {
+		t.Fatalf("update project setup commands: %v", err)
+	}
+
+	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err != nil {
+		t.Fatalf("reused PrepareForTask: %v", err)
+	}
+
+	count, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("read setup counter: %v", err)
+	}
+	if got, want := string(count), "xxx"; got != want {
+		t.Fatalf("setup counter = %q, want %q (changed setup commands must force a rerun)", got, want)
 	}
 }
 
