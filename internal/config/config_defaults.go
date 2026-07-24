@@ -1578,6 +1578,12 @@ func applyMonitorDefaults(cfg *Config, file *FileConfig) {
 	if cfg.Monitor.IssueRepo == "" {
 		cfg.Monitor.IssueRepo = "Automaat/sybra"
 	}
+	if cfg.Monitor.LostAgentIssueAfterOccurrences <= 0 {
+		cfg.Monitor.LostAgentIssueAfterOccurrences = 2
+	}
+	if cfg.Monitor.LostAgentAutoCloseAfterClears <= 0 {
+		cfg.Monitor.LostAgentAutoCloseAfterClears = 3
+	}
 	if cfg.Monitor.BottleneckHours == nil {
 		cfg.Monitor.BottleneckHours = map[string]float64{}
 	}

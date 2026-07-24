@@ -1,0 +1,70 @@
+package workflow
+
+import (
+	"strconv"
+	"time"
+)
+
+// rewindRetryPolicy is the shape shared by a bounded retry that re-arms by
+// rewinding the workflow to a *different* step, rather than re-arming the
+// current one in place the way boundedRetryPolicy does. Testing auto-retry
+// (route_test_result re-dispatching run_test) and verify-checks auto-fix
+// (rewinding a failed verify run back to implement) both: read a per-key
+// attempt counter, and either bump it — stashing a backoff + reask note,
+// clearing the rewind target's step history, and moving CurrentStep to it —
+// or leave the counter untouched once the cap is spent so the caller can run
+// its own escalation. Each caller still owns cap-exhaustion entirely
+// (testing offers a human-required or a ready-pr escalation depending on the
+// failure kind; verify-checks always flags for human review) — rewindRetry
+// only unifies the counter read/increment/cap-compare and rewind mechanics.
+type rewindRetryPolicy struct {
+	// counterKey is the workflow variable holding this policy's attempt count.
+	counterKey string
+	max        int
+	// rewindStep is the step ID CurrentStep rewinds to and whose step-history
+	// records are cleared so its own max_retries budget isn't seen as
+	// already spent from an earlier cycle.
+	rewindStep string
+	// backoff computes the retry-after delay from the pre-increment attempt
+	// count (verify-checks grows it per attempt; testing uses a constant).
+	backoff func(attempts int) time.Duration
+	// onArm sets any additional workflow variables the rewound step's prompt
+	// needs (reask note, cleared verdict vars) once the counter has been
+	// bumped to `attempt`, before the workflow is persisted. Optional.
+	onArm func(wfExec *Execution, attempt int)
+	// reason builds the task status-reason recorded alongside the rewind.
+	reason func(attempt int) string
+}
+
+// rewindRetry applies a rewindRetryPolicy. armed=true means the counter was
+// bumped and the workflow rewound to p.rewindStep — the caller must treat
+// this tick as parked (rewindRetry does not return a step-parked sentinel
+// itself since the two callers use different ones). armed=false means the
+// cap was already spent and rewindRetry made no changes; the caller owns
+// escalation. err!=nil can only accompany armed=true: the counter bump
+// itself succeeded but persisting it or updating task status failed, so the
+// caller must propagate the error rather than treat this as "go escalate".
+func (e *Engine) rewindRetry(taskID string, wfExec *Execution, t TaskInfo, p rewindRetryPolicy) (armed bool, attempt int, err error) {
+	attempts := parseWorkflowInt(wfExec.Variables[p.counterKey])
+	if attempts >= p.max {
+		return false, attempts, nil
+	}
+
+	attempt = attempts + 1
+	wfExec.SetVar(p.counterKey, strconv.Itoa(attempt))
+	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(p.backoff(attempts)).Format(time.RFC3339))
+	if p.onArm != nil {
+		p.onArm(wfExec, attempt)
+	}
+	wfExec.ClearStepRecords(p.rewindStep)
+	wfExec.CurrentStep = p.rewindStep
+	wfExec.State = ExecWaiting
+
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return true, attempt, err
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, p.reason(attempt)); err != nil {
+		return true, attempt, err
+	}
+	return true, attempt, nil
+}
