@@ -7,11 +7,51 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/project"
 )
+
+// TestSandboxEnforce_UnsharePidHidesHostProcesses pins the fix for task
+// 0871ec54's test-runner crash loop: without --unshare-pid, --proc /proc
+// still reflects the host's real process table, so a sandboxed agent's own
+// `pkill -f <pattern>` (e.g. dev-server teardown) can see and signal
+// unrelated live processes on a shared multi-agent host — including a
+// sibling sybra-server — self-inflicting the completion-stall it was
+// supposed to avoid. The victim here stands in for that sibling process: it
+// runs entirely outside the sandboxed command's process tree.
+func TestSandboxEnforce_UnsharePidHidesHostProcesses(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("bwrap not installed; enforce path unexercised on this host")
+	}
+	wt, err := canonicalizeRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &RunConfig{sandbox: sandboxSpec{
+		mode:        "enforce",
+		worktree:    wt,
+		sandboxHome: wt,
+		tmp:         wt,
+		sharedCache: wt,
+	}}
+
+	victim := exec.Command("sleep", "9999")
+	if err := victim.Start(); err != nil {
+		t.Fatalf("start victim: %v", err)
+	}
+	t.Cleanup(func() { _ = victim.Process.Kill() })
+
+	script := "kill -0 " + strconv.Itoa(victim.Process.Pid) + " 2>&1 && echo CAN_SIGNAL_HOST || echo CANNOT_SIGNAL_HOST"
+	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
+	out, runErr := cmd.CombinedOutput()
+	got := string(out)
+	if strings.Contains(got, "CAN_SIGNAL_HOST") || !strings.Contains(got, "CANNOT_SIGNAL_HOST") {
+		t.Errorf("sandboxed process could see/signal a host process outside its own pid namespace (err=%v): %q", runErr, got)
+	}
+}
 
 func TestSandboxEnforce_FencesWritesToAllowlist(t *testing.T) {
 	if !sandboxExecAvailable() {

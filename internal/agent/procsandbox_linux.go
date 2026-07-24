@@ -50,6 +50,15 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		return name, args
 	}
 	wrapped := []string{
+		// Without this, --proc /proc still reflects the host's real process
+		// table: a sandboxed agent's own `pkill -f <pattern>` can see and
+		// signal arbitrary host processes it doesn't own the tree of — e.g. a
+		// test-runner's dev-server teardown reaping an unrelated sibling
+		// sybra-server on the shared host, self-inflicting the very
+		// completion-stall it was supposed to avoid. bwrap reaps zombies for
+		// the new namespace's pid 1 automatically (see bwrap(1)), so no
+		// additional init flag is needed.
+		"--unshare-pid",
 		"--ro-bind", "/", "/",
 		"--dev", "/dev",
 		"--proc", "/proc",

@@ -48,8 +48,8 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	}
 
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--ro-bind / / --dev /dev --proc /proc") {
-		t.Fatalf("expected read-only root + fresh dev/proc bwrap args, got: %s", joined)
+	if !strings.Contains(joined, "--unshare-pid --ro-bind / / --dev /dev --proc /proc") {
+		t.Fatalf("expected pid-namespace isolation + read-only root + fresh dev/proc bwrap args, got: %s", joined)
 	}
 	for _, root := range []string{
 		"/data/wt",
