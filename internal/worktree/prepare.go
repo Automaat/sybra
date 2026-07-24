@@ -338,16 +338,24 @@ func (m *Manager) reconcileAndRebase(ctx context.Context, wtPath, wtBranch, base
 		}
 		return fmt.Errorf("%w: reconcile %s with remote: %w", ErrRebaseFailed, wtBranch, err)
 	}
-	callPhase(onPhase, "Rebasing onto origin…")
+	// Rebasing rewrites SHAs, so rebasing an already-pushed branch diverges it
+	// from the remote; Sybra never force-pushes, so that loops through conflict
+	// recovery forever (the recurring "branch diverged from remote" that stalls
+	// autonomy). Merge base into a pushed branch instead — it keeps the pushed
+	// SHAs and stays fast-forwardable; only a genuine conflict escalates.
+	if project.BranchPushed(ctx, wtPath, wtBranch) {
+		callPhase(onPhase, "Merging base into pushed branch…")
+		if mergeErr := project.MergeOnto(ctx, wtPath, baseRef); mergeErr != nil {
+			return fmt.Errorf("%w: merge %s into pushed branch %s: %w", ErrRebaseFailed, baseRef, wtBranch, mergeErr)
+		}
+		m.logger.Info("worktree.pushed-branch-merged-base", "branch", wtBranch, "base", baseRef)
+		return nil
+	}
+	callPhase(onPhase, fmt.Sprintf("Rebasing onto %s…", baseRef))
 	if rebaseErr := project.RebaseOnto(ctx, wtPath, baseRef); rebaseErr != nil {
-		// A rebase failure here is very often not a genuine content conflict —
-		// under concurrent agents, base moves quickly and the branch's own
-		// history is otherwise clean. Try an additive merge before giving up:
-		// unlike rebase, it never rewrites existing commits, so recovery never
-		// needs a force-push (see MergeOnto). Only when the merge also fails
-		// (a real conflict) does this still surface ErrRebaseFailed for the
-		// caller to escalate — ordinarily to human-required, or to the PR-fix
-		// conflict-recovery agent when a PR is already open.
+		// A rebase failure on an unpushed branch is usually base moving under
+		// concurrent agents, not a content conflict. Try an additive merge
+		// before giving up; only a real conflict surfaces ErrRebaseFailed.
 		callPhase(onPhase, "Rebase failed, trying merge…")
 		if mergeErr := project.MergeOnto(ctx, wtPath, baseRef); mergeErr != nil {
 			return fmt.Errorf("%w: rebase %s onto %s: %w (merge fallback also failed: %w)",
