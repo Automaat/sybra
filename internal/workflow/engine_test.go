@@ -3233,10 +3233,12 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 	tests := []struct {
 		name             string
 		retries          string
+		freshUsed        bool
 		wantStarts       int
 		wantStatus       string
 		wantReason       string
 		wantRetry        string
+		wantFresh        string
 		wantSessionFence bool
 	}{
 		{
@@ -3248,12 +3250,28 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			wantRetry:  "2",
 		},
 		{
-			name:             "third identical zero-output attempt blocks and fences off the poisoned session",
+			// Exhausting the *resume* budget is not terminal: the poisoned
+			// session is fenced with a reset budget so the next tick dispatches a
+			// clean session, instead of latching a permanent blocked deadlock
+			// (2026-07-23). This tick is consumed (no dispatch yet).
+			name:             "resume budget exhausted grants one fresh-session round",
 			retries:          strconv.Itoa(maxWatchdogRateLimitRetries),
+			wantStarts:       0,
+			wantStatus:       "in-progress",
+			wantReason:       watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+			wantRetry:        "0",
+			wantFresh:        "1",
+			wantSessionFence: true,
+		},
+		{
+			name:             "fresh round also exhausts, blocks and fences off the poisoned session",
+			retries:          strconv.Itoa(maxWatchdogRateLimitRetries),
+			freshUsed:        true,
 			wantStarts:       0,
 			wantStatus:       "blocked",
 			wantReason:       "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
 			wantRetry:        strconv.Itoa(maxWatchdogRateLimitRetries),
+			wantFresh:        "1",
 			wantSessionFence: true,
 		},
 	}
@@ -3267,6 +3285,9 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			vars := map[string]string{}
 			if tc.retries != "" {
 				vars[watchdogRateLimitRetryKey("implement")] = tc.retries
+			}
+			if tc.freshUsed {
+				vars[watchdogZeroOutputFreshRetryKey("implement")] = "1"
 			}
 			tasks.Put(TaskInfo{
 				ID:           "t1",
@@ -3300,6 +3321,9 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != tc.wantRetry {
 				t.Fatalf("rate-limit retry var = %q, want %q", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")], tc.wantRetry)
 			}
+			if got.Workflow.Variables[watchdogZeroOutputFreshRetryKey("implement")] != tc.wantFresh {
+				t.Fatalf("fresh-retry var = %q, want %q", got.Workflow.Variables[watchdogZeroOutputFreshRetryKey("implement")], tc.wantFresh)
+			}
 			// sybra#2542: exhausting the zero-output-stall budget must bump
 			// Workflow.StartedAt past every prior agent run, so
 			// PickImplementationResumeSession's StartedAt fence rejects the
@@ -3312,6 +3336,62 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 				t.Fatalf("workflow.started_at = %v, want unchanged %v", got.Workflow.StartedAt, oldStartedAt)
 			}
 		})
+	}
+}
+
+// TestResumeStalled_WatchdogZeroOutputFreshRoundDispatches proves the deadlock
+// break end-to-end: a poisoned resume that has exhausted its resume budget is
+// granted a fresh round (tick 1 consumed, fenced) and then actually
+// re-dispatches a clean session on the next tick — rather than latching a
+// permanent blocked state as it did during the 2026-07-23 board freeze.
+func TestResumeStalled_WatchdogZeroOutputFreshRoundDispatches(t *testing.T) {
+	oldStartedAt := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{watchdogRateLimitRetryKey("implement"): strconv.Itoa(maxWatchdogRateLimitRetries)},
+			StartedAt:   oldStartedAt,
+		},
+	})
+
+	// Tick 1: resume budget already exhausted -> fence + reset, no dispatch yet.
+	engine.ResumeStalled()
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("tick 1 dispatched %d agents, want 0 (fence-and-wait)", got)
+	}
+	afterFence, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if afterFence.Status != "in-progress" {
+		t.Fatalf("tick 1 status = %q, want in-progress (not blocked)", afterFence.Status)
+	}
+	if !afterFence.Workflow.StartedAt.After(oldStartedAt) {
+		t.Fatalf("tick 1 did not fence the poisoned session (started_at %v)", afterFence.Workflow.StartedAt)
+	}
+
+	// Tick 2: fenced clean session actually dispatches.
+	engine.ResumeStalled()
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("tick 2 dispatched %d agents total, want 1 (fresh session ran)", got)
+	}
+	final, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if final.Status == "blocked" {
+		t.Fatalf("task latched blocked despite a fresh-session recovery being available")
 	}
 }
 
