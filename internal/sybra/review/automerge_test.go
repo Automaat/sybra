@@ -70,8 +70,8 @@ func TestReadyForCopilotAutoMerge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := readyForCopilotAutoMerge(tt.pr); got != tt.want {
-				t.Errorf("readyForCopilotAutoMerge() = %v, want %v", got, tt.want)
+			if got := NewMergeGate(tt.pr).ReadyForMerge(MergePolicyCopilot, false); got != tt.want {
+				t.Errorf("ReadyForMerge(Copilot) = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -80,6 +80,7 @@ func TestReadyForCopilotAutoMerge(t *testing.T) {
 func TestReadyForRESTAutoMerge(t *testing.T) {
 	t.Parallel()
 	base := github.PullRequest{
+		SourcedViaREST:     true,
 		RESTMergeableState: "clean",
 		RESTCIFetched:      true,
 		CIStatus:           "SUCCESS",
@@ -120,8 +121,8 @@ func TestReadyForRESTAutoMerge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := readyForRESTAutoMerge(tt.pr); got != tt.want {
-				t.Errorf("readyForRESTAutoMerge() = %v, want %v", got, tt.want)
+			if got := NewMergeGate(tt.pr).ReadyForMerge(MergePolicyCopilot, false); got != tt.want {
+				t.Errorf("ReadyForMerge(Copilot) = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -322,8 +323,8 @@ func TestReadyToArmNativeAutoMerge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := readyToArmNativeAutoMerge(tt.pr); got != tt.want {
-				t.Errorf("readyToArmNativeAutoMerge() = %v, want %v", got, tt.want)
+			if got := NewMergeGate(tt.pr).ReadyToArm(); got != tt.want {
+				t.Errorf("ReadyToArm() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -1179,7 +1180,7 @@ func TestHandleAutoMerge_ArmFailureBacksOff(t *testing.T) {
 	}
 
 	// CI still pending: eligible to arm, not eligible for the direct-merge
-	// gate (readyForCopilotAutoMerge requires CI green).
+	// gate (ReadyForMerge(Copilot) requires CI green).
 	pr := github.PullRequest{
 		Repository:      "pet-owner/pet-repo",
 		Number:          80,
@@ -1381,8 +1382,8 @@ func TestBlockedOnlyByThreads(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := blockedOnlyByThreads(tt.pr); got != tt.want {
-				t.Errorf("blockedOnlyByThreads() = %v, want %v", got, tt.want)
+			if got := NewMergeGate(tt.pr).BlockedOnlyByThreads(); got != tt.want {
+				t.Errorf("BlockedOnlyByThreads() = %v, want %v", got, tt.want)
 			}
 		})
 	}

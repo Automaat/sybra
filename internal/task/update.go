@@ -38,6 +38,7 @@ type Update struct {
 	ReviewPhase           *string
 	ReviewedHeadSHA       *string
 	ReviewedHeadAttempts  *int
+	ReconcileFailures     *int
 	PRPhase               *string
 	Priority              *Priority
 	DueDate               **time.Time

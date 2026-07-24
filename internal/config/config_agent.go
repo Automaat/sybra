@@ -47,17 +47,10 @@ type AgentDefaults struct {
 	// until the reviewer returns a CLEAN verdict, so the fix agent's diff is
 	// never the last word. nil means not configured (falls back to true). false
 	// falls back to a single review pass per task: cheaper and more
-	// predictable when no per-task budget is configured.
+	// predictable when no per-task budget is configured. The cycle itself is
+	// bounded by GitHubConfig.ReviewRoundsPerHour — the same durable budget
+	// the inbound PR-review dispatcher enforces — not a separate knob here.
 	ReviewUntilClean *bool `yaml:"review_until_clean" json:"reviewUntilClean"`
-	// MaxReviewRounds bounds how many automated review rounds a single
-	// simple-task-review execution may spend before Sybra parks the task
-	// blocked. 0 means use DefaultMaxReviewRounds (3). Ignored when
-	// ReviewUntilClean is false or AllowUnboundedReviewRounds is true.
-	MaxReviewRounds int `yaml:"max_review_rounds" json:"maxReviewRounds"`
-	// AllowUnboundedReviewRounds restores the legacy "loop until CLEAN with no
-	// review-round cap" posture. nil means not configured (defaults to false).
-	// Use only with a deliberate MaxTaskCostUSD backstop.
-	AllowUnboundedReviewRounds *bool `yaml:"allow_unbounded_review_rounds" json:"allowUnboundedReviewRounds"`
 	// BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
 	// claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
 	// vars (claude has no equivalent CLI flag). 0 means use
