@@ -1836,6 +1836,87 @@ export class RoutingSummary {
 }
 
 /**
+ * SLOTargets are the rolling autonomy/reliability targets Sybra holds
+ * itself to (see #2441). Defined here rather than in internal/evaluation
+ * because config cannot import evaluation (evaluation already imports
+ * config); internal/evaluation/slo.go aliases this type so evaluation code
+ * reads naturally as evaluation.SLOTargets.
+ */
+export class SLOTargets {
+    /**
+     * MinAutonomyRate is the minimum fraction of landed tasks that must
+     * reach done without a human in the loop.
+     */
+    "minAutonomyRate": number;
+
+    /**
+     * MinCIFirstPassRate is the minimum fraction of landed tasks that must
+     * pass CI on the first push (no CI-fix agent needed).
+     */
+    "minCiFirstPassRate": number;
+
+    /**
+     * MaxReworkRate is the maximum fraction of landed tasks allowed to
+     * bounce between statuses (a repeated status transition).
+     */
+    "maxReworkRate": number;
+
+    /**
+     * MaxIdenticalRetryCap is the maximum number of failed agent runs a
+     * single task may accumulate in-window before it counts as a breach.
+     */
+    "maxIdenticalRetryCap": number;
+
+    /**
+     * MaxRestartsPerHour is the maximum rate of automatic human-required
+     * recovery restarts (monitor auto-retry, PR-monitor blocker
+     * reconciliation) the fleet may sustain.
+     */
+    "maxRestartsPerHour": number;
+
+    /**
+     * ThrottleOnBudgetExhausted enables a default-off dispatch clamp
+     * (internal/sybra/agentorch.effectiveMaxConcurrent) that narrows the
+     * concurrency ceiling for new workflow-driven implementation dispatch
+     * while the SLO error budget is exhausted. Recovery and
+     * interactive/operator dispatch are never throttled by this flag.
+     */
+    "throttleOnBudgetExhausted": boolean;
+
+    /** Creates a new SLOTargets instance. */
+    constructor($$source: Partial<SLOTargets> = {}) {
+        if (!("minAutonomyRate" in $$source)) {
+            this["minAutonomyRate"] = 0;
+        }
+        if (!("minCiFirstPassRate" in $$source)) {
+            this["minCiFirstPassRate"] = 0;
+        }
+        if (!("maxReworkRate" in $$source)) {
+            this["maxReworkRate"] = 0;
+        }
+        if (!("maxIdenticalRetryCap" in $$source)) {
+            this["maxIdenticalRetryCap"] = 0;
+        }
+        if (!("maxRestartsPerHour" in $$source)) {
+            this["maxRestartsPerHour"] = 0;
+        }
+        if (!("throttleOnBudgetExhausted" in $$source)) {
+            this["throttleOnBudgetExhausted"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SLOTargets instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SLOTargets {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SLOTargets($$parsedSource as Partial<SLOTargets>);
+    }
+}
+
+/**
  * SelfMonitorConfig controls the in-process selfmonitor service that
  * replaces the /loop 6h /sybra-self-monitor skill. Each tick snapshots
  * the latest health report, distills per-finding agent logs into a
