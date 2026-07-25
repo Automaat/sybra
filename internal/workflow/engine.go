@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -363,8 +364,11 @@ type Engine struct {
 	dispatchGate     func(TaskInfo) bool
 	// dispatchDisabled is stored negated so the zero value keeps a
 	// struct-literal Engine dispatching, matching its behavior before this
-	// gate existed.
-	dispatchDisabled bool
+	// gate existed. atomic.Bool because SetAutoDispatch (config/lifecycle
+	// goroutines) and the read sites (startWorkflowCore, DispatchEvent,
+	// HandleStatusChange, ResumeStalled — all called from agent/workflow
+	// goroutines) run concurrently with no shared lock between them.
+	dispatchDisabled atomic.Bool
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
@@ -522,13 +526,13 @@ func (e *Engine) SetDispatchGate(gate func(TaskInfo) bool) { e.dispatchGate = ga
 // agent starts (App.StartAgent, sybra-cli) never touch the engine and keep
 // working. Set orchestrator.scheduler_enabled true to opt an agent-only
 // instance back into workflows.
-func (e *Engine) SetAutoDispatch(on bool) { e.dispatchDisabled = !on }
+func (e *Engine) SetAutoDispatch(on bool) { e.dispatchDisabled.Store(!on) }
 
 // AutoDispatchEnabled reports whether this instance dispatches workflows. The
 // gate in startWorkflowCore is what actually enforces it; this lets a caller
 // avoid announcing an auto-start that is about to be refused, and avoid
 // spawning a goroutine that would only no-op.
-func (e *Engine) AutoDispatchEnabled() bool { return !e.dispatchDisabled }
+func (e *Engine) AutoDispatchEnabled() bool { return !e.dispatchDisabled.Load() }
 
 // SetAutoApprovePlansWithoutDecisions enables automatic approval of validated
 // simple-task plans whose decision sidecar explicitly says there are no open
