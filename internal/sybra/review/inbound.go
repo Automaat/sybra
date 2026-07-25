@@ -451,6 +451,10 @@ func (r *Handler) reconcileReviewPhases(tasks []task.Task, summary github.Review
 
 // reconcileReviewTask computes and applies the phase for a single review task.
 func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[string]github.PullRequest) {
+	key := reviewPRKey(t.ProjectID, t.PRNumber)
+	reqPR, inReq := requested[key]
+	apPR, inApproved := approved[key]
+
 	// An agent owning the PR short-circuits: surface "reviewing" without the
 	// extra GitHub round-trips.
 	if r.agents.HasRunningAgentForTask(t.ID) {
@@ -458,13 +462,13 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		// stale. Without clearing here the count never decays and a single fresh
 		// failure hours later can trip a circuit meant to catch a persistent one.
 		r.clearReconcileFailure(t)
+		// A running (possibly stuck/looping) review agent that already submitted a
+		// bogus approval would otherwise leave it live on GitHub for the whole run,
+		// since this branch skips the full self-approval path below (#2198).
+		r.reverseLiveSelfApproval(t, inApproved)
 		r.applyReviewPhase(t, computeReviewPhase(reviewSignals{AgentRunning: true}))
 		return
 	}
-
-	key := reviewPRKey(t.ProjectID, t.PRNumber)
-	reqPR, inReq := requested[key]
-	apPR, inApproved := approved[key]
 
 	// A conflicting PR is blocked on the author rebasing — surface "conflict" and
 	// sink it to the bottom of the lane, whatever the viewer's review state (the
@@ -488,6 +492,11 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	}
 	if res, decided := stickyConflictPhase(mergeable, t.ReviewPhase); decided {
 		r.clearReconcileFailure(t)
+		// The conflict phase outranks review state, but a self-approval is still a
+		// live green light on GitHub that native auto-merge would count the moment
+		// the conflict clears — reverse it now rather than waiting for the one poll
+		// where mergeability flips back and this branch stops short-circuiting.
+		r.reverseLiveSelfApproval(t, inApproved)
 		r.applyReviewPhase(t, res)
 		return
 	}
@@ -502,6 +511,11 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		return
 	}
 	r.clearReconcileFailure(t)
+
+	selfApproved := myState.Approved || inApproved
+	if selfApproved {
+		r.dismissSelfApproval(t, myState)
+	}
 
 	submitted := myState.Submitted || inApproved
 	headSHA := ""
@@ -545,7 +559,7 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	r.applyReviewPhase(t, computeReviewPhase(reviewSignals{
 		CostGuardrailStopped:      latestReviewRunStoppedByCostGuardrail(t),
 		HasDraft:                  myState.Pending,
-		ViewerApproved:            myState.Approved || inApproved,
+		SelfApproved:              selfApproved,
 		Submitted:                 submitted,
 		ReRequested:               inReq,
 		HeadSHA:                   headSHA,
@@ -553,6 +567,64 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		HeadLineageUnknown:        headLineageUnknown,
 		BaseOnlyMergeFromReviewed: baseOnlyMergeFromReviewed,
 	}))
+}
+
+// selfApprovalDismissMessage is left on GitHub's audit trail explaining why
+// an approval was reversed the moment it was detected.
+const selfApprovalDismissMessage = "Dismissed automatically by Sybra: our own bot identity approved its own review task, which can never stand in for a human review."
+
+// reverseLiveSelfApproval dismisses a live bot self-approval before the
+// agent-running and conflict short-circuits in reconcileReviewTask return,
+// which would otherwise skip the full self-approval path and leave a bogus
+// APPROVED review standing on GitHub for the whole agent run / conflict window.
+//
+// The REST round-trip is spent only when the cheap approvals-only summary leg
+// (inApproved) already flags an approval, so the common no-approval path keeps
+// the short-circuit's zero-round-trip cost. Escalation to human-required is not
+// attempted here — the short-circuit phases (reviewing/conflict) stand; the
+// full self-approval escalation runs on the next fall-through poll.
+func (r *Handler) reverseLiveSelfApproval(t *task.Task, inApproved bool) {
+	if !inApproved {
+		return
+	}
+	myStateFn := github.FetchMyReviewState
+	if r.fetchMyReviewStateFn != nil {
+		myStateFn = r.fetchMyReviewStateFn
+	}
+	myState, err := myStateFn(t.ProjectID, t.PRNumber)
+	if err != nil {
+		r.logger.Warn("review.self-approval.probe", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+		return
+	}
+	r.dismissSelfApproval(t, myState)
+}
+
+// dismissSelfApproval reverses an approval our own bot identity submitted on
+// a PR it is reviewing. This is never a legitimate green light — it means an
+// approval escaped the gh shim's PreToolUse-adjacent floor (internal/agent's
+// ghshim.go) or was otherwise submitted under the bot's own credentials
+// rather than a human's — so the outcome, not just the attempt, is caught and
+// reversed here (#2198).
+//
+// Best-effort: myState is only populated with a review ID when the REST
+// fetch itself observed the approval (myState.Approved), so an inApproved-only
+// detection (stale search-leg signal, REST already shows something else) has
+// nothing to dismiss yet — computeReviewPhase still keeps the task out of the
+// "approved" phase regardless. A dismissal failure is logged, never fatal:
+// escalating the task to human-required does not depend on it succeeding.
+func (r *Handler) dismissSelfApproval(t *task.Task, myState github.MyReviewState) {
+	if !myState.Approved || myState.ReviewID == 0 {
+		return
+	}
+	dismissFn := github.DismissReview
+	if r.dismissReviewFn != nil {
+		dismissFn = r.dismissReviewFn
+	}
+	if err := dismissFn(t.ProjectID, t.PRNumber, myState.ReviewID, selfApprovalDismissMessage); err != nil {
+		r.logger.Error("review.self-approval.dismiss-failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+		return
+	}
+	r.logAudit(audit.EventReviewSelfApprovalDismissed, t.ID, "", map[string]any{"pr": t.PRNumber, "repo": t.ProjectID})
 }
 
 func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {

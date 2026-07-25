@@ -600,6 +600,7 @@ func approvedOnly(prs []PullRequest) []PullRequest {
 // fetchMyReviewStateWith, and the REST auto-merge approval gate
 // (restApproval) so all three parse the same /pulls/{n}/reviews shape once.
 type restReview struct {
+	ID          int64  `json:"id"`
 	State       string `json:"state"`
 	CommitID    string `json:"commit_id"`
 	SubmittedAt string `json:"submitted_at"`
@@ -714,6 +715,7 @@ type MyReviewState struct {
 	Submitted   bool   // a submitted (non-draft) review exists
 	Approved    bool   // the latest submitted review is an approval
 	ReviewedSHA string // commit_id of the latest submitted review ("" if none)
+	ReviewID    int64  // id of the review carrying the latest verdict (0 if none) — needed to dismiss it
 }
 
 // FetchMyReviewState reports the authenticated user's review state on a PR.
@@ -779,6 +781,7 @@ func fetchMyReviewStateWith(e execer, repo string, number int) (MyReviewState, e
 			if r.SubmittedAt >= latestVerdict {
 				latestVerdict = r.SubmittedAt
 				st.Approved = r.State == "APPROVED"
+				st.ReviewID = r.ID
 			}
 		}
 	}
@@ -799,6 +802,30 @@ func approvePRWith(e execer, repo string, number int) error {
 		strconv.Itoa(number), "-R", repo)
 	if err != nil {
 		return fmt.Errorf("gh pr review --approve %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	if runtimeCacheEnabled(e) {
+		invalidatePRCaches(repo, number)
+	}
+	return nil
+}
+
+// DismissReview dismisses a previously-submitted review, reverting its
+// verdict (e.g. an APPROVED that should never have counted). GitHub has no
+// `gh pr review` dismiss subcommand, so this goes through the REST
+// dismissals endpoint directly; it requires the numeric review ID (see
+// MyReviewState.ReviewID) and a message explaining why the verdict no
+// longer stands.
+func DismissReview(repo string, number int, reviewID int64, message string) error {
+	return dismissReviewWith(defaultExecer, repo, number, reviewID, message)
+}
+
+func dismissReviewWith(e execer, repo string, number int, reviewID int64, message string) error {
+	out, err := e.run("api", "--method", "PUT",
+		fmt.Sprintf("repos/%s/pulls/%d/reviews/%d/dismissals", repo, number, reviewID),
+		"-f", "message="+message,
+		"-f", "event=DISMISS")
+	if err != nil {
+		return fmt.Errorf("dismiss review %d on %s#%d: %s: %w", reviewID, repo, number, strings.TrimSpace(string(out)), err)
 	}
 	if runtimeCacheEnabled(e) {
 		invalidatePRCaches(repo, number)
