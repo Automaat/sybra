@@ -197,8 +197,9 @@ func TestExecPushBranch_Success(t *testing.T) {
 // stale app-token cache) even though the real push would succeed. The step
 // must attempt the real push instead of parking on the probe alone.
 func TestExecPushBranch_PreflightFailureFallsThroughToSuccessfulPush(t *testing.T) {
-	_, wtPath := newPRWorktree(t, "feat/existing-pr")
+	bare, wtPath := newPRWorktree(t, "feat/existing-pr")
 	commitFile(t, wtPath, "change.txt", "feat: task work")
+	local := headSHA(t, wtPath)
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
@@ -227,6 +228,11 @@ func TestExecPushBranch_PreflightFailureFallsThroughToSuccessfulPush(t *testing.
 	}
 	if ti.Status != "ready-pr" {
 		t.Fatalf("status = %q, want unchanged ready-pr (push succeeded despite the failed probe)", ti.Status)
+	}
+	// The real push must actually land on the remote — a silent no-op
+	// fallthrough would leave the bare repo without the branch head.
+	if got := strings.TrimSpace(runGitAt(t, bare, "rev-parse", "feat/existing-pr")); got != local {
+		t.Fatalf("bare remote head = %q, want %q (real push did not land)", got, local)
 	}
 }
 
