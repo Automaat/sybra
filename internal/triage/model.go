@@ -34,10 +34,13 @@ const Schema = `{"type":"object","properties":{"title":{"type":"string"},"descri
 var (
 	validSizes = []string{"small", "medium", "large"}
 	validTypes = []string{"bug", "feature", "refactor", "review", "chore", "docs"}
-	// validModes only contains headless — the interactive runner was removed
-	// and RouteMode no longer passes the LLM's pick through, but the schema
-	// enum is the deterministic floor: a model can't emit a value ValidateVerdict
-	// would then reject.
+	// validModes only contains headless — the interactive runner was removed.
+	// This is the first of two independent floors: the schema enum restricts
+	// what the classifier is asked to emit, and ValidateVerdict rejects the
+	// verdict outright if a model still hallucinates outside it. RouteMode
+	// applies a second, unconditional floor regardless of what reaches it, as
+	// defense in depth against any other caller of RouteMode that skips
+	// ValidateVerdict.
 	validModes = []string{"headless"}
 
 	// domainTags are the controlled-vocabulary domain tags. Tags outside

@@ -13,12 +13,12 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-// newFakeInteractiveClaudeApp builds a real *App (unmocked taskAgentReleaser)
+// newFakeSteerableClaudeApp builds a real *App (unmocked taskAgentReleaser)
 // backed by a real agent.Manager with restart-survival enabled, and installs
 // a fake `claude` binary on PATH that blocks reading its never-EOF FIFO
 // stdin — the same shape a live, detached steerable-headless session
 // mid-turn has in production.
-func newFakeInteractiveClaudeApp(t *testing.T) *App {
+func newFakeSteerableClaudeApp(t *testing.T) *App {
 	t.Helper()
 
 	fakebin := t.TempDir()
@@ -70,12 +70,12 @@ func newFakeInteractiveClaudeApp(t *testing.T) *App {
 	return a
 }
 
-// startIdleInteractiveAgent runs a detached steerable-headless "claude"
+// startIdleSteerableAgent runs a detached steerable-headless "claude"
 // session for taskID and waits for its subprocess to come up and block on
 // its never-EOF FIFO stdin (mid-turn, awaiting the next turn boundary — a
 // live process holding an agent.max_concurrent slot). Returns the agent and
 // its OS pid.
-func startIdleInteractiveAgent(t *testing.T, a *App, taskID string) (ag *agent.Agent, pid int) {
+func startIdleSteerableAgent(t *testing.T, a *App, taskID string) (ag *agent.Agent, pid int) {
 	t.Helper()
 	ag, err := a.agents.Run(agent.RunConfig{
 		TaskID:            taskID,
@@ -120,7 +120,7 @@ func processAliveForTest(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-// TestApp_TaskTerminal_AsksLiveInteractiveAgentToExit is the regression test
+// TestApp_TaskTerminal_AsksLiveSteerableAgentToExit is the regression test
 // for #2290: a live agent process has no lifecycle tie-back to its owning
 // task, so it survives task completion indefinitely, permanently holding an
 // agent.max_concurrent slot. It reproduces the exact production shape — a
@@ -128,16 +128,16 @@ func processAliveForTest(pid int) bool {
 // mid-turn on a never-EOF stdin FIFO — and asserts that moving the owning
 // task to a terminal status asks the real OS process to exit within a
 // bounded time.
-func TestApp_TaskTerminal_AsksLiveInteractiveAgentToExit(t *testing.T) {
+func TestApp_TaskTerminal_AsksLiveSteerableAgentToExit(t *testing.T) {
 	for _, target := range []task.Status{task.StatusDone, task.StatusCancelled} {
 		t.Run(string(target), func(t *testing.T) {
-			a := newFakeInteractiveClaudeApp(t)
+			a := newFakeSteerableClaudeApp(t)
 
-			created, err := a.tasks.Create("interactive session outlives task", "", "headless")
+			created, err := a.tasks.Create("steerable session outlives task", "", "headless")
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, pid := startIdleInteractiveAgent(t, a, created.ID)
+			_, pid := startIdleSteerableAgent(t, a, created.ID)
 
 			if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(target)}); err != nil {
 				t.Fatal(err)
