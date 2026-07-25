@@ -1,6 +1,8 @@
 package intervention
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -159,5 +161,51 @@ func TestStore_PutRejectsEmptyFingerprint(t *testing.T) {
 	}
 	if err := store.Put("owner/repo", Record{TaskID: "task-a"}); err == nil {
 		t.Fatal("Put with empty fingerprint: want error, got nil")
+	}
+}
+
+// TestStore_PutConcurrentSameFingerprint asserts the read-modify-write in Put
+// is serialized: N concurrent captures of the same fingerprint must aggregate
+// to Recurrences==N, never lose an increment to a last-writer clobber. Run with
+// -race to also catch the underlying data race.
+func TestStore_PutConcurrentSameFingerprint(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Date(2026, 7, 25, 10, 0, 0, 0, time.UTC)
+	const n = 32
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			rec := Record{
+				TaskID:              fmt.Sprintf("task-%d", i),
+				CreatedAt:           base.Add(time.Duration(i) * time.Minute),
+				BlockerKind:         "operator_decision",
+				BlockerCode:         "no_project_assigned",
+				OperatorActionClass: OperatorActionHuman,
+				FromStatus:          "human-required",
+				ToStatus:            "in-progress",
+			}
+			rec.Fingerprint = Fingerprint(rec)
+			if err := store.Put("owner/repo", rec); err != nil {
+				t.Errorf("Put: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	got, err := store.Query("owner/repo", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(Query) = %d, want 1 (same fingerprint must dedup to one file)", len(got))
+	}
+	if got[0].Recurrences != n {
+		t.Fatalf("Recurrences = %d, want %d (no increment may be lost)", got[0].Recurrences, n)
 	}
 }

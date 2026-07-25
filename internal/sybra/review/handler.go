@@ -1070,25 +1070,40 @@ func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, co
 	if c.State == "CLOSED" {
 		landedStatus = task.StatusCancelled
 	}
-	// Snapshot the pre-transition task so a human-required landing can be
-	// captured as an intervention below — best-effort, an unresolved fetch
-	// just skips the capture rather than blocking the landing itself (see
-	// preTaskWasHumanRequired's use after the status write).
-	preTask, preErr := r.tasks.Get(c.TaskID)
-	if _, err := r.tasks.Update(c.TaskID, task.Update{
-		Status:  task.Ptr(landedStatus),
-		Outcome: task.Ptr(base),
-	}); err != nil {
-		return err
-	}
+	// Snapshot the pre-transition task, flip it to the landed status, and
+	// capture a human-required landing as an intervention — all under the
+	// per-task human-action lock so this can't race a concurrent operator
+	// dispatch (svc_tasks.go) or reconciler into a double intervention capture.
+	// The lock scope stops here: the bounded GitHub enrichment below must not
+	// hold a lock humans also need. Snapshot fetch is best-effort — an
+	// unresolved read just skips the capture rather than blocking the landing.
+	//
 	// The other automated exit path from human-required this package owns —
 	// see outbound.go's reconcileHumanRequiredBlockers and
 	// Handler.recordInterventionOnUnblock. A merged/closed PR landing a task
 	// that was parked human-required is Sybra noticing the blocker cleared,
 	// not an operator click, so it classifies the same as auto_recovery.
-	if preErr == nil && preTask.Status == task.StatusHumanRequired {
-		r.recordInterventionOnUnblock(preTask, string(landedStatus),
-			fmt.Sprintf("automatic PR-landing advance: pr %s while parked human-required", strings.ToLower(c.State)), intervention.OperatorActionAutoRecovery)
+	transition := func() error {
+		preTask, preErr := r.tasks.Get(c.TaskID)
+		if _, err := r.tasks.Update(c.TaskID, task.Update{
+			Status:  task.Ptr(landedStatus),
+			Outcome: task.Ptr(base),
+		}); err != nil {
+			return err
+		}
+		if preErr == nil && preTask.Status == task.StatusHumanRequired {
+			r.recordInterventionOnUnblock(preTask, string(landedStatus),
+				fmt.Sprintf("automatic PR-landing advance: pr %s while parked human-required", strings.ToLower(c.State)), intervention.OperatorActionAutoRecovery)
+		}
+		return nil
+	}
+	// WorkflowEngine is only nil in narrow tests; run unlocked there.
+	if r.WorkflowEngine != nil {
+		if err := r.WorkflowEngine.WithHumanActionLock(c.TaskID, transition); err != nil {
+			return err
+		}
+	} else if err := transition(); err != nil {
+		return err
 	}
 	// The task just landed; any still-Running/Waiting workflow (e.g.
 	// paused at code_review_staff) is now stale. Cancel it so

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Store is a project-partitioned, fingerprint-deduplicated, filesystem-backed
@@ -16,6 +17,11 @@ import (
 // work-derived fields on rec before Put.
 type Store struct {
 	dir string
+	// mu serializes Put's read-modify-write so two concurrent captures of the
+	// same fingerprint cannot both read Recurrences==N and clobber each other's
+	// increment (a fingerprint deliberately excludes TaskID, so distinct tasks
+	// unblocking with an identical blocker shape share a file).
+	mu sync.Mutex
 }
 
 // New creates dir if it does not exist and returns a Store rooted there.
@@ -59,6 +65,14 @@ func (s *Store) Put(projectKey string, rec Record) error {
 	if rec.LastSeen.IsZero() {
 		rec.LastSeen = rec.CreatedAt
 	}
+
+	// Serialize the read-modify-write below: the aggregate branch reads the
+	// existing Recurrences and rewrites the whole file, so concurrent Puts on
+	// the same fingerprint would otherwise lose an increment on a last-writer
+	// clobber.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	existing, readErr := readRecord(path)
 	switch {
 	case readErr == nil:
