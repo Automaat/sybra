@@ -336,6 +336,43 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_HumanVerdictDoesNotRet
 	}
 }
 
+func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_UmbrellaDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	existing := mkTask("hr5", task.StatusHumanRequired, func(t *task.Task) {
+		t.StatusReason = "watchdog: stop"
+		t.Tags = []string{"medium"}
+		t.TaskType = task.TaskTypeUmbrella
+	})
+	ft := &fakeTasks{tasks: []task.Task{existing}}
+	rem := newRemediator(ft, nil, nil, nil)
+	a := Anomaly{
+		Kind:   KindStuckHumanBlocked,
+		TaskID: "hr5",
+		Evidence: map[string]any{
+			"status":                         "human-required",
+			"known_lost_agent_investigation": true,
+		},
+	}
+
+	label, err := rem.Apply(context.Background(), a)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if label == "" {
+		t.Fatal("expected non-empty label")
+	}
+	if len(ft.updates) != 1 {
+		t.Fatalf("want 1 update, got %d", len(ft.updates))
+	}
+	u := ft.updates[0]
+	if u.u.Status != nil {
+		t.Fatalf("status must not change for umbrella tracker, got %v", u.u.Status)
+	}
+	if u.u.Tags != nil {
+		t.Fatalf("tags must not change for umbrella tracker, got %v", *u.u.Tags)
+	}
+}
+
 func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_TamperFlagDoesNotRetry(t *testing.T) {
 	t.Parallel()
 	existing := mkTask("hr4", task.StatusHumanRequired, func(t *task.Task) {
