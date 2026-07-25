@@ -111,7 +111,11 @@ export class AutonomyTrend {
 }
 
 /**
- * AutonomyWeekPoint is autonomy over one 7-day bucket.
+ * AutonomyWeekPoint is autonomy over one 7-day bucket. WeekEnd is exclusive
+ * for every bucket except the newest (the one ending at "now"): consecutive
+ * buckets share a boundary instant, so treat [WeekStart, WeekEnd) as the
+ * bucket's true range rather than reading WeekEnd as an inclusive endpoint —
+ * see ComputeAutonomyTrend's nanosecond trim.
  */
 export class AutonomyWeekPoint {
     "weekStart": string;
