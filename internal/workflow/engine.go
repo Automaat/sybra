@@ -455,7 +455,11 @@ type AdmissionDecision struct {
 	// BlockerKind is the blocker.Kind string set on a "blocked" outcome
 	// (empty on "admitted").
 	BlockerKind string
-	Reason      string
+	// Reason is the full block reason on a "blocked" outcome, or one of
+	// "admitted" (checks ran and passed) / "disabled" (admission.Enabled is
+	// false, no checks ran) on an "admitted" outcome — never empty, so
+	// consumers can distinguish a real pass from a skipped check.
+	Reason string
 }
 
 // defaultTestAttempts is the generous absolute backstop for the testing →
