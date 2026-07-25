@@ -482,6 +482,14 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 		}
 		return out
 	})
+	metrics.RegisterAgentsByClass(func() map[string]int64 {
+		snapshot := a.agents.InFlightByClass()
+		out := make(map[string]int64, len(snapshot))
+		for class, n := range snapshot {
+			out[class] = int64(n)
+		}
+		return out
+	})
 	metrics.RegisterGHAuthState(func() map[string]int64 {
 		state := github.AuthHealthSnapshot().State
 		out := map[string]int64{

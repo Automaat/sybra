@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -82,6 +83,67 @@ func (r Role) IsSystem() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// WorkloadClass partitions dispatch capacity into a small set of pools so one
+// kind of work (e.g. a retry storm of system/monitor runs) cannot starve
+// another (e.g. new implementation work). See internal/agent/capacity.go for
+// the reserve-with-borrowing admission rule that consumes this.
+type WorkloadClass string
+
+const (
+	// ClassImplementation covers new work that has not yet landed: fresh
+	// implementation runs and their planning step. Deterministic recovery
+	// (restarting a stalled implementation run) also folds in here for v1 —
+	// it is not yet a distinct class (see task #2463 subissues).
+	ClassImplementation WorkloadClass = "implementation"
+	// ClassCompletion covers work that lands or verifies an already-started
+	// PR: review, fix-review, pr-fix, test-runner, test-fix.
+	ClassCompletion WorkloadClass = "completion"
+	// ClassSystem covers unattended system/monitor roles (Role.IsSystem()).
+	ClassSystem WorkloadClass = "system"
+)
+
+// AllWorkloadClasses lists every known WorkloadClass. Fixed and small by
+// design — admitClass and the Manager's per-class accounting maps iterate
+// this instead of tracking an open-ended set of keys.
+func AllWorkloadClasses() []WorkloadClass {
+	return []WorkloadClass{ClassImplementation, ClassCompletion, ClassSystem}
+}
+
+// ParseClassReservations converts the config-level agent.class_reservations
+// map (string keys, so internal/config never needs to import this package)
+// into the WorkloadClass-keyed map ManagerRuntimeConfig.ClassReservations
+// expects. Unknown keys are dropped defensively — config validation
+// (internal/config.validateClassReservations) already rejects them at
+// startup, so this only guards against a caller that skipped validation
+// (e.g. a test building config by hand).
+func ParseClassReservations(in map[string]int) map[WorkloadClass]int {
+	out := make(map[WorkloadClass]int, len(in))
+	for k, v := range in {
+		c := WorkloadClass(k)
+		if !slices.Contains(AllWorkloadClasses(), c) {
+			continue
+		}
+		out[c] = v
+	}
+	return out
+}
+
+// WorkloadClass maps a role to the capacity pool it draws from. Every known
+// Role resolves to exactly one class; an unknown/empty role falls back to
+// ClassImplementation, matching RoleFromName's own fallback semantics.
+func (r Role) WorkloadClass() WorkloadClass {
+	switch r {
+	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview, RoleMonitor, RoleLoop, RoleOrchestrator:
+		return ClassSystem
+	case RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleTestFix:
+		return ClassCompletion
+	case RoleImplementation, RolePlan:
+		return ClassImplementation
+	default:
+		return ClassImplementation
 	}
 }
 

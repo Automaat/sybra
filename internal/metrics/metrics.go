@@ -64,6 +64,10 @@ var (
 	agentFailoversCounter metric.Int64Counter
 	agentsGatedCounter    metric.Int64Counter
 
+	agentClassAdmitted metric.Int64Counter
+	agentClassRejected metric.Int64Counter
+	agentClassBorrowed metric.Int64Counter
+
 	autoMergeAttempts metric.Int64Counter
 
 	// Observable gauge providers, mutated at wiring time and read from the
@@ -76,6 +80,7 @@ var (
 	pollerAuthHealthFn     func() map[string]int64
 	providerRawHealthFn    func() map[string]int64
 	agentsInFlightFn       func() map[string]int64
+	agentsByClassFn        func() map[string]int64
 	ghAuthStateFn          func() map[string]int64
 	ghAuthTransitionsFn    func() int64
 	ghAuthSuppressedFn     func() int64
@@ -89,6 +94,7 @@ var (
 	providerRawHealthyG    metric.Int64ObservableGauge
 	pollerAuthHealthyG     metric.Int64ObservableGauge
 	agentsInFlightGauge    metric.Int64ObservableGauge
+	agentsByClassGauge     metric.Int64ObservableGauge
 	ghAuthStateGauge       metric.Int64ObservableGauge
 	ghAuthTransitionsGauge metric.Int64ObservableGauge
 	ghAuthSuppressedGauge  metric.Int64ObservableGauge
@@ -328,9 +334,27 @@ func createProviderInstruments() error {
 	); err != nil {
 		return err
 	}
-	agentsGatedCounter, err = m.Int64Counter(
+	if agentsGatedCounter, err = m.Int64Counter(
 		"sybra_agents_gated_total",
 		metric.WithDescription("Agent runs refused by the provider health gate, by provider and reason."),
+	); err != nil {
+		return err
+	}
+	if agentClassAdmitted, err = m.Int64Counter(
+		"sybra_agent_class_admitted_total",
+		metric.WithDescription("Agent dispatches admitted by the per-workload-class capacity gate, by class."),
+	); err != nil {
+		return err
+	}
+	if agentClassRejected, err = m.Int64Counter(
+		"sybra_agent_class_rejected_total",
+		metric.WithDescription("Agent dispatches refused by the per-workload-class capacity gate, by class."),
+	); err != nil {
+		return err
+	}
+	agentClassBorrowed, err = m.Int64Counter(
+		"sybra_agent_class_borrowed_total",
+		metric.WithDescription("Agent dispatches admitted by drawing on another class's unused reserved capacity, by class."),
 	)
 	return err
 }
@@ -396,6 +420,12 @@ func createObservableGauges() error {
 	); err != nil {
 		return err
 	}
+	if agentsByClassGauge, err = m.Int64ObservableGauge(
+		"sybra_agents_by_class",
+		metric.WithDescription("Current in-flight agent count, by workload class."),
+	); err != nil {
+		return err
+	}
 	if ghAuthStateGauge, err = m.Int64ObservableGauge(
 		"sybra_github_auth_state",
 		metric.WithDescription("Current centralized GitHub auth-health state (1=active), by state name."),
@@ -435,6 +465,7 @@ func createObservableGauges() error {
 	_, err = m.RegisterCallback(
 		observe,
 		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, providerRawHealthyG, pollerAuthHealthyG, agentsInFlightGauge,
+		agentsByClassGauge,
 		ghAuthStateGauge, ghAuthTransitionsGauge, ghAuthSuppressedGauge, ghOutboxPendingGauge, ghOutboxReplayedGauge, ghOutboxAgeGauge,
 	)
 	return err
@@ -449,6 +480,7 @@ func observe(_ context.Context, obs metric.Observer) error {
 	providerRawHealth := providerRawHealthFn
 	pollerAuthHealth := pollerAuthHealthFn
 	inFlight := agentsInFlightFn
+	byClass := agentsByClassFn
 	ghAuthState := ghAuthStateFn
 	ghAuthTransitions := ghAuthTransitionsFn
 	ghAuthSuppressed := ghAuthSuppressedFn
@@ -494,6 +526,12 @@ func observe(_ context.Context, obs metric.Observer) error {
 		for name, n := range inFlight() {
 			obs.ObserveInt64(agentsInFlightGauge, n,
 				metric.WithAttributes(attribute.String("provider", name)))
+		}
+	}
+	if byClass != nil {
+		for class, n := range byClass() {
+			obs.ObserveInt64(agentsByClassGauge, n,
+				metric.WithAttributes(attribute.String("class", class)))
 		}
 	}
 	if ghAuthState != nil {
@@ -584,6 +622,14 @@ func RegisterPollerAuthHealth(fn func() map[string]int64) {
 func RegisterAgentsInFlightByProvider(fn func() map[string]int64) {
 	obsMu.Lock()
 	agentsInFlightFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterAgentsByClass wires a provider callback returning workload class
+// name -> current in-flight agent count for the agents_by_class gauge.
+func RegisterAgentsByClass(fn func() map[string]int64) {
+	obsMu.Lock()
+	agentsByClassFn = fn
 	obsMu.Unlock()
 }
 
@@ -803,6 +849,36 @@ func AgentGated(name, reason string) {
 			attribute.String("provider", name),
 			attribute.String("reason", reason),
 		))
+}
+
+// AgentClassAdmitted records one dispatch admitted by the per-workload-class
+// capacity gate.
+func AgentClassAdmitted(class string) {
+	if agentClassAdmitted == nil {
+		return
+	}
+	agentClassAdmitted.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("class", class)))
+}
+
+// AgentClassRejected records one dispatch refused by the per-workload-class
+// capacity gate.
+func AgentClassRejected(class string) {
+	if agentClassRejected == nil {
+		return
+	}
+	agentClassRejected.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("class", class)))
+}
+
+// AgentClassBorrowed records one dispatch admitted by drawing on another
+// class's unused reserved capacity (see agent.borrowsSharedCapacity).
+func AgentClassBorrowed(class string) {
+	if agentClassBorrowed == nil {
+		return
+	}
+	agentClassBorrowed.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("class", class)))
 }
 
 // AutoMergeAttempt records one auto-merge decision point. result is one of

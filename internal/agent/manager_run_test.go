@@ -453,6 +453,63 @@ func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {
 	}
 }
 
+// TestRegisterRunningAgent_ClassGate proves the per-workload-class admission
+// gate holds a reserved class's guarantee even while the pool is otherwise
+// saturated by another class, and rejects a further dispatch of a class with
+// no remaining guarantee or borrowable capacity — the acceptance criterion
+// for reserve-with-borrowing.
+func TestRegisterRunningAgent_ClassGate(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 3
+	m.classFloors = map[WorkloadClass]int{ClassCompletion: 1}
+	m.mu.Unlock()
+
+	// Saturate the pool with system-class work (no floor of its own).
+	sys1 := &Agent{ID: "sys1", Provider: "claude", Role: RoleMonitor, done: make(chan struct{})}
+	if err := m.registerRunningAgent(sys1, RunConfig{Role: RoleMonitor}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(sys1): %v", err)
+	}
+	sys2 := &Agent{ID: "sys2", Provider: "claude", Role: RoleMonitor, done: make(chan struct{})}
+	if err := m.registerRunningAgent(sys2, RunConfig{Role: RoleMonitor}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(sys2): %v", err)
+	}
+
+	// A completion-class dispatch must still be admitted: it hasn't consumed
+	// its reserved floor of 1 yet, and reserved classes cannot be starved.
+	fix := &Agent{ID: "fix1", Provider: "claude", Role: RolePRFix, done: make(chan struct{})}
+	if err := m.registerRunningAgent(fix, RunConfig{Role: RolePRFix}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(fix, protected by floor): %v", err)
+	}
+
+	// A further system-class dispatch must now be rejected: the pool is at
+	// its cap (3 live against maxConcurrent effectively bounded by the floor
+	// math) and completion's floor must not be stranded.
+	sys3 := &Agent{ID: "sys3", Provider: "claude", Role: RoleMonitor, done: make(chan struct{})}
+	if err := m.registerRunningAgent(sys3, RunConfig{Role: RoleMonitor}, func() {}); !errors.Is(err, ErrMaxConcurrentReached) {
+		t.Fatalf("registerRunningAgent(sys3) err = %v, want ErrMaxConcurrentReached", err)
+	}
+
+	m.mu.RLock()
+	gotLive := m.liveByClass[ClassSystem]
+	gotCompletion := m.liveByClass[ClassCompletion]
+	m.mu.RUnlock()
+	if gotLive != 2 {
+		t.Fatalf("liveByClass[system] = %d, want 2", gotLive)
+	}
+	if gotCompletion != 1 {
+		t.Fatalf("liveByClass[completion] = %d, want 1", gotCompletion)
+	}
+
+	m.markAgentDone(context.Background(), fix)
+	m.mu.RLock()
+	gotCompletion = m.liveByClass[ClassCompletion]
+	m.mu.RUnlock()
+	if gotCompletion != 0 {
+		t.Fatalf("liveByClass[completion] after markAgentDone = %d, want 0", gotCompletion)
+	}
+}
+
 // TestTryReserveSlot exercises the three capacity postures TryReserveSlot
 // must report: under cap, at cap, and cap disabled. It is an advisory peek
 // only — the assertions never look at liveCount mutation, since
@@ -579,6 +636,35 @@ func TestAvailableQueueDrainSlots(t *testing.T) {
 	m.mu.Unlock()
 	if got := m.AvailableQueueDrainSlots(3); got != 3 {
 		t.Fatalf("cap disabled AvailableQueueDrainSlots(3) = %d, want 3", got)
+	}
+}
+
+// TestAvailableQueueDrainSlots_ClassAware proves the manual-drain batch size
+// (always implementation-class items, see enqueueManualStart) reflects a
+// floor reserved for a different class: capacity that class_reservations
+// protects for completion must not be reported as drainable to
+// implementation, even though the raw free-slot count would suggest it is.
+func TestAvailableQueueDrainSlots_ClassAware(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 3
+	m.classFloors = map[WorkloadClass]int{ClassCompletion: 1}
+	m.mu.Unlock()
+
+	// Raw free slots = 3, but 1 must stay protected for completion's floor,
+	// so only 2 are drainable to implementation.
+	if got := m.AvailableQueueDrainSlots(5); got != 2 {
+		t.Fatalf("AvailableQueueDrainSlots(5) with completion floor reserved = %d, want 2", got)
+	}
+
+	// A live completion agent already satisfies its own floor, so nothing is
+	// protected from implementation anymore: all 2 remaining raw slots drain.
+	fix := &Agent{ID: "fix1", Provider: "claude", Role: RolePRFix, done: make(chan struct{})}
+	if err := m.registerRunningAgent(fix, RunConfig{Role: RolePRFix}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(fix): %v", err)
+	}
+	if got := m.AvailableQueueDrainSlots(5); got != 2 {
+		t.Fatalf("AvailableQueueDrainSlots(5) with completion floor already met = %d, want 2", got)
 	}
 }
 
