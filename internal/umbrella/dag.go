@@ -167,6 +167,23 @@ func (g *Graph) HasCycle() bool {
 	return len(g.cycleMembers()) > 0
 }
 
+// UnresolvedRefs filters refs down to the ones that do not resolve to a known
+// done node in the graph — either untracked entirely (the common case for a
+// cross-program ref: no Sybra task carries that issue) or tracked but not yet
+// Done. Lets a caller name exactly which dependency is still holding a node
+// back instead of only reporting the aggregate satisfied/not-satisfied bool
+// depsSatisfied computes.
+func (g *Graph) UnresolvedRefs(refs []string) []string {
+	var out []string
+	for _, ref := range refs {
+		j, ok := g.byIssue[NormalizeIssueRef(ref)]
+		if !ok || !g.nodes[j].Done {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
 // depsSatisfied reports whether every dependency of node i resolves to a known
 // node that is done. An unresolvable dependency is treated as unsatisfied so a
 // child is never released ahead of a dependency that has not been materialized
