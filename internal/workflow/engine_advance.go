@@ -553,7 +553,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return comp, err
 		case StepWaitHuman:
 			return nil, wrapDispatchErr(step.ID, e.execWaitHuman(taskID, step, wfExec))
-		case StepClearPlanArtifacts, StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepFlagPlanCritique, StepDetectTampering, StepVerifyChecks, StepFocusedChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR, StepClassifyTask:
+		case StepClearPlanArtifacts, StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepFlagPlanCritique, StepDetectTampering, StepVerifyChecks, StepFocusedChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR, StepClassifyTask, StepAdmissionPreflight:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
@@ -671,6 +671,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execCreatePR(taskID, step, wfExec, t)
 	case StepClassifyTask:
 		return e.execClassifyTask(taskID, step, wfExec)
+	case StepAdmissionPreflight:
+		return e.execAdmissionPreflight(taskID, step, wfExec, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}

@@ -226,7 +226,7 @@ func (e *Engine) advanceSatisfiedWaitForStatus(taskID string, t TaskInfo) (TaskI
 // Safe to call for any status change — no-ops when the current step does
 // not declare wait_for_status or when the status does not match.
 func (e *Engine) HandleStatusChange(taskID, newStatus string) {
-	if e.dispatchDisabled {
+	if e.dispatchDisabled.Load() {
 		return
 	}
 	t, err := e.tasks.GetTask(taskID)
@@ -1053,7 +1053,7 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 
 func isResumableStepType(t StepType) bool {
 	switch t {
-	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN:
+	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN, StepAdmissionPreflight:
 		return true
 	default:
 		return false
@@ -1189,7 +1189,7 @@ func (e *Engine) handleMissingStep(t *TaskInfo) {
 }
 
 func (e *Engine) ResumeStalled() {
-	if e.dispatchDisabled {
+	if e.dispatchDisabled.Load() {
 		return
 	}
 	// Prune stale admission-queue items (missing/terminal/in-progress tasks)
