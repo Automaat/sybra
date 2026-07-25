@@ -232,7 +232,13 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 		e.logger.Warn("workflow.pr-tail.preflight-failed-attempting-push",
 			"task_id", taskID, "step", step.ID, "err", preflightErr)
 	}
-	pushErr := project.PushSync(ctx, wtPath, branch)
+	// Preflight's mandated retry backoffs and dry-run subprocesses can consume
+	// a large slice of the shared budget; give the real push its own fresh
+	// timeout so it isn't killed on stale budget and misclassified into the
+	// non-auth retry bucket (#2160/#2386).
+	pushCtx, pushCancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer pushCancel()
+	pushErr := project.PushSync(pushCtx, wtPath, branch)
 	if pushErr == nil {
 		return StepOutput{}, nil, true
 	}
