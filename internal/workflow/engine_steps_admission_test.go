@@ -13,6 +13,15 @@ func newAdmissionPreflightStep() *Step {
 	return &Step{ID: "admission_preflight", Type: StepAdmissionPreflight}
 }
 
+func newAdmissionExec() *Execution {
+	return &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "admission_preflight",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+	}
+}
+
 func TestExecAdmissionPreflight_DisabledIsNoOp(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "fa6919fc", Status: "in-progress"})
@@ -20,7 +29,7 @@ func TestExecAdmissionPreflight_DisabledIsNoOp(t *testing.T) {
 	// admission zero-value: Enabled defaults false, matching every other
 	// Engine dependency's nil-safe default.
 
-	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: `{"schema_version": "2"}`})
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +49,7 @@ func TestExecAdmissionPreflight_AdmitsNoContract(t *testing.T) {
 	engine := newEngineForEval(t, tasks)
 	engine.SetAdmissionConfig(config.AdmissionConfig{Enabled: true})
 
-	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc"})
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +69,7 @@ func TestExecAdmissionPreflight_AdmitsValidContract(t *testing.T) {
 	engine := newEngineForEval(t, tasks)
 	engine.SetAdmissionConfig(config.AdmissionConfig{Enabled: true})
 
-	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")})
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +96,7 @@ func TestExecAdmissionPreflight_InvalidContractBlocksAsOperatorDecision(t *testi
 		`"task_id": "fa6919fc",
   "schema_version": "2",`, 1)
 
-	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +131,7 @@ func TestExecAdmissionPreflight_UnknownCapabilityBlocksAsOperatorDecision(t *tes
   "objective": "ship the thing",
   "required_capabilities": ["launch_missiles"],`, 1)
 
-	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +160,7 @@ func TestExecAdmissionPreflight_OversizeAcceptanceCriteriaBlocksAsOperatorDecisi
 		`"acceptance_criteria": ["implementation prompt includes the contract"]`,
 		`"acceptance_criteria": ["first criterion", "second criterion"]`, 1)
 
-	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +194,7 @@ func TestExecAdmissionPreflight_OversizeFilesBlocksAsOperatorDecision(t *testing
     {"path": "internal/workflow/engine_advance.go", "purpose": "edit"}
   ],`, 1)
 
-	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +220,7 @@ func TestExecAdmissionPreflight_NoWorktreeSkipsCredentialCheck(t *testing.T) {
 	preflight := &fakePushPreflighter{err: errors.New("should never be called")}
 	engine.SetPushCredentialPreflighter(preflight)
 
-	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")})
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +242,7 @@ func TestExecAdmissionPreflight_MissingCredentialsBlockAsCredentialRequired(t *t
 	preflight := &fakePushPreflighter{err: errors.New("gh auth status: Bad credentials")}
 	engine.SetPushCredentialPreflighter(preflight)
 
-	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")})
 	if err != nil {
 		t.Fatal(err)
@@ -259,6 +268,38 @@ func TestExecAdmissionPreflight_MissingCredentialsBlockAsCredentialRequired(t *t
 	}
 }
 
+func TestExecAdmissionPreflight_TransientCredentialErrorParksForRetry(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "fa6919fc", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	engine.SetAdmissionConfig(config.AdmissionConfig{Enabled: true})
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: "/tmp/wt", ok: true})
+	// A rate-limited/transient preflight hit must self-heal via a bounded
+	// retry, not permanently strand a re-dispatched task at human-required.
+	preflight := &fakePushPreflighter{err: errors.New("gh: API rate limit exceeded for GitHub")}
+	engine.SetPushCredentialPreflighter(preflight)
+
+	wfExec := newAdmissionExec()
+	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), wfExec,
+		TaskInfo{ID: "fa6919fc", Status: "in-progress", PlanContract: validPlanContract("fa6919fc")})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out.Status == "completed" {
+		t.Fatalf("out = %+v, want the step parked (not completed)", out)
+	}
+	ti, _ := tasks.GetTask("fa6919fc")
+	if ti.Status == "human-required" {
+		t.Fatalf("status = %q, want the task parked in-progress (transient error must not strand it)", ti.Status)
+	}
+	if ti.Blocker.Exhausted {
+		t.Error("blocker.Exhausted = true, want false (transient error is retriable)")
+	}
+	if wfExec.State != ExecWaiting {
+		t.Errorf("wfExec.State = %v, want ExecWaiting (parked for retry)", wfExec.State)
+	}
+}
+
 func TestExecAdmissionPreflight_RecordsAdmissionDecision(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "fa6919fc", Status: "in-progress"})
@@ -269,7 +310,7 @@ func TestExecAdmissionPreflight_RecordsAdmissionDecision(t *testing.T) {
 		decisions = append(decisions, d)
 	})
 
-	if _, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	if _, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")}); err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +325,7 @@ func TestExecAdmissionPreflight_RecordsAdmissionDecision(t *testing.T) {
 		`"task_id": "fa6919fc",`,
 		`"task_id": "fa6919fc",
   "schema_version": "2",`, 1)
-	if _, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(),
+	if _, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: invalid}); err != nil {
 		t.Fatal(err)
 	}

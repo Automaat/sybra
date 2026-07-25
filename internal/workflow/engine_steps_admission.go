@@ -43,16 +43,22 @@ const admissionPreflightReasonPrefix = "admission preflight blocked:"
 //     avoids flipping every ordinary task to human-required on its first
 //     pass (see the Stop Condition on mass-flipping in-flight tasks).
 //
-// A failure sets a terminal blocker.State (Exhausted: true — no automatic
-// re-attempts, matching KindTriageRetryExhausted's precedent) and flips the
-// task to human-required: blocker.KindCredentialRequired for the push-auth
-// probe, blocker.KindOperatorDecision for a contract/scope problem (a human
-// must fix the spec, not retry the same dispatch). Both are in
-// blocker.AllowsHumanRequired's allow-list.
+// A contract/scope failure sets a terminal blocker.State (Exhausted: true — no
+// automatic re-attempts, matching KindTriageRetryExhausted's precedent) and
+// flips the task to human-required with blocker.KindOperatorDecision (a human
+// must fix the spec, not retry the same dispatch).
+//
+// A push-credential failure is NOT unconditionally terminal: it is classified
+// the same way push_branch/create_pr classify the identical preflight error
+// (classifyAdmissionCredentialError), so a rate-limit or transient GitHub blip
+// hit at this step self-heals via a bounded retry instead of permanently
+// stranding a re-dispatched task at human-required. Only a non-transient
+// credential failure escalates, as blocker.KindCredentialRequired. Both
+// blocker kinds are in blocker.AllowsHumanRequired's allow-list.
 //
 // Disabled via admission.Enabled=false (SetAdmissionConfig) is a pure no-op —
 // the step always admits.
-func (e *Engine) execAdmissionPreflight(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+func (e *Engine) execAdmissionPreflight(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	if !e.admission.Enabled {
 		return e.admitTask(step, t, "disabled")
 	}
@@ -68,11 +74,33 @@ func (e *Engine) execAdmissionPreflight(taskID string, step *Step, t TaskInfo) (
 		}
 	}
 
-	if reason := e.checkAdmissionCredentials(taskID); reason != "" {
-		return e.blockAdmission(taskID, step, t, blocker.KindCredentialRequired, reason)
+	if credErr := e.checkAdmissionCredentials(taskID); credErr != nil {
+		return e.classifyAdmissionCredentialError(taskID, step, wfExec, t, credErr)
 	}
 
 	return e.admitTask(step, t, "admitted")
+}
+
+// classifyAdmissionCredentialError mirrors classifyPRGitError's transient-vs-
+// permanent split for the push-credential preflight run at admission time: a
+// rate-limit or transient GitHub blip parks the step for a bounded retry (it
+// self-heals on a later pass, exactly as push_branch/create_pr would for the
+// identical error moments later in the same workflow), while a genuine auth
+// failure or otherwise unclassifiable credential problem escalates to a
+// terminal blocker.KindCredentialRequired — the same distinction
+// looksLikeAuthFailure draws (a broken token does not self-heal, a network
+// blip does).
+func (e *Engine) classifyAdmissionCredentialError(taskID string, step *Step, wfExec *Execution, t TaskInfo, err error) (StepOutput, error) {
+	msg := err.Error()
+	switch {
+	case looksLikeGitHubRateLimit(msg):
+		return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateRetryStatusReason, "workflow.admission-preflight.rate-limit")
+	case looksLikeTransientGitHub(msg):
+		return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateTransientStatusReason, "workflow.admission-preflight.transient")
+	default:
+		return e.blockAdmission(taskID, step, t, blocker.KindCredentialRequired,
+			"push credential preflight failed: "+trimDiffLine(msg))
+	}
 }
 
 // checkAdmissionOversize returns a non-empty reason when the plan contract's
@@ -100,24 +128,22 @@ func (e *Engine) checkAdmissionOversize(raw string) string {
 	return ""
 }
 
-// checkAdmissionCredentials returns a non-empty reason when a worktree
-// already exists for the task and the push-auth preflight against it fails.
-// A not-yet-existing worktree is not a failure here — see the doc comment on
-// execAdmissionPreflight.
-func (e *Engine) checkAdmissionCredentials(taskID string) string {
+// checkAdmissionCredentials returns a non-nil error when a worktree already
+// exists for the task and the push-auth preflight against it fails. The raw
+// error is returned (not a formatted reason) so the caller can classify it as
+// transient vs permanent. A not-yet-existing worktree is not a failure here —
+// see the doc comment on execAdmissionPreflight.
+func (e *Engine) checkAdmissionCredentials(taskID string) error {
 	if e.worktrees == nil {
-		return ""
+		return nil
 	}
 	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
 	if !ok {
-		return ""
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
-	if err := e.preflightPushCredentials(ctx, wtPath); err != nil {
-		return "push credential preflight failed: " + trimDiffLine(err.Error())
-	}
-	return ""
+	return e.preflightPushCredentials(ctx, wtPath)
 }
 
 // blockAdmission flips the task to human-required with a terminal blocker
