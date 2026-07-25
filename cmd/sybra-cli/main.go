@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/issueref"
 	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
@@ -1488,7 +1489,7 @@ func parseDepConditions(raws []string) ([]any, error) {
 			return nil, err
 		}
 		ref, _ := m["ref"].(string)
-		key := strings.ToLower(ref)
+		key := issueref.Normalize(ref)
 		if seen[key] {
 			return nil, fmt.Errorf("invalid --depends-on-condition %q: duplicate ref %q", raw, m["ref"])
 		}
@@ -1506,12 +1507,12 @@ func parseDepConditions(raws []string) ([]any, error) {
 func warnInertDepConditions(currentDependsOn []string, conds []any) {
 	present := make(map[string]bool, len(currentDependsOn))
 	for _, d := range currentDependsOn {
-		present[strings.ToLower(strings.TrimSpace(d))] = true
+		present[issueref.Normalize(d)] = true
 	}
 	for _, c := range conds {
 		m, _ := c.(map[string]any)
 		ref, _ := m["ref"].(string)
-		if !present[strings.ToLower(strings.TrimSpace(ref))] {
+		if !present[issueref.Normalize(ref)] {
 			fmt.Fprintf(os.Stderr, "warning: --depends-on-condition ref %q is not in this task's depends_on — condition will be inert until it is added\n", ref)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/issueref"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -475,11 +476,14 @@ func depConditionFromMap(m map[string]any) (DepCondition, error) {
 // validateDepConditions rejects more than one condition per Ref — the gate
 // (holdUnmetConditions) only ever evaluates the first condition it finds for
 // a given ref, so a silently-accepted second condition on the same ref would
-// be silently inert rather than erroring where the mistake is made.
+// be silently inert rather than erroring where the mistake is made. The dedup
+// key is normalized via issueref.Normalize so a URL and its "owner/repo#n"
+// shorthand collapse to the same ref — the same equivalence matchesDepRef uses
+// at gate time, otherwise two spellings of one dep slip past this check.
 func validateDepConditions(conds []DepCondition) error {
 	seen := make(map[string]bool, len(conds))
 	for _, c := range conds {
-		key := strings.ToLower(strings.TrimSpace(c.Ref))
+		key := issueref.Normalize(c.Ref)
 		if seen[key] {
 			return fmt.Errorf("depends_on_conditions: duplicate ref %q — only one condition per ref is supported", c.Ref)
 		}

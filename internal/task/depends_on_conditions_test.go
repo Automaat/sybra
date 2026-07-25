@@ -46,6 +46,14 @@ func TestApplyDependsOnConditionsField(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// URL and shorthand normalize to the same ref (issueref.Normalize),
+			// matching matchesDepRef's gate-time equivalence — must be rejected
+			// as a duplicate, not silently accepted as two distinct refs.
+			name:    "duplicate ref url vs shorthand rejected",
+			body:    `{"depends_on_conditions":[{"ref":"o/r#1","kind":"note","value":"a"},{"ref":"https://github.com/o/r/issues/1","kind":"label","value":"b"}]}`,
+			wantErr: true,
+		},
+		{
 			name:    "non-object element rejected",
 			body:    `{"depends_on_conditions":["not-an-object"]}`,
 			wantErr: true,
