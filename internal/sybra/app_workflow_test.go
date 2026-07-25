@@ -1076,10 +1076,99 @@ func TestRecordSystemAgentStartIgnoresMissingTask(t *testing.T) {
 	}
 
 	adapter := &agentAdapter{tasks: mgr}
-	adapter.recordSystemAgentStart(created.ID, string(agent.RolePlan), "headless", agent.RunConfig{Prompt: "prompt"}, &agent.Agent{
+	if err := adapter.recordSystemAgentStart(created.ID, string(agent.RolePlan), "headless", agent.RunConfig{Prompt: "prompt"}, &agent.Agent{
 		ID:        "agent-1",
 		Provider:  "claude",
 		Model:     "sonnet",
 		StartedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		t.Fatalf("recordSystemAgentStart() err = %v, want nil: a task the workflow no longer owns is a silent no-op, not a failure", err)
+	}
+}
+
+// TestAgentAdapterStartAgentFailsClosedOnDroppedRunRecord pins #2199's
+// remaining gap: recordSystemAgentStart must not log-and-continue when
+// AddRunWithStatus fails for a reason other than the task having disappeared
+// (os.ErrNotExist, covered above). A dropped write here silently un-counts
+// reviewbudget.Budget's Role=="review" rate cap, so the already-started agent
+// must be stopped and the failure surfaced rather than left to run unrecorded.
+func TestAgentAdapterStartAgentFailsClosedOnDroppedRunRecord(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses the write-permission block this test relies on")
+	}
+
+	fakebin := t.TempDir()
+	fakeClaude := filepath.Join(fakebin, "claude")
+	// Short-lived (well under the goleak check at process exit) but long
+	// enough to still be alive when recordSystemAgentStart's StopAgent call
+	// runs, so the state assertion below exercises a genuinely live process
+	// rather than one that raced to completion on its own.
+	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\n"+
+		"printf '{\"type\":\"system\",\"session_id\":\"fake-session\"}\\n'\n"+
+		"sleep 0.2\n"),
+		0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tmp := t.TempDir()
+	tasksDir := filepath.Join(tmp, "tasks")
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := task.NewManager(store, nil)
+	created, err := mgr.Create("drop run record", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, filepath.Join(tmp, "logs"))
+	t.Cleanup(func() { agents.ShutdownWithGrace(2 * time.Second) })
+
+	adapter := &agentAdapter{
+		agents:    agents,
+		tasks:     mgr,
+		agentOrch: agentorch.New(nil, nil, nil, nil, logger, nil, nil),
+	}
+
+	// Block writes to the tasks dir so AddRunWithStatus fails with something
+	// other than os.ErrNotExist once the agent below has already started.
+	if err := os.Chmod(tasksDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tasksDir, 0o755) })
+
+	agentID, _, _, startErr := adapter.StartAgent(created.ID, string(agent.RoleReview), "headless", "sonnet", "claude", "prompt", t.TempDir(), nil, false, false, "", "", workflow.AgentAssignment{})
+	if startErr == nil {
+		t.Fatal("StartAgent() err = nil, want an error when the run-record write fails")
+	}
+	if agentID != "" {
+		t.Fatalf("StartAgent() agentID = %q, want empty on a failed dispatch", agentID)
+	}
+
+	var started *agent.Agent
+	for _, a := range agents.ListAgents() {
+		if a.TaskID == created.ID {
+			started = a
+		}
+	}
+	if started == nil {
+		t.Fatal("no agent registered for the task despite agents.Run succeeding before the failed write")
+	}
+	if got := started.GetState(); got != agent.StateStopped {
+		t.Fatalf("started agent state = %v, want Stopped: a dropped run-record write must not leave an unrecorded agent running", got)
+	}
+
+	if err := os.Chmod(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := mgr.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.AgentRuns) != 0 {
+		t.Fatalf("AgentRuns = %+v, want none — a dropped run-record write must not silently grant free review-round budget", reloaded.AgentRuns)
+	}
 }

@@ -876,7 +876,9 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		return "", "", "", translatePoolBusy(err)
 	}
 
-	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
+	if recErr := a.recordSystemAgentStart(taskID, role, mode, cfg, ag); recErr != nil {
+		return "", "", "", recErr
+	}
 
 	return ag.ID, cfg.Dir, baselineRef, nil
 }
@@ -1138,7 +1140,7 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) (bool
 	return true, nil
 }
 
-func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg agent.RunConfig, ag *agent.Agent) {
+func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg agent.RunConfig, ag *agent.Agent) error {
 	var nextStatus *task.Status
 	if cur, rerr := a.tasks.Get(taskID); rerr == nil && cur.Status == task.StatusHumanRequired {
 		nextStatus = task.Ptr(task.StatusInProgress)
@@ -1170,17 +1172,23 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 			// (delete/cleanup/terminal teardown) after StartAgent succeeded but
 			// before the AgentRun write. Treat that as a silent no-op: the
 			// workflow already no longer owns a task file to update.
-			return
+			return nil
 		}
 		// Not just lost history: reviewbudget.Budget (#2499) counts Role=="review"
 		// AgentRuns to bound the automated review loop, so a silently dropped
 		// write here under-counts that durable budget for this task, same as
-		// #2199 named. Logged at Error rather than escalated to human-required
-		// directly — ag is already a live, running process, and flipping every
-		// role's dispatch to a hard failure here risks a duplicate dispatch on
-		// retry, which is worse than an undercounted budget.
+		// #2199 named. Fail closed like StartReviewAgent (review/inbound.go):
+		// signal the agent that already started before surfacing the error
+		// (best-effort — does not block for exit), so a workflow-level retry
+		// targets an agent Sybra no longer considers live instead of piling a
+		// second one on top of an unrecorded process still running.
 		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
+		if stopErr := a.agents.StopAgent(ag.ID); stopErr != nil {
+			return fmt.Errorf("record agent run: %w; stop started agent %s: %w", addErr, ag.ID, stopErr)
+		}
+		return fmt.Errorf("record agent run: %w", addErr)
 	}
+	return nil
 }
 
 func (a *agentAdapter) withExperiencePrompt(cfg *agent.RunConfig, role agent.Role, t task.Task) {
