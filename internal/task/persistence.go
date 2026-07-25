@@ -9,27 +9,32 @@ import (
 
 // taskFrontmatter is the on-disk YAML schema for a task file. Keep persistence
 // field names here so Task can evolve as the domain/API model without carrying
-// serialization tags.
+// serialization tags (see TestTaskDomainTypesHaveNoYAMLTags). Field order
+// mirrors Task's so the two are easy to diff side by side when a field is
+// added.
 type taskFrontmatter struct {
-	ID                     string              `yaml:"id"`
-	Slug                   string              `yaml:"slug,omitempty"`
-	Title                  string              `yaml:"title"`
-	Status                 Status              `yaml:"status"`
-	TaskType               TaskType            `yaml:"task_type,omitempty"`
-	AgentMode              string              `yaml:"agent_mode"`
-	AllowedTools           []string            `yaml:"allowed_tools"`
-	Tags                   []string            `yaml:"tags"`
-	ProjectID              string              `yaml:"project_id,omitempty"`
-	Branch                 string              `yaml:"branch,omitempty"`
-	WorktreeDir            string              `yaml:"worktree_dir,omitempty"`
-	PRNumber               int                 `yaml:"pr_number,omitempty"`
-	Issue                  string              `yaml:"issue,omitempty"`
-	RefIssue               string              `yaml:"ref_issue,omitempty"`
-	StatusReason           string              `yaml:"status_reason,omitempty"`
-	Blocker                *blocker.State      `yaml:"blocker,omitempty"`
+	ID           string   `yaml:"id"`
+	Slug         string   `yaml:"slug,omitempty"`
+	Title        string   `yaml:"title"`
+	Status       Status   `yaml:"status"`
+	TaskType     TaskType `yaml:"task_type,omitempty"`
+	AgentMode    string   `yaml:"agent_mode"`
+	AllowedTools []string `yaml:"allowed_tools"`
+	Tags         []string `yaml:"tags"`
+	ProjectID    string   `yaml:"project_id,omitempty"`
+	Branch       string   `yaml:"branch,omitempty"`
+	WorktreeDir  string   `yaml:"worktree_dir,omitempty"`
+	PRNumber     int      `yaml:"pr_number,omitempty"`
+	Issue        string   `yaml:"issue,omitempty"`
+	StatusReason string   `yaml:"status_reason,omitempty"`
+	// Blocker matches Task's value type (not a pointer): blocker.State
+	// implements IsZeroer, so yaml.v3's omitempty already skips a zero value
+	// without needing pointer indirection to distinguish "unset" from "set".
+	Blocker                blocker.State       `yaml:"blocker,omitempty"`
 	HandoffSourceProvider  string              `yaml:"handoff_source_provider,omitempty"`
 	BlockedByIssue         string              `yaml:"blocked_by_issue,omitempty"`
 	UmbrellaIssue          string              `yaml:"umbrella_issue,omitempty"`
+	RefIssue               string              `yaml:"ref_issue,omitempty"`
 	DependsOn              []string            `yaml:"depends_on,omitempty"`
 	Reviewed               bool                `yaml:"reviewed,omitempty"`
 	RunRole                string              `yaml:"run_role,omitempty"`
@@ -119,12 +124,12 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		WorktreeDir:            fm.WorktreeDir,
 		PRNumber:               fm.PRNumber,
 		Issue:                  fm.Issue,
-		RefIssue:               fm.RefIssue,
 		StatusReason:           fm.StatusReason,
-		Blocker:                derefBlocker(fm.Blocker),
+		Blocker:                fm.Blocker,
 		HandoffSourceProvider:  fm.HandoffSourceProvider,
 		BlockedByIssue:         fm.BlockedByIssue,
 		UmbrellaIssue:          fm.UmbrellaIssue,
+		RefIssue:               fm.RefIssue,
 		DependsOn:              fm.DependsOn,
 		Reviewed:               fm.Reviewed,
 		RunRole:                fm.RunRole,
@@ -190,12 +195,12 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		WorktreeDir:            t.WorktreeDir,
 		PRNumber:               t.PRNumber,
 		Issue:                  t.Issue,
-		RefIssue:               t.RefIssue,
 		StatusReason:           t.StatusReason,
-		Blocker:                blockerPtr(t.Blocker),
+		Blocker:                t.Blocker,
 		HandoffSourceProvider:  t.HandoffSourceProvider,
 		BlockedByIssue:         t.BlockedByIssue,
 		UmbrellaIssue:          t.UmbrellaIssue,
+		RefIssue:               t.RefIssue,
 		DependsOn:              t.DependsOn,
 		Reviewed:               t.Reviewed,
 		RunRole:                t.RunRole,
@@ -228,21 +233,6 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		MirrorRev:              t.MirrorRev,
 		MirrorUpdatedAt:        t.MirrorUpdatedAt,
 	}
-}
-
-func blockerPtr(b blocker.State) *blocker.State {
-	if b.IsZero() {
-		return nil
-	}
-	out := b
-	return &out
-}
-
-func derefBlocker(b *blocker.State) blocker.State {
-	if b == nil {
-		return blocker.State{}
-	}
-	return *b
 }
 
 func agentRunsFromRecords(records []agentRunRecord) []AgentRun {
