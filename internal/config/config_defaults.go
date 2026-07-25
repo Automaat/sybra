@@ -825,6 +825,7 @@ func (c *Config) Directories() map[string]string {
 		"loop_agents":     c.LoopAgentsDir,
 		"artifacts":       ArtifactsDir(),
 		"experiences":     c.ExperiencesDir(),
+		"interventions":   c.InterventionsDir(),
 		"agentqueue":      AgentQueueDir(),
 		"learning":        LearningDir(),
 		"gh_issue_outbox": GHIssueOutboxDir(),
@@ -854,6 +855,12 @@ func LearningDir() string {
 
 func (c *Config) ExperiencesDir() string {
 	return filepath.Join(HomeDir(), "experience")
+}
+
+// InterventionsDir is the directory under ~/.sybra that persists
+// internal/intervention records.
+func (c *Config) InterventionsDir() string {
+	return filepath.Join(HomeDir(), "interventions")
 }
 
 func Load() (*ResolvedConfig, error) {
@@ -1117,6 +1124,19 @@ func applyAdmissionDefaults(cfg *Config, file *FileConfig) {
 // Nil-safe for test construction.
 func (c *Config) AdmissionEnabled() bool {
 	return c != nil && c.Admission.Enabled
+}
+
+// applyInterventionDefaults defaults Enabled to true unless the file
+// explicitly disabled it — mirroring applyAdmissionDefaults so an operator's
+// explicit `intervention.enabled: false` is never silently re-enabled on the
+// next resolve. Safe to default on: internal/intervention records are
+// local-only, scrub-guarded for work projects (see
+// TaskService.recordInterventionOnUnblock), and feed no deterministic
+// routing/admission/completion gate.
+func applyInterventionDefaults(cfg *Config, file *FileConfig) {
+	if file == nil || !file.Has("intervention", "enabled") {
+		cfg.Intervention.Enabled = true
+	}
 }
 
 // applyEvidenceDefaults leaves Agent.Evidence.Enabled at its zero value

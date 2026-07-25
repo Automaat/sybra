@@ -39,6 +39,7 @@ import (
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/logging"
@@ -90,6 +91,7 @@ type App struct {
 	artifacts         *artifact.Store
 	evidenceStore     *evidence.Store
 	experience        *experience.Store
+	intervention      *intervention.Store
 	learning          *learning.Store
 	agentQueue        *agentqueue.Queue
 	stats             *stats.Store
@@ -463,6 +465,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.agentOrch.SetContext(appCtx)
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 	a.reviewer.SetABTestingSource(a.abTestingConfig)
+	a.reviewer.SetInterventionStore(a.intervention)
 
 	a.initWorkflowEngine()
 

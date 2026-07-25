@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -547,6 +548,7 @@ func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs
 		}
 
 		priorReason := t.StatusReason
+		preTask := *t
 		tags := append(append([]string{}, t.Tags...), reconciledLatchTag)
 		updated, err := r.tasks.Update(t.ID, task.Update{
 			Status:       task.Ptr(task.StatusInReview),
@@ -558,6 +560,14 @@ func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs
 			continue
 		}
 		tasks[i] = updated
+		// One of the two automated exit paths from human-required this
+		// package owns — see Handler.recordInterventionOnUnblock. Blocked
+		// (not human-required) tasks reconciled here are out of this
+		// feature's scope.
+		if preTask.Status == task.StatusHumanRequired {
+			r.recordInterventionOnUnblock(preTask, string(task.StatusInReview),
+				fmt.Sprintf("automatic reconciliation: %s blocker cleared", kind), intervention.OperatorActionAutoRecovery)
+		}
 		if r.prTracker != nil {
 			r.prTracker.Clear(t.ID, kind)
 		}

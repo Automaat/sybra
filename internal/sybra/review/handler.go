@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
@@ -46,6 +47,12 @@ type Handler struct {
 	cfg            *config.Config
 	abTesting      func() abtest.Config
 	experience     *experience.Store
+	// intervention captures a genuine human-required unblock through the two
+	// automated exit paths this package owns (reconcileHumanRequiredBlockers,
+	// advanceClosedTaskPR). Late-bound via SetInterventionStore since it is
+	// only available after App.initLocalStores runs — nil degrades to a no-op
+	// (see intervention.Capture).
+	intervention *intervention.Store
 	// renovatePRsFn returns Renovate-bot PRs to fold into the monitor pass.
 	// FetchReviews uses author:@me which excludes bot-authored PRs, so without
 	// this hook a Renovate PR linked to a task by pr_number/branch never gets
@@ -332,6 +339,20 @@ func (r *Handler) SetAutoMergeAppliedHook(fn func()) {
 
 func (r *Handler) SetABTestingSource(fn func() abtest.Config) {
 	r.abTesting = fn
+}
+
+// SetInterventionStore late-binds the intervention store (only constructed
+// after App.initLocalStores, before this Handler is built — see app.go).
+func (r *Handler) SetInterventionStore(store *intervention.Store) {
+	r.intervention = store
+}
+
+// recordInterventionOnUnblock is the review package's entry point into the
+// shared intervention.Capture pipeline — see its doc comment for why every
+// exit path from human-required must go through this one function instead of
+// each hooking its own guard/scrub/audit chain.
+func (r *Handler) recordInterventionOnUnblock(cur task.Task, target, reason string, class intervention.OperatorActionClass) {
+	intervention.Capture(r.intervention, r.cfg, r.projects, r.audit, r.logger, cur, target, reason, class)
 }
 
 func (r *Handler) abTestingConfig() abtest.Config {
@@ -1049,10 +1070,39 @@ func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, co
 	if c.State == "CLOSED" {
 		landedStatus = task.StatusCancelled
 	}
-	if _, err := r.tasks.Update(c.TaskID, task.Update{
-		Status:  task.Ptr(landedStatus),
-		Outcome: task.Ptr(base),
-	}); err != nil {
+	// Snapshot the pre-transition task, flip it to the landed status, and
+	// capture a human-required landing as an intervention — all under the
+	// per-task human-action lock so this can't race a concurrent operator
+	// dispatch (svc_tasks.go) or reconciler into a double intervention capture.
+	// The lock scope stops here: the bounded GitHub enrichment below must not
+	// hold a lock humans also need. Snapshot fetch is best-effort — an
+	// unresolved read just skips the capture rather than blocking the landing.
+	//
+	// The other automated exit path from human-required this package owns —
+	// see outbound.go's reconcileHumanRequiredBlockers and
+	// Handler.recordInterventionOnUnblock. A merged/closed PR landing a task
+	// that was parked human-required is Sybra noticing the blocker cleared,
+	// not an operator click, so it classifies the same as auto_recovery.
+	transition := func() error {
+		preTask, preErr := r.tasks.Get(c.TaskID)
+		if _, err := r.tasks.Update(c.TaskID, task.Update{
+			Status:  task.Ptr(landedStatus),
+			Outcome: task.Ptr(base),
+		}); err != nil {
+			return err
+		}
+		if preErr == nil && preTask.Status == task.StatusHumanRequired {
+			r.recordInterventionOnUnblock(preTask, string(landedStatus),
+				fmt.Sprintf("automatic PR-landing advance: pr %s while parked human-required", strings.ToLower(c.State)), intervention.OperatorActionAutoRecovery)
+		}
+		return nil
+	}
+	// WorkflowEngine is only nil in narrow tests; run unlocked there.
+	if r.WorkflowEngine != nil {
+		if err := r.WorkflowEngine.WithHumanActionLock(c.TaskID, transition); err != nil {
+			return err
+		}
+	} else if err := transition(); err != nil {
 		return err
 	}
 	// The task just landed; any still-Running/Waiting workflow (e.g.

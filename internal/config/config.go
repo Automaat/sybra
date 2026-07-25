@@ -36,6 +36,7 @@ type Config struct {
 	HarnessEvolve  HarnessEvolveConfig  `yaml:"harness_evolution" json:"harnessEvolution"`
 	PromptLab      PromptLabConfig      `yaml:"prompt_lab" json:"promptLab"`
 	Experience     ExperienceConfig     `yaml:"experience" json:"experience"`
+	Intervention   InterventionConfig   `yaml:"intervention" json:"intervention"`
 	ABTesting      abtest.Config        `yaml:"ab_testing" json:"abTesting"`
 	Routing        RoutingConfig        `yaml:"routing" json:"routing"`
 	Providers      ProvidersConfig      `yaml:"providers" json:"providers"`
