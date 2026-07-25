@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"errors"
 	"os/exec"
 	"strings"
 	"sync"
@@ -16,8 +17,9 @@ import (
 // internal/evidence/store.go) so tests exercising replay/staleness behave
 // the same as the real recorder.
 type fakeEvidenceRecorder struct {
-	mu    sync.Mutex
-	store map[string]evidence.CompletionEvidence
+	mu      sync.Mutex
+	store   map[string]evidence.CompletionEvidence
+	loadErr error
 }
 
 func newFakeEvidenceRecorder() *fakeEvidenceRecorder {
@@ -47,7 +49,20 @@ func (f *fakeEvidenceRecorder) AppendCriterion(taskID string, entry evidence.Cri
 func (f *fakeEvidenceRecorder) Evidence(taskID string) (evidence.CompletionEvidence, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.loadErr != nil {
+		return evidence.CompletionEvidence{}, f.loadErr
+	}
 	return f.store[taskID], nil
+}
+
+// SetLoadErr arms Evidence to fail on its next (and every subsequent) call,
+// simulating an unreadable/corrupt evidence.Store — see
+// TestStore_Load_ReadErrorFailsClosed/CorruptJSONFailsClosed in
+// internal/evidence for the real Store behavior this mirrors.
+func (f *fakeEvidenceRecorder) SetLoadErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loadErr = err
 }
 
 // Set overwrites the whole CompletionEvidence for a task — used by tests that
@@ -107,6 +122,33 @@ func TestExecRequireEvidence_DisabledSkips(t *testing.T) {
 	}
 }
 
+// TestExecRequireEvidence_UnreadableStoreBlocks proves an EvidenceRecorder
+// read error (an unreadable/corrupt evidence.Store — see
+// evidence.Store.Load's fail-closed behavior) blocks the task rather than
+// being treated as an absent baseline. Those two cases must not collapse:
+// "never recorded" is safe to skip, "recorded but we can't read it" is not.
+func TestExecRequireEvidence_UnreadableStoreBlocks(t *testing.T) {
+	t.Parallel()
+	wt := makeGitRepo(t, true)
+	engine, tasks, rec := newRequireEvidenceEngine(t, wt)
+	rec.SetLoadErr(errors.New("disk hiccup"))
+	tasks.Put(TaskInfo{ID: "t1"})
+
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(out.Output, "blocked: ") {
+		t.Fatalf("Output = %q, want a blocked: prefix", out.Output)
+	}
+	if tasks.mustGetTask(t, "t1").Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", tasks.mustGetTask(t, "t1").Status)
+	}
+	if !strings.Contains(out.Output, "evidence store unreadable") {
+		t.Errorf("Output = %q, want it to name the unreadable store", out.Output)
+	}
+}
+
 func TestExecRequireEvidence_NoBaselineSkips(t *testing.T) {
 	t.Parallel()
 	wt := makeGitRepo(t, true)
@@ -120,7 +162,7 @@ func TestExecRequireEvidence_NoBaselineSkips(t *testing.T) {
 	if out.Output != "skipped: no evidence baseline recorded" {
 		t.Errorf("Output = %q, want skip", out.Output)
 	}
-	if tasks.tasks["t1"].Status == "human-required" {
+	if tasks.mustGetTask(t, "t1").Status == "human-required" {
 		t.Errorf("task flipped to human-required on an absent baseline")
 	}
 }
@@ -145,7 +187,7 @@ func TestExecRequireEvidence_CompleteAndFreshLands(t *testing.T) {
 	if out.Output != "complete" {
 		t.Errorf("Output = %q, want complete", out.Output)
 	}
-	if tasks.tasks["t1"].Status == "human-required" {
+	if tasks.mustGetTask(t, "t1").Status == "human-required" {
 		t.Errorf("task flipped to human-required despite complete, fresh evidence")
 	}
 }
@@ -170,11 +212,11 @@ func TestExecRequireEvidence_MissingCriterionBlocks(t *testing.T) {
 	if !strings.HasPrefix(out.Output, "blocked: ") {
 		t.Fatalf("Output = %q, want a blocked: prefix", out.Output)
 	}
-	if tasks.tasks["t1"].Status != "human-required" {
-		t.Fatalf("Status = %q, want human-required", tasks.tasks["t1"].Status)
+	if tasks.mustGetTask(t, "t1").Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", tasks.mustGetTask(t, "t1").Status)
 	}
-	if tasks.tasks["t1"].Blocker.Kind != blocker.KindOperatorDecision {
-		t.Errorf("Blocker.Kind = %q, want %q", tasks.tasks["t1"].Blocker.Kind, blocker.KindOperatorDecision)
+	if tasks.mustGetTask(t, "t1").Blocker.Kind != blocker.KindOperatorDecision {
+		t.Errorf("Blocker.Kind = %q, want %q", tasks.mustGetTask(t, "t1").Blocker.Kind, blocker.KindOperatorDecision)
 	}
 	if !strings.Contains(tasks.reasons["t1"], evidenceCriterionVerifyChecks+": missing") {
 		t.Errorf("reason = %q, want it to name the missing criterion", tasks.reasons["t1"])
@@ -196,8 +238,8 @@ func TestExecRequireEvidence_FailedCriterionBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tasks.tasks["t1"].Status != "human-required" {
-		t.Fatalf("Status = %q, want human-required", tasks.tasks["t1"].Status)
+	if tasks.mustGetTask(t, "t1").Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", tasks.mustGetTask(t, "t1").Status)
 	}
 	if !strings.Contains(out.Output, "failed (exit 1)") {
 		t.Errorf("Output = %q, want it to report the failed exit status", out.Output)
@@ -222,8 +264,8 @@ func TestExecRequireEvidence_StaleAfterHEADMutationBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tasks.tasks["t1"].Status != "human-required" {
-		t.Fatalf("Status = %q, want human-required", tasks.tasks["t1"].Status)
+	if tasks.mustGetTask(t, "t1").Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", tasks.mustGetTask(t, "t1").Status)
 	}
 	if !strings.Contains(out.Output, "stale") {
 		t.Errorf("Output = %q, want it to report staleness", out.Output)
@@ -261,8 +303,8 @@ func TestExecRequireEvidence_ReplayedDuplicateEvidenceStillBlocks(t *testing.T) 
 	if _, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tasks.tasks["t1"].Status != "human-required" {
-		t.Fatalf("Status = %q, want human-required — a replayed stale entry must not land", tasks.tasks["t1"].Status)
+	if tasks.mustGetTask(t, "t1").Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required — a replayed stale entry must not land", tasks.mustGetTask(t, "t1").Status)
 	}
 }
 
@@ -313,7 +355,7 @@ func TestRefreshReviewEvidenceFreshness_RestampsToHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tasks.tasks["t1"].Status == "human-required" {
+	if tasks.mustGetTask(t, "t1").Status == "human-required" {
 		t.Fatalf("task blocked after refresh; output = %q", out.Output)
 	}
 }
@@ -383,8 +425,8 @@ func TestExecRequireEvidence_TestedTaskRequiresTestRunnerCriterion(t *testing.T)
 	if !strings.Contains(out.Output, evidenceCriterionTestRunner+": missing") {
 		t.Errorf("Output = %q, want it to require the test_runner criterion for a tested task", out.Output)
 	}
-	if tasks.tasks["t1"].Status != "human-required" {
-		t.Errorf("Status = %q, want human-required", tasks.tasks["t1"].Status)
+	if tasks.mustGetTask(t, "t1").Status != "human-required" {
+		t.Errorf("Status = %q, want human-required", tasks.mustGetTask(t, "t1").Status)
 	}
 }
 

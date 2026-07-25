@@ -192,6 +192,11 @@ func taskWasTested(runs []AgentRunInfo) bool {
 //   - the worktree/HEAD cannot be resolved — verify_commits and
 //     detect_tampering already gate a broken worktree upstream, so this is
 //     not require_evidence's failure to report
+//
+// An EvidenceRecorder read error is NOT a no-op: unlike an absent baseline
+// (never instrumented), an error means evidence exists but this gate cannot
+// vouch for it (unreadable/corrupt store), so it blocks rather than silently
+// treating unreadable proof as no proof at all — see evidence.Store.Load.
 func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	if !e.evidence.Enabled || e.evidenceRecorder == nil {
 		return stepDone(step, "skipped: evidence gate disabled")
@@ -199,7 +204,7 @@ func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (Ste
 	ce, err := e.evidenceRecorder.Evidence(taskID)
 	if err != nil {
 		e.logger.Warn("workflow.require-evidence.load-failed", "task_id", taskID, "err", err)
-		return stepDone(step, "skipped: evidence unreadable")
+		return e.blockRequireEvidence(taskID, step, t, "evidence store unreadable: "+err.Error())
 	}
 	if len(ce.Criteria) == 0 {
 		return stepDone(step, "skipped: no evidence baseline recorded")
@@ -225,22 +230,29 @@ func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (Ste
 	}
 
 	if len(problems) > 0 {
-		reason := evidenceGateReasonPrefix + " " + strings.Join(problems, "; ")
-		if err := e.tasks.UpdateTaskBlocker(taskID, "human-required", reason, blocker.State{
-			Kind:      blocker.KindOperatorDecision,
-			Actor:     blocker.ActorWorkflow,
-			Exhausted: true,
-		}); err != nil {
-			return StepOutput{}, fmt.Errorf("require-evidence: set human-required: %w", err)
-		}
-		e.fireEvidenceDecision(t, EvidenceDecision{Outcome: "blocked", Reason: reason})
-		e.logger.Warn("workflow.require-evidence.blocked", "task_id", taskID, "problems", problems)
-		return stepDone(step, "blocked: "+reason)
+		return e.blockRequireEvidence(taskID, step, t, strings.Join(problems, "; "))
 	}
 
 	e.fireEvidenceDecision(t, EvidenceDecision{Outcome: "verified"})
 	e.logger.Info("workflow.require-evidence.verified", "task_id", taskID, "head", headSHA)
 	return stepDone(step, "complete")
+}
+
+// blockRequireEvidence flips taskID to human-required with a terminal
+// operator-decision blocker, shared by every execRequireEvidence failure mode
+// (missing/failed/stale criteria, or an unreadable evidence store).
+func (e *Engine) blockRequireEvidence(taskID string, step *Step, t TaskInfo, problem string) (StepOutput, error) {
+	reason := evidenceGateReasonPrefix + " " + problem
+	if err := e.tasks.UpdateTaskBlocker(taskID, "human-required", reason, blocker.State{
+		Kind:      blocker.KindOperatorDecision,
+		Actor:     blocker.ActorWorkflow,
+		Exhausted: true,
+	}); err != nil {
+		return StepOutput{}, fmt.Errorf("require-evidence: set human-required: %w", err)
+	}
+	e.fireEvidenceDecision(t, EvidenceDecision{Outcome: "blocked", Reason: reason})
+	e.logger.Warn("workflow.require-evidence.blocked", "task_id", taskID, "reason", reason)
+	return stepDone(step, "blocked: "+reason)
 }
 
 func (e *Engine) fireEvidenceDecision(t TaskInfo, d EvidenceDecision) {

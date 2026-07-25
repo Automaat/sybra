@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -12,6 +13,25 @@ func newTestStore(t *testing.T) *Store {
 	return NewStore(artifact.New(t.TempDir()))
 }
 
+// fakeBlobStore is a narrow blobStore double letting tests simulate a
+// read error or a corrupt/unparseable blob — states artifact.Store can reach
+// (disk error, damaged file) but can't reliably trigger through its real API.
+type fakeBlobStore struct {
+	readErr  error
+	readData []byte
+}
+
+func (f *fakeBlobStore) Put(taskID string, a artifact.Artifact) (artifact.Meta, error) {
+	return artifact.Meta{}, nil
+}
+
+func (f *fakeBlobStore) Read(taskID, name string) ([]byte, artifact.Meta, error) {
+	if f.readErr != nil {
+		return nil, artifact.Meta{}, f.readErr
+	}
+	return f.readData, artifact.Meta{}, nil
+}
+
 func TestStore_Load_AbsentTaskReturnsZeroValue(t *testing.T) {
 	s := newTestStore(t)
 	ce, err := s.Load("no-such-task")
@@ -20,6 +40,28 @@ func TestStore_Load_AbsentTaskReturnsZeroValue(t *testing.T) {
 	}
 	if ce.TaskID != "" || len(ce.Criteria) != 0 {
 		t.Fatalf("Load on absent task = %+v, want zero value", ce)
+	}
+}
+
+func TestStore_Load_ReadErrorFailsClosed(t *testing.T) {
+	s := NewStore(&fakeBlobStore{readErr: errors.New("disk hiccup")})
+	ce, err := s.Load("t1")
+	if err == nil {
+		t.Fatal("Load: want an error on an unreadable blob, got nil — a storage failure must not look like an absent baseline")
+	}
+	if len(ce.Criteria) != 0 {
+		t.Errorf("Load on read error = %+v, want zero value", ce)
+	}
+}
+
+func TestStore_Load_CorruptJSONFailsClosed(t *testing.T) {
+	s := NewStore(&fakeBlobStore{readData: []byte("{not valid json")})
+	ce, err := s.Load("t1")
+	if err == nil {
+		t.Fatal("Load: want an error on corrupt JSON, got nil — corrupted evidence must not look like an absent baseline")
+	}
+	if len(ce.Criteria) != 0 {
+		t.Errorf("Load on corrupt JSON = %+v, want zero value", ce)
 	}
 }
 

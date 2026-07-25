@@ -24,8 +24,12 @@ const (
 	// structured evidence contract (readiness probe / manual probes /
 	// automated checks) — see hasManualPassEvidence.
 	ProofStructuredTest ProofType = "structured_test"
-	// ProofReviewFinding is a review-role step completing without flipping the
-	// task back into a fix_review round.
+	// ProofReviewFinding is a review-role step's completion output, recorded
+	// unconditionally whenever a review step finishes — including a
+	// NEEDS_FIXES verdict that sends the task into a fix_review round. It
+	// asserts "a review ran and this is what it said", not "review approved
+	// with no further changes"; require_evidence's freshness check (FinalRev
+	// vs current HEAD) is what actually gates a stale/superseded verdict.
 	ProofReviewFinding ProofType = "review_finding"
 	// ProofManual is an explicit human attestation overriding a deterministic
 	// check (e.g. the verify-blessed / tamper-blessed tags) rather than the

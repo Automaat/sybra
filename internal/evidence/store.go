@@ -3,6 +3,7 @@ package evidence
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -32,26 +33,31 @@ func NewStore(blobs blobStore) *Store {
 	return &Store{blobs: blobs}
 }
 
-// Load reads a task's CompletionEvidence. Fails open: a never-recorded task
-// (blob absent) or a corrupt/unreadable blob both return a zero-value
-// CompletionEvidence and a nil error — callers (the require_evidence gate)
-// treat an empty result as "no baseline yet", not as a hard failure, so a
-// storage hiccup can never itself strand a task.
+// Load reads a task's CompletionEvidence. A never-recorded task (blob absent)
+// is the one case that fails open — a zero-value CompletionEvidence and a nil
+// error, which callers (the require_evidence gate) treat as "no baseline
+// yet" rather than a hard failure, so a task from before evidence collection
+// started is never retroactively blocked. A blob that exists but cannot be
+// read or parsed is different: that is not an absent baseline, it is evidence
+// we cannot vouch for, so it fails closed with a non-nil error — the
+// require_evidence gate blocks on it instead of silently treating unreadable
+// proof as no proof at all.
 func (s *Store) Load(taskID string) (CompletionEvidence, error) {
 	if s == nil || s.blobs == nil {
 		return CompletionEvidence{}, nil
 	}
 	data, _, err := s.blobs.Read(taskID, blobName)
 	if err != nil {
-		if !errors.Is(err, artifact.ErrNotFound) {
-			slog.Warn("evidence.load.read-err", "task_id", taskID, "err", err)
+		if errors.Is(err, artifact.ErrNotFound) {
+			return CompletionEvidence{}, nil
 		}
-		return CompletionEvidence{}, nil
+		slog.Warn("evidence.load.read-err", "task_id", taskID, "err", err)
+		return CompletionEvidence{}, fmt.Errorf("evidence: read blob for task %s: %w", taskID, err)
 	}
 	var ce CompletionEvidence
 	if jErr := json.Unmarshal(data, &ce); jErr != nil {
 		slog.Warn("evidence.load.parse-err", "task_id", taskID, "err", jErr)
-		return CompletionEvidence{}, nil
+		return CompletionEvidence{}, fmt.Errorf("evidence: parse blob for task %s: %w", taskID, jErr)
 	}
 	return ce, nil
 }

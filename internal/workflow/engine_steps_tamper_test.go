@@ -1021,6 +1021,33 @@ func TestExecDetectTampering_NoWorktreeSkips(t *testing.T) {
 	}
 }
 
+// TestExecDetectTampering_DiffErrorDoesNotClaimClean proves a genuine
+// diff/tooling failure (here: no git repository at the worktree path) is
+// reported honestly rather than as "clean" — the fail-open routing still
+// lets the task continue (no evidence recorded either — see the doc comment
+// on the diff-error branch), but operators/logs must not be told the diff
+// was actually checked and found clean when it never ran.
+func TestExecDetectTampering_DiffErrorDoesNotClaimClean(t *testing.T) {
+	t.Parallel()
+	wt := t.TempDir() // not a git repository — git diff fails
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output == "clean" {
+		t.Errorf("Output = %q, a diff/tooling error must not be reported as clean", out.Output)
+	}
+	if !strings.Contains(out.Output, "skipped") {
+		t.Errorf("Output = %q, want it to say the check was skipped", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status == "human-required" {
+		t.Errorf("status = %q, a diff error must not itself flip the task", ti.Status)
+	}
+}
+
 func TestExecDetectTampering_CleanImplChange(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})

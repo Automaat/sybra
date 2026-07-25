@@ -915,8 +915,10 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 		// detect_tampering entry for the require_evidence completion gate — the
 		// exact opposite of "fresh, passing proof". Leaving the criterion
 		// absent/stale makes require_evidence block instead, so a transient git
-		// error cannot launder an unverified diff onto a PR.
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "clean"}, nil
+		// error cannot launder an unverified diff onto a PR. The Output says so
+		// explicitly (not "clean") so operators/logs/sidecars reading this step's
+		// result aren't misled into thinking the diff was actually checked.
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: diff error (no evidence recorded)"}, nil
 	}
 
 	if len(report.Files) == 0 {
