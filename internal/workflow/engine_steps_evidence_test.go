@@ -98,7 +98,7 @@ func TestExecRequireEvidence_DisabledSkips(t *testing.T) {
 	rec.Set("t1", evidence.CompletionEvidence{Criteria: []evidence.CriterionEvidence{{Criterion: "verify_checks"}}})
 	tasks.Put(TaskInfo{ID: "t1"})
 
-	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), nil, TaskInfo{ID: "t1"})
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestExecRequireEvidence_NoBaselineSkips(t *testing.T) {
 	engine, tasks, _ := newRequireEvidenceEngine(t, wt)
 	tasks.Put(TaskInfo{ID: "t1"})
 
-	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), nil, TaskInfo{ID: "t1"})
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestExecRequireEvidence_CompleteAndFreshLands(t *testing.T) {
 	}})
 	tasks.Put(TaskInfo{ID: "t1"})
 
-	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), nil, TaskInfo{ID: "t1"})
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestExecRequireEvidence_MissingCriterionBlocks(t *testing.T) {
 	}})
 	tasks.Put(TaskInfo{ID: "t1"})
 
-	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), nil, TaskInfo{ID: "t1"})
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestExecRequireEvidence_FailedCriterionBlocks(t *testing.T) {
 	}})
 	tasks.Put(TaskInfo{ID: "t1"})
 
-	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), nil, TaskInfo{ID: "t1"})
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestExecRequireEvidence_StaleAfterHEADMutationBlocks(t *testing.T) {
 	}})
 	tasks.Put(TaskInfo{ID: "t1"})
 
-	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), nil, TaskInfo{ID: "t1"})
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestExecRequireEvidence_ReplayedDuplicateEvidenceStillBlocks(t *testing.T) 
 		t.Fatalf("Criteria = %d entries after replay, want 2 (upsert, not append)", len(ce.Criteria))
 	}
 
-	if _, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), nil, TaskInfo{ID: "t1"}); err != nil {
+	if _, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if tasks.tasks["t1"].Status != "human-required" {
@@ -277,12 +277,67 @@ func TestExecRequireEvidence_ReviewedTaskRequiresReviewCriterion(t *testing.T) {
 	}})
 	tasks.Put(TaskInfo{ID: "t1", Reviewed: true})
 
-	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), nil, TaskInfo{ID: "t1", Reviewed: true})
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1", Reviewed: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out.Output, evidenceCriterionReview+": missing") {
 		t.Errorf("Output = %q, want it to require the review criterion for a reviewed task", out.Output)
+	}
+}
+
+// TestExecRequireEvidence_TestedTaskRequiresTestRunnerCriterion proves the
+// test_runner requirement is derived from the task's durable AgentRuns history
+// (which survives the workflow handoff), not the fresh current Execution's
+// StepCounts — so a task that went through testing but has no test-runner
+// evidence still blocks at the require_evidence gate.
+func TestExecRequireEvidence_TestedTaskRequiresTestRunnerCriterion(t *testing.T) {
+	t.Parallel()
+	wt := makeGitRepo(t, true)
+	head := headSHAForTest(t, wt)
+	engine, tasks, rec := newRequireEvidenceEngine(t, wt)
+	rec.Set("t1", evidence.CompletionEvidence{Criteria: []evidence.CriterionEvidence{
+		{Criterion: evidenceCriterionVerifyCommits, ExitStatus: 0, FinalRev: head},
+		{Criterion: evidenceCriterionDetectTampering, ExitStatus: 0, FinalRev: head},
+		// test_runner evidence omitted despite a prior test-runner run.
+	}})
+	tested := TaskInfo{ID: "t1", AgentRuns: []AgentRunInfo{{Role: testRunnerRole}}}
+	tasks.Put(tested)
+
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), tested)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.Output, evidenceCriterionTestRunner+": missing") {
+		t.Errorf("Output = %q, want it to require the test_runner criterion for a tested task", out.Output)
+	}
+	if tasks.tasks["t1"].Status != "human-required" {
+		t.Errorf("Status = %q, want human-required", tasks.tasks["t1"].Status)
+	}
+}
+
+// TestExecRequireEvidence_UntestedTaskSkipsTestRunnerCriterion proves a task
+// that never went through a test-runner run is not held to the test_runner
+// criterion — otherwise every un-tested task would be blocked on evidence no
+// producer ever had a chance to record.
+func TestExecRequireEvidence_UntestedTaskSkipsTestRunnerCriterion(t *testing.T) {
+	t.Parallel()
+	wt := makeGitRepo(t, true)
+	head := headSHAForTest(t, wt)
+	engine, tasks, rec := newRequireEvidenceEngine(t, wt)
+	rec.Set("t1", evidence.CompletionEvidence{Criteria: []evidence.CriterionEvidence{
+		{Criterion: evidenceCriterionVerifyCommits, ExitStatus: 0, FinalRev: head},
+		{Criterion: evidenceCriterionDetectTampering, ExitStatus: 0, FinalRev: head},
+	}})
+	untested := TaskInfo{ID: "t1"}
+	tasks.Put(untested)
+
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), untested)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "complete" {
+		t.Errorf("Output = %q, want complete for an untested task", out.Output)
 	}
 }
 
@@ -302,7 +357,7 @@ func TestExecRequireEvidence_FiresDecisionHook(t *testing.T) {
 		got = append(got, d)
 	})
 
-	if _, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), nil, TaskInfo{ID: "t1"}); err != nil {
+	if _, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 1 || got[0].Outcome != "verified" {
@@ -314,7 +369,7 @@ func TestExecRequireEvidence_FiresDecisionHook(t *testing.T) {
 		{Criterion: evidenceCriterionVerifyCommits, ExitStatus: 1, FinalRev: head},
 	}})
 	tasks.Put(TaskInfo{ID: "t2"})
-	if _, err := engine.execRequireEvidence("t2", newRequireEvidenceStep(), nil, TaskInfo{ID: "t2"}); err != nil {
+	if _, err := engine.execRequireEvidence("t2", newRequireEvidenceStep(), TaskInfo{ID: "t2"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 2 || got[1].Outcome != "blocked" || got[1].Reason == "" {

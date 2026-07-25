@@ -98,7 +98,7 @@ func evidenceBackendIdentity() string {
 // configured verify suite (or a task that never went through review) is never
 // blocked on a criterion that could never have produced evidence in the first
 // place.
-func (e *Engine) requiredEvidenceCriteria(taskID string, wfExec *Execution, t TaskInfo) []string {
+func (e *Engine) requiredEvidenceCriteria(taskID string, t TaskInfo) []string {
 	var required []string
 	if e.worktrees != nil {
 		if _, ok := e.worktrees.GetWorktreePath(taskID); ok {
@@ -108,13 +108,30 @@ func (e *Engine) requiredEvidenceCriteria(taskID string, wfExec *Execution, t Ta
 	if e.checks != nil && len(e.checks.VerifyCommands(e.ctx, taskID)) > 0 {
 		required = append(required, evidenceCriterionVerifyChecks)
 	}
-	if wfExec != nil && wfExec.CountStep(testVerdictSourceStep) > 0 {
+	if taskWasTested(t.AgentRuns) {
 		required = append(required, evidenceCriterionTestRunner)
 	}
 	if t.Reviewed {
 		required = append(required, evidenceCriterionReview)
 	}
 	return required
+}
+
+// taskWasTested reports whether the task ever went through a test-runner run.
+// It reads the task-level AgentRuns history rather than the current
+// Execution's StepCounts because require_evidence runs as the first step of a
+// fresh simple-task-pr.yaml Execution: the run_test step that produced the
+// verdict executed inside testing-task.yaml's own, separate Execution and so
+// never appears in the current wfExec's per-execution step history. AgentRuns
+// survives that workflow handoff, so a task with missing, failed, or stale
+// test-runner evidence is still held to the test_runner criterion.
+func taskWasTested(runs []AgentRunInfo) bool {
+	for i := range runs {
+		if runs[i].Role == testRunnerRole {
+			return true
+		}
+	}
+	return false
 }
 
 // execRequireEvidence is the final deterministic completion gate: every
@@ -134,7 +151,7 @@ func (e *Engine) requiredEvidenceCriteria(taskID string, wfExec *Execution, t Ta
 //   - the worktree/HEAD cannot be resolved — verify_commits and
 //     detect_tampering already gate a broken worktree upstream, so this is
 //     not require_evidence's failure to report
-func (e *Engine) execRequireEvidence(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	if !e.evidence.Enabled || e.evidenceRecorder == nil {
 		return stepDone(step, "skipped: evidence gate disabled")
 	}
@@ -153,7 +170,7 @@ func (e *Engine) execRequireEvidence(taskID string, step *Step, wfExec *Executio
 	}
 
 	var problems []string
-	for _, criterion := range e.requiredEvidenceCriteria(taskID, wfExec, t) {
+	for _, criterion := range e.requiredEvidenceCriteria(taskID, t) {
 		entry, ok := ce.ByCriterion(criterion)
 		switch {
 		case !ok:

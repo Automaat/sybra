@@ -676,7 +676,7 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 	case StepAdmissionPreflight:
 		return e.execAdmissionPreflight(taskID, step, wfExec, t)
 	case StepRequireEvidence:
-		return e.execRequireEvidence(taskID, step, wfExec, t)
+		return e.execRequireEvidence(taskID, step, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
