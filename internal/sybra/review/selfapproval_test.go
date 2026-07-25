@@ -82,6 +82,79 @@ func TestReconcileReviewTask_DismissFailureStillEscalates(t *testing.T) {
 	}
 }
 
+// A running (possibly stuck/looping) review agent short-circuits the phase
+// computation to "reviewing", but a bogus approval it already submitted must
+// still be reversed on GitHub rather than left live for the whole run (#2198).
+func TestReconcileReviewTask_RunningAgentStillDismissesSelfApproval(t *testing.T) {
+	r, tasks := newReconcileFailureHandler(t)
+	tk := newReviewTaskInPhase(t, tasks, "reviewing")
+
+	claim, ok := r.agents.TryClaimDispatch(tk.ID)
+	if !ok {
+		t.Fatal("claim dispatch")
+	}
+	defer claim.Release()
+	if !r.agents.HasRunningAgentForTask(tk.ID) {
+		t.Fatal("test setup: task should read as running")
+	}
+
+	var dismissedReviewID int64
+	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
+		return github.MyReviewState{Submitted: true, Approved: true, ReviewID: 777}, nil
+	}
+	r.dismissReviewFn = func(_ string, _ int, reviewID int64, _ string) error {
+		dismissedReviewID = reviewID
+		return nil
+	}
+
+	key := reviewPRKey(tk.ProjectID, tk.PRNumber)
+	approved := map[string]github.PullRequest{
+		key: {Number: tk.PRNumber, Repository: tk.ProjectID, Mergeable: "MERGEABLE"},
+	}
+
+	got := mustGet(t, tasks, tk.ID)
+	r.reconcileReviewTask(&got, map[string]github.PullRequest{}, approved)
+
+	if dismissedReviewID != 777 {
+		t.Fatalf("dismiss review ID = %d, want 777 — a running agent's stale approval was left live", dismissedReviewID)
+	}
+	if final := mustGet(t, tasks, tk.ID); final.ReviewPhase != ReviewPhaseReviewing {
+		t.Errorf("review_phase = %q, want %q — the running-agent short-circuit still applies", final.ReviewPhase, ReviewPhaseReviewing)
+	}
+}
+
+// A conflicting PR short-circuits to the conflict phase, but a self-approval is
+// still a live green light that native auto-merge would count once the conflict
+// clears — it must be reversed now, not on the poll where mergeability flips.
+func TestReconcileReviewTask_ConflictStillDismissesSelfApproval(t *testing.T) {
+	r, tasks := newReconcileFailureHandler(t)
+	tk := newReviewTaskInPhase(t, tasks, "conflict")
+
+	var dismissedReviewID int64
+	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
+		return github.MyReviewState{Submitted: true, Approved: true, ReviewID: 888}, nil
+	}
+	r.dismissReviewFn = func(_ string, _ int, reviewID int64, _ string) error {
+		dismissedReviewID = reviewID
+		return nil
+	}
+
+	key := reviewPRKey(tk.ProjectID, tk.PRNumber)
+	approved := map[string]github.PullRequest{
+		key: {Number: tk.PRNumber, Repository: tk.ProjectID, Mergeable: "CONFLICTING"},
+	}
+
+	got := mustGet(t, tasks, tk.ID)
+	r.reconcileReviewTask(&got, map[string]github.PullRequest{}, approved)
+
+	if dismissedReviewID != 888 {
+		t.Fatalf("dismiss review ID = %d, want 888 — a conflicting PR's self-approval was left live", dismissedReviewID)
+	}
+	if final := mustGet(t, tasks, tk.ID); final.ReviewPhase != ReviewPhaseConflict {
+		t.Errorf("review_phase = %q, want %q — the conflict short-circuit still applies", final.ReviewPhase, ReviewPhaseConflict)
+	}
+}
+
 // The reviewed-by:@me search leg (inApproved) is the only signal in some
 // polls — e.g. right after the REST fetch already observed a later verdict.
 // Without a REST-fetched review ID there is nothing to dismiss yet, but the
