@@ -24,6 +24,8 @@ func admitClass(class WorkloadClass, live, reserved, floors map[WorkloadClass]in
 		return true
 	}
 
+	floors = capFloorsToPool(floors, poolMax)
+
 	used := make(map[WorkloadClass]int, len(AllWorkloadClasses()))
 	var total int
 	for _, c := range AllWorkloadClasses() {
@@ -49,6 +51,34 @@ func admitClass(class WorkloadClass, live, reserved, floors map[WorkloadClass]in
 		}
 	}
 	return total+protected < poolMax
+}
+
+// capFloorsToPool scales the configured per-class floors down proportionally so
+// their sum never exceeds poolMax, returning floors unchanged when they already
+// fit. Class floors (agent.class_reservations) are validated against the full
+// agent.max_concurrent, but admitClass can be evaluated against a narrower
+// runtime ceiling — the SLO concurrency throttle halves it while the autonomy
+// error budget is exhausted. Against that narrowed ceiling the raw floor-sum can
+// exceed the pool, breaking the sum(floors) <= poolMax invariant admitClass's
+// borrow arithmetic depends on: the protected floor total would reach the
+// ceiling and permanently reject the throttled class even with the pool idle,
+// blocking admission instead of narrowing it. Integer (floor) scaling both
+// restores the invariant and leaves the truncated remainder as headroom, so an
+// unreserved class can still borrow the idle slack the throttle means to
+// narrow, not eliminate.
+func capFloorsToPool(floors map[WorkloadClass]int, poolMax int) map[WorkloadClass]int {
+	var sum int
+	for _, c := range AllWorkloadClasses() {
+		sum += floors[c]
+	}
+	if sum <= poolMax {
+		return floors
+	}
+	scaled := make(map[WorkloadClass]int, len(AllWorkloadClasses()))
+	for _, c := range AllWorkloadClasses() {
+		scaled[c] = floors[c] * poolMax / sum
+	}
+	return scaled
 }
 
 // borrowsSharedCapacity reports whether an admission of class draws on

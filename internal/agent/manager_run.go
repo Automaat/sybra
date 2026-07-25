@@ -872,9 +872,17 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 		m.liveByClass[class]++
 	}
 	m.mu.Unlock()
-	metrics.AgentClassAdmitted(string(class))
-	if borrowed {
-		metrics.AgentClassBorrowed(string(class))
+	// Only count dispatches that actually passed through the capacity gate
+	// (!IgnoreConcurrencyLimit) and were capacity-tracked (a.done != nil, i.e.
+	// added to m.liveByClass). Interactive agents and gate-bypassing callers
+	// (monitor/loop/orchestrator/human-review set IgnoreConcurrencyLimit) never
+	// enter the class gauges, so folding them into "admitted"/"borrowed" would
+	// misreport class-isolation behavior for anyone debugging starvation.
+	if !cfg.IgnoreConcurrencyLimit && a.done != nil {
+		metrics.AgentClassAdmitted(string(class))
+		if borrowed {
+			metrics.AgentClassBorrowed(string(class))
+		}
 	}
 	return nil
 }

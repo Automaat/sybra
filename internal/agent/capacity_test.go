@@ -79,6 +79,39 @@ func TestAdmitClass(t *testing.T) {
 			want: false,
 		},
 		{
+			name:   "narrowed ceiling below floor-sum still admits throttled class when reserved classes idle",
+			class:  ClassImplementation,
+			live:   map[WorkloadClass]int{},
+			floors: map[WorkloadClass]int{ClassCompletion: 3, ClassSystem: 3},
+			// SLO throttle halved max_concurrent 10 -> 5, below floor-sum 6.
+			// capFloorsToPool scales floors to completion=2, system=2 (floor of
+			// 3*5/6). Admitting implementation: total=0, protected=2+2=4 < 5 ->
+			// admit. Without scaling protected would be 3+3=6, permanently
+			// rejecting implementation even with the pool idle.
+			max:  5,
+			want: true,
+		},
+		{
+			name:   "narrowed ceiling: scaled floors still protected once reserved classes are busy",
+			class:  ClassImplementation,
+			live:   map[WorkloadClass]int{ClassCompletion: 2, ClassSystem: 2},
+			floors: map[WorkloadClass]int{ClassCompletion: 3, ClassSystem: 3},
+			// Scaled floors completion=2, system=2 are fully used; total=4 < 5,
+			// no deficit remains so protected=0 -> implementation borrows the one
+			// remaining slot. Bump either class to 3 and total hits 5 -> reject.
+			max:  5,
+			want: true,
+		},
+		{
+			name:   "narrowed ceiling: implementation rejected once pool saturated at narrowed cap",
+			class:  ClassImplementation,
+			live:   map[WorkloadClass]int{ClassCompletion: 3, ClassSystem: 2},
+			floors: map[WorkloadClass]int{ClassCompletion: 3, ClassSystem: 3},
+			// total=5 >= max=5 -> rejected by the pool gate before floors matter.
+			max:  5,
+			want: false,
+		},
+		{
 			name:     "reserved counts toward used same as live",
 			class:    ClassImplementation,
 			live:     map[WorkloadClass]int{ClassImplementation: 1},
