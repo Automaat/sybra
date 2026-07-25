@@ -34,6 +34,20 @@ export enum Kind {
     KindReviewFixExhausted = "review_fix_exhausted",
     KindTriageRetryExhausted = "triage_retry_exhausted",
     KindWatchdogRateLimitExhausted = "watchdog_rate_limit_exhausted",
+
+    /**
+     * KindDependencyScopeUnmet marks a task blocked on a depends_on issue
+     * whose closure a prior agent/human run explicitly verified did NOT
+     * satisfy the scope this task actually needs (e.g. the closing PR only
+     * covered part of the referenced issue). Code names the specific
+     * depends_on ref the verdict applies to. The umbrella dependency gate
+     * (internal/sybra/app_umbrella_gate.go) trusts this over a bare "done"
+     * status: it never silently re-releases a child carrying this kind for
+     * one of its own depends_on refs — it escalates to human-required
+     * instead, so a fresh confirmation is required before the same,
+     * already-known-negative implementation cycle repeats (sybra#2637).
+     */
+    KindDependencyScopeUnmet = "dependency_scope_unmet",
 };
 
 /**

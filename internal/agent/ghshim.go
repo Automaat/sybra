@@ -11,20 +11,73 @@ import (
 
 // GhShimReason is what the gh shim prints to stderr, and the agent reads, when
 // it refuses to submit a PR review event.
-const GhShimReason = "Blocked by Sybra: agents may only create pending PR review drafts. " +
-	"Use gh api to create a pull-request review without an event; review submission is a human decision."
+//
+// Only APPROVE is blocked: approval authority is human-only because it can
+// satisfy a required-reviewer gate on the operator's account. REQUEST_CHANGES
+// and COMMENT are constructive feedback, not authority, so the shim lets those
+// through to the real gh binary.
+const GhShimReason = "Blocked by Sybra: APPROVE is a human decision. " +
+	"Use --request-changes/--comment (or gh api -f event=REQUEST_CHANGES/COMMENT) to submit feedback, " +
+	"or gh api without an event to leave the review pending for a human to approve."
 
 const ghShimScript = `#!/bin/sh
 if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
-	printf '%%s\n' '%[1]s' >&2
-	exit 1
+	sawapprove=0
+	sawverdict=0
+	sawunknown=0
+	skipval=0
+	for arg in "$@"; do
+		# The previous token was a value-taking flag in its separate form, so
+		# this token is its value (a body, file path or repo) — never a flag.
+		# Classifying it would misread a body that starts with '-' (e.g. a
+		# markdown bullet or "-1, ...") as an unknown short-flag bundle.
+		if [ "$skipval" = 1 ]; then
+			skipval=0
+			continue
+		fi
+		case "$arg" in
+		--approve | --approve=*)
+			sawapprove=1
+			;;
+		--comment | --comment=* | --request-changes | --request-changes=*)
+			sawverdict=1
+			;;
+		--body | --body-file | --repo)
+			skipval=1
+			;;
+		--body=* | --body-file=* | --repo=* | --help)
+			;;
+		-*)
+			rest=${arg#-}
+			case "$rest" in
+			*[!abcrFR]*)
+				sawunknown=1
+				;;
+			*)
+				case "$rest" in *a*) sawapprove=1 ;; esac
+				case "$rest" in *c*) sawverdict=1 ;; esac
+				case "$rest" in *r*) sawverdict=1 ;; esac
+				# A short bundle ending in a value-taking flag (-b/-F/-R) takes
+				# the next argv token as its value; skip classifying it.
+				case "$rest" in *[bFR]) skipval=1 ;; esac
+				;;
+			esac
+			;;
+		esac
+	done
+	# Block APPROVE, and anything we cannot positively identify as
+	# REQUEST_CHANGES/COMMENT (unrecognized flags, or no verdict flag at all —
+	# the latter drops into gh's interactive prompt, which a headless agent
+	# cannot answer).
+	{ [ "$sawunknown" = 1 ] || [ "$sawapprove" = 1 ] || [ "$sawverdict" = 0 ]; } \
+		&& printf '%%s\n' '%[1]s' >&2 && exit 1
 fi
 if [ "$1" = "api" ]; then
 	sawhidden=0
 	sawreviews=0
 	for arg in "$@"; do
 		case "$arg" in
-		[Ee][Vv][Ee][Nn][Tt]=[Cc][Oo][Mm][Mm][Ee][Nn][Tt] | [Ee][Vv][Ee][Nn][Tt]=[Rr][Ee][Qq][Uu][Ee][Ss][Tt]_[Cc][Hh][Aa][Nn][Gg][Ee][Ss] | [Ee][Vv][Ee][Nn][Tt]=[Aa][Pp][Pp][Rr][Oo][Vv][Ee])
+		[Ee][Vv][Ee][Nn][Tt]=[Aa][Pp][Pp][Rr][Oo][Vv][Ee])
 			printf '%%s\n' '%[1]s' >&2
 			exit 1
 			;;
@@ -68,11 +121,12 @@ exec '%[2]s' "$@"
 // writeGhShim materializes a `gh` wrapper in dir, for callers to prepend to an
 // agent's PATH.
 //
-// This is the deterministic floor under the review-agent prompts: the prompts
-// tell agents to create pending drafts without submitting review events
-// (semantic ceiling), and this refuses direct submitted-review calls even if
-// that instruction drifts or is dropped — a prompt is not a permission
-// boundary.
+// This is the deterministic floor under the review-agent prompts: prompts
+// carry the approve/request-changes/comment distinction (semantic ceiling),
+// and this refuses direct APPROVE submissions even if that instruction drifts
+// or is dropped — a prompt is not a permission boundary. REQUEST_CHANGES and
+// COMMENT are feedback, not authority, so both this shim and the prompts let
+// agents submit those directly.
 //
 // It matches on real argv, after the shell has already resolved quoting,
 // command substitution, heredocs and aliases, so it needs no shell parsing of
