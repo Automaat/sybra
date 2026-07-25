@@ -143,12 +143,17 @@ func (e *Engine) blockAdmission(taskID string, step *Step, t TaskInfo, kind bloc
 	return StepOutput{StepID: step.ID, Status: "completed", Output: full}, nil
 }
 
-// admitTask records a passing admission decision.
+// admitTask records a passing admission decision. output is either
+// "admitted" (checks ran and passed) or "disabled" (admission.Enabled=false,
+// no checks ran) — it doubles as AdmissionDecision.Reason so the
+// admission.decided audit event can distinguish the two instead of reporting
+// an empty reason for every admit.
 func (e *Engine) admitTask(step *Step, t TaskInfo, output string) (StepOutput, error) {
 	e.recordAdmissionDecision(t, AdmissionDecision{
 		Outcome:        "admitted",
 		RiskTier:       planContractRiskTier(t.PlanContract),
 		PermissionTier: planContractPermissionTier(t.PlanContract),
+		Reason:         output,
 	})
 	return StepOutput{StepID: step.ID, Status: "completed", Output: output}, nil
 }

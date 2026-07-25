@@ -6,7 +6,7 @@ import (
 )
 
 func TestIsResumableStepType(t *testing.T) {
-	resumable := []StepType{StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN}
+	resumable := []StepType{StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN, StepAdmissionPreflight}
 	for _, st := range resumable {
 		if !isResumableStepType(st) {
 			t.Errorf("isResumableStepType(%q) = false, want true", st)
