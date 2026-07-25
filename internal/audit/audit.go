@@ -69,22 +69,27 @@ const (
 	// failing at or above the configured success-rate threshold. Logged
 	// instead of dispatching a fix agent or escalating to human-required.
 	// Data carries pr, repo, and the flaky check names — never agent output.
-	EventPRCIFlakeDetected         = "pr_monitor.ci_flake_detected"
-	EventReviewStarted             = "review.agent_started"
-	EventFixReviewStarted          = "fix_review.agent_started"
-	EventReviewPublished           = "review.published"
-	EventRenovateCIFix             = "renovate.ci_fix_started"
-	EventHealthReport              = "health.report"
-	EventAgentStartFailed          = "agent.start_failed"
-	EventProviderGateBlocked       = "provider.gate_blocked"
-	EventProviderModelIncompatible = "provider.model_incompatible"
-	EventHumanReviewSpawned        = "human_review.spawned"
-	EventHumanReviewVerdict        = "human_review.verdict"
-	EventHumanReviewIssue          = "human_review.issue_filed"
-	EventHumanReviewSkipped        = "human_review.skipped"
-	EventExperienceRecorded        = "experience.recorded"
-	EventExperienceSkipped         = "experience.skipped"
-	EventExperienceInjected        = "experience.injected"
+	EventPRCIFlakeDetected = "pr_monitor.ci_flake_detected"
+	EventReviewStarted     = "review.agent_started"
+	EventFixReviewStarted  = "fix_review.agent_started"
+	EventReviewPublished   = "review.published"
+	// EventReviewSelfApprovalDismissed records that our own bot identity's
+	// approval on an inbound review task's PR was detected and dismissed —
+	// the outcome-based backstop under the gh shim (#2198). Data carries pr
+	// and repo, never agent output.
+	EventReviewSelfApprovalDismissed = "review.self_approval_dismissed"
+	EventRenovateCIFix               = "renovate.ci_fix_started"
+	EventHealthReport                = "health.report"
+	EventAgentStartFailed            = "agent.start_failed"
+	EventProviderGateBlocked         = "provider.gate_blocked"
+	EventProviderModelIncompatible   = "provider.model_incompatible"
+	EventHumanReviewSpawned          = "human_review.spawned"
+	EventHumanReviewVerdict          = "human_review.verdict"
+	EventHumanReviewIssue            = "human_review.issue_filed"
+	EventHumanReviewSkipped          = "human_review.skipped"
+	EventExperienceRecorded          = "experience.recorded"
+	EventExperienceSkipped           = "experience.skipped"
+	EventExperienceInjected          = "experience.injected"
 
 	// EventTaskLanded records a task's terminal outcome (merged/closed) with
 	// queue-inclusive and work-based timing for the evaluation scorecard.

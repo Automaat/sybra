@@ -29,7 +29,7 @@ func TestComputeReviewPhase(t *testing.T) {
 		},
 		{
 			name: "conflict outranks a pending draft / submitted review",
-			sig:  reviewSignals{Mergeable: "CONFLICTING", HasDraft: true, Submitted: true, ViewerApproved: true},
+			sig:  reviewSignals{Mergeable: "CONFLICTING", HasDraft: true, Submitted: true, SelfApproved: true},
 			want: reviewPhaseResult{Phase: ReviewPhaseConflict, Status: task.StatusInReview, Reason: "PR has merge conflicts — author must rebase"},
 		},
 		{
@@ -38,9 +38,9 @@ func TestComputeReviewPhase(t *testing.T) {
 			want: reviewPhaseResult{Phase: ReviewPhaseAwaitingAuthor, Status: task.StatusInReview, Reason: "Awaiting author response"},
 		},
 		{
-			name: "approved waits for merge",
-			sig:  reviewSignals{ViewerApproved: true, Submitted: true, HeadSHA: "abc"},
-			want: reviewPhaseResult{Phase: ReviewPhaseApproved, Status: task.StatusInReview, Reason: "Approved — awaiting merge"},
+			name: "self-approval is blocked, dismissed, and escalated — never treated as approved",
+			sig:  reviewSignals{SelfApproved: true, Submitted: true, HeadSHA: "abc"},
+			want: reviewPhaseResult{Phase: ReviewPhaseSelfApprovalBlocked, Status: task.StatusHumanRequired, Reason: "Bot self-approved its own review task — approval dismissed; needs an actual human review"},
 		},
 		{
 			name: "pending draft → drafted, needs human to post",
