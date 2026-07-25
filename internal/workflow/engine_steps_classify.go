@@ -23,16 +23,23 @@ func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) 
 		return e.humanRequiredClassify(taskID, step, "no task classifier configured")
 	}
 
-	ctx, cancel := context.WithTimeout(e.ctx, classifyTaskTimeout)
-	defer cancel()
-
 	// Restore the retry budget the replaced run_agent step carried
 	// (max_retries: 3). A transient rate limit or brief provider outage now
 	// retries with backoff instead of permanently parking the task on
 	// human-required on the first blip.
+	//
+	// Each attempt gets its own fresh classifyTaskTimeout deadline (derived
+	// from e.ctx) instead of sharing one across the whole loop — a shared
+	// deadline let one slow/killed first attempt burn through the entire
+	// budget, so retries 2-4 failed instantly with "context deadline
+	// exceeded" before ever dispatching, defeating the retry/backoff this
+	// loop exists to provide.
 	var err error
 	for attempt := 0; ; attempt++ {
-		if err = e.classifier.ClassifyTask(ctx, taskID); err == nil {
+		attemptCtx, cancel := context.WithTimeout(e.ctx, classifyTaskTimeout)
+		err = e.classifier.ClassifyTask(attemptCtx, taskID)
+		cancel()
+		if err == nil {
 			e.logger.Info("workflow.classify-task", "task_id", taskID, "step", step.ID)
 			return StepOutput{StepID: step.ID, Status: "completed"}, nil
 		}
@@ -43,8 +50,8 @@ func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) 
 		// would let resolveNext advance past triage without it ever having
 		// run). ResumeStalled's step-type allowlist includes classify_task
 		// specifically so this park is actually picked back up, not stranded.
-		// The per-step deadline (classifyTaskTimeout) fires on the derived
-		// ctx, not e.ctx, so a genuinely hung classify still escalates below.
+		// The per-attempt deadline (classifyTaskTimeout) fires on attemptCtx,
+		// not e.ctx, so a genuinely hung classify still escalates below.
 		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
 			e.logger.Warn("workflow.classify-task.canceled", "task_id", taskID, "step", step.ID, "err", err)
 			wfExec.State = ExecWaiting
@@ -58,11 +65,11 @@ func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) 
 		}
 		e.logger.Warn("workflow.classify-task.retry", "task_id", taskID, "step", step.ID,
 			"attempt", attempt+1, "max", len(classifyTaskRetryBackoffs), "err", err)
-		// Interruptible backoff: an engine shutdown (parent ctx) or the per-step
-		// deadline cancels ctx and wakes the wait immediately, so the retry loop
-		// never blocks teardown. The next iteration's e.ctx check then routes a
+		// Interruptible backoff on e.ctx (not the now-canceled attemptCtx): an
+		// engine shutdown wakes the wait immediately, so the retry loop never
+		// blocks teardown. The next iteration's e.ctx check then routes a
 		// shutdown to the resume-on-next-boot path above.
-		classifyTaskWait(ctx, classifyTaskRetryBackoffs[attempt])
+		classifyTaskWait(e.ctx, classifyTaskRetryBackoffs[attempt])
 	}
 
 	return e.humanRequiredClassify(taskID, step, "triage classify failed: "+err.Error())
