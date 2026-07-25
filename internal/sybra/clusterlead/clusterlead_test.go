@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -411,27 +410,6 @@ func TestMirrorMirrorsPlanningSidecars(t *testing.T) {
 	}
 }
 
-// fakeAnomalySink is a monitor.IssueSink test double that records every
-// submitted anomaly so tests can assert alerting fired without depending on
-// GitHub/local-task-routing machinery.
-type fakeAnomalySink struct {
-	mu    sync.Mutex
-	calls []monitor.Anomaly
-}
-
-func (s *fakeAnomalySink) Submit(_ context.Context, a monitor.Anomaly, _ string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.calls = append(s.calls, a)
-	return true, nil
-}
-
-func (s *fakeAnomalySink) submitted() []monitor.Anomaly {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.calls)
-}
-
 // TestMirrorDetectsAndRepairsTagsAndDependsOnDrift covers issue #2350: Tags
 // and DependsOn are leader-authoritative fields Merge never pulls from the
 // follower (see Merge's field list — only execution fields like Status flow
@@ -440,9 +418,7 @@ func (s *fakeAnomalySink) submitted() []monitor.Anomaly {
 // notice. This seeds a follower report that disagrees with the canonical
 // copy on both fields and asserts the sweep detects it and repairs the
 // follower within the same reconcile pass — without touching the follower's
-// own Status/PR fields (never a stale full-task overwrite) — and, per #2495,
-// does NOT alert: a single drift that repairs cleanly is the backstop
-// working as designed, not something a human needs to see.
+// own Status/PR fields (never a stale full-task overwrite).
 func TestMirrorDetectsAndRepairsTagsAndDependsOnDrift(t *testing.T) {
 	stub := &followerStub{}
 	srv := stub.server(t)
@@ -453,8 +429,6 @@ func TestMirrorDetectsAndRepairsTagsAndDependsOnDrift(t *testing.T) {
 	}
 	mgr := newManager(t)
 	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
-	sink := &fakeAnomalySink{}
-	mirror.SetAnomalySink(sink)
 
 	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	canonical := task.Task{
@@ -486,12 +460,6 @@ func TestMirrorDetectsAndRepairsTagsAndDependsOnDrift(t *testing.T) {
 	stub.tasks = []task.Task{stale}
 	if !mirror.applyFollowerTask("pet-box", stale) {
 		t.Fatal("apply follower report")
-	}
-
-	// Detected and repaired, but not alerted — a lone drift that repairs
-	// cleanly on the first try is exactly the case #2495 stopped alerting on.
-	if calls := sink.submitted(); len(calls) != 0 {
-		t.Fatalf("anomaly sink got %d submissions, want 0 (a single clean repair must not alert): %+v", len(calls), calls)
 	}
 
 	// Repaired: the follower stub received an AssignTask carrying the
@@ -590,64 +558,11 @@ func TestMirrorDriftRepairUsesLiveFollowerStateNotStaleSnapshot(t *testing.T) {
 	}
 }
 
-// TestMirrorAlertsWhenDriftRepairFails covers #2495's other alert-worthy
-// case: the backstop detects drift but the repair push itself never reaches
-// the follower (e.g. the follower is down). Unlike a drift that repairs
-// cleanly (TestMirrorDetectsAndRepairsTagsAndDependsOnDrift, which must NOT
-// alert), a repair failure means the backstop couldn't self-heal — that is
-// exactly when a human needs to know.
-func TestMirrorAlertsWhenDriftRepairFails(t *testing.T) {
-	stub := &followerStub{failAssign: true}
-	srv := stub.server(t)
-	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
-	roster, err := NewRoster(cfg, nil)
-	if err != nil || roster == nil {
-		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
-	}
-	mgr := newManager(t)
-	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
-	sink := &fakeAnomalySink{}
-	mirror.SetAnomalySink(sink)
-
-	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
-	canonical := task.Task{
-		ID:           "task-pet",
-		Status:       task.StatusTodo,
-		AssignedNode: "pet-box",
-		Tags:         []string{"backend", "umbrella-gated"},
-		UpdatedAt:    t0,
-	}
-	if _, _, err := mgr.Put(canonical); err != nil {
-		t.Fatal(err)
-	}
-
-	stale := task.Task{
-		ID:           "task-pet",
-		Status:       task.StatusInProgress,
-		AssignedNode: "pet-box",
-		Tags:         []string{"backend"},
-		UpdatedAt:    t0.Add(time.Hour),
-	}
-	stub.tasks = []task.Task{stale}
-	if !mirror.applyFollowerTask("pet-box", stale) {
-		t.Fatal("apply follower report")
-	}
-
-	calls := sink.submitted()
-	if len(calls) != 1 {
-		t.Fatalf("anomaly sink got %d submissions, want 1 (repair failed, backstop couldn't self-heal): %+v", len(calls), calls)
-	}
-	if calls[0].Kind != monitor.KindClusterDrift || calls[0].TaskID != "task-pet" {
-		t.Fatalf("submitted anomaly = %+v, want KindClusterDrift for task-pet", calls[0])
-	}
-}
-
-// TestMirrorAlertsOnRepeatedDriftWithinWindow covers #2495's third
-// alert-worthy case: even when each individual repair succeeds, the same
-// task drifting again shortly after signals the write-time push isn't
-// sticking for it — worth a human's attention even though the backstop keeps
-// self-healing it.
-func TestMirrorAlertsOnRepeatedDriftWithinWindow(t *testing.T) {
+// TestMirrorNoRepairOnOrdinaryStatusDisagreement asserts that Status
+// differing between the leader and follower — the normal, expected,
+// self-healing case Merge exists for — never fires the drift repair path.
+// Only Tags/DependsOn (fields Merge doesn't carry) are drift-worthy.
+func TestMirrorNoRepairOnOrdinaryStatusDisagreement(t *testing.T) {
 	stub := &followerStub{}
 	srv := stub.server(t)
 	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
@@ -657,71 +572,6 @@ func TestMirrorAlertsOnRepeatedDriftWithinWindow(t *testing.T) {
 	}
 	mgr := newManager(t)
 	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
-	sink := &fakeAnomalySink{}
-	mirror.SetAnomalySink(sink)
-
-	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
-	canonical := task.Task{
-		ID:           "task-pet",
-		Status:       task.StatusTodo,
-		AssignedNode: "pet-box",
-		Tags:         []string{"backend", "umbrella-gated"},
-		UpdatedAt:    t0,
-	}
-	if _, _, err := mgr.Put(canonical); err != nil {
-		t.Fatal(err)
-	}
-
-	firstDrift := task.Task{
-		ID: "task-pet", Status: task.StatusInProgress, AssignedNode: "pet-box",
-		Tags: []string{"backend"}, UpdatedAt: t0.Add(time.Hour),
-	}
-	stub.tasks = []task.Task{firstDrift}
-	if !mirror.applyFollowerTask("pet-box", firstDrift) {
-		t.Fatal("apply first follower report")
-	}
-	if calls := sink.submitted(); len(calls) != 0 {
-		t.Fatalf("first (clean) repair alerted, want 0 submissions: %+v", calls)
-	}
-
-	// The follower re-reports the same stale Tags shortly after the first
-	// repair — as if whatever originally broke the write-time push for this
-	// task is still broken.
-	secondDrift := task.Task{
-		ID: "task-pet", Status: task.StatusInProgress, AssignedNode: "pet-box",
-		Tags: []string{"backend"}, UpdatedAt: t0.Add(2 * time.Hour),
-	}
-	stub.tasks = []task.Task{secondDrift}
-	if !mirror.applyFollowerTask("pet-box", secondDrift) {
-		t.Fatal("apply second follower report")
-	}
-
-	calls := sink.submitted()
-	if len(calls) != 1 {
-		t.Fatalf("anomaly sink got %d submissions, want 1 (re-drift within window must alert): %+v", len(calls), calls)
-	}
-	if calls[0].Kind != monitor.KindClusterDrift || calls[0].TaskID != "task-pet" {
-		t.Fatalf("submitted anomaly = %+v, want KindClusterDrift for task-pet", calls[0])
-	}
-}
-
-// TestMirrorNoAlertOnOrdinaryStatusDisagreement asserts that Status differing
-// between the leader and follower — the normal, expected, self-healing case
-// Merge exists for — never fires the drift alert/repair path. Only
-// Tags/DependsOn (fields Merge doesn't carry) are drift-worthy; alerting on
-// every ordinary status lag would make the signal useless.
-func TestMirrorNoAlertOnOrdinaryStatusDisagreement(t *testing.T) {
-	stub := &followerStub{}
-	srv := stub.server(t)
-	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
-	roster, err := NewRoster(cfg, nil)
-	if err != nil || roster == nil {
-		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
-	}
-	mgr := newManager(t)
-	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
-	sink := &fakeAnomalySink{}
-	mirror.SetAnomalySink(sink)
 
 	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	if _, _, err := mgr.Put(task.Task{
@@ -739,9 +589,6 @@ func TestMirrorNoAlertOnOrdinaryStatusDisagreement(t *testing.T) {
 		t.Fatal("apply follower report")
 	}
 
-	if calls := sink.submitted(); len(calls) != 0 {
-		t.Fatalf("anomaly sink got %d submissions for an ordinary status advance, want 0: %+v", len(calls), calls)
-	}
 	if _, ok := stub.lastAssigned(); ok {
 		t.Error("follower received an unnecessary repair push for a matching Tags/DependsOn task")
 	}
