@@ -120,19 +120,6 @@ func RefreshAppToken(ctx context.Context) error {
 	return err
 }
 
-// RefreshAppTokenEnv mints or renews the installation token, then exports it
-// for gh subprocesses spawned outside this package.
-func RefreshAppTokenEnv(ctx context.Context) error {
-	if err := RefreshAppToken(ctx); err != nil {
-		return err
-	}
-	if tok := CurrentAppToken(); tok != "" {
-		_ = os.Setenv("GH_TOKEN", tok)
-		_ = os.Setenv("GITHUB_TOKEN", tok)
-	}
-	return nil
-}
-
 // ForceRefreshAppToken always mints a new installation token when App auth is
 // enabled, even if the cached token isn't near expiry by our locally recorded
 // timestamp. A preflight failure landing right at the hourly rotation
@@ -156,32 +143,6 @@ func forceRefreshAppTokenLeader(ctx context.Context) (leader bool, err error) {
 		return false, nil
 	}
 	return src.refresh(ctx, true)
-}
-
-// ForceRefreshAppTokenEnv force-refreshes the installation token and
-// re-exports it for gh subprocesses spawned outside this package, mirroring
-// RefreshAppTokenEnv but always minting. Used when a live 401/403 already
-// proved the cached token is dead, so the corrected token reaches provider
-// subprocess env in the same step as this package's own cache — not only on
-// the next 30-minute ticker pass.
-func ForceRefreshAppTokenEnv(ctx context.Context) error {
-	_, err := forceRefreshAppTokenEnvLeader(ctx)
-	return err
-}
-
-// forceRefreshAppTokenEnvLeader is ForceRefreshAppTokenEnv's core, propagating
-// the mint-leader signal (see forceRefreshAppTokenLeader) so the auth-health
-// observer counts a shared, singleflight-collapsed failure once.
-func forceRefreshAppTokenEnvLeader(ctx context.Context) (leader bool, err error) {
-	leader, err = forceRefreshAppTokenLeader(ctx)
-	if err != nil {
-		return leader, err
-	}
-	if tok := CurrentAppToken(); tok != "" {
-		_ = os.Setenv("GH_TOKEN", tok)
-		_ = os.Setenv("GITHUB_TOKEN", tok)
-	}
-	return leader, nil
 }
 
 // cachedAppToken returns the current installation token, or "" when App auth is
@@ -333,11 +294,10 @@ func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string) 
 }
 
 // appLogin returns the App's bot login as it appears on GitHub artifacts —
-// "<slug>[bot]", e.g. "sybra-app[bot]". This is the App-auth answer to "who am
-// I?": /user (see ViewerLogin) is a user-to-server endpoint and always 403s for
-// installation tokens, so it can never identify an App. GET /app is JWT-authed
-// and returns the slug, which is immutable for the lifetime of the App and so
-// is cached indefinitely.
+// "<slug>[bot]", e.g. "sybra-app[bot]". This is the App-auth branch viewerLoginE
+// (client.go) delegates to for "who am I?" — see that function's doc for why
+// /user can never answer this. GET /app is JWT-authed and returns the slug,
+// which is immutable for the lifetime of the App and so is cached indefinitely.
 func (s *appTokenSource) appLogin(ctx context.Context) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("app login: app auth is disabled")
@@ -482,12 +442,11 @@ func GHEnv() []string {
 // ambient GH_TOKEN carrying one, or ambient user gh auth. Performs a live
 // lookup, so it's meant for a startup/periodic preflight, not a hot path.
 //
-// Deliberately does NOT use ViewerLogin()/gh api user: /user is a
-// user-to-server endpoint that always 403s for GitHub App installation
-// tokens even when they're fully functional for issue filing, which made
-// the preflight false-positive on exactly the credential type it exists to
-// support (see #2032). /rate_limit is reachable by every credential type gh
-// supports, so probe that instead.
+// Deliberately does NOT use ViewerLogin()/gh api user — see viewerLoginE's
+// doc (client.go) for why /user 403s under App auth (#2032) and made this
+// preflight false-positive on exactly the credential type it exists to
+// support. /rate_limit is reachable by every credential type gh supports, so
+// probe that instead.
 func Authenticated() bool {
 	return authenticated(defaultExecer)
 }

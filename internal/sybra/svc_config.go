@@ -418,8 +418,7 @@ func (s *ConfigService) applyWorkflowGuardrails(cfg config.Config) {
 	}
 	s.workflowEngine.SetMaxCheckpoints(cfg.MaxCheckpoints())
 	s.workflowEngine.SetReviewUntilClean(cfg.ReviewUntilClean())
-	s.workflowEngine.SetMaxReviewRounds(cfg.MaxReviewRounds())
-	s.workflowEngine.SetAllowUnboundedReviewRounds(cfg.AllowUnboundedReviewRounds())
+	s.workflowEngine.SetReviewRoundsPerHour(cfg.Agent.ReviewRoundsPerHourLimit())
 }
 
 func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) error {

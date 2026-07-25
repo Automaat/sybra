@@ -278,6 +278,16 @@ var fieldAliasSpecs = []fieldAliasSpec{
 	{aliasPath: []string{"agent", "checkpoint_on_assistant_event_ceiling"}, legacyPath: []string{"agent", "checkpoint_on_turn_ceiling"}, fieldPath: []string{"Agent", "CheckpointOnTurnCeiling"}},
 	{aliasPath: []string{"agent", "assistant_event_cost_fraction"}, legacyPath: []string{"agent", "turn_cost_fraction"}, fieldPath: []string{"Agent", "TurnCostFraction"}},
 	{aliasPath: []string{"agent", "assistant_event_multiplier"}, legacyPath: []string{"agent", "turn_multiplier"}, fieldPath: []string{"Agent", "TurnMultiplier"}},
+	// review_rounds_per_hour briefly lived on GitHubConfig (schema v2, one day)
+	// before moving to AgentDefaults. Unlike every other entry in this table,
+	// aliasPath and legacyPath cross parents (agent vs github) — that's fine
+	// for validation and setFieldByPathFromNode (both are keyed off fieldPath,
+	// not the parent), but migrateNodeToCanonical only renames a leaf in
+	// place, so a raw github.review_rounds_per_hour survives migration under
+	// integrations.github rather than moving to execution.agent. Harmless
+	// (Resolve applies the same alias on the next parse) but not perfectly
+	// canonicalized.
+	{aliasPath: []string{"agent", "review_rounds_per_hour"}, legacyPath: []string{"github", "review_rounds_per_hour"}, fieldPath: []string{"Agent", "ReviewRoundsPerHour"}},
 }
 
 type aliasIndex struct {

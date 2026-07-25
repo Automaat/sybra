@@ -1,17 +1,15 @@
 <script lang="ts">
   import { Loader } from '@lucide/svelte'
-  import type { ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import { extractBashActivity, stripAnsi, truncateOutput } from '$lib/bash-activity.js'
 
   interface Props {
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: ConvoEvent[]
   }
 
-  const { streamOutputs, convoEvents }: Props = $props()
+  const { streamOutputs }: Props = $props()
 
-  const activities = $derived(extractBashActivity(streamOutputs, convoEvents))
+  const activities = $derived(extractBashActivity(streamOutputs))
 </script>
 
 {#if activities.length === 0}

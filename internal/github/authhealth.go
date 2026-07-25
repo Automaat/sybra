@@ -342,7 +342,7 @@ func onAuthFailureObserved(ctx context.Context, reason string) {
 	// specific call's cancellation/deadline — a short-lived poll context
 	// timing out mid-mint must not abort a refresh other concurrent 401s are
 	// singleflight-waiting on (see appauth.go's refreshMu).
-	leader, err := forceRefreshAppTokenEnvLeader(context.WithoutCancel(ctx))
+	leader, err := forceRefreshAppTokenLeader(context.WithoutCancel(ctx))
 	if err != nil {
 		// Only the goroutine that actually performed the mint records the
 		// failure. Concurrent 401s are singleflight-collapsed into that one

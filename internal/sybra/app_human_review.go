@@ -206,6 +206,16 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.logger.Error("human-review.task.get", "task_id", taskID, "err", err)
 		return false
 	}
+	// An umbrella tracker runs no agent — it only rolls up its children (see
+	// task.TaskTypeUmbrella) — so a child's escalation or a dependency cycle
+	// parking the tracker itself at human-required must never spawn a review
+	// agent onto it: there is no product code for it to analyze, and it falls
+	// into a repetitive info-gathering loop until the watchdog kills it and
+	// re-parks the task in human-required (see #2610).
+	if t.TaskType == task.TaskTypeUmbrella {
+		h.skip(taskID, "task_type_umbrella")
+		return false
+	}
 	// Status guard: the status hook launches maybeSpawn asynchronously
 	// (go a.humanReview.maybeSpawn), so a fast recovery path
 	// (human-required -> ready-pr / in-review) can flip the task out of
@@ -1064,12 +1074,12 @@ func (h *humanReviewHandler) fileLocalConfigured(taskID, agentID string, v verdi
 		return
 	}
 	body := strings.TrimSpace(v.IssueBody) + "\n\n## Filing route\n\nGitHub issue filing disabled by `human_review.sybra_bug_action: local_task`; Sybra created this local task instead."
-	tags := append([]string{"sybra-bug", "local"}, v.IssueLabels...)
+	tags := append([]string{string(task.FlagSybraBug), string(task.FlagLocal)}, v.IssueLabels...)
 	init := task.Update{Tags: &tags}
 	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
 		init.ProjectID = &projectID
 	}
-	if existing := h.findExistingLocalBugTaskOnRoute(v.IssueTitle, "local"); existing != nil {
+	if existing := h.findExistingLocalBugTaskOnRoute(v.IssueTitle, string(task.FlagLocal)); existing != nil {
 		h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
 			"created": false, "url": "", "title": v.IssueTitle, "local_task_id": existing.ID,
 		})
@@ -1152,12 +1162,12 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 		return
 	}
 
-	tags := append([]string{"sybra-bug", "scrubbed"}, v.IssueLabels...)
+	tags := append([]string{string(task.FlagSybraBug), string(task.FlagScrubbed)}, v.IssueLabels...)
 	init := task.Update{Tags: &tags}
 	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
 		init.ProjectID = &projectID
 	}
-	if existing := h.findExistingLocalBugTaskOnRoute(title, "scrubbed"); existing != nil {
+	if existing := h.findExistingLocalBugTaskOnRoute(title, string(task.FlagScrubbed)); existing != nil {
 		h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
 			"created": false, "url": "", "title": title,
 			"local_task_id": existing.ID, "redactions_title": titleRed, "redactions_body": bodyRed,
@@ -1210,7 +1220,7 @@ func (h *humanReviewHandler) findExistingLocalBugTaskOnRoute(title, routeTag str
 		if strings.TrimSpace(t.Title) != title {
 			continue
 		}
-		if slices.Contains(t.Tags, "sybra-bug") && slices.Contains(t.Tags, routeTag) {
+		if task.HasFlag(t.Tags, task.FlagSybraBug) && slices.Contains(t.Tags, routeTag) {
 			return t
 		}
 	}
@@ -1262,8 +1272,8 @@ func (h *humanReviewHandler) findExistingLocalBugTask(title string) (task.Task, 
 	}
 	for i := range all {
 		if all[i].Title == title &&
-			slices.Contains(all[i].Tags, "sybra-bug") &&
-			hasAnyTag(all[i].Tags, "local", "scrubbed", "issue-filing-failed") {
+			task.HasFlag(all[i].Tags, task.FlagSybraBug) &&
+			hasAnyTag(all[i].Tags, string(task.FlagLocal), string(task.FlagScrubbed), string(task.FlagIssueFilingFailed)) {
 			return all[i], true
 		}
 	}

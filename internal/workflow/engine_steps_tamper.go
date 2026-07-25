@@ -9,7 +9,6 @@ import (
 	"go/parser"
 	gotoken "go/token"
 	"log/slog"
-	"os/exec"
 	pathpkg "path"
 	"regexp"
 	"slices"
@@ -945,9 +944,7 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 
 	// core.quotePath=false keeps non-ASCII paths unquoted so classification and
 	// the per-file diff pathspec below see the real filename.
-	nsCmd := exec.CommandContext(ctx, "git", "-c", "core.quotePath=false", "diff", "--name-status", rangeSpec)
-	nsCmd.Dir = wtPath
-	nsOut, err := nsCmd.Output()
+	nsOut, err := gitStdout(ctx, wtPath, "-c", "core.quotePath=false", "diff", "--name-status", rangeSpec)
 	if err != nil {
 		// Surface the per-step timeout/cancel through the error chain so the
 		// caller can distinguish it from a genuine git failure.
@@ -957,7 +954,7 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 		return tamperReport{}, fmt.Errorf("git diff --name-status: %w", err)
 	}
 
-	changes := dropUpstreamMergedChanges(ctx, wtPath, taskID, upstream, parseNameStatus(string(nsOut)), e.logger)
+	changes := dropUpstreamMergedChanges(ctx, wtPath, taskID, upstream, parseNameStatus(nsOut), e.logger)
 	fetched := 0
 	for i := range changes {
 		c := &changes[i]
@@ -1133,18 +1130,14 @@ func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo, taskID s
 	if t.Workflow != nil {
 		if stepID := t.Workflow.LastAgentStepID(); stepID != "" {
 			if sha := strings.TrimSpace(t.Workflow.Variables[tamperBaselineVar(stepID)]); sha != "" {
-				verify := exec.CommandContext(ctx, "git", "rev-parse", "--verify", sha+"^{commit}")
-				verify.Dir = wtPath
-				if verify.Run() == nil {
+				if gitOK(ctx, wtPath, "rev-parse", "--verify", sha+"^{commit}") {
 					// A stored baseline can go stale (e.g. the underlying branch
 					// was force-pushed after the baseline was captured) and stay
 					// git-resolvable while no longer being an ancestor of HEAD.
 					// Diffing against such an orphaned base with two dots spans
 					// the entire divergent history instead of the agent's actual
 					// change, so require ancestry before trusting it.
-					ancestor := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", sha, "HEAD")
-					ancestor.Dir = wtPath
-					if ancestor.Run() == nil {
+					if gitIsAncestor(ctx, wtPath, sha, "HEAD") {
 						return sha, sha + "..HEAD"
 					}
 					if logger != nil {
@@ -1180,15 +1173,15 @@ func dropUpstreamMergedChanges(ctx context.Context, wtPath, taskID, upstream str
 }
 
 func pathIdenticalToUpstream(ctx context.Context, wtPath, upstream, path string) bool {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--quiet", upstream, "HEAD", "--", path)
-	cmd.Dir = wtPath
-	return cmd.Run() == nil
+	return gitOK(ctx, wtPath, "diff", "--quiet", upstream, "HEAD", "--", path)
 }
 
+// gitFilePatch and gitFileAtRef return raw (untrimmed) git output — the exact
+// patch/file bytes matter to the tamper regex scanners below, so they use
+// gitCmd directly rather than the output-trimming gitOutput helper.
+
 func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-c", "core.quotePath=false", "diff", rangeSpec, "--", path)
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
+	out, err := gitCmd(ctx, wtPath, "-c", "core.quotePath=false", "diff", rangeSpec, "--", path).Output()
 	if err != nil {
 		return "", err
 	}
@@ -1200,9 +1193,7 @@ func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, 
 // newly added file — which callers treat as "no base content" rather than a
 // hard failure.
 func gitFileAtRef(ctx context.Context, wtPath, ref, path string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "show", ref+":"+path)
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
+	out, err := gitCmd(ctx, wtPath, "show", ref+":"+path).Output()
 	if err != nil {
 		return "", err
 	}

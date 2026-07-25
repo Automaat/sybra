@@ -157,7 +157,7 @@ describe('DoneLayout', () => {
 
   it('shows "Done" badge', () => {
     render(DoneLayout, {
-      props: { a: makeAgent(), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('Done')).toBeDefined()
   })
@@ -165,14 +165,14 @@ describe('DoneLayout', () => {
   it('shows final message from summary', () => {
     mockSummarize.mockReturnValue({ finalMessage: 'Task completed successfully', filesEdited: [], commandsRun: 0 })
     render(DoneLayout, {
-      props: { a: makeAgent(), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('Task completed successfully')).toBeDefined()
   })
 
   it('shows cost when costUsd > 0', () => {
     render(DoneLayout, {
-      props: { a: makeAgent({ costUsd: 0.042 }), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent({ costUsd: 0.042 }), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('$0.042')).toBeDefined()
   })
@@ -183,7 +183,6 @@ describe('DoneLayout', () => {
         a: makeAgent({ startedAt: '2026-01-01T10:00:00Z', lastEventAt: '2026-01-01T10:02:30Z' }),
         linkedTask: null,
         streamOutputs: [],
-        convoEvents: [],
       },
     })
     expect(screen.getByText('2m 30s')).toBeDefined()
@@ -192,7 +191,7 @@ describe('DoneLayout', () => {
   it('shows branch when linkedTask has branch', () => {
     const t = makeTask({ branch: 'feat/my-feature' })
     render(DoneLayout, {
-      props: { a: makeAgent(), linkedTask: t, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: t, streamOutputs: [] },
     })
     expect(screen.getByText('feat/my-feature')).toBeDefined()
   })
@@ -200,7 +199,7 @@ describe('DoneLayout', () => {
   it('shows PR number when linkedTask has prNumber', () => {
     const t = makeTask({ prNumber: 42 })
     render(DoneLayout, {
-      props: { a: makeAgent(), linkedTask: t, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: t, streamOutputs: [] },
     })
     expect(screen.getByText('#42')).toBeDefined()
   })
@@ -208,7 +207,7 @@ describe('DoneLayout', () => {
   it('shows files changed when filesEdited non-empty', () => {
     mockSummarize.mockReturnValue({ finalMessage: '', filesEdited: ['src/foo.ts', 'src/bar.ts'], commandsRun: 0 })
     render(DoneLayout, {
-      props: { a: makeAgent(), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('src/foo.ts')).toBeDefined()
     expect(screen.getByText('src/bar.ts')).toBeDefined()
@@ -216,14 +215,14 @@ describe('DoneLayout', () => {
 
   it('shows no files message when filesEdited empty', () => {
     render(DoneLayout, {
-      props: { a: makeAgent(), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('Agent completed without modifying files.')).toBeDefined()
   })
 
   it('toggles activity section on button click', async () => {
     render(DoneLayout, {
-      props: { a: makeAgent(), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('Show full activity')).toBeDefined()
     await fireEvent.click(screen.getByText('Show full activity'))
@@ -233,14 +232,14 @@ describe('DoneLayout', () => {
   it('shows commands run count when > 0', () => {
     mockSummarize.mockReturnValue({ finalMessage: '', filesEdited: [], commandsRun: 5 })
     render(DoneLayout, {
-      props: { a: makeAgent(), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('5')).toBeDefined()
   })
 
   it('shows turn count when turnCount > 0', () => {
     render(DoneLayout, {
-      props: { a: makeAgent({ turnCount: 12 }), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent({ turnCount: 12 }), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('12')).toBeDefined()
   })
@@ -256,7 +255,7 @@ describe('ReviewingLayout', () => {
 
   it('shows "In Review" badge', () => {
     render(ReviewingLayout, {
-      props: { a: makeAgent(), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('In Review')).toBeDefined()
   })
@@ -264,7 +263,7 @@ describe('ReviewingLayout', () => {
   it('shows final message when summary has one', () => {
     mockSummarize.mockReturnValue({ finalMessage: 'PR ready for review', filesEdited: [], commandsRun: 0 })
     render(ReviewingLayout, {
-      props: { a: makeAgent(), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('PR ready for review')).toBeDefined()
   })
@@ -272,7 +271,7 @@ describe('ReviewingLayout', () => {
   it('shows branch when linkedTask has branch', () => {
     const t = makeTask({ branch: 'fix/auth-bug' })
     render(ReviewingLayout, {
-      props: { a: makeAgent(), linkedTask: t, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: t, streamOutputs: [] },
     })
     expect(screen.getByText('fix/auth-bug')).toBeDefined()
   })
@@ -280,7 +279,7 @@ describe('ReviewingLayout', () => {
   it('shows PR number when linkedTask has prNumber', () => {
     const t = makeTask({ prNumber: 99 })
     render(ReviewingLayout, {
-      props: { a: makeAgent(), linkedTask: t, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: t, streamOutputs: [] },
     })
     expect(screen.getByText('PR #99')).toBeDefined()
   })
@@ -288,7 +287,7 @@ describe('ReviewingLayout', () => {
   it('shows Open worktree button when task has id', () => {
     const t = makeTask({ id: 'task-abc' })
     render(ReviewingLayout, {
-      props: { a: makeAgent(), linkedTask: t, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: t, streamOutputs: [] },
     })
     expect(screen.getByText('Open worktree')).toBeDefined()
   })
@@ -296,7 +295,7 @@ describe('ReviewingLayout', () => {
   it('calls OpenWorktree when button clicked', async () => {
     const t = makeTask({ id: 'task-abc' })
     render(ReviewingLayout, {
-      props: { a: makeAgent(), linkedTask: t, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: t, streamOutputs: [] },
     })
     await fireEvent.click(screen.getByText('Open worktree'))
     expect(mockOpenWorktree).toHaveBeenCalledWith('task-abc')
@@ -305,7 +304,7 @@ describe('ReviewingLayout', () => {
   it('shows no branch/PR message when both missing', () => {
     const t = makeTask({ branch: '', prNumber: 0 })
     render(ReviewingLayout, {
-      props: { a: makeAgent(), linkedTask: t, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: t, streamOutputs: [] },
     })
     expect(screen.getByText('No branch or PR recorded — open the linked task for context.')).toBeDefined()
   })
@@ -314,7 +313,7 @@ describe('ReviewingLayout', () => {
     mockOpenWorktree.mockRejectedValue(new Error('not found'))
     const t = makeTask({ id: 'task-xyz' })
     render(ReviewingLayout, {
-      props: { a: makeAgent(), linkedTask: t, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: t, streamOutputs: [] },
     })
     await fireEvent.click(screen.getByText('Open worktree'))
     await vi.waitFor(() => {
@@ -324,7 +323,7 @@ describe('ReviewingLayout', () => {
 
   it('toggles activity on button click', async () => {
     render(ReviewingLayout, {
-      props: { a: makeAgent(), linkedTask: null, streamOutputs: [], convoEvents: [] },
+      props: { a: makeAgent(), linkedTask: null, streamOutputs: [] },
     })
     expect(screen.getByText('Show full activity')).toBeDefined()
     await fireEvent.click(screen.getByText('Show full activity'))
@@ -347,7 +346,6 @@ describe('RunningLayout steer box', () => {
       selectedIndex: null,
       onselect: vi.fn(),
       streamOutputs: [],
-      convoEvents: [],
       allAgents: [],
       latestToolUse: undefined,
       onnavigate: vi.fn(),

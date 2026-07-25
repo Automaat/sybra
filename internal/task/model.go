@@ -365,6 +365,11 @@ type Task struct {
 	// re-dispatch loop (#2164 spent 112 reviews on one unchanged commit).
 	ReviewedHeadSHA      string `json:"reviewedHeadSha,omitempty"`
 	ReviewedHeadAttempts int    `json:"reviewedHeadAttempts,omitempty"`
+	// ReconcileFailures counts consecutive non-transient review-phase reconcile
+	// failures (#2199); recordReconcileFailure escalates to human-required once
+	// it reaches reconcileFailureLimit. Durable so a process restart never
+	// hands a permanently-failing task a fresh free budget.
+	ReconcileFailures int `json:"reconcileFailures,omitempty"`
 	// PRPhase tracks where an outbound own-PR task (status in-review/ready-review,
 	// not tag `review`) sits in its lifecycle: draft → building → fixing →
 	// changes-requested → awaiting-approval → approved. Computed by the PR poller;

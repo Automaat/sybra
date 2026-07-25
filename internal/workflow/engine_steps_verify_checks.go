@@ -11,10 +11,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
 // verifyChecksDefaultTimeout bounds the whole verify run (every command). A test
@@ -90,18 +91,6 @@ var cdDirPattern = regexp.MustCompile(`(?:^|[\s(])cd\s+("[^"]*"|'[^']*'|[^\s&|;)
 // (docs/CONFIG.md's `setup:` commands get 5 minutes).
 const verifyChecksNodeModulesRepairTimeout = 5 * time.Minute
 
-// verifyMissingToolchainRe recognizes a verify command failing because a
-// toolchain executable is missing from PATH, as opposed to a genuine
-// implementation defect. A match after a run triggers healToolchainAndRetry
-// (re-running the project's setup commands) instead of blocking outright.
-var verifyMissingToolchainRe = regexp.MustCompile(
-	`(?i)command not found|executable file not found|not found in \$?PATH|[\w./-]+: not found`)
-
-var verifyGoInfraFailureRes = []*regexp.Regexp{
-	regexp.MustCompile(`(?m)\blink: signal: terminated\b`),
-	regexp.MustCompile(`(?mi)(?:can't open import:.*go-build|go-build[\\/].*no such file or directory)`),
-}
-
 var verifyGolangCILintFindingRe = regexp.MustCompile(`^([^\s:][^:\n]*\.go):\d+:\d+:\s.+$`)
 
 var verifyFrontendPathMentionRe = regexp.MustCompile(`(?:^|[\s("'` + "`" + `])((?:frontend/|(?:\./)?src/)[A-Za-z0-9._/\-]+\.(?:[cm]?[jt]sx?|svelte))(?:[:(]\d+(?::\d+)?)?`)
@@ -126,7 +115,7 @@ type verifyChecksReport struct {
 }
 
 type verifyFailureClassification struct {
-	Kind           string
+	Kind           failureclassify.Kind
 	Reason         string
 	FailedPackages []string
 	ChangedFiles   []string
@@ -191,7 +180,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 
 	failedCmd, output, runErr := e.runVerifySuiteWithRetry(e.ctx, taskID, wtPath, cmds, timeout, step.ID)
 
-	if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {
+	if failedCmd != "" && failureclassify.IsMissingToolchain(output) {
 		if healed, fc, out, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
 			failedCmd, output, runErr = fc, out, rErr
 		}
@@ -202,7 +191,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output)
 	if classification != nil {
-		report.Classification = classification.Kind
+		report.Classification = classification.Kind.String()
 		report.FailedPackages = classification.FailedPackages
 		report.ChangedFiles = classification.ChangedFiles
 	}
@@ -239,7 +228,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 				return e.autoFixOrFlagVerifyChecks(
 					taskID, step, wfExec, t, classification.Reason, failedCmd, output)
 			}
-			return e.blockVerifyChecks(taskID, step, classification.Reason, classification.Kind)
+			return e.blockVerifyChecks(taskID, step, classification.Reason, classification.Kind.String())
 		}
 		reason := "implementation does not pass the project verify suite: " + trimDiffLine(failedCmd) +
 			" — fix the code, or add the `verify-blessed` tag to override (e.g. a known-flaky suite)"
@@ -422,9 +411,9 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 	if failedCmd == "" {
 		return nil
 	}
-	if verifyGoInfraFailure(output) {
+	if failureclassify.IsGoInfraFailure(output) {
 		return &verifyFailureClassification{
-			Kind:   "infra_failure",
+			Kind:   failureclassify.InfraFailure,
 			Reason: "verify suite hit Go toolchain/build-cache instability (linker terminated or cache artifacts vanished) — blocked as verifier infrastructure, not an implementation failure",
 		}
 	}
@@ -436,7 +425,7 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 			target = "changed Go files `" + strings.Join(lintFiles, "`, `") + "`"
 		}
 		return &verifyFailureClassification{
-			Kind:         "code_fixable_lint",
+			Kind:         failureclassify.CodeFixableLint,
 			Reason:       "verify suite failed on " + target + " in " + trimDiffLine(failedCmd) + " — deterministic lint finding; re-ask implementation to fix the code without weakening the check",
 			ChangedFiles: changedFiles,
 			AutoFixable:  true,
@@ -450,7 +439,7 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 			reason += " (latest failure: " + trimDiffLine(excerpt) + ")"
 		}
 		return &verifyFailureClassification{
-			Kind:         "frontend_deterministic_failure",
+			Kind:         failureclassify.FrontendDeterministicFailure,
 			Reason:       reason,
 			ChangedFiles: changedFiles,
 			AutoFixable:  true,
@@ -461,7 +450,7 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 		return nil
 	}
 	return &verifyFailureClassification{
-		Kind:           "unrelated_failure",
+		Kind:           failureclassify.UnrelatedFailure,
 		Reason:         "verify suite failed only in untouched Go package(s): " + strings.Join(pkgs, ", ") + " — blocked as a pre-existing/unrelated verifier failure, not this diff",
 		FailedPackages: pkgs,
 		ChangedFiles:   changedFiles,
@@ -497,15 +486,6 @@ func classifyDeterministicFrontendVerifyFailure(
 		}
 	}
 	return "", changedFiles, false
-}
-
-func verifyGoInfraFailure(output string) bool {
-	for _, re := range verifyGoInfraFailureRes {
-		if re.MatchString(output) {
-			return true
-		}
-	}
-	return false
 }
 
 func classifyCodeFixableLintFailure(
@@ -852,30 +832,28 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
 		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
 	}
-	key := "step." + step.ID + ".auto_fix"
-	attempts := parseWorkflowInt(wfExec.Variables[key])
-	if attempts >= verifyChecksAutoFixCeiling {
+	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
+		counterKey: "step." + step.ID + ".auto_fix",
+		max:        verifyChecksAutoFixCeiling,
+		rewindStep: verifyChecksImplStepID,
+		backoff:    autoFixBackoff,
+		onArm: func(wfExec *Execution, attempt int) {
+			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
+		},
+		reason: func(attempt int) string {
+			return fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s", attempt, trimDiffLine(failedCmd))
+		},
+	})
+	if err != nil {
+		return StepOutput{}, fmt.Errorf("verify-checks: rewind to implement: %w", err)
+	}
+	if !armed {
 		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
 			reason, verifyChecksAutoFixCeiling)
 		return e.flagVerifyChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
-
-	wfExec.SetVar(key, strconv.Itoa(attempts+1))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(autoFixBackoff(attempts)).Format(time.RFC3339))
-	wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
-	wfExec.ClearStepRecords(verifyChecksImplStepID)
-	wfExec.CurrentStep = verifyChecksImplStepID
-	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return StepOutput{}, fmt.Errorf("verify-checks: rewind to implement: %w", err)
-	}
-	retryReason := fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s",
-		attempts+1, trimDiffLine(failedCmd))
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, retryReason); err != nil {
-		return StepOutput{}, err
-	}
 	e.logger.Info("workflow.verify-checks.auto-fix",
-		"task_id", taskID, "attempt", attempts+1, "cmd", trimDiffLine(failedCmd))
+		"task_id", taskID, "attempt", attempt, "cmd", trimDiffLine(failedCmd))
 	return StepOutput{}, errStepParked
 }
 

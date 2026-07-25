@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
@@ -33,25 +32,6 @@ const TransientFetchWarnThreshold = 3
 
 const stalePRDispatchGateAge = 15 * time.Minute
 
-// readyPRState is a cached "confirmed ready to merge" snapshot for a task's
-// linked PR, keyed by "repo#number". fetchKnownTaskPRs reuses it across poll
-// cycles instead of re-running the full per-PR fetch (reviews, threads,
-// status checks) once a PR has already been observed OPEN + clean +
-// checks-green + approved — as long as a cheap probe confirms neither the
-// head commit nor the PR's updatedAt timestamp has moved. A force-push (any
-// head-SHA change) or a new review/status event at the same head (which
-// bumps updatedAt without moving the head SHA) invalidates the entry
-// immediately, since the cached approval/CI verdict is pinned to the old
-// snapshot. handleAutoMerge evicts the entry the moment it acts on the PR
-// (arm native auto-merge or attempt a squash merge), so the next cycle
-// always does a fresh fetch to observe the post-action state (merged/closed,
-// or armed) instead of replaying a stale snapshot.
-type readyPRState struct {
-	HeadSHA   string
-	UpdatedAt string
-	PR        github.PullRequest
-}
-
 // Handler manages PR review task creation, agent dispatch, and status tracking.
 type Handler struct {
 	logger         *slog.Logger
@@ -76,9 +56,6 @@ type Handler struct {
 	// global-search fetch path (pollAndMonitorPRs) and backs off instead of
 	// retrying at pollFast cadence once tripped. See poll.AuthCircuit.
 	authCircuit *poll.AuthCircuit
-	// reconcileFailures tracks consecutive non-transient phase-reconcile
-	// failures per task ID, escalating at reconcileFailureLimit (#2164).
-	reconcileFailures map[string]int
 	// wtFailures tracks consecutive worktree-creation failures per task ID.
 	// Once a task hits wtFailureLimit, it is escalated to human-required.
 	wtFailures map[string]int
@@ -151,15 +128,13 @@ type Handler struct {
 	fetchPRStatsFn func(repo string, number int) (github.PRStats, error)
 	// fetchHeadStateFn cheaply probes a PR's current head SHA, open/closed
 	// state, and updatedAt timestamp, used to validate (or invalidate) a
-	// readyPRCache entry without doing a full per-PR fetch. Overridable in
-	// tests; nil falls back to github.FetchPRHeadState.
+	// prSnapshots ready-cache entry without doing a full per-PR fetch.
+	// Overridable in tests; nil falls back to github.FetchPRHeadState.
 	fetchHeadStateFn func(repo string, number int) (sha string, open bool, updatedAt string, err error)
-	// readyPRCache holds known-ready PR snapshots keyed by "repo#number"; see
-	// readyPRState.
-	readyPRCache map[string]readyPRState
-	// prPollState tracks stable linked PRs across poll cycles so the known-PR
-	// fetch path can defer unchanged PRs with exponential backoff.
-	prPollState map[string]prPollEntry
+	// prSnapshots is the single per-PR ("repo#number") cache backing both the
+	// ready-to-merge fetch shortcut and the known-PR poll backoff — replaces
+	// the formerly separate readyPRCache/prPollState maps (#2499).
+	prSnapshots PRSnapshotStore
 	// autoMergeBackoff persists a retry fingerprint (repo, PR, head SHA,
 	// error class) for failed auto-merge/arm attempts so handleAutoMerge
 	// backs off exponentially instead of re-attempting unchanged state every
@@ -332,8 +307,6 @@ func New(
 		fetchThreads:        github.FetchReviewThreads,
 		resolveThread:       github.ResolveReviewThread,
 		fetchHeadStateFn:    github.FetchPRHeadState,
-		readyPRCache:        make(map[string]readyPRState),
-		prPollState:         make(map[string]prPollEntry),
 		cfg:                 cfg,
 		experience:          experienceStore,
 		tryCleanMergeFn:     project.TryCleanMerge,
@@ -690,8 +663,8 @@ func buildOutboundMatchers(tasks []task.Task) (matchers, closedMatchers []github
 // comments kind is still dropped: REST exposes no thread-resolution data, so
 // acting on it could stall on unresolved threads it can't see; it resumes
 // once GraphQL recovers. ready_to_merge issues reach handleAutoMerge, which
-// gates a SourcedViaREST PR on the strict REST readiness check
-// (readyForRESTAutoMerge) rather than the Copilot/thread-based gate.
+// gates a SourcedViaREST PR on MergeGate's strict REST readiness check
+// (RESTApproved) rather than the Copilot/thread-based gate.
 func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []task.Task) {
 	selection := r.selectKnownPRPoll(ctx, tasks)
 	r.logger.Info("reviews.poll.bounded",
@@ -891,7 +864,7 @@ func prRefCacheKey(repo string, number int) string {
 }
 
 // fetchKnownTaskPRs fetches the current state of every task's linked PR. A PR
-// last observed ready-to-merge (readyPRCache) skips the full fetch as long as
+// last observed ready-to-merge (prSnapshots) skips the full fetch as long as
 // a cheap head-SHA-plus-state-plus-updatedAt probe confirms the PR is still
 // open at the same head commit with no newer review/status event — avoiding
 // a wasted full re-poll for PRs that are green but stuck behind an unrelated
@@ -925,25 +898,20 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 		}
 		seen[key] = struct{}{}
 
-		if cached, ok := r.readyPRCache[key]; ok {
+		if cached, ok := r.prSnapshots.Ready(key); ok {
 			sha, open, updatedAt, err := headStateFn(m.ProjectID, m.PRNumber)
 			if err == nil && open && sha != "" && sha == cached.HeadSHA && updatedAt == cached.UpdatedAt {
-				prs = append(prs, cached.PR)
-				r.noteKnownPRResult(m.ProjectID, m.PRNumber, cached.PR)
+				prs = append(prs, cached)
+				r.noteKnownPRResult(m.ProjectID, m.PRNumber, cached)
 				continue
 			}
-			delete(r.readyPRCache, key)
+			r.prSnapshots.ClearReady(key)
 		}
 		refs = append(refs, github.PRRef{Repo: m.ProjectID, Number: m.PRNumber})
 	}
 
 	// Drop cache entries for PRs no longer linked to a monitored task.
-	for key := range r.readyPRCache {
-		if _, ok := seen[key]; !ok {
-			delete(r.readyPRCache, key)
-		}
-	}
-	r.pruneKnownPRState(seen)
+	r.prSnapshots.Prune(seen)
 
 	if len(refs) == 0 {
 		return prs
@@ -968,7 +936,7 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 			continue
 		}
 		if !res.Open {
-			delete(r.readyPRCache, prRefCacheKey(res.Repo, res.Number))
+			r.prSnapshots.ClearReady(prRefCacheKey(res.Repo, res.Number))
 			continue
 		}
 		prs = append(prs, res.PR)
@@ -994,15 +962,12 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 // fetch — under-caching a narrow case beats risking a stale merge decision.
 func (r *Handler) updateReadyPRCache(repo string, number int, pr github.PullRequest) {
 	key := prRefCacheKey(repo, number)
-	ready := pr.SourcedViaREST && readyForRESTAutoMerge(pr) || !pr.SourcedViaREST && readyForCopilotAutoMerge(pr)
+	ready := NewMergeGate(pr).ReadyForMerge(MergePolicyCopilot, false)
 	if !ready || pr.HeadSHA == "" {
-		delete(r.readyPRCache, key)
+		r.prSnapshots.ClearReady(key)
 		return
 	}
-	if r.readyPRCache == nil {
-		r.readyPRCache = make(map[string]readyPRState)
-	}
-	r.readyPRCache[key] = readyPRState{HeadSHA: pr.HeadSHA, UpdatedAt: pr.UpdatedAt, PR: pr}
+	r.prSnapshots.SetReady(key, pr.HeadSHA, pr.UpdatedAt, pr)
 }
 
 // evictReadyPRCache drops a cached ready-state, forcing the next poll cycle
@@ -1011,7 +976,7 @@ func (r *Handler) updateReadyPRCache(repo string, number int, pr github.PullRequ
 // makes the cached snapshot stale — the PR may now be merged/closed, or have
 // native auto-merge armed — and only a fresh fetch can observe that.
 func (r *Handler) evictReadyPRCache(repo string, number int) {
-	delete(r.readyPRCache, prRefCacheKey(repo, number))
+	r.prSnapshots.ClearReady(prRefCacheKey(repo, number))
 }
 
 // advanceClosedTaskPRs moves tasks whose linked PR is no longer open to done,
@@ -1947,13 +1912,16 @@ func (r *Handler) adoptOrphanMergedPR(ctx context.Context, t *task.Task) {
 
 // findMergedPRByBranch queries GitHub for a merged PR matching the given head
 // branch in the repository. Returns the PR number, or 0 if none or ambiguous.
+//
+// Routes through github.Run — the shared request gate (pacing, rate-limit
+// bookkeeping, auth-circuit breaker) every other gh call in the process
+// gets — instead of shelling out directly, so this traffic isn't invisible to
+// the shared rate budget. See #2496.
 func findMergedPRByBranch(repo, branch string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+	out, err := github.Run(ctx, "pr", "list",
 		"--repo", repo, "--head", branch, "--state", "merged", "--json", "number", "--limit", "2")
-	cmd.Env = github.GHEnv()
-	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, out)
 	}
@@ -2011,7 +1979,8 @@ func (r *Handler) maybeArmNativeAutoMerge(ctx context.Context, tasks []task.Task
 		if pr == nil || pr.Repository != t.ProjectID {
 			continue
 		}
-		if !readyToArmNativeAutoMerge(*pr) {
+		gate := NewMergeGate(*pr)
+		if !gate.ReadyToArm() {
 			continue
 		}
 		proj, err := r.projects.Get(t.ProjectID)
@@ -2022,7 +1991,7 @@ func (r *Handler) maybeArmNativeAutoMerge(ctx context.Context, tasks []task.Task
 			continue
 		}
 
-		stateSig := autoMergeStateSignature(*pr)
+		stateSig := gate.StateSignature()
 		if !backoff.ShouldAttempt(pr.Repository, pr.Number, pr.HeadSHA, stateSig) {
 			metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(pr.Repository, pr.Number)))
 			continue

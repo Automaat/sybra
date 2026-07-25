@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
 const (
@@ -51,12 +53,16 @@ const (
 	// already-superseded reports for the current blocking failure.
 	resolvedTestFailuresHeading = "## Resolved Test Failures (historical)"
 
-	testOutcomePass                 = "pass"
-	testOutcomeProductBug           = "product_bug"
-	testOutcomeAmbiguousRequirement = "ambiguous_requirement"
-	testOutcomeInfraFailure         = "infra_failure"
-	testOutcomeMissingEvidence      = "missing_evidence"
-	testOutcomeProtocolViolation    = "protocol_violation"
+	// testOutcome* mirror the failureclassify vocabulary so route_test_result
+	// and verify_checks classify the same underlying signal (infra vs. code
+	// vs. evidence/protocol issues) against one shared source of truth
+	// instead of independently-defined strings that could drift (#2500).
+	testOutcomePass                 = string(failureclassify.Pass)
+	testOutcomeProductBug           = string(failureclassify.ProductBug)
+	testOutcomeAmbiguousRequirement = string(failureclassify.AmbiguousRequirement)
+	testOutcomeInfraFailure         = string(failureclassify.InfraFailure)
+	testOutcomeMissingEvidence      = string(failureclassify.MissingEvidence)
+	testOutcomeProtocolViolation    = string(failureclassify.ProtocolViolation)
 
 	testProtocolFixSuggestions  = "fix-suggestions"
 	testProtocolMissingEvidence = "missing-evidence"
@@ -99,37 +105,34 @@ func testingAutoRetryKey(outcome string) string {
 // exhausted and the caller should escalate to human-required. The retry counter
 // is keyed by outcome and persists on the workflow across the rewind.
 func (e *Engine) parkTestingRetryOrEscalate(taskID, outcome, reaskNote string, wfExec *Execution, t TaskInfo) (parked bool, err error) {
-	key := testingAutoRetryKey(outcome)
-	attempts := parseWorkflowInt(wfExec.Variables[key])
-	if attempts >= testingAutoRetryCap {
+	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
+		counterKey: testingAutoRetryKey(outcome),
+		max:        testingAutoRetryCap,
+		// Rewind to the tester step; ResumeStalled re-dispatches it once idle
+		// and past the backoff (run_test is a run_agent step).
+		rewindStep: testVerdictSourceStep,
+		backoff:    func(int) time.Duration { return testingAutoRetryBackoff },
+		onArm: func(wfExec *Execution, attempt int) {
+			if reaskNote != "" {
+				wfExec.SetVar(testingReaskNoteVar, reaskNote)
+			}
+			// Clear the prior run's verdict/outcome/taint so the re-armed run is
+			// judged on its own output, not the stale report that triggered this
+			// retry.
+			clearTestVerdictVars(wfExec)
+		},
+		reason: func(attempt int) string {
+			return fmt.Sprintf("auto-retrying adversarial testing (%s, attempt %d/%d)", outcome, attempt, testingAutoRetryCap)
+		},
+	})
+	if err != nil {
+		return false, err
+	}
+	if !armed {
 		return false, nil
 	}
-	wfExec.SetVar(key, strconv.Itoa(attempts+1))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(testingAutoRetryBackoff).Format(time.RFC3339))
-	if reaskNote != "" {
-		wfExec.SetVar(testingReaskNoteVar, reaskNote)
-	}
-	// Clear the prior run's verdict/outcome/taint so the re-armed run is judged
-	// on its own output, not the stale report that triggered this retry.
-	clearTestVerdictVars(wfExec)
-	// Also clear run_test's step-history records: CountStep(run_test) counts
-	// every historical execution, not just the current retry cycle, so without
-	// this a route-level re-arm would leave the tester's own in-step
-	// max_retries budget looking exhausted from earlier cycles.
-	wfExec.ClearStepRecords(testVerdictSourceStep)
-	// Rewind to the tester step; ResumeStalled re-dispatches it once idle and
-	// past the backoff (run_test is a run_agent step).
-	wfExec.CurrentStep = testVerdictSourceStep
-	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return false, err
-	}
-	reason := fmt.Sprintf("auto-retrying adversarial testing (%s, attempt %d/%d)", outcome, attempts+1, testingAutoRetryCap)
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, reason); err != nil {
-		return false, err
-	}
 	e.logger.Info("workflow.test.auto-retry",
-		"task_id", taskID, "outcome", outcome, "attempt", attempts+1, "cap", testingAutoRetryCap)
+		"task_id", taskID, "outcome", outcome, "attempt", attempt, "cap", testingAutoRetryCap)
 	return true, nil
 }
 

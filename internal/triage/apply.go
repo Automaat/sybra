@@ -18,10 +18,10 @@ import (
 // Sybra-bug tracker routing markers.
 var preservedTags = append(append([]string{}, escapeHatchTags...),
 	umbrella.GatedTag,
-	"sybra-bug",
-	"scrubbed",
-	"local",
-	"issue-filing-failed",
+	string(task.FlagSybraBug),
+	string(task.FlagScrubbed),
+	string(task.FlagLocal),
+	string(task.FlagIssueFilingFailed),
 )
 
 const defaultSybraBugProjectID = "Automaat/sybra"
@@ -189,7 +189,7 @@ func isPRFixTask(t task.Task) bool {
 }
 
 func isSybraBugTask(t task.Task, v Verdict) bool {
-	return slices.Contains(t.Tags, "sybra-bug") || slices.Contains(v.Tags, "sybra-bug")
+	return task.HasFlag(t.Tags, task.FlagSybraBug) || task.HasFlag(v.Tags, task.FlagSybraBug)
 }
 
 // projectTypeFor returns the registered project type for id and whether id

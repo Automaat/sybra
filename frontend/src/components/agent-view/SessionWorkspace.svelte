@@ -1,6 +1,5 @@
 <script lang="ts">
   import { Tabs } from '@skeletonlabs/skeleton-svelte'
-  import type { ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import type { PlanStep } from '$lib/plan-steps.js'
   import { tabForTool, type TabKey, type ToolUseSignal } from '$lib/workspace-tabs.js'
@@ -12,12 +11,11 @@
     agentId: string
     taskId: string
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: ConvoEvent[]
     planSteps: PlanStep[]
     latestToolUse: ToolUseSignal | undefined
   }
 
-  const { agentId, taskId, streamOutputs, convoEvents, planSteps, latestToolUse }: Props = $props()
+  const { agentId, taskId, streamOutputs, planSteps, latestToolUse }: Props = $props()
 
   function getStorageString(key: string, fallback: string): string {
     if (typeof localStorage === 'undefined') return fallback
@@ -126,7 +124,7 @@
   <!-- Tab content -->
   <div class="min-h-0 flex-1 overflow-y-auto">
     {#if activeTab === 'shell'}
-      <ShellTab {streamOutputs} {convoEvents} />
+      <ShellTab {streamOutputs} />
     {:else if activeTab === 'editor'}
       <EditorTab {taskId} {latestEditToolUseId} />
     {:else if activeTab === 'planner'}

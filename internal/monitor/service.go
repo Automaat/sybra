@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -95,8 +96,14 @@ type Service struct {
 }
 
 type remediationResult struct {
-	labels         []string
-	skipIssueForFP map[string]bool
+	labels []string
+	// lostAgentCauses maps a lost_agent anomaly's base fingerprint to the
+	// remediation error message, for anomalies whose remediation this tick
+	// returned an error. fileIssues uses presence in this map to file
+	// immediately (an outright remediation failure) rather than waiting for
+	// the occurrence-streak gate a merely-recurring-but-"successful"
+	// remediation goes through.
+	lostAgentCauses map[string]string
 }
 
 // NewService validates dependencies and returns a Service ready for Run.
@@ -182,6 +189,7 @@ func (s *Service) tickAndLog(ctx context.Context) {
 		"dispatched", len(report.Dispatched),
 		"issues_opened", report.IssuesOpened,
 		"issues_updated", report.IssuesUpdated,
+		"issues_closed", report.IssuesClosed,
 	)
 }
 
@@ -229,9 +237,10 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		report.Remediated = append(report.Remediated, preRemediated...)
 		report.Remediated = append(report.Remediated, rem.labels...)
 		report.Dispatched = s.dispatchLLMAnomalies(ctx, now, report.Anomalies)
-		opened, updated := s.fileIssues(ctx, now, report.Anomalies, rem.skipIssueForFP)
+		opened, updated := s.fileIssues(ctx, now, report.Anomalies, rem.lostAgentCauses)
 		report.IssuesOpened = opened
 		report.IssuesUpdated = updated
+		report.IssuesClosed = s.closeRecoveredLostAgents(ctx, report.Anomalies)
 	}
 
 	s.state.recordReport(report, now)
@@ -374,7 +383,7 @@ func (s *Service) applyDowngradeLLM(anoms []Anomaly) {
 }
 
 func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remediationResult {
-	res := remediationResult{skipIssueForFP: map[string]bool{}}
+	res := remediationResult{lostAgentCauses: map[string]string{}}
 	for i := range anoms {
 		a := anoms[i]
 		if a.RequiresLLM {
@@ -386,12 +395,12 @@ func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remedi
 		label, err := s.rem.Apply(ctx, a)
 		if err != nil {
 			s.logger.Warn("monitor.remediate.failed", "kind", a.Kind, "task_id", a.TaskID, "err", err)
+			if a.Kind == KindLostAgent {
+				res.lostAgentCauses[a.Fingerprint] = err.Error()
+			}
 			continue
 		}
 		res.labels = append(res.labels, label)
-		if a.Kind == KindLostAgent {
-			res.skipIssueForFP[a.Fingerprint] = true
-		}
 	}
 	return res
 }
@@ -426,20 +435,30 @@ func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms
 
 // fileIssues files deterministic-body issues for anomalies that were neither
 // dispatched to an LLM nor fully handled in-process. Returns (opened, updated).
-func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly, skipIssueForFP map[string]bool) (opened, updated int) {
+//
+// lostAgentCauses carries the remediation failure message for lost_agent
+// anomalies whose remediation errored this tick (see applyRemediations); its
+// presence is what lets a lost_agent anomaly file immediately instead of
+// going through the occurrence-streak gate in gateLostAgentIssue.
+func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly, lostAgentCauses map[string]string) (opened, updated int) {
 	cooldown := time.Duration(s.cfg.IssueCooldownMinutes) * time.Minute
 	for i := range anoms {
 		a := anoms[i]
 		if a.RequiresLLM || isHumanRequiredStuck(a) {
 			continue
 		}
-		if skipIssueForFP[a.Fingerprint] {
-			continue
+		var body string
+		if a.Kind == KindLostAgent {
+			var ok bool
+			if a, body, ok = s.gateLostAgentIssue(a, lostAgentCauses); !ok {
+				continue
+			}
+		} else {
+			body = DeterministicIssueBody(a)
 		}
 		if !s.state.canIssue(a.Fingerprint, now, cooldown) {
 			continue
 		}
-		body := DeterministicIssueBody(a)
 		created, err := s.sink.Submit(ctx, a, body)
 		if err != nil {
 			if errors.Is(err, ErrGHRateLimit) {
@@ -449,6 +468,9 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 			s.logger.Warn("monitor.issue.failed", "kind", a.Kind, "fingerprint", a.Fingerprint, "err", err)
 			continue
 		}
+		if a.Kind == KindLostAgent {
+			s.state.lostAgentFiled(anoms[i].Fingerprint, a.Fingerprint)
+		}
 		if created {
 			opened++
 		} else {
@@ -456,6 +478,104 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 		}
 	}
 	return opened, updated
+}
+
+// gateLostAgentIssue decides whether a lost_agent anomaly should reach the
+// issue sink this tick, and with what body:
+//
+//   - An outright remediation failure this tick (recorded in causes) files
+//     immediately — remediation has already failed at least once, so there is
+//     nothing to wait for. The fingerprint is qualified with the failure cause
+//     so a distinct failure mode never collapses into whatever issue an
+//     earlier, unrelated cause opened.
+//   - Otherwise, remediation "succeeded" (resetLostAgent is best-effort and
+//     always returns nil short of a task-store error), so the anomaly only
+//     recurring means recovery hasn't taken effect *yet* — a single
+//     detection is not "failed", it's business as usual. Filing waits for
+//     LostAgentIssueAfterOccurrences consecutive detections; recurrences past
+//     the first that actually files post a terse occurrence-count comment
+//     instead of the full body, so a self-healing anomaly doesn't read as a
+//     stream of fresh incidents.
+func (s *Service) gateLostAgentIssue(a Anomaly, causes map[string]string) (Anomaly, string, bool) {
+	baseFP := a.Fingerprint
+	// Always record the hit, even on the already-filed/immediate-file
+	// branches below, so a tracking entry exists for closeRecoveredLostAgents
+	// to later clear and auto-close.
+	streak := s.state.lostAgentHit(baseFP, a.TaskID)
+	if filedFP, alreadyFiled := s.state.lostAgentFiledFP(baseFP); alreadyFiled {
+		// An issue is already open for this task's lost_agent condition:
+		// keep commenting on it regardless of this tick's cause/streak
+		// state, rather than re-evaluating the gate — which could otherwise
+		// open a second, differently-fingerprinted issue once a transient
+		// remediation error clears while the underlying condition persists.
+		a.Fingerprint = filedFP
+		return a, RecurrenceComment(a, streak), true
+	}
+	if cause, failed := causes[baseFP]; failed {
+		a.Fingerprint = Fingerprint(a.Kind, a.TaskID, map[string]any{"cause": cause})
+		return a, DeterministicIssueBody(a), true
+	}
+	if streak < s.cfg.LostAgentIssueAfterOccurrences {
+		s.logger.Debug("monitor.lost_agent.remediation_pending", "task_id", a.TaskID, "fingerprint", baseFP, "streak", streak)
+		return a, "", false
+	}
+	// At or past threshold and not yet successfully filed: always emit the full
+	// diagnostic body. The alreadyFiled check above owns the "issue exists, just
+	// comment" case, so a streak that has overshot the threshold (e.g. because a
+	// prior submit on the qualifying tick failed transiently) must still produce
+	// the full body — not a terse recurrence comment that would become the entire
+	// body of the brand-new issue this create actually opens.
+	return a, DeterministicIssueBody(a), true
+}
+
+// closeRecoveredLostAgents auto-closes any previously-filed lost_agent
+// issue/task whose condition has stayed clear for
+// LostAgentAutoCloseAfterClears consecutive ticks — the same "stayed clear
+// for N scans" intent as the #2433 merged-PR task auto-close, applied here
+// to monitor-filed issues rather than tasks. No-op when the sink doesn't
+// implement IssueCloser.
+func (s *Service) closeRecoveredLostAgents(ctx context.Context, anoms []Anomaly) int {
+	seen := make(map[string]bool, len(anoms))
+	for i := range anoms {
+		if anoms[i].Kind == KindLostAgent {
+			seen[anoms[i].Fingerprint] = true
+		}
+	}
+	cleared := s.state.lostAgentSweepClears(seen, s.cfg.LostAgentAutoCloseAfterClears)
+	if len(cleared) == 0 {
+		return 0
+	}
+	closer, ok := s.sink.(IssueCloser)
+	if !ok {
+		// No closer wired: nothing can ever close these, so drop them now
+		// rather than re-returning them (with an ever-climbing clearStreak)
+		// on every future tick.
+		for _, c := range cleared {
+			s.state.lostAgentForget(c.fp)
+		}
+		return 0
+	}
+	closed := 0
+	for _, c := range cleared {
+		a := Anomaly{Kind: KindLostAgent, TaskID: c.taskID, Fingerprint: c.filedFP}
+		comment := fmt.Sprintf("monitor: condition cleared for %d consecutive scans; auto-closing.", s.cfg.LostAgentAutoCloseAfterClears)
+		didClose, err := closer.CloseIfOpen(ctx, a, comment)
+		if err != nil {
+			// Keep the tracking entry alive (lostAgentSweepClears did not
+			// delete it) so the next tick retries this close instead of
+			// permanently orphaning the open issue/task.
+			s.logger.Warn("monitor.lost_agent.autoclose_failed", "task_id", c.taskID, "fingerprint", c.filedFP, "err", err)
+			continue
+		}
+		// Close succeeded or the issue was already gone: forget the entry so
+		// a future recurrence starts a clean streak.
+		s.state.lostAgentForget(c.fp)
+		if didClose {
+			closed++
+			s.logger.Info("monitor.lost_agent.autoclosed", "task_id", c.taskID, "fingerprint", c.filedFP)
+		}
+	}
+	return closed
 }
 
 // AuditDirReader builds an auditAPI bound to a fixed directory. Used by the

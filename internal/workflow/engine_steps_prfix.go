@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path"
 	"regexp"
 	"slices"
@@ -369,15 +368,9 @@ func resolvedMergeUnexpectedDirtyPaths(ctx context.Context, wtPath string, allow
 }
 
 func gitStatusPorcelainPaths(ctx context.Context, wtPath string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	out, err := gitCombinedOutput(ctx, wtPath, "status", "--porcelain", "-z")
 	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			return nil, fmt.Errorf("git status --porcelain -z: %w", err)
-		}
-		return nil, fmt.Errorf("git status --porcelain -z: %w: %s", err, detail)
+		return nil, err
 	}
 
 	var paths []string

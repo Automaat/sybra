@@ -394,7 +394,6 @@ func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
 		"    checkpoint_on_assistant_event_ceiling: false",
 		"    assistant_event_cost_fraction: 0.6",
 		"    assistant_event_multiplier: 3",
-		"    max_review_rounds: 4",
 		"",
 	}, "\n")))
 	if err != nil {
@@ -415,9 +414,6 @@ func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
 	}
 	if got := resolved.Config.Agent.TurnMultiplier; got != 3 {
 		t.Fatalf("Agent.TurnMultiplier = %v, want 3", got)
-	}
-	if got := resolved.Config.MaxReviewRounds(); got != 4 {
-		t.Fatalf("MaxReviewRounds() = %d, want 4", got)
 	}
 	if resolved.Config.CheckpointOnTurnCeilingEnabled() {
 		t.Fatal("CheckpointOnTurnCeilingEnabled() = true, want false")
@@ -469,8 +465,8 @@ func TestResolveV2GuardrailAliasesWarnAndKeepBoundedReviewLoop(t *testing.T) {
 	if !resolved.Config.ReviewUntilClean() {
 		t.Fatal("ReviewUntilClean() = false, want true")
 	}
-	if resolved.Config.AllowUnboundedReviewRounds() {
-		t.Fatal("AllowUnboundedReviewRounds() = true, want false for schema-v2 review_until_clean=true")
+	if got := resolved.Config.Agent.ReviewRoundsPerHourLimit(); got <= 0 {
+		t.Fatalf("ReviewRoundsPerHourLimit() = %d, want the positive default for schema-v2 review_until_clean=true", got)
 	}
 }
 
@@ -487,8 +483,102 @@ func TestResolveLegacyReviewUntilCleanPreservesUnboundedLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resolved.Config.AllowUnboundedReviewRounds() {
-		t.Fatal("AllowUnboundedReviewRounds() = false, want true for schema-v1 review_until_clean=true")
+	if got := resolved.Config.Agent.ReviewRoundsPerHourLimit(); got > 0 {
+		t.Fatalf("ReviewRoundsPerHourLimit() = %d, want disabled (<=0) for schema-v1 review_until_clean=true", got)
+	}
+}
+
+// github.review_rounds_per_hour was the field's home for one day (schema v2,
+// before it moved to agent). A config that already adopted it during that
+// window must keep parsing and resolving instead of hitting "unknown config
+// key" on the next upgrade.
+func TestParseFileConfig_AcceptsLegacyGitHubReviewRoundsPerHour(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("ParseFileConfig() error = %v, want the legacy key accepted as an alias", err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
+		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want 5 from the legacy github key", got)
+	}
+}
+
+func TestResolve_ConflictingReviewRoundsPerHourKeysError(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"agent:",
+		"  review_rounds_per_hour: 3",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resolve(fileCfg, Environment{}, ResolveOptions{}); err == nil {
+		t.Fatal("Resolve() error = nil, want a conflict error for mismatched agent/github values")
+	}
+}
+
+func TestResolveLegacyReviewUntilCleanKeepsExplicitGitHubReviewRoundsPerHour(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"agent:",
+		"  review_until_clean: true",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
+		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want the explicit legacy github value 5 preserved, not clobbered to -1", got)
+	}
+}
+
+func TestMigrateRawConfig_RelocatesLegacyGitHubReviewRoundsPerHour(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"agent:",
+		"  review_until_clean: true",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(result.MigratedRaw)
+	if !strings.Contains(text, "review_rounds_per_hour: 5") {
+		t.Fatalf("migrated config missing the preserved value:\n%s", text)
+	}
+	if strings.Contains(text, "integrations:\n  github:\n    review_rounds_per_hour") {
+		t.Fatalf("migrated config kept review_rounds_per_hour under integrations.github:\n%s", text)
+	}
+
+	fileCfg, err := ParseFileConfig(result.MigratedRaw)
+	if err != nil {
+		t.Fatalf("re-parse migrated output: %v", err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatalf("re-resolve migrated output: %v", err)
+	}
+	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
+		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want 5 preserved through migration", got)
 	}
 }
 
@@ -510,7 +600,7 @@ func TestMigrateRawConfigRewritesGuardrailAliasesAndPreservesExplicitReviewLoop(
 		"post_result_cost_usd: 9",
 		"max_assistant_events: 60",
 		"review_until_clean: true",
-		"allow_unbounded_review_rounds: true",
+		"review_rounds_per_hour: -1",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("migrated config missing %q:\n%s", want, text)
@@ -537,7 +627,7 @@ func TestMigrateRawConfigKeepsV2ReviewUntilCleanBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(result.MigratedRaw)
-	if strings.Contains(text, "allow_unbounded_review_rounds") {
+	if strings.Contains(text, "review_rounds_per_hour") {
 		t.Fatalf("migration opted v2 config into unbounded review rounds:\n%s", text)
 	}
 	if result.Changed {
@@ -546,7 +636,7 @@ func TestMigrateRawConfigKeepsV2ReviewUntilCleanBounded(t *testing.T) {
 }
 
 func TestMigrateNodeToCanonicalPreservesNilAsYAMLNull(t *testing.T) {
-	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil, false)
+	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2998,7 +3088,7 @@ func TestCheckpointDefaults(t *testing.T) {
 // default 3, negative disables"), and every dispatcher test runs with a nil cfg
 // — so without this table the production path is exercised by nothing, and a
 // regression that silently disables the cap fleet-wide ships green.
-func TestGitHubConfig_ReviewRoundsPerHourLimit(t *testing.T) {
+func TestAgentDefaults_ReviewRoundsPerHourLimit(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -3015,7 +3105,7 @@ func TestGitHubConfig_ReviewRoundsPerHourLimit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := GitHubConfig{ReviewRoundsPerHour: tt.set}.ReviewRoundsPerHourLimit()
+			got := AgentDefaults{ReviewRoundsPerHour: tt.set}.ReviewRoundsPerHourLimit()
 			if got != tt.want {
 				t.Errorf("ReviewRoundsPerHourLimit(%d) = %d, want %d", tt.set, got, tt.want)
 			}
