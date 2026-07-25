@@ -71,6 +71,11 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 			continue
 		}
 
+		if project.HasUnpushedCommits(ctx, wtPath) {
+			m.logger.Warn("worktree.orphan-cleanup.unpushed-commits", "path", wtPath)
+			continue
+		}
+
 		removed := false
 		if exists && t.ProjectID != "" {
 			if proj, perr := m.projects.Get(t.ProjectID); perr == nil {
@@ -104,6 +109,25 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 			m.logger.Warn("worktree.prune", "project", projects[i].ID, "err", err)
 		}
 	}
+}
+
+// HasUnpushedCommits reports whether taskID's own worktree holds commits not
+// on origin. Used by sandbox cleanup (a separate per-task data dir from the
+// git worktree) so it never reaps a sandbox tied to a task whose worktree
+// still holds completed-but-unpushed work (#2593). Returns false — nothing to
+// protect — when the task, its worktree, or its project cannot be resolved,
+// or when the worktree is externally adopted (owned by the tool that created
+// it, not Sybra).
+func (m *Manager) HasUnpushedCommits(ctx context.Context, taskID string) bool {
+	t, err := m.tasks.Get(taskID)
+	if err != nil || t.ProjectID == "" || t.WorktreeDir != "" {
+		return false
+	}
+	wtPath := filepath.Join(m.dir, t.DirName())
+	if _, err := os.Stat(wtPath); err != nil {
+		return false
+	}
+	return project.HasUnpushedCommits(ctx, wtPath)
 }
 
 // List returns all git worktrees for the given project.

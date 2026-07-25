@@ -312,7 +312,7 @@ func TestInitSandboxes_AppliesRetentionWindow(t *testing.T) {
 		ID:              "task-done",
 		Status:          task.StatusDone,
 		StatusChangedAt: time.Now(),
-	}}, nil)
+	}}, nil, nil)
 
 	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
 		t.Fatalf("recent done sandbox removed despite positive retention: %v", err)

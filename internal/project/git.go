@@ -1130,6 +1130,20 @@ func IsWorktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 	return worktreeDirty(ctx, worktreePath)
 }
 
+// HasUnpushedCommits reports whether HEAD in worktreePath holds commits that
+// no remote-tracking ref locally knows about. Errs toward true: if the count
+// cannot be determined (not a git repo, missing dir, git failure), callers
+// deciding whether a worktree/sandbox is safe to reap must treat it as unsafe
+// rather than silently destroying possibly-unpushed work (see #2593, where a
+// completed implementation was lost this way).
+func HasUnpushedCommits(ctx context.Context, worktreePath string) bool {
+	out, err := executil.Output(ctx, worktreePath, "git", "rev-list", "--count", "HEAD", "--not", "--remotes")
+	if err != nil {
+		return true
+	}
+	return out != "0"
+}
+
 // HardResetWorktree resets a worktree's index and working tree to ref (a
 // branch name or commit SHA) via `git reset --hard`. Used by best-of-N
 // promotion to materialize the canonical worktree at the winning attempt's

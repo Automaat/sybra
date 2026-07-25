@@ -330,8 +330,13 @@ func cleanupEligible(s task.Status) bool {
 // they have been eligible for at least the configured retention window (see
 // SetRetentionWindow). Non-eligible tasks (active, in-review, etc.) always
 // keep their dirs. When hasAgent reports a live task agent, the dir is
-// preserved so cleanup never races an active run.
-func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAgent func(string) bool) {
+// preserved so cleanup never races an active run. When hasUnpushedCommits
+// reports the task's git worktree still holds commits not on origin, the dir
+// is preserved regardless of status/age/deletion — status alone (e.g. a task
+// bounced to human-required by a failed push, then reset) is not proof the
+// work is safely recoverable elsewhere (#2593). hasUnpushedCommits may be nil,
+// in which case this signal is skipped (matches hasAgent's nil handling).
+func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAgent, hasUnpushedCommits func(string) bool) {
 	entries, err := os.ReadDir(m.dataDir)
 	if err != nil {
 		return
@@ -361,6 +366,9 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 			// including a task record that's gone missing — an orphaned
 			// dir with a running agent is not orphaned, it's just
 			// unlinked from the (possibly stale) task list.
+			continue
+		case hasUnpushedCommits != nil && hasUnpushedCommits(taskID):
+			m.logger.Warn("sandbox.cleanup.unpushed-commits", "task_id", taskID)
 			continue
 		case !exists:
 			// Deleted task — remove regardless of age, and regardless of any

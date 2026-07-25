@@ -152,7 +152,13 @@ func (a *App) maintenancePass(ctx context.Context) {
 			if a.agents != nil {
 				hasAgent = a.agents.HasRunningAgentForTask
 			}
-			a.sandboxes.CleanupOrphaned(ctx, tasks, hasAgent)
+			var hasUnpushedCommits func(string) bool
+			if a.worktrees != nil {
+				hasUnpushedCommits = func(taskID string) bool {
+					return a.worktrees.HasUnpushedCommits(ctx, taskID)
+				}
+			}
+			a.sandboxes.CleanupOrphaned(ctx, tasks, hasAgent, hasUnpushedCommits)
 		}
 	}
 }

@@ -28,6 +28,7 @@ import (
 	"github.com/Automaat/sybra/internal/buildcache"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -310,6 +311,17 @@ func gitStatusClean(path string) bool {
 	return len(bytes.TrimSpace(out)) == 0
 }
 
+// hasUnpushedCommits reports whether the worktree at path holds commits not
+// on any remote. Unlike gitStatusClean this is never bypassed by --force: a
+// clean-but-unpushed worktree holds finished work with no other copy, which
+// --force exists to blow past for merely-dirty (in-progress, discardable)
+// state, not completed-but-undelivered commits (#2593).
+func hasUnpushedCommits(path string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return project.HasUnpushedCommits(ctx, path)
+}
+
 // resolveBucketNames returns the bucket names Scan/Apply should consider:
 // opts.Only when set (already validated by the caller), otherwise every
 // known bucket name (still subject to each bucket's own gate check).
@@ -565,6 +577,9 @@ func (s *Scanner) scanWorktrees(snap snapshot, opts Options) Bucket {
 		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.now()); !ok {
 			continue
 		}
+		if hasUnpushedCommits(p) {
+			continue
+		}
 		if !opts.Force && !gitStatusClean(p) {
 			continue
 		}
@@ -719,6 +734,9 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 		taskID := taskIDFromWorktreeDir(filepath.Base(path))
 		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.now()); !ok {
 			return false, reason
+		}
+		if hasUnpushedCommits(path) {
+			return false, "worktree has commits not pushed to any remote"
 		}
 		if !opts.Force && !gitStatusClean(path) {
 			return false, "worktree has uncommitted changes"
