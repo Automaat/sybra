@@ -73,6 +73,14 @@ const (
 	// carries only the task ID (via the audit envelope) — never branch
 	// names, commit SHAs, or agent output.
 	EventBranchConflictAutoResolved = "pr_monitor.branch_conflict_auto_resolved"
+	// EventPRBranchStaleAutoSynced records that a PR branch was found behind
+	// its base between review/fix-review rounds and was brought up to date by
+	// a deterministic git merge (pushed) before the round's agent ran — so the
+	// round is spent on the real issue instead of a stale-diff artifact
+	// (#2609). Unlike EventPRConflictAutoResolved, this never skips the round:
+	// the triggering issue still needs the agent's attention. Data carries
+	// only pr — never PR titles, branch names, or agent output.
+	EventPRBranchStaleAutoSynced = "pr_monitor.branch_stale_auto_synced"
 	// EventPRBlockerReconciled records that a human-required task parked by
 	// the pr-monitor auto-fix-exhausted escalation (ci_failure or conflict)
 	// was moved back to in-review because a fresh probe found its linked PR
