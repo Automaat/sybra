@@ -736,6 +736,39 @@ func TestBuiltinPRReview_AuthorizesVisibleReviewAction(t *testing.T) {
 	}
 }
 
+// TestBuiltinPRReview_EscalatesOnLookupFailure locks the failure-recovery
+// contract added for #2647: a review step whose agent could not find/access
+// the PR self-escalates to human-required (via sybra-cli), and the step's
+// Next transitions must stop the workflow there instead of blindly following
+// the unconditional edge into set_in_review — mirroring
+// simple-task-review.yaml's require_code_review gate.
+func TestBuiltinPRReview_EscalatesOnLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	pr := defByID(t, "pr-review")
+	for _, stepID := range []string{"review_simple", "review_staff"} {
+		step := pr.StepByID(stepID)
+		if step == nil {
+			t.Fatalf("%s step not found in pr-review", stepID)
+		}
+		if !strings.Contains(step.Config.Prompt, "human-required") {
+			t.Fatalf("%s prompt missing PR-not-found escalation instruction:\n%s", stepID, step.Config.Prompt)
+		}
+		if len(step.Next) < 2 {
+			t.Fatalf("%s next transitions = %+v, want a human-required guard before the unconditional edge", stepID, step.Next)
+		}
+		guard := step.Next[0]
+		if guard.When == nil || guard.When.Field != "task.status" || guard.When.Operator != "equals" ||
+			guard.When.Value != "human-required" || guard.GoTo != "" {
+			t.Fatalf("%s first transition = %+v, want a human-required guard ending the workflow", stepID, guard)
+		}
+		fallback := step.Next[len(step.Next)-1]
+		if fallback.When != nil || fallback.GoTo != "set_in_review" {
+			t.Fatalf("%s fallback transition = %+v, want unconditional goto set_in_review", stepID, fallback)
+		}
+	}
+}
+
 func TestBuiltinPRReview_PickReviewMethod(t *testing.T) {
 	t.Parallel()
 
