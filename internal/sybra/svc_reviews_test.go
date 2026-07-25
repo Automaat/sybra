@@ -186,6 +186,8 @@ func TestReviewService_StartFixReview_NoProjectID(t *testing.T) {
 func TestReviewService_StartFixReview_HappyPath(t *testing.T) {
 	argsLog := filepath.Join(t.TempDir(), "claude-args.log")
 	t.Setenv("FAKE_CLAUDE_ARGS_LOG", argsLog)
+	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.log")
+	t.Setenv("FAKE_CLAUDE_STDIN_LOG", stdinLog)
 
 	svc, taskMgr, _ := setupReviewService(t)
 
@@ -227,8 +229,6 @@ func TestReviewService_StartFixReview_HappyPath(t *testing.T) {
 
 	for _, want := range []string{
 		"-p",
-		"/fix-review https://github.com/testowner/testrepo/pull/42 --auto",
-		"fix(review)",
 		"--output-format",
 		"stream-json",
 		"--model",
@@ -236,6 +236,27 @@ func TestReviewService_StartFixReview_HappyPath(t *testing.T) {
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("expected %q in args:\n%s", want, args)
+		}
+	}
+
+	// The prompt itself travels over stdin, not argv (see
+	// provider_claude.go's non-steerable branch) — check the captured
+	// stdin content, not args, for its actual text.
+	waitFor(t, 5*time.Second, "fake-claude stdin log written", func() bool {
+		_, err := os.Stat(stdinLog)
+		return err == nil
+	})
+	stdinData, err := os.ReadFile(stdinLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(stdinData)
+	for _, want := range []string{
+		"/fix-review https://github.com/testowner/testrepo/pull/42 --auto",
+		"fix(review)",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("expected %q in stdin prompt:\n%s", want, prompt)
 		}
 	}
 

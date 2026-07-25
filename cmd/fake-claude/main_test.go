@@ -158,12 +158,12 @@ func TestPopScenario_FileMissingFallsBack(t *testing.T) {
 	}
 }
 
-func TestWriteArgsLog(t *testing.T) {
+func TestWriteCaptureLog(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "claude-args.log")
 
-	if err := writeArgsLog(path, []byte("-p\nhello")); err != nil {
-		t.Fatalf("writeArgsLog: %v", err)
+	if err := writeCaptureLog(path, []byte("-p\nhello")); err != nil {
+		t.Fatalf("writeCaptureLog: %v", err)
 	}
 
 	got, err := os.ReadFile(path)
