@@ -13,7 +13,6 @@ import (
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -70,17 +69,11 @@ type Mirror struct {
 	applyMu  sync.Mutex
 
 	attachments *attachment.Store
-	anomalySink monitor.IssueSink
 
 	// missingMu guards missingStreak, written from each node's independent
 	// reconcileLoop goroutine.
 	missingMu     sync.Mutex
 	missingStreak map[string]int // "node|taskID" -> consecutive confirmed-404 ticks
-
-	// driftMu guards driftLastSeen, written from each node's independent
-	// reconcileLoop goroutine.
-	driftMu       sync.Mutex
-	driftLastSeen map[string]time.Time // "node|taskID" -> time of the last detected drift
 }
 
 // NewMirror constructs a Mirror. A nil logger falls back to slog.Default(); a
@@ -95,7 +88,6 @@ func NewMirror(cfg *config.Config, tasks *task.Manager, roster *cluster.Roster, 
 	return &Mirror{
 		cfg: cfg, tasks: tasks, roster: roster, logger: logger, interval: interval,
 		missingStreak: make(map[string]int),
-		driftLastSeen: make(map[string]time.Time),
 	}
 }
 
@@ -103,15 +95,6 @@ func NewMirror(cfg *config.Config, tasks *task.Manager, roster *cluster.Roster, 
 // attachment uploads back into the canonical task view.
 func (m *Mirror) SetAttachments(store *attachment.Store) {
 	m.attachments = store
-}
-
-// SetAnomalySink supplies the sink drift detection reports through — the same
-// routing sink monitor.Service uses, so a cluster-drift finding gets the
-// existing dedup, work-project scrubbing, and durable GitHub-issue-outbox
-// behavior for free. A nil sink (monitor disabled, or not yet wired at
-// construction time) disables alerting only; detection and repair still run.
-func (m *Mirror) SetAnomalySink(sink monitor.IssueSink) {
-	m.anomalySink = sink
 }
 
 // Run starts, per follower, a reconcile ticker, and blocks until ctx is
@@ -362,45 +345,33 @@ func (m *Mirror) adoptFollowerTask(ctx context.Context, node string, follower ta
 	return true
 }
 
-// driftAlertWindow bounds how soon a second drift on the same task after a
-// previously detected one is treated as a re-drift worth alerting on. Now
-// that Assigner pushes Tags/DependsOn edits to the follower at write time
-// (see PushFieldUpdate and its TaskService.UpdateTask caller), this backstop
-// firing at all should be rare; a repair that holds for longer than this
-// before the task drifts again is presumed unrelated (e.g. two independent
-// manual edits), not a repair that failed to stick.
-const driftAlertWindow = time.Hour
-
 // detectAndRepairDrift compares the two leader-authoritative fields Merge
 // never touches — Tags and DependsOn — between the leader's canonical copy
 // and what the follower actually reports. Every other field either flows
 // follower-authoritative through Merge every reconcile tick (Status,
 // Workflow, AgentRuns, ...) or is immutable identity (ID, ProjectID,
 // CreatedAt), so an ordinary disagreement there is expected and self-heals
-// on its own — alerting on it would just be noise. Tags/DependsOn only ever
-// change on the leader (umbrella-gate release, a manual sybra-cli edit, ...);
-// if a leader-side write to one of them never reached the follower — the
-// #2349 class of bug, from any cause, not just the one fixed there — nothing
-// else in the reconcile loop will ever notice, because Merge doesn't carry
-// them. This is the backstop: detected within one reconcile interval, logged,
-// and repaired by pushing just the drifted fields onto the follower's own
-// current state (never a stale full-task overwrite that could roll back
-// follower-side execution progress).
+// on its own. Tags/DependsOn only ever change on the leader (umbrella-gate
+// release, a manual sybra-cli edit, ...); if a leader-side write to one of
+// them never reached the follower — the #2349 class of bug, from any cause,
+// not just the one fixed there — nothing else in the reconcile loop will
+// ever notice, because Merge doesn't carry them. This is the backstop:
+// detected within one reconcile interval, logged, and repaired by pushing
+// just the drifted fields onto the follower's own current state (never a
+// stale full-task overwrite that could roll back follower-side execution
+// progress).
 //
-// Alerting is deliberately narrower than detection: a single drift that
-// repairs cleanly is exactly the write-time push path missing a beat (a
-// follower restart mid-push, a transient network blip, ...) — the sort of
-// thing the 42 `cluster_drift` issues/2 weeks were filed for despite the
-// backstop already having fixed it within one tick. Only alert when the
-// repair itself fails (the backstop couldn't self-heal, so a human needs to
-// know) or when the same task drifted again within driftAlertWindow of the
-// last time (the backstop keeps working, but something keeps re-breaking the
-// write-time push for this task, which is worth investigating).
+// Purely self-healing, no alerting: every case this backstop hits — a
+// follower restart mid-push, a transient network blip, a repair that fails
+// outright — either fixes itself within one tick or keeps retrying every
+// tick after, so there is nothing here a human needs paged for. (#2495
+// narrowed alerting to repair-failure/re-drift only, and it still produced
+// 42 `cluster_drift` issues in 2 weeks for cases the backstop had already
+// fixed — not worth a GitHub issue at any threshold.)
 func (m *Mirror) detectAndRepairDrift(ctx context.Context, node string, canonical, follower task.Task) {
 	tagsDrift := !slices.Equal(sortedCopy(canonical.Tags), sortedCopy(follower.Tags))
 	depsDrift := !slices.Equal(sortedCopy(canonical.DependsOn), sortedCopy(follower.DependsOn))
 	if !tagsDrift && !depsDrift {
-		m.clearDriftLastSeen(node, canonical.ID)
 		return
 	}
 	m.logger.Error("cluster.mirror.drift_detected",
@@ -408,64 +379,7 @@ func (m *Mirror) detectAndRepairDrift(ctx context.Context, node string, canonica
 		"tags_drift", tagsDrift, "deps_drift", depsDrift,
 		"canonical_tags", canonical.Tags, "follower_tags", follower.Tags,
 		"canonical_depends_on", canonical.DependsOn, "follower_depends_on", follower.DependsOn)
-
-	redrift := m.recentDrift(node, canonical.ID)
-	m.recordDriftSeen(node, canonical.ID)
-	repaired := m.repairDrift(ctx, node, canonical)
-	if !repaired || redrift {
-		m.alertDrift(ctx, node, canonical, tagsDrift, depsDrift)
-	}
-}
-
-func driftSeenKey(node, taskID string) string { return missingStreakKey(node, taskID) }
-
-// recentDrift reports whether node/taskID last drifted within
-// driftAlertWindow.
-func (m *Mirror) recentDrift(node, taskID string) bool {
-	m.driftMu.Lock()
-	defer m.driftMu.Unlock()
-	last, ok := m.driftLastSeen[driftSeenKey(node, taskID)]
-	return ok && time.Since(last) < driftAlertWindow
-}
-
-func (m *Mirror) recordDriftSeen(node, taskID string) {
-	m.driftMu.Lock()
-	defer m.driftMu.Unlock()
-	m.driftLastSeen[driftSeenKey(node, taskID)] = time.Now()
-}
-
-// clearDriftLastSeen drops node/taskID's drift history once a reconcile tick
-// finds it no longer drifting, so a later, unrelated drift starts fresh
-// instead of inheriting a stale streak (mirrors clearMissingStreak).
-func (m *Mirror) clearDriftLastSeen(node, taskID string) {
-	m.driftMu.Lock()
-	defer m.driftMu.Unlock()
-	delete(m.driftLastSeen, driftSeenKey(node, taskID))
-}
-
-func (m *Mirror) alertDrift(ctx context.Context, node string, canonical task.Task, tagsDrift, depsDrift bool) {
-	if m.anomalySink == nil {
-		return
-	}
-	ev := map[string]any{
-		"node":       node,
-		"tags_drift": tagsDrift,
-		"deps_drift": depsDrift,
-		"tags":       canonical.Tags,
-		"depends_on": canonical.DependsOn,
-	}
-	a := monitor.Anomaly{
-		Kind:        monitor.KindClusterDrift,
-		TaskID:      canonical.ID,
-		Severity:    monitor.SeverityError,
-		RequiresLLM: false,
-		Fingerprint: monitor.Fingerprint(monitor.KindClusterDrift, canonical.ID, ev),
-		Evidence:    ev,
-		DetectedAt:  time.Now().UTC(),
-	}
-	if _, err := m.anomalySink.Submit(ctx, a, monitor.DeterministicIssueBody(a)); err != nil {
-		m.logger.Warn("cluster.mirror.drift_alert.failed", "task", canonical.ID, "node", node, "err", err)
-	}
+	m.repairDrift(ctx, node, canonical)
 }
 
 // driftRepairTimeout bounds repairDrift's two follower round trips (a
@@ -482,21 +396,20 @@ const driftRepairTimeout = 5 * time.Second
 // re-fetches via GetTask rather than reusing this tick's ListTasks snapshot,
 // which can already be stale by the time this repair runs — earlier tasks in
 // the same batch, under the same applyMu lock, each take up to
-// driftRepairTimeout first. Returns whether the repair reached the follower —
-// detectAndRepairDrift alerts when it doesn't, since that's the one case the
-// backstop itself can't self-heal.
-func (m *Mirror) repairDrift(ctx context.Context, node string, canonical task.Task) bool {
+// driftRepairTimeout first. Every failure path logs its own Warn; a failed
+// repair simply retries on the next reconcile tick.
+func (m *Mirror) repairDrift(ctx context.Context, node string, canonical task.Task) {
 	client, ok := m.roster.Client(node)
 	if !ok || client == nil {
 		m.logger.Warn("cluster.mirror.drift_repair.no_client", "task", canonical.ID, "node", node)
-		return false
+		return
 	}
 	repairCtx, cancel := context.WithTimeout(ctx, driftRepairTimeout)
 	defer cancel()
 	live, err := client.GetTask(repairCtx, canonical.ID)
 	if err != nil {
 		m.logger.Warn("cluster.mirror.drift_repair.refetch_failed", "task", canonical.ID, "node", node, "err", err)
-		return false
+		return
 	}
 	repaired := live
 	repaired.Tags = canonical.Tags
@@ -504,10 +417,9 @@ func (m *Mirror) repairDrift(ctx context.Context, node string, canonical task.Ta
 	repaired.AssignedNode = node
 	if err := client.AssignTask(repairCtx, repaired); err != nil {
 		m.logger.Warn("cluster.mirror.drift_repair.failed", "task", canonical.ID, "node", node, "err", err)
-		return false
+		return
 	}
 	m.logger.Info("cluster.mirror.drift_repaired", "task", canonical.ID, "node", node)
-	return true
 }
 
 // sortedCopy returns a sorted copy of ss so set-like fields (Tags,
