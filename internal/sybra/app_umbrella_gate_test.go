@@ -869,6 +869,88 @@ func TestReleaseUnblockedChildren_StaleScopeVerdictDoesNotHoldRelease(t *testing
 	}
 }
 
+// TestReleaseUnblockedChildren_ScopeVerdictMatchesAlternateRefSpellings guards
+// the normalization gap: a scope verdict recorded with a ref spelling that is
+// not byte-identical to the DependsOn entry — a full github.com URL, a
+// differently-cased shorthand, or the bare "#N" a human copies straight off the
+// issue page — must still match and hold the child. Raw string equality (or
+// NormalizeIssueRef without a bare-number fallback) would silently release it
+// back into the sybra#2637 re-dispatch cycle.
+func TestReleaseUnblockedChildren_ScopeVerdictMatchesAlternateRefSpellings(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		blockerCode string
+	}{
+		{"full github url", "https://github.com/Automaat/sybra/issues/1"},
+		{"mixed case shorthand", "automaat/SYBRA#1"},
+		{"bare hash number", "#1"},
+		{"plain number", "1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app, m := newUmbrellaGateApp(t)
+			const umb = "https://github.com/Automaat/sybra/issues/100"
+			mkTracker(t, m, umb, 5)
+
+			mkChild(t, m, "dep", "Automaat/sybra#1", umb, nil, task.StatusDone)
+			child := mkChild(t, m, "child", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
+			if _, err := m.Update(child.ID, task.Update{
+				Status: task.Ptr(task.StatusBlocked),
+				Blocker: task.Ptr(blocker.State{
+					Kind: blocker.KindDependencyScopeUnmet,
+					Code: tc.blockerCode,
+				}),
+			}); err != nil {
+				t.Fatalf("record scope verdict: %v", err)
+			}
+
+			app.releaseUnblockedChildren(context.Background())
+
+			held := mustTask(t, m, child.ID)
+			if held.Status != task.StatusHumanRequired {
+				t.Fatalf("child status = %q, want human-required — verdict ref %q must match DependsOn #1", held.Status, tc.blockerCode)
+			}
+		})
+	}
+}
+
+// TestReleaseUnblockedChildren_ScopeVerdictMatchesBodyDerivedRef guards the
+// second bypass: the gate's release decision runs against a merged dependency
+// set that folds in body-derived cross-program refs (umbrella.ExternalBlockers),
+// not the raw t.DependsOn. A scope verdict naming one of those body-referenced
+// refs must still hold the child once that ref resolves, even though it never
+// appears in the formal DependsOn slice.
+func TestReleaseUnblockedChildren_ScopeVerdictMatchesBodyDerivedRef(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	mkTracker(t, m, umb, 5)
+
+	// The dependency lives in another program; it is named only in the child's
+	// body ("strictly after ..."), never in DependsOn.
+	mkChild(t, m, "dep", "Automaat/otherprog#7", umb, nil, task.StatusDone)
+	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, nil, task.StatusTodo)
+	if _, err := m.Update(child.ID, task.Update{
+		Status: task.Ptr(task.StatusBlocked),
+		Body:   task.Ptr("Implements the thing. Strictly after Automaat/otherprog#7."),
+		Blocker: task.Ptr(blocker.State{
+			Kind: blocker.KindDependencyScopeUnmet,
+			Code: "Automaat/otherprog#7",
+		}),
+	}); err != nil {
+		t.Fatalf("record scope verdict: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	held := mustTask(t, m, child.ID)
+	if held.Status != task.StatusHumanRequired {
+		t.Fatalf("child status = %q, want human-required — verdict names a body-derived ref that must be honored", held.Status)
+	}
+}
+
 func TestReleaseUnblockedChildren_HoldsWhileUmbrellaExpanding(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)

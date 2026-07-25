@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,6 +103,13 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	}
 
 	crossProgramRefs := map[string][]string{} // task ID -> free-text external blockers found in its body
+	// mergedDeps mirrors the DependsOn set the gate's own release decision runs
+	// against — t.DependsOn folded together with body-derived cross-program refs
+	// (umbrella.ExternalBlockers). holdScopeVerdictBlocked matches a scope
+	// verdict against this same merged set, not the raw t.DependsOn, so a verdict
+	// naming a body-referenced external ref still holds the child (see finding on
+	// namesScopeVerdictDep reading t.DependsOn directly).
+	mergedDeps := make(map[string][]string, len(tasks))
 
 	for i := range tasks {
 		t := &tasks[i]
@@ -116,6 +124,7 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 				dependsOn = mergeIssueRefs(dependsOn, refs)
 			}
 		}
+		mergedDeps[t.ID] = dependsOn
 		nodes[i] = umbrella.Node{
 			ID:        t.ID,
 			Issue:     t.Issue,
@@ -166,7 +175,7 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	// children still release so independent work under the umbrella can proceed.
 	// Expanding/recovering trackers are removed from states above, so release
 	// and rollup both hold until the complete DAG is visible.
-	ready := a.holdScopeVerdictBlocked(g.ReadyToRelease(), byID, states)
+	ready := a.holdScopeVerdictBlocked(g.ReadyToRelease(), byID, states, mergedDeps)
 	a.releaseCapped(ctx, ready, byID, states)
 
 	// An in-flight recovery run owns this umbrella's tracker/children this
@@ -286,14 +295,14 @@ const dependencyScopeVerdictReasonPrefix = "held: prior verdict flagged unmet sc
 // same already-known-negative cycle. A blocker whose Code no longer names a
 // current depends_on ref (e.g. DependsOn was edited since) is stale and must
 // not hold release.
-func (a *App) holdScopeVerdictBlocked(ready []string, byID map[string]*task.Task, states map[string]*umbrellaState) []string {
+func (a *App) holdScopeVerdictBlocked(ready []string, byID map[string]*task.Task, states map[string]*umbrellaState, mergedDeps map[string][]string) []string {
 	if len(ready) == 0 {
 		return ready
 	}
 	kept := ready[:0]
 	for _, id := range ready {
 		t := byID[id]
-		if t == nil || !namesScopeVerdictDep(t) {
+		if t == nil || !namesScopeVerdictDep(t, mergedDeps[id]) {
 			kept = append(kept, id)
 			continue
 		}
@@ -318,16 +327,58 @@ func (a *App) holdScopeVerdictBlocked(ready []string, byID map[string]*task.Task
 }
 
 // namesScopeVerdictDep reports whether t carries an explicit prior
-// dependency-scope-unmet verdict naming one of its own current DependsOn
-// refs.
-func namesScopeVerdictDep(t *task.Task) bool {
+// dependency-scope-unmet verdict naming one of its own current dependency refs.
+// dependsOn is the same merged set the gate's release decision runs against
+// (t.DependsOn plus body-derived cross-program refs), not the raw t.DependsOn,
+// so a verdict naming a body-referenced external ref is still honored.
+func namesScopeVerdictDep(t *task.Task, dependsOn []string) bool {
 	if t.Blocker.Kind != blocker.KindDependencyScopeUnmet || t.Blocker.Code == "" {
 		return false
 	}
-	target := umbrella.NormalizeIssueRef(t.Blocker.Code)
-	return slices.ContainsFunc(t.DependsOn, func(ref string) bool {
+	if dependsOn == nil {
+		dependsOn = t.DependsOn
+	}
+	return matchesDepRef(t.Blocker.Code, dependsOn)
+}
+
+// matchesDepRef reports whether code names one of the dependsOn refs. It first
+// matches on the canonical "owner/repo#n" form (via NormalizeIssueRef, which
+// collapses github.com URLs and lowercases shorthand). If code is a bare "#n"
+// (or plain "n") with no owner/repo — the spelling a human copies straight off
+// a GitHub issue, which NormalizeIssueRef cannot canonicalize without a repo —
+// it falls back to matching by issue number alone. That errs toward holding the
+// child rather than releasing it into the known-negative re-dispatch cycle this
+// gate exists to stop (sybra#2637).
+func matchesDepRef(code string, dependsOn []string) bool {
+	target := umbrella.NormalizeIssueRef(code)
+	if slices.ContainsFunc(dependsOn, func(ref string) bool {
 		return umbrella.NormalizeIssueRef(ref) == target
-	})
+	}) {
+		return true
+	}
+	if n, ok := bareIssueNumber(code); ok {
+		return slices.ContainsFunc(dependsOn, func(ref string) bool {
+			_, rn, rok := umbrella.ParseRef(ref)
+			return rok && rn == n
+		})
+	}
+	return false
+}
+
+// bareIssueNumber parses a repo-less issue reference ("#42" or "42") into its
+// number. It reports ok=false for anything carrying an owner/repo (those are
+// handled by the canonical NormalizeIssueRef path) or that is not a plain
+// number.
+func bareIssueNumber(s string) (int, bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "#")
+	if s == "" || strings.ContainsAny(s, "/#") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // accumulateChild folds one child task's status into its umbrella's tally.
