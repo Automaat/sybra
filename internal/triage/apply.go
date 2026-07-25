@@ -56,7 +56,7 @@ const umbrellaGuardOptOutTag = "notumbrella"
 // atomic per task (Manager holds a per-task mutex).
 //
 // projects is used to look up the project type after ProjectID is matched,
-// which feeds into routing rules (work projects force interactive mode).
+// which feeds into routing rules (work projects force the planning status).
 func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project) (task.Task, error) {
 	return ApplyWithOptions(mgr, t, v, projects, ApplyOptions{})
 }
@@ -79,7 +79,7 @@ func ApplyWithOptions(mgr *task.Manager, t task.Task, v Verdict, projects []proj
 	// is only authoritative while it still resolves to a registered project —
 	// a renamed/deleted project leaves a stale ID that would otherwise lock
 	// the task to an empty project type, silently skipping the work-typed
-	// forced-interactive/forced-planning routing. So keep it only when it
+	// forced-planning routing. So keep it only when it
 	// resolves; otherwise re-resolve, preferring the task's own Issue URL —
 	// the authoritative source-of-truth link — over the classifier's guess
 	// and generic title/body scanning.

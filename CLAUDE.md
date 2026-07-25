@@ -1,6 +1,6 @@
 # Sybra
 
-Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, two execution modes (interactive conversational session + headless `claude -p`), Wails v3 alpha GUI (darwin-only).
+Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, headless execution (`claude -p`, steerable mid-run), Wails v3 alpha GUI (darwin-only).
 
 ## Work-Data Confidentiality (HARD RULE)
 
@@ -148,7 +148,7 @@ Tasks are YAML frontmatter + GFM markdown files in `tasks/`:
 id: task-abc123
 title: Implement auth middleware
 status: todo              # new|todo|in-progress|in-review|human-required|done
-agent_mode: headless      # interactive|headless
+agent_mode: headless      # headless (legacy task files may still carry interactive; load-only, no longer dispatchable)
 allowed_tools: []         # empty = all tools allowed
 tags: [backend, auth]
 project_id: owner/repo    # optional, links to a registered project
@@ -199,13 +199,13 @@ claude -p --output-format stream-json [--resume <id>] [--allowedTools "..."]
 
 Codex and copilot report no USD at all (tokens and premium requests respectively). `stats.EstimateAgentCost` derives it so the ceilings can see them; `Agent.BankEstimatedCost` banks it live, and **must** run after `AddCacheStats` — cached input is ~95% of a codex run and prices at a tenth of standard, so estimating first overstates by ~6x. A provider-reported cost always wins over the estimate.
 
-**Fork subagents** (`fork_subagent: true`): sets `CLAUDE_CODE_FORK_SUBAGENT=1` in the subprocess environment (CC v2.1.121+, claude provider only). Allows a single prompt to spawn parallel subagent runs, reducing wall-clock time for multi-part work. Tradeoff: each forked subagent incurs its own token usage — total cost multiplies with parallelism. Enable per-task from the metadata panel or task creation dialog. Not propagated to interactive or codex agents.
+**Fork subagents** (`fork_subagent: true`): sets `CLAUDE_CODE_FORK_SUBAGENT=1` in the subprocess environment (CC v2.1.121+, claude provider only). Allows a single prompt to spawn parallel subagent runs, reducing wall-clock time for multi-part work. Tradeoff: each forked subagent incurs its own token usage — total cost multiplies with parallelism. Enable per-task from the metadata panel or task creation dialog. Not propagated to codex agents.
 
-**Interactive** (persistent conversational session — not tmux):
+**Provider gate.** Headless dispatch resolves the provider through `prepareRunConfig` → `gateProvider` → `resolveProviderDecision`, so an unhealthy/rate-limited provider fails over (claude → codex → copilot) and the model is remapped (`NormalizeModel`). Failover is decided at *dispatch*; an agent already running when its own provider caps mid-run does not hot-swap (recovers by re-dispatch via `RescheduleRateLimitedAgent`).
 
-`agent.Manager.Run` spawns a long-lived CLI process that streams stream-json over stdin/stdout: claude via `runConversational` (persistent approval-hook runner), codex/copilot via the per-turn conversational runner (`UsesPerTurnConvo()`). The GUI renders the live stream in a bounded session box; the user drives it by sending turns.
+**Interactive mode has been removed** (the persistent conversational-session runner, `agent_mode: interactive`). A running headless agent is instead steered mid-run over its stdin/stream-json transport (`agent.Manager.Run` with `HeadlessSteerable`) — see Steering below. `task.AgentModeInteractive` is kept only so pre-existing task files carrying it still parse; no path can mint a new one (`task.ValidateMintableAgentMode`), and no dispatch path honors it.
 
-**Same provider gate as headless.** Both modes resolve the provider through `prepareRunConfig` → `gateProvider` → `resolveProviderDecision`, so an unhealthy/rate-limited provider fails over (claude → codex → copilot) and the model is remapped (`NormalizeModel`) exactly like headless. There is no provider-pinned interactive launcher. Failover is decided at *dispatch*; an agent already running when its own provider caps mid-run does not hot-swap (headless recovers by re-dispatch via `RescheduleRateLimitedAgent`).
+**Steering** a running headless agent: `SendMessage`/`GetConvoOutput` inject a mid-run message over the agent's stdin and stream the resulting `ConvoEvent`s back, gated on `Agent.CanSteer` (a live stdin transport — `agent.headless_steerable`, default `true`). This is the GUI's "steer agent" control on a running agent, not a second execution mode.
 
 ### Worktree Agent Context
 

@@ -74,7 +74,7 @@ describe('QuickAddTask', () => {
     await fireEvent.input(input, { target: { value: 'My new task' } })
     await fireEvent.submit(input.closest('form')!)
     await vi.waitFor(() => {
-      expect(mockCreate).toHaveBeenCalledWith('My new task', '', 'interactive')
+      expect(mockCreate).toHaveBeenCalledWith('My new task', '', 'headless')
     })
   })
 

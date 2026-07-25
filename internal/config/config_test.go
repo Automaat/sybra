@@ -78,6 +78,18 @@ func TestParseFileConfigRejectsUnknownKeyWithFullPathAndSuggestion(t *testing.T)
 	}
 }
 
+func TestParseFileConfigToleratesRemovedAgentModeKey(t *testing.T) {
+	// A full re-serialize (Settings save, config dump) writes every field
+	// including zero values, so pre-existing config.yaml files commonly still
+	// carry agent.mode even though AgentDefaults.Mode was deleted (the
+	// interactive runner it selected no longer exists). Loading must not
+	// fail closed with "unknown config key" on upgrade.
+	_, err := ParseFileConfig([]byte("agent:\n  mode: ''\n  provider: claude\n"))
+	if err != nil {
+		t.Fatalf("ParseFileConfig with legacy agent.mode key: %v", err)
+	}
+}
+
 func TestParseFileConfigRejectsFutureSchemaVersion(t *testing.T) {
 	_, err := ParseFileConfig([]byte("schema_version: 99\n"))
 	if err == nil {

@@ -8,7 +8,6 @@
   import type { ToolUseSignal } from '$lib/workspace-tabs.js'
   import { convoStore } from '../../stores/convo.svelte.js'
   import ToolApproval from '../ToolApproval.svelte'
-  import ChatView from '../ChatView.svelte'
   import StreamOutput from '../StreamOutput.svelte'
   import ActionTimeline from '../ActionTimeline.svelte'
   import ThreePanelLayout from './ThreePanelLayout.svelte'
@@ -105,24 +104,11 @@
             </div>
           {/if}
           <div class="min-w-0 flex-1">
-            {#if a.mode === 'interactive'}
-              <ChatView
-                agentId={a.id}
-                agentState={a.state}
-                costUsd={a.costUsd}
-                inputTokens={a.inputTokens ?? 0}
-                outputTokens={a.outputTokens ?? 0}
-                highlightIndex={selectedIndex}
-                suppressApprovals={true}
-                onvisibleindex={(i) => { if (selectedIndex === null) onselect(i) }}
-              />
-            {:else}
-              <StreamOutput
-                agentId={a.id}
-                highlightIndex={selectedIndex}
-                onvisibleindex={(i) => { if (selectedIndex === null) onselect(i) }}
-              />
-            {/if}
+            <StreamOutput
+              agentId={a.id}
+              highlightIndex={selectedIndex}
+              onvisibleindex={(i) => { if (selectedIndex === null) onselect(i) }}
+            />
           </div>
         </div>
       {/if}

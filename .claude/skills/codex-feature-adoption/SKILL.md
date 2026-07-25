@@ -64,7 +64,7 @@ A changelog entry only matters if it touches how Sybra invokes or manages `codex
 | Concern | Where to look |
 | :-- | :-- |
 | Headless `codex exec` flags | `internal/agent/runner_headless_invocation.go` (the `a.Provider == "codex"` branch: `exec --json --skip-git-repo-check --ignore-user-config --ignore-rules`, `-C <cwd>`, `--model`) |
-| Sandbox / approvals | `codexSandboxArgs(...)` in the same file; `--dangerously-bypass-approvals-and-sandbox` (headless) vs `--sandbox workspace-write` (interactive) in `manager_run.go` |
+| Sandbox / approvals | `codexSandboxArgs(...)` in `provider_codex.go`; `--dangerously-bypass-approvals-and-sandbox` is always used for real dispatch (headless-only now) — `--sandbox workspace-write` only survives as a dead branch in the display-command builder |
 | Stream parsing | `internal/agent/stream.go` (`ParseCodexLine` → `CodexEvent`) parses the NDJSON; `internal/agent/runner_headless_stream.go` (`codexEventToStreamEvent`) maps Codex events (`thread.started`, `turn.started`, `turn.completed`, `item.started`/`item.completed`, `error`) into Sybra's StreamEvent shape |
 | Sessions | Codex has **no `--resume`**; sessions persist as `~/.codex/sessions/rollout-<sessionID>.jsonl` (resolved by `resolveCodexSessionFile` in `discovery.go`). Watch for any new resume/continue flag. |
 | Skills | `discoverCodexSkills()` + `rewriteSkillInvocations()` (Codex has no native skills; Sybra rewrites `/skill` → `$` prompt injection) |

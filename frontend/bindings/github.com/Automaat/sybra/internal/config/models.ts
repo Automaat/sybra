@@ -8,7 +8,6 @@ import { Create as $Create } from "@wailsio/runtime";
 export class AgentDefaults {
     "provider": string;
     "model": string;
-    "mode": string;
     "maxConcurrent": number;
     "researchMachineDir": string;
 
@@ -190,8 +189,7 @@ export class AgentDefaults {
      * DispatchJitterMs bounds a uniform random delay applied before headless
      * agent dispatch, so a wave of concurrently ready tasks does not all
      * probe the provider health gate in the same tick. 0 disables jitter.
-     * Never applied to interactive/chat dispatch. Default 1000 — set 0 to
-     * disable.
+     * Default 1000 — set 0 to disable.
      */
     "dispatchJitterMs": number;
 
@@ -283,9 +281,6 @@ export class AgentDefaults {
         }
         if (!("model" in $$source)) {
             this["model"] = "";
-        }
-        if (!("mode" in $$source)) {
-            this["mode"] = "";
         }
         if (!("maxConcurrent" in $$source)) {
             this["maxConcurrent"] = 0;
@@ -391,30 +386,30 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField29_0 = $$createType0;
-        const $$createField30_0 = $$createType1;
-        const $$createField31_0 = $$createType2;
-        const $$createField32_0 = $$createType3;
-        const $$createField33_0 = $$createType4;
-        const $$createField34_0 = $$createType5;
+        const $$createField28_0 = $$createType0;
+        const $$createField29_0 = $$createType1;
+        const $$createField30_0 = $$createType2;
+        const $$createField31_0 = $$createType3;
+        const $$createField32_0 = $$createType4;
+        const $$createField33_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField29_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField28_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField30_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField29_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField31_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField30_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField32_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField31_0($$parsedSource["queue"]);
         }
         if ("classReservations" in $$parsedSource) {
-            $$parsedSource["classReservations"] = $$createField33_0($$parsedSource["classReservations"]);
+            $$parsedSource["classReservations"] = $$createField32_0($$parsedSource["classReservations"]);
         }
         if ("evidence" in $$parsedSource) {
-            $$parsedSource["evidence"] = $$createField34_0($$parsedSource["evidence"]);
+            $$parsedSource["evidence"] = $$createField33_0($$parsedSource["evidence"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }

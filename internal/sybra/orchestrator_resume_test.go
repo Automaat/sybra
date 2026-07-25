@@ -129,7 +129,7 @@ updated_at: 2025-01-01T00:00:00Z
 	orch := agentorch.New(taskMgr, projStore, agentMgr, nil, logger, wm, nil)
 
 	// Create the task with the project pre-assigned so PrepareForTask succeeds.
-	created, err := taskMgr.Create("stale-resume guard", "", "interactive")
+	created, err := taskMgr.Create("stale-resume guard", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}

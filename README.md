@@ -17,11 +17,11 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 ## Features
 
 - **Task board** — drag-and-drop Kanban with status swimlanes, priority, tags, agent mode
-- **Dual execution modes** — headless (`claude -p` with NDJSON streaming) or interactive (persistent conversational sessions)
+- **Headless execution** — `claude -p` with NDJSON streaming, steerable mid-run over its stdin transport
 - **Worktree isolation** — each agent gets a per-task git worktree from a bare clone; no conflicts between concurrent agents
 - **GitHub integration** — link tasks to repos; agents clone, commit, and open PRs automatically
 - **Eval agents** — post-implementation verification: confirm commits exist, PRs are open, quality gates pass
-- **Chat UI** — VS Code-like conversation view per agent with real-time output streaming
+- **Live agent view** — per-agent output streaming with a real-time timeline and steer controls
 - **Planning workflow** — complex tasks get a plan that humans review before implementation starts
 - **Spotlight** — keyboard-driven task creation from anywhere in the app
 - **Audit log** — structured NDJSON event log for failure analysis and cycle-time tracking
@@ -82,7 +82,7 @@ Use `--json` for machine-readable output (required by Claude Code skills).
 id: task-abc123
 title: Implement auth middleware
 status: todo
-agent_mode: headless      # headless | interactive
+agent_mode: headless
 tags: [backend, auth, medium]
 project_id: owner/repo
 ---

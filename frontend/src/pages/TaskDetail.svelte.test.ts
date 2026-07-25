@@ -111,7 +111,6 @@ vi.mock('@skeletonlabs/skeleton-svelte', () => ({
 
 vi.mock('../components/StreamOutput.svelte', () => ({ default: () => {} }))
 vi.mock('../components/StatusBadge.svelte', () => ({ default: () => {} }))
-vi.mock('../components/ChatView.svelte', () => ({ default: () => {} }))
 vi.mock('../components/MessageBubble.svelte', () => ({ default: () => {} }))
 vi.mock('../components/ProviderLogo.svelte', () => ({ default: () => {} }))
 

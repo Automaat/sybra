@@ -280,7 +280,7 @@ func suggestedInvestigation(a Anomaly) string {
 			if verdict == "human" {
 				hint += "- Human-review agent confirmed: this task requires direct human input (scope beyond automation — credentials, creative decision, or ambiguous requirement).\n"
 				if taskID != "" {
-					hint += "- Review the task body and the auto-review note, provide the required input, then unblock: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
+					hint += "- Review the task body and the auto-review note, provide the required input, then unblock: `sybra-cli update " + taskID + " --status todo`.\n"
 				}
 			} else {
 				hint += "- Human-review agent assessed this task — check the latest auto-review note in the task body.\n"
@@ -289,7 +289,7 @@ func suggestedInvestigation(a Anomaly) string {
 						hint += fmt.Sprintf("- If note says awaiting PR review: check PR #%d for new reviewer feedback.\n", prNum)
 					}
 					hint += "- Note confirms human input needed: provide it, then `sybra-cli update " + taskID + " --status todo`.\n"
-					hint += "- If the note says scope exceeds automation, switch to interactive mode: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
+					hint += "- If the note says scope exceeds automation, this is ongoing human work, not a one-time unblock — expect to keep providing input and re-queuing with `--status todo` across multiple rounds.\n"
 				}
 				hint += "- Note shows unparseable or failed verdict: review the raw agent output in the note and act accordingly.\n"
 			}

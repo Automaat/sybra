@@ -85,7 +85,7 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 	}
 	<-w.Ready()
 
-	created, err := app.tasks.Create("watcher status hook task", "", "interactive")
+	created, err := app.tasks.Create("watcher status hook task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}

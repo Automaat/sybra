@@ -56,15 +56,6 @@
       bind:value={settings.agent.model}
       modified={a.model !== d.model}
       onreset={() => (settings.agent.model = d.model)} />
-    <SelectField id="agent-mode" label="Default mode" keyPath="execution.agent.mode"
-      options={[
-        { value: '', label: '— none —' },
-        { value: 'headless', label: 'Headless' },
-        { value: 'interactive', label: 'Interactive' },
-      ]}
-      bind:value={settings.agent.mode}
-      modified={a.mode !== d.mode}
-      onreset={() => (settings.agent.mode = d.mode)} />
     <NumberField id="agent-concurrency" label="Max concurrent" keyPath="execution.agent.max_concurrent" min={1} max={100}
       description="1–100"
       bind:value={settings.agent.maxConcurrent}
