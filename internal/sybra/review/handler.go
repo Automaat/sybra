@@ -1676,8 +1676,10 @@ func prMonitorEligible(t *task.Task) bool {
 	case task.StatusInReview:
 		return t.PRNumber != 0 || t.Branch != ""
 	case task.StatusInProgress, task.StatusReadyPR, task.StatusReadyReview, task.StatusTesting:
-		// Only tasks that already have a PR — a branch alone isn't enough,
-		// still mid-implementation.
+		// A PR number is required in every one of these lanes — a branch
+		// alone stays ineligible even past in-progress, since ready-review
+		// and testing also cover a pre-PR local loop (see prMonitorEligible
+		// doc comment above).
 		return t.PRNumber != 0
 	case task.StatusTodo:
 		// A handoff-tagged task is exempted from skipTaskCreatedWorkflow's
