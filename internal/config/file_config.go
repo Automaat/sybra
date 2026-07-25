@@ -298,6 +298,18 @@ type fieldAliasIndex struct {
 	byParent map[string]map[string]fieldAliasSpec
 }
 
+// removedConfigKeys lists config keys that used to exist but were deleted
+// outright (not renamed — see fieldAliasSpecs for renames). A pre-existing
+// config.yaml can still carry one of these even after the field is gone from
+// the Go struct — a full re-serialize (e.g. Settings save, or config dump)
+// writes every field including zero values, so "removed but never actually
+// read" keys like agent.mode routinely end up persisted on disk. Validation
+// must keep loading such a file instead of failing closed with "unknown
+// config key", or every operator upgrading past the removal breaks startup.
+var removedConfigKeys = map[string]map[string]bool{
+	"agent": {"mode": true},
+}
+
 func newAliasIndex(specs []durationAliasSpec) aliasIndex {
 	idx := aliasIndex{byParent: map[string]map[string]durationAliasSpec{}}
 	for _, spec := range specs {
@@ -443,6 +455,9 @@ func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, a
 				continue
 			}
 			if _, ok := allowedFieldAliases[key]; ok {
+				continue
+			}
+			if removedConfigKeys[parent][key] {
 				continue
 			}
 			suggestion := nearestKey(key, knownKeys(fields, allowedAliases, allowedFieldAliases))

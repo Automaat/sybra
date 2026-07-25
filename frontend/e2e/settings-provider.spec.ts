@@ -14,7 +14,6 @@ async function currentAgentSettings(page: Page) {
   return {
     provider: await page.locator('#agent-provider').inputValue(),
     model: await page.locator('#agent-model').inputValue(),
-    mode: await page.locator('#agent-mode').inputValue(),
   }
 }
 
@@ -27,13 +26,12 @@ async function saveSettings(page: Page) {
   await expect(page.getByText('Settings saved')).toBeVisible()
 }
 
-async function restoreAgentSettings(page: Page, original: { provider: string; model: string; mode: string }) {
+async function restoreAgentSettings(page: Page, original: { provider: string; model: string }) {
   if ((await page.locator('#agent-provider').count()) === 0) {
     await goToSettings(page)
   }
   await page.locator('#agent-provider').selectOption(original.provider)
   await page.locator('#agent-model').selectOption(original.model)
-  await page.locator('#agent-mode').selectOption(original.mode)
   await saveSettings(page)
 }
 
