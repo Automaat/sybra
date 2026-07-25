@@ -542,24 +542,13 @@ func pushK8sGitWorkspace(ctx context.Context, dir string, workspace k8sGitWorksp
 	if workspace.Remote == "" || workspace.Branch == "" {
 		return nil
 	}
-	if !hasUnpushedCommits(ctx, dir) {
+	if !project.HasUnpushedCommits(ctx, dir) {
 		return nil
 	}
 	if _, err := gitOutput(ctx, dir, "push", "-u", "origin", "HEAD:"+workspace.Branch); err != nil {
 		return fmt.Errorf("push k8s workspace branch: %w", err)
 	}
 	return nil
-}
-
-// hasUnpushedCommits reports whether HEAD holds commits that no remote branch
-// contains. Errs toward true: if the count cannot be read, push and let a real
-// failure surface rather than silently dropping work.
-func hasUnpushedCommits(ctx context.Context, dir string) bool {
-	out, err := gitOutput(ctx, dir, "rev-list", "--count", "HEAD", "--not", "--remotes")
-	if err != nil {
-		return true
-	}
-	return strings.TrimSpace(out) != "0"
 }
 
 func syncK8sGitWorkspace(ctx context.Context, dir string) error {

@@ -202,5 +202,11 @@ func (r *Recovery) cleanupOrphanedSandboxes(ctx context.Context) {
 	if r.Agents != nil {
 		hasAgent = r.Agents.HasRunningAgentForTask
 	}
-	r.Sandboxes.CleanupOrphaned(ctx, tasks, hasAgent)
+	var hasUnpushedCommits func(string) bool
+	if r.Worktrees != nil {
+		hasUnpushedCommits = func(taskID string) bool {
+			return r.Worktrees.HasUnpushedCommits(ctx, taskID)
+		}
+	}
+	r.Sandboxes.CleanupOrphaned(ctx, tasks, hasAgent, hasUnpushedCommits)
 }

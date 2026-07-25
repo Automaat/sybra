@@ -68,7 +68,11 @@ func runGit(t *testing.T, dir string, args ...string) {
 }
 
 // makeGitWorktree creates a real, initialized git repo at path with one
-// committed file. dirty additionally leaves an uncommitted modification.
+// committed file, pushed to a throwaway bare "origin" so the worktree looks
+// fully delivered (matching production, where every Sybra-managed worktree
+// tracks the project's bare clone as origin) — i.e. HasUnpushedCommits is
+// false unless a caller commits further without pushing. dirty additionally
+// leaves an uncommitted modification.
 func makeGitWorktree(t *testing.T, path string, dirty bool) {
 	t.Helper()
 	mustMkdir(t, path)
@@ -78,11 +82,29 @@ func makeGitWorktree(t *testing.T, path string, dirty bool) {
 	}
 	runGit(t, path, "add", "-A")
 	runGit(t, path, "commit", "-q", "-m", "init")
+
+	originDir := t.TempDir()
+	runGit(t, originDir, "init", "-q", "--bare")
+	runGit(t, path, "remote", "add", "origin", originDir)
+	runGit(t, path, "push", "-q", "-u", "origin", "HEAD:refs/heads/main")
+
 	if dirty {
 		if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("b"), 0o644); err != nil {
 			t.Fatalf("dirty file: %v", err)
 		}
 	}
+}
+
+// makeGitWorktreeUnpushed is like makeGitWorktree but leaves an extra
+// committed change that was never pushed to origin — the scenario
+// HasUnpushedCommits must refuse to reap (#2593).
+func makeGitWorktreeUnpushed(t *testing.T, path string) {
+	t.Helper()
+	makeGitWorktree(t, path, false)
+	if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("c"), 0o644); err != nil {
+		t.Fatalf("unpushed file: %v", err)
+	}
+	runGit(t, path, "commit", "-q", "-am", "unpushed work")
 }
 
 func doneTask(id string, statusChangedAt time.Time) task.Task {
@@ -375,6 +397,36 @@ func TestScanSandboxesSkipsActiveOrphanAndTerminal(t *testing.T) {
 	}
 }
 
+// TestScanSandboxesSkipsDeletedTaskUnpushedWorktree proves a sandbox whose
+// owning task was DELETED is still preserved when that task's git worktree
+// survives on disk holding commits never pushed to origin. The task record is
+// gone, so the guard must resolve the worktree by directory name rather than a
+// live record — the exact deleted-task gap #2593 must protect.
+func TestScanSandboxesSkipsDeletedTaskUnpushedWorktree(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	now := time.Now()
+
+	// Sandbox dir is named by the bare task ID; its owning task is absent
+	// from the store (deleted).
+	taskID := "deadface"
+	sb := filepath.Join(sandboxesDir(), taskID)
+	writeFileAt(t, filepath.Join(sb, "f"), 9, now)
+
+	// The deleted task's worktree survives under a slug-prefixed dir name and
+	// still holds an unpushed commit.
+	makeGitWorktreeUnpushed(t, filepath.Join(cfg.WorktreesDir, "feat-"+taskID))
+
+	s := NewScanner(cfg, &fakeLister{}) // no tasks: the sandbox is an orphan
+	res, err := s.Scan(Options{Only: []string{BucketSandboxes}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if res.Buckets[0].Items != 0 {
+		t.Fatalf("deleted task's sandbox must be preserved while its worktree holds unpushed commits, got %+v", res.Buckets[0])
+	}
+}
+
 func TestScanGoBuildCacheOrphanEligible(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Sandbox.RetentionHours = 1
@@ -448,6 +500,61 @@ func TestScanWorktreesDirtySkippedWithoutForce(t *testing.T) {
 	}
 	if res.Buckets[0].Items != 1 {
 		t.Fatalf("dirty worktree must be reported eligible with --force, got %+v", res.Buckets[0])
+	}
+}
+
+// TestScanWorktreesUnpushedSkippedEvenWithForce proves a worktree holding
+// commits that never reached origin is never reported eligible — not even
+// with --force, which only bypasses the uncommitted-changes check. Without
+// this guard a task bounced through human-required (e.g. a push failure) and
+// later reaped by a status/retention-only sweep would silently lose a
+// completed diff (#2593).
+func TestScanWorktreesUnpushedSkippedEvenWithForce(t *testing.T) {
+	cfg := testConfig(t)
+	now := time.Now()
+	unpushedPath := filepath.Join(cfg.WorktreesDir, "beefdead")
+	makeGitWorktreeUnpushed(t, unpushedPath)
+
+	lister := &fakeLister{tasks: []task.Task{doneTask("beefdead", now.Add(-100*time.Hour))}}
+	s := NewScanner(cfg, lister)
+
+	for _, opts := range []Options{
+		{Only: []string{BucketWorktrees}, Worktrees: true},
+		{Only: []string{BucketWorktrees}, Worktrees: true, Force: true},
+	} {
+		res, err := s.Scan(opts)
+		if err != nil {
+			t.Fatalf("scan (force=%v): %v", opts.Force, err)
+		}
+		if res.Buckets[0].Items != 0 {
+			t.Fatalf("worktree with unpushed commits must never be eligible (force=%v), got %+v", opts.Force, res.Buckets[0])
+		}
+	}
+}
+
+// TestApplyWorktreesRevalidatesUnpushedCommits proves Apply's revalidation
+// step also refuses a worktree with unpushed commits, even when a stale
+// Bucket (as if produced before the guard existed, or by a racing Scan)
+// claims it is eligible.
+func TestApplyWorktreesRevalidatesUnpushedCommits(t *testing.T) {
+	cfg := testConfig(t)
+	now := time.Now()
+	unpushedPath := filepath.Join(cfg.WorktreesDir, "cafebabe")
+	makeGitWorktreeUnpushed(t, unpushedPath)
+
+	lister := &fakeLister{tasks: []task.Task{doneTask("cafebabe", now.Add(-100*time.Hour))}}
+	s := NewScanner(cfg, lister)
+
+	staleBucket := Bucket{Name: BucketWorktrees, Paths: []string{unpushedPath}}
+	res, err := s.Apply([]Bucket{staleBucket}, Options{Worktrees: true, Force: true})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(res.Buckets) != 1 || res.Buckets[0].Removed != 0 {
+		t.Fatalf("worktree with unpushed commits must not be removed, got %+v", res.Buckets)
+	}
+	if _, err := os.Stat(unpushedPath); err != nil {
+		t.Fatalf("worktree with unpushed commits must survive apply: %v", err)
 	}
 }
 

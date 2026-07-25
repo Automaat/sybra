@@ -13,7 +13,11 @@ import (
 )
 
 // makeDoctorWorktree creates a real git repo at path with one committed
-// file; dirty additionally leaves an uncommitted change.
+// file, pushed to a throwaway bare "origin" so it looks fully delivered
+// (matching production, where every Sybra-managed worktree tracks the
+// project's bare clone as origin) — i.e. it holds no unpushed commits unless
+// a caller commits further without pushing. dirty additionally leaves an
+// uncommitted change.
 func makeDoctorWorktree(t *testing.T, path string, dirty bool) {
 	t.Helper()
 	t.Setenv("GIT_AUTHOR_NAME", "test")
@@ -29,6 +33,12 @@ func makeDoctorWorktree(t *testing.T, path string, dirty bool) {
 	}
 	runGit(t, path, "add", "-A")
 	runGit(t, path, "commit", "-m", "init")
+
+	origin := t.TempDir()
+	runGit(t, origin, "init", "--bare")
+	runGit(t, path, "remote", "add", "origin", origin)
+	runGit(t, path, "push", "-u", "origin", "HEAD:refs/heads/main")
+
 	if dirty {
 		if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("b"), 0o644); err != nil {
 			t.Fatalf("dirty file: %v", err)
