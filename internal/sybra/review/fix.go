@@ -911,7 +911,20 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// instead: singleConflict already owns the merge attempt below, and
 	// running both here would double-merge/double-push the same branch.
 	if autoResolveAdmitted && !singleConflict {
-		r.syncStaleBranch(ctx, t, primary.PR, dir)
+		if synced := r.syncStaleBranch(ctx, t, primary.PR, dir); synced != "" {
+			// syncStaleBranch pushed a new merge commit; refresh the cached
+			// PR.HeadSHA so MarkHandled, the dedup fast-skip, and the budget
+			// check key on the pushed commit rather than the stale pre-sync SHA.
+			stale := primary.PR.HeadSHA
+			primary.PR.HeadSHA = synced
+			for i := range handle {
+				if handle[i].PR.Number == primary.PR.Number &&
+					handle[i].PR.Repository == primary.PR.Repository &&
+					handle[i].PR.HeadSHA == stale {
+					handle[i].PR.HeadSHA = synced
+				}
+			}
+		}
 	}
 
 	if autoResolveAdmitted && singleConflict && r.autoResolveConflict(ctx, t, primary.PR, dir) {
@@ -1165,45 +1178,50 @@ func (r *Handler) rollbackAutoResolvedMerge(ctx context.Context, taskID string, 
 // no-op; a genuine content conflict or any error is left for the round's own
 // agent (or the dedicated conflict-recovery path) to handle. The caller always
 // proceeds to dispatch the round regardless of outcome.
-func (r *Handler) syncStaleBranch(ctx context.Context, t task.Task, pr github.PullRequest, dir string) {
+// syncStaleBranch returns the new HEAD SHA when it created and pushed a merge
+// commit, or "" when no sync happened (no-op, skipped, or failed). Callers must
+// refresh any cached PR.HeadSHA with the returned value so downstream
+// bookkeeping (retry tracker MarkHandled, dedup fast-skip) keys on the pushed
+// commit rather than the stale pre-sync SHA.
+func (r *Handler) syncStaleBranch(ctx context.Context, t task.Task, pr github.PullRequest, dir string) string {
 	proj, err := r.projects.Get(t.ProjectID)
 	if err != nil || proj.Type != project.ProjectTypePet {
-		return
+		return ""
 	}
 
 	base, err := resolveAutoResolveBase(ctx, dir, pr, proj)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-sync.base", "task_id", t.ID, "pr", pr.Number, "err", err)
-		return
+		return ""
 	}
 
 	branch, err := project.CurrentBranch(ctx, dir)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-sync.branch", "task_id", t.ID, "pr", pr.Number, "err", err)
-		return
+		return ""
 	}
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
 		r.logger.Warn("pr-monitor.branch-sync.branch-empty", "task_id", t.ID, "pr", pr.Number)
-		return
+		return ""
 	}
 
 	if err := project.ReconcileWithRemote(ctx, dir, branch); err != nil {
 		r.logger.Warn("pr-monitor.branch-sync.branch-preflight", "task_id", t.ID, "pr", pr.Number, "branch", branch, "err", err)
-		return
+		return ""
 	}
 
 	preMergeHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-sync.pre-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
-		return
+		return ""
 	}
 	preMergeHead = strings.TrimSpace(preMergeHead)
 
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", base, base)
 	if err := executil.Run(ctx, dir, "git", "fetch", "origin", refspec); err != nil {
 		r.logger.Warn("pr-monitor.branch-sync.fetch", "task_id", t.ID, "pr", pr.Number, "err", err)
-		return
+		return ""
 	}
 
 	mergeFn := r.tryCleanMergeFn
@@ -1213,22 +1231,23 @@ func (r *Handler) syncStaleBranch(ctx context.Context, t task.Task, pr github.Pu
 	result, err := mergeFn(ctx, dir, "refs/remotes/origin/"+base)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-sync.merge", "task_id", t.ID, "pr", pr.Number, "err", err)
-		return
+		return ""
 	}
 	if result != project.CleanMergeCreated {
-		return
+		return ""
 	}
 
 	mergedHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-sync.post-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
 		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "post-merge-head")
-		return
+		return ""
 	}
-	if strings.TrimSpace(mergedHead) == "" {
+	mergedHead = strings.TrimSpace(mergedHead)
+	if mergedHead == "" {
 		r.logger.Warn("pr-monitor.branch-sync.post-merge-head-empty", "task_id", t.ID, "pr", pr.Number)
 		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "post-merge-head-empty")
-		return
+		return ""
 	}
 
 	pushFn := r.pushSyncFn
@@ -1238,7 +1257,7 @@ func (r *Handler) syncStaleBranch(ctx context.Context, t task.Task, pr github.Pu
 	if err := pushFn(ctx, dir, branch); err != nil {
 		r.logger.Warn("pr-monitor.branch-sync.push", "task_id", t.ID, "pr", pr.Number, "err", err)
 		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "push")
-		return
+		return ""
 	}
 
 	r.evictReadyPRCache(pr.Repository, pr.Number)
@@ -1246,6 +1265,7 @@ func (r *Handler) syncStaleBranch(ctx context.Context, t task.Task, pr github.Pu
 		"pr": pr.Number,
 	})
 	r.logger.Info("pr-monitor.branch-sync.synced", "task_id", t.ID, "pr", pr.Number)
+	return mergedHead
 }
 
 // dispatchPRIssueWithOptions starts the pr-fix workflow for primary and, on
