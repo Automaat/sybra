@@ -11,6 +11,13 @@ trigger:
     - field: task.tags
       operator: not_contains
       value: handoff-pr
+    # "review" is also used as a plain category tag on non-PR bugfix tasks
+    # (e.g. tasks about internal/sybra/review itself). Without this, such a
+    # task sticks in this workflow forever targeting a nonexistent PR #0,
+    # re-dispatching on every status reset (#2627).
+    - field: task.pr_number
+      operator: not_equals
+      value: ""
 steps:
   # Mechanical heuristic: pick adversarial vs staff review based on PR diff
   # size + shape. Same step type used by simple-task; here it falls back to
