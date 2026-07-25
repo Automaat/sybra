@@ -12,6 +12,25 @@ trigger:
       operator: not_in
       value: review,test-runner,human-review
 steps:
+  # Proactive, best-effort branch sync with origin/main right before the PR
+  # handoff — shrinks the window in which the branch can go stale between the
+  # last reactive sync (at agent dispatch) and PR creation. Never blocks: a
+  # missing worktree/syncer, a conflict, or a transient failure are all
+  # recorded and the workflow still continues to require_evidence.
+  #
+  # Runs BEFORE require_evidence deliberately: SyncTaskBranch can move HEAD
+  # forward (rebase onto a moved origin/main) and thus ship content none of the
+  # deterministic gates ever ran against. Placing the evidence gate after the
+  # sync makes it evaluate the exact HEAD that will be pushed — a branch-moving
+  # sync leaves the content criteria stale against the new HEAD, so the gate
+  # correctly flips the task to human-required rather than shipping an
+  # unverified merge/rebase result.
+  - id: sync_branch
+    name: Sync Branch
+    type: sync_branch
+    next:
+      - goto: require_evidence
+
   # Final deterministic completion gate (opt-in via agent.evidence.enabled,
   # default off): asserts every criterion applicable to this task
   # (verify_checks, detect_tampering, the test-runner verdict, review) has
@@ -19,7 +38,7 @@ steps:
   # allowed to open/update a PR. No-op when the gate is disabled or the task
   # has no recorded evidence baseline (an in-flight task predating evidence
   # collection); otherwise a missing/failed/stale criterion flips the task to
-  # human-required instead of continuing to sync_branch.
+  # human-required instead of continuing to maybe_create_pr.
   - id: require_evidence
     name: Require Completion Evidence
     type: require_evidence
@@ -29,17 +48,6 @@ steps:
           operator: equals
           value: human-required
         goto: ""
-      - goto: sync_branch
-
-  # Proactive, best-effort branch sync with origin/main right before the PR
-  # handoff — shrinks the window in which the branch can go stale between the
-  # last reactive sync (at agent dispatch) and PR creation. Never blocks: a
-  # missing worktree/syncer, a conflict, or a transient failure are all
-  # recorded and the workflow still continues to maybe_create_pr.
-  - id: sync_branch
-    name: Sync Branch
-    type: sync_branch
-    next:
       - goto: maybe_create_pr
 
   # Guard: when the task already has a PR number (retries), skip create_pr
