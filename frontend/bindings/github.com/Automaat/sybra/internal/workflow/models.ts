@@ -1001,15 +1001,17 @@ export enum StepType {
      * StepAdmissionPreflight runs deterministic pre-dispatch admission checks
      * (plan contract schema/capability validation, oversize scope limits,
      * push credential readiness) before any code-author agent is dispatched —
-     * see execAdmissionPreflight (engine_steps_admission.go). Recoverable
-     * environment failures (missing push credentials) route through a
-     * blocker.KindCredentialRequired; scope/content problems (missing
-     * objective, unknown capability, oversize scope) route through
-     * blocker.KindOperatorDecision — both terminal (no automatic
-     * re-attempts), matching blocker.AllowsHumanRequired. Listed in
-     * isResumableStepType (like StepClassifyTask): it is deterministic and
-     * side-effect-free until it decides, so re-running it after a crash
-     * between persisting CurrentStep and executing it is safe.
+     * see execAdmissionPreflight (engine_steps_admission.go). Scope/content
+     * problems (missing objective, unknown capability, oversize scope) and a
+     * non-transient credential failure both route through human-required —
+     * the former always blocker.KindOperatorDecision, the latter
+     * blocker.KindCredentialRequired — as terminal (no automatic re-attempts),
+     * matching blocker.AllowsHumanRequired. A transient/rate-limited
+     * credential-preflight error is NOT terminal: classifyAdmissionCredentialError
+     * parks the step for a bounded retry instead, mirroring push_branch/
+     * create_pr's identical classification of the same error. Resumable —
+     * see isResumableStepType — so a crash between persisting CurrentStep and
+     * executing it does not strand the task.
      */
     StepAdmissionPreflight = "admission_preflight",
 };
