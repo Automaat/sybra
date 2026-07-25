@@ -5,7 +5,8 @@ package sybra
 //	config → audit/stats → task.Store → project.Store → loopagent.Store
 //	→ emit/bgops → task.Manager → limits/approval → agent.Manager → providerHealth
 //	→ worktrees → sandboxes → agentOrch → reviewer → workflowEngine
-//	→ wireServices → [LifecycleManager: StartManagers → StartPollers → StartWatchers]
+//	→ wireServices → mintAppTokenBeforeRecovery → RunStartupCleanup
+//	→ [LifecycleManager: StartManagers → StartPollers → StartWatchers]
 
 import (
 	"context"
@@ -332,6 +333,13 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 	// dispatch after a fresh enabled boot can beat version 1 publication.
 	lm.startRoutingService(schedulerCtx, emit)
 	lm.StartWatchers(schedulerCtx)
+	// Mint the GitHub App installation token synchronously (bounded timeout)
+	// before RunStartupCleanup's recovery pushes and the monitor's
+	// Authenticated() preflight run — both used to race an empty token on
+	// every boot, since the mint previously lived inside StartPollers,
+	// several steps after recovery already ran. A mint outage degrades to
+	// ambient gh credentials instead of blocking startup. See #2494.
+	lm.mintAppTokenBeforeRecovery(schedulerCtx)
 
 	a.wg.Go(func() {
 		a.recovery.RunStartupCleanup(schedulerCtx)
@@ -390,6 +398,13 @@ func (a *App) Startup(ctx context.Context) error {
 	if err != nil {
 		a.logger.Error("task.store.init", "err", err)
 		return fmt.Errorf("task store: %w", err)
+	}
+	// Eagerly run the legacy-field backfill (see task.Store.Migrate) so
+	// startup pays that cost once instead of leaving it to the first List()
+	// caller. List() still self-heals on read regardless, so a failure here
+	// is logged rather than fatal.
+	if err := store.Migrate(); err != nil {
+		a.logger.Warn("task.store.migrate", "err", err)
 	}
 
 	projStore, err := project.NewStore(

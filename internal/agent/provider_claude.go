@@ -62,7 +62,10 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		// running turn can accept further steer messages the same way.
 		args = []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
 	} else {
-		args = []string{"-p", cfg.Prompt, "--output-format", "stream-json", "--verbose"}
+		// No positional prompt: argv is world-readable (`ps aux`) and a
+		// later pkill/pgrep the agent runs can self-match it (#2575). The
+		// caller writes cfg.Prompt to stdin and closes it instead.
+		args = []string{"-p", "--output-format", "stream-json", "--verbose"}
 	}
 	if sid := a.GetSessionID(); sid != "" {
 		args = append(args, "--resume", sid)

@@ -269,3 +269,56 @@ func TestResolveRunRole(t *testing.T) {
 		})
 	}
 }
+
+// TestRole_WorkloadClass locks in that every known Role resolves to exactly
+// one WorkloadClass, and that the mapping is exhaustive (no known role falls
+// through to the unknown-role default by accident).
+func TestRole_WorkloadClass(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		role Role
+		want WorkloadClass
+	}{
+		{RoleImplementation, ClassImplementation},
+		{RolePlan, ClassImplementation},
+		{RolePRFix, ClassCompletion},
+		{RoleReview, ClassCompletion},
+		{RoleFixReview, ClassCompletion},
+		{RoleTestRunner, ClassCompletion},
+		{RoleTestFix, ClassCompletion},
+		{RoleTriage, ClassSystem},
+		{RoleEval, ClassSystem},
+		{RolePlanCritic, ClassSystem},
+		{RoleHumanReview, ClassSystem},
+		{RoleMonitor, ClassSystem},
+		{RoleLoop, ClassSystem},
+		{RoleOrchestrator, ClassSystem},
+		// Unknown/empty role falls back to ClassImplementation, matching
+		// RoleFromName's own fallback semantics.
+		{Role(""), ClassImplementation},
+		{Role("future"), ClassImplementation},
+	}
+
+	seen := make(map[Role]bool, len(tests))
+	for _, tt := range tests {
+		t.Run(string(tt.role), func(t *testing.T) {
+			t.Parallel()
+			if got := tt.role.WorkloadClass(); got != tt.want {
+				t.Fatalf("Role(%q).WorkloadClass() = %q, want %q", tt.role, got, tt.want)
+			}
+		})
+		seen[tt.role] = true
+	}
+
+	allKnown := []Role{
+		RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor, RoleOrchestrator,
+		RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation,
+		RoleHumanReview, RoleTestFix,
+	}
+	for _, r := range allKnown {
+		if !seen[r] {
+			t.Fatalf("Role %q has no WorkloadClass test case", r)
+		}
+	}
+}

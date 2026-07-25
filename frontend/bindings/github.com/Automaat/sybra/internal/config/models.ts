@@ -78,24 +78,25 @@ export class AgentDefaults {
      * until the reviewer returns a CLEAN verdict, so the fix agent's diff is
      * never the last word. nil means not configured (falls back to true). false
      * falls back to a single review pass per task: cheaper and more
-     * predictable when no per-task budget is configured.
+     * predictable when no per-task budget is configured. The cycle itself is
+     * bounded by ReviewRoundsPerHour below — the same durable budget the
+     * inbound PR-review dispatcher enforces — not a separate knob here.
      */
     "reviewUntilClean": boolean | null;
 
     /**
-     * MaxReviewRounds bounds how many automated review rounds a single
-     * simple-task-review execution may spend before Sybra parks the task
-     * blocked. 0 means use DefaultMaxReviewRounds (3). Ignored when
-     * ReviewUntilClean is false or AllowUnboundedReviewRounds is true.
+     * ReviewRoundsPerHour caps automated review-role agent dispatches one task
+     * may receive in a rolling hour before it is parked for a human. Shared by
+     * both the inbound PR-review dispatcher and simple-task-review's own
+     * review→fix loop (reviewbudget.Budget is their single owner) — it bounds
+     * "how much automated review is too much" regardless of whether a PR
+     * exists yet, which is why it lives here rather than under GitHubConfig.
+     * 0 uses the default; negative disables the cap. Rate-based rather than a
+     * lifetime total so a long-lived PR that is legitimately re-reviewed after
+     * each push is never blocked, while a runaway loop is stopped within the
+     * hour (#2164 sustained ~5/hour for 23 hours).
      */
-    "maxReviewRounds": number;
-
-    /**
-     * AllowUnboundedReviewRounds restores the legacy "loop until CLEAN with no
-     * review-round cap" posture. nil means not configured (defaults to false).
-     * Use only with a deliberate MaxTaskCostUSD backstop.
-     */
-    "allowUnboundedReviewRounds": boolean | null;
+    "reviewRoundsPerHour": number;
 
     /**
      * BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
@@ -258,6 +259,17 @@ export class AgentDefaults {
      */
     "queue": QueueConfig;
 
+    /**
+     * ClassReservations reserves a configurable minimum number of concurrent
+     * slots per workload class ("implementation", "completion", "system" —
+     * see agent.Role.WorkloadClass), so one class saturating the shared pool
+     * (e.g. a retry storm of system/monitor work) cannot starve another. Keys
+     * outside the known class set, or a sum exceeding MaxConcurrent, fail
+     * config validation. Empty/nil (the default) reproduces the pre-class-
+     * isolation single shared pool exactly — this feature is opt-in.
+     */
+    "classReservations": { [_ in string]?: number };
+
     /** Creates a new AgentDefaults instance. */
     constructor($$source: Partial<AgentDefaults> = {}) {
         if (!("provider" in $$source)) {
@@ -302,11 +314,8 @@ export class AgentDefaults {
         if (!("reviewUntilClean" in $$source)) {
             this["reviewUntilClean"] = null;
         }
-        if (!("maxReviewRounds" in $$source)) {
-            this["maxReviewRounds"] = 0;
-        }
-        if (!("allowUnboundedReviewRounds" in $$source)) {
-            this["allowUnboundedReviewRounds"] = null;
+        if (!("reviewRoundsPerHour" in $$source)) {
+            this["reviewRoundsPerHour"] = 0;
         }
         if (!("bashTimeoutSeconds" in $$source)) {
             this["bashTimeoutSeconds"] = 0;
@@ -362,6 +371,9 @@ export class AgentDefaults {
         if (!("queue" in $$source)) {
             this["queue"] = (new QueueConfig());
         }
+        if (!("classReservations" in $$source)) {
+            this["classReservations"] = {};
+        }
 
         Object.assign(this, $$source);
     }
@@ -370,22 +382,26 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField30_0 = $$createType0;
-        const $$createField31_0 = $$createType1;
-        const $$createField32_0 = $$createType2;
-        const $$createField33_0 = $$createType3;
+        const $$createField29_0 = $$createType0;
+        const $$createField30_0 = $$createType1;
+        const $$createField31_0 = $$createType2;
+        const $$createField32_0 = $$createType3;
+        const $$createField33_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField30_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField29_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField31_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField30_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField32_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField31_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField33_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField32_0($$parsedSource["queue"]);
+        }
+        if ("classReservations" in $$parsedSource) {
+            $$parsedSource["classReservations"] = $$createField33_0($$parsedSource["classReservations"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }
@@ -599,16 +615,6 @@ export class GitHubConfig {
     "reviewsFastSeconds": number;
 
     /**
-     * ReviewRoundsPerHour caps automated review runs one PR may receive in a
-     * rolling hour before the task is parked for a human. 0 uses the default;
-     * negative disables the cap. Rate-based rather than a lifetime total so a
-     * long-lived PR that is legitimately re-reviewed after each push is never
-     * blocked, while a runaway loop is stopped within the hour (#2164 sustained
-     * ~5/hour for 23 hours).
-     */
-    "reviewRoundsPerHour": number;
-
-    /**
      * Deprecated compatibility input for both PR streams' idle intervals.
      */
     "reviewsSlowSeconds": number;
@@ -711,9 +717,6 @@ export class GitHubConfig {
         if (!("reviewsFastSeconds" in $$source)) {
             this["reviewsFastSeconds"] = 0;
         }
-        if (!("reviewRoundsPerHour" in $$source)) {
-            this["reviewRoundsPerHour"] = 0;
-        }
         if (!("reviewsSlowSeconds" in $$source)) {
             this["reviewsSlowSeconds"] = 0;
         }
@@ -758,14 +761,14 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField1_0 = $$createType4;
-        const $$createField14_0 = $$createType5;
+        const $$createField1_0 = $$createType5;
+        const $$createField13_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("polling" in $$parsedSource) {
             $$parsedSource["polling"] = $$createField1_0($$parsedSource["polling"]);
         }
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField14_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField13_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
     }
@@ -824,9 +827,9 @@ export class GitHubPollingConfig {
      * Creates a new GitHubPollingConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubPollingConfig {
-        const $$createField0_0 = $$createType6;
-        const $$createField1_0 = $$createType7;
-        const $$createField2_0 = $$createType7;
+        const $$createField0_0 = $$createType7;
+        const $$createField1_0 = $$createType8;
+        const $$createField2_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("issues" in $$parsedSource) {
             $$parsedSource["issues"] = $$createField0_0($$parsedSource["issues"]);
@@ -1029,10 +1032,10 @@ export class K8sJobsConfig {
      * Creates a new K8sJobsConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): K8sJobsConfig {
-        const $$createField3_0 = $$createType8;
-        const $$createField8_0 = $$createType10;
-        const $$createField9_0 = $$createType12;
-        const $$createField10_0 = $$createType14;
+        const $$createField3_0 = $$createType9;
+        const $$createField8_0 = $$createType11;
+        const $$createField9_0 = $$createType13;
+        const $$createField10_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("command" in $$parsedSource) {
             $$parsedSource["command"] = $$createField3_0($$parsedSource["command"]);
@@ -1097,6 +1100,22 @@ export class MonitorConfig {
     "issueLabel": string;
     "issueRepo": string;
 
+    /**
+     * LostAgentIssueAfterOccurrences is how many consecutive ticks a
+     * lost_agent anomaly must be detected for the same task before an issue
+     * is filed. The deterministic remediation (resetLostAgent) runs every
+     * tick regardless; a single recurrence just means recovery hasn't taken
+     * effect yet, not that it failed.
+     */
+    "lostAgentIssueAfterOccurrences": number;
+
+    /**
+     * LostAgentAutoCloseAfterClears is how many consecutive ticks a
+     * previously-filed lost_agent issue's task must stay clear (no longer
+     * detected as lost) before the issue is auto-closed.
+     */
+    "lostAgentAutoCloseAfterClears": number;
+
     /** Creates a new MonitorConfig instance. */
     constructor($$source: Partial<MonitorConfig> = {}) {
         if (!("enabled" in $$source)) {
@@ -1135,6 +1154,12 @@ export class MonitorConfig {
         if (!("issueRepo" in $$source)) {
             this["issueRepo"] = "";
         }
+        if (!("lostAgentIssueAfterOccurrences" in $$source)) {
+            this["lostAgentIssueAfterOccurrences"] = 0;
+        }
+        if (!("lostAgentAutoCloseAfterClears" in $$source)) {
+            this["lostAgentAutoCloseAfterClears"] = 0;
+        }
 
         Object.assign(this, $$source);
     }
@@ -1143,7 +1168,7 @@ export class MonitorConfig {
      * Creates a new MonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorConfig {
-        const $$createField9_0 = $$createType15;
+        const $$createField9_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bottleneckHours" in $$parsedSource) {
             $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
@@ -1270,7 +1295,7 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
-        const $$createField6_0 = $$createType16;
+        const $$createField6_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
             $$parsedSource["pressure"] = $$createField6_0($$parsedSource["pressure"]);
@@ -1308,10 +1333,10 @@ export class PathDescriptor {
      * Creates a new PathDescriptor instance from a string or object.
      */
     static createFrom($$source: any = {}): PathDescriptor {
-        const $$createField2_0 = $$createType8;
-        const $$createField3_0 = $$createType8;
-        const $$createField4_0 = $$createType8;
-        const $$createField7_0 = $$createType8;
+        const $$createField2_0 = $$createType9;
+        const $$createField3_0 = $$createType9;
+        const $$createField4_0 = $$createType9;
+        const $$createField7_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("queryPaths" in $$parsedSource) {
             $$parsedSource["queryPaths"] = $$createField2_0($$parsedSource["queryPaths"]);
@@ -1392,7 +1417,7 @@ export class PlaywrightMCPConfig {
      * Creates a new PlaywrightMCPConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): PlaywrightMCPConfig {
-        const $$createField1_0 = $$createType8;
+        const $$createField1_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("extraArgs" in $$parsedSource) {
             $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
@@ -1654,12 +1679,12 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType17;
-        const $$createField1_0 = $$createType18;
-        const $$createField2_0 = $$createType18;
-        const $$createField3_0 = $$createType18;
-        const $$createField4_0 = $$createType18;
-        const $$createField5_0 = $$createType19;
+        const $$createField0_0 = $$createType18;
+        const $$createField1_0 = $$createType19;
+        const $$createField2_0 = $$createType19;
+        const $$createField3_0 = $$createType19;
+        const $$createField4_0 = $$createType19;
+        const $$createField5_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -1818,9 +1843,9 @@ export class RoutingSummary {
      * Creates a new RoutingSummary instance from a string or object.
      */
     static createFrom($$source: any = {}): RoutingSummary {
-        const $$createField6_0 = $$createType8;
-        const $$createField7_0 = $$createType21;
-        const $$createField8_0 = $$createType8;
+        const $$createField6_0 = $$createType9;
+        const $$createField7_0 = $$createType22;
+        const $$createField8_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("precedence" in $$parsedSource) {
             $$parsedSource["precedence"] = $$createField6_0($$parsedSource["precedence"]);
@@ -1993,7 +2018,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType8;
+        const $$createField6_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -2167,21 +2192,22 @@ const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = PlaywrightMCPConfig.createFrom;
 const $$createType2 = K8sJobsConfig.createFrom;
 const $$createType3 = QueueConfig.createFrom;
-const $$createType4 = GitHubPollingConfig.createFrom;
-const $$createType5 = GitHubAppConfig.createFrom;
-const $$createType6 = GitHubPollingStreamConfig.createFrom;
-const $$createType7 = GitHubPRPollingConfig.createFrom;
-const $$createType8 = $Create.Array($Create.Any);
-const $$createType9 = K8sJobEnvVar.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = K8sJobSecretEnvVar.createFrom;
-const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = K8sJobVolume.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = $Create.Map($Create.Any, $Create.Any);
-const $$createType16 = PressureConfig.createFrom;
-const $$createType17 = ProviderHealthCheckConfig.createFrom;
-const $$createType18 = ProviderEntryConfig.createFrom;
-const $$createType19 = ProviderLimitsConfig.createFrom;
-const $$createType20 = RoutingEligibleVariant.createFrom;
-const $$createType21 = $Create.Array($$createType20);
+const $$createType4 = $Create.Map($Create.Any, $Create.Any);
+const $$createType5 = GitHubPollingConfig.createFrom;
+const $$createType6 = GitHubAppConfig.createFrom;
+const $$createType7 = GitHubPollingStreamConfig.createFrom;
+const $$createType8 = GitHubPRPollingConfig.createFrom;
+const $$createType9 = $Create.Array($Create.Any);
+const $$createType10 = K8sJobEnvVar.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = K8sJobSecretEnvVar.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = K8sJobVolume.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = $Create.Map($Create.Any, $Create.Any);
+const $$createType17 = PressureConfig.createFrom;
+const $$createType18 = ProviderHealthCheckConfig.createFrom;
+const $$createType19 = ProviderEntryConfig.createFrom;
+const $$createType20 = ProviderLimitsConfig.createFrom;
+const $$createType21 = RoutingEligibleVariant.createFrom;
+const $$createType22 = $Create.Array($$createType21);

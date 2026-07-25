@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,45 +25,38 @@ type IssueSink interface {
 	Submit(ctx context.Context, a Anomaly, body string) (created bool, err error)
 }
 
-// ghExecer abstracts gh invocation for tests. The default impl shells out via
-// exec.CommandContext. Mirrors the pattern in internal/github/client.go.
+// IssueCloser is an optional IssueSink capability: closes whatever open
+// issue (or local task, for monitorRoutingSink's work-project path) matches
+// an anomaly's fingerprint, once its condition has cleared. Not every sink
+// implements it (NoopSink and test fakes don't); callers type-assert and
+// skip closing when it's absent.
+type IssueCloser interface {
+	CloseIfOpen(ctx context.Context, a Anomaly, comment string) (closed bool, err error)
+}
+
+// ghExecer abstracts gh invocation for tests. The default impl routes through
+// github.RunWithEnv. Mirrors the pattern in internal/github/client.go.
 type ghExecer interface {
 	run(ctx context.Context, args ...string) ([]byte, error)
 }
 
 type defaultGHExecer struct{}
 
-var (
-	ghEnv = github.GHEnv
-	// authCircuitOpen/observeGHResult mirror the centralized GitHub
-	// auth-health circuit breaker (internal/github/authhealth.go) the same
-	// way ghEnv already mirrors credential injection — this sink shells out
-	// directly instead of going through internal/github's request gate, so
-	// without this it would keep hammering `gh` during an auth outage the
-	// rest of the process has already backed off from, and would never
-	// report its own failures into the shared state for other callers (or
-	// the health/metrics surfaces) to see. See #2453.
-	authCircuitOpen = github.AuthCircuitOpen
-	observeGHResult = github.ObserveCallResultCtx
-)
+// ghEnv is indirected (rather than calling github.GHEnv directly) so tests
+// can inject a synthetic token without a real App-auth mint. Share the same
+// credential source as every other gh call in the process (internal/github's
+// ghExecer/ghRunCtx): the cached GitHub App installation token when one is
+// configured, so this sink isn't silently dependent on an ambient `gh auth
+// login`/GH_TOKEN that the App-auth setup was specifically meant to replace.
+// See #2032.
+var ghEnv = github.GHEnv
 
+// run routes through github.RunWithEnv — the same request gate (pacing,
+// rate-limit bookkeeping, auth-circuit breaker) every other gh call in the
+// process gets — instead of shelling out directly, so this sink's traffic
+// isn't invisible to the shared rate budget. See #2496.
 func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) {
-	if open, retryAfter := authCircuitOpen(); open {
-		github.RecordSuppressedCall()
-		return nil, github.NewAuthCircuitOpenError(retryAfter)
-	}
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	// Share the same credential source as every other gh call in the
-	// process (internal/github's ghExecer/ghRunCtx): inject the cached
-	// GitHub App installation token when one is configured, so this sink
-	// isn't silently dependent on an ambient `gh auth login`/GH_TOKEN that
-	// the App-auth setup was specifically meant to replace. See #2032.
-	if env := ghEnv(); env != nil {
-		cmd.Env = env
-	}
-	out, err := cmd.CombinedOutput()
-	observeGHResult(ctx, out, err)
-	return out, err
+	return github.RunWithEnv(ctx, ghEnv(), args...)
 }
 
 // GHIssueSink is the production IssueSink: searches by title, comments on hit,
@@ -138,6 +130,27 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		return false, "", classifyGHError("gh issue create", out, err)
 	}
 	return true, parseIssueCreateURL(out), nil
+}
+
+// CloseIfOpen implements IssueCloser: closes the open issue matching the
+// anomaly's fingerprint title, if one exists. Used to auto-resolve a
+// deterministic-kind issue (e.g. lost_agent) once its condition has stayed
+// clear for the configured number of consecutive scans — the same intent as
+// the #2433 merged-PR task auto-close, applied to monitor-filed issues.
+func (s *GHIssueSink) CloseIfOpen(ctx context.Context, a Anomaly, comment string) (bool, error) {
+	num, _, err := s.findOpenIssue(ctx, IssueTitle(a.Kind, a.Fingerprint))
+	if err != nil {
+		return false, err
+	}
+	if num == 0 {
+		return false, nil
+	}
+	args := append(s.repoArgs(), "issue", "close", strconv.Itoa(num), "--reason", "completed", "--comment", attribution.Append(comment))
+	out, err := s.exec.run(ctx, args...)
+	if err != nil {
+		return false, classifyGHError("gh issue close", out, err)
+	}
+	return true, nil
 }
 
 // parseIssueCreateURL pulls the first line of `gh issue create` stdout that

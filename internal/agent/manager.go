@@ -98,6 +98,16 @@ type Manager struct {
 	// another dispatcher cannot steal the slot between "capacity looks free"
 	// and registerRunningAgent's final claim.
 	reservedCount int
+	// liveByClass and reservedByClass mirror liveByProvider/reservedCount but
+	// bucketed by WorkloadClass instead of provider, maintained at the same
+	// three sites (registerRunningAgent, markAgentDone, ReattachAllContext) so
+	// sum(liveByClass) == liveCount always holds. classFloors is the
+	// configured per-class reserved minimum (agent.class_reservations,
+	// default empty). admitClass reads all three to implement
+	// reserve-with-borrowing admission.
+	liveByClass     map[WorkloadClass]int
+	reservedByClass map[WorkloadClass]int
+	classFloors     map[WorkloadClass]int
 	// maxInFlightPerProvider caps concurrent in-flight agents per provider.
 	// 0 disables the cap (soft cap: never blocks dispatch, only redirects).
 	maxInFlightPerProvider int
@@ -250,6 +260,12 @@ type ManagerRuntimeConfig struct {
 	// Jobs. This is a PoC execution backend and is default-off.
 	K8sJobsEnabled bool
 	K8sJobs        K8sJobRunnerConfig
+	// ClassReservations mirrors config agent.class_reservations: a per-class
+	// reserved minimum concurrent slot count. Keyed by WorkloadClass; unknown
+	// keys and an over-budget sum are rejected at config validation, not here.
+	// nil/empty reproduces pre-class-isolation behaviour exactly (admitClass
+	// with all-zero floors is the plain liveCount+reserved<max rule).
+	ClassReservations map[WorkloadClass]int
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string, cfg ManagerConfig) (*Manager, error) {
@@ -262,6 +278,9 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		dispatchClaims:         make(map[string]time.Time),
 		queueNudge:             make(chan struct{}, 1),
 		liveByProvider:         make(map[string]int),
+		liveByClass:            make(map[WorkloadClass]int),
+		reservedByClass:        make(map[WorkloadClass]int),
+		classFloors:            cloneClassFloors(cfg.Runtime.ClassReservations),
 		ctx:                    ctx,
 		emit:                   emit,
 		onComplete:             cfg.OnComplete,
@@ -434,6 +453,13 @@ type CapacityReservation struct {
 	manager  *Manager
 	counted  bool
 	released bool
+	// class is the WorkloadClass this reservation counted against in
+	// reservedByClass. Always ClassImplementation today: TryHoldCapacity/
+	// TryHoldCapacityWithLimit have exactly one caller (the workflow engine's
+	// run_agent step), which is always an implementation dispatch. Widen this
+	// to a caller-supplied class if a second caller ever reserves for a
+	// different WorkloadClass.
+	class WorkloadClass
 }
 
 // TryClaimDispatch reserves the right to dispatch an agent for taskID. On a
@@ -467,8 +493,13 @@ func (r *CapacityReservation) consumeLocked() bool {
 		return false
 	}
 	r.released = true
-	if r.counted && r.manager.reservedCount > 0 {
-		r.manager.reservedCount--
+	if r.counted {
+		if r.manager.reservedCount > 0 {
+			r.manager.reservedCount--
+		}
+		if r.manager.reservedByClass[r.class] > 0 {
+			r.manager.reservedByClass[r.class]--
+		}
 	}
 	return true
 }
@@ -487,9 +518,14 @@ func (r *CapacityReservation) Release() {
 	m.mu.Lock()
 	if !r.released {
 		r.released = true
-		if r.counted && m.reservedCount > 0 {
-			m.reservedCount--
-			shouldNudge = true
+		if r.counted {
+			if m.reservedCount > 0 {
+				m.reservedCount--
+				shouldNudge = true
+			}
+			if m.reservedByClass[r.class] > 0 {
+				m.reservedByClass[r.class]--
+			}
 		}
 	}
 	m.mu.Unlock()
@@ -520,6 +556,7 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.defaultSandboxMode = cfg.SandboxMode
 	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
 	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
+	m.classFloors = cloneClassFloors(cfg.ClassReservations)
 	if cfg.K8sJobsEnabled {
 		m.k8sRunner = newK8sJobRunner(m.logger, cfg.K8sJobs)
 	} else {
@@ -549,6 +586,20 @@ func (m *Manager) InFlightByProvider() map[string]int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return maps.Clone(m.liveByProvider)
+}
+
+// InFlightByClass returns a snapshot of in-flight agent counts by
+// WorkloadClass, kept in lockstep with RunningCount's liveCount (mirrors
+// InFlightByProvider). Keys are the string form of WorkloadClass so callers
+// (metrics) do not need to import this package's type.
+func (m *Manager) InFlightByClass() map[string]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]int, len(m.liveByClass))
+	for c, n := range m.liveByClass {
+		out[string(c)] = n
+	}
+	return out
 }
 
 func (m *Manager) sessionSinkFn() func(taskID, agentID, sessionID string) error {
@@ -680,6 +731,15 @@ func copyStringFloatMap(in map[string]float64) map[string]float64 {
 
 func copyStringBoolMap(in map[string]bool) map[string]bool {
 	return maps.Clone(in)
+}
+
+// cloneClassFloors returns a non-nil defensive copy so admitClass can always
+// index it directly without a nil-map guard, and so a caller's map cannot be
+// mutated out from under the manager after ReplaceRuntimeConfig/NewManager.
+func cloneClassFloors(in map[WorkloadClass]int) map[WorkloadClass]int {
+	out := make(map[WorkloadClass]int, len(AllWorkloadClasses()))
+	maps.Copy(out, in)
+	return out
 }
 
 // ProviderRateLimited reports whether the named provider is currently in a
@@ -950,6 +1010,9 @@ func (m *Manager) TryHoldCapacity() (*CapacityReservation, bool) {
 // so a burst of concurrent callers cannot each observe a stale live-only count
 // and collectively overshoot extraLimit — the SLO throttle relies on this to
 // hold admission at the halved ceiling atomically.
+//
+// The reservation always counts against ClassImplementation — see
+// CapacityReservation.class.
 func (m *Manager) TryHoldCapacityWithLimit(extraLimit int) (*CapacityReservation, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -958,13 +1021,14 @@ func (m *Manager) TryHoldCapacityWithLimit(extraLimit int) (*CapacityReservation
 		ceiling = extraLimit
 	}
 	if ceiling <= 0 {
-		return &CapacityReservation{manager: m}, true
+		return &CapacityReservation{manager: m, class: ClassImplementation}, true
 	}
-	if m.liveCount+m.reservedCount >= ceiling {
+	if !admitClass(ClassImplementation, m.liveByClass, m.reservedByClass, m.classFloors, ceiling) {
 		return nil, false
 	}
 	m.reservedCount++
-	return &CapacityReservation{manager: m, counted: true}, true
+	m.reservedByClass[ClassImplementation]++
+	return &CapacityReservation{manager: m, counted: true, class: ClassImplementation}, true
 }
 
 // TryReserveSlot is an advisory peek at capacity: it reports whether a slot
@@ -983,6 +1047,13 @@ func (m *Manager) TryReserveSlot() bool {
 // immediately, bounded by the caller's current manual-queue depth. This is a
 // read-only helper for the app-level queue drain: it never claims capacity,
 // and registerRunningAgent still re-checks the cap authoritatively.
+//
+// The manual queue only ever holds implementation-role items (see
+// enqueueManualStart), so this simulates repeated ClassImplementation
+// admission via admitClass on a local copy of the live/reserved snapshot:
+// class floors reserved for other classes can leave fewer slots available to
+// implementation than the raw free count would suggest, and this must
+// reflect that instead of over-reporting drainable slots.
 func (m *Manager) AvailableQueueDrainSlots(queueDepth int) int {
 	if queueDepth <= 0 {
 		return 0
@@ -992,14 +1063,13 @@ func (m *Manager) AvailableQueueDrainSlots(queueDepth int) int {
 	if m.maxConcurrent <= 0 {
 		return queueDepth
 	}
-	free := m.maxConcurrent - m.liveCount - m.reservedCount
-	if free <= 0 {
-		return 0
+	live := maps.Clone(m.liveByClass)
+	n := 0
+	for n < queueDepth && admitClass(ClassImplementation, live, m.reservedByClass, m.classFloors, m.maxConcurrent) {
+		live[ClassImplementation]++
+		n++
 	}
-	if free > queueDepth {
-		return queueDepth
-	}
-	return free
+	return n
 }
 
 // signalQueueNudge fires a non-blocking, coalescing signal on queueNudge. If

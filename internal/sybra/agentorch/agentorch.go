@@ -907,6 +907,7 @@ func (o *Orchestrator) enqueueManualStart(t task.Task, taskID, mode, prompt stri
 	o.queue.Offer(agentqueue.Item{
 		TaskID:                 taskID,
 		Role:                   string(agent.RoleImplementation),
+		Class:                  string(agent.RoleImplementation.WorkloadClass()),
 		Priority:               t.Priority,
 		Status:                 t.Status,
 		Manual:                 true,
@@ -950,6 +951,7 @@ func (o *Orchestrator) enqueueImplementation(t task.Task, taskID string) bool {
 	o.queue.Offer(agentqueue.Item{
 		TaskID:   taskID,
 		Role:     string(agent.RoleImplementation),
+		Class:    string(agent.RoleImplementation.WorkloadClass()),
 		Priority: t.Priority,
 		Status:   t.Status,
 	})

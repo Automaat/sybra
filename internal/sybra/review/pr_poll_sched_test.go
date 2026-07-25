@@ -141,9 +141,9 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		t.Parallel()
 
 		r := &Handler{
-			prPollState: map[string]prPollEntry{
+			prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{
 				"owner/repo#7": {skipTicks: 2},
-			},
+			}},
 		}
 		tk := newTask("deferred", 7, base)
 
@@ -155,7 +155,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 			if sel.deferredPRs != 1 {
 				t.Fatalf("poll %d deferredPRs = %d, want 1", i+1, sel.deferredPRs)
 			}
-			if got := r.prPollState["owner/repo#7"].skipTicks; got != wantSkip {
+			if _, _, got, _ := r.prSnapshots.Backoff("owner/repo#7"); got != wantSkip {
 				t.Fatalf("poll %d skipTicks = %d, want %d", i+1, got, wantSkip)
 			}
 		}
@@ -171,14 +171,14 @@ func TestSelectKnownPRPoll(t *testing.T) {
 
 		tk := newTask("reviewed", 7, base)
 		r := &Handler{
-			prPollState: map[string]prPollEntry{
+			prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{
 				"owner/repo#7": {
-					lastHeadSHA:   "sha-1",
-					lastUpdatedAt: "2026-07-13T12:00:00Z",
-					stableStreak:  3,
-					skipTicks:     4,
+					headSHA:      "sha-1",
+					updatedAt:    "2026-07-13T12:00:00Z",
+					stableStreak: 3,
+					skipTicks:    4,
 				},
-			},
+			}},
 			fetchHeadStateFn: func(repo string, number int) (string, bool, string, error) {
 				if repo != "owner/repo" || number != 7 {
 					t.Fatalf("fetchHeadStateFn(%q, %d), want owner/repo#7", repo, number)
@@ -194,7 +194,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		if sel.deferredPRs != 0 {
 			t.Fatalf("deferredPRs = %d, want 0", sel.deferredPRs)
 		}
-		if got := r.prPollState["owner/repo#7"].skipTicks; got != 0 {
+		if _, _, got, _ := r.prSnapshots.Backoff("owner/repo#7"); got != 0 {
 			t.Fatalf("skipTicks = %d, want reset to 0", got)
 		}
 	})
@@ -204,14 +204,14 @@ func TestSelectKnownPRPoll(t *testing.T) {
 
 		tk := newTask("rate-limited", 7, base)
 		r := &Handler{
-			prPollState: map[string]prPollEntry{
+			prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{
 				"owner/repo#7": {
-					lastHeadSHA:   "sha-1",
-					lastUpdatedAt: "2026-07-13T12:00:00Z",
-					stableStreak:  3,
-					skipTicks:     4,
+					headSHA:      "sha-1",
+					updatedAt:    "2026-07-13T12:00:00Z",
+					stableStreak: 3,
+					skipTicks:    4,
 				},
-			},
+			}},
 			fetchHeadStateFn: func(string, int) (string, bool, string, error) {
 				return "", false, "", fmt.Errorf("rate limited")
 			},
@@ -224,7 +224,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		if sel.deferredPRs != 1 {
 			t.Fatalf("deferredPRs = %d, want 1", sel.deferredPRs)
 		}
-		if got := r.prPollState["owner/repo#7"].skipTicks; got != 3 {
+		if _, _, got, _ := r.prSnapshots.Backoff("owner/repo#7"); got != 3 {
 			t.Fatalf("skipTicks = %d, want decremented to 3", got)
 		}
 	})
@@ -233,20 +233,20 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		t.Parallel()
 
 		r := &Handler{
-			prPollState: map[string]prPollEntry{
+			prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{
 				"owner/repo#1": {},
 				"owner/repo#2": {},
-			},
+			}},
 		}
 
 		r.pruneKnownPRState(map[string]struct{}{"owner/repo#1": {}})
-		if len(r.prPollState) != 1 {
-			t.Fatalf("len(prPollState) = %d, want 1", len(r.prPollState))
+		if got := r.prSnapshots.Len(); got != 1 {
+			t.Fatalf("len(prSnapshots) = %d, want 1", got)
 		}
-		if _, ok := r.prPollState["owner/repo#1"]; !ok {
+		if _, ok := r.prSnapshots.entries["owner/repo#1"]; !ok {
 			t.Fatal("owner/repo#1 pruned, want retained")
 		}
-		if _, ok := r.prPollState["owner/repo#2"]; ok {
+		if _, ok := r.prSnapshots.entries["owner/repo#2"]; ok {
 			t.Fatal("owner/repo#2 retained, want pruned")
 		}
 	})
@@ -297,7 +297,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		wantSkips := []int{1, 2, 4, 8}
 		for i, want := range wantSkips {
 			r.noteKnownPRResult("owner/repo", 42, stablePR)
-			if got := r.prPollState["owner/repo#42"].skipTicks; got != want {
+			if _, _, got, _ := r.prSnapshots.Backoff("owner/repo#42"); got != want {
 				t.Fatalf("stable round %d skipTicks = %d, want %d", i+1, got, want)
 			}
 		}
@@ -305,7 +305,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		changedPR := stablePR
 		changedPR.HeadSHA = "sha-2"
 		r.noteKnownPRResult("owner/repo", 42, changedPR)
-		if got := r.prPollState["owner/repo#42"].skipTicks; got != 0 {
+		if _, _, got, _ := r.prSnapshots.Backoff("owner/repo#42"); got != 0 {
 			t.Fatalf("skipTicks after head change = %d, want 0", got)
 		}
 	})

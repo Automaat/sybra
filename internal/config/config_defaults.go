@@ -59,11 +59,6 @@ func (c *Config) RetryWatchdog() int {
 // redispatching forever.
 const DefaultMaxCheckpoints = 3
 
-// DefaultMaxReviewRounds bounds how many automated review rounds one
-// simple-task-review execution may spend before Sybra parks the task
-// blocked.
-const DefaultMaxReviewRounds = 3
-
 // MaxCheckpoints returns the configured checkpoint-handoff cap or
 // DefaultMaxCheckpoints when unset/non-positive.
 func (c *Config) MaxCheckpoints() int {
@@ -216,24 +211,6 @@ func (c *Config) ReviewUntilClean() bool {
 		return *c.Agent.ReviewUntilClean
 	}
 	return true
-}
-
-// MaxReviewRounds returns the configured automated review-round cap or the
-// default when unset/non-positive.
-func (c *Config) MaxReviewRounds() int {
-	if c != nil && c.Agent.MaxReviewRounds > 0 {
-		return c.Agent.MaxReviewRounds
-	}
-	return DefaultMaxReviewRounds
-}
-
-// AllowUnboundedReviewRounds reports whether the legacy uncapped
-// review→fix→review loop is explicitly enabled.
-func (c *Config) AllowUnboundedReviewRounds() bool {
-	if c != nil && c.Agent.AllowUnboundedReviewRounds != nil {
-		return *c.Agent.AllowUnboundedReviewRounds
-	}
-	return false
 }
 
 // PromptLabAutoApprove reports whether a filed Prompt Lab proposal may start
@@ -467,9 +444,9 @@ func (c GitHubConfig) RunsReviewer() bool {
 	return c.RunsSybraPRs() || c.RunsAssignedPRs()
 }
 
-// ReviewRoundsPerHourLimit resolves the per-PR review rate cap. 0 means unset
-// (use the default); a negative value disables the cap entirely.
-func (c GitHubConfig) ReviewRoundsPerHourLimit() int {
+// ReviewRoundsPerHourLimit resolves the per-task automated-review rate cap. 0
+// means unset (use the default); a negative value disables the cap entirely.
+func (c AgentDefaults) ReviewRoundsPerHourLimit() int {
 	if c.ReviewRoundsPerHour == 0 {
 		return DefaultReviewRoundsPerHour
 	}
@@ -701,7 +678,6 @@ func defaultSeedConfig() *Config {
 			MaxCostUSD:       5.0,
 			MaxTurns:         150,
 			MaxCheckpoints:   DefaultMaxCheckpoints,
-			MaxReviewRounds:  DefaultMaxReviewRounds,
 			DispatchJitterMs: 1000,
 		},
 		Notification: NotificationConfig{
@@ -1601,6 +1577,12 @@ func applyMonitorDefaults(cfg *Config, file *FileConfig) {
 	}
 	if cfg.Monitor.IssueRepo == "" {
 		cfg.Monitor.IssueRepo = "Automaat/sybra"
+	}
+	if cfg.Monitor.LostAgentIssueAfterOccurrences <= 0 {
+		cfg.Monitor.LostAgentIssueAfterOccurrences = 2
+	}
+	if cfg.Monitor.LostAgentAutoCloseAfterClears <= 0 {
+		cfg.Monitor.LostAgentAutoCloseAfterClears = 3
 	}
 	if cfg.Monitor.BottleneckHours == nil {
 		cfg.Monitor.BottleneckHours = map[string]float64{}

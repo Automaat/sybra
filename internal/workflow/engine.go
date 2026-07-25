@@ -393,13 +393,13 @@ type Engine struct {
 	// keeps the review→fix→review cycle running, matching
 	// config.ReviewUntilClean's default of true.
 	reviewLoopDisabled bool
-	// maxReviewRounds bounds how many automated review rounds one
-	// simple-task-review execution may spend before it is parked
-	// blocked. 0 → config.DefaultMaxReviewRounds.
-	maxReviewRounds int
-	// allowUnboundedReviewRounds restores the legacy uncapped
-	// review→fix→review loop. Defaults to false.
-	allowUnboundedReviewRounds bool
+	// reviewRoundsPerHour bounds simple-task-review's review→fix→review
+	// cycle through the same durable reviewbudget.Budget the inbound
+	// PR-review dispatcher uses (internal/sybra's app_orchestrator.go) —
+	// one owner for "is this task reviewing too much", not a separate
+	// per-workflow-execution round cap. 0 → config.DefaultReviewRoundsPerHour;
+	// negative disables the cap.
+	reviewRoundsPerHour int
 	// openPROnUnrunnableGate: see SetOpenPROnUnrunnableGate. Defaults to true
 	// (set in NewEngine), matching config.TestingOpenPROnUnrunnableGateEnabled's
 	// nil-is-true default.
@@ -631,14 +631,13 @@ func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
 // review pass per task (false).
 func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
 
-// SetMaxReviewRounds sets how many automated review rounds one
-// simple-task-review execution may spend before the task is parked
-// blocked. Values <= 0 fall back to config.DefaultMaxReviewRounds.
-func (e *Engine) SetMaxReviewRounds(n int) { e.maxReviewRounds = n }
-
-// SetAllowUnboundedReviewRounds restores the legacy uncapped
-// review→fix→review loop when true.
-func (e *Engine) SetAllowUnboundedReviewRounds(v bool) { e.allowUnboundedReviewRounds = v }
+// SetReviewRoundsPerHour sets the rolling-hour review-role dispatch cap
+// simple-task-review's detect_tampering step checks before looping back for
+// another review→fix round — the same resolved limit
+// (config.AgentDefaults.ReviewRoundsPerHourLimit) the inbound PR-review
+// dispatcher enforces. 0 falls back to config.DefaultReviewRoundsPerHour;
+// negative disables the cap.
+func (e *Engine) SetReviewRoundsPerHour(n int) { e.reviewRoundsPerHour = n }
 
 // SetOpenPROnUnrunnableGate controls whether execRouteTestResult opens a PR
 // (ready-pr) instead of escalating to human-required once a testing cycle

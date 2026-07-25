@@ -39,13 +39,34 @@ func (ghExecer) run(args ...string) ([]byte, error) {
 // expires — releasing the global request gate instead of holding it for the
 // kernel TCP timeout. Used by latency-sensitive callers (the PR poll loop).
 func ghRunCtx(ctx context.Context, args ...string) ([]byte, error) {
+	return RunWithEnv(ctx, ghEnv(), args...)
+}
+
+// RunWithEnv executes `gh` with args under env (nil = inherit the ambient
+// process environment unchanged) through the shared request gate — the same
+// pacing, rate-limit bookkeeping, and auth-circuit breaker every other gh
+// call in this package gets. Exported for callers outside this package that
+// build their own credential env (e.g. internal/monitor's issue sink, which
+// mirrors GHEnv() locally so its tests can inject a synthetic token without a
+// real App-auth mint) but must not bypass the shared gate to do it — a
+// caller that shells out to gh directly makes its traffic invisible to the
+// shared rate budget (see #2496).
+func RunWithEnv(ctx context.Context, env []string, args ...string) ([]byte, error) {
 	return ghGate.execute(ctx, func() ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "gh", args...)
-		if env := ghEnv(); env != nil {
+		if env != nil {
 			cmd.Env = env
 		}
 		return cmd.CombinedOutput()
 	})
+}
+
+// Run is RunWithEnv using this package's own credential environment
+// (GHEnv()). This is the chokepoint every gh invocation in the process should
+// route through when no more specific Fetch/Create/etc. helper covers the
+// call.
+func Run(ctx context.Context, args ...string) ([]byte, error) {
+	return RunWithEnv(ctx, GHEnv(), args...)
 }
 
 // runCtx lets ghExecer satisfy the optional ctxRunner interface, so callers

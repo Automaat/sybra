@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"syscall"
-	"time"
 
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/github"
@@ -243,9 +241,7 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 // Returns "origin/main" if nothing resolves.
 func resolveOriginBase(ctx context.Context, wtPath string) string {
 	for _, candidate := range []string{"origin/HEAD", "origin/master", "origin/main"} {
-		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", candidate)
-		cmd.Dir = wtPath
-		if cmd.Run() == nil {
+		if gitOK(ctx, wtPath, "rev-parse", "--verify", candidate) {
 			return candidate
 		}
 	}
@@ -569,26 +565,14 @@ func branchMergedIntoBase(parentCtx context.Context, wtPath string) bool {
 	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
 	defer cancel()
 	baseRef := resolveOriginBase(ctx, wtPath)
-	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", "HEAD", baseRef)
-	cmd.Dir = wtPath
-	return cmd.Run() == nil
+	return gitIsAncestor(ctx, wtPath, "HEAD", baseRef)
 }
 
 func (e *Engine) gitLogAheadOfBase(wtPath string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	baseRef := resolveOriginBase(ctx, wtPath)
-	cmd := exec.CommandContext(ctx, "git", "log", baseRef+"..HEAD", "--oneline")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			return out, fmt.Errorf("git log %s..HEAD: %w", baseRef, err)
-		}
-		return out, fmt.Errorf("git log %s..HEAD: %w: %s", baseRef, err, detail)
-	}
-	return out, nil
+	return gitCombinedOutput(ctx, wtPath, "log", baseRef+"..HEAD", "--oneline")
 }
 
 func shouldRetryVerifyCommitsGitError(err error, output []byte) bool {
@@ -641,13 +625,9 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 		refspecs = append(refspecs, "+"+"refs/heads/"+baseBranch+":refs/remotes/origin/"+baseBranch)
 	}
 
-	deleteCmd := exec.CommandContext(ctx, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
-	deleteCmd.Dir = wtPath
-	_ = deleteCmd.Run()
+	_ = gitDo(ctx, wtPath, "update-ref", "-d", "refs/remotes/origin/"+branch)
 	if baseBranch, ok := strings.CutPrefix(baseRef, "origin/"); ok && baseBranch != "" && baseBranch != "HEAD" {
-		deleteBaseCmd := exec.CommandContext(ctx, "git", "update-ref", "-d", "refs/remotes/origin/"+baseBranch)
-		deleteBaseCmd.Dir = wtPath
-		_ = deleteBaseCmd.Run()
+		_ = gitDo(ctx, wtPath, "update-ref", "-d", "refs/remotes/origin/"+baseBranch)
 	}
 
 	args := []string{"fetch", "--no-tags", "--no-recurse-submodules"}
@@ -656,11 +636,8 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 	}
 	args = append(args, "origin")
 	args = append(args, refspecs...)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		e.logger.Warn("workflow.verify-commits.ref-recovery.failed", "task_id", taskID, "branch", branch, "err", err, "output", strings.TrimSpace(string(out)))
+	if _, err := gitCombinedOutput(ctx, wtPath, args...); err != nil {
+		e.logger.Warn("workflow.verify-commits.ref-recovery.failed", "task_id", taskID, "branch", branch, "err", err)
 		return false
 	}
 	e.logger.Warn("workflow.verify-commits.ref-recovery.fetched", "task_id", taskID, "branch", branch, "base", baseRef)
@@ -686,34 +663,26 @@ func verifyCommitsNegotiationTips(ctx context.Context, wtPath, baseRef string) [
 }
 
 func pruneBrokenVerifyCommitRefs(ctx context.Context, wtPath, barePath, taskBranch string) []string {
-	cmd := exec.CommandContext(ctx, "git", "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
+	out, err := gitStdout(ctx, wtPath, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
 	if err != nil {
 		return nil
 	}
 
 	keepLocalBranch := "refs/heads/" + taskBranch
 	var pruned []string
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		ref := strings.TrimSpace(line)
 		if ref == "" || ref == keepLocalBranch {
 			continue
 		}
-		check := exec.CommandContext(ctx, "git", "cat-file", "-e", ref+"^{object}")
-		check.Dir = wtPath
-		if check.Run() == nil {
+		if gitOK(ctx, wtPath, "cat-file", "-e", ref+"^{object}") {
 			continue
 		}
 		if barePath != "" {
-			badValue := exec.CommandContext(ctx, "git", "rev-parse", ref)
-			badValue.Dir = wtPath
-			shaOut, _ := badValue.Output()
-			project.QuarantineRef(barePath, ref, strings.TrimSpace(string(shaOut)))
+			sha, _ := gitStdout(ctx, wtPath, "rev-parse", ref)
+			project.QuarantineRef(barePath, ref, sha)
 		}
-		deleteCmd := exec.CommandContext(ctx, "git", "update-ref", "-d", ref)
-		deleteCmd.Dir = wtPath
-		if deleteCmd.Run() == nil {
+		if gitDo(ctx, wtPath, "update-ref", "-d", ref) == nil {
 			pruned = append(pruned, ref)
 		}
 	}
@@ -721,47 +690,13 @@ func pruneBrokenVerifyCommitRefs(ctx context.Context, wtPath, barePath, taskBran
 }
 
 func revParseCommit(ctx context.Context, wtPath, ref string) string {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref+"^{commit}")
-	cmd.Dir = wtPath
-	configureWorkflowGitCancel(cmd)
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
-func configureWorkflowGitCancel(cmd *exec.Cmd) {
-	if cmd == nil {
-		return
-	}
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true
-	cmd.WaitDelay = time.Second
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-			if errors.Is(err, syscall.ESRCH) {
-				return nil
-			}
-			return err
-		}
-		return nil
-	}
+	sha, _ := gitRevParseVerify(ctx, wtPath, ref+"^{commit}")
+	return sha
 }
 
 func revParseTree(ctx context.Context, wtPath, ref string) string {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref+"^{tree}")
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+	sha, _ := gitRevParseVerify(ctx, wtPath, ref+"^{tree}")
+	return sha
 }
 
 func currentWorktreeTree(ctx context.Context, wtPath string) (string, error) {
@@ -774,22 +709,13 @@ func currentWorktreeTree(ctx context.Context, wtPath string) (string, error) {
 	defer func() { _ = os.Remove(path) }()
 
 	env := append(os.Environ(), "GIT_INDEX_FILE="+path)
-	readTree := exec.CommandContext(ctx, "git", "read-tree", "HEAD")
-	readTree.Dir = wtPath
-	readTree.Env = env
-	if out, err := readTree.CombinedOutput(); err != nil {
+	if out, err := gitCmdEnv(ctx, wtPath, env, "read-tree", "HEAD").CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git read-tree HEAD: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	add := exec.CommandContext(ctx, "git", "add", "-A")
-	add.Dir = wtPath
-	add.Env = env
-	if out, err := add.CombinedOutput(); err != nil {
+	if out, err := gitCmdEnv(ctx, wtPath, env, "add", "-A").CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	writeTree := exec.CommandContext(ctx, "git", "write-tree")
-	writeTree.Dir = wtPath
-	writeTree.Env = env
-	out, err := writeTree.CombinedOutput()
+	out, err := gitCmdEnv(ctx, wtPath, env, "write-tree").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git write-tree: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -797,27 +723,17 @@ func currentWorktreeTree(ctx context.Context, wtPath string) (string, error) {
 }
 
 func resetHardToRef(ctx context.Context, wtPath, ref string) error {
-	cmd := exec.CommandContext(ctx, "git", "reset", "--hard", ref)
-	cmd.Dir = wtPath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git reset --hard %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	_, err := gitCombinedOutput(ctx, wtPath, "reset", "--hard", ref)
+	return err
 }
 
 func fastForwardToRef(ctx context.Context, wtPath, ref string) error {
-	cmd := exec.CommandContext(ctx, "git", "merge", "--ff-only", ref)
-	cmd.Dir = wtPath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git merge --ff-only %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	_, err := gitCombinedOutput(ctx, wtPath, "merge", "--ff-only", ref)
+	return err
 }
 
 func isAncestorCommit(ctx context.Context, wtPath, ancestor, ref string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ancestor, ref)
-	cmd.Dir = wtPath
-	err := cmd.Run()
+	err := gitCmd(ctx, wtPath, "merge-base", "--is-ancestor", ancestor, ref).Run()
 	if err == nil {
 		return true, nil
 	}
@@ -837,9 +753,7 @@ func diagnoseWorktreeState(parentCtx context.Context, wtPath string) string {
 	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	out, err := gitCmd(ctx, wtPath, "status", "--porcelain").CombinedOutput()
 	if err != nil {
 		first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 		first = strings.TrimSpace(first)

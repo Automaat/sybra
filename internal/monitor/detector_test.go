@@ -13,15 +13,17 @@ import (
 
 func defaultCfg() config.MonitorConfig {
 	return config.MonitorConfig{
-		Enabled:              true,
-		IntervalSeconds:      300,
-		Model:                "sonnet",
-		IssueCooldownMinutes: 30,
-		DispatchLimit:        3,
-		StuckHumanHours:      8,
-		LostAgentMinutes:     15,
-		PRGapGraceMinutes:    15,
-		FailureRateThreshold: 0.3,
+		Enabled:                        true,
+		IntervalSeconds:                300,
+		Model:                          "sonnet",
+		IssueCooldownMinutes:           30,
+		DispatchLimit:                  3,
+		StuckHumanHours:                8,
+		LostAgentMinutes:               15,
+		PRGapGraceMinutes:              15,
+		FailureRateThreshold:           0.3,
+		LostAgentIssueAfterOccurrences: 2,
+		LostAgentAutoCloseAfterClears:  3,
 		BottleneckHours: map[string]float64{
 			"plan-review":    4,
 			"human-required": 8,
@@ -1168,6 +1170,33 @@ func TestFingerprintStability(t *testing.T) {
 	if Fingerprint(KindBottleneck, "", map[string]any{"status": "plan-review"}) ==
 		Fingerprint(KindBottleneck, "", map[string]any{"status": "in-progress"}) {
 		t.Fatal("bottleneck fingerprints should differ by status")
+	}
+}
+
+func TestFingerprintCause(t *testing.T) {
+	base := Fingerprint(KindLostAgent, "abc", nil)
+	if got := Fingerprint(KindLostAgent, "abc", map[string]any{"cause": ""}); got != base {
+		t.Fatalf("empty cause should not change the fingerprint: got %q, want %q", got, base)
+	}
+	withCause := Fingerprint(KindLostAgent, "abc", map[string]any{"cause": `task update conflict: "abc" is locked`})
+	if withCause == base {
+		t.Fatal("a non-empty cause must produce a fingerprint distinct from the bare kind+task one")
+	}
+	if !strings.HasPrefix(withCause, base+":") {
+		t.Fatalf("cause-qualified fingerprint %q should extend the base %q", withCause, base)
+	}
+	// Repeating the exact same cause reuses the same fingerprint — this is
+	// what lets a recurring, identical failure comment on one open issue
+	// instead of fragmenting into a new one every tick.
+	again := Fingerprint(KindLostAgent, "abc", map[string]any{"cause": `task update conflict: "abc" is locked`})
+	if withCause != again {
+		t.Fatal("identical cause text should produce identical fingerprints")
+	}
+	// A different cause on the same kind+task must not collide with the
+	// first one's fingerprint/issue.
+	otherCause := Fingerprint(KindLostAgent, "abc", map[string]any{"cause": "context deadline exceeded"})
+	if otherCause == withCause {
+		t.Fatal("distinct causes on the same kind+task should produce distinct fingerprints")
 	}
 }
 

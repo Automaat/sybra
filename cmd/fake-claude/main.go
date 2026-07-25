@@ -102,24 +102,43 @@ func cleanEnvPath(p string) string {
 	return abs
 }
 
+// resolvedPrompt is the prompt text resolved once in main (argv for the
+// old positional shape, stdin for the new one) — os.Args is safe to read
+// repeatedly from any scenario handler, but stdin is a one-shot resource
+// already consumed by the time handlers run, so they must read this
+// instead of calling promptArg(os.Args) themselves.
+var resolvedPrompt string
+
 func main() {
 	// Log args for test verification.
 	if logFile := cleanEnvPath(os.Getenv("FAKE_CLAUDE_ARGS_LOG")); logFile != "" {
-		_ = writeArgsLog(logFile, []byte(strings.Join(os.Args[1:], "\n")))
+		_ = writeCaptureLog(logFile, []byte(strings.Join(os.Args[1:], "\n")))
 	}
 
 	scenario := popScenario()
 	prompt := promptArg(os.Args)
-	if prompt == "" && scenarioNeedsPromptContext(scenario) {
-		prompt = readInitialPrompt(os.Stdin)
+	if prompt == "" {
+		if steerableArgs(os.Args) {
+			// Steerable scenarios control exactly when to read a turn.
+			if scenarioNeedsPromptContext(scenario) {
+				prompt = readInitialPrompt(os.Stdin)
+			}
+		} else {
+			// Non-steerable: one write, closed right after — always safe.
+			prompt = readPlainStdinPrompt(os.Stdin)
+		}
 	}
+	if logFile := cleanEnvPath(os.Getenv("FAKE_CLAUDE_STDIN_LOG")); logFile != "" {
+		_ = writeCaptureLog(logFile, []byte(prompt))
+	}
+	resolvedPrompt = prompt
 	if !runScenario(scenario, promptTaskID(prompt)) {
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
 	}
 }
 
-func writeArgsLog(logFile string, data []byte) error {
+func writeCaptureLog(logFile string, data []byte) error {
 	dir := filepath.Dir(logFile)
 	tmp, err := os.CreateTemp(dir, ".claude-args-*.tmp")
 	if err != nil {
@@ -220,6 +239,21 @@ func scenarioNeedsPromptContext(scenario string) bool {
 	}
 }
 
+// steerableArgs reports whether this invocation used the steerable
+// stream-json stdin protocol (one JSON "user" message per line, stdin kept
+// open for further turns) rather than the non-steerable one-shot plain-text
+// delivery (see internal/agent/provider_claude.go's two BuildHeadlessInvocation
+// branches).
+func steerableArgs(args []string) bool {
+	for i, arg := range args {
+		if arg == "--input-format" && i+1 < len(args) && args[i+1] == "stream-json" {
+			return true
+		}
+	}
+	return false
+}
+
+// readInitialPrompt reads one steerable stream-json "user" message line.
 func readInitialPrompt(r io.Reader) string {
 	br := bufio.NewReader(r)
 	line, err := br.ReadBytes('\n')
@@ -227,6 +261,14 @@ func readInitialPrompt(r io.Reader) string {
 		return ""
 	}
 	return parseUserPromptLine(line)
+}
+
+// readPlainStdinPrompt reads the entire non-steerable one-shot prompt: raw
+// text, no stream-json envelope, stdin closed by the caller right after the
+// write (see writeAndCloseHeadlessPrompt).
+func readPlainStdinPrompt(r io.Reader) string {
+	data, _ := io.ReadAll(r)
+	return strings.TrimSpace(string(data))
 }
 
 func parseUserPromptLine(line []byte) string {
@@ -306,7 +348,7 @@ func runScenario(scenario, taskID string) bool {
 func runSuccess() {
 	emitSystem()
 	emitAssistant("Working on it...")
-	emitResult(withReceiptFromPrompt(promptArg(os.Args), "Task completed successfully."))
+	emitResult(withReceiptFromPrompt(resolvedPrompt, "Task completed successfully."))
 }
 
 func runSuccessNoReceipt() {
@@ -602,16 +644,16 @@ func runMalformedPROutput() {
 func runWriteSidecarSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Writing fake sidecar...")
-	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
+	for _, path := range extractSidecarPaths(resolvedPrompt) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude")), 0o644)
 	}
-	emitResult(withReceiptFromPrompt(promptArg(os.Args), "Sidecar written."))
+	emitResult(withReceiptFromPrompt(resolvedPrompt, "Sidecar written."))
 }
 
 func runWriteSidecarSuccessNoReceipt(taskID string) {
 	emitSystem()
 	emitAssistant("Writing fake sidecar...")
-	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
+	for _, path := range extractSidecarPaths(resolvedPrompt) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude")), 0o644)
 	}
 	emitResult("Sidecar written.")
@@ -621,7 +663,7 @@ func runRevisePlanSidecars(taskID string) {
 	emitSystem()
 	emitAssistant("Revising fake plan sidecars...")
 	paths := map[string]string{}
-	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
+	for _, path := range extractSidecarPaths(resolvedPrompt) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude-revision")), 0o644)
 		base := filepath.Base(path)
 		switch {
@@ -665,7 +707,7 @@ func runRevisePlanSidecars(taskID string) {
 func runPlanCriticSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Critiquing plan...")
-	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
+	for _, path := range extractSidecarPaths(resolvedPrompt) {
 		if strings.Contains(filepath.Base(path), "sybra-critique") {
 			_ = os.WriteFile(path, []byte("# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n"), 0o644)
 		}
@@ -899,7 +941,7 @@ var receiptMarkerRe = regexp.MustCompile(`<!-- sybra-skill-receipt [^>]+ -->`)
 
 func promptArg(args []string) string {
 	for i, arg := range args {
-		if arg == "-p" && i+1 < len(args) {
+		if arg == "-p" && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 			return args[i+1]
 		}
 	}

@@ -230,17 +230,18 @@ func MigrateRawConfig(raw []byte, toVersion int) (*MigrationResult, error) {
 	}
 	canonical := newCanonicalConfigBuilder()
 	canonical.setScalarTopLevel("schema_version", strconv.Itoa(CurrentSchemaVersion))
-	preserveLegacyReviewLoop := fileCfg.SchemaVersion() < CurrentSchemaVersion
 	for i := 0; i+1 < len(flatRoot.Content); i += 2 {
 		key := flatRoot.Content[i].Value
 		if key == "schema_version" {
 			continue
 		}
 		value := flatRoot.Content[i+1]
-		if err := migrateLegacyTopLevelIntoCanonical(canonical, key, value, nil, preserveLegacyReviewLoop); err != nil {
+		if err := migrateLegacyTopLevelIntoCanonical(canonical, key, value, nil); err != nil {
 			return nil, err
 		}
 	}
+	applyLegacyUnboundedReviewLoop(canonical, fileCfg)
+	relocateLegacyGitHubReviewRoundsPerHour(canonical)
 	canonicalBytes, err := marshalYAMLDocument(canonical.document())
 	if err != nil {
 		return nil, err
@@ -438,6 +439,77 @@ func (b *flatConfigBuilder) setTopLevel(dest string, value *yaml.Node, source st
 		cloneYAMLNode(value),
 	)
 	return nil
+}
+
+// applyLegacyUnboundedReviewLoop mirrors the pre-#2499 "review_until_clean:
+// true implies an uncapped review→fix→review loop" compat shim, now
+// expressed through the single review-rate-limit knob
+// (execution.agent.review_rounds_per_hour) instead of a second
+// allow-unbounded flag: a legacy config that opted into the old uncapped loop
+// keeps that behavior by disabling the rate limit, rather than losing it
+// silently now that the old keys are gone from the schema. Skipped if the
+// legacy file explicitly set either now-dead key, or already carries a rate
+// limit of its own under either the current (agent) or briefly-lived legacy
+// (github) key.
+func applyLegacyUnboundedReviewLoop(canonical *canonicalConfigBuilder, fileCfg *FileConfig) {
+	if fileCfg == nil || fileCfg.SchemaVersion() >= CurrentSchemaVersion {
+		return
+	}
+	if fileCfg.Has("agent", "allow_unbounded_review_rounds") || fileCfg.Has("agent", "max_review_rounds") ||
+		fileCfg.Has("agent", "review_rounds_per_hour") || fileCfg.Has("github", "review_rounds_per_hour") {
+		return
+	}
+	executionNode, ok := yamlMappingValue(canonical.root, "execution")
+	if !ok {
+		return
+	}
+	agentNode, ok := yamlMappingValue(executionNode, "agent")
+	if !ok || !yamlMappingBool(agentNode, "review_until_clean") {
+		return
+	}
+	if yamlMappingHasKey(agentNode, "review_rounds_per_hour") {
+		return
+	}
+	agentNode.Content = append(agentNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "review_rounds_per_hour"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: "-1"},
+	)
+}
+
+// relocateLegacyGitHubReviewRoundsPerHour moves review_rounds_per_hour from
+// integrations.github to execution.agent in the migrated canonical tree.
+// fieldAliasSpecs' generic leaf-rename only fires within a node's existing
+// parent, so the field's one-day stint on GitHubConfig would otherwise
+// survive migration under its old namespace forever — functionally harmless
+// (Resolve applies the same alias on every parse) but never actually
+// canonicalized. Skipped if execution.agent already carries an explicit
+// value, leaving any real conflict for Resolve's alias check to catch.
+func relocateLegacyGitHubReviewRoundsPerHour(canonical *canonicalConfigBuilder) {
+	integrationsNode, ok := yamlMappingValue(canonical.root, "integrations")
+	if !ok {
+		return
+	}
+	githubNode, ok := yamlMappingValue(integrationsNode, "github")
+	if !ok {
+		return
+	}
+	value, ok := yamlMappingValue(githubNode, "review_rounds_per_hour")
+	if !ok {
+		return
+	}
+	executionNode, ok := yamlMappingValue(canonical.root, "execution")
+	if !ok {
+		return
+	}
+	agentNode, ok := yamlMappingValue(executionNode, "agent")
+	if !ok || yamlMappingHasKey(agentNode, "review_rounds_per_hour") {
+		return
+	}
+	yamlMappingRemove(githubNode, "review_rounds_per_hour")
+	agentNode.Content = append(agentNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "review_rounds_per_hour"},
+		value,
+	)
 }
 
 type canonicalConfigBuilder struct {
@@ -641,12 +713,12 @@ func normalizeStoragePathsNamespace(builder *flatConfigBuilder, node *yaml.Node)
 	}, "storage.paths")
 }
 
-func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key string, value *yaml.Node, parent []string, preserveLegacyReviewLoop bool) error {
+func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key string, value *yaml.Node, parent []string) error {
 	for _, rule := range topLevelNamespaceRules {
 		if key != rule.legacyKey {
 			continue
 		}
-		transformed, err := migrateNodeToCanonical([]string{key}, value, preserveLegacyReviewLoop)
+		transformed, err := migrateNodeToCanonical([]string{key}, value)
 		if err != nil {
 			return err
 		}
@@ -655,7 +727,7 @@ func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key str
 	return builder.setPath(append(slices.Clone(parent), key), value)
 }
 
-func migrateNodeToCanonical(path []string, node *yaml.Node, preserveLegacyReviewLoop bool) (*yaml.Node, error) {
+func migrateNodeToCanonical(path []string, node *yaml.Node) (*yaml.Node, error) {
 	if node == nil {
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}, nil
 	}
@@ -692,23 +764,13 @@ func migrateNodeToCanonical(path []string, node *yaml.Node, preserveLegacyReview
 				)
 				continue
 			}
-			child, err := migrateNodeToCanonical(childPath, node.Content[i+1], preserveLegacyReviewLoop)
+			child, err := migrateNodeToCanonical(childPath, node.Content[i+1])
 			if err != nil {
 				return nil, err
 			}
 			out.Content = append(out.Content,
 				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: childKey},
 				child,
-			)
-		}
-		if preserveLegacyReviewLoop &&
-			joinPath(path) == "agent" &&
-			!yamlMappingHasKey(out, "allow_unbounded_review_rounds") &&
-			!yamlMappingHasKey(out, "max_review_rounds") &&
-			yamlMappingBool(out, "review_until_clean") {
-			out.Content = append(out.Content,
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "allow_unbounded_review_rounds"},
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
 			)
 		}
 		return out, nil
@@ -737,6 +799,22 @@ func yamlMappingValue(mapping *yaml.Node, key string) (*yaml.Node, bool) {
 func yamlMappingHasKey(mapping *yaml.Node, key string) bool {
 	_, ok := yamlMappingValue(mapping, key)
 	return ok
+}
+
+// yamlMappingRemove deletes key from mapping in place, returning its value
+// and whether it was present.
+func yamlMappingRemove(mapping *yaml.Node, key string) (*yaml.Node, bool) {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil, false
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			value := mapping.Content[i+1]
+			mapping.Content = slices.Delete(mapping.Content, i, i+2)
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func yamlMappingBool(mapping *yaml.Node, key string) bool {

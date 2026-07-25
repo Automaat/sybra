@@ -36,6 +36,20 @@ jobs:
       - name: Build frontend (needed for go:embed)
         run: cd frontend && npm ci && npm run build:desktop
 
+      - name: Pre-fetch Go modules (retried, bounded)
+        # go test's own -timeout only bounds test execution, not module
+        # download — a proxy/network stall during `go mod download` is only
+        # caught by this job's outer 20m timeout-minutes, burning the whole
+        # budget on one bad fetch. Bound each attempt short and retry so a
+        # transient stall costs seconds, not the whole job.
+        run: |
+          for i in 1 2 3 4 5; do
+            timeout --kill-after=10 120 go mod download && exit 0
+            echo "go mod download attempt $i exited $?; retrying" >&2
+          done
+          echo "go mod download failed after 5 attempts" >&2
+          exit 1
+
       - name: Run Go e2e tests
         run: go test -race -tags e2e -p 1 -timeout 20m ./internal/sybra/...
 
@@ -91,7 +105,7 @@ jobs:
 
       - name: Install nilaway
         # renovate: datasource=go depName=go.uber.org/nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260723163314-0c9f43cc407d
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260724203407-f4f8ac24c032
 
       - name: Run nilaway
         run: |
@@ -245,6 +259,15 @@ jobs:
 
       - name: Check for /user identity lookups outside viewerLoginE
         run: bash scripts/check-no-viewer-user-endpoint.sh
+
+  check-gh-exec-gate:
+    name: gh Calls Routed Through ghGate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Check for direct gh subprocess spawns outside github.Run/RunWithEnv
+        run: bash scripts/check-gh-exec-gate.sh
 
   test-release-scripts:
     name: Release Scripts Tests

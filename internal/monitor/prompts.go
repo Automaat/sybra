@@ -30,6 +30,19 @@ func DeterministicIssueBody(a Anomaly) string {
 	return b.String()
 }
 
+// RecurrenceComment renders the compact comment posted on an already-open
+// issue when its anomaly is detected again. occurrence is the consecutive
+// detection count (1-based) at the time of posting. Deliberately terse —
+// re-posting the full DeterministicIssueBody on every recurrence is what
+// makes a self-healing anomaly look like a stream of fresh incidents instead
+// of one ongoing, tracked condition.
+func RecurrenceComment(a Anomaly, occurrence int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Recurred (occurrence #%d) at %s — still detected after remediation ran again.\n", occurrence, a.DetectedAt.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "Fingerprint: `%s`\n", a.Fingerprint)
+	return b.String()
+}
+
 // DispatchPrompt builds the focused per-anomaly Claude prompt the agent
 // dispatcher hands to claude -p. Each kind gets a short, surgical script.
 // issueRepo is the "owner/name" repository where GitHub issues must be filed;

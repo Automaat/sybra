@@ -5,12 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path"
 	"slices"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Automaat/sybra/internal/project"
 )
@@ -128,15 +125,9 @@ func changedFilesSinceProjectBase(parentCtx context.Context, wtPath, worktreeBas
 	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
 	defer cancel()
 	base := resolveProjectBase(ctx, wtPath, worktreeBaseRef)
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", base+"...HEAD")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	out, err := gitCombinedOutput(ctx, wtPath, "diff", "--name-only", base+"...HEAD")
 	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			return nil, fmt.Errorf("git diff --name-only %s...HEAD: %w", base, err)
-		}
-		return nil, fmt.Errorf("git diff --name-only %s...HEAD: %w: %s", base, err, detail)
+		return nil, err
 	}
 	var changed []string
 	seen := map[string]bool{}
@@ -162,10 +153,8 @@ func resolveProjectBase(ctx context.Context, wtPath, worktreeBaseRef string) str
 
 func resolveLocalDefaultBranchBase(ctx context.Context, wtPath string) string {
 	branches := []string{}
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-	cmd.Dir = wtPath
-	if out, err := cmd.Output(); err == nil {
-		branch := strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
+	if out, err := gitStdout(ctx, wtPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		branch := strings.TrimPrefix(out, "origin/")
 		if branch != "" {
 			branches = append(branches, branch)
 		}
@@ -173,9 +162,7 @@ func resolveLocalDefaultBranchBase(ctx context.Context, wtPath string) string {
 	branches = append(branches, "master", "main")
 	for _, branch := range branches {
 		candidate := "refs/heads/" + branch
-		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", candidate)
-		cmd.Dir = wtPath
-		if cmd.Run() == nil {
+		if gitOK(ctx, wtPath, "rev-parse", "--verify", candidate) {
 			return candidate
 		}
 	}
@@ -392,28 +379,26 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
 		return e.flagFocusedChecks(taskID, step, reason, failedCmd)
 	}
-	key := "step." + step.ID + ".auto_fix"
-	attempts := parseWorkflowInt(wfExec.Variables[key])
-	if attempts >= verifyChecksAutoFixCeiling {
+	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
+		counterKey: "step." + step.ID + ".auto_fix",
+		max:        verifyChecksAutoFixCeiling,
+		rewindStep: verifyChecksImplStepID,
+		backoff:    autoFixBackoff,
+		onArm: func(wfExec *Execution, attempt int) {
+			wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
+		},
+		reason: func(int) string { return reason },
+	})
+	if err != nil {
+		return StepOutput{}, fmt.Errorf("focused-checks: rewind to implement: %w", err)
+	}
+	if !armed {
 		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
 			reason, verifyChecksAutoFixCeiling)
 		return e.flagFocusedChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
-
-	wfExec.SetVar(key, strconv.Itoa(attempts+1))
-	wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(autoFixBackoff(attempts)).Format(time.RFC3339))
-	wfExec.ClearStepRecords(verifyChecksImplStepID)
-	wfExec.CurrentStep = verifyChecksImplStepID
-	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return StepOutput{}, fmt.Errorf("focused-checks: rewind to implement: %w", err)
-	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, reason); err != nil {
-		return StepOutput{}, err
-	}
 	e.logger.Info("workflow.focused-checks.reask",
-		"task_id", taskID, "attempt", attempts+1, "cmd", trimDiffLine(failedCmd))
+		"task_id", taskID, "attempt", attempt, "cmd", trimDiffLine(failedCmd))
 	return StepOutput{}, errStepParked
 }
 

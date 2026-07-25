@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // MaxParallelTagPrefix carries the planner's max-parallel value on the tracker
@@ -283,13 +285,13 @@ func ReplaceTagPrefix(tags []string, prefix, newTag string) []string {
 // GitHub sub-issue's labels — they route the task into other automations
 // (reviews, handoff lanes, the gate itself, bug containment).
 var controlTags = map[string]bool{
-	"review":    true,
-	"blocked":   true,
-	"handoff":   true,
-	"umbrella":  true,
-	GatedTag:    true,
-	"sybra-bug": true,
-	"scrubbed":  true,
+	"review":                  true,
+	"blocked":                 true,
+	"handoff":                 true,
+	"umbrella":                true,
+	GatedTag:                  true,
+	string(task.FlagSybraBug): true,
+	string(task.FlagScrubbed): true,
 }
 
 // InheritableLabels filters a sub-issue's GitHub labels down to those safe to

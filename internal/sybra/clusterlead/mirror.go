@@ -13,7 +13,6 @@ import (
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -70,7 +69,6 @@ type Mirror struct {
 	applyMu  sync.Mutex
 
 	attachments *attachment.Store
-	anomalySink monitor.IssueSink
 
 	// missingMu guards missingStreak, written from each node's independent
 	// reconcileLoop goroutine.
@@ -97,15 +95,6 @@ func NewMirror(cfg *config.Config, tasks *task.Manager, roster *cluster.Roster, 
 // attachment uploads back into the canonical task view.
 func (m *Mirror) SetAttachments(store *attachment.Store) {
 	m.attachments = store
-}
-
-// SetAnomalySink supplies the sink drift detection reports through — the same
-// routing sink monitor.Service uses, so a cluster-drift finding gets the
-// existing dedup, work-project scrubbing, and durable GitHub-issue-outbox
-// behavior for free. A nil sink (monitor disabled, or not yet wired at
-// construction time) disables alerting only; detection and repair still run.
-func (m *Mirror) SetAnomalySink(sink monitor.IssueSink) {
-	m.anomalySink = sink
 }
 
 // Run starts, per follower, a reconcile ticker, and blocks until ctx is
@@ -362,17 +351,23 @@ func (m *Mirror) adoptFollowerTask(ctx context.Context, node string, follower ta
 // follower-authoritative through Merge every reconcile tick (Status,
 // Workflow, AgentRuns, ...) or is immutable identity (ID, ProjectID,
 // CreatedAt), so an ordinary disagreement there is expected and self-heals
-// on its own — alerting on it would just be noise. Tags/DependsOn only ever
-// change on the leader (umbrella-gate release, a manual sybra-cli edit, ...);
-// if a leader-side write to one of them never reached the follower — the
-// #2349 class of bug, from any cause, not just the one fixed there — nothing
-// else in the reconcile loop will ever notice, because Merge doesn't carry
-// them and Assigner only pushes a task to its follower once, at first
-// assignment. This is the backstop: detected within one reconcile interval,
-// logged, alerted through the same anomaly sink as everything else, and
-// repaired by pushing just the drifted fields onto the follower's own
-// current state (never a stale full-task overwrite that could roll back
-// follower-side execution progress).
+// on its own. Tags/DependsOn only ever change on the leader (umbrella-gate
+// release, a manual sybra-cli edit, ...); if a leader-side write to one of
+// them never reached the follower — the #2349 class of bug, from any cause,
+// not just the one fixed there — nothing else in the reconcile loop will
+// ever notice, because Merge doesn't carry them. This is the backstop:
+// detected within one reconcile interval, logged, and repaired by pushing
+// just the drifted fields onto the follower's own current state (never a
+// stale full-task overwrite that could roll back follower-side execution
+// progress).
+//
+// Purely self-healing, no alerting: every case this backstop hits — a
+// follower restart mid-push, a transient network blip, a repair that fails
+// outright — either fixes itself within one tick or keeps retrying every
+// tick after, so there is nothing here a human needs paged for. (#2495
+// narrowed alerting to repair-failure/re-drift only, and it still produced
+// 42 `cluster_drift` issues in 2 weeks for cases the backstop had already
+// fixed — not worth a GitHub issue at any threshold.)
 func (m *Mirror) detectAndRepairDrift(ctx context.Context, node string, canonical, follower task.Task) {
 	tagsDrift := !slices.Equal(sortedCopy(canonical.Tags), sortedCopy(follower.Tags))
 	depsDrift := !slices.Equal(sortedCopy(canonical.DependsOn), sortedCopy(follower.DependsOn))
@@ -384,33 +379,7 @@ func (m *Mirror) detectAndRepairDrift(ctx context.Context, node string, canonica
 		"tags_drift", tagsDrift, "deps_drift", depsDrift,
 		"canonical_tags", canonical.Tags, "follower_tags", follower.Tags,
 		"canonical_depends_on", canonical.DependsOn, "follower_depends_on", follower.DependsOn)
-	m.alertDrift(ctx, node, canonical, tagsDrift, depsDrift)
 	m.repairDrift(ctx, node, canonical)
-}
-
-func (m *Mirror) alertDrift(ctx context.Context, node string, canonical task.Task, tagsDrift, depsDrift bool) {
-	if m.anomalySink == nil {
-		return
-	}
-	ev := map[string]any{
-		"node":       node,
-		"tags_drift": tagsDrift,
-		"deps_drift": depsDrift,
-		"tags":       canonical.Tags,
-		"depends_on": canonical.DependsOn,
-	}
-	a := monitor.Anomaly{
-		Kind:        monitor.KindClusterDrift,
-		TaskID:      canonical.ID,
-		Severity:    monitor.SeverityError,
-		RequiresLLM: false,
-		Fingerprint: monitor.Fingerprint(monitor.KindClusterDrift, canonical.ID, ev),
-		Evidence:    ev,
-		DetectedAt:  time.Now().UTC(),
-	}
-	if _, err := m.anomalySink.Submit(ctx, a, monitor.DeterministicIssueBody(a)); err != nil {
-		m.logger.Warn("cluster.mirror.drift_alert.failed", "task", canonical.ID, "node", node, "err", err)
-	}
 }
 
 // driftRepairTimeout bounds repairDrift's two follower round trips (a
@@ -427,7 +396,8 @@ const driftRepairTimeout = 5 * time.Second
 // re-fetches via GetTask rather than reusing this tick's ListTasks snapshot,
 // which can already be stale by the time this repair runs — earlier tasks in
 // the same batch, under the same applyMu lock, each take up to
-// driftRepairTimeout first.
+// driftRepairTimeout first. Every failure path logs its own Warn; a failed
+// repair simply retries on the next reconcile tick.
 func (m *Mirror) repairDrift(ctx context.Context, node string, canonical task.Task) {
 	client, ok := m.roster.Client(node)
 	if !ok || client == nil {

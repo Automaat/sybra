@@ -81,6 +81,25 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 		return fmt.Errorf("task %s has no linked PR", t.ID)
 	}
 
+	// Claim sole dispatch rights before touching anything else. This is the
+	// one caller of agent.Manager.Run in this package that used to skip the
+	// claim StartReviewAgent takes just below — reachable only from the
+	// Wails-bound ReviewService.StartFixReview (manual "Fix Review" click),
+	// it could race an automated fix-review dispatch already in flight for
+	// the same task via WorkflowEngine.DispatchEvent (which claims through
+	// agentAdapter.TryClaimDispatch, the same underlying agent.Manager).
+	// agents.Run itself performs no per-task guard, so without this claim
+	// both callers could start a second headless agent against the same
+	// worktree/branch concurrently.
+	if r.agents != nil {
+		claim, ok := r.agents.TryClaimDispatch(t.ID)
+		if !ok {
+			r.logger.Info("fix-review.agent-skip", "task_id", t.ID, "pr", t.PRNumber, "reason", "dispatch_in_progress")
+			return nil
+		}
+		defer claim.Release()
+	}
+
 	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, r.cfg)
 	if postureErr != nil {
 		return postureErr
@@ -326,6 +345,11 @@ const reconcileEscalationReason = "review reconcile failed"
 // recordReconcileFailure counts consecutive reconcile failures and escalates
 // once they look permanent. Transient blips (5xx, timeouts, budget backoff) are
 // expected and never count; only a read that keeps failing is a defect.
+//
+// The count lives on the task itself (Task.ReconcileFailures), not an
+// in-memory map (#2199): a process restart must not hand a permanently-failing
+// task a fresh free budget, silently doubling how long #2164-style breakage
+// can run undetected across a redeploy.
 func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 	if github.IsTransientError(err) {
 		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "transient", true)
@@ -342,39 +366,47 @@ func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 		// Drop the count too: it measures progress toward an escalation that has
 		// already happened, and keeping it would pin an entry for every parked
 		// task for the life of the process.
-		r.clearReconcileFailure(t.ID)
+		r.clearReconcileFailure(t)
 		return
 	}
 
-	r.failureMu.Lock()
-	if r.reconcileFailures == nil {
-		r.reconcileFailures = make(map[string]int)
-	}
-	r.reconcileFailures[t.ID]++
-	attempts := r.reconcileFailures[t.ID]
+	attempts := t.ReconcileFailures + 1
 	if attempts < reconcileFailureLimit {
-		r.failureMu.Unlock()
+		if _, uerr := r.tasks.Update(t.ID, task.Update{ReconcileFailures: task.Ptr(attempts)}); uerr != nil {
+			r.logger.Error("review.reconcile.count", "task_id", t.ID, "err", uerr)
+		}
 		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "attempts", attempts)
 		return
 	}
-	r.failureMu.Unlock()
 
 	r.logger.Error("review.reconcile.circuit-open",
 		"task_id", t.ID, "failures", reconcileFailureLimit, "err", err)
 	// human-required is not dispatchable, so escalating both surfaces the defect
-	// and starves the re-review a frozen phase would keep feeding.
+	// and starves the re-review a frozen phase would keep feeding. Reset the
+	// count in this same write (rather than leaving it for the next
+	// clearReconcileFailure call) so an already-parked task never takes a
+	// second write — and a second updated_at bump — on the very next poll.
 	if _, uerr := r.tasks.Update(t.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(fmt.Sprintf("%s %d times: %v", reconcileEscalationReason, reconcileFailureLimit, err)),
+		Status:            task.Ptr(task.StatusHumanRequired),
+		StatusReason:      task.Ptr(fmt.Sprintf("%s %d times: %v", reconcileEscalationReason, reconcileFailureLimit, err)),
+		ReconcileFailures: task.Ptr(0),
 	}); uerr != nil {
 		r.logger.Error("review.reconcile.escalate", "task_id", t.ID, "err", uerr)
 	}
 }
 
-func (r *Handler) clearReconcileFailure(taskID string) {
-	r.failureMu.Lock()
-	defer r.failureMu.Unlock()
-	delete(r.reconcileFailures, taskID)
+// clearReconcileFailure resets t's durable failure count once a reconcile
+// succeeds. A no-op write when the count is already zero, so a healthy task
+// reconciling every cooldown doesn't touch the task file on every pass.
+func (r *Handler) clearReconcileFailure(t *task.Task) {
+	if t == nil || t.ReconcileFailures == 0 {
+		return
+	}
+	if _, err := r.tasks.Update(t.ID, task.Update{ReconcileFailures: task.Ptr(0)}); err != nil {
+		r.logger.Error("review.reconcile.clear", "task_id", t.ID, "err", err)
+		return
+	}
+	t.ReconcileFailures = 0
 }
 
 // RateLimitParkReason prefixes the StatusReason written when the review rate
@@ -425,7 +457,7 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		// Reaching this proves the task is healthy, so any earlier failures are
 		// stale. Without clearing here the count never decays and a single fresh
 		// failure hours later can trip a circuit meant to catch a persistent one.
-		r.clearReconcileFailure(t.ID)
+		r.clearReconcileFailure(t)
 		r.applyReviewPhase(t, computeReviewPhase(reviewSignals{AgentRunning: true}))
 		return
 	}
@@ -455,7 +487,7 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		}
 	}
 	if res, decided := stickyConflictPhase(mergeable, t.ReviewPhase); decided {
-		r.clearReconcileFailure(t.ID)
+		r.clearReconcileFailure(t)
 		r.applyReviewPhase(t, res)
 		return
 	}
@@ -469,7 +501,7 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		r.recordReconcileFailure(t, err)
 		return
 	}
-	r.clearReconcileFailure(t.ID)
+	r.clearReconcileFailure(t)
 
 	submitted := myState.Submitted || inApproved
 	headSHA := ""
@@ -537,6 +569,13 @@ func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {
 // applyReviewPhase persists only the fields that changed. Status is set only
 // when the result names one and it differs (so an unchanged status never
 // clears a triage-authored reason); the reason follows a status or phase change.
+//
+// This is the single write site for a review task's ReviewPhase/Status
+// (#2499): computeReviewPhase (review_phase.go) is a pure function of
+// reviewSignals — it returns a reviewPhaseResult rather than mutating
+// anything — and every caller routes the result through here rather than
+// writing task.Update directly. The outbound (own-PR) equivalent is
+// applyPRPhase in outbound.go, following the same pattern for PRPhase.
 func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 	statusChanged := res.Status != "" && res.Status != t.Status
 	phaseChanged := res.Phase != t.ReviewPhase

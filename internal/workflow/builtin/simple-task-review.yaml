@@ -18,9 +18,9 @@ steps:
   # Skip review when tagged noreview/trivial or already CLEAN-reviewed in a
   # prior run. A persisted NEEDS_FIXES review must win over task.reviewed: the
   # review role marks task.reviewed when it completes, even for non-clean
-  # verdicts. If the review loop later hits max_review_rounds, that unresolved
-  # verdict parks the task blocked; the next ready-review pass must not skip
-  # the fresh code review.
+  # verdicts. If the review loop later exhausts its rolling-hour review
+  # budget, that unresolved verdict parks the task blocked; the next
+  # ready-review pass must not skip the fresh code review.
   # On skip, jump straight to done_review so the task still advances to
   # testing — trivial-tagged tasks then also skip testing (see testing-task.yaml's
   # maybe_test), landing directly on ready-pr.
@@ -298,10 +298,12 @@ steps:
   # and detect_tampering only inspects test/CI tampering, not whether the fix
   # is right or introduced a fresh bug. Re-review until CLEAN shuts that gap.
   #
-  # Fresh installs now default to a bounded review-round cap
-  # (agent.max_review_rounds, default 3). review_until_clean: false still opts
-  # into the single-pass posture, while allow_unbounded_review_rounds: true
-  # restores the legacy uncapped loop.
+  # Bounded by the same durable ReviewBudget the inbound PR-review dispatcher
+  # enforces (agent.review_rounds_per_hour, default 3 rounds/hour) rather
+  # than a separate per-workflow-execution round cap — one owner for "is this
+  # task reviewing too much" (#2499). review_until_clean: false still opts
+  # into the single-pass posture; set agent.review_rounds_per_hour to a
+  # negative value to disable the cap entirely.
   #
   # A backward goto to a sync step is safe because the run_agent steps in the
   # cycle are async: each agent completion re-enters executeSteps with a fresh
@@ -322,18 +324,18 @@ steps:
           value: "false"
         goto: done_review
       - when:
-          field: task.review_round_limit_reached
+          field: task.review_budget_exceeded
           operator: equals
           value: "true"
-        goto: review_round_limit_hit
+        goto: review_budget_exhausted
       - goto: clear_review_sidecar
 
-  - id: review_round_limit_hit
-    name: Review Round Limit Hit
+  - id: review_budget_exhausted
+    name: Review Budget Exhausted
     type: set_status
     config:
       status: blocked
-      status_reason: automated review hit max_review_rounds without a CLEAN verdict - latest NEEDS_FIXES review is not eligible for testing or PR creation; inspect the latest review or opt into allow_unbounded_review_rounds
+      status_reason: automated review spent its rolling-hour budget without a CLEAN verdict - latest NEEDS_FIXES review is not eligible for testing or PR creation; inspect the latest review or raise agent.review_rounds_per_hour
     next:
       - goto: ""
 

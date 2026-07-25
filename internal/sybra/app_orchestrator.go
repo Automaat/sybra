@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/reviewbudget"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -227,71 +228,37 @@ func isInboundReviewTask(t task.Task) bool {
 // again, which is the worse outcome for a contributor.
 const maxReviewAttemptsPerHead = 2
 
-// reviewCoversHead reports whether head's review budget is spent. An unknown
-// head ("") counts as covered: we cannot tell a new push from the commit we
-// just reviewed, and declining is the safe direction.
-func reviewCoversHead(t task.Task, head string) bool {
-	if head == "" {
-		return true
+// reviewBudget builds the single durable-AgentRuns-backed budget bounding
+// automated review dispatch: PerHour catches a runaway loop across any head,
+// PerHead catches repeated review of one unchanged commit. A nil cfg (tests)
+// uses the default per-hour limit.
+func (a *App) reviewBudget() reviewbudget.Budget {
+	perHour := config.DefaultReviewRoundsPerHour
+	if a.cfg != nil {
+		perHour = a.cfg.Agent.ReviewRoundsPerHourLimit()
 	}
-	if t.ReviewedHeadSHA != head {
-		return false
-	}
-	return t.ReviewedHeadAttempts >= maxReviewAttemptsPerHead
+	return reviewbudget.Budget{PerHour: perHour, PerHead: maxReviewAttemptsPerHead}
 }
 
-// nextReviewAttempt returns the attempt number head is about to consume. A new
-// head restarts the budget, so a real push always re-opens review.
-func nextReviewAttempt(t task.Task, head string) int {
-	if t.ReviewedHeadSHA != head {
-		return 1
-	}
-	return t.ReviewedHeadAttempts + 1
-}
-
-// reviewRoundWindow is the rolling window reviewRoundsSpent counts over.
-const reviewRoundWindow = time.Hour
-
-// reviewRoundsSpent counts automated review runs started on t within the last
-// window, read off the durable AgentRuns list so it survives a restart.
-func reviewRoundsSpent(t task.Task, now time.Time) int {
-	cutoff := now.Add(-reviewRoundWindow)
-	spent := 0
+// taskReviewRuns adapts t's durable AgentRuns history into the role/timestamp
+// pairs reviewbudget.Budget counts, without either package depending on the
+// other's types.
+func taskReviewRuns(t task.Task) []reviewbudget.Run {
+	runs := make([]reviewbudget.Run, len(t.AgentRuns))
 	for i := range t.AgentRuns {
-		if t.AgentRuns[i].Role != string(agent.RoleReview) {
-			continue
-		}
-		if t.AgentRuns[i].StartedAt.After(cutoff) {
-			spent++
-		}
+		runs[i] = reviewbudget.Run{Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt}
 	}
-	return spent
-}
-
-// reviewRateLimitExceeded reports whether t has spent its review budget for the
-// current window. limit <= 0 disables the cap.
-func reviewRateLimitExceeded(t task.Task, now time.Time, limit int) bool {
-	if limit <= 0 {
-		return false
-	}
-	return reviewRoundsSpent(t, now) >= limit
-}
-
-// reviewRoundsPerHourLimit resolves the cap; a nil cfg (tests) uses the default.
-func (a *App) reviewRoundsPerHourLimit() int {
-	if a.cfg == nil {
-		return config.DefaultReviewRoundsPerHour
-	}
-	return a.cfg.GitHub.ReviewRoundsPerHourLimit()
+	return runs
 }
 
 // parkReviewRateLimited trips the breaker: a task posting reviews this fast is
 // misbehaving, and a tripped breaker needs a human to reset rather than
 // self-healing into the next burst.
 func (a *App) parkReviewRateLimited(t task.Task, limit int) {
+	spent := a.reviewBudget().HourlySpent(taskReviewRuns(t), time.Now())
 	a.logger.Error("workflow.dispatch.inbound-review.rate-limit",
 		"task_id", t.ID, "repo", t.ProjectID, "pr", t.PRNumber,
-		"rounds", reviewRoundsSpent(t, time.Now()), "limit", limit)
+		"rounds", spent, "limit", limit)
 	reason := fmt.Sprintf("%s: %d rounds within an hour on PR #%d", review.RateLimitParkReason, limit, t.PRNumber)
 	if _, err := a.tasks.Update(t.ID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
@@ -337,14 +304,15 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 	}
 
 	// The blast-radius cap, and the only gate here that bounds a loop we have
-	// not thought of: the per-head budget above assumes the head is a
+	// not thought of: the per-head budget below assumes the head is a
 	// meaningful key, and every other gate assumes the phase machine is sane.
 	// Rate rather than lifetime total, so a PR legitimately re-reviewed after
 	// each push over weeks is never blocked while a runaway is stopped inside
 	// the hour. Counted off the durable AgentRuns list, so a restart cannot
 	// launder it. Checked before the GitHub call — it needs no network.
-	if limit := a.reviewRoundsPerHourLimit(); reviewRateLimitExceeded(t, time.Now(), limit) {
-		a.parkReviewRateLimited(t, limit)
+	budget := a.reviewBudget()
+	if budget.HourlyExceeded(taskReviewRuns(t), time.Now()) {
+		a.parkReviewRateLimited(t, budget.PerHour)
 		return
 	}
 
@@ -370,7 +338,7 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 			"task_id", taskID, "repo", t.ProjectID, "pr", t.PRNumber)
 		return
 	}
-	if reviewCoversHead(t, head) {
+	if budget.HeadCovered(t.ReviewedHeadSHA, t.ReviewedHeadAttempts, head) {
 		return
 	}
 
@@ -384,7 +352,7 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 	}
 	// Charge only once a run is underway. A run that then crashes or loops still
 	// burns its attempt, which is what bounds the loop.
-	attempt := nextReviewAttempt(t, head)
+	attempt := budget.NextAttempt(t.ReviewedHeadSHA, t.ReviewedHeadAttempts, head)
 	if _, err := a.tasks.Update(taskID, task.Update{
 		ReviewedHeadSHA:      task.Ptr(head),
 		ReviewedHeadAttempts: task.Ptr(attempt),

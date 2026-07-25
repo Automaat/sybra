@@ -68,7 +68,7 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 		a.setDetached(true)
 	}
 
-	if err := m.registerRunningAgent(a, cfg, cancel); err != nil {
+	if err := m.registerRunningAgent(a, cfg, cancel); err != nil { //nolint:contextcheck // per-class metrics are process-global accounting, not tied to per-run ctx
 		return nil, err
 	}
 
@@ -850,24 +850,40 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 }
 
 func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.CancelFunc) error {
+	class := a.EffectiveRole().WorkloadClass()
 	m.mu.Lock()
 	reserved := false
 	if !cfg.IgnoreConcurrencyLimit && cfg.capacityReservation != nil && cfg.capacityReservation.manager == m {
 		reserved = cfg.capacityReservation.consumeLocked()
 	}
-	if !cfg.IgnoreConcurrencyLimit && !reserved && m.maxConcurrent > 0 && m.liveCount+m.reservedCount >= m.maxConcurrent {
+	if !cfg.IgnoreConcurrencyLimit && !reserved && !admitClass(class, m.liveByClass, m.reservedByClass, m.classFloors, m.maxConcurrent) {
 		m.mu.Unlock()
 		cancel()
+		metrics.AgentClassRejected(string(class))
 		return fmt.Errorf("%w (%d)", ErrMaxConcurrentReached, m.maxConcurrent)
 	}
+	borrowed := !reserved && borrowsSharedCapacity(class, m.liveByClass, m.reservedByClass, m.classFloors)
 	m.agents[a.ID] = a
 	if a.done != nil {
 		m.liveCount++
 		if a.Provider != "" {
 			m.liveByProvider[a.Provider]++
 		}
+		m.liveByClass[class]++
 	}
 	m.mu.Unlock()
+	// Only count dispatches that actually passed through the capacity gate
+	// (!IgnoreConcurrencyLimit) and were capacity-tracked (a.done != nil, i.e.
+	// added to m.liveByClass). Interactive agents and gate-bypassing callers
+	// (monitor/loop/orchestrator/human-review set IgnoreConcurrencyLimit) never
+	// enter the class gauges, so folding them into "admitted"/"borrowed" would
+	// misreport class-isolation behavior for anyone debugging starvation.
+	if !cfg.IgnoreConcurrencyLimit && a.done != nil {
+		metrics.AgentClassAdmitted(string(class))
+		if borrowed {
+			metrics.AgentClassBorrowed(string(class))
+		}
+	}
 	return nil
 }
 
@@ -916,6 +932,9 @@ func (m *Manager) markAgentDone(ctx context.Context, a *Agent) {
 					m.liveByProvider[a.Provider] = v - 1
 				}
 			}
+		}
+		if class := a.EffectiveRole().WorkloadClass(); m.liveByClass[class] > 0 {
+			m.liveByClass[class]--
 		}
 		retention := m.deadAgentRetention
 		m.mu.Unlock()

@@ -166,9 +166,9 @@ func TestFetchKnownTaskPRs_ClosedAtSameHeadInvalidatesReadyCache(t *testing.T) {
 		fetchHeadStateFn: func(repo string, number int) (string, bool, string, error) {
 			return "sha50", false, "2026-07-02T10:00:00Z", nil
 		},
-		readyPRCache: map[string]readyPRState{
-			"pet-owner/pet-repo#50": {HeadSHA: "sha50", UpdatedAt: "2026-07-02T10:00:00Z", PR: readyPR},
-		},
+		prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{
+			"pet-owner/pet-repo#50": {headSHA: "sha50", updatedAt: "2026-07-02T10:00:00Z", ready: &readyPR},
+		}},
 	}
 
 	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
@@ -180,8 +180,8 @@ func TestFetchKnownTaskPRs_ClosedAtSameHeadInvalidatesReadyCache(t *testing.T) {
 	if fullFetches != 1 {
 		t.Fatalf("full fetches = %d, want 1 (closed state must force a full fetch, not reuse the cache)", fullFetches)
 	}
-	if _, ok := r.readyPRCache["pet-owner/pet-repo#50"]; ok {
-		t.Fatal("readyPRCache entry must be evicted once the cheap probe reports the PR is no longer open")
+	if _, ok := r.prSnapshots.Ready("pet-owner/pet-repo#50"); ok {
+		t.Fatal("ready-cache entry must be evicted once the cheap probe reports the PR is no longer open")
 	}
 }
 
@@ -248,13 +248,13 @@ func TestFetchKnownTaskPRs_StatusEventInvalidatesReadyCacheAtSameHead(t *testing
 	if len(got) != 1 || got[0].CIStatus != "FAILURE" {
 		t.Fatalf("second cycle: got %+v, want fresh failed-CI snapshot, not the stale cached green one", got)
 	}
-	if _, ok := r.readyPRCache["pet-owner/pet-repo#50"]; ok {
-		t.Fatal("readyPRCache must not cache a no-longer-ready (CI failed) snapshot")
+	if _, ok := r.prSnapshots.Ready("pet-owner/pet-repo#50"); ok {
+		t.Fatal("ready-cache must not cache a no-longer-ready (CI failed) snapshot")
 	}
 }
 
 // TestHandleAutoMerge_EvictsReadyCache verifies that a successful merge
-// evicts the PR's readyPRCache entry, so the next poll cycle does a fresh
+// evicts the PR's ready-cache entry, so the next poll cycle does a fresh
 // fetch instead of replaying a stale "still open and ready" snapshot for a
 // PR that is now actually merged and closed.
 func TestHandleAutoMerge_EvictsReadyCache(t *testing.T) {
@@ -296,14 +296,14 @@ func TestHandleAutoMerge_EvictsReadyCache(t *testing.T) {
 		mergePRViaREST: func(repo string, number int, headSHA string) error {
 			return nil
 		},
-		readyPRCache: map[string]readyPRState{
-			"pet-owner/pet-repo#50": {HeadSHA: "sha50", UpdatedAt: "2026-07-02T10:00:00Z", PR: pr},
-		},
+		prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{
+			"pet-owner/pet-repo#50": {headSHA: "sha50", updatedAt: "2026-07-02T10:00:00Z", ready: &pr},
+		}},
 	}
 
 	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 
-	if _, ok := r.readyPRCache["pet-owner/pet-repo#50"]; ok {
-		t.Fatal("readyPRCache entry must be evicted after a merge attempt")
+	if _, ok := r.prSnapshots.Ready("pet-owner/pet-repo#50"); ok {
+		t.Fatal("ready-cache entry must be evicted after a merge attempt")
 	}
 }

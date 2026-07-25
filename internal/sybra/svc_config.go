@@ -418,8 +418,7 @@ func (s *ConfigService) applyWorkflowGuardrails(cfg config.Config) {
 	}
 	s.workflowEngine.SetMaxCheckpoints(cfg.MaxCheckpoints())
 	s.workflowEngine.SetReviewUntilClean(cfg.ReviewUntilClean())
-	s.workflowEngine.SetMaxReviewRounds(cfg.MaxReviewRounds())
-	s.workflowEngine.SetAllowUnboundedReviewRounds(cfg.AllowUnboundedReviewRounds())
+	s.workflowEngine.SetReviewRoundsPerHour(cfg.Agent.ReviewRoundsPerHourLimit())
 }
 
 func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) error {
@@ -462,6 +461,7 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
 		K8sJobs:                k8sJobRunnerConfigFromConfig(cfg.Agent.K8sJobs),
+		ClassReservations:      agent.ParseClassReservations(cfg.Agent.ClassReservations),
 	}
 }
 

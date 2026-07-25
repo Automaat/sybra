@@ -192,9 +192,6 @@ func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 	next := *svc.cfg
 	disabled := false
 	next.Agent.ReviewUntilClean = &disabled
-	next.Agent.MaxReviewRounds = 1
-	unbounded := true
-	next.Agent.AllowUnboundedReviewRounds = &unbounded
 	next.Agent.MaxCheckpoints = 9
 	writeConfigYAML(t, cfgPath, &next)
 
@@ -208,14 +205,29 @@ func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 	if !workflowBoolField(t, svc.workflowEngine, "reviewLoopDisabled") {
 		t.Error("workflow reviewLoopDisabled = false, want true")
 	}
-	if got := workflowIntField(t, svc.workflowEngine, "maxReviewRounds"); got != 1 {
-		t.Errorf("workflow maxReviewRounds = %d, want 1", got)
-	}
-	if !workflowBoolField(t, svc.workflowEngine, "allowUnboundedReviewRounds") {
-		t.Error("workflow allowUnboundedReviewRounds = false, want true")
-	}
 	if got := workflowIntField(t, svc.workflowEngine, "maxCheckpoints"); got != 9 {
 		t.Errorf("workflow maxCheckpoints = %d, want 9", got)
+	}
+}
+
+// TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour locks in that the
+// engine's rolling-hour review budget is wired from
+// Agent.ReviewRoundsPerHourLimit. Agent.* is a hot-reload field
+// (configApplyAgentRuntime), so ReloadFromDisk already exercises this path
+// via the "agent" special case in applyHotChangesLocked; this test pins the
+// wiring directly against applyWorkflowGuardrails so it fails on the exact
+// function that dropped the value, rather than only on the reload plumbing
+// around it.
+func TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour(t *testing.T) {
+	svc, _ := setupConfigSvc(t)
+	svc.workflowEngine = workflow.NewEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
+
+	cfg := *svc.cfg
+	cfg.Agent.ReviewRoundsPerHour = 7
+	svc.applyWorkflowGuardrails(cfg)
+
+	if got := workflowIntField(t, svc.workflowEngine, "reviewRoundsPerHour"); got != 7 {
+		t.Errorf("workflow reviewRoundsPerHour = %d, want 7", got)
 	}
 }
 
