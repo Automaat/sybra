@@ -373,7 +373,13 @@ export class Task {
      * owner/repo#n shorthand) this task waits on — resolved by issue ref only,
      * not task IDs. While the task is `blocked`, the gate holds it until every
      * referenced task has reached `done`; an empty list releases immediately.
-     * Used only by umbrella child tasks.
+     * Used only by umbrella child tasks. Not exclusively planner-authored: the
+     * gate also folds in a ref it parses out of the body as a free-text
+     * "after #N" precondition on a different program's issue — one the
+     * planner's own schema can never emit, since it only allows refs among an
+     * umbrella's own sub-issues (see umbrella.ExternalBlockers) — and persists
+     * it here so it survives as structured state instead of being re-derived
+     * from prose every gate tick.
      */
     "dependsOn"?: string[];
     "reviewed": boolean;
