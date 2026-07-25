@@ -73,6 +73,12 @@ var configRegistry = []configRegistryEntry{
 	{Path: "github", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "umbrella", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "triage", Policy: configPolicyHot, Visibility: configVisibilityUI},
+	// restart, not hot: the workflow engine caches this via
+	// SetAdmissionConfig (configureAdmissionPolicy, called once from
+	// initWorkflowEngine) into an unexported Engine field, mirroring
+	// orchestrator/monitor/self_monitor's read-once-at-startup tickers below
+	// — there is no live re-arm point that would pick up a config hot-swap.
+	{Path: "admission", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "human_review", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "review_hold", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "monitor", Policy: configPolicyRestart, Visibility: configVisibilityUI},

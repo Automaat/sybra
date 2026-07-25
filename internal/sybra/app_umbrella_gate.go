@@ -101,17 +101,26 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 		return
 	}
 
+	crossProgramRefs := map[string][]string{} // task ID -> free-text external blockers found in its body
+
 	for i := range tasks {
 		t := &tasks[i]
 		expanding := false
 		if t.UmbrellaIssue != "" {
 			expanding = stateFor(t.UmbrellaIssue).expanding
 		}
+		dependsOn := t.DependsOn
+		if t.UmbrellaIssue != "" {
+			if refs := umbrella.ExternalBlockers(t.Body, t.Issue); len(refs) > 0 {
+				crossProgramRefs[t.ID] = refs
+				dependsOn = mergeIssueRefs(dependsOn, refs)
+			}
+		}
 		nodes[i] = umbrella.Node{
 			ID:        t.ID,
 			Issue:     t.Issue,
 			Umbrella:  t.UmbrellaIssue,
-			DependsOn: t.DependsOn,
+			DependsOn: dependsOn,
 			Done:      t.Status == task.StatusDone,
 			// Gate-marked todo children (current model) and legacy
 			// blocked+gated children (tasks created before this change)
@@ -141,6 +150,8 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	for _, umb := range g.CyclicUmbrellas() {
 		cyclic[umbrella.NormalizeIssueRef(umb)] = true
 	}
+
+	a.flagCrossProgramBlockers(crossProgramRefs, nodes, byID, g)
 
 	for ref, st := range states {
 		if st.expanding {
@@ -177,6 +188,78 @@ func hasStartedImplementation(t *task.Task) bool {
 		}
 	}
 	return false
+}
+
+// mergeIssueRefs unions extra into existing, de-duplicated by
+// NormalizeIssueRef and preserving existing's entries (and their original
+// spelling) first.
+func mergeIssueRefs(existing, extra []string) []string {
+	seen := make(map[string]bool, len(existing)+len(extra))
+	out := make([]string, 0, len(existing)+len(extra))
+	for _, r := range append(slices.Clone(existing), extra...) {
+		key := umbrella.NormalizeIssueRef(r)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// flagCrossProgramBlockers stamps a distinct StatusReason on a still-gated
+// (Awaiting) child whose body names a free-text "after #N"/"strictly after
+// #N" dependency (see umbrella.ExternalBlockers) that has not resolved to a
+// done task — almost always a cross-program issue no Sybra task tracks at
+// all, since the planner's DependsOn can only ever reference the umbrella's
+// own sub-issues (buildPlanSchema). Without this, the child's board card
+// looks indistinguishable from any other dependency-satisfied child, and a
+// human — or an automated review cycle that got as far as dispatching it
+// before catching the mismatch — rediscovers the same unmet dependency from
+// scratch every time instead of seeing it named up front (real incident:
+// umbrella #2493's child #2503 named "strictly after #2464" in its body and
+// was released anyway, burning 4 review runs re-confirming the same gap;
+// sybra#2616). Only touches tasks that are actually held back by one of
+// these refs, so it never fights releaseCapped for a child ready to go.
+func (a *App) flagCrossProgramBlockers(refsByTask map[string][]string, nodes []umbrella.Node, byID map[string]*task.Task, g *umbrella.Graph) {
+	if len(refsByTask) == 0 {
+		return
+	}
+	awaiting := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		awaiting[n.ID] = n.Awaiting
+	}
+	for id, refs := range refsByTask {
+		if !awaiting[id] {
+			continue
+		}
+		unresolved := g.UnresolvedRefs(refs)
+		if len(unresolved) == 0 {
+			continue
+		}
+		t := byID[id]
+		if t == nil {
+			continue
+		}
+		reason := externalBlockerReason(unresolved)
+		if t.StatusReason == reason {
+			continue
+		}
+		if _, err := a.tasks.Update(id, task.Update{StatusReason: task.Ptr(reason)}); err != nil {
+			a.logger.Error("umbrella.gate.cross_program_blocker.flag_failed", "task_id", id, "err", err)
+			continue
+		}
+		t.StatusReason = reason
+	}
+}
+
+// externalBlockerReason renders a deterministic, human-facing status reason
+// naming the specific unresolved cross-program ref(s) still holding a child
+// back, distinct from the generic reasons trackerRollup/releaseCapped use.
+func externalBlockerReason(refs []string) string {
+	sorted := slices.Clone(refs)
+	slices.Sort(sorted)
+	return "held: body names external dependency " + strings.Join(sorted, ", ") + " not tracked as done"
 }
 
 // accumulateChild folds one child task's status into its umbrella's tally.

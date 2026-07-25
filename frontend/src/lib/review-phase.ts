@@ -12,6 +12,7 @@ export type ReviewPhase =
   | 'needs-approval'
   | 'approved'
   | 'conflict'
+  | 'self-approval-blocked'
 
 /** Icon keys, resolved to lucide components at the call site. */
 export type ReviewPhaseIcon = 'loader' | 'eye' | 'pen' | 'hourglass' | 'shield' | 'check' | 'conflict'
@@ -64,12 +65,22 @@ export const REVIEW_PHASE_META: Record<ReviewPhase, ReviewPhaseMeta> = {
     icon: 'conflict',
     classes: 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200',
   },
+  // Our own bot identity submitted an approval on its own review task — always
+  // an anomaly (see internal/sybra/review/review_phase.go). The approval is
+  // dismissed server-side; error-toned and needs-you since a human must
+  // actually review the PR.
+  'self-approval-blocked': {
+    label: 'Self-approval blocked',
+    icon: 'conflict',
+    classes: 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200',
+  },
 }
 
 // Lane sort: the user's pending actions first, then waiting, then done, and
 // conflicting PRs last — they're blocked on the author, so they sink to the
 // bottom of the lane.
 const REVIEW_PHASE_ORDER: ReviewPhase[] = [
+  'self-approval-blocked',
   'needs-approval',
   'drafted',
   'manual',
@@ -129,6 +140,7 @@ const REVIEW_PHASE_NEEDS_YOU: ReadonlySet<ReviewPhase> = new Set<ReviewPhase>([
   'manual',
   'drafted',
   'needs-approval',
+  'self-approval-blocked',
 ])
 
 /** True when an inbound PR review task awaits the user's review action. */
