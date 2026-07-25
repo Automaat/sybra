@@ -6312,19 +6312,43 @@ func TestE2E_InteractivePromptQueuePressure_NoDropOrCrash(t *testing.T) {
 		return s == agent.StateRunning || s == agent.StatePaused
 	})
 
+	// block_silent never completes a turn, so drainOrCloseHeadlessSteer never
+	// fires and nothing dequeues for the life of this test: sending more
+	// concurrent messages than agent.MaxPendingHeadlessSteerPrompts is
+	// expected to hit the cap and get rejected — that is the queue-full
+	// guardrail (internal/agent/runner_headless.go) working as designed, not
+	// a drop. Only assert "no drop or crash": every send resolves to either
+	// success or the documented capacity error, the number of successes
+	// never exceeds the cap, and the agent survives the burst.
+	const sendCount = 50
 	var wg sync.WaitGroup
-	errCh := make(chan error, 50)
-	for i := range 50 {
+	errCh := make(chan error, sendCount)
+	for i := range sendCount {
 		wg.Go(func() {
 			errCh <- env.agents.SendPromptToAgent(ag.ID, fmt.Sprintf("msg-%d", i))
 		})
 	}
 	wg.Wait()
 	close(errCh)
+	var succeeded, capacityRejected int
 	for err := range errCh {
-		if err != nil {
+		switch {
+		case err == nil:
+			succeeded++
+		case strings.Contains(err.Error(), "too many pending steer messages"):
+			capacityRejected++
+		default:
 			t.Fatalf("send prompt err: %v", err)
 		}
+	}
+	if succeeded+capacityRejected != sendCount {
+		t.Fatalf("succeeded(%d) + capacityRejected(%d) != sendCount(%d)", succeeded, capacityRejected, sendCount)
+	}
+	if succeeded != agent.MaxPendingHeadlessSteerPrompts {
+		t.Fatalf("succeeded = %d, want exactly %d (the queue cap, since nothing drains it during this test)", succeeded, agent.MaxPendingHeadlessSteerPrompts)
+	}
+	if got := ag.PendingPromptCount(); got != agent.MaxPendingHeadlessSteerPrompts {
+		t.Fatalf("PendingPromptCount = %d, want %d (no drop: every accepted send must still be queued)", got, agent.MaxPendingHeadlessSteerPrompts)
 	}
 	if err := env.agents.StopAgent(ag.ID); err != nil {
 		t.Fatal(err)

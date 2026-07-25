@@ -874,6 +874,23 @@ func (a *Agent) EnqueuePrompt(text string) {
 	a.mu.Unlock()
 }
 
+// TryEnqueuePrompt appends text to the pending queue iff its current length
+// is below max, checking and appending under a single lock acquisition.
+// Callers that check PendingPromptCount() and then call EnqueuePrompt() as
+// two separate steps leave a TOCTOU window: concurrent callers can each pass
+// the check while the queue is below max and all append, overshooting the
+// cap the check was meant to enforce. Returns the queue length after the
+// call and whether the prompt was enqueued.
+func (a *Agent) TryEnqueuePrompt(text string, limit int) (queueLen int, enqueued bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.convo.pendingPrompts) >= limit {
+		return len(a.convo.pendingPrompts), false
+	}
+	a.convo.pendingPrompts = append(a.convo.pendingPrompts, text)
+	return len(a.convo.pendingPrompts), true
+}
+
 // PopPendingPrompt returns the next queued prompt and a flag indicating
 // whether a value was popped.
 func (a *Agent) PopPendingPrompt() (string, bool) {
