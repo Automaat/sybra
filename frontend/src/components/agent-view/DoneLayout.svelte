@@ -6,7 +6,6 @@
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import { summarizeAgent } from '$lib/agent-summary.js'
   import StreamOutput from '../StreamOutput.svelte'
-  import ChatView from '../ChatView.svelte'
 
   interface Props {
     a: Agent
@@ -142,11 +141,7 @@
 
     {#if activityOpen}
       <div class="mt-3" in:fly={{ y: 4, duration: 120 }}>
-        {#if a.mode === 'interactive'}
-          <ChatView agentId={a.id} agentState={a.state} costUsd={a.costUsd} inputTokens={a.inputTokens ?? 0} outputTokens={a.outputTokens ?? 0} />
-        {:else}
-          <StreamOutput agentId={a.id} />
-        {/if}
+        <StreamOutput agentId={a.id} />
       </div>
     {/if}
   </div>

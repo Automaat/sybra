@@ -32,6 +32,34 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
+// createLegacyInteractiveTask simulates a task file that predates the
+// interactive-runner removal: agent_mode is no longer mintable via the
+// Manager/Store API (see task.ValidateMintableAgentMode), but a pre-existing
+// on-disk task carrying it must still load and drive
+// recoverStaleInteractive's back-compat restart path. Mints the task
+// headless through the normal API (for correct ID/slug generation), then
+// overwrites the file directly before reloading it.
+func createLegacyInteractiveTask(t *testing.T, tasks *task.Manager, title string) task.Task {
+	t.Helper()
+	created, err := tasks.Create(title, "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.AgentMode = task.AgentModeInteractive
+	data, err := task.Marshal(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reloaded
+}
+
 // fakeGate is a provider.HealthGate stub. IsHealthy/RateLimited return the
 // configured flags so tests can simulate a rate-limited (or auth-failed)
 // provider.
@@ -677,10 +705,7 @@ func TestRestartStaleInteractiveOneShotRestartsAsOneShot(t *testing.T) {
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	created, err := tasks.Create("interactive one-shot", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, tasks, "interactive one-shot")
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
 	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
@@ -743,10 +768,7 @@ func TestRestartStaleInteractiveNoRunRedispatchesWhenProjectAssigned(t *testing.
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	created, err := tasks.Create("zero-run stale", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, tasks, "zero-run stale")
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
 	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
@@ -800,10 +822,7 @@ func TestRestartStaleInteractiveNoWorkflowRedispatches(t *testing.T) {
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	created, err := tasks.Create("interactive stale without workflow", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, tasks, "interactive stale without workflow")
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
 	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
@@ -871,10 +890,7 @@ func TestRestartStaleInteractiveModeMismatchRedispatches(t *testing.T) {
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	created, err := tasks.Create("mode-mismatch stale", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, tasks, "mode-mismatch stale")
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
 	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
@@ -949,10 +965,7 @@ func TestRestartStaleInteractiveNoRunWithoutProjectEscalates(t *testing.T) {
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	created, err := tasks.Create("zero-run stale missing project", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, tasks, "zero-run stale missing project")
 	inProg := task.StatusInProgress
 	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg}); err != nil {
 		t.Fatal(err)

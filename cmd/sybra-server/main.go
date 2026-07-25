@@ -495,7 +495,7 @@ func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCr
 		if mode == "" {
 			mode = task.AgentModeHeadless
 		}
-		if _, err := task.ValidateAgentMode(mode); err != nil {
+		if _, err := task.ValidateMintableAgentMode(mode); err != nil {
 			writeWebhookError(w, logger, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}

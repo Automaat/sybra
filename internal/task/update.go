@@ -322,7 +322,7 @@ func applyAgentModeField(u *Update, k string, v any) error {
 	if !ok {
 		return fmt.Errorf("field %q: want string, got %T", k, v)
 	}
-	mode, err := ValidateAgentMode(s)
+	mode, err := ValidateMintableAgentMode(s)
 	if err != nil {
 		return err
 	}

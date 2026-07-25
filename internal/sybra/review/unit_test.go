@@ -2489,7 +2489,7 @@ func TestAdvanceClosedTaskPRs_ClosesDespiteRunningAgentClaim(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 
-	created, err := tasks.Create("Task with merged PR and stale agent", "", string(task.AgentModeInteractive))
+	created, err := tasks.Create("Task with merged PR and stale agent", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
 	}

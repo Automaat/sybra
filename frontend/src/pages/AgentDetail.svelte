@@ -3,13 +3,12 @@
   import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { EventsOn, RespondEscalation } from '$lib/api'
   import { agentStore } from '../stores/agents.svelte.js'
-  import { convoStore } from '../stores/convo.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentState, agentEscalation, agentError, agentPluginErrors } from '../lib/events.js'
   import AgentErrorBanner from '../components/AgentErrorBanner.svelte'
   import { getAgentPhase } from '$lib/agent-phases.js'
-  import { buildStreamTimeline, buildConvoTimeline } from '$lib/timeline.js'
-  import { extractLatestPlanSteps, extractLatestPlanStepsFromConvo } from '$lib/plan-steps.js'
+  import { buildStreamTimeline } from '$lib/timeline.js'
+  import { extractLatestPlanSteps } from '$lib/plan-steps.js'
   import AgentHeader from '../components/agent-view/AgentHeader.svelte'
   import AgentViewBody from '../components/agent-view/AgentViewBody.svelte'
   import type { ToolUseSignal } from '$lib/workspace-tabs.js'
@@ -74,40 +73,19 @@
 
   // Timeline entries — reactive to store changes
   const streamOutputs = $derived(agentStore.outputs.get(agentId) ?? [])
-  const convoEvents = $derived(convoStore.conversations.get(agentId) ?? [])
-  const timelineEntries = $derived(
-    a?.mode === 'interactive'
-      ? buildConvoTimeline(convoEvents)
-      : buildStreamTimeline(streamOutputs),
-  )
-
-  const planSteps = $derived(
-    a?.mode === 'interactive'
-      ? extractLatestPlanStepsFromConvo(convoEvents)
-      : extractLatestPlanSteps(streamOutputs),
-  )
-
+  const timelineEntries = $derived(buildStreamTimeline(streamOutputs))
+  const planSteps = $derived(extractLatestPlanSteps(streamOutputs))
   const allAgents = $derived(agentStore.list)
 
   const latestToolUse = $derived.by<ToolUseSignal | undefined>(() => {
-    if (a?.mode === 'interactive') {
-      for (let i = convoEvents.length - 1; i >= 0; i--) {
-        const ev = convoEvents[i]
-        if (ev.type === 'assistant' && ev.toolUses?.length) {
-          const tu = ev.toolUses[ev.toolUses.length - 1]
-          return { id: tu.id, name: tu.name, ts: new Date(ev.timestamp) }
-        }
-      }
-    } else {
-      for (let i = streamOutputs.length - 1; i >= 0; i--) {
-        const ev = streamOutputs[i].event
-        if (ev.type === 'assistant' && ev.content) {
-          const lines = ev.content.split('\n')
-          for (let j = lines.length - 1; j >= 0; j--) {
-            const m = lines[j].match(/^\[(\w+)\]\s+(.+)$/)
-            if (m) {
-              return { id: `stream-${i}-${j}`, name: m[1], ts: streamOutputs[i].receivedAt }
-            }
+    for (let i = streamOutputs.length - 1; i >= 0; i--) {
+      const ev = streamOutputs[i].event
+      if (ev.type === 'assistant' && ev.content) {
+        const lines = ev.content.split('\n')
+        for (let j = lines.length - 1; j >= 0; j--) {
+          const m = lines[j].match(/^\[(\w+)\]\s+(.+)$/)
+          if (m) {
+            return { id: `stream-${i}-${j}`, name: m[1], ts: streamOutputs[i].receivedAt }
           }
         }
       }

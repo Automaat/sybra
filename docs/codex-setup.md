@@ -80,13 +80,7 @@ codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --da
 
 `--sandbox workspace-write` is intentionally not used in headless mode. That mode requests user approval for writes outside the workspace; in a headless run there is no TTY or UI to serve the approval prompt, so every such request is auto-rejected and the agent run fails. The worktree directory itself provides task isolation.
 
-`RequirePermissions=true` only affects sandbox selection in **interactive (conversational)** mode, where a human can approve sandbox prompts.
-
 Stdout is read as NDJSON. Sybra parses Codex event types (`agent_message`, `command_execution`, `task_complete`, etc.) and maps them to its unified `StreamEvent` format for display.
-
-### Interactive (conversational) mode
-
-Sybra spawns a new `codex exec --json` process for each user turn. Unlike Claude conversational mode (which keeps a single process alive on stdin), each Codex turn is a discrete subprocess invocation. This means there is **no persistent stdin pipe** — the UI sends messages by launching a new process with the follow-up prompt.
 
 ## Differences vs Claude Code
 
@@ -98,7 +92,6 @@ Sybra spawns a new `codex exec --json` process for each user turn. Unlike Claude
 | Session files | `~/.claude/projects/<key>/<id>.jsonl` | `~/.codex/sessions/rollout-<id>.jsonl` |
 | External discovery | Claude process detection via session files | Codex process detection via `pgrep -f codex` + session JSONL |
 | Cost reporting | Reported in `result` event (`cost_usd`) | Not reported in stream; billed on OpenAI dashboard |
-| Conversational model | Single long-lived process with stdin pipe | New subprocess per turn |
 
 ## Commit Requirements
 

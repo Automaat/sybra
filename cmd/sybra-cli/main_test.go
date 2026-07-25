@@ -1623,7 +1623,7 @@ func TestUpdateMultipleFields(t *testing.T) {
 		"--title", "new title",
 		"--status", "done",
 		"--body", "new body",
-		"--mode", "interactive",
+		"--mode", "headless",
 		"--tags", "x,y,z")
 	if code != 0 {
 		t.Fatalf("update exit %d: %s", code, out)
@@ -1640,8 +1640,8 @@ func TestUpdateMultipleFields(t *testing.T) {
 	if updated.Body != "new body" {
 		t.Errorf("Body = %q, want %q", updated.Body, "new body")
 	}
-	if updated.AgentMode != "interactive" {
-		t.Errorf("AgentMode = %q, want %q", updated.AgentMode, "interactive")
+	if updated.AgentMode != "headless" {
+		t.Errorf("AgentMode = %q, want %q", updated.AgentMode, "headless")
 	}
 	if len(updated.Tags) != 3 {
 		t.Fatalf("Tags len = %d, want 3", len(updated.Tags))
@@ -1805,14 +1805,22 @@ func TestListBothFilters(t *testing.T) {
 
 func TestCreateWithMode(t *testing.T) {
 	setupStore(t)
-	code, out := runCLI(t, "--json", "create", "--title", "interactive task", "--mode", "interactive")
+	code, out := runCLI(t, "--json", "create", "--title", "headless task", "--mode", "headless")
 	if code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	var created task.Task
 	mustUnmarshal(t, out, &created)
-	if created.AgentMode != "interactive" {
-		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "interactive")
+	if created.AgentMode != "headless" {
+		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "headless")
+	}
+}
+
+func TestCreateRejectsInteractiveMode(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "create", "--title", "removed mode task", "--mode", "interactive")
+	if code == 0 {
+		t.Fatal("expected non-zero exit creating a task with the removed interactive mode")
 	}
 }
 

@@ -204,7 +204,7 @@ test.describe('Create Task', () => {
     await page.getByPlaceholder('Task title...').fill('E2E Test Task')
     await page.getByPlaceholder('Task description (markdown)...').fill('Created by Playwright e2e test')
 
-    // Headless is the default mode (checkbox defaults on)
+    // Every task is created headless — there is no mode toggle anymore.
 
     // Submit
     await page.getByRole('button', { name: 'Create' }).click()
