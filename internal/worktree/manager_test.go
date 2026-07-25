@@ -461,6 +461,44 @@ func TestCleanupOrphaned_PreservesUnpushedCommits(t *testing.T) {
 	}
 }
 
+// TestRemove_PreservesUnpushedCommits proves the per-task cleanup chokepoint
+// (fired on task completion, manual terminal transitions, and explicit
+// deletes) refuses to delete a worktree whose completed work never reached
+// origin — the #2593 scenario where a terminal-status task's finished-but-
+// unpushed diff would otherwise be destroyed before the periodic orphan sweep
+// with its identical guard ever runs.
+func TestRemove_PreservesUnpushedCommits(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+
+	tk, err := store.Create("unpushed task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(tk.ID, task.Update{ProjectID: task.Ptr("owner/repo")}); err != nil {
+		t.Fatal(err)
+	}
+	wtDir := filepath.Join(dir, tk.DirName())
+	makePushedGitDir(t, wtDir)
+	if err := os.WriteFile(filepath.Join(wtDir, "f.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtDir, "git", "commit", "-q", "-am", "unpushed work")
+
+	m.Remove(context.Background(), tk.ID)
+
+	if _, err := os.Stat(wtDir); err != nil {
+		t.Errorf("worktree with unpushed commits removed unexpectedly: %v", err)
+	}
+}
+
 // TestRunSetup_EmptyIsNoOp — backwards compat: projects without
 // SetupCommands must skip the hook entirely without creating log files
 // or calling into the filesystem.

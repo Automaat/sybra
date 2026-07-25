@@ -26,6 +26,17 @@ func (m *Manager) Remove(ctx context.Context, taskID string) {
 	if _, err := os.Stat(wtPath); err != nil {
 		return
 	}
+	// Never reap a worktree whose completed work never reached origin — a task
+	// bounced to a terminal status (done/cancelled) after a failed push would
+	// otherwise lose its finished-but-unpushed diff right here, before the
+	// periodic orphan sweep's identical guard ever runs (#2593). This is the
+	// per-task chokepoint fired on task completion (completion.OnComplete),
+	// manual terminal transitions (UpdateTask), and explicit deletes
+	// (DeleteTask); consistent with doctor cleanup, even those never bypass it.
+	if project.HasUnpushedCommits(ctx, wtPath) {
+		m.logger.Warn("worktree.cleanup.unpushed-commits", "path", wtPath)
+		return
+	}
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return
