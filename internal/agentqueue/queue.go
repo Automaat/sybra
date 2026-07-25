@@ -13,8 +13,15 @@ import (
 
 // Item is one entry in the queue: a task/role pair awaiting dispatch.
 type Item struct {
-	TaskID   string        `yaml:"task_id"`
-	Role     string        `yaml:"role"`
+	TaskID string `yaml:"task_id"`
+	Role   string `yaml:"role"`
+	// Class is the item's WorkloadClass (agent.Role.WorkloadClass), persisted
+	// as a plain string so this package does not need to import internal/agent.
+	// Populated at every Offer site from the same role the item queues under.
+	// Advisory only today (no queue-side admission logic reads it yet) — it
+	// exists so a restart reconciles the class an operator configured
+	// class_reservations against instead of silently losing it.
+	Class    string        `yaml:"class,omitempty"`
 	Priority task.Priority `yaml:"priority"`
 	Status   task.Status   `yaml:"status"`
 	Manual   bool          `yaml:"manual"`

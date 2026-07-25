@@ -94,6 +94,38 @@ func validateAgentConfig(cfg *ResolvedConfig, add func(format string, a ...any))
 	} else if mode == "enforce" && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		add("agent.sandbox_mode=enforce requires darwin or linux; current host is %s", runtime.GOOS)
 	}
+	validateClassReservations(cfg, add)
+}
+
+// validClassReservationKeys mirrors agent.Role.WorkloadClass's fixed output
+// set (internal/agent.AllWorkloadClasses). Duplicated as string literals
+// rather than imported: internal/agent already imports internal/config, so
+// importing agent.WorkloadClass here would be a cycle.
+var validClassReservationKeys = map[string]bool{
+	"implementation": true,
+	"completion":     true,
+	"system":         true,
+}
+
+func validateClassReservations(cfg *ResolvedConfig, add func(format string, a ...any)) {
+	if len(cfg.Agent.ClassReservations) == 0 {
+		return
+	}
+	var sum int
+	for class, floor := range cfg.Agent.ClassReservations {
+		if !validClassReservationKeys[class] {
+			add("agent.class_reservations: unknown class %q (valid: implementation, completion, system)", class)
+			continue
+		}
+		if floor < 0 {
+			add("agent.class_reservations.%s: reserved minimum must be >= 0, got %d", class, floor)
+			continue
+		}
+		sum += floor
+	}
+	if cfg.Agent.MaxConcurrent > 0 && sum > cfg.Agent.MaxConcurrent {
+		add("agent.class_reservations: sum of reserved minimums (%d) exceeds agent.max_concurrent (%d)", sum, cfg.Agent.MaxConcurrent)
+	}
 }
 
 func validateLoggingConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {

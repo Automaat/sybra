@@ -159,6 +159,7 @@ func cloneConfig(src *config.Config) *config.Config {
 	cp.ProjectTypes = slices.Clone(src.ProjectTypes)
 	cp.Server.AllowedOrigins = slices.Clone(src.Server.AllowedOrigins)
 	cp.Agent.RoleEffort = cloneStringMap(src.Agent.RoleEffort)
+	cp.Agent.ClassReservations = cloneIntMap(src.Agent.ClassReservations)
 	cp.Agent.PlaywrightMCP.ExtraArgs = slices.Clone(src.Agent.PlaywrightMCP.ExtraArgs)
 	cp.Agent.K8sJobs.Command = slices.Clone(src.Agent.K8sJobs.Command)
 	cp.Agent.K8sJobs.Env = slices.Clone(src.Agent.K8sJobs.Env)
@@ -173,6 +174,15 @@ func cloneStringMap(src map[string]string) map[string]string {
 		return nil
 	}
 	dst := make(map[string]string, len(src))
+	maps.Copy(dst, src)
+	return dst
+}
+
+func cloneIntMap(src map[string]int) map[string]int {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]int, len(src))
 	maps.Copy(dst, src)
 	return dst
 }
