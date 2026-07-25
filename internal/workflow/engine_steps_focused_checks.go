@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/project"
 )
 
@@ -105,6 +106,8 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 		return e.flagFocusedChecks(taskID, step, reason, "setup")
 	}
 	if failedCmd == "" {
+		e.recordEvidence(taskID, step.ID, evidenceCriterionFocusedChecks, evidence.ProofDeterministicCheck,
+			0, strings.Join(cmds, " && "), report.OutputTail)
 		return stepDone(step, "clean")
 	}
 	return e.reaskFocusedChecks(taskID, step, wfExec, t, selected, changedFiles, failedCmd, output)
@@ -366,6 +369,7 @@ func (e *Engine) flagFocusedChecks(taskID string, step *Step, reason, detail str
 	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("focused-checks: set human-required: %w", statusErr)
 	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionFocusedChecks, evidence.ProofDeterministicCheck, 1, "", detail)
 	e.logger.Warn("workflow.focused-checks.flagged", "task_id", taskID, "detail", detail)
 	return stepDone(step, "flagged")
 }

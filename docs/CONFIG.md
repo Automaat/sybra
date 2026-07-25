@@ -85,6 +85,7 @@ How Sybra launches and routes agent work across providers and local backends.
 | `execution.agent.k8s_jobs` | `K8sJobsConfig` | _(see below)_ |  |  |  | `false` |  |  | K8sJobs configures an experimental backend that runs headless agents as short-lived Kubernetes Jobs instead of local subprocesses. |
 | `execution.agent.queue` | `QueueConfig` | _(see below)_ |  |  |  | `false` |  |  | Queue configures the agent-dispatch admission queue (internal/agentqueue) that a workflow implementation dispatch falls back to when the agent pool is saturated, instead of erroring or wasting a worktree prep. |
 | `execution.agent.class_reservations` | `map[string]int` |  |  |  | `agent.class_reservations` | `false` | `hot` |  | ClassReservations reserves a configurable minimum number of concurrent slots per workload class ("implementation", "completion", "system" — see agent.Role.WorkloadClass), so one class saturating the shared pool (e.g. a retry storm of system/monitor work) cannot starve another. Keys outside the known class set, or a sum exceeding MaxConcurrent, fail config validation. Empty/nil (the default) reproduces the pre-class- isolation single shared pool exactly — this feature is opt-in. |
+| `execution.agent.evidence` | `EvidenceConfig` | _(see below)_ |  |  |  | `false` |  |  | Evidence gates the workflow engine's require_evidence completion gate (agent.evidence.enabled — see config_evidence.go). |
 
 ### PlaywrightMCPConfig (`execution.agent.playwright_mcp`)
 
@@ -149,6 +150,20 @@ QueueConfig configures the agent-dispatch admission queue.
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `execution.agent.queue.max_depth` | `int` | `0` |  |  | `agent.queue.max_depth` | `false` | `hot` |  | MaxDepth caps the number of distinct tasks the admission queue holds at once (agentqueue.Options.MaxDepth). 0 means unbounded. Once full, a new task that can't get a pool slot is rejected with a normal dispatch error instead of being queued. |
+
+### EvidenceConfig (`execution.agent.evidence`)
+
+EvidenceConfig gates the workflow engine's require_evidence step (see
+internal/workflow/engine_steps_evidence.go), the final deterministic
+completion gate that blocks a task from landing until every criterion
+applicable to it (verify_checks, detect_tampering, the test-runner
+verdict, review) has fresh, passing evidence recorded for the task's
+current HEAD. Lives under AgentDefaults — resolved config key
+agent.evidence.enabled.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.agent.evidence.enabled` | `bool` | `false` |  |  | `agent.evidence.enabled` | `false` | `restart` |  | Enabled turns the require_evidence gate on. Defaults false (see applyEvidenceDefaults) — the underlying producers (verify_checks, detect_tampering, codegen_gate, focused_checks, the test-runner, and review) always record evidence regardless of this flag, so enabling it later gates against history that was already being collected rather than starting cold. |
 
 ### ProvidersConfig (`execution.providers`)
 

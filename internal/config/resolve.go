@@ -200,4 +200,5 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	applyGitHubPollingCompat(cfg, file)
 	applyReviewHoldDefaults(cfg)
 	applyAdmissionDefaults(cfg, file)
+	applyEvidenceDefaults(cfg, file)
 }

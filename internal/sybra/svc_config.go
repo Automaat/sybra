@@ -322,7 +322,11 @@ func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() er
 		return result, configMutationErrorf(result, "rejected immutable config paths: %s", strings.Join(result.Rejected, ", "))
 	}
 	nextActive := cloneConfig(current)
-	for _, path := range result.Applied {
+	// Copy the exact changed leaves, not the registry-entry paths: a hot ancestor
+	// entry (e.g. "agent") can cover a restart-policy child (e.g. "agent.evidence")
+	// whose change must stay pending until restart. appliedLeaves already excludes
+	// those child leaves.
+	for _, path := range result.appliedLeaves {
 		copyConfigPath(nextActive, candidate, path)
 	}
 	if persist != nil {

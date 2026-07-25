@@ -34,6 +34,7 @@ import (
 	"github.com/Automaat/sybra/internal/diskreclaim"
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
@@ -87,6 +88,7 @@ type App struct {
 	audit             *audit.Logger
 	attachments       *attachment.Store
 	artifacts         *artifact.Store
+	evidenceStore     *evidence.Store
 	experience        *experience.Store
 	learning          *learning.Store
 	agentQueue        *agentqueue.Queue

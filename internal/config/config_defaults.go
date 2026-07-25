@@ -1119,6 +1119,22 @@ func (c *Config) AdmissionEnabled() bool {
 	return c != nil && c.Admission.Enabled
 }
 
+// applyEvidenceDefaults leaves Agent.Evidence.Enabled at its zero value
+// (false) — unlike admission, this gate defaults OFF: it is new and its
+// producers (verify_checks, detect_tampering, etc.) need to have been
+// recording evidence for a while before the gate itself is safe to flip on
+// for in-flight tasks. No file.Has guard is needed since false is already
+// the zero value; kept as its own apply hook for parity with the other
+// config blocks and so future Evidence fields have a place to default.
+func applyEvidenceDefaults(cfg *Config, file *FileConfig) {
+}
+
+// EvidenceEnabled reports whether the require_evidence completion gate is
+// active. Nil-safe for test construction.
+func (c *Config) EvidenceEnabled() bool {
+	return c != nil && c.Agent.Evidence.Enabled
+}
+
 func applyExperienceDefaults(cfg *Config) {
 	if cfg.Experience.MaxRecords <= 0 {
 		cfg.Experience.MaxRecords = 5

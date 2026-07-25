@@ -286,6 +286,29 @@ steps:
         {{getvar .Vars "watchdog_reask_note"}}
         {{- end}}
     next:
+      - goto: verify_checks
+
+  # Mechanical check (no LLM): re-run the project's checks.verify suite after
+  # the review-fix agent committed. The implement-stage verify_checks only saw
+  # the pre-fix HEAD, so without this a fix that broke the suite would reach a
+  # PR unverified — and the require_evidence completion gate would flag
+  # verify_checks stale against the final HEAD. Opt-in: a no-op unless the
+  # project defines checks.verify. Same blocking semantics as the implement
+  # stage — a non-zero exit flips the task to human-required.
+  - id: verify_checks
+    name: Verify Checks
+    type: verify_checks
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: blocked
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: detect_tampering
 
   # Mechanical check (no LLM): re-scan the full diff for test/CI tampering after

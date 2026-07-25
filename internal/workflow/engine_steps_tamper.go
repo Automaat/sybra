@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/evidence"
 )
 
 // TamperBlessedTag short-circuits the detector: a human who has reviewed a
@@ -886,6 +888,8 @@ func downgradeFindingsByRule(findings []tamperFinding, rule string) []tamperFind
 func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	if slices.Contains(t.Tags, TamperBlessedTag) {
 		e.logger.Info("workflow.detect-tampering.blessed", "task_id", taskID)
+		e.recordEvidence(taskID, step.ID, evidenceCriterionDetectTampering, evidence.ProofManual,
+			0, "human bless ("+TamperBlessedTag+" tag)", "blessed")
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "blessed"}, nil
 	}
 	if e.worktrees == nil {
@@ -905,10 +909,21 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
 		}
 		e.logger.Warn("workflow.detect-tampering.diff-error", "task_id", taskID, "err", err)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "clean"}, nil
+		// Fail open for the step's own routing (the task continues), but record
+		// NO evidence: a genuine tool failure is not proof the diff is clean.
+		// Recording it as ExitStatus 0 would manufacture a fresh, passing
+		// detect_tampering entry for the require_evidence completion gate — the
+		// exact opposite of "fresh, passing proof". Leaving the criterion
+		// absent/stale makes require_evidence block instead, so a transient git
+		// error cannot launder an unverified diff onto a PR. The Output says so
+		// explicitly (not "clean") so operators/logs/sidecars reading this step's
+		// result aren't misled into thinking the diff was actually checked.
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: diff error (no evidence recorded)"}, nil
 	}
 
 	if len(report.Files) == 0 {
+		e.recordEvidence(taskID, step.ID, evidenceCriterionDetectTampering, evidence.ProofDeterministicCheck,
+			0, "git diff --name-status", "clean (no verification files changed)")
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "clean"}, nil
 	}
 
@@ -927,10 +942,14 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 		}
 		e.logger.Warn("workflow.detect-tampering.flagged",
 			"task_id", taskID, "high", high, "files", len(report.Files))
+		e.recordEvidence(taskID, step.ID, evidenceCriterionDetectTampering, evidence.ProofDeterministicCheck,
+			1, "git diff --name-status", reason)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "flagged"}, nil
 	}
 
 	e.logger.Info("workflow.detect-tampering.clean", "task_id", taskID, "files", len(report.Files))
+	e.recordEvidence(taskID, step.ID, evidenceCriterionDetectTampering, evidence.ProofDeterministicCheck,
+		0, "git diff --name-status", "clean")
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "clean"}, nil
 }
 

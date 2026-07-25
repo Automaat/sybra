@@ -178,6 +178,20 @@ func (m *memTasks) Put(t TaskInfo) {
 	m.tasks[t.ID] = &t
 }
 
+// mustGetTask returns the task's current in-memory state, failing the test
+// if it was never Put — a guarded lookup so callers don't dereference a
+// possibly-absent map entry directly.
+func (m *memTasks) mustGetTask(t *testing.T, id string) TaskInfo {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tk, ok := m.tasks[id]
+	if !ok {
+		t.Fatalf("task %q not found", id)
+	}
+	return *tk
+}
+
 func (m *memTasks) SetGetTaskHook(hook func(id string, t *TaskInfo, count int)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

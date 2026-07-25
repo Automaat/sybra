@@ -1014,6 +1014,22 @@ export enum StepType {
      * executing it does not strand the task.
      */
     StepAdmissionPreflight = "admission_preflight",
+
+    /**
+     * StepRequireEvidence is the final deterministic completion gate: it
+     * asserts every criterion applicable to the task (verify_checks,
+     * detect_tampering, the test-runner verdict when testing ran, review when
+     * the task went through review) has a recorded CompletionEvidence entry
+     * that passed and is fresh for the task's current HEAD — see
+     * execRequireEvidence (engine_steps_evidence.go). A no-op when the
+     * require_evidence gate is disabled (config.EvidenceConfig.Enabled=false,
+     * the default) or when no evidence has ever been recorded for the task
+     * (an in-flight task from before evidence collection started). Otherwise,
+     * any missing, failed, or stale criterion flips the task to
+     * human-required with a terminal blocker.KindOperatorDecision — a human
+     * must re-run the missing proof, not retry the same dispatch.
+     */
+    StepRequireEvidence = "require_evidence",
 };
 
 /**

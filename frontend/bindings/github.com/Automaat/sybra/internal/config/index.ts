@@ -6,6 +6,7 @@ export {
     AttachmentConfig,
     AuditConfig,
     BrowserConfig,
+    EvidenceConfig,
     ExperienceConfig,
     GitHubAppConfig,
     GitHubConfig,

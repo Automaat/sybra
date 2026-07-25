@@ -66,6 +66,14 @@ var configRegistry = []configRegistryEntry{
 	{Path: "sandbox", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "task_snapshot", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "agent", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyAgentRuntime},
+	// restart, not hot (overrides the parent agent entry above): the workflow
+	// engine caches agent.evidence via SetEvidenceConfig (configureEvidencePolicy,
+	// called only from initWorkflowEngine) into an unexported Engine field. The
+	// hot-apply path (applyAgentGuardrails/refreshAgentRuntimeConfig) never
+	// re-invokes SetEvidenceConfig, so a hot reload of the flag would be a silent
+	// no-op — the store/UI would show it Applied while the engine kept enforcing
+	// the old value. Same rationale as the admission entry below.
+	{Path: "agent.evidence", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "testing", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "notification", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyNotification},
 	{Path: "orchestrator", Policy: configPolicyRestart, Visibility: configVisibilityUI},
@@ -125,6 +133,14 @@ type ConfigMutationResult struct {
 	Unchanged       []string        `json:"unchanged"`
 	Rejected        []string        `json:"rejected"`
 	Recovery        *ConfigRecovery `json:"recovery,omitempty"`
+
+	// appliedLeaves are the exact leaf paths whose changes a hot apply must copy
+	// into the live config. It is intentionally finer-grained than Applied (which
+	// carries registry-entry paths for apply-group dispatch): copying a hot
+	// ancestor entry (e.g. "agent") wholesale would also drag in a restart-policy
+	// child (e.g. "agent.evidence") that must NOT take effect until restart.
+	// Unexported so it never serializes to the frontend.
+	appliedLeaves []string
 }
 
 type ConfigRecovery struct {
@@ -243,15 +259,34 @@ func ConfigRegistryMetadataByRuntimePath(path string) (ConfigRegistryMeta, bool)
 }
 
 func diffConfig(old, next config.Config) ConfigMutationResult {
+	// Assign every changed leaf to its single most-specific registry entry, so a
+	// child entry's policy overrides its ancestor's (e.g. agent.evidence=restart
+	// wins over agent=hot). Evaluating each entry independently against the whole
+	// subtree it covers would classify the SAME evidence flip as both
+	// Applied [agent] and RestartRequired [agent.evidence], and the hot-apply copy
+	// of "agent" would then drag the restart-only value live — the exact silent
+	// override the restart policy exists to prevent.
+	changedLeaves := make([][]string, len(configRegistry))
+	for _, leaf := range configLeafPaths {
+		idx := mostSpecificRegistryEntryIndex(leaf)
+		if idx < 0 {
+			continue
+		}
+		if configValuesEqual(configValueAtPath(old, leaf), configValueAtPath(next, leaf)) {
+			continue
+		}
+		changedLeaves[idx] = append(changedLeaves[idx], leaf)
+	}
 	var result ConfigMutationResult
-	for _, entry := range configRegistry {
-		if configValuesEqual(configValueAtPath(old, entry.Path), configValueAtPath(next, entry.Path)) {
+	for i, entry := range configRegistry {
+		if len(changedLeaves[i]) == 0 {
 			result.Unchanged = append(result.Unchanged, entry.Path)
 			continue
 		}
 		switch entry.Policy {
 		case configPolicyHot:
 			result.Applied = append(result.Applied, entry.Path)
+			result.appliedLeaves = append(result.appliedLeaves, changedLeaves[i]...)
 		case configPolicyRestart:
 			result.RestartRequired = append(result.RestartRequired, entry.Path)
 		case configPolicyImmutable:
@@ -259,6 +294,23 @@ func diffConfig(old, next config.Config) ConfigMutationResult {
 		}
 	}
 	return result
+}
+
+// mostSpecificRegistryEntryIndex returns the index of the longest registry entry
+// path that covers leaf (exact match or dotted-prefix ancestor), or -1 when no
+// entry covers it. Mirrors ConfigRegistryMetadataByRuntimePath's selection.
+func mostSpecificRegistryEntryIndex(leaf string) int {
+	best := -1
+	for i := range configRegistry {
+		p := configRegistry[i].Path
+		if leaf != p && !strings.HasPrefix(leaf, p+".") {
+			continue
+		}
+		if best < 0 || len(p) > len(configRegistry[best].Path) {
+			best = i
+		}
+	}
+	return best
 }
 
 func configValuesEqual(a, b any) bool {

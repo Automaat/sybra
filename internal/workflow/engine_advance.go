@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/reviewbudget"
 )
 
@@ -121,6 +122,17 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
 			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
 		}
+		e.recordEvidence(taskID, currentStep.ID, evidenceCriterionReview, evidence.ProofReviewFinding, 0, "", output.Output)
+	}
+
+	// Single-pass review posture (agent.review_until_clean: false) exits after a
+	// NEEDS_FIXES round's fix_review commit without a second review, leaving the
+	// review evidence stale against the post-fix HEAD. Re-stamp it here so the
+	// require_evidence gate does not block an otherwise-complete task. In the
+	// multi-pass posture the follow-up review re-records fresh evidence itself,
+	// so this refresh is scoped to the single-pass route only.
+	if e.reviewLoopDisabled && currentStep.Config.Role == "fix-review" && output.Status == "completed" {
+		e.refreshReviewEvidenceFreshness(taskID)
 	}
 
 	t, parked, comp, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
@@ -553,7 +565,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return comp, err
 		case StepWaitHuman:
 			return nil, wrapDispatchErr(step.ID, e.execWaitHuman(taskID, step, wfExec))
-		case StepClearPlanArtifacts, StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepFlagPlanCritique, StepDetectTampering, StepVerifyChecks, StepFocusedChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR, StepClassifyTask, StepAdmissionPreflight:
+		case StepClearPlanArtifacts, StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepFlagPlanCritique, StepDetectTampering, StepVerifyChecks, StepFocusedChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR, StepClassifyTask, StepAdmissionPreflight, StepRequireEvidence:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
@@ -673,6 +685,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execClassifyTask(taskID, step, wfExec)
 	case StepAdmissionPreflight:
 		return e.execAdmissionPreflight(taskID, step, wfExec, t)
+	case StepRequireEvidence:
+		return e.execRequireEvidence(taskID, step, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
