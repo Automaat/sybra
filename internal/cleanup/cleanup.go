@@ -336,15 +336,45 @@ func (s *Scanner) sandboxWorktreeHasUnpushedCommits(snap snapshot, taskID string
 	if taskID == "" || taskID == unknownTaskID {
 		return false
 	}
-	t, exists := snap.byID[taskID]
-	if !exists || t.ProjectID == "" || t.WorktreeDir != "" {
-		return false
-	}
-	wtPath := filepath.Join(s.cfg.WorktreesDir, t.DirName())
-	if _, err := os.Stat(wtPath); err != nil {
+	wtPath, ok := s.sandboxWorktreePath(snap, taskID)
+	if !ok {
 		return false
 	}
 	return hasUnpushedCommits(wtPath)
+}
+
+// sandboxWorktreePath resolves the Sybra-managed worktree path for taskID. For
+// a live task it uses DirName(); for a deleted task (record gone from snap) it
+// falls back to scanning the worktrees dir for a directory whose embedded task
+// ID matches — the deleted-task case is exactly the one the unpushed-commits
+// guard must protect, yet a live record no longer exists to compute DirName()
+// from (#2593). Externally-adopted worktrees (WorktreeDir set) are never
+// resolved: they live outside WorktreesDir, so the directory scan never
+// surfaces them either.
+func (s *Scanner) sandboxWorktreePath(snap snapshot, taskID string) (string, bool) {
+	if t, exists := snap.byID[taskID]; exists {
+		if t.ProjectID == "" || t.WorktreeDir != "" {
+			return "", false
+		}
+		wtPath := filepath.Join(s.cfg.WorktreesDir, t.DirName())
+		if _, err := os.Stat(wtPath); err != nil {
+			return "", false
+		}
+		return wtPath, true
+	}
+	entries, err := os.ReadDir(s.cfg.WorktreesDir)
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if taskIDFromWorktreeDir(e.Name()) == taskID {
+			return filepath.Join(s.cfg.WorktreesDir, e.Name()), true
+		}
+	}
+	return "", false
 }
 
 // resolveBucketNames returns the bucket names Scan/Apply should consider:

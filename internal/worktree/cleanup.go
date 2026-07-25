@@ -5,10 +5,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+var (
+	bareTaskIDRe   = regexp.MustCompile(`^[0-9a-f]{8}$`)
+	suffixTaskIDRe = regexp.MustCompile(`-([0-9a-f]{8})$`)
+)
+
+// taskIDFromWorktreeDir extracts the owning task ID from a worktree directory
+// name: task.Task.DirName() is either the bare 8-hex-char ID (no slug yet) or
+// "<slug>-<8hex-id>". Anything else returns "" (no match).
+func taskIDFromWorktreeDir(name string) string {
+	if bareTaskIDRe.MatchString(name) {
+		return name
+	}
+	if m := suffixTaskIDRe.FindStringSubmatch(name); m != nil {
+		return m[1]
+	}
+	return ""
+}
 
 // Remove cleans up the worktree for a task via git worktree remove.
 func (m *Manager) Remove(ctx context.Context, taskID string) {
@@ -126,19 +145,48 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 // on origin. Used by sandbox cleanup (a separate per-task data dir from the
 // git worktree) so it never reaps a sandbox tied to a task whose worktree
 // still holds completed-but-unpushed work (#2593). Returns false — nothing to
-// protect — when the task, its worktree, or its project cannot be resolved,
-// or when the worktree is externally adopted (owned by the tool that created
-// it, not Sybra).
+// protect — when the worktree cannot be resolved, or when it is externally
+// adopted (owned by the tool that created it, not Sybra).
 func (m *Manager) HasUnpushedCommits(ctx context.Context, taskID string) bool {
-	t, err := m.tasks.Get(taskID)
-	if err != nil || t.ProjectID == "" || t.WorktreeDir != "" {
-		return false
-	}
-	wtPath := filepath.Join(m.dir, t.DirName())
-	if _, err := os.Stat(wtPath); err != nil {
+	wtPath, ok := m.resolveWorktreePath(taskID)
+	if !ok {
 		return false
 	}
 	return project.HasUnpushedCommits(ctx, wtPath)
+}
+
+// resolveWorktreePath returns the Sybra-managed worktree path for taskID. For
+// a live task it uses DirName(); for a deleted task (record gone) it falls
+// back to scanning the worktrees dir for a directory whose embedded task ID
+// matches — the deleted-task case is exactly what the unpushed-commits guard
+// must protect, and a live record no longer exists to compute DirName() from
+// (#2593). Externally-adopted worktrees (WorktreeDir set) are never resolved:
+// their lifecycle is owned by the tool that created them, and they live
+// outside m.dir so the directory scan never surfaces them either.
+func (m *Manager) resolveWorktreePath(taskID string) (string, bool) {
+	if t, err := m.tasks.Get(taskID); err == nil {
+		if t.ProjectID == "" || t.WorktreeDir != "" {
+			return "", false
+		}
+		wtPath := filepath.Join(m.dir, t.DirName())
+		if _, err := os.Stat(wtPath); err != nil {
+			return "", false
+		}
+		return wtPath, true
+	}
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if taskIDFromWorktreeDir(e.Name()) == taskID {
+			return filepath.Join(m.dir, e.Name()), true
+		}
+	}
+	return "", false
 }
 
 // List returns all git worktrees for the given project.

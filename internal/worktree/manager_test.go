@@ -425,6 +425,20 @@ func TestManager_HasUnpushedCommits(t *testing.T) {
 	if got := m.HasUnpushedCommits(ctx, "no-such-task"); got {
 		t.Error("missing task must report false (nothing to protect)")
 	}
+
+	// A deleted task's record is gone, but its worktree dir survives on disk
+	// still holding unpushed work — the exact case the guard must protect
+	// (#2593). Resolve it by directory name, not a live record.
+	deletedID := "aabbccdd"
+	deletedDir := filepath.Join(dir, "deleted-task-"+deletedID)
+	makePushedGitDir(t, deletedDir)
+	if err := os.WriteFile(filepath.Join(deletedDir, "f.txt"), []byte("c"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, deletedDir, "git", "commit", "-q", "-am", "unpushed work")
+	if got := m.HasUnpushedCommits(ctx, deletedID); !got {
+		t.Error("deleted task's worktree with an unpushed commit must be protected")
+	}
 }
 
 // TestCleanupOrphaned_PreservesUnpushedCommits proves an orphaned worktree

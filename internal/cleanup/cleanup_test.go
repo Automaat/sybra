@@ -397,6 +397,36 @@ func TestScanSandboxesSkipsActiveOrphanAndTerminal(t *testing.T) {
 	}
 }
 
+// TestScanSandboxesSkipsDeletedTaskUnpushedWorktree proves a sandbox whose
+// owning task was DELETED is still preserved when that task's git worktree
+// survives on disk holding commits never pushed to origin. The task record is
+// gone, so the guard must resolve the worktree by directory name rather than a
+// live record — the exact deleted-task gap #2593 must protect.
+func TestScanSandboxesSkipsDeletedTaskUnpushedWorktree(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	now := time.Now()
+
+	// Sandbox dir is named by the bare task ID; its owning task is absent
+	// from the store (deleted).
+	taskID := "deadface"
+	sb := filepath.Join(sandboxesDir(), taskID)
+	writeFileAt(t, filepath.Join(sb, "f"), 9, now)
+
+	// The deleted task's worktree survives under a slug-prefixed dir name and
+	// still holds an unpushed commit.
+	makeGitWorktreeUnpushed(t, filepath.Join(cfg.WorktreesDir, "feat-"+taskID))
+
+	s := NewScanner(cfg, &fakeLister{}) // no tasks: the sandbox is an orphan
+	res, err := s.Scan(Options{Only: []string{BucketSandboxes}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if res.Buckets[0].Items != 0 {
+		t.Fatalf("deleted task's sandbox must be preserved while its worktree holds unpushed commits, got %+v", res.Buckets[0])
+	}
+}
+
 func TestScanGoBuildCacheOrphanEligible(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Sandbox.RetentionHours = 1
