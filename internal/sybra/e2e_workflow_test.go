@@ -3628,6 +3628,13 @@ func TestE2E_BuiltinSimpleTask_PlanPromptAvoidsOperatorSkillInvocations(t *testi
 		})
 		argsLog := filepath.Join(t.TempDir(), p.provider+"-plan-args.log")
 		t.Setenv(p.argsLogEnv, argsLog)
+		// claude's non-steerable prompt travels over stdin, not argv (see
+		// provider_claude.go); codex still gets it positionally in argv.
+		contentLog := argsLog
+		if p.provider == "claude" {
+			contentLog = filepath.Join(t.TempDir(), "claude-plan-stdin.log")
+			t.Setenv("FAKE_CLAUDE_STDIN_LOG", contentLog)
+		}
 		env.classifier.setVerdict(triage.Verdict{Tags: []string{"large", "nocritic"}, Size: "large", Type: "feature", Mode: "headless"})
 		loadBuiltinWorkflow(t, env, "simple-task-plan")
 
@@ -3650,22 +3657,22 @@ func TestE2E_BuiltinSimpleTask_PlanPromptAvoidsOperatorSkillInvocations(t *testi
 				tk.Workflow.State == workflow.ExecWaiting
 		})
 
-		waitFor(t, 10*time.Second, p.provider+" args log written", func() bool {
-			_, err := os.Stat(argsLog)
+		waitFor(t, 10*time.Second, p.provider+" prompt content log written", func() bool {
+			_, err := os.Stat(contentLog)
 			return err == nil
 		})
 
-		data, err := os.ReadFile(argsLog)
+		data, err := os.ReadFile(contentLog)
 		if err != nil {
 			t.Fatal(err)
 		}
-		args := string(data)
-		if !strings.Contains(args, "Plan task "+created.ID) {
-			t.Fatalf("%s planning prompt missing task directive:\n%s", p.provider, args)
+		content := string(data)
+		if !strings.Contains(content, "Plan task "+created.ID) {
+			t.Fatalf("%s planning prompt missing task directive:\n%s", p.provider, content)
 		}
 		for _, forbidden := range []string{"/sybra-plan", "$sybra-plan", "/sybra-tasks", "$sybra-tasks"} {
-			if strings.Contains(args, forbidden) {
-				t.Fatalf("%s planning prompt must not explicitly invoke %s:\n%s", p.provider, forbidden, args)
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s planning prompt must not explicitly invoke %s:\n%s", p.provider, forbidden, content)
 			}
 		}
 	})
