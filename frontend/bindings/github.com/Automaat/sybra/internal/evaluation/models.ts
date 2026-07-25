@@ -11,6 +11,147 @@ import * as abtest$0 from "../abtest/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as config$0 from "../config/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
+
+/**
+ * AutonomySnapshot is autonomy over one arbitrary [Since, Until] window.
+ */
+export class AutonomySnapshot {
+    "since": time$0.Time;
+    "until": time$0.Time;
+    "tasksLanded": number;
+    "autonomousLandings": number;
+    "autonomyRate": number;
+
+    /** Creates a new AutonomySnapshot instance. */
+    constructor($$source: Partial<AutonomySnapshot> = {}) {
+        if (!("since" in $$source)) {
+            this["since"] = null;
+        }
+        if (!("until" in $$source)) {
+            this["until"] = null;
+        }
+        if (!("tasksLanded" in $$source)) {
+            this["tasksLanded"] = 0;
+        }
+        if (!("autonomousLandings" in $$source)) {
+            this["autonomousLandings"] = 0;
+        }
+        if (!("autonomyRate" in $$source)) {
+            this["autonomyRate"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AutonomySnapshot instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AutonomySnapshot {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AutonomySnapshot($$parsedSource as Partial<AutonomySnapshot>);
+    }
+}
+
+/**
+ * AutonomyTrend holds all-time / last-week / last-month autonomy snapshots
+ * plus a week-by-week series, so the Evaluation tab can show how autonomy has
+ * moved over time instead of only the current rolling scorecard window.
+ */
+export class AutonomyTrend {
+    "generatedAt": time$0.Time;
+    "overall": AutonomySnapshot;
+    "lastWeek": AutonomySnapshot;
+    "lastMonth": AutonomySnapshot;
+    "weekly": AutonomyWeekPoint[];
+
+    /** Creates a new AutonomyTrend instance. */
+    constructor($$source: Partial<AutonomyTrend> = {}) {
+        if (!("generatedAt" in $$source)) {
+            this["generatedAt"] = null;
+        }
+        if (!("overall" in $$source)) {
+            this["overall"] = (new AutonomySnapshot());
+        }
+        if (!("lastWeek" in $$source)) {
+            this["lastWeek"] = (new AutonomySnapshot());
+        }
+        if (!("lastMonth" in $$source)) {
+            this["lastMonth"] = (new AutonomySnapshot());
+        }
+        if (!("weekly" in $$source)) {
+            this["weekly"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AutonomyTrend instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AutonomyTrend {
+        const $$createField1_0 = $$createType0;
+        const $$createField2_0 = $$createType0;
+        const $$createField3_0 = $$createType0;
+        const $$createField4_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("overall" in $$parsedSource) {
+            $$parsedSource["overall"] = $$createField1_0($$parsedSource["overall"]);
+        }
+        if ("lastWeek" in $$parsedSource) {
+            $$parsedSource["lastWeek"] = $$createField2_0($$parsedSource["lastWeek"]);
+        }
+        if ("lastMonth" in $$parsedSource) {
+            $$parsedSource["lastMonth"] = $$createField3_0($$parsedSource["lastMonth"]);
+        }
+        if ("weekly" in $$parsedSource) {
+            $$parsedSource["weekly"] = $$createField4_0($$parsedSource["weekly"]);
+        }
+        return new AutonomyTrend($$parsedSource as Partial<AutonomyTrend>);
+    }
+}
+
+/**
+ * AutonomyWeekPoint is autonomy over one 7-day bucket.
+ */
+export class AutonomyWeekPoint {
+    "weekStart": time$0.Time;
+    "weekEnd": time$0.Time;
+    "tasksLanded": number;
+    "autonomousLandings": number;
+    "autonomyRate": number;
+
+    /** Creates a new AutonomyWeekPoint instance. */
+    constructor($$source: Partial<AutonomyWeekPoint> = {}) {
+        if (!("weekStart" in $$source)) {
+            this["weekStart"] = null;
+        }
+        if (!("weekEnd" in $$source)) {
+            this["weekEnd"] = null;
+        }
+        if (!("tasksLanded" in $$source)) {
+            this["tasksLanded"] = 0;
+        }
+        if (!("autonomousLandings" in $$source)) {
+            this["autonomousLandings"] = 0;
+        }
+        if (!("autonomyRate" in $$source)) {
+            this["autonomyRate"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AutonomyWeekPoint instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AutonomyWeekPoint {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AutonomyWeekPoint($$parsedSource as Partial<AutonomyWeekPoint>);
+    }
+}
 
 /**
  * Breakdown is the per-dimension (provider, role) slice of the effort and
@@ -259,15 +400,15 @@ export class ComparisonBreakdown {
      * Creates a new ComparisonBreakdown instance from a string or object.
      */
     static createFrom($$source: any = {}): ComparisonBreakdown {
-        const $$createField9_0 = $$createType1;
-        const $$createField15_0 = $$createType2;
-        const $$createField17_0 = $$createType2;
-        const $$createField26_0 = $$createType2;
-        const $$createField27_0 = $$createType2;
-        const $$createField28_0 = $$createType2;
-        const $$createField29_0 = $$createType2;
-        const $$createField30_0 = $$createType2;
-        const $$createField47_0 = $$createType4;
+        const $$createField9_0 = $$createType4;
+        const $$createField15_0 = $$createType5;
+        const $$createField17_0 = $$createType5;
+        const $$createField26_0 = $$createType5;
+        const $$createField27_0 = $$createType5;
+        const $$createField28_0 = $$createType5;
+        const $$createField29_0 = $$createType5;
+        const $$createField30_0 = $$createType5;
+        const $$createField47_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("subject" in $$parsedSource) {
             $$parsedSource["subject"] = $$createField9_0($$parsedSource["subject"]);
@@ -325,10 +466,10 @@ export class ExperimentGroup {
      * Creates a new ExperimentGroup instance from a string or object.
      */
     static createFrom($$source: any = {}): ExperimentGroup {
-        const $$createField1_0 = $$createType1;
-        const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType4;
-        const $$createField4_0 = $$createType6;
+        const $$createField1_0 = $$createType4;
+        const $$createField2_0 = $$createType7;
+        const $$createField3_0 = $$createType7;
+        const $$createField4_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("subject" in $$parsedSource) {
             $$parsedSource["subject"] = $$createField1_0($$parsedSource["subject"]);
@@ -375,7 +516,7 @@ export class ExperimentKindBreakdown {
      * Creates a new ExperimentKindBreakdown instance from a string or object.
      */
     static createFrom($$source: any = {}): ExperimentKindBreakdown {
-        const $$createField1_0 = $$createType8;
+        const $$createField1_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("groups" in $$parsedSource) {
             $$parsedSource["groups"] = $$createField1_0($$parsedSource["groups"]);
@@ -436,7 +577,7 @@ export class ExperimentSampleStatus {
      * Creates a new ExperimentSampleStatus instance from a string or object.
      */
     static createFrom($$source: any = {}): ExperimentSampleStatus {
-        const $$createField5_0 = $$createType10;
+        const $$createField5_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("variants" in $$parsedSource) {
             $$parsedSource["variants"] = $$createField5_0($$parsedSource["variants"]);
@@ -449,8 +590,8 @@ export class ExperimentSampleStatus {
  * PhaseReport is the per-phase lifecycle-duration breakdown over a window.
  */
 export class PhaseReport {
-    "since": string;
-    "until": string;
+    "since": time$0.Time;
+    "until": time$0.Time;
 
     /**
      * landed tasks analyzed
@@ -462,10 +603,10 @@ export class PhaseReport {
     /** Creates a new PhaseReport instance. */
     constructor($$source: Partial<PhaseReport> = {}) {
         if (!("since" in $$source)) {
-            this["since"] = "0001-01-01T00:00:00.000Z";
+            this["since"] = null;
         }
         if (!("until" in $$source)) {
-            this["until"] = "0001-01-01T00:00:00.000Z";
+            this["until"] = null;
         }
         if (!("cohort" in $$source)) {
             this["cohort"] = 0;
@@ -481,8 +622,8 @@ export class PhaseReport {
      * Creates a new PhaseReport instance from a string or object.
      */
     static createFrom($$source: any = {}): PhaseReport {
-        const $$createField3_0 = $$createType12;
-        const $$createField4_0 = $$createType14;
+        const $$createField3_0 = $$createType15;
+        const $$createField4_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField3_0($$parsedSource["phases"]);
@@ -598,9 +739,9 @@ export class RateEstimate {
  * Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
  */
 export class Report {
-    "generatedAt": string;
-    "since": string;
-    "until": string;
+    "generatedAt": time$0.Time;
+    "since": time$0.Time;
+    "until": time$0.Time;
     "overall": Scorecard;
     "byProvider"?: Breakdown[];
     "byRole"?: Breakdown[];
@@ -622,13 +763,13 @@ export class Report {
     /** Creates a new Report instance. */
     constructor($$source: Partial<Report> = {}) {
         if (!("generatedAt" in $$source)) {
-            this["generatedAt"] = "0001-01-01T00:00:00.000Z";
+            this["generatedAt"] = null;
         }
         if (!("since" in $$source)) {
-            this["since"] = "0001-01-01T00:00:00.000Z";
+            this["since"] = null;
         }
         if (!("until" in $$source)) {
-            this["until"] = "0001-01-01T00:00:00.000Z";
+            this["until"] = null;
         }
         if (!("overall" in $$source)) {
             this["overall"] = (new Scorecard());
@@ -644,16 +785,16 @@ export class Report {
      * Creates a new Report instance from a string or object.
      */
     static createFrom($$source: any = {}): Report {
-        const $$createField3_0 = $$createType15;
-        const $$createField4_0 = $$createType17;
-        const $$createField5_0 = $$createType17;
-        const $$createField6_0 = $$createType17;
-        const $$createField7_0 = $$createType4;
-        const $$createField8_0 = $$createType4;
-        const $$createField9_0 = $$createType19;
-        const $$createField10_0 = $$createType21;
-        const $$createField11_0 = $$createType22;
-        const $$createField12_0 = $$createType23;
+        const $$createField3_0 = $$createType18;
+        const $$createField4_0 = $$createType20;
+        const $$createField5_0 = $$createType20;
+        const $$createField6_0 = $$createType20;
+        const $$createField7_0 = $$createType7;
+        const $$createField8_0 = $$createType7;
+        const $$createField9_0 = $$createType22;
+        const $$createField10_0 = $$createType24;
+        const $$createField11_0 = $$createType25;
+        const $$createField12_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -733,9 +874,9 @@ export class SLOReport {
      * Creates a new SLOReport instance from a string or object.
      */
     static createFrom($$source: any = {}): SLOReport {
-        const $$createField0_0 = $$createType24;
-        const $$createField1_0 = $$createType26;
-        const $$createField4_0 = $$createType22;
+        const $$createField0_0 = $$createType27;
+        const $$createField1_0 = $$createType29;
+        const $$createField4_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("targets" in $$parsedSource) {
             $$parsedSource["targets"] = $$createField0_0($$parsedSource["targets"]);
@@ -1030,7 +1171,7 @@ export class TaskPhases {
      * Creates a new TaskPhases instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskPhases {
-        const $$createField2_0 = $$createType27;
+        const $$createField2_0 = $$createType30;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("byPhase" in $$parsedSource) {
             $$parsedSource["byPhase"] = $$createField2_0($$parsedSource["byPhase"]);
@@ -1134,31 +1275,34 @@ export class Weakness {
 }
 
 // Private type creation functions
-const $$createType0 = abtest$0.Subject.createFrom;
-const $$createType1 = $Create.Nullable($$createType0);
-const $$createType2 = RateEstimate.createFrom;
-const $$createType3 = ComparisonBreakdown.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = ExperimentSampleStatus.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = ExperimentGroup.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = VariantSampleStatus.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = PhaseStat.createFrom;
-const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = TaskPhases.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = Scorecard.createFrom;
-const $$createType16 = Breakdown.createFrom;
+const $$createType0 = AutonomySnapshot.createFrom;
+const $$createType1 = AutonomyWeekPoint.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = abtest$0.Subject.createFrom;
+const $$createType4 = $Create.Nullable($$createType3);
+const $$createType5 = RateEstimate.createFrom;
+const $$createType6 = ComparisonBreakdown.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = ExperimentSampleStatus.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = ExperimentGroup.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = VariantSampleStatus.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = PhaseStat.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = TaskPhases.createFrom;
 const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = ExperimentKindBreakdown.createFrom;
-const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = Weakness.createFrom;
-const $$createType21 = $Create.Array($$createType20);
-const $$createType22 = $Create.Array($Create.Any);
-const $$createType23 = SLOReport.createFrom;
-const $$createType24 = config$0.SLOTargets.createFrom;
-const $$createType25 = SLOStatus.createFrom;
-const $$createType26 = $Create.Array($$createType25);
-const $$createType27 = $Create.Map($Create.Any, $Create.Any);
+const $$createType18 = Scorecard.createFrom;
+const $$createType19 = Breakdown.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = ExperimentKindBreakdown.createFrom;
+const $$createType22 = $Create.Array($$createType21);
+const $$createType23 = Weakness.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = $Create.Array($Create.Any);
+const $$createType26 = SLOReport.createFrom;
+const $$createType27 = config$0.SLOTargets.createFrom;
+const $$createType28 = SLOStatus.createFrom;
+const $$createType29 = $Create.Array($$createType28);
+const $$createType30 = $Create.Map($Create.Any, $Create.Any);

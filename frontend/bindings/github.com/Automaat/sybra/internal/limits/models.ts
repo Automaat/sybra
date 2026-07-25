@@ -5,13 +5,17 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
+
 /**
  * CycleSnapshot captures a provider-reported rolling limit window.
  */
 export class CycleSnapshot {
     "usedPercent": number;
     "windowMinutes": number;
-    "resetsAt"?: string;
+    "resetsAt"?: time$0.Time;
 
     /** Creates a new CycleSnapshot instance. */
     constructor($$source: Partial<CycleSnapshot> = {}) {
@@ -46,10 +50,10 @@ export class ProviderSummary {
     "source"?: string;
     "confidence"?: string;
     "sessionUsedPercent"?: number;
-    "sessionResetsAt"?: string;
+    "sessionResetsAt"?: time$0.Time;
     "sessionWindowMinutes"?: number;
     "weeklyUsedPercent"?: number;
-    "weeklyResetsAt"?: string;
+    "weeklyResetsAt"?: time$0.Time;
     "weeklyWindowMinutes"?: number;
     "sessionSpendUsd"?: number;
     "weeklySpendUsd"?: number;
@@ -99,7 +103,7 @@ export class Snapshot {
     "secondary"?: CycleSnapshot | null;
     "source": string;
     "confidence": string;
-    "capturedAt": string;
+    "capturedAt": time$0.Time;
 
     /** Creates a new Snapshot instance. */
     constructor($$source: Partial<Snapshot> = {}) {
@@ -113,7 +117,7 @@ export class Snapshot {
             this["confidence"] = "";
         }
         if (!("capturedAt" in $$source)) {
-            this["capturedAt"] = "0001-01-01T00:00:00.000Z";
+            this["capturedAt"] = null;
         }
 
         Object.assign(this, $$source);
@@ -141,7 +145,7 @@ export class Snapshot {
  */
 export class Summary {
     "providers": ProviderSummary[];
-    "updatedAt"?: string;
+    "updatedAt"?: time$0.Time;
 
     /** Creates a new Summary instance. */
     constructor($$source: Partial<Summary> = {}) {

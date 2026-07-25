@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
+
 /**
  * LoopAgent is a recurring headless agent: every IntervalSec seconds the
  * scheduler spawns a fresh `claude -p Prompt` process. Records are persisted
@@ -19,11 +23,11 @@ export class LoopAgent {
     "provider": string;
     "model": string;
     "enabled": boolean;
-    "lastRunAt": string;
+    "lastRunAt": time$0.Time;
     "lastRunId": string;
     "lastRunCost": number;
-    "createdAt": string;
-    "updatedAt": string;
+    "createdAt": time$0.Time;
+    "updatedAt": time$0.Time;
 
     /** Creates a new LoopAgent instance. */
     constructor($$source: Partial<LoopAgent> = {}) {
@@ -52,7 +56,7 @@ export class LoopAgent {
             this["enabled"] = false;
         }
         if (!("lastRunAt" in $$source)) {
-            this["lastRunAt"] = "0001-01-01T00:00:00.000Z";
+            this["lastRunAt"] = null;
         }
         if (!("lastRunId" in $$source)) {
             this["lastRunId"] = "";
@@ -61,10 +65,10 @@ export class LoopAgent {
             this["lastRunCost"] = 0;
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = "0001-01-01T00:00:00.000Z";
+            this["createdAt"] = null;
         }
         if (!("updatedAt" in $$source)) {
-            this["updatedAt"] = "0001-01-01T00:00:00.000Z";
+            this["updatedAt"] = null;
         }
 
         Object.assign(this, $$source);

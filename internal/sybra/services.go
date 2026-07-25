@@ -55,6 +55,7 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"GetMonitorReport",
 			"GetEvaluationReport",
 			"GetLifecyclePhases",
+			"GetAutonomyTrend",
 			"GetLearningDigestStatus",
 			// RunLearningDigestNow excluded: it shells out to the claude CLI on
 			// every call — Wails/local-only, not exposed over HTTP.
@@ -68,6 +69,7 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"GetMonitorReport",
 			"GetEvaluationReport",
 			"GetLifecyclePhases",
+			"GetAutonomyTrend",
 			"GetLearningDigestStatus",
 			"AgentQueueSnapshot",
 			"ListBackgroundOps",

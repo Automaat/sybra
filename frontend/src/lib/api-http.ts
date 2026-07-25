@@ -10,7 +10,7 @@ import type { AppSettings, ClusterNodeDTO, CodexModel, ConfigPathExplanation, Co
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
-import type { Report as EvaluationReportData, PhaseReport as PhaseReportData } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
+import type { Report as EvaluationReportData, PhaseReport as PhaseReportData, AutonomyTrend } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import type { Status } from '../../bindings/github.com/Automaat/sybra/internal/provider/models.js'
 import type { Digest, Status as LearningDigestStatus } from '../../bindings/github.com/Automaat/sybra/internal/learning/models.js'
@@ -91,6 +91,7 @@ export function OpenWorktree(_arg1: string): Promise<void> { return Promise.reje
 export function GetMonitorReport(): Promise<MonitorReportBinding> { return call('App', 'GetMonitorReport') }
 export function GetEvaluationReport(): Promise<EvaluationReportData> { return call('App', 'GetEvaluationReport') }
 export function GetLifecyclePhases(): Promise<PhaseReportData> { return call('App', 'GetLifecyclePhases') }
+export function GetAutonomyTrend(): Promise<AutonomyTrend> { return call('App', 'GetAutonomyTrend') }
 export function GetLearningDigestStatus(): Promise<LearningDigestStatus> { return call('App', 'GetLearningDigestStatus') }
 export function RunLearningDigestNow(): Promise<Digest> { return Promise.reject(new Error('not available in web mode')) }
 export function ListBackgroundOps(): Promise<Array<any>> { return call('App', 'ListBackgroundOps') }

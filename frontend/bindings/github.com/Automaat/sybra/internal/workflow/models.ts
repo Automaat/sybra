@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
+
 /**
  * AttemptStatus is one best-of-N attempt's persisted slot.
  */
@@ -55,7 +59,7 @@ export class AttemptStatus {
  */
 export class BestOfNInflight {
     "parentStepId": string;
-    "startedAt": string;
+    "startedAt": time$0.Time;
     "attempts": { [_ in string]?: AttemptStatus | null };
 
     /** Creates a new BestOfNInflight instance. */
@@ -64,7 +68,7 @@ export class BestOfNInflight {
             this["parentStepId"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = "0001-01-01T00:00:00.000Z";
+            this["startedAt"] = null;
         }
         if (!("attempts" in $$source)) {
             this["attempts"] = {};
@@ -167,8 +171,8 @@ export class Definition {
     "trigger": Trigger;
     "steps": Step[];
     "builtin": boolean;
-    "createdAt": string;
-    "updatedAt": string;
+    "createdAt": time$0.Time;
+    "updatedAt": time$0.Time;
 
     /** Creates a new Definition instance. */
     constructor($$source: Partial<Definition> = {}) {
@@ -191,10 +195,10 @@ export class Definition {
             this["builtin"] = false;
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = "0001-01-01T00:00:00.000Z";
+            this["createdAt"] = null;
         }
         if (!("updatedAt" in $$source)) {
-            this["updatedAt"] = "0001-01-01T00:00:00.000Z";
+            this["updatedAt"] = null;
         }
 
         Object.assign(this, $$source);
@@ -241,8 +245,8 @@ export class Execution {
     "state": ExecState;
     "stepHistory": StepRecord[];
     "variables": { [_ in string]?: string };
-    "startedAt": string;
-    "completedAt": string | null;
+    "startedAt": time$0.Time;
+    "completedAt": time$0.Time | null;
 
     /**
      * Recovered is set when the execution was advanced by a stale-session
@@ -301,7 +305,7 @@ export class Execution {
             this["variables"] = {};
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = "0001-01-01T00:00:00.000Z";
+            this["startedAt"] = null;
         }
         if (!("completedAt" in $$source)) {
             this["completedAt"] = null;
@@ -389,7 +393,7 @@ export class ImportSidecar {
  */
 export class ParallelChildren {
     "parentStepId": string;
-    "startedAt": string;
+    "startedAt": time$0.Time;
     "children": { [_ in string]?: ChildStatus | null };
 
     /** Creates a new ParallelChildren instance. */
@@ -398,7 +402,7 @@ export class ParallelChildren {
             this["parentStepId"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = "0001-01-01T00:00:00.000Z";
+            this["startedAt"] = null;
         }
         if (!("children" in $$source)) {
             this["children"] = {};
@@ -796,8 +800,8 @@ export class StepRecord {
     "output": string;
     "agentId": string;
     "provider"?: string;
-    "startedAt": string;
-    "endedAt": string;
+    "startedAt": time$0.Time;
+    "endedAt": time$0.Time;
 
     /** Creates a new StepRecord instance. */
     constructor($$source: Partial<StepRecord> = {}) {
@@ -814,10 +818,10 @@ export class StepRecord {
             this["agentId"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = "0001-01-01T00:00:00.000Z";
+            this["startedAt"] = null;
         }
         if (!("endedAt" in $$source)) {
-            this["endedAt"] = "0001-01-01T00:00:00.000Z";
+            this["endedAt"] = null;
         }
 
         Object.assign(this, $$source);

@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
+
 /**
  * Anomaly is a single detected drift from workflow rules. It is data — no
  * behaviour — and is safe to serialize over Wails events or print as JSON.
@@ -16,7 +20,7 @@ export class Anomaly {
     "requiresLlm": boolean;
     "fingerprint": string;
     "evidence"?: { [_ in string]?: any };
-    "detectedAt": string;
+    "detectedAt": time$0.Time;
 
     /** Creates a new Anomaly instance. */
     constructor($$source: Partial<Anomaly> = {}) {
@@ -33,7 +37,7 @@ export class Anomaly {
             this["fingerprint"] = "";
         }
         if (!("detectedAt" in $$source)) {
-            this["detectedAt"] = "0001-01-01T00:00:00.000Z";
+            this["detectedAt"] = null;
         }
 
         Object.assign(this, $$source);
@@ -143,7 +147,7 @@ export class Counts {
  * Remediated/Dispatched/Issues are filled in by the Service after side effects.
  */
 export class Report {
-    "generatedAt": string;
+    "generatedAt": time$0.Time;
     "counts": Counts;
     "anomalies": Anomaly[];
     "remediated": string[];
@@ -155,7 +159,7 @@ export class Report {
     /** Creates a new Report instance. */
     constructor($$source: Partial<Report> = {}) {
         if (!("generatedAt" in $$source)) {
-            this["generatedAt"] = "0001-01-01T00:00:00.000Z";
+            this["generatedAt"] = null;
         }
         if (!("counts" in $$source)) {
             this["counts"] = (new Counts());
