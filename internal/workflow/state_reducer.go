@@ -274,6 +274,9 @@ func previewWaitHumanByStatus(desired DesiredState, observed ObservedState, exec
 				return nil, false, nil
 			}
 			reconciled := exec.Clone()
+			if reconciled == nil {
+				return nil, false, fmt.Errorf("execution clone is nil")
+			}
 			reconciled.CurrentStep = step.ID
 			reconciled.State = ExecWaiting
 			return []Effect{
@@ -367,6 +370,9 @@ func reducerStartStep(desired DesiredState) (*Step, error) {
 
 func completeExecution(exec *Execution, state ExecState, now time.Time) *Execution {
 	completed := exec.Clone()
+	if completed == nil {
+		return nil
+	}
 	completed.CurrentStep = ""
 	completed.State = state
 	completedAt := now
