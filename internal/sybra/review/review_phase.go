@@ -116,8 +116,10 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 
 	// Our own bot identity approving its own review task is backwards — it is
 	// never a legitimate green light, so it must not surface as "approved".
-	// The caller (reconcileReviewTask) has already dismissed the approval on
-	// GitHub by the time this runs; this only decides the resulting phase.
+	// The caller (reconcileReviewTask) has already made a best-effort attempt
+	// to dismiss the approval on GitHub by the time this runs (it can
+	// legitimately skip — e.g. no review ID, or search-leg-only detection);
+	// this only decides the resulting phase, regardless of dismissal outcome.
 	if s.SelfApproved {
 		return reviewPhaseResult{
 			Phase:  ReviewPhaseSelfApprovalBlocked,

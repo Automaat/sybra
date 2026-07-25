@@ -624,7 +624,7 @@ func (r *Handler) dismissSelfApproval(t *task.Task, myState github.MyReviewState
 		r.logger.Error("review.self-approval.dismiss-failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
 		return
 	}
-	r.logAudit(audit.EventReviewSelfApprovalDismissed, t.ID, "", map[string]any{"pr": t.PRNumber})
+	r.logAudit(audit.EventReviewSelfApprovalDismissed, t.ID, "", map[string]any{"pr": t.PRNumber, "repo": t.ProjectID})
 }
 
 func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {
