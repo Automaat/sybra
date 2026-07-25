@@ -266,6 +266,78 @@ func TestExecRequireEvidence_ReplayedDuplicateEvidenceStillBlocks(t *testing.T) 
 	}
 }
 
+// TestRefreshReviewEvidenceFreshness_RestampsToHead proves the single-pass
+// review gap is closed: a NEEDS_FIXES round records review evidence at the
+// pre-fix HEAD, fix_review then commits, and refreshReviewEvidenceFreshness
+// re-stamps the review criterion to the post-fix HEAD so require_evidence keeps
+// the task moving instead of flagging review: stale. The refreshed entry must
+// preserve the original proof (type, digest, exit status) — only FinalRev moves.
+func TestRefreshReviewEvidenceFreshness_RestampsToHead(t *testing.T) {
+	t.Parallel()
+	wt := makeGitRepo(t, true)
+	head := headSHAForTest(t, wt)
+	preFix := priorCommitSHAForTest(t, wt)
+	engine, tasks, rec := newRequireEvidenceEngine(t, wt)
+	rec.Set("t1", evidence.CompletionEvidence{Criteria: []evidence.CriterionEvidence{
+		{Criterion: evidenceCriterionVerifyCommits, ExitStatus: 0, FinalRev: head},
+		{Criterion: evidenceCriterionDetectTampering, ExitStatus: 0, FinalRev: head},
+		{
+			Criterion:    evidenceCriterionReview,
+			ProofType:    evidence.ProofReviewFinding,
+			ResultDigest: evidence.Digest("Review Verdict: NEEDS_FIXES"),
+			ExitStatus:   0,
+			FinalRev:     preFix,
+		},
+	}})
+	tasks.Put(TaskInfo{ID: "t1", Reviewed: true})
+
+	engine.refreshReviewEvidenceFreshness("t1")
+
+	ce, _ := rec.Evidence("t1")
+	got, ok := ce.ByCriterion(evidenceCriterionReview)
+	if !ok {
+		t.Fatal("review evidence missing after refresh")
+	}
+	if got.FinalRev != head {
+		t.Errorf("FinalRev = %q, want post-fix HEAD %q", got.FinalRev, head)
+	}
+	if got.ProofType != evidence.ProofReviewFinding {
+		t.Errorf("ProofType = %q, refresh must preserve the original proof type", got.ProofType)
+	}
+	if got.ResultDigest != evidence.Digest("Review Verdict: NEEDS_FIXES") {
+		t.Errorf("ResultDigest = %q, refresh must preserve the original digest", got.ResultDigest)
+	}
+
+	// The re-stamped evidence must now satisfy the require_evidence gate.
+	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1", Reviewed: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tasks.tasks["t1"].Status == "human-required" {
+		t.Fatalf("task blocked after refresh; output = %q", out.Output)
+	}
+}
+
+// TestRefreshReviewEvidenceFreshness_NoReviewEvidenceNoop proves the refresh is
+// a safe no-op when no review evidence has been recorded yet — it must not
+// fabricate a review criterion the task never earned.
+func TestRefreshReviewEvidenceFreshness_NoReviewEvidenceNoop(t *testing.T) {
+	t.Parallel()
+	wt := makeGitRepo(t, true)
+	head := headSHAForTest(t, wt)
+	engine, _, rec := newRequireEvidenceEngine(t, wt)
+	rec.Set("t1", evidence.CompletionEvidence{Criteria: []evidence.CriterionEvidence{
+		{Criterion: evidenceCriterionVerifyCommits, ExitStatus: 0, FinalRev: head},
+	}})
+
+	engine.refreshReviewEvidenceFreshness("t1")
+
+	ce, _ := rec.Evidence("t1")
+	if _, ok := ce.ByCriterion(evidenceCriterionReview); ok {
+		t.Error("refresh fabricated review evidence for a task that was never reviewed")
+	}
+}
+
 func TestExecRequireEvidence_ReviewedTaskRequiresReviewCriterion(t *testing.T) {
 	t.Parallel()
 	wt := makeGitRepo(t, true)

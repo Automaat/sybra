@@ -81,6 +81,47 @@ func (e *Engine) recordEvidence(taskID, stepID, criterion string, proofType evid
 	}
 }
 
+// refreshReviewEvidenceFreshness re-stamps the existing review criterion
+// evidence to the task's current HEAD after a fix-review step's commits land.
+// It exists to close the single-pass review gap: with agent.review_until_clean
+// false, a NEEDS_FIXES round runs review (records review evidence @ pre-fix
+// HEAD) → fix_review (commits new work) → done_review WITHOUT a second review
+// round, so the review evidence's FinalRev would stay permanently pinned to the
+// pre-fix revision while HEAD moves ahead — and require_evidence, which keeps
+// the review criterion freshness-gated, would then block the task as review:
+// stale even though it did exactly what the single-pass posture asks. Re-using
+// the recorded entry (ProofType/ResultDigest/ExitStatus preserved) rather than
+// synthesizing a new proof keeps this an honest freshness refresh, not a
+// fabricated review. A no-op when no review evidence exists yet or the worktree
+// is unavailable. In the multi-pass posture the follow-up review re-runs and
+// re-records fresh evidence on its own, so callers gate this to the single-pass
+// route.
+func (e *Engine) refreshReviewEvidenceFreshness(taskID string) {
+	if e.evidenceRecorder == nil || e.worktrees == nil {
+		return
+	}
+	ce, err := e.evidenceRecorder.Evidence(taskID)
+	if err != nil {
+		return
+	}
+	entry, ok := ce.ByCriterion(evidenceCriterionReview)
+	if !ok {
+		return
+	}
+	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	entry.FinalRev = revParseCommit(ctx, wtPath, "HEAD")
+	entry.Timestamp = time.Now().UTC()
+	if err := e.evidenceRecorder.AppendCriterion(taskID, entry); err != nil {
+		e.logger.Warn("workflow.evidence.refresh-failed",
+			"task_id", taskID, "criterion", evidenceCriterionReview, "err", err)
+	}
+}
+
 // evidenceBackendIdentity best-effort identifies the machine that produced a
 // proof. Empty on a lookup failure — an informational field, not part of the
 // require_evidence pass/fail decision.

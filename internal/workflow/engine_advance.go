@@ -125,6 +125,16 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		e.recordEvidence(taskID, currentStep.ID, evidenceCriterionReview, evidence.ProofReviewFinding, 0, "", output.Output)
 	}
 
+	// Single-pass review posture (agent.review_until_clean: false) exits after a
+	// NEEDS_FIXES round's fix_review commit without a second review, leaving the
+	// review evidence stale against the post-fix HEAD. Re-stamp it here so the
+	// require_evidence gate does not block an otherwise-complete task. In the
+	// multi-pass posture the follow-up review re-records fresh evidence itself,
+	// so this refresh is scoped to the single-pass route only.
+	if e.reviewLoopDisabled && currentStep.Config.Role == "fix-review" && output.Status == "completed" {
+		e.refreshReviewEvidenceFreshness(taskID)
+	}
+
 	t, parked, comp, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
 	if err != nil || parked {
 		return err
