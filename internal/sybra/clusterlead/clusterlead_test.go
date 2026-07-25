@@ -487,6 +487,64 @@ func TestMirrorDetectsAndRepairsTagsAndDependsOnDrift(t *testing.T) {
 	}
 }
 
+// TestMirrorDetectsAndRepairsDependsOnConditionsDrift is
+// TestMirrorDetectsAndRepairsTagsAndDependsOnDrift's counterpart for
+// DependsOnConditions: a leader-side --depends-on-condition edit that never
+// reached the follower must be caught and repaired the same way Tags/
+// DependsOn already are, without rolling back the follower's own execution
+// state.
+func TestMirrorDetectsAndRepairsDependsOnConditionsDrift(t *testing.T) {
+	stub := &followerStub{}
+	srv := stub.server(t)
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
+
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	canonicalConds := []task.DepCondition{{Ref: "https://github.com/o/r/issues/1", Kind: task.DepConditionKindNote, Value: "confirm scope"}}
+	canonical := task.Task{
+		ID:                  "task-pet",
+		Status:              task.StatusTodo,
+		AssignedNode:        "pet-box",
+		DependsOn:           []string{"https://github.com/o/r/issues/1"},
+		DependsOnConditions: canonicalConds,
+		UpdatedAt:           t0,
+	}
+	if _, _, err := mgr.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+
+	// The follower reports real progress but still carries no conditions —
+	// the leader-side edit never reached it.
+	stale := task.Task{
+		ID:                  "task-pet",
+		Status:              task.StatusInProgress,
+		AssignedNode:        "pet-box",
+		DependsOn:           []string{"https://github.com/o/r/issues/1"},
+		DependsOnConditions: nil,
+		UpdatedAt:           t0.Add(time.Hour),
+	}
+	stub.tasks = []task.Task{stale}
+	if !mirror.applyFollowerTask("pet-box", stale) {
+		t.Fatal("apply follower report")
+	}
+
+	got, ok := stub.lastAssigned()
+	if !ok {
+		t.Fatal("follower did not receive a repair push")
+	}
+	if !slices.Equal(got.DependsOnConditions, canonicalConds) {
+		t.Errorf("repaired depends_on_conditions = %+v, want %+v", got.DependsOnConditions, canonicalConds)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Errorf("repair push overwrote follower status: got %q, want %q (must not roll back execution state)", got.Status, task.StatusInProgress)
+	}
+}
+
 // TestMirrorDriftRepairUsesLiveFollowerStateNotStaleSnapshot covers an
 // adversarial-review finding: this reconcile tick's ListTasks response (the
 // `follower` value Merge/detectAndRepairDrift work from) can already be

@@ -951,7 +951,8 @@ func (s *TaskService) pushFieldEditToFollower(id string, updates map[string]any,
 	}
 	_, tagsEdited := updates["tags"]
 	_, depsEdited := updates["depends_on"]
-	if !tagsEdited && !depsEdited {
+	_, condsEdited := updates["depends_on_conditions"]
+	if !tagsEdited && !depsEdited && !condsEdited {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), fieldPushTimeout)

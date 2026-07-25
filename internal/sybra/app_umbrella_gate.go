@@ -178,7 +178,8 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	// children still release so independent work under the umbrella can proceed.
 	// Expanding/recovering trackers are removed from states above, so release
 	// and rollup both hold until the complete DAG is visible.
-	ready := a.holdScopeVerdictBlocked(g.ReadyToRelease(), byID, states, mergedDeps)
+	ready := a.holdUnmetConditions(g.ReadyToRelease(), byID, states, mergedDeps)
+	ready = a.holdScopeVerdictBlocked(ready, byID, states, mergedDeps)
 	a.releaseCapped(ctx, ready, byID, states)
 
 	// An in-flight recovery run owns this umbrella's tracker/children this
@@ -305,6 +306,163 @@ func externalBlockerReason(refs []string) string {
 	sorted := slices.Clone(refs)
 	slices.Sort(sorted)
 	return "held: body names external dependency " + strings.Join(sorted, ", ") + " not tracked as done"
+}
+
+// dependencyConditionReasonPrefix marks a human-required status_reason as
+// having been written by holdUnmetConditions for a "note"-kind
+// task.DepCondition, mirroring dependencyScopeVerdictReasonPrefix's pattern
+// for the (deliberately distinct) scope-verdict gate.
+const dependencyConditionReasonPrefix = "held: unmet depends_on condition for"
+
+// holdUnmetConditions filters ready — the children ReadyToRelease has
+// confirmed have every depends_on ref resolved to Done — removing any child
+// whose task.DependsOnConditions names a condition on one of those very refs
+// that is not yet satisfied. Runs before holdScopeVerdictBlocked so a fresh
+// note/label condition is enforced on the same tick a dependency first
+// closes, not one tick later.
+//
+// A child with no DependsOnConditions returns immediately with no I/O and no
+// task.Update — every existing no-condition child (and its tests) sees zero
+// behavior change. For a child that does carry conditions, only the first
+// condition whose Ref matches a current dependency is evaluated per tick
+// (validateDepConditions enforces at most one condition per ref at write
+// time); a Ref that no longer names a current dependency is inert, exactly
+// like a stale blocker.KindDependencyScopeUnmet verdict.
+func (a *App) holdUnmetConditions(ready []string, byID map[string]*task.Task, states map[string]*umbrellaState, mergedDeps map[string][]string) []string {
+	if len(ready) == 0 {
+		return ready
+	}
+	kept := ready[:0]
+	for _, id := range ready {
+		t := byID[id]
+		if t == nil || len(t.DependsOnConditions) == 0 {
+			kept = append(kept, id)
+			continue
+		}
+		if a.holdChildUnmetCondition(t, mergedDeps[id], states) {
+			continue
+		}
+		kept = append(kept, id)
+	}
+	return kept
+}
+
+// holdChildUnmetCondition evaluates t's DependsOnConditions against its
+// current dependency set, applying at most the first matching (non-inert)
+// condition per tick. Returns held=true when the child must not release this
+// tick — the caller drops it from ready without further checks.
+func (a *App) holdChildUnmetCondition(t *task.Task, dependsOn []string, states map[string]*umbrellaState) (held bool) {
+	for _, cond := range t.DependsOnConditions {
+		if !matchesDepRef(cond.Ref, dependsOn) {
+			continue // inert: Ref is not among this task's current dependencies
+		}
+		switch cond.Kind {
+		case task.DepConditionKindNote:
+			a.escalateUnmetCondition(t, cond, states)
+			return true
+		case task.DepConditionKindLabel:
+			met, checked := a.labelConditionMet(cond)
+			if !checked {
+				// FetchIssue failed or the ref is unresolvable — fail closed
+				// and retry next tick rather than releasing on unverifiable
+				// input.
+				return true
+			}
+			if !met {
+				a.holdSelfHealingCondition(t, unmetLabelConditionReason(cond))
+				return true
+			}
+		default:
+			// Unrecognized Kind (a hand-edited task file — CLI/API input is
+			// validated at write time by task.applyDependsOnConditionsField).
+			// Fail closed: hold without escalating.
+			a.holdSelfHealingCondition(t, unknownConditionKindReason(cond))
+			return true
+		}
+	}
+	return false
+}
+
+// labelConditionMet checks a "label" DepCondition against its referenced
+// closing issue's current GitHub labels. checked=false means the check could
+// not be performed (unresolvable ref or a FetchIssue error) and the caller
+// must fail closed rather than read met's zero value as "absent".
+func (a *App) labelConditionMet(cond task.DepCondition) (met, checked bool) {
+	repo, number, ok := umbrella.ParseRef(cond.Ref)
+	if !ok {
+		a.logger.Warn("umbrella.gate.condition.unresolvable_ref", "ref", cond.Ref)
+		return false, false
+	}
+	fetch := a.umbrellaFetchIssue
+	if fetch == nil {
+		fetch = github.FetchIssue
+	}
+	issue, err := fetch(repo, number)
+	if err != nil {
+		a.logger.Warn("umbrella.gate.condition.fetch_issue_failed", "ref", cond.Ref, "err", err)
+		return false, false
+	}
+	return slices.Contains(issue.Labels, cond.Value), true
+}
+
+// holdSelfHealingCondition records reason on t without changing Status — the
+// child stays gated/blocked (or todo+tagged) exactly as before, so a later
+// tick re-evaluates it once the underlying condition changes (a label is
+// applied, or the task file is corrected). No-ops when reason already
+// matches, so a condition that stays unmet across many ticks does not write
+// (or push to a follower) every single tick.
+func (a *App) holdSelfHealingCondition(t *task.Task, reason string) {
+	if t.StatusReason == reason {
+		return
+	}
+	if _, err := a.tasks.Update(t.ID, task.Update{StatusReason: task.Ptr(reason)}); err != nil {
+		a.logger.Error("umbrella.gate.condition.hold_failed", "task_id", t.ID, "err", err)
+		return
+	}
+	t.StatusReason = reason
+}
+
+func unmetLabelConditionReason(cond task.DepCondition) string {
+	return "held: depends_on " + cond.Ref + " missing required label " + cond.Value
+}
+
+func unknownConditionKindReason(cond task.DepCondition) string {
+	return "held: depends_on " + cond.Ref + " has unrecognized condition kind " + cond.Kind
+}
+
+// escalateUnmetCondition holds t at human-required for a "note"-kind
+// condition, naming the ref and the free-text acceptance note a human must
+// confirm before this can release. Sets blocker.KindDependencyConditionUnmet
+// — deliberately not blocker.KindDependencyScopeUnmet, so a human clearing
+// this blocker is never misread as having confirmed an unrelated scope
+// verdict (see blocker.KindDependencyConditionUnmet's doc comment).
+//
+// Clearing the blocker alone does not release the child: as long as this
+// condition still names a current dependency, holdChildUnmetCondition
+// re-escalates the next tick it becomes ready again. A human must remove or
+// edit the condition itself (via a --depends-on-condition update) once the
+// note's scope is confirmed to exist — an accepted limitation matching
+// blocker.KindDependencyScopeUnmet's existing require-explicit-human-edit
+// design, not an oversight.
+func (a *App) escalateUnmetCondition(t *task.Task, cond task.DepCondition, states map[string]*umbrellaState) {
+	reason := dependencyConditionReasonPrefix + " " + cond.Ref + ": " + cond.Value
+	if _, err := a.tasks.Update(t.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		Blocker: task.Ptr(blocker.State{
+			Kind:       blocker.KindDependencyConditionUnmet,
+			Code:       cond.Ref,
+			NextAction: cond.Value,
+		}),
+	}); err != nil {
+		a.logger.Error("umbrella.gate.condition.escalate_failed", "task_id", t.ID, "err", err)
+		return
+	}
+	if st := states[umbrella.NormalizeIssueRef(t.UmbrellaIssue)]; st != nil {
+		st.setChildStatus(t.ID, task.StatusHumanRequired)
+		st.anyHR = true
+	}
+	a.logger.Info("umbrella.gate.condition.held", "task_id", t.ID, "dep", cond.Ref)
 }
 
 // dependencyScopeVerdictReasonPrefix marks a human-required status_reason as

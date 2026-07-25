@@ -4,6 +4,7 @@
 export {
     AgentRun,
     Attachment,
+    DepCondition,
     Priority,
     ReviewComment,
     Status,

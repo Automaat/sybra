@@ -27,6 +27,18 @@ const (
 	// instead, so a fresh confirmation is required before the same,
 	// already-known-negative implementation cycle repeats (sybra#2637).
 	KindDependencyScopeUnmet Kind = "dependency_scope_unmet"
+	// KindDependencyConditionUnmet marks a task blocked on a task.DepCondition
+	// of kind "note" attached to one of its depends_on refs: the referenced
+	// task is Done, but the free-text acceptance note the condition names has
+	// not been confirmed by a human. Deliberately distinct from
+	// KindDependencyScopeUnmet — that kind marks a reactive verdict a prior
+	// agent/human run recorded *after* observing a closed dependency fall
+	// short of scope, whereas this kind marks a proactive condition set
+	// *before* the dependency ever closed. Keeping them separate means a
+	// human clearing one can never be misread as having confirmed the other
+	// (internal/sybra/app_umbrella_gate.go's holdUnmetConditions is the sole
+	// writer).
+	KindDependencyConditionUnmet Kind = "dependency_condition_unmet"
 )
 
 // Actor identifies which subsystem authored the blocker.
@@ -53,7 +65,7 @@ func (s State) IsZero() bool {
 
 func AllowsHumanRequired(kind Kind) bool {
 	switch kind {
-	case KindOperatorDecision, KindCredentialRequired, KindPolicyApproval, KindDependencyScopeUnmet:
+	case KindOperatorDecision, KindCredentialRequired, KindPolicyApproval, KindDependencyScopeUnmet, KindDependencyConditionUnmet:
 		return true
 	default:
 		return false

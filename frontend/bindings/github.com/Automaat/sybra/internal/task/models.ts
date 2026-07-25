@@ -208,6 +208,55 @@ export const Attachment = attachment$0.Attachment;
 export type Attachment = attachment$0.Attachment;
 
 /**
+ * DepCondition attaches a completion condition to one Task.DependsOn ref.
+ * Ref must match a current DependsOn entry (by the same ref-matching rules
+ * the gate uses elsewhere, e.g. matchesDepRef) or the condition is inert.
+ * 
+ * Kind "label" mechanically checks the referenced closing issue's GitHub
+ * labels (via cached github.FetchIssue) for Value's label name; it holds the
+ * child while absent and self-heals the next time the gate ticks after the
+ * label is applied — no escalation.
+ * 
+ * Kind "note" never auto-satisfies: it holds the child and escalates to
+ * human-required, naming Value as the free-text acceptance note a human must
+ * confirm. Clearing the resulting blocker (blocker.KindDependencyConditionUnmet)
+ * alone does not release the child — as long as this condition still names a
+ * current DependsOn ref, the gate re-escalates on the next tick it becomes
+ * ready again. A human must remove or edit the condition itself (once the
+ * scope it names is confirmed to exist) to actually release the child; this
+ * mirrors blocker.KindDependencyScopeUnmet's existing require-explicit-
+ * human-confirmation design and is an accepted limitation, not a bug.
+ */
+export class DepCondition {
+    "ref": string;
+    "kind": string;
+    "value": string;
+
+    /** Creates a new DepCondition instance. */
+    constructor($$source: Partial<DepCondition> = {}) {
+        if (!("ref" in $$source)) {
+            this["ref"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("value" in $$source)) {
+            this["value"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DepCondition instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DepCondition {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DepCondition($$parsedSource as Partial<DepCondition>);
+    }
+}
+
+/**
  * Priority is a task's dispatch priority. PriorityNone (the empty string) is
  * treated as the lowest priority, distinct from an unset/invalid value.
  */
@@ -382,6 +431,20 @@ export class Task {
      * from prose every gate tick.
      */
     "dependsOn"?: string[];
+
+    /**
+     * DependsOnConditions attaches an optional completion condition to one of
+     * DependsOn's refs, beyond that task simply reaching Done — the umbrella
+     * dependency gate (holdUnmetConditions in
+     * internal/sybra/app_umbrella_gate.go) enforces it before releasing a
+     * child. A condition whose Ref no longer names a current DependsOn entry
+     * is inert (never enforced), the same rule the gate already applies to a
+     * stale blocker.KindDependencyScopeUnmet verdict. See DepCondition for the
+     * supported Kind values (sybra#2649: a prior run closed a dependency
+     * issue via a narrower PR than the scope this task actually needed, and
+     * nothing structural caught it before a wasted implementation cycle).
+     */
+    "dependsOnConditions"?: DepCondition[];
     "reviewed": boolean;
 
     /**
@@ -638,10 +701,11 @@ export class Task {
         const $$createField7_0 = $$createType0;
         const $$createField14_0 = $$createType1;
         const $$createField19_0 = $$createType0;
-        const $$createField40_0 = $$createType3;
+        const $$createField20_0 = $$createType3;
         const $$createField41_0 = $$createType5;
         const $$createField42_0 = $$createType7;
-        const $$createField58_0 = $$createType8;
+        const $$createField43_0 = $$createType9;
+        const $$createField59_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -655,17 +719,20 @@ export class Task {
         if ("dependsOn" in $$parsedSource) {
             $$parsedSource["dependsOn"] = $$createField19_0($$parsedSource["dependsOn"]);
         }
+        if ("dependsOnConditions" in $$parsedSource) {
+            $$parsedSource["dependsOnConditions"] = $$createField20_0($$parsedSource["dependsOnConditions"]);
+        }
         if ("attachments" in $$parsedSource) {
-            $$parsedSource["attachments"] = $$createField40_0($$parsedSource["attachments"]);
+            $$parsedSource["attachments"] = $$createField41_0($$parsedSource["attachments"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField41_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField42_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField42_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField43_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField58_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField59_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -702,6 +769,7 @@ export class Update {
     "BlockedByIssue": string | null;
     "UmbrellaIssue": string | null;
     "DependsOn": string[] | null;
+    "DependsOnConditions": DepCondition[] | null;
     "AgentMode": string | null;
     "TaskType": TaskType | null;
     "Body": string | null;
@@ -765,6 +833,9 @@ export class Update {
         }
         if (!("DependsOn" in $$source)) {
             this["DependsOn"] = null;
+        }
+        if (!("DependsOnConditions" in $$source)) {
+            this["DependsOnConditions"] = null;
         }
         if (!("AgentMode" in $$source)) {
             this["AgentMode"] = null;
@@ -885,11 +956,12 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField4_0 = $$createType9;
-        const $$createField7_0 = $$createType10;
-        const $$createField11_0 = $$createType10;
-        const $$createField29_0 = $$createType11;
-        const $$createField44_0 = $$createType12;
+        const $$createField4_0 = $$createType11;
+        const $$createField7_0 = $$createType12;
+        const $$createField8_0 = $$createType13;
+        const $$createField12_0 = $$createType12;
+        const $$createField30_0 = $$createType14;
+        const $$createField45_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Blocker" in $$parsedSource) {
             $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
@@ -897,14 +969,17 @@ export class Update {
         if ("DependsOn" in $$parsedSource) {
             $$parsedSource["DependsOn"] = $$createField7_0($$parsedSource["DependsOn"]);
         }
+        if ("DependsOnConditions" in $$parsedSource) {
+            $$parsedSource["DependsOnConditions"] = $$createField8_0($$parsedSource["DependsOnConditions"]);
+        }
         if ("Tags" in $$parsedSource) {
-            $$parsedSource["Tags"] = $$createField11_0($$parsedSource["Tags"]);
+            $$parsedSource["Tags"] = $$createField12_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField29_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField30_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField44_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField45_0($$parsedSource["Attachments"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
@@ -913,14 +988,17 @@ export class Update {
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
 const $$createType1 = blocker$0.State.createFrom;
-const $$createType2 = attachment$0.Attachment.createFrom;
+const $$createType2 = DepCondition.createFrom;
 const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = AgentRun.createFrom;
+const $$createType4 = attachment$0.Attachment.createFrom;
 const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = workflow$0.Execution.createFrom;
-const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = $Create.Map($Create.Any, $Create.Any);
-const $$createType9 = $Create.Nullable($$createType1);
-const $$createType10 = $Create.Nullable($$createType0);
-const $$createType11 = $Create.Nullable($$createType7);
-const $$createType12 = $Create.Nullable($$createType3);
+const $$createType6 = AgentRun.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = workflow$0.Execution.createFrom;
+const $$createType9 = $Create.Nullable($$createType8);
+const $$createType10 = $Create.Map($Create.Any, $Create.Any);
+const $$createType11 = $Create.Nullable($$createType1);
+const $$createType12 = $Create.Nullable($$createType0);
+const $$createType13 = $Create.Nullable($$createType3);
+const $$createType14 = $Create.Nullable($$createType9);
+const $$createType15 = $Create.Nullable($$createType5);

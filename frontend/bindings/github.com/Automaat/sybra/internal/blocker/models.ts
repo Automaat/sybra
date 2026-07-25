@@ -48,6 +48,21 @@ export enum Kind {
      * already-known-negative implementation cycle repeats (sybra#2637).
      */
     KindDependencyScopeUnmet = "dependency_scope_unmet",
+
+    /**
+     * KindDependencyConditionUnmet marks a task blocked on a task.DepCondition
+     * of kind "note" attached to one of its depends_on refs: the referenced
+     * task is Done, but the free-text acceptance note the condition names has
+     * not been confirmed by a human. Deliberately distinct from
+     * KindDependencyScopeUnmet — that kind marks a reactive verdict a prior
+     * agent/human run recorded *after* observing a closed dependency fall
+     * short of scope, whereas this kind marks a proactive condition set
+     * *before* the dependency ever closed. Keeping them separate means a
+     * human clearing one can never be misread as having confirmed the other
+     * (internal/sybra/app_umbrella_gate.go's holdUnmetConditions is the sole
+     * writer).
+     */
+    KindDependencyConditionUnmet = "dependency_condition_unmet",
 };
 
 /**

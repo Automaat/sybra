@@ -148,6 +148,7 @@ func (a *Assigner) PushFieldUpdate(ctx context.Context, t task.Task) (pushed boo
 	}
 	live.Tags = t.Tags
 	live.DependsOn = t.DependsOn
+	live.DependsOnConditions = t.DependsOnConditions
 	live.AssignedNode = home.Name
 	if err := client.AssignTask(ctx, live); err != nil {
 		return false, fmt.Errorf("clusterlead: push field update for %s to %s: %w", t.ID, home.Name, err)
