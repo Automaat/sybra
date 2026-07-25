@@ -25,7 +25,11 @@ type AutonomySnapshot struct {
 	AutonomyRate       float64   `json:"autonomyRate"`
 }
 
-// AutonomyWeekPoint is autonomy over one 7-day bucket.
+// AutonomyWeekPoint is autonomy over one 7-day bucket. WeekEnd is exclusive
+// for every bucket except the newest (the one ending at "now"): consecutive
+// buckets share a boundary instant, so treat [WeekStart, WeekEnd) as the
+// bucket's true range rather than reading WeekEnd as an inclusive endpoint —
+// see ComputeAutonomyTrend's nanosecond trim.
 type AutonomyWeekPoint struct {
 	WeekStart          time.Time `json:"weekStart"`
 	WeekEnd            time.Time `json:"weekEnd"`
@@ -51,9 +55,15 @@ type AutonomyTrend struct {
 // callers pass the full retained history once and this slices it. Each
 // snapshot and weekly bucket is computed independently (not a cumulative
 // running rate), so every rate is honest for its own window.
+//
+// Scans task signals once and reuses them across every window (via
+// computeWithSignals) rather than calling Compute directly, which would
+// rescan the full event history — including the not-window-bound
+// scanTaskSignals — on each of the (weeks+3) calls this makes.
 func ComputeAutonomyTrend(records []stats.RunRecord, events []audit.Event, now time.Time, weeks int) AutonomyTrend {
+	sigs := scanTaskSignals(events)
 	snapshot := func(since time.Time) AutonomySnapshot {
-		sc := Compute(records, events, since, now)
+		sc := computeWithSignals(records, events, sigs, since, now)
 		return AutonomySnapshot{
 			Since: since, Until: now,
 			TasksLanded: sc.TasksLanded, AutonomousLandings: sc.AutonomousLandings,
@@ -74,7 +84,7 @@ func ComputeAutonomyTrend(records []stats.RunRecord, events []audit.Event, now t
 		if i > 0 {
 			until = until.Add(-time.Nanosecond)
 		}
-		sc := Compute(records, events, weekStart, until)
+		sc := computeWithSignals(records, events, sigs, weekStart, until)
 		weekly = append(weekly, AutonomyWeekPoint{
 			WeekStart: weekStart, WeekEnd: weekEnd,
 			TasksLanded: sc.TasksLanded, AutonomousLandings: sc.AutonomousLandings,
