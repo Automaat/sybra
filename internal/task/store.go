@@ -789,6 +789,9 @@ func applyLinkFields(t *Task, u Update) {
 	if u.DependsOn != nil {
 		t.DependsOn = slices.Clone(*u.DependsOn)
 	}
+	if u.DependsOnConditions != nil {
+		t.DependsOnConditions = slices.Clone(*u.DependsOnConditions)
+	}
 }
 
 func applyUpdateFields(t *Task, u Update) error {

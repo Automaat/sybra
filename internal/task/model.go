@@ -288,6 +288,42 @@ type AgentRun struct {
 // Attachment re-exports the persisted task attachment metadata type.
 type Attachment = attachment.Attachment
 
+// DepConditionKindLabel and DepConditionKindNote are the DepCondition.Kind
+// values the umbrella dependency gate understands. Any other value fails
+// closed at gate time (held, never released, never escalated) rather than
+// being silently ignored or crashing — see holdUnmetConditions in
+// internal/sybra/app_umbrella_gate.go. Author-time input (CLI, HTTP API) is
+// validated against this pair before it ever reaches a task file; this
+// constant pair is the single source of truth both sides check against.
+const (
+	DepConditionKindLabel = "label"
+	DepConditionKindNote  = "note"
+)
+
+// DepCondition attaches a completion condition to one Task.DependsOn ref.
+// Ref must match a current DependsOn entry (by the same ref-matching rules
+// the gate uses elsewhere, e.g. matchesDepRef) or the condition is inert.
+//
+// Kind "label" mechanically checks the referenced closing issue's GitHub
+// labels (via cached github.FetchIssue) for Value's label name; it holds the
+// child while absent and self-heals the next time the gate ticks after the
+// label is applied — no escalation.
+//
+// Kind "note" never auto-satisfies: it holds the child and escalates to
+// human-required, naming Value as the free-text acceptance note a human must
+// confirm. Clearing the resulting blocker (blocker.KindDependencyConditionUnmet)
+// alone does not release the child — as long as this condition still names a
+// current DependsOn ref, the gate re-escalates on the next tick it becomes
+// ready again. A human must remove or edit the condition itself (once the
+// scope it names is confirmed to exist) to actually release the child; this
+// mirrors blocker.KindDependencyScopeUnmet's existing require-explicit-
+// human-confirmation design and is an accepted limitation, not a bug.
+type DepCondition struct {
+	Ref   string `json:"ref" yaml:"ref"`
+	Kind  string `json:"kind" yaml:"kind"`
+	Value string `json:"value" yaml:"value"`
+}
+
 // Task is the in-memory representation of a task markdown file: YAML
 // frontmatter (everything but Body) plus the GFM markdown Body. Store parses
 // and marshals it to/from tasks/<id>.md; planning/review/critique content
@@ -352,8 +388,19 @@ type Task struct {
 	// it here so it survives as structured state instead of being re-derived
 	// from prose every gate tick.
 	DependsOn []string `json:"dependsOn,omitempty"`
-	Reviewed  bool     `json:"reviewed"`
-	RunRole   string   `json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	// DependsOnConditions attaches an optional completion condition to one of
+	// DependsOn's refs, beyond that task simply reaching Done — the umbrella
+	// dependency gate (holdUnmetConditions in
+	// internal/sybra/app_umbrella_gate.go) enforces it before releasing a
+	// child. A condition whose Ref no longer names a current DependsOn entry
+	// is inert (never enforced), the same rule the gate already applies to a
+	// stale blocker.KindDependencyScopeUnmet verdict. See DepCondition for the
+	// supported Kind values (sybra#2649: a prior run closed a dependency
+	// issue via a narrower PR than the scope this task actually needed, and
+	// nothing structural caught it before a wasted implementation cycle).
+	DependsOnConditions []DepCondition `json:"dependsOnConditions,omitempty"`
+	Reviewed            bool           `json:"reviewed"`
+	RunRole             string         `json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
 	// SupervisorSteer is a one-shot corrective message left by the watchdog's
 	// headless nudge: it stops a looping headless agent (which has no mid-stream
 	// channel) and persists the steer here so the recovery loop re-dispatches

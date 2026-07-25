@@ -152,6 +152,10 @@ type App struct {
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
+	// umbrellaFetchIssue fetches a dependency's closing issue to check a
+	// "label" DepCondition. nil defaults to github.FetchIssue; overridden in
+	// tests.
+	umbrellaFetchIssue func(repo string, number int) (github.Issue, error)
 
 	// umbrellaRecoveryMu guards umbrellaRecoveryInFlight — App-owned recovery
 	// coordination state (deliberately not a package-level map) for the

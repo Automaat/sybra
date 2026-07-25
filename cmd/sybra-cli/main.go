@@ -568,11 +568,23 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	pr := fs.Int("pr", 0, "GitHub PR number")
 	issue := fs.String("issue", "", "GitHub issue URL")
 	allowDup := fs.Bool("allow-dup", false, "skip duplicate-dispatch check (project+issue+title)")
+	var dependsOnCond dependsOnConditionFlag
+	fs.Var(&dependsOnCond, "depends-on-condition",
+		"repeatable ref=kind:value completion condition on a depends_on entry (kind: label|note)")
 	if err := fs.Parse(args); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 	if *title == "" {
 		return fatal(jsonOut, "title is required")
+	}
+	var depConds []any
+	if len(dependsOnCond) > 0 {
+		conds, err := parseDepConditions(dependsOnCond)
+		if err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		depConds = conds
+		warnInertDepConditions(nil, conds) // depends_on isn't settable at create time
 	}
 
 	if !*allowDup {
@@ -596,6 +608,9 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 
 	updates := buildCreateUpdateMap(*tags, *proj, *branch, *pr, *issue,
 		*plan, *planContract, *planCritique, *planResearch, *planDecisions, *planBrief)
+	if depConds != nil {
+		updates["depends_on_conditions"] = depConds
+	}
 	if len(updates) > 0 {
 		t, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
 		if err != nil {
@@ -1167,6 +1182,12 @@ func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "no updates specified")
 	}
 
+	if conds, ok := updates["depends_on_conditions"].([]any); ok {
+		if cur, err := s.Get(id); err == nil {
+			warnInertDepConditions(cur.DependsOn, conds)
+		}
+	}
+
 	t, err := updateTaskViaAPIOrFS(s, api, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -1213,10 +1234,31 @@ type updateFlags struct {
 	blockerRetryAfter *string
 	blockerExhausted  *bool
 	blockerClear      *bool
+	dependsOnCond     *dependsOnConditionFlag
+}
+
+// dependsOnConditionFlag accumulates repeated --depends-on-condition
+// "ref=kind:value" values (stdlib flag has no repeatable-string primitive).
+// Kept distinct from cluster.go's multiFlag since that type's Set hardcodes
+// a --host-specific error message.
+type dependsOnConditionFlag []string
+
+func (f *dependsOnConditionFlag) String() string { return strings.Join(*f, ",") }
+
+func (f *dependsOnConditionFlag) Set(v string) error {
+	*f = append(*f, v)
+	return nil
 }
 
 func newUpdateFlags(fs *flag.FlagSet) updateFlags {
-	return updateFlags{
+	// dependsOnCond is allocated separately (not taken from the struct
+	// literal below) so fs.Var registers a stable address: newUpdateFlags
+	// returns updateFlags by value, and a pointer into that local copy's own
+	// field would silently detach from the struct the caller actually holds
+	// once fs.Parse runs — the same reason fs.String/Int/Bool each allocate
+	// their own backing variable instead of pointing into this struct.
+	dependsOnCond := new(dependsOnConditionFlag)
+	f := updateFlags{
 		title:             fs.String("title", "", "new title"),
 		status:            fs.String("status", "", "new status"),
 		body:              fs.String("body", "", "new body"),
@@ -1250,7 +1292,11 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		blockerRetryAfter: fs.String("blocker-retry-after", "", "RFC3339 timestamp before which the blocker should not be retried"),
 		blockerExhausted:  fs.Bool("blocker-exhausted", false, "mark the blocker's automated retry budget as exhausted"),
 		blockerClear:      fs.Bool("blocker-clear", false, "clear any blocker state on this task"),
+		dependsOnCond:     dependsOnCond,
 	}
+	fs.Var(dependsOnCond, "depends-on-condition",
+		"repeatable ref=kind:value completion condition on a depends_on entry (kind: label|note); replaces the full set when given")
+	return f
 }
 
 func buildUpdateMap(s *task.Manager, id string, fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
@@ -1395,7 +1441,80 @@ func applyTypedUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateFla
 		}
 		updates["reasoning_effort"] = v
 	}
+	if len(*f.dependsOnCond) > 0 {
+		conds, err := parseDepConditions(*f.dependsOnCond)
+		if err != nil {
+			return err
+		}
+		updates["depends_on_conditions"] = conds
+	}
 	return nil
+}
+
+// parseDepCondition parses one --depends-on-condition value of the form
+// "ref=kind:value" (kind: label|note) into the map[string]any shape
+// task.UpdateFromMap's "depends_on_conditions" case expects. value may itself
+// contain colons (e.g. a URL or a sentence), so only the first colon after
+// the ref/kind separator splits kind from value.
+func parseDepCondition(raw string) (map[string]any, error) {
+	ref, rest, hasEq := strings.Cut(raw, "=")
+	ref = strings.TrimSpace(ref)
+	if !hasEq || ref == "" {
+		return nil, fmt.Errorf("invalid --depends-on-condition %q: want ref=kind:value", raw)
+	}
+	kind, value, hasColon := strings.Cut(rest, ":")
+	kind = strings.TrimSpace(kind)
+	if !hasColon || kind == "" || value == "" {
+		return nil, fmt.Errorf("invalid --depends-on-condition %q: want ref=kind:value", raw)
+	}
+	if kind != task.DepConditionKindLabel && kind != task.DepConditionKindNote {
+		return nil, fmt.Errorf("invalid --depends-on-condition %q: unknown kind %q (valid: %s, %s)",
+			raw, kind, task.DepConditionKindLabel, task.DepConditionKindNote)
+	}
+	return map[string]any{"ref": ref, "kind": kind, "value": value}, nil
+}
+
+// parseDepConditions parses every --depends-on-condition occurrence and
+// rejects a duplicate ref within this same invocation before it ever reaches
+// task.UpdateFromMap's own duplicate check (internal/task/update.go's
+// validateDepConditions) — same rule, checked here too so the CLI's error
+// names the offending flag value instead of a generic field error.
+func parseDepConditions(raws []string) ([]any, error) {
+	out := make([]any, 0, len(raws))
+	seen := make(map[string]bool, len(raws))
+	for _, raw := range raws {
+		m, err := parseDepCondition(raw)
+		if err != nil {
+			return nil, err
+		}
+		ref, _ := m["ref"].(string)
+		key := strings.ToLower(ref)
+		if seen[key] {
+			return nil, fmt.Errorf("invalid --depends-on-condition %q: duplicate ref %q", raw, m["ref"])
+		}
+		seen[key] = true
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// warnInertDepConditions best-effort warns (stderr only, never fails the
+// command) when a just-authored condition names a ref that isn't among
+// currentDependsOn — the condition is accepted (DependsOn is commonly set
+// afterward, e.g. by umbrella expansion) but stays inert until a matching
+// depends_on entry exists.
+func warnInertDepConditions(currentDependsOn []string, conds []any) {
+	present := make(map[string]bool, len(currentDependsOn))
+	for _, d := range currentDependsOn {
+		present[strings.ToLower(strings.TrimSpace(d))] = true
+	}
+	for _, c := range conds {
+		m, _ := c.(map[string]any)
+		ref, _ := m["ref"].(string)
+		if !present[strings.ToLower(strings.TrimSpace(ref))] {
+			fmt.Fprintf(os.Stderr, "warning: --depends-on-condition ref %q is not in this task's depends_on — condition will be inert until it is added\n", ref)
+		}
+	}
 }
 
 func cmdDelete(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {

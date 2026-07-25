@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -371,14 +372,16 @@ func (m *Mirror) adoptFollowerTask(ctx context.Context, node string, follower ta
 func (m *Mirror) detectAndRepairDrift(ctx context.Context, node string, canonical, follower task.Task) {
 	tagsDrift := !slices.Equal(sortedCopy(canonical.Tags), sortedCopy(follower.Tags))
 	depsDrift := !slices.Equal(sortedCopy(canonical.DependsOn), sortedCopy(follower.DependsOn))
-	if !tagsDrift && !depsDrift {
+	condsDrift := !slices.Equal(sortedConditions(canonical.DependsOnConditions), sortedConditions(follower.DependsOnConditions))
+	if !tagsDrift && !depsDrift && !condsDrift {
 		return
 	}
 	m.logger.Error("cluster.mirror.drift_detected",
 		"task", canonical.ID, "node", node,
-		"tags_drift", tagsDrift, "deps_drift", depsDrift,
+		"tags_drift", tagsDrift, "deps_drift", depsDrift, "conds_drift", condsDrift,
 		"canonical_tags", canonical.Tags, "follower_tags", follower.Tags,
-		"canonical_depends_on", canonical.DependsOn, "follower_depends_on", follower.DependsOn)
+		"canonical_depends_on", canonical.DependsOn, "follower_depends_on", follower.DependsOn,
+		"canonical_depends_on_conditions", canonical.DependsOnConditions, "follower_depends_on_conditions", follower.DependsOnConditions)
 	m.repairDrift(ctx, node, canonical)
 }
 
@@ -414,6 +417,7 @@ func (m *Mirror) repairDrift(ctx context.Context, node string, canonical task.Ta
 	repaired := live
 	repaired.Tags = canonical.Tags
 	repaired.DependsOn = canonical.DependsOn
+	repaired.DependsOnConditions = canonical.DependsOnConditions
 	repaired.AssignedNode = node
 	if err := client.AssignTask(repairCtx, repaired); err != nil {
 		m.logger.Warn("cluster.mirror.drift_repair.failed", "task", canonical.ID, "node", node, "err", err)
@@ -427,6 +431,24 @@ func (m *Mirror) repairDrift(ctx context.Context, node string, canonical task.Ta
 func sortedCopy(ss []string) []string {
 	out := slices.Clone(ss)
 	slices.Sort(out)
+	return out
+}
+
+// sortedConditions returns a copy of conds sorted by (Ref, Kind, Value) so
+// DependsOnConditions — a set, not an ordered list — compares equal
+// regardless of authoring order, mirroring sortedCopy's treatment of
+// Tags/DependsOn.
+func sortedConditions(conds []task.DepCondition) []task.DepCondition {
+	out := slices.Clone(conds)
+	slices.SortFunc(out, func(a, b task.DepCondition) int {
+		if c := strings.Compare(a.Ref, b.Ref); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.Kind, b.Kind); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Value, b.Value)
+	})
 	return out
 }
 
