@@ -169,6 +169,14 @@ type AgentDefaults struct {
 	// that a workflow implementation dispatch falls back to when the agent
 	// pool is saturated, instead of erroring or wasting a worktree prep.
 	Queue QueueConfig `yaml:"queue" json:"queue"`
+	// ClassReservations reserves a configurable minimum number of concurrent
+	// slots per workload class ("implementation", "completion", "system" —
+	// see agent.Role.WorkloadClass), so one class saturating the shared pool
+	// (e.g. a retry storm of system/monitor work) cannot starve another. Keys
+	// outside the known class set, or a sum exceeding MaxConcurrent, fail
+	// config validation. Empty/nil (the default) reproduces the pre-class-
+	// isolation single shared pool exactly — this feature is opt-in.
+	ClassReservations map[string]int `yaml:"class_reservations" json:"classReservations"`
 }
 
 // QueueConfig configures the agent-dispatch admission queue.

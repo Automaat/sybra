@@ -18,6 +18,7 @@ func TestStore_RoundTrip(t *testing.T) {
 	it := Item{
 		TaskID:                 "t1",
 		Role:                   "implementation",
+		Class:                  "implementation",
 		Priority:               task.PriorityHigh,
 		Status:                 task.StatusInReview,
 		Manual:                 true,
@@ -35,7 +36,7 @@ func TestStore_RoundTrip(t *testing.T) {
 		t.Fatalf("load() returned %d items, want 1", len(loaded))
 	}
 	if !loaded[0].Enqueued.Equal(it.Enqueued) || loaded[0].TaskID != it.TaskID ||
-		loaded[0].Role != it.Role || loaded[0].Priority != it.Priority ||
+		loaded[0].Role != it.Role || loaded[0].Class != it.Class || loaded[0].Priority != it.Priority ||
 		loaded[0].Status != it.Status || loaded[0].Manual != it.Manual ||
 		loaded[0].Mode != it.Mode || loaded[0].Prompt != it.Prompt ||
 		loaded[0].IncludeTaskDescription != it.IncludeTaskDescription {
@@ -90,6 +91,30 @@ func TestQueue_EmptyStatusSurvivesRestart(t *testing.T) {
 	}
 	if got := reloaded.Snapshot(); len(got) != 1 || got[0].TaskID != "t1" {
 		t.Fatalf("after restart Snapshot() = %v, want single item t1", got)
+	}
+}
+
+// TestQueue_ClassSurvivesRestart proves an item's WorkloadClass label
+// (populated at Offer by the caller — see agentorch.enqueueImplementation/
+// enqueueManualStart) is not lost across a simulated app restart (a fresh
+// New against the same on-disk dir).
+func TestQueue_ClassSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	q, err := New(dir, Options{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !q.Offer(Item{TaskID: "t1", Role: "implementation", Class: "implementation", Priority: task.PriorityLow}) {
+		t.Fatal("Offer should enqueue a new item")
+	}
+
+	reloaded, err := New(dir, Options{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New (restart): %v", err)
+	}
+	got := reloaded.Snapshot()
+	if len(got) != 1 || got[0].TaskID != "t1" || got[0].Class != "implementation" {
+		t.Fatalf("after restart Snapshot() = %+v, want single item t1 with class implementation", got)
 	}
 }
 

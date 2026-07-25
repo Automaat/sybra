@@ -116,6 +116,7 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 		if a.Provider != "" {
 			m.liveByProvider[a.Provider]++
 		}
+		m.liveByClass[a.EffectiveRole().WorkloadClass()]++
 		m.mu.Unlock()
 
 		m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "events", len(a.Output()))

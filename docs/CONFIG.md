@@ -84,6 +84,7 @@ How Sybra launches and routes agent work across providers and local backends.
 | `execution.agent.playwright_mcp` | `PlaywrightMCPConfig` | _(see below)_ |  |  |  | `false` |  |  | PlaywrightMCP configures the default-off headless Playwright MCP server attached to test-runner runs that resolve to the Claude provider. |
 | `execution.agent.k8s_jobs` | `K8sJobsConfig` | _(see below)_ |  |  |  | `false` |  |  | K8sJobs configures an experimental backend that runs headless agents as short-lived Kubernetes Jobs instead of local subprocesses. |
 | `execution.agent.queue` | `QueueConfig` | _(see below)_ |  |  |  | `false` |  |  | Queue configures the agent-dispatch admission queue (internal/agentqueue) that a workflow implementation dispatch falls back to when the agent pool is saturated, instead of erroring or wasting a worktree prep. |
+| `execution.agent.class_reservations` | `map[string]int` |  |  |  | `agent.class_reservations` | `false` | `hot` |  | ClassReservations reserves a configurable minimum number of concurrent slots per workload class ("implementation", "completion", "system" — see agent.Role.WorkloadClass), so one class saturating the shared pool (e.g. a retry storm of system/monitor work) cannot starve another. Keys outside the known class set, or a sum exceeding MaxConcurrent, fail config validation. Empty/nil (the default) reproduces the pre-class- isolation single shared pool exactly — this feature is opt-in. |
 
 ### PlaywrightMCPConfig (`execution.agent.playwright_mcp`)
 
