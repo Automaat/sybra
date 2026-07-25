@@ -44,8 +44,8 @@ jobs:
         # transient stall costs seconds, not the whole job.
         run: |
           for i in 1 2 3 4 5; do
-            timeout 120 go mod download && exit 0
-            echo "go mod download attempt $i timed out or failed; retrying" >&2
+            timeout --kill-after=10 120 go mod download && exit 0
+            echo "go mod download attempt $i exited $?; retrying" >&2
           done
           echo "go mod download failed after 5 attempts" >&2
           exit 1
