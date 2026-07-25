@@ -516,6 +516,11 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 			a.convo.closeStdinPipe()
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
+				// This process is the killed child's real OS parent, and the
+				// caller only starts its cmd.Wait() reaper after a successful
+				// start — so reap here to avoid leaking a zombie, mirroring the
+				// pipe variant's kill path.
+				_ = cmd.Wait()
 			}
 			return nil, fmt.Errorf("deliver initial prompt: %w", writeErr)
 		}
