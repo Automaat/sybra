@@ -16,6 +16,16 @@ import (
 // inactivity and try to stop the agent through the same pipe.
 const stdinWriteTimeout = 30 * time.Second
 
+// stdinInitialWriteTimeout gives the first prompt delivery a longer grace
+// period than a steer message. The initial payload can exceed the OS pipe
+// buffer (~64KB on Linux) once a task body is combined with NOTES.md seeding,
+// so the write blocks until the child drains stdin — and a freshly-started
+// child may not be reading yet. Reusing the 30s steer ceiling would let a
+// merely slow-to-start child false-positive as wedged, silently stranding the
+// run. Still bounded (well under the watchdog's 10m stall ceiling) so a
+// genuinely wedged child self-recovers.
+const stdinInitialWriteTimeout = 2 * time.Minute
+
 // convoIO owns the conversational agent transport plus the existing
 // prompt/restart bookkeeping mechanically extracted from Agent.
 type convoIO struct {
@@ -34,6 +44,12 @@ type convoIO struct {
 	// cannot interleave partial writes into the child's stream-json input.
 	// Deliberately a separate lock from stdinMu — see the comment above.
 	writeMu sync.Mutex
+
+	// writeTimeout, when non-zero, overrides the per-call stdin write timeout.
+	// Injection seam for tests to drive writeStdin's self-timeout branch on a
+	// short duration instead of a real 30s/2m sleep. Zero = use the caller's
+	// timeout argument.
+	writeTimeout time.Duration
 
 	// stdinPath is the FIFO backing a detached conversational agent's stdin,
 	// reopened on reattach so follow-up messages survive a restart. Empty for
@@ -68,9 +84,20 @@ func (c *convoIO) replaceStdinPipe(pipe io.WriteCloser) {
 	c.stdinMu.Unlock()
 }
 
+// writeStdin writes data with the default steer-message timeout. Callers
+// delivering an oversized first prompt use writeStdinTimeout with
+// stdinInitialWriteTimeout instead.
 func (c *convoIO) writeStdin(data []byte) error {
+	return c.writeStdinTimeout(data, stdinWriteTimeout)
+}
+
+func (c *convoIO) writeStdinTimeout(data []byte, timeout time.Duration) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+
+	if c.writeTimeout > 0 {
+		timeout = c.writeTimeout
+	}
 
 	c.stdinMu.Lock()
 	pipe := c.stdinPipe
@@ -92,15 +119,20 @@ func (c *convoIO) writeStdin(data []byte) error {
 		done <- err
 	}()
 
+	// Stoppable timer so the success path (the common case) releases the
+	// runtime timer immediately instead of leaving it armed until it fires.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
 	case err := <-done:
 		if err != nil {
 			return fmt.Errorf("write stdin: %w", err)
 		}
 		return nil
-	case <-time.After(stdinWriteTimeout):
+	case <-timer.C:
 		c.forceClosePipe(pipe)
-		return fmt.Errorf("write stdin: timed out after %s, pipe closed", stdinWriteTimeout)
+		return fmt.Errorf("write stdin: timed out after %s, pipe closed", timeout)
 	}
 }
 
@@ -152,10 +184,17 @@ func encodeUserMessage(text string) ([]byte, error) {
 
 // writeUserMessage writes a user message to the agent's stdin in stream-json format.
 func (m *Manager) writeUserMessage(a *Agent, text string) error {
+	return m.writeUserMessageTimeout(a, text, stdinWriteTimeout)
+}
+
+// writeUserMessageTimeout is writeUserMessage with an explicit write ceiling,
+// used by the initial-prompt path to grant the oversized first payload a
+// longer grace period than a steer message.
+func (m *Manager) writeUserMessageTimeout(a *Agent, text string, timeout time.Duration) error {
 	data, err := encodeUserMessage(text)
 	if err != nil {
 		return err
 	}
 
-	return a.convo.writeStdin(data)
+	return a.convo.writeStdinTimeout(data, timeout)
 }

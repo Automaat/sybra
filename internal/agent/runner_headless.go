@@ -313,8 +313,18 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	// has it. Non-steerable stdin-prompt: always resent on every attempt,
 	// matching what the old positional-argv delivery did unconditionally.
 	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
-		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
+		// Unlike a steer message, the initial prompt is the run's only chance to
+		// reach the child — on failure the child gets EOF having never seen the
+		// task, so a log-and-continue would silently strand the run. Fail the
+		// attempt instead of pressing on as if delivery succeeded.
+		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.convo.closeStdinPipe()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			_ = cmd.Wait()
+			return false, fmt.Errorf("deliver initial prompt: %w", writeErr)
 		}
 	} else if promptStdin != nil {
 		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
@@ -497,8 +507,17 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	// attempt, matching what the old positional-argv delivery did
 	// unconditionally.
 	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
-		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
+		// Unlike a steer message, the initial prompt is the run's only chance to
+		// reach the child — on failure the child gets EOF having never seen the
+		// task, so a log-and-continue would silently strand the detached run.
+		// Fail the attempt instead of pressing on as if delivery succeeded.
+		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.convo.closeStdinPipe()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			return nil, fmt.Errorf("deliver initial prompt: %w", writeErr)
 		}
 	} else if promptStdin != nil {
 		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)

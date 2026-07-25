@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -167,6 +168,42 @@ func TestConvoIOCloseStdinPipeDoesNotBlockBehindWrite(t *testing.T) {
 
 	if c.hasStdinPipe() {
 		t.Fatal("hasStdinPipe = true after closeStdinPipe")
+	}
+}
+
+// TestConvoIOWriteStdinSelfTimeout drives writeStdin's own timer branch: with
+// no external closer, a wedged write must self-recover once writeTimeout
+// elapses — force-closing its pipe and returning the "timed out" error. The
+// injectable writeTimeout lets this exercise the real branch without a 30s
+// sleep.
+func TestConvoIOWriteStdinSelfTimeout(t *testing.T) {
+	c := convoIO{writeTimeout: 20 * time.Millisecond}
+	w := &unblockOnCloseWriteCloser{
+		started: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+	c.replaceStdinPipe(w)
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- c.writeStdin([]byte("wedged"))
+	}()
+	<-w.started
+
+	select {
+	case err := <-writeDone:
+		if err == nil {
+			t.Fatal("writeStdin succeeded, want timeout error")
+		}
+		if !strings.Contains(err.Error(), "timed out") {
+			t.Fatalf("writeStdin err = %v, want timed out", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("writeStdin did not self-timeout")
+	}
+
+	if c.hasStdinPipe() {
+		t.Fatal("hasStdinPipe = true after self-timeout, want pipe force-closed")
 	}
 }
 
