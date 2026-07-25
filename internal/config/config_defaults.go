@@ -444,9 +444,9 @@ func (c GitHubConfig) RunsReviewer() bool {
 	return c.RunsSybraPRs() || c.RunsAssignedPRs()
 }
 
-// ReviewRoundsPerHourLimit resolves the per-PR review rate cap. 0 means unset
-// (use the default); a negative value disables the cap entirely.
-func (c GitHubConfig) ReviewRoundsPerHourLimit() int {
+// ReviewRoundsPerHourLimit resolves the per-task automated-review rate cap. 0
+// means unset (use the default); a negative value disables the cap entirely.
+func (c AgentDefaults) ReviewRoundsPerHourLimit() int {
 	if c.ReviewRoundsPerHour == 0 {
 		return DefaultReviewRoundsPerHour
 	}

@@ -235,7 +235,7 @@ const maxReviewAttemptsPerHead = 2
 func (a *App) reviewBudget() reviewbudget.Budget {
 	perHour := config.DefaultReviewRoundsPerHour
 	if a.cfg != nil {
-		perHour = a.cfg.GitHub.ReviewRoundsPerHourLimit()
+		perHour = a.cfg.Agent.ReviewRoundsPerHourLimit()
 	}
 	return reviewbudget.Budget{PerHour: perHour, PerHead: maxReviewAttemptsPerHead}
 }

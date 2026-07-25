@@ -443,13 +443,13 @@ func (b *flatConfigBuilder) setTopLevel(dest string, value *yaml.Node, source st
 // applyLegacyUnboundedReviewLoop mirrors the pre-#2499 "review_until_clean:
 // true implies an uncapped review→fix→review loop" compat shim, now
 // expressed through the single review-rate-limit knob
-// (integrations.github.review_rounds_per_hour) instead of a second
+// (execution.agent.review_rounds_per_hour) instead of a second
 // allow-unbounded flag: a legacy config that opted into the old uncapped loop
 // keeps that behavior by disabling the rate limit, rather than losing it
 // silently now that the old keys are gone from the schema. Skipped if the
 // legacy file explicitly set either now-dead key itself (respecting an
-// explicit opt-out over the implicit compat default) or already carries a
-// github.review_rounds_per_hour of its own.
+// explicit opt-out over the implicit compat default) or already carries an
+// execution.agent.review_rounds_per_hour of its own.
 func applyLegacyUnboundedReviewLoop(canonical *canonicalConfigBuilder, fileCfg *FileConfig) {
 	if fileCfg == nil || fileCfg.SchemaVersion() >= CurrentSchemaVersion {
 		return
@@ -465,26 +465,10 @@ func applyLegacyUnboundedReviewLoop(canonical *canonicalConfigBuilder, fileCfg *
 	if !ok || !yamlMappingBool(agentNode, "review_until_clean") {
 		return
 	}
-	integrationsNode, ok := yamlMappingValue(canonical.root, "integrations")
-	if !ok {
-		integrationsNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-		canonical.root.Content = append(canonical.root.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "integrations"},
-			integrationsNode,
-		)
-	}
-	githubNode, ok := yamlMappingValue(integrationsNode, "github")
-	if !ok {
-		githubNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-		integrationsNode.Content = append(integrationsNode.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "github"},
-			githubNode,
-		)
-	}
-	if yamlMappingHasKey(githubNode, "review_rounds_per_hour") {
+	if yamlMappingHasKey(agentNode, "review_rounds_per_hour") {
 		return
 	}
-	githubNode.Content = append(githubNode.Content,
+	agentNode.Content = append(agentNode.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "review_rounds_per_hour"},
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: "-1"},
 	)

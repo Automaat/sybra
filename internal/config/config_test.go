@@ -465,7 +465,7 @@ func TestResolveV2GuardrailAliasesWarnAndKeepBoundedReviewLoop(t *testing.T) {
 	if !resolved.Config.ReviewUntilClean() {
 		t.Fatal("ReviewUntilClean() = false, want true")
 	}
-	if got := resolved.Config.GitHub.ReviewRoundsPerHourLimit(); got <= 0 {
+	if got := resolved.Config.Agent.ReviewRoundsPerHourLimit(); got <= 0 {
 		t.Fatalf("ReviewRoundsPerHourLimit() = %d, want the positive default for schema-v2 review_until_clean=true", got)
 	}
 }
@@ -483,7 +483,7 @@ func TestResolveLegacyReviewUntilCleanPreservesUnboundedLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := resolved.Config.GitHub.ReviewRoundsPerHourLimit(); got > 0 {
+	if got := resolved.Config.Agent.ReviewRoundsPerHourLimit(); got > 0 {
 		t.Fatalf("ReviewRoundsPerHourLimit() = %d, want disabled (<=0) for schema-v1 review_until_clean=true", got)
 	}
 }
@@ -2994,7 +2994,7 @@ func TestCheckpointDefaults(t *testing.T) {
 // default 3, negative disables"), and every dispatcher test runs with a nil cfg
 // — so without this table the production path is exercised by nothing, and a
 // regression that silently disables the cap fleet-wide ships green.
-func TestGitHubConfig_ReviewRoundsPerHourLimit(t *testing.T) {
+func TestAgentDefaults_ReviewRoundsPerHourLimit(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -3011,7 +3011,7 @@ func TestGitHubConfig_ReviewRoundsPerHourLimit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := GitHubConfig{ReviewRoundsPerHour: tt.set}.ReviewRoundsPerHourLimit()
+			got := AgentDefaults{ReviewRoundsPerHour: tt.set}.ReviewRoundsPerHourLimit()
 			if got != tt.want {
 				t.Errorf("ReviewRoundsPerHourLimit(%d) = %d, want %d", tt.set, got, tt.want)
 			}
