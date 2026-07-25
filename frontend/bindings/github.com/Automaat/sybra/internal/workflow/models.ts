@@ -996,6 +996,19 @@ export enum StepType {
      * agent invoking the /sybra-triage skill around this same classifier.
      */
     StepClassifyTask = "classify_task",
+
+    /**
+     * StepAdmissionPreflight runs deterministic pre-dispatch admission checks
+     * (plan contract schema/capability validation, oversize scope limits,
+     * push credential readiness) before any code-author agent is dispatched —
+     * see execAdmissionPreflight (engine_steps_admission.go). Recoverable
+     * environment failures (missing push credentials) route through a
+     * blocker.KindCredentialRequired; scope/content problems (missing
+     * objective, unknown capability, oversize scope) route through
+     * blocker.KindOperatorDecision — both terminal (no automatic
+     * re-attempts), matching blocker.AllowsHumanRequired.
+     */
+    StepAdmissionPreflight = "admission_preflight",
 };
 
 /**
