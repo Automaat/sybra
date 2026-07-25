@@ -322,6 +322,31 @@ func hasUnpushedCommits(path string) bool {
 	return project.HasUnpushedCommits(ctx, path)
 }
 
+// sandboxWorktreeHasUnpushedCommits reports whether the sandbox dir's owning
+// task has a git worktree still holding commits not on any remote. A sandbox
+// (~/.sybra/sandboxes/<taskID>) is a separate per-task data dir from the git
+// worktree, so this resolves the task's worktree path and defers to the same
+// git check scanWorktrees uses — an unattended diskreclaim pass must never
+// reap a sandbox tied to completed-but-unpushed work (#2593). Mirrors
+// worktree.Manager.HasUnpushedCommits. Returns false — nothing to protect —
+// when the task, its project, or worktree cannot be resolved, or when the
+// worktree is externally adopted (owned by the tool that created it, so its
+// git state is not Sybra's to protect).
+func (s *Scanner) sandboxWorktreeHasUnpushedCommits(snap snapshot, taskID string) bool {
+	if taskID == "" || taskID == unknownTaskID {
+		return false
+	}
+	t, exists := snap.byID[taskID]
+	if !exists || t.ProjectID == "" || t.WorktreeDir != "" {
+		return false
+	}
+	wtPath := filepath.Join(s.cfg.WorktreesDir, t.DirName())
+	if _, err := os.Stat(wtPath); err != nil {
+		return false
+	}
+	return hasUnpushedCommits(wtPath)
+}
+
 // resolveBucketNames returns the bucket names Scan/Apply should consider:
 // opts.Only when set (already validated by the caller), otherwise every
 // known bucket name (still subject to each bucket's own gate check).
@@ -513,7 +538,11 @@ func (s *Scanner) scanSandboxes(snap snapshot) Bucket {
 		if isSymlink(p) {
 			continue
 		}
-		if ok, _ := eligible(snap, sandboxTaskIDFromDir(e.Name()), p, retention, disabled, s.now()); !ok {
+		taskID := sandboxTaskIDFromDir(e.Name())
+		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.now()); !ok {
+			continue
+		}
+		if s.sandboxWorktreeHasUnpushedCommits(snap, taskID) {
 			continue
 		}
 		size, err := dirSize(p)
@@ -728,7 +757,13 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 		if bucketName == BucketSandboxes {
 			taskID = sandboxTaskIDFromDir(taskID)
 		}
-		return eligible(snap, taskID, path, retention, disabled, s.now())
+		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.now()); !ok {
+			return false, reason
+		}
+		if bucketName == BucketSandboxes && s.sandboxWorktreeHasUnpushedCommits(snap, taskID) {
+			return false, "owning task worktree has commits not pushed to any remote"
+		}
+		return true, "eligible"
 	case BucketWorktrees:
 		retention, disabled := s.sandboxRetention()
 		taskID := taskIDFromWorktreeDir(filepath.Base(path))
