@@ -748,15 +748,29 @@ func TestAutoResolveConflict_ActiveWorkflowSkipsFastPath(t *testing.T) {
 // only ever applies to a single, conflict-only issue: a coalesced
 // conflict+comments dispatch must always go through the normal agent path,
 // regardless of what the merge would have done.
-func TestAutoResolveConflict_CoalescedIssuesSkipFastPath(t *testing.T) {
+// TestSyncStaleBranch_CoalescedIssuesRunsPreDispatchSyncButStillDispatches
+// covers #2609: a coalesced issue set (Conflict alongside Comments) is not
+// eligible for autoResolveConflict's skip-the-round fast path (that requires
+// a single Conflict-only issue), but it IS eligible for syncStaleBranch's
+// non-skipping pre-dispatch sync — the branch still gets merged/pushed before
+// the round runs, it just never skips dispatching the agent for the
+// remaining real issue (comments).
+func TestSyncStaleBranch_CoalescedIssuesRunsPreDispatchSyncButStillDispatches(t *testing.T) {
 	h := newAutoResolveHarness(t, true)
 	tk, pr := h.newConflictTask(t)
 	mergeCalled := false
-	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+	h.r.tryCleanMergeFn = func(_ context.Context, dir, _ string) (project.CleanMergeResult, error) {
 		mergeCalled = true
+		if out, err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "synthetic merge").CombinedOutput(); err != nil {
+			t.Fatalf("git commit --allow-empty: %v: %s", err, out)
+		}
 		return project.CleanMergeCreated, nil
 	}
-	h.r.pushSyncFn = stubPush(nil)
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
 
 	commentsPR := pr
 	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
@@ -766,15 +780,18 @@ func TestAutoResolveConflict_CoalescedIssuesSkipFastPath(t *testing.T) {
 	if !ok {
 		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
 	}
-	if mergeCalled {
-		t.Error("tryCleanMergeFn invoked for a coalesced (non-single) issue set")
+	if !mergeCalled {
+		t.Error("tryCleanMergeFn not invoked for a coalesced (non-single) issue set — syncStaleBranch must still run")
+	}
+	if !pushCalled {
+		t.Error("pushSyncFn not invoked — a clean merge for a coalesced set must still be pushed")
 	}
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Workflow == nil {
-		t.Fatal("no workflow dispatched for the coalesced issue set")
+		t.Fatal("no workflow dispatched for the coalesced issue set — sync must never skip the round")
 	}
 }
 
@@ -1029,5 +1046,202 @@ func TestRollbackAutoResolvedMerge_SurvivesCancelledContext(t *testing.T) {
 
 	if got := currentHEAD(t, worktreeDir); got != preMergeHead {
 		t.Fatalf("HEAD after rollback = %s, want %s", got, preMergeHead)
+	}
+}
+
+// TestSyncStaleBranch_CreatedSyncsAndStillDispatches is the acceptance
+// criterion for #2609: a single Comments-only issue is never eligible for
+// autoResolveConflict's skip-the-round fast path, but syncStaleBranch still
+// merges/pushes a stale branch up to date before the round runs, and the
+// round dispatches regardless — the comments still need the agent's
+// attention, just against a fresh diff.
+func TestSyncStaleBranch_CreatedSyncsAndStillDispatches(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	var mergedHead string
+	h.r.tryCleanMergeFn = func(_ context.Context, dir, _ string) (project.CleanMergeResult, error) {
+		if out, err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "synthetic merge").CombinedOutput(); err != nil {
+			t.Fatalf("git commit --allow-empty: %v: %s", err, out)
+		}
+		mergedHead = currentHEAD(t, dir)
+		return project.CleanMergeCreated, nil
+	}
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if !pushCalled {
+		t.Fatal("pushSyncFn not invoked for a stale branch")
+	}
+	if mergedHead == "" {
+		t.Fatal("mergedHead not captured")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched — syncStaleBranch must never skip the round")
+	}
+
+	events := readExperienceAuditEvents(t, h.auditDir)
+	found := false
+	for _, ev := range events {
+		if ev.Type != audit.EventPRBranchStaleAutoSynced {
+			continue
+		}
+		found = true
+		if ev.Data["pr"] != float64(555) {
+			t.Errorf("audit pr = %v, want 555", ev.Data["pr"])
+		}
+	}
+	if !found {
+		t.Error("EventPRBranchStaleAutoSynced not emitted")
+	}
+}
+
+// TestSyncStaleBranch_NoopStillDispatches covers an already-fresh branch: the
+// merge is a no-op (nothing to push) and the round still dispatches normally.
+func TestSyncStaleBranch_NoopStillDispatches(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	h.r.tryCleanMergeFn = stubMerge(project.CleanMergeNoop, nil)
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if pushCalled {
+		t.Error("pushSyncFn invoked for a no-op merge")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched for a no-op sync")
+	}
+}
+
+// TestSyncStaleBranch_ConflictStillDispatches covers a genuine content
+// conflict merging base in: the branch is left alone (TryCleanMerge
+// self-cleans on conflict) and the round still dispatches — the existing
+// conflict-recovery machinery handles a real conflict once GitHub reports it.
+func TestSyncStaleBranch_ConflictStillDispatches(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	h.r.tryCleanMergeFn = stubMerge(project.CleanMergeConflict, nil)
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if pushCalled {
+		t.Error("pushSyncFn invoked for a conflicting merge")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched after a sync conflict")
+	}
+}
+
+// TestSyncStaleBranch_ApprovedPRSkipsSync mirrors
+// TestAutoResolveConflict_ApprovedPRSkipsCleanMergeAndDispatchesAgent: merging
+// base in changes the merge-base and can dismiss an existing GitHub approval,
+// so an approved PR must never be auto-merged, regardless of issue kind.
+func TestSyncStaleBranch_ApprovedPRSkipsSync(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	pr.ReviewDecision = "APPROVED"
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Fatal("tryCleanMergeFn called; approved PR must skip syncStaleBranch")
+	}
+}
+
+// TestSyncStaleBranch_ToggleOffSkipsSync verifies the same
+// AutoResolveCleanMerges kill-switch gates syncStaleBranch.
+func TestSyncStaleBranch_ToggleOffSkipsSync(t *testing.T) {
+	h := newAutoResolveHarness(t, false)
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked while AutoResolveCleanMerges is disabled")
+	}
+}
+
+// TestSyncStaleBranch_WorkProjectSkipsSync verifies the same pet-project-only
+// guard as autoResolveConflict applies to syncStaleBranch.
+func TestSyncStaleBranch_WorkProjectSkipsSync(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	if _, err := h.projects.Update(h.proj.ID, project.ProjectTypeWork); err != nil {
+		t.Fatal(err)
+	}
+
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked for a work-typed project")
 	}
 }
