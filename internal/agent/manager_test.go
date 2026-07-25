@@ -1481,7 +1481,7 @@ func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
 	}
-	for range maxPendingHeadlessSteerPrompts {
+	for range MaxPendingHeadlessSteerPrompts {
 		a.EnqueuePrompt("queued")
 	}
 	putAgent(t, m, a)
@@ -1492,8 +1492,8 @@ func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
 		t.Fatal("expected queue overflow error")
 	}
 	assertConflictClientError(t, err)
-	if got := a.PendingPromptCount(); got != maxPendingHeadlessSteerPrompts {
-		t.Fatalf("PendingPromptCount = %d, want %d", got, maxPendingHeadlessSteerPrompts)
+	if got := a.PendingPromptCount(); got != MaxPendingHeadlessSteerPrompts {
+		t.Fatalf("PendingPromptCount = %d, want %d", got, MaxPendingHeadlessSteerPrompts)
 	}
 }
 

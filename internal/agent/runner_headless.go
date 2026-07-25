@@ -109,11 +109,12 @@ var headlessRetryBackoffs = []time.Duration{30 * time.Second, 60 * time.Second, 
 // stream_tooLong log lines.
 const headlessScannerBuffer = 4 * 1024 * 1024
 
-// maxPendingHeadlessSteerPrompts bounds queued operator guidance while a
+// MaxPendingHeadlessSteerPrompts bounds queued operator guidance while a
 // headless turn is still running. The queue is replayed into the survival
 // registry, so keep it finite rather than allowing a stuck turn to grow memory
-// and restart-replay state without limit.
-const maxPendingHeadlessSteerPrompts = 20
+// and restart-replay state without limit. Exported so e2e tests outside this
+// package can assert against the real cap instead of a duplicated literal.
+const MaxPendingHeadlessSteerPrompts = 20
 
 type preparedHeadlessAttempt struct {
 	cfg     RunConfig
@@ -1274,12 +1275,12 @@ func (m *Manager) sendHeadlessSteerMessage(a *Agent, text string) error {
 	if a.isFinalizing() {
 		return conflictError(fmt.Sprintf("agent %s is finalizing and can no longer accept messages", a.ID))
 	}
-	if a.PendingPromptCount() >= maxPendingHeadlessSteerPrompts {
-		return conflictError(fmt.Sprintf("agent %s has too many pending steer messages (%d max)", a.ID, maxPendingHeadlessSteerPrompts))
+	queueLen, enqueued := a.TryEnqueuePrompt(text, MaxPendingHeadlessSteerPrompts)
+	if !enqueued {
+		return conflictError(fmt.Sprintf("agent %s has too many pending steer messages (%d max)", a.ID, MaxPendingHeadlessSteerPrompts))
 	}
-	a.EnqueuePrompt(text)
 	m.saveRegistry(m.ctx, a)
-	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", a.PendingPromptCount())
+	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", queueLen)
 
 	// Surface the sent message immediately in StreamOutput — the CLI only
 	// echoes tool-result/assistant turns back over stdout, never the
