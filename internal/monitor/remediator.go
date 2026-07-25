@@ -127,7 +127,12 @@ func (r *remediator) remediateHumanRequiredStuck(ctx context.Context, a Anomaly)
 		return string(a.Kind) + ":merged:" + a.TaskID, nil
 	}
 	if known, _ := a.Evidence["known_lost_agent_investigation"].(bool); known {
-		if humanReviewVerdict(a) == "human" || workflow.IsTamperFlaggedReason(t.StatusReason) {
+		// Umbrella trackers run no agent of their own — their in-progress is a
+		// rollup of their children (app_umbrella_gate.go), not a dispatchable
+		// unit of work. Flipping one straight to in-progress here bypasses the
+		// only umbrella-guarded dispatch choke point (agentorch.startAgent) and
+		// re-triggers the exact bug #2610 fixed. Mirrors detectLostAgents.
+		if humanReviewVerdict(a) == "human" || workflow.IsTamperFlaggedReason(t.StatusReason) || t.TaskType == task.TaskTypeUmbrella {
 			return r.refreshHumanRequiredStuck(a)
 		}
 		return r.retryKnownLostAgentStuck(a, t)
