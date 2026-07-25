@@ -70,8 +70,6 @@ func TestGhShim_BlocksSubmittedReviews(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"comment review", []string{"pr", "review", "--comment", "-b", "summary", "1"}},
-		{"request changes", []string{"pr", "review", "--request-changes", "-b", "fix this", "1"}},
 		{"long flag", []string{"pr", "review", "--approve", "1"}},
 		{"short flag", []string{"pr", "review", "-a", "1"}},
 		{"flag after number", []string{"pr", "review", "1", "--approve"}},
@@ -81,10 +79,11 @@ func TestGhShim_BlocksSubmittedReviews(t *testing.T) {
 		{"approve after a body-file flag", []string{"pr", "review", "-F", "notes.md", "--approve", "1"}},
 		{"approve after an inline body", []string{"pr", "review", "--body=lgtm", "--approve", "1"}},
 		{"repo flag first", []string{"pr", "review", "-R", "owner/repo", "--approve", "1"}},
-		{"rest comment event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=COMMENT"}},
-		{"rest request changes event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=REQUEST_CHANGES"}},
+		{"no verdict flag at all", []string{"pr", "review", "1", "-b", "lgtm"}},
+		{"no verdict flag, long body only", []string{"pr", "review", "1"}},
+		{"unrecognized short flag", []string{"pr", "review", "1", "-z"}},
+		{"approve bundled with comment", []string{"pr", "review", "1", "-ac"}},
 		{"rest approve event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=APPROVE"}},
-		{"rest pending submit", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews/99/events", "-f", "event=COMMENT"}},
 		{"graphql add review", []string{"api", "graphql", "-f", `query=mutation { addPullRequestReview(input: {event: APPROVED}) { id } }`}},
 		{"graphql submit review", []string{"api", "graphql", "-f", `query=mutation { submitPullRequestReview(input: {event: APPROVE}) { id } }`}},
 	}
@@ -98,7 +97,7 @@ func TestGhShim_BlocksSubmittedReviews(t *testing.T) {
 			if strings.Contains(stdout, "REAL-GH") {
 				t.Fatalf("shim executed real gh for %v: %s", tc.args, stdout)
 			}
-			if !strings.Contains(stderr, "pending PR review drafts") {
+			if !strings.Contains(stderr, GhShimReason) {
 				t.Fatalf("shim stderr missing reason for %v: %q", tc.args, stderr)
 			}
 		})
@@ -138,6 +137,17 @@ func TestGhShim_AllowsPendingDraftReviews(t *testing.T) {
 		{"listing approved reviews", []string{"api", "graphql", "-f", `query=query { reviews(states: APPROVED) { id } }`}},
 		{"merge is gated elsewhere", []string{"pr", "merge", "1", "--squash"}},
 		{"unrelated", []string{"repo", "view"}},
+		{"comment review", []string{"pr", "review", "--comment", "-b", "summary", "1"}},
+		{"request changes", []string{"pr", "review", "--request-changes", "-b", "fix this", "1"}},
+		{"request changes short flag", []string{"pr", "review", "1", "-r", "-b", "fix this"}},
+		{"comment with repo flag", []string{"pr", "review", "-R", "owner/repo", "--comment", "-b", "fix this", "1"}},
+		// A body value that starts with '-' is a value, not a flag bundle: it must
+		// not be misread as an unrecognized short flag and blocked.
+		{"request changes with dash-leading body", []string{"pr", "review", "123", "--request-changes", "-b", "-1, this design has issues"}},
+		{"comment with dash-leading body-file", []string{"pr", "review", "123", "--comment", "-F", "-notes.md"}},
+		{"rest comment event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=COMMENT"}},
+		{"rest request changes event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=REQUEST_CHANGES"}},
+		{"rest pending submit with comment event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews/99/events", "-f", "event=COMMENT"}},
 	}
 
 	for _, tc := range tests {
