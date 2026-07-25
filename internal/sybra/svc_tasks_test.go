@@ -1311,7 +1311,7 @@ func TestTaskService_EnrichFromPR_NotMyPRStartsPRReviewWorkflow(t *testing.T) {
 	if run.Role != "review" || run.RequestedSkill != "staff-code-review" {
 		t.Fatalf("AgentRun = %+v, want staff review run", run)
 	}
-	if !strings.Contains(run.Prompt, "Create exactly one PENDING (draft) pull-request review") ||
+	if !strings.Contains(run.Prompt, "NEVER submit an APPROVE review event") ||
 		!strings.Contains(run.Prompt, "inline comments, not one aggregated comment") {
 		t.Fatalf("AgentRun prompt missing pending inline review contract:\n%s", run.Prompt)
 	}
