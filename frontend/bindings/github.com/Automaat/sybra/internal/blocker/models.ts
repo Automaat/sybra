@@ -5,10 +5,6 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
-
 /**
  * Actor identifies which subsystem authored the blocker.
  */
@@ -62,7 +58,7 @@ export class State {
     "actor"?: Actor;
     "code"?: string;
     "nextAction"?: string;
-    "retryAfter"?: time$0.Time | null;
+    "retryAfter"?: string | null;
     "exhausted"?: boolean;
 
     /** Creates a new State instance. */

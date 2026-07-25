@@ -5,10 +5,6 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
-
 /**
  * Kind classifies an artifact's role in the workflow.
  */
@@ -36,7 +32,7 @@ export enum Kind {
 };
 
 export class ProgressEntry {
-    "ts": time$0.Time;
+    "ts": string;
     "kind": string;
     "role"?: string;
     "message": string;
@@ -44,7 +40,7 @@ export class ProgressEntry {
     /** Creates a new ProgressEntry instance. */
     constructor($$source: Partial<ProgressEntry> = {}) {
         if (!("ts" in $$source)) {
-            this["ts"] = null;
+            this["ts"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("kind" in $$source)) {
             this["kind"] = "";
