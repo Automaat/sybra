@@ -15,7 +15,10 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/reviewbudget"
 	"github.com/Automaat/sybra/internal/task"
@@ -717,6 +720,190 @@ func TestDispatchFromHumanRequired_InReviewFlipsStatusOnly(t *testing.T) {
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("in-review must not dispatch a workflow, got %d agent starts", launcher.startCalls)
+	}
+}
+
+// TestDispatchFromHumanRequired_RecordsInterventionOnUnblock exercises the
+// sybra#2468 capture hook: a genuine human-required unblock is recorded as a
+// normalized intervention record, and a second, equivalent unblock (same
+// blocker kind/code, same action class, same status transition) aggregates
+// into the same record with an incremented recurrence count instead of
+// creating a second one.
+func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+
+	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := projStore.CreateMeta("https://github.com/acme/api.git", project.ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.projects = projStore
+	svc.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
+
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	svc.audit = al
+
+	store, err := intervention.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.intervention = store
+
+	newParkedTask := func() task.Task {
+		tk, err := a.tasks.Create("fix the thing", "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, err := a.tasks.Update(tk.ID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			ProjectID:    task.Ptr(proj.ID),
+			PRNumber:     task.Ptr(7),
+			StatusReason: task.Ptr("needs manual project assignment"),
+			Blocker: &blocker.State{
+				Kind: blocker.KindOperatorDecision,
+				Code: "no_project_assigned",
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return updated
+	}
+
+	tk1 := newParkedTask()
+	if _, err := svc.DispatchFromHumanRequired(tk1.ID, "in-review", "assigned project manually"); err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+
+	records, err := store.Query(intervention.ProjectKey(proj), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
+	}
+	if records[0].Recurrences != 1 {
+		t.Fatalf("Recurrences = %d, want 1", records[0].Recurrences)
+	}
+	if records[0].OperatorActionClass != intervention.OperatorActionHuman {
+		t.Fatalf("OperatorActionClass = %q, want %q", records[0].OperatorActionClass, intervention.OperatorActionHuman)
+	}
+	if records[0].FromStatus != string(task.StatusHumanRequired) || records[0].ToStatus != "in-review" {
+		t.Fatalf("FromStatus/ToStatus = %q/%q, want human-required/in-review", records[0].FromStatus, records[0].ToStatus)
+	}
+
+	// A second, equivalent intervention on a distinct task must aggregate
+	// into the same record instead of creating a new one.
+	tk2 := newParkedTask()
+	if _, err := svc.DispatchFromHumanRequired(tk2.ID, "in-review", "assigned project manually again"); err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+
+	records, err = store.Query(intervention.ProjectKey(proj), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1 (equivalent interventions must dedup): %+v", len(records), records)
+	}
+	if records[0].Recurrences != 2 {
+		t.Fatalf("Recurrences = %d, want 2 on the repeat", records[0].Recurrences)
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventInterventionRecorded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("len(EventInterventionRecorded) = %d, want 2: %+v", len(events), events)
+	}
+}
+
+// TestDispatchFromHumanRequired_InterventionScrubsWorkProjects verifies that
+// an intervention captured for a work-typed project's unblock is routed
+// through the same scrub context as internal/experience: the record's task
+// ID is replaced with an opaque hash and its free-text fields carry no owner/
+// repo/URL, while a public-project record captured under identical
+// conditions passes those fields through untouched.
+func TestDispatchFromHumanRequired_InterventionScrubsWorkProjects(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+
+	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := projStore.CreateMeta("https://github.com/acme/api.git", project.ProjectTypeWork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.projects = projStore
+	svc.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
+
+	store, err := intervention.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.intervention = store
+
+	tk, err := a.tasks.Create("fix the thing", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := "resolved by checking https://github.com/acme/api/pull/9 manually"
+	updated, err := a.tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		ProjectID:    task.Ptr(proj.ID),
+		PRNumber:     task.Ptr(7),
+		StatusReason: task.Ptr("needs manual project assignment"),
+		Blocker: &blocker.State{
+			Kind: blocker.KindOperatorDecision,
+			Code: "no_project_assigned",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.DispatchFromHumanRequired(updated.ID, "in-review", reason); err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+
+	projectKey := intervention.ProjectKey(proj)
+	if projectKey == proj.ID {
+		t.Fatalf("work project key must be opaque, got the plain project ID %q", projectKey)
+	}
+	records, err := store.Query(projectKey, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
+	}
+	rec := records[0]
+	if rec.TaskID == updated.ID {
+		t.Fatalf("TaskID = %q, want an opaque stand-in for the plain task ID", rec.TaskID)
+	}
+	for _, field := range []string{rec.OperatorReason, rec.ProjectID} {
+		if strings.Contains(field, "acme") || strings.Contains(field, "github.com") {
+			t.Fatalf("work-typed record leaked an identifier: %q", field)
+		}
+	}
+	if !strings.Contains(rec.OperatorReason, "[redacted]") {
+		t.Fatalf("OperatorReason = %q, want a [redacted] marker for the embedded GitHub URL", rec.OperatorReason)
 	}
 }
 

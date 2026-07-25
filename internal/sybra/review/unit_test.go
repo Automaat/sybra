@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -2632,6 +2633,79 @@ func TestAdvanceClosedTaskPR_EmitsTaskLanded(t *testing.T) {
 	}
 	if !landed {
 		t.Fatalf("audit events = %+v, want task.landed", events)
+	}
+}
+
+// TestAdvanceClosedTaskPR_RecordsInterventionWhenHumanRequired proves the
+// sybra#2468 plan-critic finding is fixed: advanceClosedTaskPR is the second
+// automated exit path from human-required that bypassed the original
+// single-hook design. A PR merging/closing while its task sat human-required
+// must now capture an intervention too.
+func TestAdvanceClosedTaskPR_RecordsInterventionWhenHumanRequired(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.Create("Task whose PR was merged", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := projStore.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("waiting for review"),
+		PRNumber:     task.Ptr(1446),
+		ProjectID:    task.Ptr(proj.ID),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	auditDir := filepath.Join(tmp, "audit")
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+	logger := slog.New(slog.DiscardHandler)
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	interventionStore, err := intervention.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Handler{
+		logger: logger, emit: func(string, any) {},
+		audit:        auditLog,
+		tasks:        tasks,
+		agents:       agentMgr,
+		projects:     projStore,
+		cfg:          &config.Config{Intervention: config.InterventionConfig{Enabled: true}},
+		intervention: interventionStore,
+	}
+
+	if err := r.AdvanceClosedTaskPR(context.Background(), created.ID, 1446, "MERGED"); err != nil {
+		t.Fatalf("AdvanceClosedTaskPR: %v", err)
+	}
+
+	records, err := interventionStore.Query(intervention.ProjectKey(proj), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
+	}
+	if records[0].OperatorActionClass != intervention.OperatorActionAutoRecovery {
+		t.Fatalf("OperatorActionClass = %q, want %q", records[0].OperatorActionClass, intervention.OperatorActionAutoRecovery)
+	}
+	if records[0].ToStatus != string(task.StatusDone) {
+		t.Fatalf("ToStatus = %q, want %q", records[0].ToStatus, task.StatusDone)
 	}
 }
 

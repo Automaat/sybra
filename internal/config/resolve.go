@@ -201,4 +201,5 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	applyReviewHoldDefaults(cfg)
 	applyAdmissionDefaults(cfg, file)
 	applyEvidenceDefaults(cfg, file)
+	applyInterventionDefaults(cfg, file)
 }

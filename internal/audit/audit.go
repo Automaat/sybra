@@ -116,6 +116,15 @@ const (
 	EventExperienceRecorded          = "experience.recorded"
 	EventExperienceSkipped           = "experience.skipped"
 	EventExperienceInjected          = "experience.injected"
+	// EventInterventionRecorded records that a genuine human-required unblock
+	// was captured as a normalized intervention record (see
+	// internal/intervention). Data carries the record's fingerprint plus
+	// project_id (public) or project_key (work, opaque).
+	EventInterventionRecorded = "intervention.recorded"
+	// EventInterventionSkipped records that an unblock did not produce an
+	// intervention record — Data.reason is "project_unresolved" or
+	// "write_failed".
+	EventInterventionSkipped = "intervention.skipped"
 
 	// EventTaskLanded records a task's terminal outcome (merged/closed) with
 	// queue-inclusive and work-based timing for the evaluation scorecard.

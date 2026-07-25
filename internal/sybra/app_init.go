@@ -23,6 +23,7 @@ import (
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
@@ -334,6 +335,7 @@ func (a *App) initLocalStores() {
 	a.initAttachments()
 	a.initArtifacts()
 	a.initExperience()
+	a.initIntervention()
 	a.initLearning()
 	a.initAgentQueue()
 }
@@ -359,6 +361,15 @@ func (a *App) initExperience() {
 		return
 	}
 	a.experience = store
+}
+
+func (a *App) initIntervention() {
+	store, err := intervention.New(a.cfg.InterventionsDir())
+	if err != nil {
+		a.logger.Warn("intervention.init.degraded", "err", err)
+		return
+	}
+	a.intervention = store
 }
 
 // initLearning constructs the Learning Digest store. A failure degrades to a

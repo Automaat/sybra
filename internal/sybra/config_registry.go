@@ -97,6 +97,10 @@ var configRegistry = []configRegistryEntry{
 	{Path: "harness_evolution", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "prompt_lab", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "experience", Policy: configPolicyHot, Visibility: configVisibilityUI},
+	// hot, same as experience above: recordInterventionOnUnblock reads
+	// s.cfg.Intervention.Enabled fresh on every human-required dispatch off the
+	// shared *config.Config pointer — no cached copy to re-arm.
+	{Path: "intervention", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "ab_testing", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	// routing.Service reads its interval/budget/floor/step/coefficients once
 	// at Run() startup, same as evaluation/prompt_lab/harness_evolution's

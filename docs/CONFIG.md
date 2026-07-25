@@ -16,7 +16,7 @@ Regenerate with `go generate ./internal/config/...` after changing a struct tag 
 | `integrations` | External systems Sybra talks to on the operator's behalf. | `integrations.notification`, `integrations.github`, `integrations.renovate`, `integrations.browser` |
 | `supervision` | Health checks, review escalation, and autonomous oversight loops. | `supervision.human_review`, `supervision.monitor`, `supervision.watchdog`, `supervision.self_monitor`, `supervision.evaluation`, `supervision.learning_digest`, `supervision.harness_evolution`, `supervision.prompt_lab` |
 | `storage` | Filesystem-backed retention and path layout under SYBRA_HOME. | `storage.attachments`, `storage.trash`, `storage.sandboxes`, `storage.task_snapshot`, `storage.paths` |
-| `observability` | Logs, audit, metrics, experimentation, and operator evidence retention. | `observability.logging`, `observability.audit`, `observability.metrics`, `observability.experience`, `observability.ab_testing` |
+| `observability` | Logs, audit, metrics, experimentation, and operator evidence retention. | `observability.logging`, `observability.audit`, `observability.metrics`, `observability.experience`, `observability.intervention`, `observability.ab_testing` |
 | `routing` | Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes. | `routing` |
 | `server` | Local API/server exposure and auth for the running Sybra instance. | `server` |
 | `webhook` | Inbound external task-creation webhook listener and request-signing controls. | `webhook` |
@@ -742,6 +742,17 @@ Scalar/root keys that live directly under this namespace.
 | `observability.experience.enabled` | `bool` | `false` |  |  | `experience.enabled` | `false` | `hot` |  |  |
 | `observability.experience.max_records` | `int` | `5` |  |  | `experience.max_records` | `false` | `hot` |  |  |
 | `observability.experience.ttl` | `int` | `0` | `days` |  | `experience.ttl_days`, `experience.ttl` | `false` | `hot` |  | TTLDays expires records older than this many days out of injection — a stale record can otherwise poison a prompt with advice that no longer matches the current codebase. 0 (default) disables expiry, so existing deployments are unaffected until an operator opts in. |
+
+### InterventionConfig (`observability.intervention`)
+
+InterventionConfig gates capture of genuine human-required unblocks into a
+normalized, fingerprint-deduplicated intervention record (see
+internal/intervention) — advisory memory for a future replay fixture
+(sybra#2454), never a deterministic gate.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `observability.intervention.enabled` | `bool` | `true` |  |  | `intervention.enabled` | `false` | `hot` |  | Enabled turns capture on. Defaults true (see applyInterventionDefaults) — safe because records are local-only, scrub-guarded for work projects, and feed no routing/admission/completion decision. |
 
 ### MetricsConfig (`observability.metrics`)
 

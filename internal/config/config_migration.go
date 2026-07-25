@@ -24,7 +24,7 @@ var v2NamespaceDocs = []V2NamespaceDoc{
 	{Name: "integrations", OwnershipRule: "External systems Sybra talks to on the operator's behalf.", Paths: []string{"integrations.notification", "integrations.github", "integrations.renovate", "integrations.browser"}},
 	{Name: "supervision", OwnershipRule: "Health checks, review escalation, and autonomous oversight loops.", Paths: []string{"supervision.human_review", "supervision.monitor", "supervision.watchdog", "supervision.self_monitor", "supervision.evaluation", "supervision.learning_digest", "supervision.harness_evolution", "supervision.prompt_lab"}},
 	{Name: "storage", OwnershipRule: "Filesystem-backed retention and path layout under SYBRA_HOME.", Paths: []string{"storage.attachments", "storage.trash", "storage.sandboxes", "storage.task_snapshot", "storage.paths"}},
-	{Name: "observability", OwnershipRule: "Logs, audit, metrics, experimentation, and operator evidence retention.", Paths: []string{"observability.logging", "observability.audit", "observability.metrics", "observability.experience", "observability.ab_testing"}},
+	{Name: "observability", OwnershipRule: "Logs, audit, metrics, experimentation, and operator evidence retention.", Paths: []string{"observability.logging", "observability.audit", "observability.metrics", "observability.experience", "observability.intervention", "observability.ab_testing"}},
 	{Name: "routing", OwnershipRule: "Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes.", Paths: []string{"routing"}},
 	{Name: "server", OwnershipRule: "Local API/server exposure and auth for the running Sybra instance.", Paths: []string{"server"}},
 	{Name: "webhook", OwnershipRule: "Inbound external task-creation webhook listener and request-signing controls.", Paths: []string{"webhook"}},
@@ -78,6 +78,7 @@ var topLevelNamespaceRules = []topLevelNamespaceRule{
 	{legacyKey: "prompt_lab", canonical: []string{"supervision", "prompt_lab"}, deprecated: "supervision.prompt_lab", namespace: "supervision"},
 	{legacyKey: "metrics", canonical: []string{"observability", "metrics"}, deprecated: "observability.metrics", namespace: "observability"},
 	{legacyKey: "experience", canonical: []string{"observability", "experience"}, deprecated: "observability.experience", namespace: "observability"},
+	{legacyKey: "intervention", canonical: []string{"observability", "intervention"}, deprecated: "observability.intervention", namespace: "observability"},
 	{legacyKey: "ab_testing", canonical: []string{"observability", "ab_testing"}, deprecated: "observability.ab_testing", namespace: "observability"},
 	{legacyKey: "project_types", canonical: []string{"instance", "project_types"}, deprecated: "instance.project_types", namespace: "instance", directField: true},
 	{legacyKey: "tasks_dir", canonical: []string{"storage", "paths", "tasks"}, deprecated: "storage.paths.tasks", namespace: "storage", directField: true},
@@ -195,11 +196,12 @@ func NormalizeV2Document(root *yaml.Node) (*yaml.Node, []string, error) {
 			}
 		case "observability":
 			if err := normalizeSimpleNamespace(builder, valueNode, map[string]string{
-				"logging":    "logging",
-				"audit":      "audit",
-				"metrics":    "metrics",
-				"experience": "experience",
-				"ab_testing": "ab_testing",
+				"logging":      "logging",
+				"audit":        "audit",
+				"metrics":      "metrics",
+				"experience":   "experience",
+				"intervention": "intervention",
+				"ab_testing":   "ab_testing",
 			}, "observability"); err != nil {
 				return nil, nil, err
 			}
