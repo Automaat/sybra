@@ -1244,7 +1244,7 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		statusReason:      fs.String("status-reason", "", "reason for status change"),
 		maxTurns:          fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
 		reasoningEffort:   fs.String("reasoning-effort", "", "reasoning effort (all providers): low|medium|high|xhigh ('default' or 'none' clears the override)"),
-		blockerKind:       fs.String("blocker-kind", "", "blocker kind (e.g. operator_decision|credential_required|policy_approval|worktree_repair|review_fix_exhausted|triage_retry_exhausted)"),
+		blockerKind:       fs.String("blocker-kind", "", "blocker kind (e.g. operator_decision|credential_required|policy_approval|worktree_repair|review_fix_exhausted|triage_retry_exhausted|dependency_scope_unmet)"),
 		blockerCode:       fs.String("blocker-code", "", "blocker code (short machine-readable subtype)"),
 		blockerNextAction: fs.String("blocker-next-action", "", "next automatic action for the blocker (e.g. repair_worktree)"),
 		blockerRetryAfter: fs.String("blocker-retry-after", "", "RFC3339 timestamp before which the blocker should not be retried"),

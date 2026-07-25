@@ -166,7 +166,8 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	// children still release so independent work under the umbrella can proceed.
 	// Expanding/recovering trackers are removed from states above, so release
 	// and rollup both hold until the complete DAG is visible.
-	a.releaseCapped(ctx, g.ReadyToRelease(), byID, states)
+	ready := a.holdScopeVerdictBlocked(g.ReadyToRelease(), byID, states)
+	a.releaseCapped(ctx, ready, byID, states)
 
 	// An in-flight recovery run owns this umbrella's tracker/children this
 	// tick; skip its rollup entirely rather than computing status from a
@@ -260,6 +261,73 @@ func externalBlockerReason(refs []string) string {
 	sorted := slices.Clone(refs)
 	slices.Sort(sorted)
 	return "held: body names external dependency " + strings.Join(sorted, ", ") + " not tracked as done"
+}
+
+// dependencyScopeVerdictReasonPrefix marks a human-required status_reason as
+// having been written by holdScopeVerdictBlocked, mirroring
+// externalBlockerReason/admissionPreflightReasonPrefix's pattern for other
+// mechanical gates.
+const dependencyScopeVerdictReasonPrefix = "held: prior verdict flagged unmet scope for"
+
+// holdScopeVerdictBlocked filters ready — the children ReadyToRelease just
+// confirmed have every depends_on ref resolved to Done — removing any child
+// whose Blocker already carries an explicit prior verdict
+// (blocker.KindDependencyScopeUnmet) that one of those very refs did not
+// actually satisfy the scope this task needs, and escalating it to
+// human-required instead. depsSatisfied only ever asks "is the referenced
+// task Done?" — it cannot tell a scope-complete closure from one that merely
+// closed the same issue number (sybra#2637: umbrella #2493's child #2503
+// cycled blocked -> todo -> human-required 8 times because PR #2620 closed
+// #2464 without implementing the permutation-contract scope #2503 actually
+// depended on, burning a fresh implementation-agent run each cycle). Once a
+// prior run recorded that verdict, trust it over the raw Done flag: require a
+// human to clear the blocker (or record a fresh one) after confirming the
+// scope now genuinely exists, rather than silently re-dispatching into the
+// same already-known-negative cycle. A blocker whose Code no longer names a
+// current depends_on ref (e.g. DependsOn was edited since) is stale and must
+// not hold release.
+func (a *App) holdScopeVerdictBlocked(ready []string, byID map[string]*task.Task, states map[string]*umbrellaState) []string {
+	if len(ready) == 0 {
+		return ready
+	}
+	kept := ready[:0]
+	for _, id := range ready {
+		t := byID[id]
+		if t == nil || !namesScopeVerdictDep(t) {
+			kept = append(kept, id)
+			continue
+		}
+		reason := dependencyScopeVerdictReasonPrefix + " " + t.Blocker.Code +
+			" — clear the blocker once the required scope is confirmed to exist"
+		if _, err := a.tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(reason),
+			Blocker:      task.Ptr(t.Blocker),
+		}); err != nil {
+			a.logger.Error("umbrella.gate.scope_verdict.hold_failed", "task_id", id, "err", err)
+			kept = append(kept, id) // don't silently strand it on our own write error
+			continue
+		}
+		if st := states[umbrella.NormalizeIssueRef(t.UmbrellaIssue)]; st != nil {
+			st.setChildStatus(id, task.StatusHumanRequired)
+			st.anyHR = true
+		}
+		a.logger.Info("umbrella.gate.scope_verdict.held", "task_id", id, "dep", t.Blocker.Code)
+	}
+	return kept
+}
+
+// namesScopeVerdictDep reports whether t carries an explicit prior
+// dependency-scope-unmet verdict naming one of its own current DependsOn
+// refs.
+func namesScopeVerdictDep(t *task.Task) bool {
+	if t.Blocker.Kind != blocker.KindDependencyScopeUnmet || t.Blocker.Code == "" {
+		return false
+	}
+	target := umbrella.NormalizeIssueRef(t.Blocker.Code)
+	return slices.ContainsFunc(t.DependsOn, func(ref string) bool {
+		return umbrella.NormalizeIssueRef(ref) == target
+	})
 }
 
 // accumulateChild folds one child task's status into its umbrella's tally.

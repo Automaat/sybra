@@ -786,6 +786,89 @@ func TestReleaseUnblockedChildren_HoldsOnCrossProgramBodyRef(t *testing.T) {
 	}
 }
 
+// TestReleaseUnblockedChildren_ScopeVerdictBlocksReleaseOnDepClose is the
+// regression guard for sybra#2637: a child once carried a
+// blocker.KindDependencyScopeUnmet verdict naming a still-open dependency
+// (recorded by a prior agent run that found the referenced issue's closure
+// would not satisfy this task's actual required scope). Once that dependency
+// later flips Done, depsSatisfied alone would silently release the child back
+// into another implementation cycle — the gate must instead escalate to
+// human-required so a human confirms the scope now exists before dispatching
+// again.
+func TestReleaseUnblockedChildren_ScopeVerdictBlocksReleaseOnDepClose(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+
+	dep := mkChild(t, m, "dep", "Automaat/sybra#1", umb, nil, task.StatusInProgress)
+	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
+	if _, err := m.Update(child.ID, task.Update{
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr("blocked: #1 closed via a narrower PR that does not implement the required scope"),
+		Blocker: task.Ptr(blocker.State{
+			Kind: blocker.KindDependencyScopeUnmet,
+			Code: "Automaat/sybra#1",
+		}),
+	}); err != nil {
+		t.Fatalf("record scope verdict: %v", err)
+	}
+
+	// Dependency still open: the verdict is moot, child stays held as usual.
+	app.releaseUnblockedChildren(context.Background())
+	if got := mustStatus(t, m, child.ID); got != task.StatusBlocked {
+		t.Fatalf("child status = %q, want blocked while dep is still open", got)
+	}
+
+	// Dependency closes — depsSatisfied alone would now release the child.
+	if _, err := m.Update(dep.ID, task.Update{Status: task.Ptr(task.StatusDone)}); err != nil {
+		t.Fatalf("finish dep: %v", err)
+	}
+	app.releaseUnblockedChildren(context.Background())
+
+	held := mustTask(t, m, child.ID)
+	if held.Status != task.StatusHumanRequired {
+		t.Fatalf("child status = %q, want human-required — a prior scope verdict must not be silently overridden by the dep closing", held.Status)
+	}
+	if !strings.Contains(held.StatusReason, "#1") {
+		t.Fatalf("status reason = %q, want it to name the unmet ref #1", held.StatusReason)
+	}
+	if held.Blocker.Kind != blocker.KindDependencyScopeUnmet {
+		t.Fatalf("blocker kind = %q, want the verdict preserved for a human to clear", held.Blocker.Kind)
+	}
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
+		t.Fatalf("tracker = %q, want human-required to surface the held child", got)
+	}
+}
+
+// TestReleaseUnblockedChildren_StaleScopeVerdictDoesNotHoldRelease covers the
+// case where a blocker.KindDependencyScopeUnmet verdict names a ref that is
+// no longer among the task's own DependsOn (e.g. DependsOn was edited after
+// the verdict was recorded) — the verdict is stale and must not block an
+// otherwise-ready release.
+func TestReleaseUnblockedChildren_StaleScopeVerdictDoesNotHoldRelease(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	mkTracker(t, m, umb, 5)
+
+	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, nil, task.StatusTodo)
+	if _, err := m.Update(child.ID, task.Update{
+		Status: task.Ptr(task.StatusBlocked),
+		Blocker: task.Ptr(blocker.State{
+			Kind: blocker.KindDependencyScopeUnmet,
+			Code: "Automaat/sybra#999", // not in (empty) DependsOn
+		}),
+	}); err != nil {
+		t.Fatalf("record stale verdict: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+	if got := mustStatus(t, m, child.ID); got != task.StatusTodo {
+		t.Fatalf("child status = %q, want todo — a stale verdict must not hold an otherwise-ready release", got)
+	}
+}
+
 func TestReleaseUnblockedChildren_HoldsWhileUmbrellaExpanding(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)
