@@ -503,6 +503,36 @@ func TestPRMonitorEligible(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "ready-pr with PR — eligible (sybra#2645: workflow completed at ready-pr, nothing else watches its PR)",
+			tk:   task.Task{Status: task.StatusReadyPR, PRNumber: 2645},
+			want: true,
+		},
+		{
+			name: "ready-pr with nothing — not eligible",
+			tk:   task.Task{Status: task.StatusReadyPR},
+			want: false,
+		},
+		{
+			name: "ready-review with PR — eligible (sybra#2646: local review loop is blind to real CI failures on the already-open PR)",
+			tk:   task.Task{Status: task.StatusReadyReview, PRNumber: 2646},
+			want: true,
+		},
+		{
+			name: "ready-review with branch only — not eligible (avoid WIP false positives)",
+			tk:   task.Task{Status: task.StatusReadyReview, Branch: "sybra/wip"},
+			want: false,
+		},
+		{
+			name: "testing with PR — eligible, same lane as ready-review",
+			tk:   task.Task{Status: task.StatusTesting, PRNumber: 2646},
+			want: true,
+		},
+		{
+			name: "testing with nothing — not eligible",
+			tk:   task.Task{Status: task.StatusTesting},
+			want: false,
+		},
+		{
 			name: "review tag excluded (inbound review task, not ours)",
 			tk:   task.Task{Status: task.StatusInReview, PRNumber: 42, Tags: []string{"review"}},
 			want: false,
