@@ -81,6 +81,25 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 		return fmt.Errorf("task %s has no linked PR", t.ID)
 	}
 
+	// Claim sole dispatch rights before touching anything else. This is the
+	// one caller of agent.Manager.Run in this package that used to skip the
+	// claim StartReviewAgent takes just below — reachable only from the
+	// Wails-bound ReviewService.StartFixReview (manual "Fix Review" click),
+	// it could race an automated fix-review dispatch already in flight for
+	// the same task via WorkflowEngine.DispatchEvent (which claims through
+	// agentAdapter.TryClaimDispatch, the same underlying agent.Manager).
+	// agents.Run itself performs no per-task guard, so without this claim
+	// both callers could start a second headless agent against the same
+	// worktree/branch concurrently.
+	if r.agents != nil {
+		claim, ok := r.agents.TryClaimDispatch(t.ID)
+		if !ok {
+			r.logger.Info("fix-review.agent-skip", "task_id", t.ID, "pr", t.PRNumber, "reason", "dispatch_in_progress")
+			return nil
+		}
+		defer claim.Release()
+	}
+
 	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, r.cfg)
 	if postureErr != nil {
 		return postureErr
