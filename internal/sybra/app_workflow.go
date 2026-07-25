@@ -1178,10 +1178,10 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 		// AgentRuns to bound the automated review loop, so a silently dropped
 		// write here under-counts that durable budget for this task, same as
 		// #2199 named. Fail closed like StartReviewAgent (review/inbound.go):
-		// stop the agent that already started before surfacing the error, so
-		// a workflow-level retry never races a live, unrecorded process —
-		// it always redispatches into a clean slate instead of piling a
-		// second agent on top of one still running.
+		// signal the agent that already started before surfacing the error
+		// (best-effort — does not block for exit), so a workflow-level retry
+		// targets an agent Sybra no longer considers live instead of piling a
+		// second one on top of an unrecorded process still running.
 		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
 		if stopErr := a.agents.StopAgent(ag.ID); stopErr != nil {
 			return fmt.Errorf("record agent run: %w; stop started agent %s: %w", addErr, ag.ID, stopErr)
