@@ -402,11 +402,20 @@ type taskSignals struct {
 // [since, until]. Records and events outside the window are ignored, so callers
 // may pass a superset. Pure: no I/O, deterministic for a given input.
 func Compute(records []stats.RunRecord, events []audit.Event, since, until time.Time) Scorecard {
+	return computeWithSignals(records, events, scanTaskSignals(events), since, until)
+}
+
+// computeWithSignals is Compute with task signals pre-scanned by the caller.
+// scanTaskSignals is not window-bound (it scans the full event history
+// regardless of [since, until]), so a caller that windows the same events
+// repeatedly — e.g. ComputeAutonomyTrend, which calls this once per snapshot
+// and per weekly bucket — can scan it once and reuse it instead of paying an
+// O(events) rescan on every call.
+func computeWithSignals(records []stats.RunRecord, events []audit.Event, sigs map[string]*taskSignals, since, until time.Time) Scorecard {
 	sc := Scorecard{WindowDays: until.Sub(since).Hours() / 24}
 	win := func(t time.Time) bool { return !t.Before(since) && !t.After(until) }
 
 	lg := scanLandings(events, win)
-	sigs := scanTaskSignals(events) // not window-bound: capture full task history
 	runs, fails, stalls, resolved := scanReliability(records, win)
 	cost, turns, tools := scanEfficiency(records, win)
 

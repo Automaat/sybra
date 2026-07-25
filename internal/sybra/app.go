@@ -563,6 +563,21 @@ func (a *App) GetLifecyclePhases() evaluation.PhaseReport {
 	return rep
 }
 
+// GetAutonomyTrend returns all-time / last-week / last-month autonomy
+// snapshots plus a week-by-week trend, so the Evaluation tab can show how
+// autonomy has moved over time instead of only the current rolling window.
+func (a *App) GetAutonomyTrend() evaluation.AutonomyTrend {
+	if a.evaluationSvc == nil {
+		return evaluation.AutonomyTrend{}
+	}
+	trend, err := a.evaluationSvc.AutonomyTrend(context.Background())
+	if err != nil {
+		a.logger.Warn("evaluation.autonomy_trend.failed", "err", err)
+		return evaluation.AutonomyTrend{}
+	}
+	return trend
+}
+
 // RunLearningDigestNow synchronously generates and persists a fresh Learning
 // Digest, returning it or a clear error (insufficient fresh data, a
 // malformed/invalid summarizer response, or a persist failure). A failed run

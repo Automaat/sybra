@@ -234,6 +234,27 @@ func (s *Service) PhaseReport(_ context.Context) (PhaseReport, error) {
 	return ComputePhaseDurations(evts, since, now, 10), nil
 }
 
+// AutonomyTrend returns all-time / last-week / last-month autonomy plus a
+// week-by-week series. Reads full audit history (not just the scorecard
+// window) since "all-time" and week buckets further back than the configured
+// window need it. Read-only.
+func (s *Service) AutonomyTrend(_ context.Context) (AutonomyTrend, error) {
+	now := s.now()
+	var evts []audit.Event
+	if s.audit != nil {
+		var err error
+		evts, err = s.audit.Read(audit.Query{Since: autonomyAllTimeAnchor, Until: now})
+		if err != nil {
+			return AutonomyTrend{}, err
+		}
+	}
+	var recs []stats.RunRecord
+	if s.stats != nil {
+		recs = s.stats.All()
+	}
+	return ComputeAutonomyTrend(recs, evts, now, autonomyTrendWeeks), nil
+}
+
 // SetABTesting swaps the A/B config used by CompareVariants/GroupByKind on
 // the next Scan — wired from internal/routing's WeightApplier so a routing
 // overlay tick updates the evaluation report's variant readiness/min-sample

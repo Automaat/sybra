@@ -1,7 +1,9 @@
 <script lang="ts">
+  import AutonomyTrendSection from '../components/AutonomyTrendSection.svelte'
   import ExperimentGroup from '../components/ExperimentGroup.svelte'
   import LearningDigestCard from '../components/LearningDigestCard.svelte'
   import { hours, num, pct, rateCell, seconds } from '$lib/evaluation-format.js'
+  import { autonomyTrendStore } from '../stores/autonomy-trend.svelte.js'
   import { evaluationStore } from '../stores/evaluation.svelte.js'
   import { learningStore } from '../stores/learning.svelte.js'
   import { lifecycleStore } from '../stores/lifecycle.svelte.js'
@@ -49,6 +51,7 @@
     evaluationStore.load()
     evaluationStore.listen()
     lifecycleStore.load()
+    autonomyTrendStore.load()
     learningStore.load()
     learningStore.listen()
     return () => {
@@ -105,6 +108,7 @@
       onclick={() => {
         evaluationStore.load()
         lifecycleStore.load()
+        autonomyTrendStore.load()
       }}
     >
       {evaluationStore.loading ? 'Loading…' : 'Refresh'}
@@ -114,6 +118,14 @@
   {#if evaluationStore.error}
     <p class="text-error-500">{evaluationStore.error}</p>
   {/if}
+
+  {#if autonomyTrendStore.error}
+    <p class="text-error-500">{autonomyTrendStore.error}</p>
+  {/if}
+
+  <!-- Independent of the scorecard's own rolling window (o) — reads all-time
+       history, so it must render even when the scorecard window is quiet. -->
+  <AutonomyTrendSection trend={autonomyTrendStore.data} />
 
   {#if o}
     <!-- Headline scorecard -->
