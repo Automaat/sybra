@@ -1006,7 +1006,10 @@ export enum StepType {
      * blocker.KindCredentialRequired; scope/content problems (missing
      * objective, unknown capability, oversize scope) route through
      * blocker.KindOperatorDecision — both terminal (no automatic
-     * re-attempts), matching blocker.AllowsHumanRequired.
+     * re-attempts), matching blocker.AllowsHumanRequired. Listed in
+     * isResumableStepType (like StepClassifyTask): it is deterministic and
+     * side-effect-free until it decides, so re-running it after a crash
+     * between persisting CurrentStep and executing it is safe.
      */
     StepAdmissionPreflight = "admission_preflight",
 };
