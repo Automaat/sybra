@@ -48,9 +48,20 @@ type AgentDefaults struct {
 	// never the last word. nil means not configured (falls back to true). false
 	// falls back to a single review pass per task: cheaper and more
 	// predictable when no per-task budget is configured. The cycle itself is
-	// bounded by GitHubConfig.ReviewRoundsPerHour — the same durable budget
-	// the inbound PR-review dispatcher enforces — not a separate knob here.
+	// bounded by ReviewRoundsPerHour below — the same durable budget the
+	// inbound PR-review dispatcher enforces — not a separate knob here.
 	ReviewUntilClean *bool `yaml:"review_until_clean" json:"reviewUntilClean"`
+	// ReviewRoundsPerHour caps automated review-role agent dispatches one task
+	// may receive in a rolling hour before it is parked for a human. Shared by
+	// both the inbound PR-review dispatcher and simple-task-review's own
+	// review→fix loop (reviewbudget.Budget is their single owner) — it bounds
+	// "how much automated review is too much" regardless of whether a PR
+	// exists yet, which is why it lives here rather than under GitHubConfig.
+	// 0 uses the default; negative disables the cap. Rate-based rather than a
+	// lifetime total so a long-lived PR that is legitimately re-reviewed after
+	// each push is never blocked, while a runaway loop is stopped within the
+	// hour (#2164 sustained ~5/hour for 23 hours).
+	ReviewRoundsPerHour int `yaml:"review_rounds_per_hour" json:"reviewRoundsPerHour"`
 	// BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
 	// claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
 	// vars (claude has no equivalent CLI flag). 0 means use

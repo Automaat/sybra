@@ -1397,7 +1397,7 @@ func TestDispatchInboundReview_RateLimitReadsRealConfig(t *testing.T) {
 	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
 
 	cfg := config.DefaultConfig()
-	cfg.GitHub.ReviewRoundsPerHour = 1 // deliberately not the default
+	cfg.Agent.ReviewRoundsPerHour = 1 // deliberately not the default
 	a.cfg = cfg
 
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")
@@ -1429,7 +1429,7 @@ func TestDispatchInboundReview_RateLimitDisabledByConfig(t *testing.T) {
 	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
 
 	cfg := config.DefaultConfig()
-	cfg.GitHub.ReviewRoundsPerHour = -1
+	cfg.Agent.ReviewRoundsPerHour = -1
 	a.cfg = cfg
 
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")

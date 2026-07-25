@@ -212,16 +212,18 @@ func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 
 // TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour locks in that the
 // engine's rolling-hour review budget is wired from
-// GitHub.ReviewRoundsPerHourLimit — a restart-required field (unlike the
-// deleted Agent.MaxReviewRounds knob it replaced), so this is exercised
-// directly against applyWorkflowGuardrails rather than through
-// ReloadFromDisk's hot-apply path.
+// Agent.ReviewRoundsPerHourLimit. Agent.* is a hot-reload field
+// (configApplyAgentRuntime), so ReloadFromDisk already exercises this path
+// via the "agent" special case in applyHotChangesLocked; this test pins the
+// wiring directly against applyWorkflowGuardrails so it fails on the exact
+// function that dropped the value, rather than only on the reload plumbing
+// around it.
 func TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour(t *testing.T) {
 	svc, _ := setupConfigSvc(t)
 	svc.workflowEngine = workflow.NewEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
 
 	cfg := *svc.cfg
-	cfg.GitHub.ReviewRoundsPerHour = 7
+	cfg.Agent.ReviewRoundsPerHour = 7
 	svc.applyWorkflowGuardrails(cfg)
 
 	if got := workflowIntField(t, svc.workflowEngine, "reviewRoundsPerHour"); got != 7 {

@@ -634,7 +634,7 @@ func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
 // SetReviewRoundsPerHour sets the rolling-hour review-role dispatch cap
 // simple-task-review's detect_tampering step checks before looping back for
 // another review→fix round — the same resolved limit
-// (config.GitHubConfig.ReviewRoundsPerHourLimit) the inbound PR-review
+// (config.AgentDefaults.ReviewRoundsPerHourLimit) the inbound PR-review
 // dispatcher enforces. 0 falls back to config.DefaultReviewRoundsPerHour;
 // negative disables the cap.
 func (e *Engine) SetReviewRoundsPerHour(n int) { e.reviewRoundsPerHour = n }

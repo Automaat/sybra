@@ -1321,26 +1321,26 @@ func (a *App) getDiskReclaimer() *diskreclaim.Reclaimer {
 func (a *App) configureTestingEscalation() {
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	a.workflowEngine.SetReviewUntilClean(a.cfg.ReviewUntilClean())
-	a.workflowEngine.SetReviewRoundsPerHour(a.cfg.GitHub.ReviewRoundsPerHourLimit())
+	a.workflowEngine.SetReviewRoundsPerHour(a.cfg.Agent.ReviewRoundsPerHourLimit())
 	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
 	a.warnUnboundedReviewLoop()
 }
 
 // warnUnboundedReviewLoop surfaces the one posture where the review→fix cycle
 // has no stopping condition at all: review_until_clean plus a disabled
-// per-hour review budget (github.review_rounds_per_hour < 0) plus no
+// per-hour review budget (agent.review_rounds_per_hour < 0) plus no
 // cumulative task-cost ceiling. Fresh installs default to a bounded budget;
 // this warning remains for explicit opt-outs.
 func (a *App) warnUnboundedReviewLoop() {
-	if !a.cfg.ReviewUntilClean() || a.cfg.GitHub.ReviewRoundsPerHourLimit() > 0 || a.cfg.Agent.MaxTaskCostUSD > 0 {
+	if !a.cfg.ReviewUntilClean() || a.cfg.Agent.ReviewRoundsPerHourLimit() > 0 || a.cfg.Agent.MaxTaskCostUSD > 0 {
 		return
 	}
 	a.logger.Warn("review.loop.unbounded",
 		"review_until_clean", true,
-		"review_rounds_per_hour", a.cfg.GitHub.ReviewRoundsPerHourLimit(),
+		"review_rounds_per_hour", a.cfg.Agent.ReviewRoundsPerHourLimit(),
 		"max_task_cost_usd", 0,
 		"detail", "review→fix cycles until CLEAN with no per-hour review budget and no task-cost ceiling; "+
-			"set agent.max_task_cost_usd to bound it, set github.review_rounds_per_hour to a positive value, "+
+			"set agent.max_task_cost_usd to bound it, set agent.review_rounds_per_hour to a positive value, "+
 			"or set agent.review_until_clean: false for a single review pass",
 	)
 }

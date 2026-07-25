@@ -47,13 +47,6 @@ type GitHubConfig struct {
 	// volume; lower them only on a high-limit (App-token) instance.
 	// Deprecated compatibility input for both PR streams' active intervals.
 	ReviewsFastSeconds int `yaml:"reviews_fast_seconds" json:"reviewsFastSeconds"`
-	// ReviewRoundsPerHour caps automated review runs one PR may receive in a
-	// rolling hour before the task is parked for a human. 0 uses the default;
-	// negative disables the cap. Rate-based rather than a lifetime total so a
-	// long-lived PR that is legitimately re-reviewed after each push is never
-	// blocked, while a runaway loop is stopped within the hour (#2164 sustained
-	// ~5/hour for 23 hours).
-	ReviewRoundsPerHour int `yaml:"review_rounds_per_hour" json:"reviewRoundsPerHour"`
 	// Deprecated compatibility input for both PR streams' idle intervals.
 	ReviewsSlowSeconds int `yaml:"reviews_slow_seconds" json:"reviewsSlowSeconds"`
 	// ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR
