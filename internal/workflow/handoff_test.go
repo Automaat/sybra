@@ -230,3 +230,23 @@ func TestBuiltinHandoffPR_DoesNotEnterPRReview(t *testing.T) {
 		t.Fatalf("simple-task-plan must not match handoff-pr tags %q; conditions=%+v", fields["task.tags"], plan.Trigger.Conditions)
 	}
 }
+
+// TestBuiltinPRReview_RequiresPRNumber is the regression for #2627: a plain
+// bugfix task carrying "review" as a category tag (not a PR-review marker)
+// with no attached PR must not match pr-review's trigger, or it sticks
+// forever re-dispatching to a nonexistent PR #0.
+func TestBuiltinPRReview_RequiresPRNumber(t *testing.T) {
+	t.Parallel()
+
+	pr := defByID(t, "pr-review")
+
+	noPR := map[string]string{"task.tags": "backend,review,medium,bug"}
+	if EvalConditions(pr.Trigger.Conditions, noPR) {
+		t.Fatalf("pr-review must not match a category 'review' tag with no pr_number; conditions=%+v", pr.Trigger.Conditions)
+	}
+
+	withPR := map[string]string{"task.tags": "review", "task.pr_number": "2599"}
+	if !EvalConditions(pr.Trigger.Conditions, withPR) {
+		t.Fatalf("pr-review must still match a real PR-review task; conditions=%+v", pr.Trigger.Conditions)
+	}
+}
