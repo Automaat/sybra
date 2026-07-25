@@ -30,6 +30,7 @@ func TestReduce(t *testing.T) {
 			},
 			observed: ObservedState{Now: now},
 			check: func(t *testing.T, effects []Effect) {
+				t.Helper()
 				requireKinds(t, effects, EffectSetWorkflowState, EffectDispatchStep)
 				wf := effects[0].Workflow
 				if wf == nil {
@@ -70,6 +71,7 @@ func TestReduce(t *testing.T) {
 				CompletedOutput: &StepOutput{StepID: "build", Status: "completed", Output: "ok"},
 			},
 			check: func(t *testing.T, effects []Effect) {
+				t.Helper()
 				requireKinds(t, effects, EffectRecordStep, EffectSetWorkflowState, EffectDispatchStep)
 				if effects[0].Record == nil || effects[0].Record.StepID != "build" || effects[0].Record.Status != "completed" {
 					t.Fatalf("record = %#v", effects[0].Record)
@@ -98,6 +100,7 @@ func TestReduce(t *testing.T) {
 				CompletedOutput: &StepOutput{StepID: "done", Status: "completed"},
 			},
 			check: func(t *testing.T, effects []Effect) {
+				t.Helper()
 				requireKinds(t, effects, EffectRecordStep, EffectCompleteWorkflow)
 				wf := effects[1].Workflow
 				if wf == nil || wf.State != ExecCompleted || wf.CurrentStep != "" || wf.CompletedAt == nil || !wf.CompletedAt.Equal(now) {
@@ -117,6 +120,7 @@ func TestReduce(t *testing.T) {
 				CompletedOutput: &StepOutput{StepID: "link-pr", Status: "completed", TerminalStatus: "done", TerminalReason: "already merged"},
 			},
 			check: func(t *testing.T, effects []Effect) {
+				t.Helper()
 				requireKinds(t, effects, EffectRecordStep, EffectSetTaskStatus, EffectCompleteWorkflow)
 				if effects[1].Status != "done" || effects[1].StatusReason != "already merged" {
 					t.Fatalf("status effect = %#v", effects[1])
@@ -142,6 +146,7 @@ func TestReduce(t *testing.T) {
 				Execution: &Execution{WorkflowID: "wf", CurrentStep: "mark-review", State: ExecRunning, StartedAt: now.Add(-time.Minute)},
 			},
 			check: func(t *testing.T, effects []Effect) {
+				t.Helper()
 				requireKinds(t, effects, EffectSetTaskStatus, EffectRecordStep, EffectSetTaskStatus, EffectSetWorkflowState, EffectWaitHuman)
 				if effects[0].Status != "in-review" {
 					t.Fatalf("first status = %q, want in-review", effects[0].Status)
@@ -163,6 +168,7 @@ func TestReduce(t *testing.T) {
 				Execution: &Execution{WorkflowID: "wf", CurrentStep: "review", State: ExecRunning, StartedAt: now.Add(-time.Minute)},
 			},
 			check: func(t *testing.T, effects []Effect) {
+				t.Helper()
 				requireKinds(t, effects, EffectSetTaskStatus, EffectSetWorkflowState, EffectWaitHuman)
 				if effects[2].Step == nil || effects[2].Step.ID != "review" {
 					t.Fatalf("wait step = %#v", effects[2].Step)
@@ -212,6 +218,7 @@ func TestReduce(t *testing.T) {
 			},
 			observed: ObservedState{Now: now},
 			check: func(t *testing.T, effects []Effect) {
+				t.Helper()
 				requireKinds(t, effects, EffectSetWorkflowState, EffectSetTaskStatus, EffectSetWorkflowState, EffectWaitHuman)
 				effects[0].Workflow.Variables["seed"] = "mutated"
 				effects[3].HumanActions[0] = "mutated"
@@ -227,7 +234,6 @@ func TestReduce(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			effects, err := Reduce(tc.desired, tc.observed)
@@ -338,7 +344,6 @@ func TestReduceTransitionFields(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			effects, err := Reduce(makeDesired(tc.condition), tc.observed)
@@ -394,7 +399,6 @@ func TestReduceAsyncBoundaryCompatibility(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			effects, err := Reduce(desired, ObservedState{

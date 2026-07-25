@@ -321,9 +321,7 @@ func reducerTransitionFields(desired DesiredState, observed ObservedState, exec 
 	}
 	fields["config.review_until_clean"] = strconv.FormatBool(desired.ReviewUntilClean)
 	fields["task.review_budget_exceeded"] = strconv.FormatBool(observed.ReviewBudgetExceeded)
-	for k, v := range desired.TransitionExtras {
-		fields[k] = v
-	}
+	maps.Copy(fields, desired.TransitionExtras)
 	return fields
 }
 
