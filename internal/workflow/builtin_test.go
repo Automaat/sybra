@@ -1051,8 +1051,11 @@ func TestBuiltinSimpleTaskPR_NoCodegenAfterTesting(t *testing.T) {
 	}
 
 	first := simple.FirstStep()
-	if first == nil || first.Type != StepSyncBranch {
-		t.Fatalf("FirstStep = %+v, want sync_branch first", first)
+	if first == nil || first.Type != StepRequireEvidence {
+		t.Fatalf("FirstStep = %+v, want require_evidence first", first)
+	}
+	if len(first.Next) != 2 || first.Next[len(first.Next)-1].GoTo != "sync_branch" {
+		t.Fatalf("require_evidence.Next = %+v, want a fallback goto sync_branch", first.Next)
 	}
 
 	syncStep := simple.StepByID("sync_branch")

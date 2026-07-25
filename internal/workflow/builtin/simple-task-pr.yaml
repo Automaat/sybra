@@ -12,6 +12,25 @@ trigger:
       operator: not_in
       value: review,test-runner,human-review
 steps:
+  # Final deterministic completion gate (opt-in via agent.evidence.enabled,
+  # default off): asserts every criterion applicable to this task
+  # (verify_checks, detect_tampering, the test-runner verdict, review) has
+  # fresh, passing CompletionEvidence for the task's current HEAD before it is
+  # allowed to open/update a PR. No-op when the gate is disabled or the task
+  # has no recorded evidence baseline (an in-flight task predating evidence
+  # collection); otherwise a missing/failed/stale criterion flips the task to
+  # human-required instead of continuing to sync_branch.
+  - id: require_evidence
+    name: Require Completion Evidence
+    type: require_evidence
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: sync_branch
+
   # Proactive, best-effort branch sync with origin/main right before the PR
   # handoff — shrinks the window in which the branch can go stale between the
   # last reactive sync (at agent dispatch) and PR creation. Never blocks: a

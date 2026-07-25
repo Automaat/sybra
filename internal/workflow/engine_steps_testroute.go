@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
@@ -510,6 +511,10 @@ func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *St
 	}
 
 	violation, outcome, fingerprint := applyTestVerdictCompletion(wfExec, output, *body, t)
+	if outcome == testOutcomePass && violation == "" {
+		e.recordEvidence(taskID, output.StepID, evidenceCriterionTestRunner, evidence.ProofStructuredTest,
+			0, "", output.Output)
+	}
 	if outcome == testOutcomeProductBug && fingerprint != "" {
 		report := currentTestFailureReport(output.Output, *body, wfExec, output.StepID)
 		if nextBody, changed := upsertAcceptanceLedger(*body, fingerprint, report); changed {

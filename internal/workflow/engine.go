@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
@@ -318,6 +319,32 @@ type ArtifactRecorder interface {
 	PutGeneric(taskID, name, stepID, content string) error
 }
 
+// EvidenceRecorder persists durable per-task CompletionEvidence (deterministic
+// check outcomes, structured test verdicts, review findings) consulted by the
+// require_evidence step before a task may land. Engine operates with a nil
+// recorder — every call site is nil-guarded, and require_evidence itself
+// no-ops without one, so engine unit tests compile and pass unchanged.
+type EvidenceRecorder interface {
+	// AppendCriterion records one proof for a named criterion, replacing any
+	// existing entry for the same criterion. Best-effort: callers (the
+	// deterministic gate steps) must never let a recording failure alter
+	// their own pass/fail outcome or timing.
+	AppendCriterion(taskID string, entry evidence.CriterionEvidence) error
+	// Evidence returns the task's current CompletionEvidence. A task with no
+	// recorded evidence returns a zero value and no error.
+	Evidence(taskID string) (evidence.CompletionEvidence, error)
+}
+
+// EvidenceDecision summarizes one require_evidence step outcome, passed to
+// the hook installed via SetEvidenceDecisionHook — mirrors AdmissionDecision.
+type EvidenceDecision struct {
+	// Outcome is "verified" or "blocked".
+	Outcome string
+	// Reason is the full block reason on a "blocked" outcome, or "" on a
+	// "verified" outcome.
+	Reason string
+}
+
 // CompletionInfo is passed to the OnComplete callback when a workflow finishes.
 type CompletionInfo struct {
 	TaskID     string
@@ -358,6 +385,11 @@ type Engine struct {
 	manualTests      ManualTestConfigGetter
 	classifier       TaskClassifier
 	recorder         ArtifactRecorder
+	evidenceRecorder EvidenceRecorder
+	// evidence configures the require_evidence step (zero-value Enabled=false
+	// matches config.EvidenceConfig's own default — see SetEvidenceConfig).
+	evidence         config.EvidenceConfig
+	evidenceHook     func(TaskInfo, EvidenceDecision)
 	costBudget       CostBudgetChecker
 	attemptWorktrees AttemptWorktreeManager
 	onComplete       func(CompletionInfo)
@@ -654,6 +686,25 @@ func (e *Engine) SetTaskClassifier(c TaskClassifier) { e.classifier = c }
 // disables artifact recording — all calls are nil-guarded so engine unit
 // tests remain unchanged.
 func (e *Engine) SetArtifactRecorder(r ArtifactRecorder) { e.recorder = r }
+
+// SetEvidenceRecorder wires an EvidenceRecorder that captures per-task
+// completion evidence for the require_evidence step. Leaving it unset
+// disables evidence recording and makes require_evidence a no-op — all calls
+// are nil-guarded so engine unit tests remain unchanged.
+func (e *Engine) SetEvidenceRecorder(r EvidenceRecorder) { e.evidenceRecorder = r }
+
+// SetEvidenceConfig wires the require_evidence step's Enabled flag. Leaving it
+// unset (zero value) keeps the gate disabled, matching
+// config.EvidenceConfig's own default-false.
+func (e *Engine) SetEvidenceConfig(cfg config.EvidenceConfig) { e.evidence = cfg }
+
+// SetEvidenceDecisionHook installs an observer for every require_evidence
+// outcome. Used by the app layer to write the completion_evidence.verified/
+// blocked audit events without making internal/workflow import internal/audit
+// — mirrors SetAdmissionDecisionHook.
+func (e *Engine) SetEvidenceDecisionHook(hook func(TaskInfo, EvidenceDecision)) {
+	e.evidenceHook = hook
+}
 
 // SetCostBudgetChecker wires the cumulative task cost-budget preflight used
 // by the `best_of_n` step (fan-out) and its judge run_agent step. Leaving it

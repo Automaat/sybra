@@ -27,11 +27,22 @@ const (
 	// on a block, the blocker.Kind and reason. Recorded on every dispatch,
 	// not just blocks, so evaluation can correlate predicted risk/clarity
 	// against actual task outcome.
-	EventAdmissionDecided    = "admission.decided"
-	EventOrchestratorStart   = "orchestrator.started"
-	EventOrchestratorStop    = "orchestrator.stopped"
-	EventPRConflictDetected  = "pr_monitor.conflict_detected"
-	EventPRCIFailureDetected = "pr_monitor.ci_failure_detected"
+	EventAdmissionDecided = "admission.decided"
+	// EventCompletionEvidenceVerified records the workflow engine's
+	// require_evidence step (internal/workflow/engine_steps_evidence.go)
+	// finding every applicable criterion present, passing, and fresh for the
+	// task's current HEAD — the deterministic gate that lets a task proceed
+	// to PR landing.
+	EventCompletionEvidenceVerified = "completion_evidence.verified"
+	// EventCompletionEvidenceBlocked records require_evidence flipping a task
+	// to human-required because at least one required criterion was missing,
+	// failed, or stale (recorded against a revision other than current HEAD).
+	// Data carries the unmet criteria, never agent output.
+	EventCompletionEvidenceBlocked = "completion_evidence.blocked"
+	EventOrchestratorStart         = "orchestrator.started"
+	EventOrchestratorStop          = "orchestrator.stopped"
+	EventPRConflictDetected        = "pr_monitor.conflict_detected"
+	EventPRCIFailureDetected       = "pr_monitor.ci_failure_detected"
 	// EventPRCIFlakyDetected records that a ci_failure issue's failing check
 	// names all also show a passing outcome for the same head commit (see
 	// github.flakyOnlyFailure) — noise, not a deterministic regression. The

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
@@ -97,6 +99,8 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 		}
 	}
 
+	e.recordEvidence(taskID, step.ID, evidenceCriterionCodegenGate, evidence.ProofDeterministicCheck,
+		0, strings.Join(cmds, " && "), report.OutputTail)
 	if committed {
 		e.logger.Info("workflow.codegen-gate.committed", "task_id", taskID, "commands", len(cmds))
 		return stepDone(step, "committed")
@@ -109,6 +113,7 @@ func (e *Engine) flagCodegenGate(taskID string, step *Step, reason, detail strin
 	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("codegen-gate: set human-required: %w", statusErr)
 	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionCodegenGate, evidence.ProofDeterministicCheck, 1, "", detail)
 	e.logger.Warn("workflow.codegen-gate.flagged", "task_id", taskID, "detail", detail)
 	return stepDone(step, "flagged")
 }

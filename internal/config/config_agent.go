@@ -177,6 +177,9 @@ type AgentDefaults struct {
 	// config validation. Empty/nil (the default) reproduces the pre-class-
 	// isolation single shared pool exactly — this feature is opt-in.
 	ClassReservations map[string]int `yaml:"class_reservations" json:"classReservations"`
+	// Evidence gates the workflow engine's require_evidence completion gate
+	// (agent.evidence.enabled — see config_evidence.go).
+	Evidence EvidenceConfig `yaml:"evidence" json:"evidence"`
 }
 
 // QueueConfig configures the agent-dispatch admission queue.

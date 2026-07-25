@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/attribution"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 )
@@ -308,6 +309,8 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 		finalSource = finalCommitSourceAgent
 	}
 	e.recordFinalCommitState(taskID, wfExec, wtPath, finalSource)
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck,
+		0, "git log <base>..HEAD --oneline", string(output))
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
 }
 
@@ -435,6 +438,7 @@ func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExe
 			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.verify-commits.agent-failed", "task_id", taskID)
+		e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck, 1, "", reason)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "agent failed before commit: flipped to human-required"}
 	}
 	if branchMergedIntoBase(e.ctx, wtPath) {
@@ -449,6 +453,7 @@ func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExe
 	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 		e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck, 1, "", reason)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "no commits: flipped to human-required"}
 }
 

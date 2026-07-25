@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/prcontent"
@@ -51,6 +52,7 @@ var (
 	_ workflow.CheckConfigGetter      = (*checkConfigGetterAdapter)(nil)
 	_ workflow.ManualTestConfigGetter = (*manualTestConfigGetterAdapter)(nil)
 	_ workflow.ArtifactRecorder       = (*artifactRecorderAdapter)(nil)
+	_ workflow.EvidenceRecorder       = (*evidenceRecorderAdapter)(nil)
 	_ workflow.CostBudgetChecker      = (*agentAdapter)(nil)
 	_ workflow.AttemptWorktreeManager = (*attemptWorktreeAdapter)(nil)
 )
@@ -122,6 +124,19 @@ func (a *artifactRecorderAdapter) PutGeneric(taskID, name, stepID, content strin
 		Content: []byte(content),
 	})
 	return err
+}
+
+// evidenceRecorderAdapter bridges evidence.Store → workflow.EvidenceRecorder.
+type evidenceRecorderAdapter struct {
+	store *evidence.Store
+}
+
+func (a *evidenceRecorderAdapter) AppendCriterion(taskID string, entry evidence.CriterionEvidence) error {
+	return a.store.Append(taskID, entry)
+}
+
+func (a *evidenceRecorderAdapter) Evidence(taskID string) (evidence.CompletionEvidence, error) {
+	return a.store.Load(taskID)
 }
 
 // taskAdapter bridges task.Manager → workflow.TaskProvider.
