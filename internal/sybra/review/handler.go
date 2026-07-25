@@ -1648,6 +1648,24 @@ func (r *Handler) includeKnownTaskPRs(ctx context.Context, tasks []task.Task, mo
 // own re-entry lane and must not also become a pr-fix candidate.
 // Branch-only matching stays gated on in-review to avoid false positives
 // from tasks that pushed a WIP branch without opening a PR yet.
+//
+// ready-pr, ready-review, and testing joined for the same class of bug
+// (sybra#2645/#2646): a task whose own workflow already opened a PR can sit
+// in any of these three lanes — ready-pr when its implement workflow
+// completed without a further status transition, ready-review/testing while
+// a *later* local review or test cycle (e.g. a post-push pr-fix loop, or a
+// PR-fix-triggered re-review) runs against the same already-open PR. None of
+// these lanes has any other mechanism watching GitHub for a real ci_failure
+// or review comment on that PR, so a check like Nilaway failing on every push
+// went unaddressed indefinitely (confirmed live: PR #2646 failed the same
+// Nilaway gate across 4+ pushes with no fix agent ever targeting it, and PR
+// #2645 sat at ready-pr with its `simple-task-implement` workflow already
+// `completed` — nothing left to drive it and pr-fix wasn't watching either).
+// Eligibility here only makes the task visible to the poll; canDispatch
+// (hasBlockingAgentForTask) still refuses to start a pr-fix agent while the
+// task's own workflow has a live agent running, so this cannot race an
+// in-flight local review/test loop — it only picks up the slack once that
+// loop is idle and something on GitHub still needs fixing.
 func prMonitorEligible(t *task.Task) bool {
 	if slices.Contains(t.Tags, "review") {
 		// Review tasks are inbound (reviewing someone else's PR), not tasks
@@ -1657,7 +1675,7 @@ func prMonitorEligible(t *task.Task) bool {
 	switch t.Status {
 	case task.StatusInReview:
 		return t.PRNumber != 0 || t.Branch != ""
-	case task.StatusInProgress:
+	case task.StatusInProgress, task.StatusReadyPR, task.StatusReadyReview, task.StatusTesting:
 		// Only tasks that already have a PR — a branch alone isn't enough,
 		// still mid-implementation.
 		return t.PRNumber != 0
