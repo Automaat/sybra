@@ -752,6 +752,40 @@ func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
 	}
 }
 
+// TestReleaseUnblockedChildren_HoldsOnCrossProgramBodyRef reproduces the real
+// #2616 incident: a child's own DependsOn is fully satisfied (empty here),
+// but its body names a free-text "strictly after #N" precondition on a
+// different program's issue no Sybra task tracks. The gate must never
+// release it, and must stamp a status reason naming the specific ref instead
+// of leaving the generic reason a human/reviewer would have to re-derive
+// every cycle.
+func TestReleaseUnblockedChildren_HoldsOnCrossProgramBodyRef(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	mkTracker(t, m, umb, 5)
+
+	child, err := m.CreateFull("child", "Ship this strictly after #2464 lands upstream.", task.AgentModeHeadless, task.Update{
+		Issue:         task.Ptr("Automaat/sybra#1"),
+		UmbrellaIssue: task.Ptr(umb),
+		Status:        task.Ptr(task.StatusTodo),
+		Tags:          task.Ptr([]string{umbrellaGatedTag}),
+	})
+	if err != nil {
+		t.Fatalf("CreateFull: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+
+	held := mustTask(t, m, child.ID)
+	if held.Status != task.StatusTodo || !slices.Contains(held.Tags, umbrellaGatedTag) {
+		t.Fatalf("child released despite unmet cross-program ref: status=%q tags=%v", held.Status, held.Tags)
+	}
+	if !strings.Contains(held.StatusReason, "#2464") {
+		t.Fatalf("status reason = %q, want it to name the unmet ref #2464", held.StatusReason)
+	}
+}
+
 func TestReleaseUnblockedChildren_HoldsWhileUmbrellaExpanding(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)
