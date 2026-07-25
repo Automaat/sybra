@@ -154,6 +154,10 @@ type Handler struct {
 	// signal that decides whether a review task still needs an agent.
 	// Overridable in tests; nil falls back to github.FetchMyReviewState.
 	fetchMyReviewStateFn func(repo string, number int) (github.MyReviewState, error)
+	// dismissReviewFn reverses a review our own bot identity submitted on a PR
+	// it is reviewing (self-approval — see dismissSelfApproval). Overridable in
+	// tests; nil falls back to github.DismissReview.
+	dismissReviewFn func(repo string, number int, reviewID int64, message string) error
 	// viewerLoginFn returns the authenticated GitHub login (the identity the fix
 	// agent posts as), used to tell the agent's own thread replies from a human
 	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.
