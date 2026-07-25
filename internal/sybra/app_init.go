@@ -1265,6 +1265,7 @@ func (a *App) configureWorkflowPolicies() {
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
 	a.workflowEngine.SetABTestingConfig(a.abTestingConfig())
 	a.configurePlanAutoApproval()
+	a.configureAdmissionPolicy()
 }
 
 func (a *App) configurePlanAutoApproval() {
@@ -1273,6 +1274,22 @@ func (a *App) configurePlanAutoApproval() {
 		a.logAudit(audit.EventPlanApproved, t.ID, "", map[string]any{
 			"auto":   true,
 			"reason": reason,
+		})
+	})
+}
+
+// configureAdmissionPolicy wires the admission_preflight step's config and
+// its audit hook. The hook writes admission.decided without making
+// internal/workflow import internal/audit — mirrors configurePlanAutoApproval.
+func (a *App) configureAdmissionPolicy() {
+	a.workflowEngine.SetAdmissionConfig(a.cfg.Admission)
+	a.workflowEngine.SetAdmissionDecisionHook(func(t workflow.TaskInfo, d workflow.AdmissionDecision) {
+		a.logAudit(audit.EventAdmissionDecided, t.ID, "", map[string]any{
+			"outcome":         d.Outcome,
+			"risk_tier":       d.RiskTier,
+			"permission_tier": d.PermissionTier,
+			"blocker_kind":    d.BlockerKind,
+			"reason":          d.Reason,
 		})
 	})
 }

@@ -12,7 +12,7 @@ Regenerate with `go generate ./internal/config/...` after changing a struct tag 
 |---|---|---|
 | `instance` | Machine role, local routing, and operator-scoped UX defaults. | `instance`, `instance.project_types` |
 | `execution` | How Sybra launches and routes agent work across providers and local backends. | `execution.agent`, `execution.providers` |
-| `workflow` | Task-stage policy, planning/testing orchestration, and board-driven automation. | `workflow.orchestrator`, `workflow.testing`, `workflow.triage`, `workflow.umbrella` |
+| `workflow` | Task-stage policy, planning/testing orchestration, and board-driven automation. | `workflow.orchestrator`, `workflow.testing`, `workflow.triage`, `workflow.umbrella`, `workflow.admission` |
 | `integrations` | External systems Sybra talks to on the operator's behalf. | `integrations.notification`, `integrations.github`, `integrations.renovate`, `integrations.browser` |
 | `supervision` | Health checks, review escalation, and autonomous oversight loops. | `supervision.human_review`, `supervision.monitor`, `supervision.watchdog`, `supervision.self_monitor`, `supervision.evaluation`, `supervision.learning_digest`, `supervision.harness_evolution`, `supervision.prompt_lab` |
 | `storage` | Filesystem-backed retention and path layout under SYBRA_HOME. | `storage.attachments`, `storage.trash`, `storage.sandboxes`, `storage.task_snapshot`, `storage.paths` |
@@ -296,6 +296,21 @@ atomically applies the verdict (title, tags, size/type, mode, project).
 | `workflow.triage.enabled` | `bool` | `false` |  |  | `triage.enabled` | `false` | `hot` |  |  |
 | `workflow.triage.poll` | `int` | `60` | `seconds` |  | `triage.poll_seconds`, `triage.poll` | `false` | `hot` |  |  |
 | `workflow.triage.model` | `string` | `""` |  |  | `triage.model` | `false` | `hot` |  |  |
+
+### AdmissionConfig (`workflow.admission`)
+
+AdmissionConfig gates the workflow engine's admission_preflight step (see
+internal/workflow/engine_steps_admission.go), a deterministic pre-dispatch
+check that rejects a task's plan contract for missing admission facts
+(objective, unrecognized required_capabilities), oversized scope, or a
+failing push-credential preflight — before any code-author agent is
+dispatched.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `workflow.admission.enabled` | `bool` | `true` |  |  | `admission.enabled` | `false` | `restart` |  | Enabled turns the admission_preflight step's checks on. Defaults true (see applyAdmissionDefaults) — safe because a contract with no schema_version (every contract generated before this feature shipped) validates exactly as it did before this migration, and the size limits below default to 0 (disabled), so enabling this does not retroactively block any in-flight task. |
+| `workflow.admission.max_acceptance_criteria` | `int` | `0` |  |  | `admission.max_acceptance_criteria` | `false` | `restart` |  | MaxAcceptanceCriteria caps a plan contract's acceptance_criteria count before admission_preflight flags the task as oversized (an operator_decision human-required, not an automatic split — auto-split is deferred, see #2466 Fix point 5). Zero disables the limit. |
+| `workflow.admission.max_change_surface_files` | `int` | `0` |  |  | `admission.max_change_surface_files` | `false` | `restart` |  | MaxChangeSurfaceFiles caps a plan contract's files count the same way. Zero disables the limit. |
 
 ## Integrations
 

@@ -21,10 +21,17 @@ const (
 	EventPlanApproved         = "plan.approved"
 	EventPlanRejected         = "plan.rejected"
 	EventEvalCompleted        = "eval.completed"
-	EventOrchestratorStart    = "orchestrator.started"
-	EventOrchestratorStop     = "orchestrator.stopped"
-	EventPRConflictDetected   = "pr_monitor.conflict_detected"
-	EventPRCIFailureDetected  = "pr_monitor.ci_failure_detected"
+	// EventAdmissionDecided records the workflow engine's admission_preflight
+	// step outcome (internal/workflow/engine_steps_admission.go) — "admitted"
+	// or "blocked" — plus the task's declared risk_tier/permission_tier and,
+	// on a block, the blocker.Kind and reason. Recorded on every dispatch,
+	// not just blocks, so evaluation can correlate predicted risk/clarity
+	// against actual task outcome.
+	EventAdmissionDecided    = "admission.decided"
+	EventOrchestratorStart   = "orchestrator.started"
+	EventOrchestratorStop    = "orchestrator.stopped"
+	EventPRConflictDetected  = "pr_monitor.conflict_detected"
+	EventPRCIFailureDetected = "pr_monitor.ci_failure_detected"
 	// EventPRCIFlakyDetected records that a ci_failure issue's failing check
 	// names all also show a passing outcome for the same head commit (see
 	// github.flakyOnlyFailure) — noise, not a deterministic regression. The

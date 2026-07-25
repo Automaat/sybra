@@ -20,7 +20,7 @@ type V2NamespaceDoc struct {
 var v2NamespaceDocs = []V2NamespaceDoc{
 	{Name: "instance", OwnershipRule: "Machine role, local routing, and operator-scoped UX defaults.", Paths: []string{"instance", "instance.project_types"}},
 	{Name: "execution", OwnershipRule: "How Sybra launches and routes agent work across providers and local backends.", Paths: []string{"execution.agent", "execution.providers"}},
-	{Name: "workflow", OwnershipRule: "Task-stage policy, planning/testing orchestration, and board-driven automation.", Paths: []string{"workflow.orchestrator", "workflow.testing", "workflow.triage", "workflow.umbrella"}},
+	{Name: "workflow", OwnershipRule: "Task-stage policy, planning/testing orchestration, and board-driven automation.", Paths: []string{"workflow.orchestrator", "workflow.testing", "workflow.triage", "workflow.umbrella", "workflow.admission"}},
 	{Name: "integrations", OwnershipRule: "External systems Sybra talks to on the operator's behalf.", Paths: []string{"integrations.notification", "integrations.github", "integrations.renovate", "integrations.browser"}},
 	{Name: "supervision", OwnershipRule: "Health checks, review escalation, and autonomous oversight loops.", Paths: []string{"supervision.human_review", "supervision.monitor", "supervision.watchdog", "supervision.self_monitor", "supervision.evaluation", "supervision.learning_digest", "supervision.harness_evolution", "supervision.prompt_lab"}},
 	{Name: "storage", OwnershipRule: "Filesystem-backed retention and path layout under SYBRA_HOME.", Paths: []string{"storage.attachments", "storage.trash", "storage.sandboxes", "storage.task_snapshot", "storage.paths"}},
@@ -62,6 +62,7 @@ var topLevelNamespaceRules = []topLevelNamespaceRule{
 	{legacyKey: "orchestrator", canonical: []string{"workflow", "orchestrator"}, deprecated: "workflow.orchestrator", namespace: "workflow"},
 	{legacyKey: "triage", canonical: []string{"workflow", "triage"}, deprecated: "workflow.triage", namespace: "workflow"},
 	{legacyKey: "umbrella", canonical: []string{"workflow", "umbrella"}, deprecated: "workflow.umbrella", namespace: "workflow"},
+	{legacyKey: "admission", canonical: []string{"workflow", "admission"}, deprecated: "workflow.admission", namespace: "workflow"},
 	{legacyKey: "notification", canonical: []string{"integrations", "notification"}, deprecated: "integrations.notification", namespace: "integrations"},
 	{legacyKey: "github", canonical: []string{"integrations", "github"}, deprecated: "integrations.github", namespace: "integrations"},
 	{legacyKey: "review_hold", canonical: []string{"integrations", "github", "review_hold"}, deprecated: "integrations.github.review_hold", namespace: "integrations"},
@@ -167,6 +168,7 @@ func NormalizeV2Document(root *yaml.Node) (*yaml.Node, []string, error) {
 				"testing":      "testing",
 				"triage":       "triage",
 				"umbrella":     "umbrella",
+				"admission":    "admission",
 			}, "workflow"); err != nil {
 				return nil, nil, err
 			}

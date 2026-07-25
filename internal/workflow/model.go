@@ -182,6 +182,16 @@ const (
 	// session involved. Replaces a run_agent step that wrapped a full Sonnet
 	// agent invoking the /sybra-triage skill around this same classifier.
 	StepClassifyTask StepType = "classify_task"
+	// StepAdmissionPreflight runs deterministic pre-dispatch admission checks
+	// (plan contract schema/capability validation, oversize scope limits,
+	// push credential readiness) before any code-author agent is dispatched —
+	// see execAdmissionPreflight (engine_steps_admission.go). Recoverable
+	// environment failures (missing push credentials) route through a
+	// blocker.KindCredentialRequired; scope/content problems (missing
+	// objective, unknown capability, oversize scope) route through
+	// blocker.KindOperatorDecision — both terminal (no automatic
+	// re-attempts), matching blocker.AllowsHumanRequired.
+	StepAdmissionPreflight StepType = "admission_preflight"
 )
 
 // Best-of-N attempt count bounds enforced by Definition.Validate. A floor of

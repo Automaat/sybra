@@ -430,6 +430,32 @@ type Engine struct {
 	queueReconciler                  func()
 	autoApprovePlansWithoutDecisions bool
 	planAutoApproveHook              func(TaskInfo, string)
+	// admission configures the admission_preflight step's oversize checks
+	// (zero-value MaxAcceptanceCriteria/MaxChangeSurfaceFiles disables them,
+	// matching config.AdmissionConfig's own default). SetAdmissionConfig's
+	// doc comment covers Enabled.
+	admission config.AdmissionConfig
+	// admissionDecisionHook observes every admission_preflight outcome. It is
+	// used by the app layer to write the admission.decided audit event
+	// without making workflow import the audit package — mirrors
+	// planAutoApproveHook.
+	admissionDecisionHook func(TaskInfo, AdmissionDecision)
+}
+
+// AdmissionDecision summarizes one admission_preflight step outcome, passed
+// to the hook installed via SetAdmissionDecisionHook.
+type AdmissionDecision struct {
+	// Outcome is "admitted" or "blocked".
+	Outcome string
+	// RiskTier/PermissionTier echo the task's plan contract fields (empty
+	// when no contract is present), so evaluation can correlate predicted
+	// risk/clarity against the actual admission and eventual task outcome.
+	RiskTier       string
+	PermissionTier string
+	// BlockerKind is the blocker.Kind string set on a "blocked" outcome
+	// (empty on "admitted").
+	BlockerKind string
+	Reason      string
 }
 
 // defaultTestAttempts is the generous absolute backstop for the testing →
@@ -512,6 +538,23 @@ func (e *Engine) SetAutoApprovePlansWithoutDecisions(enabled bool) {
 // the audit package.
 func (e *Engine) SetPlanAutoApproveHook(hook func(TaskInfo, string)) {
 	e.planAutoApproveHook = hook
+}
+
+// SetAdmissionConfig wires the admission_preflight step's oversize limits.
+// Enabled defaults false in a zero-value config (matching every other
+// Engine dependency's nil-safe default); the app layer resolves
+// config.AdmissionConfig's own default-true before calling this, so an
+// unwired Engine (e.g. in unit tests) safely runs the step as a no-op.
+func (e *Engine) SetAdmissionConfig(cfg config.AdmissionConfig) {
+	e.admission = cfg
+}
+
+// SetAdmissionDecisionHook installs an observer for every admission_preflight
+// outcome. It is used by the app layer to write the admission.decided audit
+// event without making workflow import the audit package — mirrors
+// SetPlanAutoApproveHook.
+func (e *Engine) SetAdmissionDecisionHook(hook func(TaskInfo, AdmissionDecision)) {
+	e.admissionDecisionHook = hook
 }
 
 // Defs returns the workflow definition store.
