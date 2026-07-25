@@ -503,6 +503,11 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	}
 	r.clearReconcileFailure(t)
 
+	selfApproved := myState.Approved || inApproved
+	if selfApproved {
+		r.dismissSelfApproval(t, myState)
+	}
+
 	submitted := myState.Submitted || inApproved
 	headSHA := ""
 	baseOnlyMergeFromReviewed := false
@@ -545,7 +550,7 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	r.applyReviewPhase(t, computeReviewPhase(reviewSignals{
 		CostGuardrailStopped:      latestReviewRunStoppedByCostGuardrail(t),
 		HasDraft:                  myState.Pending,
-		ViewerApproved:            myState.Approved || inApproved,
+		SelfApproved:              selfApproved,
 		Submitted:                 submitted,
 		ReRequested:               inReq,
 		HeadSHA:                   headSHA,
@@ -553,6 +558,38 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		HeadLineageUnknown:        headLineageUnknown,
 		BaseOnlyMergeFromReviewed: baseOnlyMergeFromReviewed,
 	}))
+}
+
+// selfApprovalDismissMessage is left on GitHub's audit trail explaining why
+// an approval was reversed the moment it was detected.
+const selfApprovalDismissMessage = "Dismissed automatically by Sybra: our own bot identity approved its own review task, which can never stand in for a human review."
+
+// dismissSelfApproval reverses an approval our own bot identity submitted on
+// a PR it is reviewing. This is never a legitimate green light — it means an
+// approval escaped the gh shim's PreToolUse-adjacent floor (internal/agent's
+// ghshim.go) or was otherwise submitted under the bot's own credentials
+// rather than a human's — so the outcome, not just the attempt, is caught and
+// reversed here (#2198).
+//
+// Best-effort: myState is only populated with a review ID when the REST
+// fetch itself observed the approval (myState.Approved), so an inApproved-only
+// detection (stale search-leg signal, REST already shows something else) has
+// nothing to dismiss yet — computeReviewPhase still keeps the task out of the
+// "approved" phase regardless. A dismissal failure is logged, never fatal:
+// escalating the task to human-required does not depend on it succeeding.
+func (r *Handler) dismissSelfApproval(t *task.Task, myState github.MyReviewState) {
+	if !myState.Approved || myState.ReviewID == 0 {
+		return
+	}
+	dismissFn := github.DismissReview
+	if r.dismissReviewFn != nil {
+		dismissFn = r.dismissReviewFn
+	}
+	if err := dismissFn(t.ProjectID, t.PRNumber, myState.ReviewID, selfApprovalDismissMessage); err != nil {
+		r.logger.Error("review.self-approval.dismiss-failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+		return
+	}
+	r.logAudit(audit.EventReviewSelfApprovalDismissed, t.ID, "", map[string]any{"pr": t.PRNumber})
 }
 
 func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {

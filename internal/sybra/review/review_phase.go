@@ -27,6 +27,11 @@ const (
 	ReviewPhaseNeedsApproval = "needs-approval"
 	// ReviewPhaseApproved: the human approved; the PR is waiting to merge.
 	ReviewPhaseApproved = "approved"
+	// ReviewPhaseSelfApprovalBlocked: our own bot identity submitted the
+	// approval on a PR it is reviewing — a self-approval, which must never be
+	// treated as a legitimate green light. The approval is dismissed and the
+	// task is escalated for a human to actually review the PR.
+	ReviewPhaseSelfApprovalBlocked = "self-approval-blocked"
 )
 
 // reviewSignals are the live GitHub facts about a review task's PR, gathered
@@ -35,7 +40,7 @@ type reviewSignals struct {
 	AgentRunning              bool   // a review agent is running for this task
 	CostGuardrailStopped      bool   // a review agent was cost-stopped before producing a draft/submission
 	HasDraft                  bool   // viewer has a PENDING (unsubmitted) review
-	ViewerApproved            bool   // viewer's latest submitted review is an approval
+	SelfApproved              bool   // our own bot identity's latest submitted review is an approval — always an anomaly, never a legitimate green light
 	Submitted                 bool   // viewer has a submitted (non-draft) review
 	ReRequested               bool   // PR is back in viewer's review-requested list
 	HeadSHA                   string // current PR head commit ("" if unknown)
@@ -109,11 +114,15 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 		}
 	}
 
-	if s.ViewerApproved {
+	// Our own bot identity approving its own review task is backwards — it is
+	// never a legitimate green light, so it must not surface as "approved".
+	// The caller (reconcileReviewTask) has already dismissed the approval on
+	// GitHub by the time this runs; this only decides the resulting phase.
+	if s.SelfApproved {
 		return reviewPhaseResult{
-			Phase:  ReviewPhaseApproved,
-			Status: task.StatusInReview,
-			Reason: "Approved — awaiting merge",
+			Phase:  ReviewPhaseSelfApprovalBlocked,
+			Status: task.StatusHumanRequired,
+			Reason: "Bot self-approved its own review task — approval dismissed; needs an actual human review",
 		}
 	}
 
