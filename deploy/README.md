@@ -54,7 +54,7 @@ validate it (below) before trusting the deploy.**
 |------|--------------|---------|
 | `systemd/sybra.service` | `/etc/systemd/system/sybra.service` | The unit (KillMode=process, exit-42 restart, ExecStartPre build). |
 | `systemd/sybra.env.example` | `/etc/sybra/sybra.env` | Runtime env (listen port, local CLI server target, static dir, `PATH` with mise shims + npm globals). |
-| `bin/sybra-build.sh` | `/opt/sybra/bin/sybra-build.sh` | `ExecStartPre`: build web + binary from `/opt/sybra/src`, atomic swap, keep last-good on failure. |
+| `bin/sybra-build.sh` | `/opt/sybra/bin/sybra-build.sh` | `ExecStartPre`: build web + server + CLI from `/opt/sybra/src`, atomic swap, keep last-good on failure. |
 | `bin/sybra-run.sh` | `/opt/sybra/bin/sybra-run.sh` | `ExecStart`: activate mise toolchain, `exec` the built binary. |
 
 Layout on the box:
@@ -64,10 +64,21 @@ Layout on the box:
   src/         git checkout of Automaat/sybra on main   (autoupdate RepoDir)
   review-src/  second, independent checkout for human-review's fallback dir
   bin/         sybra-build.sh, sybra-run.sh
-  build/       sybra-server (running binary) + web/ (static bundle)
+  build/       sybra-server (running binary) + sybra-cli + web/ (static bundle)
 /etc/sybra/sybra.env
 /data/sybra/home  →  HOME=/home/sybra/.sybra  (config, tasks, worktrees, agent registry)
 ```
+
+`sybra-build.sh` builds `sybra-cli` from the same checkout as `sybra-server`
+and swaps both binaries into place as a pair — if either swap fails, the
+other is rolled back too, so a successful rebuild always keeps them in sync
+and a failed one falls back to the previous matched pair rather than a
+half-applied mix (#2619: `sybra-cli` could hard-fail on a config-schema key
+the running server already understood, because only `sybra-server` was
+rebuilt). It also symlinks the built CLI to `$HOME/.local/bin/sybra-cli`
+(`/home/sybra/.local/bin/sybra-cli`), which is already on `PATH` per
+`sybra.env.example`, so `sybra-cli` resolves as a bare command for the
+`sybra` user without a separate manual install step.
 
 `review-src/` exists so `human_review.sybra_repo_dir` never resolves to the
 same directory `auto_update.repo_dir` builds and ff-merges from (#1925) —
