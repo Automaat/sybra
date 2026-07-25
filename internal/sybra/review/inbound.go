@@ -247,25 +247,26 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 }
 
 // StaffCodeReviewPrompt returns the direct PR-review prompt shared by inbound
-// review automation and task enrichment. It authorizes creating an unsubmitted
-// pending review so headless agents do not stop to ask the operator, while
-// withholding submission and approval authority: these PRs are other people's
-// work, and an approval from the operator's account can satisfy a
-// required-reviewer gate. Kept in lockstep with the pr-review builtin workflow
-// prompts and backed by the gh PATH shim (agent.writeGhShim), which refuses
-// submitted review events if this instruction ever drifts.
+// review automation and task enrichment. It withholds only approval
+// authority: these PRs are other people's work, and an approval from the
+// operator's account can satisfy a required-reviewer gate. REQUEST_CHANGES
+// and COMMENT are feedback, not authority, so the prompt authorizes
+// submitting those directly instead of parking every review as an unsubmitted
+// pending draft. Kept in lockstep with the pr-review builtin workflow prompts
+// and backed by the gh PATH shim (agent.writeGhShim), which refuses submitted
+// APPROVE events if this instruction ever drifts.
 func StaffCodeReviewPrompt(projectID string, prNumber int) string {
 	return fmt.Sprintf(`Run /staff-code-review on https://github.com/%s/pull/%d
 
 This task is an authorized Sybra PR review for the linked project. Do not ask the operator for confirmation before posting your review.
 
-NEVER submit any review event. You have no approval authority, and a human must verify and submit the review on GitHub. Do not run `+"`gh pr review`"+`, do not run `+"`gh pr review --approve`"+`, and do not submit COMMENT, REQUEST_CHANGES, or APPROVE via `+"`gh api`"+`.
+You have no approval authority: NEVER submit an APPROVE review event. Do not run `+"`gh pr review --approve`"+` and do not submit `+"`event=APPROVE`"+` via `+"`gh api`"+`. REQUEST_CHANGES and COMMENT are feedback, not approval authority, so submit those directly instead of leaving them pending.
 
-Create exactly one PENDING (draft) pull-request review and leave it unsubmitted. Before creating it, fetch the PR head SHA and existing reviews; if a review for that head already contains the Sybra harness footer, do not create another review.
+Before posting, fetch the PR head SHA and existing reviews; if a review for that head already contains the Sybra harness footer, do not create another review.
 
-Use GitHub's review API so findings become inline comments, not one aggregated comment. Add each blocking correctness issue as a `+"`comments`"+` entry on the changed line it applies to. Put only the short verdict and summary in the draft review body. If the review is clean and has no inline findings, create a pending review with the clean summary body and no inline comments.
+Use GitHub's review API so findings become inline comments, not one aggregated comment. Add each blocking correctness issue as a `+"`comments`"+` entry on the changed line it applies to. Put only the short verdict and summary in the review body.
 
-Prefer `+"`gh api repos/%s/pulls/%d/reviews -X POST ...`"+` with explicit `+"`-f`"+`/`+"`-F`"+` fields such as `+"`comments[][path]`"+`, `+"`comments[][line]`"+`, `+"`comments[][side]=RIGHT`"+`, and `+"`comments[][body]`"+`. Omit `+"`event`"+` so GitHub leaves the review PENDING.
+Post via `+"`gh api repos/%s/pulls/%d/reviews -X POST ...`"+` with explicit `+"`-f`"+`/`+"`-F`"+` fields such as `+"`comments[][path]`"+`, `+"`comments[][line]`"+`, `+"`comments[][side]=RIGHT`"+`, and `+"`comments[][body]`"+`, then choose the event by verdict: at least one blocking finding, submit with `+"`-f event=REQUEST_CHANGES`"+`; no blocking finding but the review has notes worth surfacing, submit with `+"`-f event=COMMENT`"+`; nothing to say at all (fully clean, no findings), omit `+"`event`"+` so GitHub leaves the review PENDING for a human to approve.
 
 End the review summary and every review comment you post with a blank line then exactly this standalone harness attribution footer:
 
