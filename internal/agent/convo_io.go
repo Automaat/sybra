@@ -139,16 +139,20 @@ func (c *convoIO) writeStdinTimeout(data []byte, timeout time.Duration) error {
 // forceClosePipe closes pipe and clears it from convoIO's bookkeeping, but
 // only if it is still the active stdin handle. A concurrent
 // replaceStdinPipe/closeStdinPipe call may already have moved convoIO on to
-// a different (or no) pipe by the time a wedged write's timeout fires, in
-// which case this is a no-op so a stale timeout cannot clobber a newer pipe.
+// a different (or no) pipe by the time a wedged write's timeout fires — in
+// which case that call already closed pipe itself, so this is a no-op
+// entirely: no bookkeeping to clobber and nothing left to close.
 func (c *convoIO) forceClosePipe(pipe io.WriteCloser) {
 	c.stdinMu.Lock()
-	if c.stdinPipe == pipe {
+	active := c.stdinPipe == pipe
+	if active {
 		c.stdinPipe = nil
 		c.hasPipe.Store(false)
 	}
 	c.stdinMu.Unlock()
-	_ = pipe.Close()
+	if active {
+		_ = pipe.Close()
+	}
 }
 
 func (c *convoIO) closeStdinPipe() {
