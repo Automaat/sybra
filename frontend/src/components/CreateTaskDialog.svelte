@@ -16,7 +16,6 @@
 
   let title = $state('')
   let body = $state('')
-  let headless = $state(true)
   let reasoningEffort = $state('')
   let selectedProject = $state('')
   let projectSearch = $state('')
@@ -58,7 +57,6 @@
   function reset() {
     title = ''
     body = ''
-    headless = true
     reasoningEffort = ''
     selectedProject = ''
     projectSearch = ''
@@ -77,8 +75,7 @@
     submitting = true
     error = ''
     try {
-      const effectiveMode = headless ? 'headless' : 'interactive'
-      let t = await taskStore.create(title.trim(), body, effectiveMode)
+      let t = await taskStore.create(title.trim(), body, 'headless')
       const updates: Record<string, unknown> = {}
       if (selectedProject) updates.project_id = selectedProject
       if (reasoningEffort) updates.reasoning_effort = reasoningEffort
@@ -174,14 +171,6 @@
           </div>
         {/if}
 
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            bind:checked={headless}
-            class="rounded border-surface-300 dark:border-surface-600"
-          />
-          <span class="text-sm font-medium">Headless</span>
-        </label>
         <label class="flex flex-col gap-1">
           <span class="text-sm font-medium">Reasoning effort</span>
           <select

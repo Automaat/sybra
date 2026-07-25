@@ -381,8 +381,8 @@ func reattachAlive(r Record) bool {
 	}
 	if r.ProcStartedAt != "" {
 		// context.Background(): reattachAlive is a free function called from
-		// ReattachAll/reattachInteractive/reattachPerTurnConvo before any
-		// per-agent ctx exists yet (it decides whether reattach happens at all).
+		// ReattachAll before any per-agent ctx exists yet (it decides whether
+		// reattach happens at all).
 		if cur := processStartString(context.Background(), r.PID); cur != "" && cur != r.ProcStartedAt {
 			return false
 		}

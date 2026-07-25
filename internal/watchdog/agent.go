@@ -329,11 +329,6 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 				continue
 			}
 			w.inspectHeadless(ctx, s, now, ag)
-		case "interactive":
-			if state != agent.StateRunning && state != agent.StatePaused {
-				continue
-			}
-			w.reapIdleInteractive(ag, now)
 		default:
 			continue
 		}
@@ -504,33 +499,6 @@ func (w *Watchdog) reapTaskAgentForStatus(ag *agent.Agent) bool {
 		w.logger.Error("agent.watchdog.status_release.stop_failed", "id", ag.ID, "err", err)
 	}
 	return true
-}
-
-func (w *Watchdog) reapIdleInteractive(ag *agent.Agent, now time.Time) {
-	if ag.TaskID == "" || w.tasks == nil {
-		return
-	}
-	t, err := w.tasks.Get(ag.TaskID)
-	if err != nil {
-		return
-	}
-	if t.TaskType == task.TaskTypeUmbrella {
-		return
-	}
-	if shouldReleaseTaskAgentForStatus(t.Status) && !isHumanReviewAgent(ag) {
-		w.logger.Warn("agent.watchdog.status_release",
-			"id", ag.ID, "task_id", ag.TaskID, "status", t.Status)
-		if err := w.stopForRelease(ag); err != nil {
-			w.logger.Error("agent.watchdog.status_release.stop_failed", "id", ag.ID, "err", err)
-		}
-		return
-	}
-	stall := now.Sub(ag.GetLastEventAt())
-	total := now.Sub(ag.StartedAt)
-	role := ag.EffectiveRole()
-	if reason := hardDeadlineBreach(ag, stall, total, stallLimit(role, t.Tags), sizeBudget(role, t.Tags)); reason != "" {
-		w.hardStop(ag, reason, stall, total)
-	}
 }
 
 func shouldReleaseTaskAgentForStatus(status task.Status) bool {

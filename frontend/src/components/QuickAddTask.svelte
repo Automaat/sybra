@@ -94,7 +94,7 @@
     submitting = true
     let t
     try {
-      t = await taskStore.create(value.trim(), '', 'interactive')
+      t = await taskStore.create(value.trim(), '', 'headless')
     } catch (err) {
       notificationStore.pushLocal('error', 'Create failed', String(err))
       submitting = false

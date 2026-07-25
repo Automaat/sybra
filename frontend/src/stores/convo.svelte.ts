@@ -23,7 +23,7 @@ class ConvoStore {
   conversations = new SvelteMap<string, ConvoEvent[]>()
   // Keyed by agentId, then toolUseId — so a toolUseId is only ever looked up
   // within its own agent's chat, and one agent's approvals never bleed into
-  // another agent's ChatView/BlockedLayout.
+  // another agent's BlockedLayout.
   pendingApprovals = new SvelteMap<string, SvelteMap<string, ApprovalRequest>>()
 
   async getOutput(agentId: string): Promise<ConvoEvent[]> {

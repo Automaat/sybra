@@ -133,7 +133,7 @@ func TestApp_TaskTerminal_AsksLiveInteractiveAgentToExit(t *testing.T) {
 		t.Run(string(target), func(t *testing.T) {
 			a := newFakeInteractiveClaudeApp(t)
 
-			created, err := a.tasks.Create("interactive session outlives task", "", "interactive")
+			created, err := a.tasks.Create("interactive session outlives task", "", "headless")
 			if err != nil {
 				t.Fatal(err)
 			}

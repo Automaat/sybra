@@ -62,7 +62,7 @@ func setupPromptLabService(t *testing.T) *PromptLabService {
 
 func createProposal(t *testing.T, svc *PromptLabService, status task.Status, tags []string) task.Task {
 	t.Helper()
-	created, err := svc.tasks.CreateFull("Tighten instructions for role test-runner", "body", task.AgentModeInteractive, task.Update{
+	created, err := svc.tasks.CreateFull("Tighten instructions for role test-runner", "body", task.AgentModeHeadless, task.Update{
 		Status: &status,
 		Tags:   &tags,
 	})

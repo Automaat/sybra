@@ -71,9 +71,6 @@ func validateAgentConfig(cfg *ResolvedConfig, add func(format string, a ...any))
 	if cfg.Agent.FallbackModel != "" && !modelNamePattern.MatchString(cfg.Agent.FallbackModel) {
 		add("agent.fallback_model: invalid fallback model: %q", cfg.Agent.FallbackModel)
 	}
-	if cfg.Agent.Mode != "" && cfg.Agent.Mode != "headless" && cfg.Agent.Mode != "interactive" {
-		add("agent.mode: invalid mode: %q", cfg.Agent.Mode)
-	}
 	if cfg.Agent.MaxConcurrent < 1 || cfg.Agent.MaxConcurrent > 100 {
 		add("agent.max_concurrent: maxConcurrent must be 1–100")
 	}

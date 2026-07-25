@@ -129,7 +129,7 @@ Recommendations (cross-cutting):
       },
       "verdict": {"classification": "confirmed", "confidence": 0.92,
                   "rootCause": "agent loops on reading the same 2000-line file without making progress",
-                  "nextAction": "split task into 3 subtasks scoped per concern, or flip to interactive mode"}
+                  "nextAction": "split task into 3 subtasks scoped per concern"}
     },
     {
       "finding": {"category": "triage_mismatch", "severity": "warning",
@@ -160,20 +160,22 @@ Top issues:
    - Root cause: agent loops on reading the same 2000-line file without making progress
    - Evidence: stall — last 5 calls are identical Read('internal/agent/manager.go');
      78% of $0.43 cost attributed to Read
-   - Fix: split into 3 subtasks scoped per concern, or flip to interactive mode
+   - Fix: split into 3 subtasks scoped per concern
 
 2. [triage_mismatch] task task-def456 triaged headless but escalated to human-required
    - Task: integrate new auth provider (touches secrets + IAM)
    - Root cause: triage saw "integrate" + small description and chose headless;
      task needs credential setup no agent can do autonomously
    - Evidence: classified_mode=headless → final_status=human-required
-   - Fix: add triage rule "tasks tagged secrets or iam → interactive"
+   - Fix: add triage rule "tasks tagged secrets or iam → human-required"
 
 Recommendations:
-- Add triage heuristic: tasks targeting files >1000 LOC default to interactive
-  or get auto-split before dispatch.
-- The selfmonitor actor (when dry_run=false) will auto-flip task-def456 to
-  interactive on the next selfmonitor tick.
+- Add triage heuristic: tasks targeting files >1000 LOC get auto-split
+  before dispatch.
+- The selfmonitor actor (when dry_run=false) will auto-flip task-def456's
+  agent_mode back to headless on the next selfmonitor tick (a no-op here
+  since headless is already the only mode) — this finding needs a human
+  triage-rule fix instead.
 ```
 </example>
 

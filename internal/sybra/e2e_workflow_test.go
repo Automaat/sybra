@@ -1537,6 +1537,34 @@ func TestE2E_ProviderMatrix_NoResult_DoesNotStall(t *testing.T) {
 	})
 }
 
+// createLegacyInteractiveTask simulates a task file that predates the
+// interactive-runner removal: agent_mode is no longer mintable through the
+// Manager/Store API (see task.ValidateMintableAgentMode), but a pre-existing
+// on-disk task carrying it must still load and drive legacy-compat paths
+// (resolveRunAgentMode's coercion, recoverStaleInteractive). Mints the task
+// headless through the normal API for correct ID/slug generation, then
+// overwrites the file directly before reloading it.
+func createLegacyInteractiveTask(t *testing.T, tasks *task.Manager, title string) task.Task {
+	t.Helper()
+	created, err := tasks.Create(title, "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.AgentMode = task.AgentModeInteractive
+	data, err := task.Marshal(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reloaded
+}
+
 // TestE2E_LegacyInteractiveTask_ImplementDispatchesHeadless locks in
 // backward compatibility for a task file carrying the legacy
 // agent_mode: interactive value (task.AgentModeInteractive stays a valid,
@@ -1553,10 +1581,7 @@ func TestE2E_LegacyInteractiveTask_ImplementDispatchesHeadless(t *testing.T) {
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
 		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "success"})
 
-		created, err := env.tasks.Create("legacy interactive task", "", "interactive")
-		if err != nil {
-			t.Fatal(err)
-		}
+		created := createLegacyInteractiveTask(t, env.tasks, "legacy interactive task")
 
 		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
@@ -1720,7 +1745,7 @@ func TestE2E_ResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	created, err := env.tasks.Create("stalled but live agent task", "", "interactive")
+	created, err := env.tasks.Create("stalled but live agent task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1906,10 +1931,7 @@ func TestE2E_RecoverStaleInteractive(t *testing.T) {
 	// evaluate is now a mechanical Go step that doesn't invoke fake-claude.
 	env := setupE2EMulti(t, []string{})
 
-	created, err := env.tasks.Create("stale interactive task", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, env.tasks, "stale interactive task")
 
 	// Put the task in the state that recoverStaleInteractive would encounter:
 	// interactive agent run already stopped, workflow waiting at implement.
@@ -4607,7 +4629,7 @@ func TestE2E_WaitForStatus_MismatchDoesNotAdvance(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("wait status mismatch", "", "interactive")
+	created, err := env.tasks.Create("wait status mismatch", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4638,7 +4660,7 @@ func TestE2E_WaitForStatus_ExactAdvancesOnce(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("wait status exact", "", "interactive")
+	created, err := env.tasks.Create("wait status exact", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4675,7 +4697,7 @@ func TestE2E_ReuseAgent_FallbackStartsNewWhenDead(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement", "interactive_implement"})
 	writeWorkflowFixture(t, env, "test-reuse-agent", testReuseAgentWorkflowYAML)
 
-	created, err := env.tasks.Create("reuse agent dead fallback", "", "interactive")
+	created, err := env.tasks.Create("reuse agent dead fallback", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5005,7 +5027,7 @@ func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	created, err := env.tasks.Create("delete during run", "", "interactive")
+	created, err := env.tasks.Create("delete during run", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5325,7 +5347,7 @@ func TestE2E_StatusChangeAndAgentComplete_RaceSingleRecord(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-status-complete-race", testStatusCompleteRaceWorkflowYAML)
 
-	created, err := env.tasks.Create("status/complete race", "", "interactive")
+	created, err := env.tasks.Create("status/complete race", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5535,7 +5557,7 @@ func TestE2E_WorktreeDisappearsMidVerify_SkipsGracefully(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-verify-after-status", testVerifyAfterStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("worktree disappears", "", "interactive")
+	created, err := env.tasks.Create("worktree disappears", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5650,7 +5672,7 @@ func TestE2E_DeletedTask_RaceCallbacks_NoRecreate(t *testing.T) {
 
 func TestE2E_ResumeStalled_TightLoopIdempotent(t *testing.T) {
 	env := setupE2EProvider(t, "claude", "interactive_implement")
-	created, err := env.tasks.Create("resume tight loop", "", "interactive")
+	created, err := env.tasks.Create("resume tight loop", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5689,7 +5711,7 @@ func TestE2E_WaitForStatus_RepeatedIdenticalEvents_AdvanceOnce(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("repeat same status", "", "interactive")
+	created, err := env.tasks.Create("repeat same status", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5723,7 +5745,7 @@ func TestE2E_ProviderBinaryFlap_SecondStepFallsBackDeterministically(t *testing.
 	t.Setenv("FAKE_CODEX_ARGS_LOG", codexArgsLog)
 	t.Setenv("FAKE_CLAUDE_ARGS_LOG", claudeArgsLog)
 
-	created, err := env.tasks.Create("provider flap", "", "interactive")
+	created, err := env.tasks.Create("provider flap", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6116,7 +6138,7 @@ func TestE2E_StatusHookStorm_NoDuplicateAdvance(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("status storm", "", "interactive")
+	created, err := env.tasks.Create("status storm", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6426,7 +6448,7 @@ func TestE2E_StatusChange_AfterTerminal_NoMutation(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("terminal status noop", "", "interactive")
+	created, err := env.tasks.Create("terminal status noop", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}

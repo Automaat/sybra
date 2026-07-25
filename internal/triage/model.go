@@ -29,12 +29,16 @@ type Verdict struct {
 // so Codex's strict additionalProperties:false rule is satisfied — the model
 // emits null for them when unset, which json.Unmarshal decodes into the zero
 // value, matching the `omitempty` prose-parsing path's behavior.
-const Schema = `{"type":"object","properties":{"title":{"type":"string"},"description":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"size":{"type":"string","enum":["small","medium","large"]},"type":{"type":"string","enum":["bug","feature","refactor","review","chore","docs"]},"mode":{"type":"string","enum":["headless","interactive"]},"project_id":{"type":["string","null"]},"original_title":{"type":["string","null"]}},"required":["title","description","tags","size","type","mode","project_id","original_title"],"additionalProperties":false}`
+const Schema = `{"type":"object","properties":{"title":{"type":"string"},"description":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"size":{"type":"string","enum":["small","medium","large"]},"type":{"type":"string","enum":["bug","feature","refactor","review","chore","docs"]},"mode":{"type":"string","enum":["headless"]},"project_id":{"type":["string","null"]},"original_title":{"type":["string","null"]}},"required":["title","description","tags","size","type","mode","project_id","original_title"],"additionalProperties":false}`
 
 var (
 	validSizes = []string{"small", "medium", "large"}
 	validTypes = []string{"bug", "feature", "refactor", "review", "chore", "docs"}
-	validModes = []string{"headless", "interactive"}
+	// validModes only contains headless — the interactive runner was removed
+	// and RouteMode no longer passes the LLM's pick through, but the schema
+	// enum is the deterministic floor: a model can't emit a value ValidateVerdict
+	// would then reject.
+	validModes = []string{"headless"}
 
 	// domainTags are the controlled-vocabulary domain tags. Tags outside
 	// this set and the size/type sets are rejected.

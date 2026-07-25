@@ -19,12 +19,8 @@ processes.
 | --- | --- | --- |
 | `runHeadlessAttemptSurvive` after subprocess start | `saveRegistry(a)` writes PID/log snapshot | `Agent.toRecord()` snapshots under `Agent.mu`; `registryStore.Save` serializes file write |
 | `processHeadlessLine` on `init`/`system` or terminal `result` | `saveRegistry(a)` refreshes captured session ID | `Agent.mu` snapshots changed fields; `registryStore.Save` serializes file write |
-| `startConvoProcessSurvive` and one-shot conversational survival | `saveRegistry(a)` writes FIFO/log/PID snapshot | `Agent.mu` snapshots changed fields; `registryStore.Save` serializes file write |
-| `processConvoLine` on session capture for detached interactive Claude | `saveRegistry(a)` refreshes session ID | `Agent.mu` snapshots changed fields; `registryStore.Save` serializes file write |
 | `markAgentDone` | `Delete(a.ID)` removes record and FIFO | `registryStore.Delete` serializes file/FIFO removal; `Manager.mu` separately decrements `liveCount` |
 | `ReattachAll` startup sweep | `List()` reads records; dead records call `Delete` | `registryStore.List/Delete` serialize file operations; each reattached agent registration uses `Manager.mu` |
-| `reattachInteractive` and `reattachPerTurnConvo` dead/zombie cleanup | `Delete(r.ID)` removes stale record/FIFO | `registryStore.Delete` serializes file/FIFO removal |
-| `finalizePerTurnOneShot` after recovered completion | `Delete(r.ID)` removes completed one-shot record | `registryStore.Delete` serializes file/FIFO removal |
 
 ## Refactor Boundary
 

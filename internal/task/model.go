@@ -137,12 +137,28 @@ func AllAgentModes() []string {
 	return []string{AgentModeHeadless, AgentModeInteractive}
 }
 
-// ValidateAgentMode rejects unknown agent modes. Empty strings are rejected
-// here; callers that need to allow "unset" (e.g. parser legacy compat) must
-// guard the empty case before calling.
+// ValidateAgentMode rejects unknown agent modes, including the legacy
+// AgentModeInteractive value — kept valid here only so pre-existing task
+// files carrying it still parse (see parser.go) and cluster-replicated tasks
+// still assign; the interactive runner itself was removed and no dispatch
+// path honors the value anymore. Empty strings are rejected here; callers
+// that need to allow "unset" (e.g. parser legacy compat) must guard the
+// empty case before calling. New or updated tasks must use
+// ValidateMintableAgentMode instead.
 func ValidateAgentMode(s string) (string, error) {
 	if !validAgentModes[s] {
 		return "", fmt.Errorf("invalid agent_mode %q (valid: %v)", s, AllAgentModes())
+	}
+	return s, nil
+}
+
+// ValidateMintableAgentMode rejects any agent mode that isn't currently
+// dispatchable. Use this — not ValidateAgentMode — whenever a task is being
+// newly created or its mode explicitly changed, so no path can mint a fresh
+// "interactive" task now that the interactive runner is gone.
+func ValidateMintableAgentMode(s string) (string, error) {
+	if s != AgentModeHeadless {
+		return "", fmt.Errorf("invalid agent_mode %q (valid: %v)", s, []string{AgentModeHeadless})
 	}
 	return s, nil
 }

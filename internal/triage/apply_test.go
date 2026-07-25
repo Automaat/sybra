@@ -191,7 +191,7 @@ func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 
 func TestApplyPreservesPromptLabProposalTagsAndStatus(t *testing.T) {
 	mgr := newTestManager(t)
-	created, err := mgr.Create("Prompt Lab: tighten instructions for role review", "proposal body", task.AgentModeInteractive)
+	created, err := mgr.Create("Prompt Lab: tighten instructions for role review", "proposal body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -234,8 +234,8 @@ func TestApplyPreservesPromptLabProposalTagsAndStatus(t *testing.T) {
 	if updated.StatusReason != "" {
 		t.Errorf("status_reason: got %q, want empty (untouched)", updated.StatusReason)
 	}
-	if updated.AgentMode != task.AgentModeInteractive {
-		t.Errorf("agent_mode: got %q, want unchanged interactive", updated.AgentMode)
+	if updated.AgentMode != task.AgentModeHeadless {
+		t.Errorf("agent_mode: got %q, want unchanged headless", updated.AgentMode)
 	}
 	if updated.ProjectID != "" {
 		t.Errorf("project_id: got %q, want unchanged empty", updated.ProjectID)
@@ -262,7 +262,7 @@ func TestApplyGuardsUmbrellaTitledTaskWithNormalType(t *testing.T) {
 		Tags:  []string{"backend", "infra", "large", "refactor"},
 		Size:  "large",
 		Type:  "refactor",
-		Mode:  "interactive",
+		Mode:  "headless",
 	}
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {

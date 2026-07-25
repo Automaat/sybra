@@ -1,4 +1,4 @@
-import type { ConvoEvent, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+import type { StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 
 export interface TimestampedStreamEvent {
   event: StreamEvent
@@ -50,41 +50,5 @@ export function buildStreamTimeline(events: TimestampedStreamEvent[]): TimelineE
     timestamp: e.receivedAt,
     type: e.event.type,
     summary: summarize(e.event),
-  }))
-}
-
-function summarizeConvo(event: ConvoEvent): string {
-  switch (event.type) {
-    case 'user_input':
-      return event.text ? 'User: ' + trunc(event.text.split('\n')[0].trim()) : 'User input'
-    case 'assistant': {
-      if (event.toolUses && event.toolUses.length > 0) {
-        return event.toolUses.map((t) => t.name).join(', ')
-      }
-      if (event.text) return trunc(event.text.split('\n')[0].trim() || 'Assistant')
-      return 'Assistant'
-    }
-    case 'user': {
-      // tool results
-      const hasError = event.toolResults?.some((r) => r.isError)
-      return hasError ? 'Result (error)' : 'Result'
-    }
-    case 'result': {
-      const cost = event.costUsd ? ` — $${event.costUsd.toFixed(2)}` : ''
-      return `Done${cost}`
-    }
-    case 'system':
-      return 'System'
-    default:
-      return event.type
-  }
-}
-
-export function buildConvoTimeline(events: ConvoEvent[]): TimelineEntry[] {
-  return events.map((e, i) => ({
-    index: i,
-    timestamp: new Date(e.timestamp),
-    type: e.type,
-    summary: summarizeConvo(e),
   }))
 }

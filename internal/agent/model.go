@@ -1717,8 +1717,7 @@ type RunConfig struct {
 	AssignmentUnit     string
 	AssignmentKey      string
 	DecisionVersion    int
-	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
-	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)
+	RequirePermissions bool // when true, suppress --dangerously-skip-permissions
 	// OneShot closes stdin after the first `result` event in conversational
 	// mode so the claude process exits naturally. Without this, interactive
 	// agents sit in StatePaused forever and onComplete never fires, stranding
@@ -1874,14 +1873,9 @@ type RunConfig struct {
 }
 
 // needsApprovalHook reports whether a run should wire the PreToolUse approval
-// hook. True when permissions are required or an interactive permission-mode is
-// set. Both the headless (provider_claude.go) and conversational
-// (runner_convo.go) call sites gate on this so a future change can't silently
-// desync them: headless runs never set PermissionMode (they use
-// HeadlessPermissionMode for the auto classifier), so for them it collapses to
-// RequirePermissions alone.
+// hook.
 func (cfg RunConfig) needsApprovalHook() bool {
-	return cfg.RequirePermissions || cfg.PermissionMode != ""
+	return cfg.RequirePermissions
 }
 
 // ConvoOutput returns a snapshot of the conversation event buffer.

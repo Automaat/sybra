@@ -938,8 +938,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	// Capture the session id as soon as it appears (init/system), not only on
 	// the terminal result. Claude/Codex report it at session start; without
 	// this a mid-run crash leaves the registry record with an empty session
-	// and restart-stale cold-restarts instead of resuming. Mirrors the
-	// conversational runner (runner_convo.go) and AddResultStats.
+	// and restart-stale cold-restarts instead of resuming. Mirrors AddResultStats.
 	if (event.Type == "init" || event.Type == "system") && event.SessionID != "" {
 		if a.GetSessionID() != event.SessionID {
 			a.SetSessionID(event.SessionID)
@@ -1283,8 +1282,7 @@ func (m *Manager) sendHeadlessSteerMessage(a *Agent, text string) error {
 
 	// Surface the sent message immediately in StreamOutput — the CLI only
 	// echoes tool-result/assistant turns back over stdout, never the
-	// injected user text itself (mirrors ConvoEvent's user_input in
-	// runner_convo.go's SendMessage).
+	// injected user text itself.
 	ev := StreamEvent{Type: "user_input", Content: text, Timestamp: time.Now().UTC()}
 	a.AppendOutput(ev)
 	m.emit(events.AgentOutput(a.ID), ev)
