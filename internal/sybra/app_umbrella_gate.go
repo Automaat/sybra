@@ -114,6 +114,9 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 			if refs := umbrella.ExternalBlockers(t.Body, t.Issue); len(refs) > 0 {
 				crossProgramRefs[t.ID] = refs
 				dependsOn = mergeIssueRefs(dependsOn, refs)
+				if !slices.Equal(dependsOn, t.DependsOn) {
+					a.persistCrossProgramDeps(ctx, t, dependsOn)
+				}
 			}
 		}
 		nodes[i] = umbrella.Node{
@@ -188,6 +191,38 @@ func hasStartedImplementation(t *task.Task) bool {
 		}
 	}
 	return false
+}
+
+// persistCrossProgramDeps writes a body-derived external dependency ref (see
+// umbrella.ExternalBlockers) into t's own DependsOn field so the precondition
+// survives as structured state a human or the next agent run can read
+// directly, instead of being re-derived from prose on every gate tick and
+// every dispatch decision (the exact churn behind sybra#2640: task aa8a3956
+// re-confirmed the same unmet #2464 precondition across 5+ runs because
+// nothing durable recorded it). Kept alongside the ephemeral merge used for
+// this tick's graph — that merge is discarded at function return, so without
+// this write the field a human inspects via `sybra-cli get`/the GUI would
+// never show the dependency the gate is actually enforcing. On success,
+// updates t in place so the rest of this tick's pass (nodes[i] below, byID)
+// observes the new value immediately, and best-effort forwards the edit to a
+// follower-homed task's home node the same way TaskService.UpdateTask does
+// for any other Tags/DependsOn edit — a missed push just leaves Mirror's
+// drift backstop to repair it on the next reconcile.
+func (a *App) persistCrossProgramDeps(ctx context.Context, t *task.Task, merged []string) {
+	updated, err := a.tasks.Update(t.ID, task.Update{DependsOn: task.Ptr(merged)})
+	if err != nil {
+		a.logger.Error("umbrella.gate.cross_program_blocker.persist_failed", "task_id", t.ID, "err", err)
+		return
+	}
+	t.DependsOn = updated.DependsOn
+	if a.assigner == nil {
+		return
+	}
+	pushCtx, cancel := context.WithTimeout(ctx, pushReleaseTimeout)
+	defer cancel()
+	if _, err := a.assigner.PushFieldUpdate(pushCtx, updated); err != nil {
+		a.logger.Warn("umbrella.gate.cross_program_blocker.push_failed", "task_id", t.ID, "err", err)
+	}
 }
 
 // mergeIssueRefs unions extra into existing, de-duplicated by

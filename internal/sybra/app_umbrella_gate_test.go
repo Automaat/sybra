@@ -784,6 +784,40 @@ func TestReleaseUnblockedChildren_HoldsOnCrossProgramBodyRef(t *testing.T) {
 	if !strings.Contains(held.StatusReason, "#2464") {
 		t.Fatalf("status reason = %q, want it to name the unmet ref #2464", held.StatusReason)
 	}
+	if !slices.Contains(held.DependsOn, "#2464") {
+		t.Fatalf("dependsOn = %v, want it to persist the body-derived ref #2464 (sybra#2640)", held.DependsOn)
+	}
+}
+
+// TestReleaseUnblockedChildren_PersistsCrossProgramDependsOn covers sybra#2640:
+// a body-derived "after #N" precondition (see umbrella.ExternalBlockers) must
+// be written into the task's own DependsOn field, not just used to build this
+// tick's ephemeral gate graph — otherwise a human or another agent inspecting
+// the task never sees the dependency the gate is actually enforcing and keeps
+// re-deriving it from prose (the churn behind the #2493/#2503/#2464 incident).
+// It must merge with, not clobber, the child's existing structured deps, and
+// must not grow unbounded across repeated gate ticks.
+func TestReleaseUnblockedChildren_PersistsCrossProgramDependsOn(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	mkTracker(t, m, umb, 5)
+
+	sibling := mkChild(t, m, "sibling", "Automaat/sybra#2", umb, nil, task.StatusDone)
+	child := mkChild(t, m, "child", "Automaat/sybra#3", umb, []string{sibling.Issue}, task.StatusTodo)
+	if _, err := m.Update(child.ID, task.Update{
+		Body: task.Ptr("Ship this strictly after #2464 lands upstream."),
+	}); err != nil {
+		t.Fatalf("seed body: %v", err)
+	}
+
+	app.releaseUnblockedChildren(context.Background())
+	app.releaseUnblockedChildren(context.Background())
+
+	held := mustTask(t, m, child.ID)
+	if got, want := held.DependsOn, []string{sibling.Issue, "#2464"}; !slices.Equal(got, want) {
+		t.Fatalf("dependsOn = %v, want %v (merged once, no duplicate across repeated ticks)", got, want)
+	}
 }
 
 func TestReleaseUnblockedChildren_HoldsWhileUmbrellaExpanding(t *testing.T) {
