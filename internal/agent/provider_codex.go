@@ -36,6 +36,23 @@ func (codexProvider) NormalizeModel(model string) string {
 	if resolved, ok := modeltier.NormalizeAlias("codex", model); ok {
 		return resolved
 	}
+	// Unlike copilot/opencode, codex is not a multi-vendor gateway — it only
+	// ever understands its own OpenAI model IDs. A literal Claude model ID
+	// (e.g. "claude-haiku-4-5-20251001", the role default a hand-built
+	// RunConfig can carry — see #2639) reaches the CLI verbatim otherwise and
+	// is rejected outright. Cross-provider failover already resolves this via
+	// modeltier.InferTier's fuzzy match (model_resolution.go); reuse it here
+	// too for the same-provider path, but gated on the model literal actually
+	// naming the "claude" vendor — InferTier's Contains-based matching is too
+	// permissive to run unconditionally (e.g. it would fuzzy-match, and thus
+	// silently truncate, codex's own "gpt-5.4[1m]" down to "gpt-5.4").
+	if strings.Contains(strings.ToLower(model), "claude") {
+		if tier, ok := modeltier.InferTier(model); ok {
+			if mapped := modeltier.Model(tier, "codex"); mapped != "" {
+				return mapped
+			}
+		}
+	}
 	return model
 }
 
