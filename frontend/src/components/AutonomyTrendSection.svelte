@@ -25,8 +25,14 @@
       : [],
   )
 
+  // A week with zero landings has no autonomy signal at all — plotting it as
+  // 0% would misrepresent "no data" as "0% autonomous". Drop it instead, so
+  // the chart (and its own emptyLabel, when every bucket is empty) reflects
+  // only weeks with an actual sample.
   const weeklyPoints = $derived<TimeSeriesPoint[]>(
-    (trend?.weekly ?? []).map((w) => ({ date: String(w.weekStart).slice(0, 10), value: w.autonomyRate * 100 })),
+    (trend?.weekly ?? [])
+      .filter((w) => w.tasksLanded > 0)
+      .map((w) => ({ date: String(w.weekStart).slice(0, 10), value: w.autonomyRate * 100 })),
   )
 
   // Higher is better; same thresholds as the headline scorecard's goodScale.
@@ -36,8 +42,18 @@
     return 'text-error-600 dark:text-error-400'
   }
 
+  // A zero-landings snapshot's autonomyRate is 0, indistinguishable from a
+  // genuinely bad rate — render it as "no data" rather than a misleading 0%.
+  function rateLabel(s: AutonomySnapshot): string {
+    return s.tasksLanded > 0 ? pct(s.autonomyRate) : '—'
+  }
+
+  function rateColor(s: AutonomySnapshot): string {
+    return s.tasksLanded > 0 ? goodScale(s.autonomyRate) : 'text-surface-400'
+  }
+
   function detail(s: AutonomySnapshot): string {
-    return `${s.autonomousLandings}/${s.tasksLanded} landed`
+    return s.tasksLanded > 0 ? `${s.autonomousLandings}/${s.tasksLanded} landed` : 'no landings in window'
   }
 </script>
 
@@ -48,7 +64,7 @@
       {#each tiles as tile (tile.label)}
         <div>
           <span class="text-xs font-medium text-surface-500">{tile.label}</span>
-          <p class="mt-1 text-2xl font-bold {goodScale(tile.snapshot.autonomyRate)}">{pct(tile.snapshot.autonomyRate)}</p>
+          <p class="mt-1 text-2xl font-bold {rateColor(tile.snapshot)}">{rateLabel(tile.snapshot)}</p>
           <p class="mt-0.5 text-xs text-surface-400">{detail(tile.snapshot)}</p>
         </div>
       {/each}

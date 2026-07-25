@@ -72,4 +72,42 @@ describe('AutonomyTrendSection', () => {
 
     expect(screen.getByRole('img', { name: 'Autonomy rate by week' })).toBeDefined()
   })
+
+  it('renders "no data" instead of a misleading 0% for a zero-landings window', () => {
+    render(AutonomyTrendSection, {
+      props: { trend: trend({ lastWeek: snapshot({ tasksLanded: 0, autonomousLandings: 0, autonomyRate: 0 }) }) },
+    })
+
+    expect(screen.getByText('—')).toBeDefined()
+    expect(screen.getByText('no landings in window')).toBeDefined()
+    expect(screen.queryByText('0%')).toBeNull()
+  })
+
+  it('excludes zero-landing weeks from the chart instead of plotting them as 0%', () => {
+    const { container } = render(AutonomyTrendSection, {
+      props: {
+        trend: trend({
+          weekly: [
+            weekPoint({ weekStart: '2026-01-01T00:00:00Z', tasksLanded: 0, autonomousLandings: 0, autonomyRate: 0 }),
+            weekPoint({ weekStart: '2026-01-08T00:00:00Z', tasksLanded: 2, autonomousLandings: 2, autonomyRate: 1 }),
+          ],
+        }),
+      },
+    })
+
+    // One landed week → one plotted point; the empty week contributes none.
+    expect(container.querySelectorAll('circle').length).toBe(1)
+  })
+
+  it('shows the chart empty state when every weekly bucket has zero landings', () => {
+    render(AutonomyTrendSection, {
+      props: {
+        trend: trend({
+          weekly: [weekPoint({ tasksLanded: 0, autonomousLandings: 0, autonomyRate: 0 })],
+        }),
+      },
+    })
+
+    expect(screen.getByText('Not enough weekly data yet')).toBeDefined()
+  })
 })
