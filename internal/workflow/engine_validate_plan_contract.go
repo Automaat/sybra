@@ -12,6 +12,27 @@ import (
 
 const maxPlanContractBytes = 64 * 1024
 
+// PlanContractSchemaV2 opts a plan contract into the admission-facts
+// extension (Objective, RequiredCapabilities). An absent SchemaVersion (or
+// explicit "1") validates under the original v1 rules only — existing
+// contracts and in-flight tasks are unaffected by this migration, so
+// deploying the extension never mass-flips them to human-required. See
+// ValidatePlanContractForTask and execAdmissionPreflight
+// (engine_steps_admission.go).
+const PlanContractSchemaV2 = "2"
+
+// planContractCapabilities is the closed registry of capability names a v2
+// plan contract's RequiredCapabilities may declare. Deliberately closed (not
+// free text): an unrecognized capability is a validation problem rather than
+// a silent pass, so admission_preflight cannot be bypassed by inventing a new
+// capability name the engine has no probe for.
+var planContractCapabilities = map[string]bool{
+	"repo_write": true,
+	"network":    true,
+	"provider":   true,
+	"git_push":   true,
+}
+
 type PlanContract struct {
 	TaskID             string                     `json:"task_id"`
 	Branch             string                     `json:"branch"`
@@ -24,6 +45,22 @@ type PlanContract struct {
 	RiskTier           string                     `json:"risk_tier"`
 	PermissionTier     string                     `json:"permission_tier"`
 	Rollback           string                     `json:"rollback"`
+	// SchemaVersion gates the admission-facts fields below. Empty and "1" are
+	// equivalent (the original schema); PlanContractSchemaV2 requires
+	// Objective and validates RequiredCapabilities against a closed registry.
+	// Any other value is an unsupported-schema-version validation problem.
+	SchemaVersion string `json:"schema_version,omitempty"`
+	// Objective is a one-line statement of what "done" means for this task,
+	// required under PlanContractSchemaV2 — a machine-checkable admission
+	// fact distinct from the free-form Steps/AcceptanceCriteria prose.
+	Objective string `json:"objective,omitempty"`
+	// Dependencies names other task IDs or external resources this task's
+	// admission depends on. Advisory only (no validation beyond being a plain
+	// string list) — scheduling on it is deferred, see #2466 Fix point 5.
+	Dependencies []string `json:"dependencies,omitempty"`
+	// RequiredCapabilities declares which planContractCapabilities entries
+	// this task's implementation needs. Validated under PlanContractSchemaV2.
+	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 }
 
 type PlanContractFile struct {
@@ -130,7 +167,46 @@ func ValidatePlanContractForTask(raw, taskID, taskBody string) []string {
 	for _, id := range collectForeignTaskIDs(raw, taskID) {
 		problems = append(problems, "references foreign task ID "+id)
 	}
+	problems = append(problems, validateSchemaVersion(contract)...)
 	sort.Strings(problems)
+	return problems
+}
+
+// validateSchemaVersion applies the admission-facts rules gated by
+// PlanContract.SchemaVersion. Absent and "1" are the original schema — no
+// additional fields are required, so pre-existing contracts (and any
+// generated without the extension) keep validating exactly as before this
+// migration. PlanContractSchemaV2 requires Objective and validates
+// RequiredCapabilities against the closed planContractCapabilities registry.
+// Any other value is rejected outright rather than silently treated as v1,
+// so a typo'd or future schema_version cannot skip the extension's checks.
+func validateSchemaVersion(contract PlanContract) []string {
+	switch contract.SchemaVersion {
+	case "", "1":
+		return nil
+	case PlanContractSchemaV2:
+		var problems []string
+		if strings.TrimSpace(contract.Objective) == "" {
+			problems = append(problems, "objective is required for schema_version \"2\"")
+		}
+		problems = append(problems, validateRequiredCapabilities(contract.RequiredCapabilities)...)
+		return problems
+	default:
+		return []string{fmt.Sprintf("unsupported schema_version %q", contract.SchemaVersion)}
+	}
+}
+
+// validateRequiredCapabilities checks each declared capability against the
+// closed planContractCapabilities registry. An unrecognized name is a
+// validation problem, never a silent pass — see planContractCapabilities.
+func validateRequiredCapabilities(capabilities []string) []string {
+	var problems []string
+	for _, c := range capabilities {
+		name := strings.TrimSpace(c)
+		if !planContractCapabilities[name] {
+			problems = append(problems, fmt.Sprintf("required_capabilities: unknown capability %q", c))
+		}
+	}
 	return problems
 }
 

@@ -373,6 +373,84 @@ func TestExecValidatePlanContract_RejectsMalformedExpectedDeletions(t *testing.T
 	}
 }
 
+func TestValidatePlanContract_SchemaV2Migration(t *testing.T) {
+	// A contract with no schema_version at all — the shape every contract
+	// generated before this admission-facts extension shipped — must
+	// validate exactly as before: zero new problems, even without
+	// objective/required_capabilities. This is the backward-compat
+	// guarantee that keeps deploying the extension from mass-flipping
+	// in-flight tasks to human-required.
+	if problems := ValidatePlanContract(validPlanContract("fa6919fc"), "fa6919fc"); len(problems) != 0 {
+		t.Fatalf("problems = %v, want none for a contract with no schema_version", problems)
+	}
+
+	// Explicit schema_version "1" is equivalent to absent.
+	v1 := strings.Replace(validPlanContract("fa6919fc"),
+		`"task_id": "fa6919fc",`,
+		`"task_id": "fa6919fc",
+  "schema_version": "1",`, 1)
+	if problems := ValidatePlanContract(v1, "fa6919fc"); len(problems) != 0 {
+		t.Fatalf("problems = %v, want none for schema_version \"1\"", problems)
+	}
+}
+
+func TestValidatePlanContract_SchemaV2RequiresObjective(t *testing.T) {
+	contract := strings.Replace(validPlanContract("fa6919fc"),
+		`"task_id": "fa6919fc",`,
+		`"task_id": "fa6919fc",
+  "schema_version": "2",`, 1)
+
+	problems := ValidatePlanContract(contract, "fa6919fc")
+	joined := strings.Join(problems, "\n")
+	if !strings.Contains(joined, `objective is required for schema_version "2"`) {
+		t.Fatalf("problems = %v, want missing objective", problems)
+	}
+}
+
+func TestValidatePlanContract_SchemaV2AcceptsObjectiveAndKnownCapabilities(t *testing.T) {
+	contract := strings.Replace(validPlanContract("fa6919fc"),
+		`"task_id": "fa6919fc",`,
+		`"task_id": "fa6919fc",
+  "schema_version": "2",
+  "objective": "ship the thing",
+  "dependencies": ["other-task-id"],
+  "required_capabilities": ["repo_write", "git_push"],`, 1)
+
+	if problems := ValidatePlanContract(contract, "fa6919fc"); len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+}
+
+func TestValidatePlanContract_SchemaV2RejectsUnknownCapability(t *testing.T) {
+	contract := strings.Replace(validPlanContract("fa6919fc"),
+		`"task_id": "fa6919fc",`,
+		`"task_id": "fa6919fc",
+  "schema_version": "2",
+  "objective": "ship the thing",
+  "required_capabilities": ["repo_write", "launch_missiles"],`, 1)
+
+	problems := ValidatePlanContract(contract, "fa6919fc")
+	joined := strings.Join(problems, "\n")
+	if !strings.Contains(joined, `unknown capability "launch_missiles"`) {
+		t.Fatalf("problems = %v, want unknown capability", problems)
+	}
+	if strings.Contains(joined, `"repo_write"`) {
+		t.Fatalf("problems = %v, want the known capability left unflagged", problems)
+	}
+}
+
+func TestValidatePlanContract_RejectsUnsupportedSchemaVersion(t *testing.T) {
+	contract := strings.Replace(validPlanContract("fa6919fc"),
+		`"task_id": "fa6919fc",`,
+		`"task_id": "fa6919fc",
+  "schema_version": "99",`, 1)
+
+	problems := ValidatePlanContract(contract, "fa6919fc")
+	if len(problems) != 1 || !strings.Contains(problems[0], `unsupported schema_version "99"`) {
+		t.Fatalf("problems = %v, want unsupported schema_version", problems)
+	}
+}
+
 func TestExecValidatePlanContract_RejectsForeignWorktreeOrBranch(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "fa6919fc", Status: "planning"})

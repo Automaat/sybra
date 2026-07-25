@@ -1086,6 +1086,39 @@ func (c *Config) ReviewHoldNitMaxLines() int {
 	return c.ReviewHold.NitMaxLines
 }
 
+// Admission size limits default to 0 (disabled) — auto-splitting an
+// oversized task into a gated DAG is deferred (#2466 Fix point 5), so these
+// only ever flag a task for a human, never reshape it.
+const (
+	DefaultAdmissionMaxAcceptanceCriteria = 0
+	DefaultAdmissionMaxChangeSurfaceFiles = 0
+)
+
+// applyAdmissionDefaults defaults Enabled to true unless the file explicitly
+// disabled it — using file.Has (not the zero value) so an operator who
+// explicitly set `admission.enabled: false` is never silently re-enabled on
+// the next resolve, mirroring applySelfMonitorDefaults' DryRun handling.
+// True-by-default is safe here: a plan contract with no schema_version (every
+// contract generated before this feature shipped) validates unchanged, and
+// the size limits below stay off unless explicitly configured.
+func applyAdmissionDefaults(cfg *Config, file *FileConfig) {
+	if file == nil || !file.Has("admission", "enabled") {
+		cfg.Admission.Enabled = true
+	}
+	if cfg.Admission.MaxAcceptanceCriteria < 0 {
+		cfg.Admission.MaxAcceptanceCriteria = DefaultAdmissionMaxAcceptanceCriteria
+	}
+	if cfg.Admission.MaxChangeSurfaceFiles < 0 {
+		cfg.Admission.MaxChangeSurfaceFiles = DefaultAdmissionMaxChangeSurfaceFiles
+	}
+}
+
+// AdmissionEnabled reports whether admission_preflight's checks are active.
+// Nil-safe for test construction.
+func (c *Config) AdmissionEnabled() bool {
+	return c != nil && c.Admission.Enabled
+}
+
 func applyExperienceDefaults(cfg *Config) {
 	if cfg.Experience.MaxRecords <= 0 {
 		cfg.Experience.MaxRecords = 5

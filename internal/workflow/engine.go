@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -363,8 +364,11 @@ type Engine struct {
 	dispatchGate     func(TaskInfo) bool
 	// dispatchDisabled is stored negated so the zero value keeps a
 	// struct-literal Engine dispatching, matching its behavior before this
-	// gate existed.
-	dispatchDisabled bool
+	// gate existed. atomic.Bool because SetAutoDispatch (config/lifecycle
+	// goroutines) and the read sites (startWorkflowCore, DispatchEvent,
+	// HandleStatusChange, ResumeStalled — all called from agent/workflow
+	// goroutines) run concurrently with no shared lock between them.
+	dispatchDisabled atomic.Bool
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
@@ -430,6 +434,36 @@ type Engine struct {
 	queueReconciler                  func()
 	autoApprovePlansWithoutDecisions bool
 	planAutoApproveHook              func(TaskInfo, string)
+	// admission configures the admission_preflight step's oversize checks
+	// (zero-value MaxAcceptanceCriteria/MaxChangeSurfaceFiles disables them,
+	// matching config.AdmissionConfig's own default). SetAdmissionConfig's
+	// doc comment covers Enabled.
+	admission config.AdmissionConfig
+	// admissionDecisionHook observes every admission_preflight outcome. It is
+	// used by the app layer to write the admission.decided audit event
+	// without making workflow import the audit package — mirrors
+	// planAutoApproveHook.
+	admissionDecisionHook func(TaskInfo, AdmissionDecision)
+}
+
+// AdmissionDecision summarizes one admission_preflight step outcome, passed
+// to the hook installed via SetAdmissionDecisionHook.
+type AdmissionDecision struct {
+	// Outcome is "admitted" or "blocked".
+	Outcome string
+	// RiskTier/PermissionTier echo the task's plan contract fields (empty
+	// when no contract is present), so evaluation can correlate predicted
+	// risk/clarity against the actual admission and eventual task outcome.
+	RiskTier       string
+	PermissionTier string
+	// BlockerKind is the blocker.Kind string set on a "blocked" outcome
+	// (empty on "admitted").
+	BlockerKind string
+	// Reason is the full block reason on a "blocked" outcome, or one of
+	// "admitted" (checks ran and passed) / "disabled" (admission.Enabled is
+	// false, no checks ran) on an "admitted" outcome — never empty, so
+	// consumers can distinguish a real pass from a skipped check.
+	Reason string
 }
 
 // defaultTestAttempts is the generous absolute backstop for the testing →
@@ -492,13 +526,13 @@ func (e *Engine) SetDispatchGate(gate func(TaskInfo) bool) { e.dispatchGate = ga
 // agent starts (App.StartAgent, sybra-cli) never touch the engine and keep
 // working. Set orchestrator.scheduler_enabled true to opt an agent-only
 // instance back into workflows.
-func (e *Engine) SetAutoDispatch(on bool) { e.dispatchDisabled = !on }
+func (e *Engine) SetAutoDispatch(on bool) { e.dispatchDisabled.Store(!on) }
 
 // AutoDispatchEnabled reports whether this instance dispatches workflows. The
 // gate in startWorkflowCore is what actually enforces it; this lets a caller
 // avoid announcing an auto-start that is about to be refused, and avoid
 // spawning a goroutine that would only no-op.
-func (e *Engine) AutoDispatchEnabled() bool { return !e.dispatchDisabled }
+func (e *Engine) AutoDispatchEnabled() bool { return !e.dispatchDisabled.Load() }
 
 // SetAutoApprovePlansWithoutDecisions enables automatic approval of validated
 // simple-task plans whose decision sidecar explicitly says there are no open
@@ -512,6 +546,23 @@ func (e *Engine) SetAutoApprovePlansWithoutDecisions(enabled bool) {
 // the audit package.
 func (e *Engine) SetPlanAutoApproveHook(hook func(TaskInfo, string)) {
 	e.planAutoApproveHook = hook
+}
+
+// SetAdmissionConfig wires the admission_preflight step's oversize limits.
+// Enabled defaults false in a zero-value config (matching every other
+// Engine dependency's nil-safe default); the app layer resolves
+// config.AdmissionConfig's own default-true before calling this, so an
+// unwired Engine (e.g. in unit tests) safely runs the step as a no-op.
+func (e *Engine) SetAdmissionConfig(cfg config.AdmissionConfig) {
+	e.admission = cfg
+}
+
+// SetAdmissionDecisionHook installs an observer for every admission_preflight
+// outcome. It is used by the app layer to write the admission.decided audit
+// event without making workflow import the audit package — mirrors
+// SetPlanAutoApproveHook.
+func (e *Engine) SetAdmissionDecisionHook(hook func(TaskInfo, AdmissionDecision)) {
+	e.admissionDecisionHook = hook
 }
 
 // Defs returns the workflow definition store.

@@ -105,7 +105,7 @@ func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, 
 			StepDetectTampering, StepVerifyChecks, StepFocusedChecks,
 			StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch,
 			StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch,
-			StepCreatePR, StepClassifyTask:
+			StepCreatePR, StepClassifyTask, StepAdmissionPreflight:
 			return nil, false, false, nil
 		}
 		nextID, err = ResolveTransition(step.Next, fields)

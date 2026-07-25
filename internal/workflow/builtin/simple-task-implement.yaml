@@ -19,6 +19,25 @@ trigger:
       operator: not_contains
       value: prompt-lab-proposal
 steps:
+  # Mechanical check (no LLM): deterministic pre-dispatch admission checks —
+  # plan contract validity (including v2 admission-facts fields), oversize
+  # scope, and push credential readiness — before any code-author agent is
+  # dispatched. Covers both the planned path (already checked once by
+  # simple-task-plan's validate_plan_contract) and the noplan/handoff paths
+  # that reach in-progress without ever running that step. A failure flips
+  # the task to human-required with a terminal credential_required or
+  # operator_decision blocker; see execAdmissionPreflight.
+  - id: admission_preflight
+    name: Admission Preflight
+    type: admission_preflight
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: implement
+
   - id: implement
     name: Implement
     type: run_agent
