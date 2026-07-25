@@ -119,6 +119,10 @@
     <p class="text-error-500">{evaluationStore.error}</p>
   {/if}
 
+  {#if autonomyTrendStore.error}
+    <p class="text-error-500">{autonomyTrendStore.error}</p>
+  {/if}
+
   <!-- Independent of the scorecard's own rolling window (o) — reads all-time
        history, so it must render even when the scorecard window is quiet. -->
   <AutonomyTrendSection trend={autonomyTrendStore.data} />
