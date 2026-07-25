@@ -909,8 +909,13 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
 		}
 		e.logger.Warn("workflow.detect-tampering.diff-error", "task_id", taskID, "err", err)
-		e.recordEvidence(taskID, step.ID, evidenceCriterionDetectTampering, evidence.ProofDeterministicCheck,
-			0, "git diff --name-status", "clean (diff error, fail-open): "+err.Error())
+		// Fail open for the step's own routing (the task continues), but record
+		// NO evidence: a genuine tool failure is not proof the diff is clean.
+		// Recording it as ExitStatus 0 would manufacture a fresh, passing
+		// detect_tampering entry for the require_evidence completion gate — the
+		// exact opposite of "fresh, passing proof". Leaving the criterion
+		// absent/stale makes require_evidence block instead, so a transient git
+		// error cannot launder an unverified diff onto a PR.
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "clean"}, nil
 	}
 

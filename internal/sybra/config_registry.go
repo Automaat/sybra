@@ -66,6 +66,14 @@ var configRegistry = []configRegistryEntry{
 	{Path: "sandbox", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "task_snapshot", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "agent", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyAgentRuntime},
+	// restart, not hot (overrides the parent agent entry above): the workflow
+	// engine caches agent.evidence via SetEvidenceConfig (configureEvidencePolicy,
+	// called only from initWorkflowEngine) into an unexported Engine field. The
+	// hot-apply path (applyAgentGuardrails/refreshAgentRuntimeConfig) never
+	// re-invokes SetEvidenceConfig, so a hot reload of the flag would be a silent
+	// no-op — the store/UI would show it Applied while the engine kept enforcing
+	// the old value. Same rationale as the admission entry below.
+	{Path: "agent.evidence", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "testing", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "notification", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyNotification},
 	{Path: "orchestrator", Policy: configPolicyRestart, Visibility: configVisibilityUI},

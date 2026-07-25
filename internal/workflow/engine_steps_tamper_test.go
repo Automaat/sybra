@@ -1781,8 +1781,22 @@ func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
 		t.Fatal("fix_review step missing from simple-task-review")
 		return
 	}
-	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
-		t.Errorf("fix_review goto = %q, want detect_tampering", got)
+	// fix_review commits code changes, so verify_checks must re-run before
+	// tamper detection to keep verify_checks evidence fresh at the post-fix
+	// HEAD (and catch a fix that broke the suite) ahead of require_evidence.
+	verify := rev.StepByID("verify_checks")
+	if verify == nil {
+		t.Fatal("verify_checks step missing from simple-task-review")
+		return
+	}
+	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "verify_checks" {
+		t.Errorf("fix_review goto = %q, want verify_checks", got)
+	}
+	if got, _ := ResolveTransition(verify.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
+		t.Errorf("verify_checks goto = %q, want detect_tampering", got)
+	}
+	if got, _ := ResolveTransition(verify.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Errorf("verify_checks human-required goto = %q, want end", got)
 	}
 	if got, _ := ResolveTransition(tamper.Next, map[string]string{"task.status": "human-required"}); got != "" {
 		t.Errorf("flagged detect_tampering goto = %q, want end", got)

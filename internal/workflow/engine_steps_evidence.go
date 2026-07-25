@@ -30,6 +30,22 @@ const (
 // admissionPreflightReasonPrefix's pattern for other mechanical gates.
 const evidenceGateReasonPrefix = "completion evidence incomplete:"
 
+// freshnessExemptCriteria names criteria whose proof asserts a monotonic
+// historical fact rather than a property of the current tree, so a commit
+// landing after they ran cannot invalidate them. Only verify_commits
+// qualifies: it proves "the agent produced commits ahead of origin/main", and
+// the two commit-producing steps that routinely run after it — the codegen
+// gate's checkpoint commit (implement stage) and the review-fix commits
+// (review stage) — only ever add commits, never unmake that fact. Without this
+// exemption the require_evidence gate would flag verify_commits stale on the
+// ordinary happy path (any project with checks.codegen configured, or any task
+// that took one review-fix round). Every content-validating criterion
+// (detect_tampering, verify_checks, test_runner, review) stays freshness-gated,
+// since a later commit genuinely can change what they asserted.
+var freshnessExemptCriteria = map[string]bool{
+	evidenceCriterionVerifyCommits: true,
+}
+
 // recordEvidence best-effort appends one CriterionEvidence entry for taskID.
 // A missing recorder, worktree getter, or worktree is a silent no-op — this
 // is instrumentation, not a gate, and must never alter the caller's own
@@ -103,10 +119,11 @@ func (e *Engine) requiredEvidenceCriteria(taskID string, wfExec *Execution, t Ta
 
 // execRequireEvidence is the final deterministic completion gate: every
 // criterion requiredEvidenceCriteria names for this task must have a
-// CompletionEvidence entry that passed (ExitStatus 0) and is fresh (FinalRev
-// equals the task's current HEAD) — otherwise the task flips to
-// human-required with a terminal blocker.KindOperatorDecision instead of
-// landing on stale or missing proof.
+// CompletionEvidence entry that passed (ExitStatus 0) and, unless the
+// criterion is in freshnessExemptCriteria, is fresh (FinalRev equals the
+// task's current HEAD) — otherwise the task flips to human-required with a
+// terminal blocker.KindOperatorDecision instead of landing on stale or
+// missing proof.
 //
 // No-op (completed, no block) when:
 //   - the gate is disabled (config.EvidenceConfig.Enabled=false, the default)
@@ -143,7 +160,7 @@ func (e *Engine) execRequireEvidence(taskID string, step *Step, wfExec *Executio
 			problems = append(problems, criterion+": missing")
 		case !entry.Passed():
 			problems = append(problems, fmt.Sprintf("%s: failed (exit %d)", criterion, entry.ExitStatus))
-		case entry.FinalRev != headSHA:
+		case !freshnessExemptCriteria[criterion] && entry.FinalRev != headSHA:
 			problems = append(problems, fmt.Sprintf("%s: stale (recorded at %s, HEAD is %s)",
 				criterion, trimDiffLine(entry.FinalRev), trimDiffLine(headSHA)))
 		}

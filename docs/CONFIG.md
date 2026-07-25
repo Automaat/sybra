@@ -163,7 +163,7 @@ agent.evidence.enabled.
 
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
-| `execution.agent.evidence.enabled` | `bool` | `false` |  |  | `agent.evidence.enabled` | `false` | `hot` |  | Enabled turns the require_evidence gate on. Defaults false (see applyEvidenceDefaults) — the underlying producers (verify_checks, detect_tampering, codegen_gate, focused_checks, the test-runner, and review) always record evidence regardless of this flag, so enabling it later gates against history that was already being collected rather than starting cold. |
+| `execution.agent.evidence.enabled` | `bool` | `false` |  |  | `agent.evidence.enabled` | `false` | `restart` |  | Enabled turns the require_evidence gate on. Defaults false (see applyEvidenceDefaults) — the underlying producers (verify_checks, detect_tampering, codegen_gate, focused_checks, the test-runner, and review) always record evidence regardless of this flag, so enabling it later gates against history that was already being collected rather than starting cold. |
 
 ### ProvidersConfig (`execution.providers`)
 
