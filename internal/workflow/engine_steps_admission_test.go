@@ -300,6 +300,30 @@ func TestExecAdmissionPreflight_TransientCredentialErrorParksForRetry(t *testing
 	}
 }
 
+// TestExecAdmissionPreflight_DisabledDecisionReasonDistinguishesSkip asserts
+// that a disabled-admission no-op and a checks-ran-and-passed admission both
+// report Outcome "admitted" but differ in Reason ("disabled" vs "admitted") —
+// without this, the admission.decided audit event can't tell "checks were
+// skipped" from "checks passed" (see PR #2631 review).
+func TestExecAdmissionPreflight_DisabledDecisionReasonDistinguishesSkip(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "fa6919fc", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	// admission zero-value: Enabled defaults false.
+	var decisions []AdmissionDecision
+	engine.SetAdmissionDecisionHook(func(_ TaskInfo, d AdmissionDecision) {
+		decisions = append(decisions, d)
+	})
+
+	if _, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
+		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")}); err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) != 1 || decisions[0].Outcome != "admitted" || decisions[0].Reason != "disabled" {
+		t.Fatalf("decisions = %+v, want single admitted/disabled decision", decisions)
+	}
+}
+
 func TestExecAdmissionPreflight_RecordsAdmissionDecision(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "fa6919fc", Status: "in-progress"})
@@ -319,6 +343,9 @@ func TestExecAdmissionPreflight_RecordsAdmissionDecision(t *testing.T) {
 	}
 	if decisions[0].Outcome != "admitted" || decisions[0].RiskTier != "medium" || decisions[0].PermissionTier != "repo-write" {
 		t.Fatalf("decision = %+v, want admitted/medium/repo-write", decisions[0])
+	}
+	if decisions[0].Reason != "admitted" {
+		t.Fatalf("decision.Reason = %q, want %q — checks that actually ran must be distinguishable from a disabled no-op", decisions[0].Reason, "admitted")
 	}
 
 	invalid := strings.Replace(validPlanContract("fa6919fc"),
