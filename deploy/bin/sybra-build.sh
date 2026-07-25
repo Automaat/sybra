@@ -64,12 +64,21 @@ rm -rf "$WEB"
 if ! mv "$WEB.new" "$WEB"; then
   keep_last_good_or_fail "swap web bundle"
 fi
+[[ -x "$BIN" ]] && mv -f "$BIN" "$BIN.prev"
 if ! mv -f "$BIN.new" "$BIN"; then
+  [[ -f "$BIN.prev" ]] && mv -f "$BIN.prev" "$BIN"
   keep_last_good_or_fail "swap server binary"
 fi
+[[ -x "$CLI_BIN" ]] && mv -f "$CLI_BIN" "$CLI_BIN.prev"
 if ! mv -f "$CLI_BIN.new" "$CLI_BIN"; then
+  # Roll the server swap back too, so a partial failure here can never
+  # leave a new server paired with a stale CLI (the drift this build step
+  # exists to prevent, #2619).
+  [[ -f "$CLI_BIN.prev" ]] && mv -f "$CLI_BIN.prev" "$CLI_BIN"
+  mv -f "$BIN.prev" "$BIN"
   keep_last_good_or_fail "swap sybra-cli binary"
 fi
+rm -f "$BIN.prev" "$CLI_BIN.prev"
 
 if ! (mkdir -p "$CLI_LINK_DIR" && ln -sf "$CLI_BIN" "$CLI_LINK_DIR/sybra-cli"); then
   log "warning: failed to symlink sybra-cli into $CLI_LINK_DIR; binary is still at $CLI_BIN"

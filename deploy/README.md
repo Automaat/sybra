@@ -69,11 +69,13 @@ Layout on the box:
 /data/sybra/home  →  HOME=/home/sybra/.sybra  (config, tasks, worktrees, agent registry)
 ```
 
-`sybra-build.sh` builds `sybra-cli` from the same checkout, in the same
-atomic swap, as `sybra-server` — the two binaries can never drift apart the
-way they used to when only `sybra-server` was rebuilt (#2619: `sybra-cli`
-could hard-fail on a config-schema key the running server already
-understood). It also symlinks the built CLI to `$HOME/.local/bin/sybra-cli`
+`sybra-build.sh` builds `sybra-cli` from the same checkout as `sybra-server`
+and swaps both binaries into place as a pair — if either swap fails, the
+other is rolled back too, so a successful rebuild always keeps them in sync
+and a failed one falls back to the previous matched pair rather than a
+half-applied mix (#2619: `sybra-cli` could hard-fail on a config-schema key
+the running server already understood, because only `sybra-server` was
+rebuilt). It also symlinks the built CLI to `$HOME/.local/bin/sybra-cli`
 (`/home/sybra/.local/bin/sybra-cli`), which is already on `PATH` per
 `sybra.env.example`, so `sybra-cli` resolves as a bare command for the
 `sybra` user without a separate manual install step.
