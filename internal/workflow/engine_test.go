@@ -7757,7 +7757,7 @@ func runGitAt(t *testing.T, dir string, args ...string) string {
 }
 
 func gitCombinedAt(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err

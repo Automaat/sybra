@@ -421,8 +421,14 @@ func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) 
 func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *testing.T) {
 	t.Parallel()
 
-	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-retry")
+	bare, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-retry")
 	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
+
+	// A preflight-only failure now falls through to a real push attempt
+	// (#2386) instead of parking, so this must drive the retry with a real
+	// push failure: break the remote for the first attempt, restore it
+	// before the resumed attempt.
+	runGitAt(t, wtPath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "does-not-exist.git"))
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -433,7 +439,7 @@ func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *te
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	preflight := &fakePushPreflighter{errs: []error{errors.New("i/o timeout")}}
+	preflight := &fakePushPreflighter{}
 	engine.SetPushCredentialPreflighter(preflight)
 
 	wf := &Execution{
@@ -475,6 +481,8 @@ func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *te
 	if len(resolved) != 0 {
 		t.Fatalf("resolved paths after checkpoint = %v, want none", resolved)
 	}
+
+	runGitAt(t, wtPath, "remote", "set-url", "origin", bare)
 
 	resumedTask, err := tasks.GetTask("t1")
 	if err != nil {

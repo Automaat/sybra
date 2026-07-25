@@ -222,10 +222,23 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	if preflightErr := e.preflightPushCredentials(ctx, wtPath); preflightErr != nil {
-		out, err = e.classifyPRGitError(taskID, step, wfExec, t, preflightErr, "push credential preflight")
-		return out, err, false
+		// The dry-run probe can false-positive on a momentarily stale
+		// credential (e.g. an app-token rotation window landing mid-check,
+		// #2160) even though the real push would succeed (#2386). Don't park
+		// on the probe alone — fall through and attempt the actual push;
+		// only classify/escalate below if that also fails. PreflightPushCredentials
+		// already recorded the audit finding (pushAuthFailureHook) before
+		// returning, so the signal isn't lost even though it no longer blocks.
+		e.logger.Warn("workflow.pr-tail.preflight-failed-attempting-push",
+			"task_id", taskID, "step", step.ID, "err", preflightErr)
 	}
-	pushErr := project.PushSync(ctx, wtPath, branch)
+	// Preflight's mandated retry backoffs and dry-run subprocesses can consume
+	// a large slice of the shared budget; give the real push its own fresh
+	// timeout so it isn't killed on stale budget and misclassified into the
+	// non-auth retry bucket (#2160/#2386).
+	pushCtx, pushCancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer pushCancel()
+	pushErr := project.PushSync(pushCtx, wtPath, branch)
 	if pushErr == nil {
 		return StepOutput{}, nil, true
 	}
