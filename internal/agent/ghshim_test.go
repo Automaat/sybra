@@ -141,6 +141,10 @@ func TestGhShim_AllowsPendingDraftReviews(t *testing.T) {
 		{"request changes", []string{"pr", "review", "--request-changes", "-b", "fix this", "1"}},
 		{"request changes short flag", []string{"pr", "review", "1", "-r", "-b", "fix this"}},
 		{"comment with repo flag", []string{"pr", "review", "-R", "owner/repo", "--comment", "-b", "fix this", "1"}},
+		// A body value that starts with '-' is a value, not a flag bundle: it must
+		// not be misread as an unrecognized short flag and blocked.
+		{"request changes with dash-leading body", []string{"pr", "review", "123", "--request-changes", "-b", "-1, this design has issues"}},
+		{"comment with dash-leading body-file", []string{"pr", "review", "123", "--comment", "-F", "-notes.md"}},
 		{"rest comment event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=COMMENT"}},
 		{"rest request changes event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=REQUEST_CHANGES"}},
 		{"rest pending submit with comment event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews/99/events", "-f", "event=COMMENT"}},

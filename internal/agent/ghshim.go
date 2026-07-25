@@ -25,7 +25,16 @@ if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
 	sawapprove=0
 	sawverdict=0
 	sawunknown=0
+	skipval=0
 	for arg in "$@"; do
+		# The previous token was a value-taking flag in its separate form, so
+		# this token is its value (a body, file path or repo) — never a flag.
+		# Classifying it would misread a body that starts with '-' (e.g. a
+		# markdown bullet or "-1, ...") as an unknown short-flag bundle.
+		if [ "$skipval" = 1 ]; then
+			skipval=0
+			continue
+		fi
 		case "$arg" in
 		--approve | --approve=*)
 			sawapprove=1
@@ -33,7 +42,10 @@ if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
 		--comment | --comment=* | --request-changes | --request-changes=*)
 			sawverdict=1
 			;;
-		--body | --body=* | --body-file | --body-file=* | --repo | --repo=* | --help)
+		--body | --body-file | --repo)
+			skipval=1
+			;;
+		--body=* | --body-file=* | --repo=* | --help)
 			;;
 		-*)
 			rest=${arg#-}
@@ -45,6 +57,9 @@ if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
 				case "$rest" in *a*) sawapprove=1 ;; esac
 				case "$rest" in *c*) sawverdict=1 ;; esac
 				case "$rest" in *r*) sawverdict=1 ;; esac
+				# A short bundle ending in a value-taking flag (-b/-F/-R) takes
+				# the next argv token as its value; skip classifying it.
+				case "$rest" in *[bFR]) skipval=1 ;; esac
 				;;
 			esac
 			;;
