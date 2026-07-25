@@ -11,11 +11,13 @@ import (
 
 type recordingWriteCloser struct {
 	bytes.Buffer
-	closed bool
+	closed     bool
+	closeCount int
 }
 
 func (w *recordingWriteCloser) Close() error {
 	w.closed = true
+	w.closeCount++
 	return nil
 }
 
@@ -223,6 +225,9 @@ func TestConvoIOForceClosePipeIgnoresStalePipe(t *testing.T) {
 
 	if !c.hasStdinPipe() {
 		t.Fatal("forceClosePipe on a stale pipe cleared the active pipe")
+	}
+	if old.closeCount != 1 {
+		t.Fatalf("old pipe closeCount = %d, want 1 (forceClosePipe must not double-close a pipe replaceStdinPipe already closed)", old.closeCount)
 	}
 	if err := c.writeStdin([]byte("still works")); err != nil {
 		t.Fatalf("writeStdin after stale forceClosePipe: %v", err)
