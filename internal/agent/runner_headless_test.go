@@ -2706,9 +2706,11 @@ func TestHeadlessInitialPromptOverStdin(t *testing.T) {
 	}
 }
 
-// TestStdinPromptHeadlessInvocation pins which headless invocations get a
-// prompt written to stdin rather than argv (#2575): every claude run,
-// steerable or not, but never codex/copilot.
+// TestStdinPromptHeadlessInvocation pins which headless invocations need the
+// caller to write a prompt to stdin itself: a non-steerable claude run only
+// — a steerable claude run already gets its prompt over stdin through the
+// separate writeUserMessage/convo path, and codex/copilot still receive the
+// prompt positionally.
 func TestStdinPromptHeadlessInvocation(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -3031,6 +3033,67 @@ done
 		t.Fatalf("write fake claude binary: %v", err)
 	}
 	return dir
+}
+
+// makeFakeEchoPlainStdinClaude writes a fake "claude" binary that reads its
+// entire stdin as a single plain-text blob (no stream-json envelope — the
+// non-steerable delivery contract) and echoes it back as a result event.
+// Returns the directory containing the binary so the caller can prepend it
+// to PATH while keeping headlessInvocation.name as "claude".
+func makeFakeEchoPlainStdinClaude(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/bash
+prompt=$(cat)
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-1\",\"total_cost_usd\":0.01,\"result\":\"$prompt\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}"
+`
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude binary: %v", err)
+	}
+	return dir
+}
+
+// TestHeadlessNonSteerablePipeWritesPromptOverStdin drives
+// runHeadlessAttemptPipe end to end against a fake provider that reads its
+// whole stdin as a plain-text blob, proving the non-steerable stdin-prompt
+// path (stdinPromptHeadlessInvocation, writeAndCloseHeadlessPrompt) actually
+// delivers the prompt to a real subprocess rather than merely wiring a pipe
+// no one reads.
+func TestHeadlessNonSteerablePipeWritesPromptOverStdin(t *testing.T) {
+	binDir := makeFakeEchoPlainStdinClaude(t)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+
+	inv := headlessInvocation{
+		name:    "claude",
+		args:    []string{"-p", "--output-format", "stream-json", "--verbose"},
+		command: "claude",
+	}
+	cfg := RunConfig{Prompt: "prompt delivered over stdin, not argv"}
+
+	var outFile *os.File
+	t.Cleanup(func() {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := m.runHeadlessAttemptPipe(ctx, a, cfg, &outFile, inv); err != nil {
+		t.Fatalf("runHeadlessAttemptPipe: %v", err)
+	}
+
+	var sawPrompt bool
+	for _, ev := range a.Output() {
+		if ev.Type == "result" && strings.Contains(ev.Content, cfg.Prompt) {
+			sawPrompt = true
+		}
+	}
+	if !sawPrompt {
+		t.Fatalf("expected a result event echoing the stdin-delivered prompt; got %+v", a.Output())
+	}
 }
 
 // A checkpoint handoff commits the run's work and sets escalation reason

@@ -234,11 +234,13 @@ func steerableHeadlessInvocation(cfg RunConfig, providerName string) bool {
 	return cfg.HeadlessSteerable && providerName == "claude"
 }
 
-// stdinPromptHeadlessInvocation reports whether this attempt's prompt was
-// omitted from argv and must be written to stdin as a plain one-shot blob
-// (see claudeProvider.BuildHeadlessInvocation's non-steerable branch) — true
-// for every claude headless run, steerable or not; codex/copilot still
-// receive the prompt positionally.
+// stdinPromptHeadlessInvocation reports whether this attempt needs the
+// caller to write its prompt to stdin as a plain one-shot blob (see
+// claudeProvider.BuildHeadlessInvocation's non-steerable branch) — true only
+// for a non-steerable claude run. A steerable claude run also delivers its
+// prompt over stdin, but through the pre-existing writeUserMessage/convo
+// pipe path, so it's excluded here; codex/copilot still receive the prompt
+// positionally and are excluded too.
 func stdinPromptHeadlessInvocation(steerable bool, providerName string) bool {
 	return !steerable && providerName == "claude"
 }
@@ -305,10 +307,11 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	}
 	a.SetCmd(cmd)
 
-	// The prompt is delivered as the first user message over stdin instead of
-	// a positional argument (see BuildHeadlessInvocation), mirroring the
-	// conversational runner's initial-prompt handling: a resumed run
-	// (session already set) must not resend it.
+	// Steerable: the prompt is the first user message over stdin, mirroring
+	// the conversational runner's initial-prompt handling — a resumed run
+	// (session already set) must not resend it, since the session already
+	// has it. Non-steerable stdin-prompt: always resent on every attempt,
+	// matching what the old positional-argv delivery did unconditionally.
 	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
 		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
@@ -488,10 +491,11 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	}
 	m.logger.Info("agent.headless.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir, "detached", true)
 
-	// The prompt is delivered as the first user message over the FIFO instead
-	// of a positional argument (see BuildHeadlessInvocation); a resumed run
-	// (session already set) must not resend it. Mirrors
-	// runConvoAttemptSurvive's initial-prompt handling.
+	// Steerable: the prompt is the first user message over the FIFO,
+	// mirroring runConvoAttemptSurvive — a resumed run (session already set)
+	// must not resend it. Non-steerable stdin-prompt: always resent on every
+	// attempt, matching what the old positional-argv delivery did
+	// unconditionally.
 	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
 		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
