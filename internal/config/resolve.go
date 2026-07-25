@@ -105,7 +105,9 @@ func applyLegacyReviewLoopCompat(file *FileConfig, cfg *ResolvedConfig) {
 	if file.SchemaVersion() >= CurrentSchemaVersion {
 		return
 	}
-	if file.Has("agent", "review_rounds_per_hour") {
+	// github.review_rounds_per_hour is the field's legacy (schema v2, one-day)
+	// home; an explicit value there must win over the implicit -1 below.
+	if file.Has("agent", "review_rounds_per_hour") || file.Has("github", "review_rounds_per_hour") {
 		return
 	}
 	node, ok := file.nodeAt("agent", "review_until_clean")

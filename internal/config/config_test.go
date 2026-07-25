@@ -488,6 +488,100 @@ func TestResolveLegacyReviewUntilCleanPreservesUnboundedLoop(t *testing.T) {
 	}
 }
 
+// github.review_rounds_per_hour was the field's home for one day (schema v2,
+// before it moved to agent). A config that already adopted it during that
+// window must keep parsing and resolving instead of hitting "unknown config
+// key" on the next upgrade.
+func TestParseFileConfig_AcceptsLegacyGitHubReviewRoundsPerHour(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("ParseFileConfig() error = %v, want the legacy key accepted as an alias", err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
+		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want 5 from the legacy github key", got)
+	}
+}
+
+func TestResolve_ConflictingReviewRoundsPerHourKeysError(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"agent:",
+		"  review_rounds_per_hour: 3",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resolve(fileCfg, Environment{}, ResolveOptions{}); err == nil {
+		t.Fatal("Resolve() error = nil, want a conflict error for mismatched agent/github values")
+	}
+}
+
+func TestResolveLegacyReviewUntilCleanKeepsExplicitGitHubReviewRoundsPerHour(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"agent:",
+		"  review_until_clean: true",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
+		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want the explicit legacy github value 5 preserved, not clobbered to -1", got)
+	}
+}
+
+func TestMigrateRawConfig_RelocatesLegacyGitHubReviewRoundsPerHour(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"agent:",
+		"  review_until_clean: true",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(result.MigratedRaw)
+	if !strings.Contains(text, "review_rounds_per_hour: 5") {
+		t.Fatalf("migrated config missing the preserved value:\n%s", text)
+	}
+	if strings.Contains(text, "integrations:\n  github:\n    review_rounds_per_hour") {
+		t.Fatalf("migrated config kept review_rounds_per_hour under integrations.github:\n%s", text)
+	}
+
+	fileCfg, err := ParseFileConfig(result.MigratedRaw)
+	if err != nil {
+		t.Fatalf("re-parse migrated output: %v", err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatalf("re-resolve migrated output: %v", err)
+	}
+	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
+		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want 5 preserved through migration", got)
+	}
+}
+
 func TestMigrateRawConfigRewritesGuardrailAliasesAndPreservesExplicitReviewLoop(t *testing.T) {
 	raw := []byte(strings.Join([]string{
 		"agent:",
