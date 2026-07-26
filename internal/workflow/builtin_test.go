@@ -1028,6 +1028,60 @@ func TestBuiltinSimpleTaskPR_CreateAndPushAreDeterministic(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTaskReview_FixReviewPushesBeforeVerify guards the
+// post-review-fix handoff. The fix-review agent commits locally and is
+// intentionally told not to push, so the workflow must sync the branch through
+// the deterministic push_branch step before verify_checks observes the final
+// HEAD.
+func TestBuiltinSimpleTaskReview_FixReviewPushesBeforeVerify(t *testing.T) {
+	t.Parallel()
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-review" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-review builtin definition not found")
+		return
+	}
+
+	fixStep := simple.StepByID("fix_review")
+	if fixStep == nil {
+		t.Fatal("fix_review step not found in simple-task-review")
+		return
+	}
+	if fixStep.Type != StepRunAgent {
+		t.Fatalf("fix_review step type = %q, want %q", fixStep.Type, StepRunAgent)
+	}
+	if strings.Contains(fixStep.Config.Prompt, "git push") {
+		t.Fatalf("fix_review prompt asks the agent to push; push must be deterministic:\n%s", fixStep.Config.Prompt)
+	}
+	if len(fixStep.Next) != 1 || fixStep.Next[0].GoTo != "push_review_fix_branch" {
+		t.Fatalf("fix_review next = %+v, want push_review_fix_branch", fixStep.Next)
+	}
+
+	pushStep := simple.StepByID("push_review_fix_branch")
+	if pushStep == nil {
+		t.Fatal("push_review_fix_branch step not found in simple-task-review")
+		return
+	}
+	if pushStep.Type != StepPushBranch {
+		t.Fatalf("push_review_fix_branch step type = %q, want %q", pushStep.Type, StepPushBranch)
+	}
+	if pushStep.Config.Prompt != "" {
+		t.Fatalf("push_review_fix_branch step carries an agent prompt: %q", pushStep.Config.Prompt)
+	}
+	if len(pushStep.Next) == 0 || pushStep.Next[len(pushStep.Next)-1].GoTo != "verify_checks" {
+		t.Fatalf("push_review_fix_branch next = %+v, want default goto verify_checks", pushStep.Next)
+	}
+}
+
 // TestBuiltinSimpleTaskPR_NoCodegenAfterTesting guards the PR handoff
 // workflow's non-mutating contract: after review/testing pass, the workflow
 // may sync, push, create, and link a PR, but it must not run codegen_gate and
