@@ -216,3 +216,126 @@ func TestRecordForStep_ReturnsNilForMissing(t *testing.T) {
 		t.Errorf("expected nil for missing step, got %v", got)
 	}
 }
+
+func makeID(stepID string, pos int) EffectID {
+	return EffectID{Generation: 1, StepSeq: 1, StepID: stepID, Pos: pos}
+}
+
+func TestEffectLog_RecordIntentIdempotent(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	now := time.Now()
+	e.RecordEffectIntent(id, now)
+	e.RecordEffectIntent(id, now.Add(time.Second))
+	if len(e.EffectLog) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(e.EffectLog))
+	}
+}
+
+func TestEffectLog_RecordCompletionOnAbsent(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	e.RecordEffectCompletion(id, time.Now())
+	if len(e.EffectLog) != 0 {
+		t.Fatalf("completion before intent should add no record, got %d", len(e.EffectLog))
+	}
+}
+
+func TestEffectLog_RecordCompletionIdempotent(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	now := time.Now()
+	e.RecordEffectIntent(id, now)
+	e.RecordEffectCompletion(id, now.Add(time.Second))
+	first := *e.EffectLog[0].CompletedAt
+	e.RecordEffectCompletion(id, now.Add(2*time.Second))
+	if *e.EffectLog[0].CompletedAt != first {
+		t.Fatalf("double completion should be idempotent, CompletedAt changed")
+	}
+}
+
+func TestEffectLog_EffectAppliedAndPending(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	now := time.Now()
+
+	// neither intent nor completion
+	if e.EffectApplied(id) || e.EffectPending(id) {
+		t.Fatal("no record: both should be false")
+	}
+
+	// intent only
+	e.RecordEffectIntent(id, now)
+	if e.EffectApplied(id) {
+		t.Fatal("intent-only: EffectApplied should be false")
+	}
+	if !e.EffectPending(id) {
+		t.Fatal("intent-only: EffectPending should be true")
+	}
+
+	// intent + completion
+	e.RecordEffectCompletion(id, now.Add(time.Second))
+	if !e.EffectApplied(id) {
+		t.Fatal("after completion: EffectApplied should be true")
+	}
+	if e.EffectPending(id) {
+		t.Fatal("after completion: EffectPending should be false")
+	}
+}
+
+func TestEffectLog_EffectIDForStep(t *testing.T) {
+	e := &Execution{}
+	now := time.Now()
+	id1 := EffectID{Generation: 1, StepSeq: 1, StepID: "implement", Pos: 0}
+	id2 := EffectID{Generation: 1, StepSeq: 2, StepID: "implement", Pos: 0}
+	e.RecordEffectIntent(id1, now)
+	e.RecordEffectIntent(id2, now.Add(time.Second))
+
+	got, ok := e.EffectIDForStep("implement", 0)
+	if !ok {
+		t.Fatal("expected hit for implement/0")
+	}
+	if !got.Equal(id2) {
+		t.Fatalf("expected most-recent id2, got %v", got)
+	}
+
+	_, ok = e.EffectIDForStep("missing", 0)
+	if ok {
+		t.Fatal("expected miss for unknown step")
+	}
+
+	_, ok = e.EffectIDForStep("implement", 99)
+	if ok {
+		t.Fatal("expected miss for wrong pos")
+	}
+}
+
+func TestEffectLog_TrimToMaxCap(t *testing.T) {
+	e := &Execution{}
+	now := time.Now()
+	for i := range maxEffectLog + 5 {
+		id := EffectID{Generation: 1, StepSeq: i, StepID: "step", Pos: 0}
+		e.RecordEffectIntent(id, now)
+	}
+	if len(e.EffectLog) != maxEffectLog {
+		t.Fatalf("expected log trimmed to %d, got %d", maxEffectLog, len(e.EffectLog))
+	}
+	// oldest entries evicted; first remaining should be index 5
+	if e.EffectLog[0].ID.StepSeq != 5 {
+		t.Fatalf("expected oldest remaining StepSeq=5, got %d", e.EffectLog[0].ID.StepSeq)
+	}
+}
+
+func TestEffectLog_CloneIsolation(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	e.RecordEffectIntent(id, time.Now())
+
+	cloned := e.Clone()
+	now2 := time.Now().Add(time.Second)
+	cloned.RecordEffectCompletion(id, now2)
+
+	if e.EffectApplied(id) {
+		t.Fatal("mutating clone's EffectLog should not affect original")
+	}
+}

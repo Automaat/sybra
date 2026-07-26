@@ -6,6 +6,17 @@ import (
 	"time"
 )
 
+const maxEffectLog = 200
+
+// EffectRecord pairs an EffectID with intent and completion timestamps.
+// It is stored on Execution.EffectLog so retried effects can reuse their
+// original EffectID as an idempotency key.
+type EffectRecord struct {
+	ID          EffectID   `yaml:"id" json:"id"`
+	IntentAt    time.Time  `yaml:"intent_at" json:"intentAt"`
+	CompletedAt *time.Time `yaml:"completed_at,omitempty" json:"completedAt,omitempty"`
+}
+
 // ExecState tracks the overall execution state.
 type ExecState string
 
@@ -52,6 +63,10 @@ type Execution struct {
 	// promoteBestOfN can locate the winning attempt's worktree without
 	// depending on live agent state.
 	BestOfNInflight map[string]*BestOfNInflight `yaml:"best_of_n_inflight,omitempty" json:"bestOfNInflight,omitempty"`
+	// EffectLog records intent-before and completion-after for each effect so
+	// retried effects can reuse their original EffectID as an idempotency key.
+	// Trimmed to maxEffectLog oldest-first. Not wired into the engine yet.
+	EffectLog []EffectRecord `yaml:"effect_log,omitempty" json:"effectLog,omitempty"`
 }
 
 // BestOfNInflight is the in-flight bookkeeping for one `best_of_n` parent.
@@ -203,7 +218,70 @@ func (e *Execution) Clone() *Execution {
 			cloned.BestOfNInflight[key] = &parentClone
 		}
 	}
+	if e.EffectLog != nil {
+		cloned.EffectLog = slices.Clone(e.EffectLog)
+	}
 	return &cloned
+}
+
+// RecordEffectIntent records that an effect is about to be applied.
+// Idempotent: a second call with the same ID is a no-op.
+// Trims EffectLog to maxEffectLog by evicting oldest entries.
+func (e *Execution) RecordEffectIntent(id EffectID, now time.Time) {
+	for i := range e.EffectLog {
+		if e.EffectLog[i].ID.Equal(id) {
+			return
+		}
+	}
+	e.EffectLog = append(e.EffectLog, EffectRecord{ID: id, IntentAt: now})
+	if len(e.EffectLog) > maxEffectLog {
+		e.EffectLog = e.EffectLog[len(e.EffectLog)-maxEffectLog:]
+	}
+}
+
+// RecordEffectCompletion marks an effect as applied.
+// No-op if the intent was never recorded or if completion is already set.
+func (e *Execution) RecordEffectCompletion(id EffectID, now time.Time) {
+	for i := range e.EffectLog {
+		if e.EffectLog[i].ID.Equal(id) {
+			if e.EffectLog[i].CompletedAt == nil {
+				t := now
+				e.EffectLog[i].CompletedAt = &t
+			}
+			return
+		}
+	}
+}
+
+// EffectApplied reports whether the effect was both intended and completed.
+func (e *Execution) EffectApplied(id EffectID) bool {
+	for i := range e.EffectLog {
+		if e.EffectLog[i].ID.Equal(id) {
+			return e.EffectLog[i].CompletedAt != nil
+		}
+	}
+	return false
+}
+
+// EffectPending reports whether the effect was intended but not yet completed.
+func (e *Execution) EffectPending(id EffectID) bool {
+	for i := range e.EffectLog {
+		if e.EffectLog[i].ID.Equal(id) {
+			return e.EffectLog[i].CompletedAt == nil
+		}
+	}
+	return false
+}
+
+// EffectIDForStep returns the most-recently recorded EffectID whose StepID and
+// Pos match the given values, so a retried effect can reuse the same key.
+func (e *Execution) EffectIDForStep(stepID string, pos int) (EffectID, bool) {
+	for i := range slices.Backward(e.EffectLog) {
+		if e.EffectLog[i].ID.StepID == stepID && e.EffectLog[i].ID.Pos == pos {
+			return e.EffectLog[i].ID, true
+		}
+	}
+	return EffectID{}, false
 }
 
 // AllChildrenDone reports whether every child reached a terminal status.
