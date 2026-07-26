@@ -162,7 +162,7 @@ func TestManagerApplyStatusEffect_TrimsEffectLog(t *testing.T) {
 	}
 
 	got := created
-	for i := 0; i < maxTaskEffectLog+5; i++ {
+	for i := range maxTaskEffectLog + 5 {
 		got, err = m.ApplyStatusEffect(created.ID, StatusEffect{
 			Source: fmt.Sprintf("watchdog.run.%03d", i),
 			Update: Update{
