@@ -33,24 +33,35 @@ type EffectClaimResult struct {
 	Completed bool
 }
 
-func (e *Engine) effectClaimForStep(t TaskInfo, stepID string, pos int) EffectClaim {
+func (e *Engine) effectClaimForStep(t TaskInfo, step *Step, pos int) EffectClaim {
+	stepID := step.ID
+	reuseCompleted := !isAsyncWorkflowStep(step.Type)
+	skippedCompleted := false
 	if t.Workflow != nil {
 		if existing, ok := t.Workflow.EffectIDForStep(stepID, pos); ok {
 			currentSeq := executionStepSeq(t.Workflow)
-			if rec, found := t.Workflow.effectRecord(existing); found && rec.ID.StepSeq == currentSeq {
-				return EffectClaim{
-					EffectID: existing,
-					Owner:    e.ownerID,
-					LeaseTTL: e.effectLeaseTTL,
-					Now:      e.now(),
+			if rec, found := t.Workflow.effectRecord(existing); found && rec.ID.StepSeq >= currentSeq {
+				if rec.CompletedAt != nil && !reuseCompleted {
+					skippedCompleted = true
+				} else {
+					return EffectClaim{
+						EffectID: existing,
+						Owner:    e.ownerID,
+						LeaseTTL: e.effectLeaseTTL,
+						Now:      e.now(),
+					}
 				}
 			}
 		}
 	}
+	stepSeq := executionStepSeq(t.Workflow)
+	if skippedCompleted {
+		stepSeq = nextEffectStepSeq(t.Workflow, t.Generation, stepSeq)
+	}
 	return EffectClaim{
 		EffectID: EffectID{
 			Generation: t.Generation,
-			StepSeq:    executionStepSeq(t.Workflow),
+			StepSeq:    stepSeq,
 			StepID:     stepID,
 			Pos:        pos,
 		},
@@ -60,8 +71,21 @@ func (e *Engine) effectClaimForStep(t TaskInfo, stepID string, pos int) EffectCl
 	}
 }
 
-func (e *Engine) claimStepEffect(taskID string, t TaskInfo, stepID string, pos int) (*Execution, EffectID, error) {
-	claim := e.effectClaimForStep(t, stepID, pos)
+func nextEffectStepSeq(wf *Execution, generation int64, base int) int {
+	if wf == nil {
+		return base
+	}
+	next := base
+	for _, rec := range wf.EffectLog {
+		if rec.ID.Generation == generation && rec.ID.StepSeq >= next {
+			next = rec.ID.StepSeq + 1
+		}
+	}
+	return next
+}
+
+func (e *Engine) claimStepEffect(taskID string, t TaskInfo, step *Step, pos int) (*Execution, EffectID, error) {
+	claim := e.effectClaimForStep(t, step, pos)
 	result, err := e.tasks.ClaimWorkflowEffect(taskID, claim)
 	if err != nil {
 		return result.Workflow, claim.EffectID, err

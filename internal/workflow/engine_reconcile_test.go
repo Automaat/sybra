@@ -231,7 +231,15 @@ func TestHandleStatusChange_ReconcileSideEffectFencedByActiveClaim(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if _, _, err := engineB.claimStepEffect("t1", taskInfo, "flag_plan_critique_verdict", effectPosStepAction); err != nil {
+	def, err := store.Get("plan-critique-reconcile")
+	if err != nil {
+		t.Fatalf("Get definition: %v", err)
+	}
+	step := def.StepByID("flag_plan_critique_verdict")
+	if step == nil {
+		t.Fatal("flag_plan_critique_verdict step missing")
+	}
+	if _, _, err := engineB.claimStepEffect("t1", taskInfo, step, effectPosStepAction); err != nil {
 		t.Fatalf("foreign claim: %v", err)
 	}
 

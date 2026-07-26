@@ -3150,6 +3150,53 @@ func TestResumeStalled_RunAgent(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_RunAgentAfterCompletedDispatchEffect(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	completedAt := time.Now().UTC()
+	tasks.Put(TaskInfo{
+		ID:         "t1",
+		Generation: 1,
+		Status:     "in-progress",
+		AgentMode:  "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecRunning,
+			Variables:   make(map[string]string),
+			EffectLog: []EffectRecord{{
+				ID:          EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+				IntentAt:    completedAt.Add(-time.Second),
+				Owner:       engine.ownerID,
+				CompletedAt: &completedAt,
+			}},
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if agents.CallCount() != 1 {
+		t.Fatalf("expected 1 agent start, got %d", agents.CallCount())
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if len(got.Workflow.EffectLog) != 2 {
+		t.Fatalf("effect log len = %d, want 2: %+v", len(got.Workflow.EffectLog), got.Workflow.EffectLog)
+	}
+	if got.Workflow.EffectLog[1].ID.StepSeq <= got.Workflow.EffectLog[0].ID.StepSeq {
+		t.Fatalf("new effect StepSeq = %d, want greater than prior completed StepSeq %d",
+			got.Workflow.EffectLog[1].ID.StepSeq, got.Workflow.EffectLog[0].ID.StepSeq)
+	}
+	if got.Workflow.EffectLog[1].CompletedAt == nil {
+		t.Fatalf("new dispatch effect was not completed: %+v", got.Workflow.EffectLog[1])
+	}
+}
+
 func TestResumeStalled_DispatchesRateLimitedProviderForFailover(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -4479,6 +4526,50 @@ func TestHandleHumanAction_NotWaiting(t *testing.T) {
 	err := engine.HandleHumanAction("t1", "approve", nil)
 	if err == nil {
 		t.Fatal("expected error for non-waiting task")
+	}
+}
+
+func TestHandleHumanAction_InvalidActionAlreadyWaitingDoesNotMutate(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "plan-review",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "review_plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{"existing": "value"},
+			StepHistory: []StepRecord{{StepID: "plan", Status: "completed"}},
+		},
+	})
+
+	err := engine.HandleHumanAction("t1", "bogus", nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid human action") {
+		t.Fatalf("HandleHumanAction error = %v, want invalid human action", err)
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("CurrentStep = %q, want review_plan", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.State != ExecWaiting {
+		t.Fatalf("State = %q, want %q", got.Workflow.State, ExecWaiting)
+	}
+	if _, ok := got.Workflow.Variables["human_action"]; ok {
+		t.Fatal("human_action var was set for rejected action")
+	}
+	if got.Workflow.Variables["existing"] != "value" {
+		t.Fatalf("existing var = %q, want value", got.Workflow.Variables["existing"])
+	}
+	if len(got.Workflow.StepHistory) != 1 || got.Workflow.StepHistory[0].StepID != "plan" {
+		t.Fatalf("StepHistory changed: %+v", got.Workflow.StepHistory)
 	}
 }
 

@@ -136,6 +136,18 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 	if err != nil {
 		return err
 	}
+	if t.Workflow != nil && t.Workflow.State == ExecWaiting && t.Workflow.CurrentStep != "" {
+		def, err := e.store.Get(t.Workflow.WorkflowID)
+		if err != nil {
+			return err
+		}
+		currentStep := def.StepByID(t.Workflow.CurrentStep)
+		if currentStep != nil && currentStep.Type == StepWaitHuman {
+			if err := validateHumanAction(currentStep, action); err != nil {
+				return err
+			}
+		}
+	}
 	t, err = e.advanceSatisfiedWaitForStatus(taskID, t)
 	if err != nil {
 		return err
@@ -154,8 +166,8 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 	if currentStep.Type != StepWaitHuman {
 		return fmt.Errorf("task %s is not at a wait_human step", taskID)
 	}
-	if len(currentStep.Config.HumanActions) > 0 && !slices.Contains(currentStep.Config.HumanActions, action) {
-		return fmt.Errorf("invalid human action %q for step %q", action, currentStep.ID)
+	if err := validateHumanAction(currentStep, action); err != nil {
+		return err
 	}
 
 	wfExec := t.Workflow
@@ -173,6 +185,13 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		Status: "completed",
 		Output: action,
 	})
+}
+
+func validateHumanAction(step *Step, action string) error {
+	if len(step.Config.HumanActions) > 0 && !slices.Contains(step.Config.HumanActions, action) {
+		return fmt.Errorf("invalid human action %q for step %q", action, step.ID)
+	}
+	return nil
 }
 
 // advanceSatisfiedWaitForStatus repairs stale workflow position before a human

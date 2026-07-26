@@ -654,7 +654,7 @@ func (e *Engine) recordSyncStepOutput(taskID string, step *Step, wfExec *Executi
 }
 
 func (e *Engine) claimAndRevalidateStepEffect(taskID string, step *Step, t *TaskInfo, wfExec **Execution) (EffectID, bool, error) {
-	claimedExec, effectID, claimErr := e.claimStepEffect(taskID, *t, step.ID, effectPosStepAction)
+	claimedExec, effectID, claimErr := e.claimStepEffect(taskID, *t, step, effectPosStepAction)
 	mergedExec, replayCompleted, err := e.handleStepClaimResult(taskID, step, *wfExec, claimedExec, effectID, claimErr)
 	if err != nil || replayCompleted {
 		*wfExec = mergedExec
@@ -664,7 +664,7 @@ func (e *Engine) claimAndRevalidateStepEffect(taskID string, step *Step, t *Task
 	*wfExec = mergedExec
 	t.Workflow = mergedExec
 
-	claimedExec, _, claimErr = e.claimStepEffect(taskID, *t, step.ID, effectPosStepAction)
+	claimedExec, _, claimErr = e.claimStepEffect(taskID, *t, step, effectPosStepAction)
 	mergedExec, replayCompleted, err = e.handleStepClaimResult(taskID, step, *wfExec, claimedExec, effectID, claimErr)
 	*wfExec = mergedExec
 	t.Workflow = mergedExec
