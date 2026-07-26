@@ -270,6 +270,32 @@ func newParallelReconcileDef() Definition {
 	}
 }
 
+func newBestOfNReconcileDef() Definition {
+	return Definition{
+		ID:   "bestofn-reconcile",
+		Name: "best of n reconcile",
+		Steps: []Step{
+			{
+				ID:   "attempts",
+				Name: "Attempts",
+				Type: StepBestOfN,
+				Config: StepConfig{
+					Attempts: 2,
+					Prompt:   "implement",
+				},
+				Next: []Transition{{GoTo: "review_plan"}},
+			},
+			{
+				ID:     "review_plan",
+				Name:   "Review Plan",
+				Type:   StepWaitHuman,
+				Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve", "reject"}},
+				Next:   []Transition{{GoTo: ""}},
+			},
+		},
+	}
+}
+
 // TestHandleStatusChange_DoesNotReconcilePastIncompleteParallel covers a real
 // incident on a fix for reconcileCurrentStepFromStatus itself: an external
 // task.Status write matching a downstream wait_human must not fast-forward
@@ -392,6 +418,72 @@ func TestHandleStatusChange_DoesNotReconcilePastNotYetSpawnedParallel(t *testing
 	got, _ := tasks.GetTask("t1")
 	if got.Workflow.CurrentStep != "fan_out" {
 		t.Fatalf("CurrentStep = %q, want fan_out (must not skip a boundary whose record hasn't been created yet)", got.Workflow.CurrentStep)
+	}
+}
+
+func TestHandleStatusChange_DoesNotReconcilePastNotYetSpawnedBestOfN(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newBestOfNReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "plan-review",
+		Workflow: &Execution{
+			WorkflowID:  "bestofn-reconcile",
+			CurrentStep: "attempts",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			// No BestOfNInflight entry at all — the pre-spawn window.
+		},
+	})
+
+	engine.HandleStatusChange("t1", "plan-review")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "attempts" {
+		t.Fatalf("CurrentStep = %q, want attempts (must not skip a boundary whose record hasn't been created yet)", got.Workflow.CurrentStep)
+	}
+}
+
+func TestHandleStatusChange_ReconcilesPastCompletedBestOfN(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newBestOfNReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "plan-review",
+		Workflow: &Execution{
+			WorkflowID:  "bestofn-reconcile",
+			CurrentStep: "attempts",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			BestOfNInflight: map[string]*BestOfNInflight{
+				"attempts": {
+					ParentStepID: "attempts",
+					Attempts: map[string]*AttemptStatus{
+						"attempt_1": {Status: "completed"},
+						"attempt_2": {Status: "failed"},
+					},
+				},
+			},
+		},
+	})
+
+	engine.HandleStatusChange("t1", "plan-review")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("CurrentStep = %q, want review_plan", got.Workflow.CurrentStep)
 	}
 }
 

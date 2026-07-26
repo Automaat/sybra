@@ -26,9 +26,15 @@ func (e *Engine) asyncBoundaryComplete(wf *Execution, step *Step) bool {
 	}
 	switch step.Type {
 	case StepParallel:
-		return wf.ParallelInflight[step.ID].AllChildrenDone()
+		if rec := wf.ParallelInflight[step.ID]; rec != nil {
+			return rec.AllChildrenDone()
+		}
+		return false
 	case StepBestOfN:
-		return wf.BestOfNInflight[step.ID].AllAttemptsDone()
+		if rec := wf.BestOfNInflight[step.ID]; rec != nil {
+			return rec.AllAttemptsDone()
+		}
+		return false
 	default:
 		return true
 	}
