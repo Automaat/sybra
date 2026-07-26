@@ -224,24 +224,24 @@ export class Definition {
  * distinguishes sibling effects from the same reducer decision.
  */
 export class EffectID {
-    "Generation": number;
-    "StepSeq": number;
-    "StepID": string;
-    "Pos": number;
+    "generation": number;
+    "stepSeq": number;
+    "stepID": string;
+    "pos": number;
 
     /** Creates a new EffectID instance. */
     constructor($$source: Partial<EffectID> = {}) {
-        if (!("Generation" in $$source)) {
-            this["Generation"] = 0;
+        if (!("generation" in $$source)) {
+            this["generation"] = 0;
         }
-        if (!("StepSeq" in $$source)) {
-            this["StepSeq"] = 0;
+        if (!("stepSeq" in $$source)) {
+            this["stepSeq"] = 0;
         }
-        if (!("StepID" in $$source)) {
-            this["StepID"] = "";
+        if (!("stepID" in $$source)) {
+            this["stepID"] = "";
         }
-        if (!("Pos" in $$source)) {
-            this["Pos"] = 0;
+        if (!("pos" in $$source)) {
+            this["pos"] = 0;
         }
 
         Object.assign(this, $$source);
