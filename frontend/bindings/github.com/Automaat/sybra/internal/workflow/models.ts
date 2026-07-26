@@ -218,6 +218,80 @@ export class Definition {
 }
 
 /**
+ * EffectID identifies one reducer-emitted effect within a task generation.
+ * Generation scopes ids across retries/resets, StepSeq orders steps within that
+ * generation, StepID anchors the originating workflow step, and Pos
+ * distinguishes sibling effects from the same reducer decision.
+ */
+export class EffectID {
+    "Generation": number;
+    "StepSeq": number;
+    "StepID": string;
+    "Pos": number;
+
+    /** Creates a new EffectID instance. */
+    constructor($$source: Partial<EffectID> = {}) {
+        if (!("Generation" in $$source)) {
+            this["Generation"] = 0;
+        }
+        if (!("StepSeq" in $$source)) {
+            this["StepSeq"] = 0;
+        }
+        if (!("StepID" in $$source)) {
+            this["StepID"] = "";
+        }
+        if (!("Pos" in $$source)) {
+            this["Pos"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EffectID instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EffectID {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EffectID($$parsedSource as Partial<EffectID>);
+    }
+}
+
+/**
+ * EffectRecord pairs an EffectID with intent and completion timestamps.
+ * It is stored on Execution.EffectLog so retried effects can reuse their
+ * original EffectID as an idempotency key.
+ */
+export class EffectRecord {
+    "id": EffectID;
+    "intentAt": string;
+    "completedAt"?: string | null;
+
+    /** Creates a new EffectRecord instance. */
+    constructor($$source: Partial<EffectRecord> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = (new EffectID());
+        }
+        if (!("intentAt" in $$source)) {
+            this["intentAt"] = "0001-01-01T00:00:00.000Z";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EffectRecord instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EffectRecord {
+        const $$createField0_0 = $$createType6;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("id" in $$parsedSource) {
+            $$parsedSource["id"] = $$createField0_0($$parsedSource["id"]);
+        }
+        return new EffectRecord($$parsedSource as Partial<EffectRecord>);
+    }
+}
+
+/**
  * ExecState tracks the overall execution state.
  */
 export enum ExecState {
@@ -283,6 +357,13 @@ export class Execution {
      */
     "bestOfNInflight"?: { [_ in string]?: BestOfNInflight | null };
 
+    /**
+     * EffectLog records intent-before and completion-after for each effect so
+     * retried effects can reuse their original EffectID as an idempotency key.
+     * Trimmed to maxEffectLog oldest-first. Not wired into the engine yet.
+     */
+    "effectLog"?: EffectRecord[];
+
     /** Creates a new Execution instance. */
     constructor($$source: Partial<Execution> = {}) {
         if (!("workflowId" in $$source)) {
@@ -314,11 +395,12 @@ export class Execution {
      * Creates a new Execution instance from a string or object.
      */
     static createFrom($$source: any = {}): Execution {
-        const $$createField3_0 = $$createType7;
-        const $$createField4_0 = $$createType8;
-        const $$createField8_0 = $$createType11;
-        const $$createField9_0 = $$createType12;
-        const $$createField10_0 = $$createType15;
+        const $$createField3_0 = $$createType8;
+        const $$createField4_0 = $$createType9;
+        const $$createField8_0 = $$createType12;
+        const $$createField9_0 = $$createType13;
+        const $$createField10_0 = $$createType16;
+        const $$createField11_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("stepHistory" in $$parsedSource) {
             $$parsedSource["stepHistory"] = $$createField3_0($$parsedSource["stepHistory"]);
@@ -334,6 +416,9 @@ export class Execution {
         }
         if ("bestOfNInflight" in $$parsedSource) {
             $$parsedSource["bestOfNInflight"] = $$createField10_0($$parsedSource["bestOfNInflight"]);
+        }
+        if ("effectLog" in $$parsedSource) {
+            $$parsedSource["effectLog"] = $$createField11_0($$parsedSource["effectLog"]);
         }
         return new Execution($$parsedSource as Partial<Execution>);
     }
@@ -411,7 +496,7 @@ export class ParallelChildren {
      * Creates a new ParallelChildren instance from a string or object.
      */
     static createFrom($$source: any = {}): ParallelChildren {
-        const $$createField2_0 = $$createType18;
+        const $$createField2_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("children" in $$parsedSource) {
             $$parsedSource["children"] = $$createField2_0($$parsedSource["children"]);
@@ -495,10 +580,10 @@ export class Step {
      * Creates a new Step instance from a string or object.
      */
     static createFrom($$source: any = {}): Step {
-        const $$createField3_0 = $$createType19;
-        const $$createField4_0 = $$createType21;
+        const $$createField3_0 = $$createType22;
+        const $$createField4_0 = $$createType24;
         const $$createField5_0 = $$createType5;
-        const $$createField6_0 = $$createType23;
+        const $$createField6_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("config" in $$parsedSource) {
             $$parsedSource["config"] = $$createField3_0($$parsedSource["config"]);
@@ -746,14 +831,14 @@ export class StepConfig {
      * Creates a new StepConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): StepConfig {
-        const $$createField5_0 = $$createType24;
-        const $$createField7_0 = $$createType24;
-        const $$createField10_0 = $$createType26;
-        const $$createField18_0 = $$createType24;
-        const $$createField19_0 = $$createType24;
-        const $$createField20_0 = $$createType28;
-        const $$createField21_0 = $$createType29;
-        const $$createField24_0 = $$createType24;
+        const $$createField5_0 = $$createType27;
+        const $$createField7_0 = $$createType27;
+        const $$createField10_0 = $$createType29;
+        const $$createField18_0 = $$createType27;
+        const $$createField19_0 = $$createType27;
+        const $$createField20_0 = $$createType31;
+        const $$createField21_0 = $$createType32;
+        const $$createField24_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField5_0($$parsedSource["allowedTools"]);
@@ -1062,7 +1147,7 @@ export class Transition {
      * Creates a new Transition instance from a string or object.
      */
     static createFrom($$source: any = {}): Transition {
-        const $$createField0_0 = $$createType26;
+        const $$createField0_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("when" in $$parsedSource) {
             $$parsedSource["when"] = $$createField0_0($$parsedSource["when"]);
@@ -1112,8 +1197,8 @@ export class Trigger {
      * Creates a new Trigger instance from a string or object.
      */
     static createFrom($$source: any = {}): Trigger {
-        const $$createField2_0 = $$createType30;
-        const $$createField3_0 = $$createType23;
+        const $$createField2_0 = $$createType33;
+        const $$createField3_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("conditions" in $$parsedSource) {
             $$parsedSource["conditions"] = $$createField2_0($$parsedSource["conditions"]);
@@ -1132,28 +1217,31 @@ const $$createType2 = $Create.Map($Create.Any, $$createType1);
 const $$createType3 = Trigger.createFrom;
 const $$createType4 = Step.createFrom;
 const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = StepRecord.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = $Create.Map($Create.Any, $Create.Any);
-const $$createType9 = ParallelChildren.createFrom;
-const $$createType10 = $Create.Nullable($$createType9);
-const $$createType11 = $Create.Map($Create.Any, $$createType10);
-const $$createType12 = $Create.Map($Create.Any, $Create.Any);
-const $$createType13 = BestOfNInflight.createFrom;
-const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = $Create.Map($Create.Any, $$createType14);
-const $$createType16 = ChildStatus.createFrom;
-const $$createType17 = $Create.Nullable($$createType16);
-const $$createType18 = $Create.Map($Create.Any, $$createType17);
-const $$createType19 = StepConfig.createFrom;
-const $$createType20 = Transition.createFrom;
-const $$createType21 = $Create.Array($$createType20);
-const $$createType22 = Position.createFrom;
-const $$createType23 = $Create.Nullable($$createType22);
-const $$createType24 = $Create.Array($Create.Any);
-const $$createType25 = Condition.createFrom;
+const $$createType6 = EffectID.createFrom;
+const $$createType7 = StepRecord.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = $Create.Map($Create.Any, $Create.Any);
+const $$createType10 = ParallelChildren.createFrom;
+const $$createType11 = $Create.Nullable($$createType10);
+const $$createType12 = $Create.Map($Create.Any, $$createType11);
+const $$createType13 = $Create.Map($Create.Any, $Create.Any);
+const $$createType14 = BestOfNInflight.createFrom;
+const $$createType15 = $Create.Nullable($$createType14);
+const $$createType16 = $Create.Map($Create.Any, $$createType15);
+const $$createType17 = EffectRecord.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = ChildStatus.createFrom;
+const $$createType20 = $Create.Nullable($$createType19);
+const $$createType21 = $Create.Map($Create.Any, $$createType20);
+const $$createType22 = StepConfig.createFrom;
+const $$createType23 = Transition.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = Position.createFrom;
 const $$createType26 = $Create.Nullable($$createType25);
-const $$createType27 = ImportSidecar.createFrom;
-const $$createType28 = $Create.Nullable($$createType27);
-const $$createType29 = $Create.Array($$createType27);
-const $$createType30 = $Create.Array($$createType25);
+const $$createType27 = $Create.Array($Create.Any);
+const $$createType28 = Condition.createFrom;
+const $$createType29 = $Create.Nullable($$createType28);
+const $$createType30 = ImportSidecar.createFrom;
+const $$createType31 = $Create.Nullable($$createType30);
+const $$createType32 = $Create.Array($$createType30);
+const $$createType33 = $Create.Array($$createType28);
