@@ -42,7 +42,7 @@ func currentStepEffectRecord(t TaskInfo, step *Step, pos int) (EffectRecord, boo
 		return EffectRecord{}, false
 	}
 	currentSeq := executionStepSeq(t.Workflow)
-	if rec.ID.Generation != t.Generation || rec.ID.StepSeq < currentSeq {
+	if rec.ID.StepSeq < currentSeq {
 		return EffectRecord{}, false
 	}
 	return rec, true

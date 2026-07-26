@@ -179,6 +179,48 @@ func TestReplayPersistedEffects(t *testing.T) {
 		}
 	})
 
+	t.Run("pending intent survives unrelated task generation change", func(t *testing.T) {
+		store := newTestStore(t)
+		originalID := EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction}
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 2,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       originalID,
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewEngine(store, tasks, agents, discardLogger())
+
+		engine.ReplayPersistedEffects()
+
+		if len(agents.calls) != 1 {
+			t.Fatalf("StartAgent calls = %d, want 1", len(agents.calls))
+		}
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Workflow.EffectLog) != 1 {
+			t.Fatalf("effect log len = %d, want 1: %+v", len(got.Workflow.EffectLog), got.Workflow.EffectLog)
+		}
+		if !got.Workflow.EffectLog[0].ID.Equal(originalID) {
+			t.Fatalf("effect ID = %s, want original %s", got.Workflow.EffectLog[0].ID.String(), originalID.String())
+		}
+		if got.Workflow.EffectLog[0].CompletedAt == nil {
+			t.Fatalf("effect log = %+v, want completed replayed effect", got.Workflow.EffectLog)
+		}
+	})
+
 	t.Run("completed async effect reconciles as no-op", func(t *testing.T) {
 		now := time.Now().UTC()
 		completedAt := now
