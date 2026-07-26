@@ -1,6 +1,6 @@
 id: simple-task-plan
 name: Simple Task — Plan
-description: Triage a new task and (when planning is required) drive the plan / critique / human-review loop. Hands off to simple-task-implement via task.status=in-progress on completion.
+description: Triage a new task and (when planning is required) drive the plan / critique / human-review loop. Human approval lands the task in todo as a stable ready-for-implementation state.
 builtin: true
 trigger:
   on: task.created
@@ -80,6 +80,16 @@ steps:
     type: set_status
     config:
       status: in-progress
+    next:
+      - goto: ""
+
+  # Complex tasks that passed human plan review land on todo as a stable
+  # post-review resting state; approval itself must not start implementation.
+  - id: set_todo_and_end
+    name: Hand Off to Todo
+    type: set_status
+    config:
+      status: todo
     next:
       - goto: ""
 
@@ -521,7 +531,7 @@ steps:
           field: vars.human_action
           operator: equals
           value: approve
-        goto: set_in_progress_and_end
+        goto: set_todo_and_end
       - when:
           field: vars.human_action
           operator: equals
