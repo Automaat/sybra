@@ -20,6 +20,11 @@ import (
 
 const inboundReviewRedispatchCooldown = 10 * time.Minute
 
+type workflowRecoveryLoop interface {
+	ReplayPersistedEffects()
+	ResumeStalled()
+}
+
 // orchestratorLoop runs two cadences. The cheap, latency-sensitive dispatch pass
 // (start the orchestrator, release unblocked children) fires on a fast ticker and
 // on demand via dispatchNudge, so a freshly-ready task isn't left idle. The
@@ -174,11 +179,9 @@ func (a *App) queueDrainPass(ctx context.Context) {
 	}
 	a.reconcileRunnableBoardTasks(ctx)
 	if a.workflowEngine != nil {
-		// workflow.Engine derives its shell-step context from its own e.ctx
-		// field (Engine.SetContext, bound once from App's root ctx), not an
-		// explicit per-call parameter.
-		a.workflowEngine.ReplayPersistedEffects()
-		a.workflowEngine.ResumeStalled() //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
+		var workflowRecovery workflowRecoveryLoop = a.workflowEngine
+		workflowRecovery.ReplayPersistedEffects()
+		workflowRecovery.ResumeStalled()
 	}
 }
 

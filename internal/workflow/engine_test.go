@@ -269,7 +269,7 @@ func workflowMetricValue(t *testing.T, name string, labels []string) float64 {
 	req := httptest.NewRequest(http.MethodGet, "/metrics", http.NoBody)
 	rec := httptest.NewRecorder()
 	promhttp.Handler().ServeHTTP(rec, req)
-	for _, line := range strings.Split(rec.Body.String(), "\n") {
+	for line := range strings.SplitSeq(rec.Body.String(), "\n") {
 		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, name) {
 			continue
 		}

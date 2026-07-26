@@ -527,7 +527,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return nil, err
 		}
 		t = e.withManualTestConfig(t)
-		ctx, err := e.prepareStepTemplateContext(taskID, step, wfExec, t)
+		tmplCtx, err := e.prepareStepTemplateContext(taskID, step, wfExec, t)
 		if err != nil {
 			return nil, err
 		}
@@ -542,7 +542,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 
 		// Async steps: execute and return. Callback (HandleAgentComplete/HandleHumanAction)
 		// will call AdvanceStep later.
-		if handled, comp, asyncErr := e.executeAsyncWorkflowStep(taskID, def, step, wfExec, ctx, effectID); handled {
+		if handled, comp, asyncErr := e.executeAsyncWorkflowStep(taskID, def, step, wfExec, tmplCtx, effectID); handled {
 			if errors.Is(asyncErr, errWorkflowYield) {
 				return nil, asyncErr
 			}
@@ -570,7 +570,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			}
 		} else {
 			var execErr error
-			output, execErr = e.execSyncStep(taskID, step, wfExec, ctx, t)
+			output, execErr = e.execSyncStep(taskID, step, wfExec, tmplCtx, t)
 			if execErr != nil {
 				// The step parked the workflow in ExecWaiting (it persisted the new
 				// CurrentStep/State itself). Stop without recording/advancing/
