@@ -250,6 +250,7 @@ func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
+	var fenceErr error
 	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
 		if cur.Workflow == nil {
 			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
@@ -261,6 +262,7 @@ func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim)
 		result = claimResult
 		if claimErr != nil {
 			if errors.Is(claimErr, workflow.ErrEffectClaimConflict) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				fenceErr = claimErr
 				return task.Update{}, errWorkflowEffectNoPersist
 			}
 			return task.Update{}, claimErr
@@ -269,7 +271,7 @@ func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim)
 	})
 	if err != nil {
 		if errors.Is(err, errWorkflowEffectNoPersist) {
-			return result, nil
+			return result, fenceErr
 		}
 		return workflow.EffectClaimResult{}, err
 	}
