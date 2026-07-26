@@ -215,7 +215,7 @@ func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *St
 		return t, parked, nil, err
 	}
 	var recovered bool
-	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output)
+	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output, output.Output)
 	if recovered || err != nil {
 		return t, false, comp, err
 	}
@@ -564,9 +564,6 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 				StepID: step.ID,
 				Status: "completed",
 				Output: wfExec.Variables["step."+step.ID+".output"],
-			}
-			if output.Output == "" {
-				output.Output = "skipped: effect already completed"
 			}
 		} else {
 			var execErr error

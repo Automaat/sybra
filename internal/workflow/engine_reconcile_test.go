@@ -3,6 +3,7 @@ package workflow
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func newPlanCritiqueReconcileDef() Definition {
@@ -297,6 +298,68 @@ func TestHandleStatusChange_DoesNotReconcileRunningRunAgentWithoutWaitForStatus(
 	}
 	if _, ok := got.Workflow.Variables["step.flag_plan_critique_verdict.output"]; ok {
 		t.Fatal("flag_plan_critique_verdict output recorded while critique agent was still running")
+	}
+}
+
+func TestHandleStatusChange_ReplayedSetStatusDoesNotInventOutput(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "set-status-replay-reconcile",
+		Name: "set status replay reconcile",
+		Steps: []Step{
+			{
+				ID:   "set_review",
+				Name: "Set Review",
+				Type: StepSetStatus,
+				Config: StepConfig{
+					Status:       "plan-review",
+					StatusReason: "ready for review",
+				},
+				Next: []Transition{{GoTo: "review_plan"}},
+			},
+			{
+				ID:     "review_plan",
+				Name:   "Review Plan",
+				Type:   StepWaitHuman,
+				Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve", "reject"}},
+				Next:   []Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	completedAt := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "plan-review",
+		Workflow: &Execution{
+			WorkflowID:  "set-status-replay-reconcile",
+			CurrentStep: "set_review",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			EffectLog: []EffectRecord{{
+				ID: EffectID{
+					StepID: "set_review",
+					Pos:    effectPosStepAction,
+				},
+				IntentAt:    completedAt,
+				CompletedAt: &completedAt,
+			}},
+		},
+	})
+
+	engine.HandleStatusChange("t1", "plan-review")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("CurrentStep = %q, want review_plan", got.Workflow.CurrentStep)
+	}
+	if _, ok := got.Workflow.Variables["step.set_review.output"]; ok {
+		t.Fatalf("step.set_review.output = %q, want unset on replay", got.Workflow.Variables["step.set_review.output"])
 	}
 }
 
