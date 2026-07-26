@@ -207,6 +207,9 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 			effects = append(effects, newWorkflowEffect(kind, completeExecution(exec, workflowStateForKind(kind), observed.Now)))
 			return cloneEffects(effects), nil
 		}
+		if next == nil {
+			return nil, fmt.Errorf("next step missing after unresolved transition from %s", current.ID)
+		}
 		exec.CurrentStep = next.ID
 		exec.State = ExecRunning
 		current = next
@@ -225,6 +228,9 @@ func continueFromStep(desired DesiredState, observed ObservedState, exec *Execut
 			kind = EffectFailWorkflow
 		}
 		return append(cloneEffects(effects), newWorkflowEffect(kind, completeExecution(exec, workflowStateForKind(kind), observed.Now))), nil
+	}
+	if next == nil {
+		return nil, fmt.Errorf("next step missing after unresolved transition from %s", current.ID)
 	}
 	exec.CurrentStep = next.ID
 	exec.State = ExecRunning
@@ -334,9 +340,15 @@ func reducerAsyncBoundaryComplete(exec *Execution, step *Step) bool {
 	}
 	switch step.Type {
 	case StepParallel:
-		return exec.ParallelInflight[step.ID].AllChildrenDone()
+		if p := exec.ParallelInflight[step.ID]; p != nil {
+			return p.AllChildrenDone()
+		}
+		return false
 	case StepBestOfN:
-		return exec.BestOfNInflight[step.ID].AllAttemptsDone()
+		if b := exec.BestOfNInflight[step.ID]; b != nil {
+			return b.AllAttemptsDone()
+		}
+		return false
 	default:
 		return true
 	}

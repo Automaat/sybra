@@ -376,6 +376,10 @@ func TestReduceAsyncBoundaryCompatibility(t *testing.T) {
 		exec *Execution
 	}{
 		{
+			name: "parallel boundary not yet spawned still blocks",
+			exec: &Execution{WorkflowID: "wf", CurrentStep: "fan_out", State: ExecWaiting},
+		},
+		{
 			name: "parallel boundary still incomplete",
 			exec: &Execution{
 				WorkflowID:  "wf",
