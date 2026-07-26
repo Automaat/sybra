@@ -96,6 +96,46 @@ func TestPlanningService_PlanTask_StartsWorkflow(t *testing.T) {
 	}
 }
 
+func TestPlanningService_PlanTask_ResumesPlanningAtPlanStep(t *testing.T) {
+	planSvc, _, a := setupPlanningService(t)
+
+	created, err := a.tasks.Create("resume planning", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusPlanning),
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "review_plan",
+			State:       workflow.ExecFailed,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := planSvc.PlanTask(created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Workflow == nil {
+		t.Fatal("workflow missing after PlanTask")
+	}
+	if updated.Workflow.WorkflowID != "simple-task-plan" {
+		t.Fatalf("WorkflowID = %q, want simple-task-plan", updated.Workflow.WorkflowID)
+	}
+	if updated.Workflow.RecordForStep("triage") != nil {
+		t.Fatalf("triage record = %+v, want no triage re-entry", updated.Workflow.RecordForStep("triage"))
+	}
+	if updated.Status == task.StatusInProgress {
+		t.Fatalf("Status = %q, want planning-side status, not implementation handoff", updated.Status)
+	}
+}
+
 func TestPlanningService_ApprovePlan_ErrorWhenNotWaiting(t *testing.T) {
 	planSvc, taskSvc, _ := setupPlanningService(t)
 

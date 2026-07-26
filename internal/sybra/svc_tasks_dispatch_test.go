@@ -701,8 +701,59 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	if gotUmbrella.Workflow == nil || gotUmbrella.Workflow.WorkflowID != "old-workflow" || gotUmbrella.Workflow.State != workflow.ExecFailed {
 		t.Fatalf("synthetic umbrella task should be left alone, got %+v", gotUmbrella.Workflow)
 	}
-	if launcher.startCalls != 4 {
-		t.Fatalf("startCalls = %d, want 4 for idle/post-plan implementation and inbound review tasks", launcher.startCalls)
+	if launcher.startCalls != 6 {
+		t.Fatalf("startCalls = %d, want 6 for resumed planning, implementation, and inbound review tasks", launcher.startCalls)
+	}
+}
+
+func TestDispatchPlanningWorkflow_RejectedPlanDoesNotRedispatchImplementation(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		classifier: fakeTriageClassifier{},
+	})
+	a.workflowEngine = svc.workflowEngine
+
+	created, err := a.tasks.Create("rejected plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusPlanning),
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "review_plan",
+			State:       workflow.ExecCompleted,
+			Variables:   map[string]string{},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchPlanningWorkflow(created.ID)
+
+	got, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusPlanning {
+		t.Fatalf("status = %q, want planning", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "simple-task-plan" {
+		t.Fatalf("workflow = %+v, want simple-task-plan", got.Workflow)
+	}
+	if got.Workflow.CurrentStep != "plan" {
+		t.Fatalf("current_step = %q, want plan", got.Workflow.CurrentStep)
+	}
+	if len(got.AgentRuns) != 1 {
+		t.Fatalf("agent runs = %+v, want one planning run", got.AgentRuns)
+	}
+	if got.AgentRuns[0].Role != string(agent.RolePlan) {
+		t.Fatalf("agent role = %q, want %q", got.AgentRuns[0].Role, agent.RolePlan)
+	}
+	if launcher.startCalls != 1 {
+		t.Fatalf("startCalls = %d, want 1 planning dispatch", launcher.startCalls)
 	}
 }
 

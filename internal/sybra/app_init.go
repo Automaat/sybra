@@ -977,10 +977,10 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 		if err != nil {
 			return
 		}
-		// Only front-of-pipeline tasks. simple-task-plan's trigger has no status
-		// condition, so without this guard a task.created dispatch could restart
-		// planning on an in-review/done task.
-		if t.Status != task.StatusNew && t.Status != task.StatusTodo && t.Status != task.StatusPlanning {
+		// Only fresh task.created entries. Planning re-entry has its own lane:
+		// restarting simple-task-plan from step 1 would re-run triage, which can
+		// hand a rejected/reset planning task straight back to implementation.
+		if t.Status != task.StatusNew && t.Status != task.StatusTodo {
 			return
 		}
 		if !a.runsTaskLocally(t) {
@@ -1040,7 +1040,16 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 	if id == "" {
 		return
 	}
-	a.dispatchTaskCreatedWorkflow(id)
+	t, err := a.tasks.Get(id)
+	if err != nil {
+		return
+	}
+	switch t.Status {
+	case task.StatusPlanning:
+		a.dispatchPlanningWorkflow(id)
+	default:
+		a.dispatchTaskCreatedWorkflow(id)
+	}
 }
 
 func (a *App) initAudit() {
