@@ -77,7 +77,10 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 	if rec.CompletedAt == nil && e.resumePreflightConsumesTick(t, step, "workflow.effect-replay.skip") {
 		return
 	}
+	e.replayPendingEffect(t, step, &def)
+}
 
+func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) {
 	reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
 	if !acquired {
 		e.resumeSkip.Log(e.logger, "workflow.effect-replay.skip", t.ID,
@@ -86,7 +89,7 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 		return
 	}
 
-	fresh, abort := e.resolveFreshTaskForResume(t, step, &def)
+	fresh, abort := e.resolveFreshTaskForResume(t, step, def)
 	if abort {
 		return
 	}
@@ -99,7 +102,8 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 		return
 	}
 
-	def, err = e.store.Get(fresh.Workflow.WorkflowID)
+	var err error
+	*def, err = e.store.Get(fresh.Workflow.WorkflowID)
 	if err != nil {
 		e.clearResumeDispatching(t.ID)
 		return
@@ -109,7 +113,7 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 		e.clearResumeDispatching(t.ID)
 		return
 	}
-	rec, ok = currentStepEffectRecord(fresh, step, effectPosStepAction)
+	rec, ok := currentStepEffectRecord(fresh, step, effectPosStepAction)
 	if !ok {
 		e.clearResumeDispatching(t.ID)
 		return
@@ -121,17 +125,12 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 		metrics.OrchestratorEffectReplay(e.metricContext(), "already_completed")
 		return
 	}
-	if e.handleTransientFetchRetry(&fresh, step) {
-		e.clearResumeDispatching(t.ID)
-		return
-	}
-	if e.handleWatchdogRateLimitRetry(&fresh, step) {
-		e.clearResumeDispatching(t.ID)
+	if e.effectReplayConsumedRetry(&fresh, step, t.ID) {
 		return
 	}
 
 	e.logger.Info("workflow.effect-replay", "task_id", fresh.ID, "step", step.ID, "effect", rec.ID.String())
-	comp, rErr := e.executeSteps(fresh.ID, &def, step, fresh.Workflow)
+	comp, rErr := e.executeSteps(fresh.ID, def, step, fresh.Workflow)
 	rErr = normalizeExecuteStepsErr(rErr)
 	e.clearResumeDispatching(fresh.ID)
 	e.fireComplete(comp)
@@ -148,4 +147,16 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 	e.clearTransientFetchRetry(fresh.ID, cleanupWorkflow, step.ID)
 	e.clearCircuitBreakerOnSuccess(fresh.ID, cleanupWorkflow, step.ID)
 	e.clearWatchdogReaskNote(fresh.ID, cleanupWorkflow)
+}
+
+func (e *Engine) effectReplayConsumedRetry(t *TaskInfo, step *Step, claimTaskID string) bool {
+	if e.handleTransientFetchRetry(t, step) {
+		e.clearResumeDispatching(claimTaskID)
+		return true
+	}
+	if e.handleWatchdogRateLimitRetry(t, step) {
+		e.clearResumeDispatching(claimTaskID)
+		return true
+	}
+	return false
 }
