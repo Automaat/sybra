@@ -525,7 +525,7 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 		case rateLimited || malformedTool:
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
 		default:
-			h.workflowEngine.ClearAgentStep(ag.ID)
+			h.workflowEngine.ClearAgentStep(ag.TaskID, ag.ID)
 		}
 		return false
 	}

@@ -263,31 +263,14 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// finalizes on its first completed turn on its own (drainOrCloseHeadlessSteer).
 	oneShot := false
 
-	// The step-starting marker below brackets the (potentially multi-second,
-	// worktree-prep-bound) StartAgent call, so a stale/untracked agent
-	// completion arriving mid-start (e.g. a reattached agent from a prior
-	// step) sees this step as claimed instead of falling through to the
-	// "nothing tracked yet, credit the current step" fallback in
-	// HandleAgentComplete. The deferred unmark clears it once this function
-	// is done, at which point either agentRoutes (success) or the
-	// parked/failed step state takes over.
-	//
-	// A completion for this very start can also beat the agentRoutes write a
-	// few lines down. Unlike spawnParallelChild and startBestOfNAttempt,
-	// e.mu is not held across the StartAgent call here on purpose: this is
-	// the hot path and worktree prep can be slow. HandleAgentComplete
-	// buffers a completion that arrives in that window instead of dropping
-	// it (#2176's hang was exactly that silent drop). The deferred replay
-	// hands it back once this function's outcome — route registered, or
-	// parked/failed — is settled.
-	e.markStepStarting(taskID, step.ID)
-	defer func() {
-		for _, buffered := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {
-			e.HandleAgentComplete(taskID, buffered)
-		}
-	}()
+	// Serialize completion routing against spawn until the persisted route is on
+	// the workflow itself. A completion that arrives during StartAgent now waits
+	// on e.mu and then reads the durable route/effect state instead of racing a
+	// process-local pending-start buffer.
+	e.mu.Lock()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
+		e.mu.Unlock()
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
 			return parkErr
 		}
@@ -302,17 +285,12 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if cleanRetryRef != "" {
 		delete(wfExec.Variables, cleanRetryKey)
 	}
-
-	// Track which task+step this agent was spawned for so HandleAgentComplete
-	// can detect stale completions (e.g. duplicate agent from a ResumeStalled
-	// race) rather than blindly crediting the current step.
-	e.mu.Lock()
-	e.agentRoutes[agentID] = agentRoute{taskID: taskID, stepID: step.ID}
-	e.mu.Unlock()
-
+	wfExec.SetAgentRoute(agentID, step.ID)
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
-	return e.tasks.SetWorkflow(taskID, wfExec)
+	err = e.tasks.SetWorkflow(taskID, wfExec)
+	e.mu.Unlock()
+	return err
 }
 
 func resolveRunAgentMode(mode string, ctx TemplateContext) string {

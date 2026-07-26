@@ -333,13 +333,17 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 // found" error loop that followed workflow completion in older versions —
 // but that legitimacy still needs to be visible when diagnosing a stall.
 func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
+	e.mu.Lock()
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
+		e.mu.Unlock()
 		e.logger.Error("workflow.agent-complete.get", "task_id", taskID, "err", err)
 		return
 	}
+	spawnedStep, routeStatus := e.resolveCompletionRouteLocked(t, c)
+	e.mu.Unlock()
 	if e.handleAgentCompleteInitialBail(taskID, t, c) {
-		e.clearAgentStep(c.AgentID)
+		e.clearAgentStep(taskID, c.AgentID)
 		return
 	}
 
@@ -350,15 +354,6 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	// a manual implementation agent completing during a code_review step) and
 	// must be dropped to prevent it from advancing the wrong step.
 	//
-	// This used to be two separate e.mu critical sections: lookupAgentStep,
-	// then (if untracked) checkOrBufferForTaskStep. execRunAgent could write
-	// c.AgentID's route into the gap between them, and the second call would
-	// then see its own agent's brand-new route as "some other agent already
-	// owns this step" — clearAgentStep deleted the route that call had just
-	// written, recreating the #2176 hang through a different pair of critical
-	// sections than the ones the first fix closed (an adversarial review's
-	// second pass). resolveCompletionRoute folds both checks into one.
-	spawnedStep, routeStatus := e.resolveCompletionRoute(taskID, t.Workflow.CurrentStep, c)
 	defs := completionDefinitionCache{engine: e, task: t}
 	switch routeStatus {
 	case taskStepTracked:
@@ -367,37 +362,20 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	case taskStepRouted:
 		e.logger.Info("workflow.agent-complete.bail",
 			"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-ignored", "current_step", spawnedStep)
-		e.clearAgentStep(c.AgentID)
+		e.clearAgentStep(taskID, c.AgentID)
 		return
 	case taskStepBuffered:
-		// The step's own execRunAgent call is still registering its route
-		// (StartAgent returned but agentRoutes isn't written yet) — this is
-		// almost certainly that agent's own completion beating the
-		// bookkeeping, not a stale phantom. Dropping it here is the #2176
-		// hang: the workflow never gets another completion for this step.
-		// unmarkStepStartingAndTakePending pops this same buffer while
-		// still holding the mutex it used to clear the pending-start
-		// marker, so a completion can never land in the gap between the
-		// two and be left with nothing to deliver it.
 		e.logger.Info("workflow.agent-complete.buffered",
-			"task_id", taskID, "agent_id", c.AgentID, "reason", "start-in-flight", "current_step", spawnedStep)
+			"task_id", taskID, "agent_id", c.AgentID, "reason", "effect-pending", "current_step", spawnedStep)
 		return
 	case taskStepFree:
 		// Neither a route nor a pending start exists for this task+step, so
 		// the role match below is what decides.
-		if def, ok := defs.get(); ok {
-			if current := def.StepByID(t.Workflow.CurrentStep); current != nil && current.Type == StepParallel {
-				if childStepID, ok := parallelChildStepByAgentID(t.Workflow, current.ID, c.AgentID); ok {
-					spawnedStep = childStepID
-					break
-				}
-			}
-		}
 		if runRole := agentRunRole(t.AgentRuns, c.AgentID); runRole != "" {
 			if def, ok := defs.get(); ok && !untrackedCompletionMatchesCurrentStep(def, spawnedStep, runRole) {
 				e.logger.Info("workflow.agent-complete.bail",
 					"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-role-mismatch", "current_step", spawnedStep)
-				e.clearAgentStep(c.AgentID)
+				e.clearAgentStep(taskID, c.AgentID)
 				return
 			}
 		}
@@ -417,7 +395,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 			if s := def.StepByID(spawnedStep); s != nil && s.Config.WaitForStatus != "" {
 				e.logger.Info("workflow.agent-complete.wait-for-status",
 					"task_id", taskID, "agent_id", c.AgentID, "step", spawnedStep, "wait_for_status", s.Config.WaitForStatus)
-				e.clearAgentStep(c.AgentID)
+				e.clearAgentStep(taskID, c.AgentID)
 				return
 			}
 		}
@@ -451,7 +429,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		out.TerminalReason = "checkpoint_failed: checkpoint commit failed — no durable checkpoint state created"
 	}
 	if def, ok := defs.get(); ok && e.maybeRecoverUnverifiedSkillRun(taskID, c.AgentID, spawnedStep, c.Result, def, def.StepByID(t.Workflow.CurrentStep)) {
-		e.clearAgentStep(c.AgentID)
+		e.clearAgentStep(taskID, c.AgentID)
 		return
 	}
 
@@ -473,7 +451,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 			e.surfaceStartFailure(taskID, t.Status, err, t.Workflow, failedStep)
 		}
 	}
-	e.clearAgentStep(c.AgentID)
+	e.clearAgentStep(taskID, c.AgentID)
 }
 
 func (e *Engine) handleAgentCompleteInitialBail(taskID string, t TaskInfo, c AgentCompletion) bool {
@@ -486,7 +464,7 @@ func (e *Engine) handleAgentCompleteInitialBail(taskID string, t TaskInfo, c Age
 		// workflow turns terminal (e.g. an untracked agent advanced the step
 		// first, leaving the real agent's output file unread).
 		if c.Success {
-			if spawnedStep, tracked := e.lookupAgentStep(c.AgentID); tracked {
+			if spawnedStep, tracked := e.lookupAgentStep(taskID, c.AgentID); tracked {
 				e.importSidecarIfConfigured(taskID, spawnedStep, t)
 			}
 		}
@@ -528,95 +506,71 @@ func traceID(taskID, stepID, agentID string) string {
 	return "trace-" + hex.EncodeToString(sum[:])[:12]
 }
 
-// lookupAgentStep returns the stepID an agent was spawned for and whether it
-// was tracked. Untracked agents fall back to the workflow's current step.
-func (e *Engine) lookupAgentStep(agentID string) (string, bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	entry, ok := e.agentRoutes[agentID]
-	return entry.stepID, ok
-}
-
-// hasTrackedAgentForTaskStep returns true when a tracked agent is already in
-// flight for the given task+step pair, OR a run_agent start for that pair is
-// in progress but hasn't been assigned an agent ID yet (see pendingStepStart).
-// Used to detect phantom completions from untracked
-// (manually-dispatched, or reattached-and-stale) agents: without the
-// pendingStepStart check, a stale completion arriving while the real agent for
-// the current step is still being started (e.g. blocked on worktree prep)
-// falls back to "current step, nothing tracked yet" and gets misattributed —
-// advancing the step before its real agent ever ran.
+// hasTrackedAgentForTaskStep returns true when a tracked agent already owns the
+// given task+step pair, or when that step's async action effect is still
+// pending and the route has not been durably completed yet.
 func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, entry := range e.agentRoutes {
-		if entry.taskID == taskID && entry.stepID == stepID {
+	if taskID == "" || stepID == "" {
+		return false
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil {
+		return false
+	}
+	for _, routedStep := range t.Workflow.AgentRoutes {
+		if routedStep == stepID {
 			return true
 		}
 	}
-	return e.pendingStepStart[pendingStepStartKey(taskID, stepID)] > 0
+	return routeStepPending(t, stepID)
 }
 
 // taskStepStatus is resolveCompletionRoute's verdict for an agent completion.
 type taskStepStatus int
 
 const (
-	// taskStepFree means no route and no pending start — HandleAgentComplete
+	// taskStepFree means no route and no pending effect — HandleAgentComplete
 	// falls through to its other untracked-completion handling.
 	taskStepFree taskStepStatus = iota
 	// taskStepTracked means c.AgentID itself has a registered route — the
 	// normal, common case: deliver as a tracked completion.
 	taskStepTracked
-	// taskStepRouted means some other agent's agentRoutes entry already
-	// exists for this task+step — that agent legitimately owns it, so the
-	// completion is a phantom.
+	// taskStepRouted means some other persisted route already owns this
+	// task+step — that agent legitimately owns it, so the completion is a
+	// phantom.
 	taskStepRouted
-	// taskStepBuffered means a run_agent start is in flight — StartAgent came
-	// back but its route isn't registered yet — and the completion was
-	// buffered atomically with that check; see unmarkStepStartingAndTakePending.
+	// taskStepBuffered means the step's action effect is still pending, so the
+	// dispatch that owns it is still publishing its durable route/state.
 	taskStepBuffered
 )
 
-// resolveCompletionRoute is HandleAgentComplete's single atomic resolution of
-// an agent completion against the engine's route and pending-start state.
-//
-// This used to be three separate e.mu critical sections across two functions
-// (an agentRoutes[c.AgentID] lookup, then — if that missed — a checkOrBuffer
-// pass combining an agentRoutes scan with a pendingStepStart/pendingCompletions
-// check). Two rounds of adversarial review each found a real stranding path
-// through a different pair of those sections: a completion could land in the
-// gap between the pendingStepStart check and the pendingCompletions write and
-// never be popped, or c.AgentID's own route could register in the gap between
-// the first lookup and the second section's scan, making that scan see the
-// agent's own brand-new route as "someone else owns this step" and delete it
-// via clearAgentStep. One critical section for the whole decision closes both
-// gaps: nothing else can observe or mutate agentRoutes/pendingStepStart/
-// pendingCompletions partway through.
-func (e *Engine) resolveCompletionRoute(taskID, currentStep string, c AgentCompletion) (spawnedStep string, status taskStepStatus) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if entry, ok := e.agentRoutes[c.AgentID]; ok {
-		return entry.stepID, taskStepTracked
+// resolveCompletionRouteLocked resolves one completion against the workflow's
+// persisted agent routes plus the current step's pending effect intent. Caller
+// holds e.mu so spawn-time route publication and completion-time reads cannot
+// interleave.
+func (e *Engine) resolveCompletionRouteLocked(t TaskInfo, c AgentCompletion) (spawnedStep string, status taskStepStatus) {
+	if t.Workflow == nil {
+		return "", taskStepFree
 	}
-	spawnedStep = currentStep
-	for _, entry := range e.agentRoutes {
-		if entry.taskID == taskID && entry.stepID == spawnedStep {
+	if stepID, ok := t.Workflow.AgentRoute(c.AgentID); ok {
+		return stepID, taskStepTracked
+	}
+	spawnedStep = t.Workflow.CurrentStep
+	if stepID, ok := parallelChildStepByAgentID(t.Workflow, spawnedStep, c.AgentID); ok {
+		return stepID, taskStepTracked
+	}
+	if stepID, ok := bestOfNAttemptStepByAgentID(t.Workflow, spawnedStep, c.AgentID); ok {
+		return stepID, taskStepTracked
+	}
+	for agentID, stepID := range t.Workflow.AgentRoutes {
+		if agentID != c.AgentID && stepID == spawnedStep {
 			return spawnedStep, taskStepRouted
 		}
 	}
-	key := pendingStepStartKey(taskID, spawnedStep)
-	if e.pendingStepStart[key] <= 0 {
-		return spawnedStep, taskStepFree
+	if routeStepPending(t, spawnedStep) {
+		return spawnedStep, taskStepBuffered
 	}
-	if e.pendingCompletions == nil {
-		e.pendingCompletions = make(map[string][]AgentCompletion)
-	}
-	e.pendingCompletions[key] = append(e.pendingCompletions[key], c)
-	return spawnedStep, taskStepBuffered
-}
-
-func pendingStepStartKey(taskID, stepID string) string {
-	return taskID + "|" + stepID
+	return spawnedStep, taskStepFree
 }
 
 type completionDefinitionCache struct {
@@ -663,103 +617,13 @@ func untrackedCompletionMatchesCurrentStep(def *Definition, stepID, runRole stri
 	return step.Config.Role == runRole
 }
 
-func parallelChildStepByAgentID(wf *Execution, parentStepID, agentID string) (string, bool) {
-	if wf == nil || parentStepID == "" || agentID == "" {
-		return "", false
-	}
-	rec := wf.ParallelInflight[parentStepID]
-	if rec == nil {
-		return "", false
-	}
-	for childStepID, child := range rec.Children {
-		if child != nil && child.AgentID == agentID {
-			return childStepID, true
-		}
-	}
-	return "", false
-}
-
-// markStepStarting records that a run_agent step's agent-start sequence
-// (which may block for seconds on worktree prep) is underway for taskID/stepID,
-// before an agent ID exists to register in agentRoutes. Paired with
-// unmarkStepStartingAndTakePending, always via defer, on every return path.
-func (e *Engine) markStepStarting(taskID, stepID string) {
-	e.mu.Lock()
-	key := pendingStepStartKey(taskID, stepID)
-	e.pendingStepStart[key]++
-	e.mu.Unlock()
-}
-
-// unmarkStepStartingAndTakePending clears one markStepStarting mark and, in
-// the same critical section, pops any completions resolveCompletionRoute
-// buffered for this key. A #2176 review found that two separate critical
-// sections for the unmark and the pop let a completion get buffered in the
-// gap between them, with nothing ever popping it again. The caller
-// (execRunAgent's deferred cleanup) redelivers what this returns.
-func (e *Engine) unmarkStepStartingAndTakePending(taskID, stepID string) []AgentCompletion {
-	e.mu.Lock()
-	key := pendingStepStartKey(taskID, stepID)
-	if e.pendingStepStart[key] <= 1 {
-		delete(e.pendingStepStart, key)
-	} else {
-		e.pendingStepStart[key]--
-	}
-	buffered := e.pendingCompletions[key]
-	delete(e.pendingCompletions, key)
-	e.mu.Unlock()
-	return buffered
-}
-
-// clearAgentStep removes the agent→step mapping. Safe to call for unknown IDs.
-func (e *Engine) clearAgentStep(agentID string) {
-	if agentID == "" {
-		return
-	}
-	e.mu.Lock()
-	delete(e.agentRoutes, agentID)
-	e.mu.Unlock()
-}
-
-// clearAgentStepsForTask drops every agent→step mapping owned by a task. Called
-// right after StopAgentsForTask on a (re)dispatch: any agent we just stopped is
-// superseded by the one about to be spawned, so its late or double-delivered
-// completion must not be credited to the workflow. Clearing the entry turns
-// that completion "untracked", at which point the phantom-completion guard in
-// HandleAgentComplete drops it (the freshly-dispatched agent is the only tracked
-// agent for the current step). Without this a stopped test-runner's late
-// provider-error completion lands on the still-current run_test step and burns
-// the retry budget before the retry agent has produced a verdict.
-//
-// Also drops any completion resolveCompletionRoute buffered for this task
-// under the same supersession: a buffered completion is exactly as stale as
-// an agentRoutes entry once the agent that would have owned it is stopped,
-// and the new dispatch's own unmarkStepStartingAndTakePending call has no way
-// to tell a leftover entry from a previous attempt apart from its own.
-func (e *Engine) clearAgentStepsForTask(taskID string) {
-	if taskID == "" {
-		return
-	}
-	e.mu.Lock()
-	for id, entry := range e.agentRoutes {
-		if entry.taskID == taskID {
-			delete(e.agentRoutes, id)
-		}
-	}
-	prefix := taskID + "|"
-	for key := range e.pendingCompletions {
-		if strings.HasPrefix(key, prefix) {
-			delete(e.pendingCompletions, key)
-		}
-	}
-	e.mu.Unlock()
-}
-
-// ClearAgentStep removes the agent→step mapping without advancing the workflow.
+// ClearAgentStep removes the persisted agent→step mapping without advancing the
+// workflow.
 // Used when an agent exits due to an infrastructure-level signal kill so the
 // tracked-agent entry is released while the workflow step stays stalled for
 // ResumeStalled to re-dispatch.
-func (e *Engine) ClearAgentStep(agentID string) {
-	e.clearAgentStep(agentID)
+func (e *Engine) ClearAgentStep(taskID, agentID string) {
+	e.clearAgentStep(taskID, agentID)
 }
 
 // RescheduleRateLimitedAgent immediately re-drives the run_agent step that a
@@ -767,53 +631,54 @@ func (e *Engine) ClearAgentStep(agentID string) {
 // running-agent check because headless done closes only after onComplete returns.
 func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	if taskID == "" {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		e.logger.Warn("workflow.rate-limit-reschedule.untracked", "agent_id", agentID)
 		return
 	}
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 	if _, skip := resumeSkipReasonForStatus(t.Status); t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed || skip {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 
 	def, err := e.store.Get(t.Workflow.WorkflowID)
 	if err != nil {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 	step := def.StepByID(t.Workflow.CurrentStep)
 	if step == nil {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
-	spawnedStep, tracked := e.lookupAgentStep(agentID)
+	spawnedStep, tracked := e.lookupAgentStep(taskID, agentID)
 	if step.Type == StepParallel {
 		if !tracked || !parallelHasChild(step, spawnedStep) {
-			e.clearAgentStep(agentID)
+			e.clearAgentStep(taskID, agentID)
 			return
 		}
 		child := def.StepByID(spawnedStep)
 		if child == nil || child.Type != StepRunAgent {
-			e.clearAgentStep(agentID)
+			e.clearAgentStep(taskID, agentID)
 			return
 		}
 		e.rescheduleRateLimitedParallelChild(taskID, agentID, step, child, t)
 		return
 	}
 	if step.Type != StepRunAgent {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 	if tracked && spawnedStep != step.ID {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
-	e.clearAgentStep(agentID)
+	e.clearAgentStep(taskID, agentID)
+	clearAgentRouteFromWorkflow(t.Workflow, agentID)
 	e.rescheduleRateLimitedRunAgent(taskID, agentID, step, t, &def)
 }
 
@@ -854,28 +719,28 @@ func (e *Engine) clearResumeDispatching(taskID string) {
 // per-step checkpoint counter.
 func (e *Engine) RescheduleCheckpointedAgent(taskID, agentID string) {
 	if taskID == "" {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		e.logger.Warn("workflow.checkpoint-reschedule.untracked", "agent_id", agentID)
 		return
 	}
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 	if _, skip := resumeSkipReasonForStatus(t.Status); t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed || skip {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 
 	def, err := e.store.Get(t.Workflow.WorkflowID)
 	if err != nil {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 	step := def.StepByID(t.Workflow.CurrentStep)
 	if step == nil {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 	// best_of_n / parallel attempts keep the parent block as CurrentStep, so a
@@ -886,10 +751,11 @@ func (e *Engine) RescheduleCheckpointedAgent(taskID, agentID string) {
 	// agent.max_checkpoints — ResumeStalled re-enters the block resume-safely to
 	// respawn the pending attempt.
 	if step.Type == StepBestOfN || step.Type == StepParallel {
-		spawnedStep, tracked := e.lookupAgentStep(agentID)
+		spawnedStep, tracked := e.lookupAgentStep(taskID, agentID)
 		isChild := (step.Type == StepParallel && parallelHasChild(step, spawnedStep)) ||
 			(step.Type == StepBestOfN && bestOfNStepMatches(step, spawnedStep))
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
+		clearAgentRouteFromWorkflow(t.Workflow, agentID)
 		if !tracked || !isChild {
 			return
 		}
@@ -900,15 +766,16 @@ func (e *Engine) RescheduleCheckpointedAgent(taskID, agentID string) {
 		return
 	}
 	if step.Type != StepRunAgent {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
-	if spawnedStep, tracked := e.lookupAgentStep(agentID); tracked && spawnedStep != step.ID {
-		e.clearAgentStep(agentID)
+	if spawnedStep, tracked := e.lookupAgentStep(taskID, agentID); tracked && spawnedStep != step.ID {
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 
-	e.clearAgentStep(agentID)
+	e.clearAgentStep(taskID, agentID)
+	clearAgentRouteFromWorkflow(t.Workflow, agentID)
 	e.rescheduleRunAgent(taskID, agentID, step, t, &def, "workflow.checkpoint-reschedule", func(t *TaskInfo, step *Step) bool {
 		return e.handleCheckpointReschedule(taskID, t, step)
 	})
@@ -976,12 +843,17 @@ func (e *Engine) workflowForPostDispatchCleanup(taskID string) *Execution {
 }
 
 func (e *Engine) shouldRetryGhostPark(taskID, stepID string) bool {
-	if e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) || e.hasTrackedAgentForTaskStep(taskID, stepID) {
+	if e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) {
 		return false
 	}
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil || t.Workflow == nil {
 		return false
+	}
+	for _, routedStep := range t.Workflow.AgentRoutes {
+		if routedStep == stepID {
+			return false
+		}
 	}
 	return t.Workflow.State == ExecWaiting && t.Workflow.CurrentStep == stepID
 }
@@ -1026,21 +898,22 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 	fresh, err := e.tasks.GetTask(taskID)
 	_, skip := resumeSkipReasonForStatus(fresh.Status)
 	if err != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != parent.ID || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed || skip {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 	wfExec := fresh.Workflow
 	rec := wfExec.ParallelInflight[parent.ID]
 	if rec == nil {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
 	status := rec.Children[child.ID]
 	if status == nil || status.AgentID != agentID {
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
 		return
 	}
-	e.clearAgentStep(agentID)
+	e.clearAgentStep(taskID, agentID)
+	clearAgentRouteFromWorkflow(wfExec, agentID)
 
 	if e.shouldSkipResumeForRateLimitedProvider(&fresh, child) {
 		// See RescheduleRateLimitedAgent: park rather than burn a retry budget or
@@ -1137,17 +1010,13 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	defer e.mu.Unlock()
 
 	_, dispatching := e.dispatching[taskID]
-	// agentRoutes holds outstanding agents the engine spawned but hasn't yet
-	// routed completion for. Required because interactive agents pass through
-	// StatePaused after their first result event (one-shot path closes stdin →
-	// state Paused → process exits → onComplete fires → AdvanceStep), and
-	// HasRunningAgent returns false during that window. Without this check a
-	// tight ResumeStalled loop dispatches a duplicate.
 	hasOutstandingAgent := false
-	for _, entry := range e.agentRoutes {
-		if entry.taskID == taskID && (entry.stepID == step.ID || parallelHasChild(step, entry.stepID) || bestOfNStepMatches(step, entry.stepID)) {
-			hasOutstandingAgent = true
-			break
+	if fresh, err := e.tasks.GetTask(taskID); err == nil && fresh.Workflow != nil {
+		for _, stepID := range fresh.Workflow.AgentRoutes {
+			if stepID == step.ID || parallelHasChild(step, stepID) || bestOfNStepMatches(step, stepID) {
+				hasOutstandingAgent = true
+				break
+			}
 		}
 	}
 
@@ -1467,8 +1336,8 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 		return false
 	}
 	// A tracked agent for this task+step may still be mid-completion-routing
-	// even though HasRunningAgent already returned false (see the agentRoutes
-	// comment in ResumeStalled). Treating that window as a hang would burn
+	// even though HasRunningAgent already returned false (see the persisted
+	// route comment in ResumeStalled). Treating that window as a hang would burn
 	// retry budget and clear the hang marker without a clean re-dispatch
 	// actually happening.
 	if e.hasTrackedAgentForTaskStep(t.ID, step.ID) {

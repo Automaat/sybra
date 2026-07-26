@@ -419,23 +419,8 @@ func cloneWorkflowPermutationAgents(src *mockAgents) *mockAgents {
 }
 
 func rehydrateWorkflowPermutationRoutes(engine *Engine, tasks *memTasks) {
-	ti, err := tasks.GetTask("t1")
-	if err != nil {
-		return
-	}
-	if ti.Workflow == nil || ti.Workflow.CurrentStep == "" {
-		return
-	}
-	rec := ti.Workflow.ParallelInflight[ti.Workflow.CurrentStep]
-	if rec == nil {
-		return
-	}
-	for childID, child := range rec.Children {
-		if child == nil || child.AgentID == "" || child.Status != "pending" {
-			continue
-		}
-		engine.agentRoutes[child.AgentID] = agentRoute{taskID: ti.ID, stepID: childID}
-	}
+	_ = engine
+	_ = tasks
 }
 
 func mustListTasks(t *testing.T, tasks *memTasks) []TaskInfo {

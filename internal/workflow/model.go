@@ -401,9 +401,9 @@ func (d *Definition) Validate() error {
 
 // validateParallelStep enforces that a `parallel` step has at least two
 // run_agent children, no nested parallels, and globally-unique child IDs.
-// The constraints exist because the engine's step bookkeeping (agentRoutes
-// map, ImportSidecar lookup, retry counter) is keyed by step ID — duplicates
-// would cause cross-step state to clobber each other.
+// The constraints exist because the engine's step bookkeeping (persisted agent
+// routes, ImportSidecar lookup, retry counter) is keyed by step ID —
+// duplicates would cause cross-step state to clobber each other.
 func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 	if s.Type != StepParallel {
 		if len(s.Parallel) > 0 {

@@ -21,7 +21,7 @@ type AgentCompletion struct {
 // CompletionWorkflow is the subset of Engine used by completion.Handler.
 type CompletionWorkflow interface {
 	HandleAgentComplete(taskID string, c AgentCompletion)
-	ClearAgentStep(agentID string)
+	ClearAgentStep(taskID, agentID string)
 	RescheduleRateLimitedAgent(taskID, agentID string)
 	RescheduleCheckpointedAgent(taskID, agentID string)
 	DispatchEvent(taskID, event string, extra map[string]string, vars map[string]string) (string, error)
