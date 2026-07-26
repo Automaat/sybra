@@ -105,6 +105,9 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	if r.handleTerminalWorkflow(&t) {
 		return
 	}
+	if r.WorkflowEngine != nil && r.WorkflowEngine.ReplayPersistedEffectsForTask(t.ID) {
+		return
+	}
 	// Debounce respawn when a previous run started recently. Covers
 	// the dev-reload case: app restarts every few seconds, but a
 	// headless subprocess from the prior lifecycle is still alive.

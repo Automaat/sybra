@@ -339,6 +339,66 @@ steps:
 		}
 	})
 
+	t.Run("task-scoped replay only touches requested task", func(t *testing.T) {
+		store := newTestStore(t)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+			"t2": {
+				ID:         "t2",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewEngine(store, tasks, agents, discardLogger())
+
+		if handled := engine.ReplayPersistedEffectsForTask("t2"); !handled {
+			t.Fatal("ReplayPersistedEffectsForTask returned false, want true")
+		}
+		if len(agents.calls) != 1 {
+			t.Fatalf("StartAgent calls = %d, want 1", len(agents.calls))
+		}
+		if agents.calls[0].TaskID != "t2" {
+			t.Fatalf("replayed task = %q, want t2", agents.calls[0].TaskID)
+		}
+		got1, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got1.Workflow.EffectLog[0].CompletedAt != nil {
+			t.Fatalf("t1 effect log = %+v, want pending untouched effect", got1.Workflow.EffectLog)
+		}
+		got2, err := tasks.GetTask("t2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got2.Workflow.EffectLog[0].CompletedAt == nil {
+			t.Fatalf("t2 effect log = %+v, want completed replayed effect", got2.Workflow.EffectLog)
+		}
+	})
+
 	t.Run("pending run_agent intent waits for provider cooldown", func(t *testing.T) {
 		store := newTestStore(t)
 		tasks := &memTasks{tasks: map[string]*TaskInfo{

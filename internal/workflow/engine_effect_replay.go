@@ -44,89 +44,104 @@ func (e *Engine) ReplayPersistedEffects() {
 	}
 }
 
-func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
+// ReplayPersistedEffectsForTask replays or reconciles the persisted current-step
+// effect for one task. It reports whether durable effect state consumed the
+// caller's recovery tick, even if the effect resolved as a no-op or was fenced
+// by an existing dispatcher.
+func (e *Engine) ReplayPersistedEffectsForTask(taskID string) bool {
+	if e.dispatchDisabled.Load() {
+		return false
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return false
+	}
+	return e.replayPersistedEffectsTask(&t)
+}
+
+func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) bool {
 	if t.Workflow == nil || t.Workflow.CurrentStep == "" {
-		return
+		return false
 	}
 	if e.dispatchGate != nil && !e.dispatchGate(*t) {
-		return
+		return false
 	}
 	switch t.Workflow.State {
 	case ExecCompleted, ExecFailed:
-		return
+		return false
 	case ExecRunning, ExecWaiting:
 	default:
-		return
+		return false
 	}
 	if e.agents.HasRunningAgent(t.ID) || e.agents.IsDispatching(t.ID) {
-		return
+		return false
 	}
 
 	def, err := e.store.Get(t.Workflow.WorkflowID)
 	if err != nil {
-		return
+		return false
 	}
 	step := def.StepByID(t.Workflow.CurrentStep)
 	if step == nil {
-		return
+		return false
 	}
 	rec, ok := currentStepEffectRecord(*t, step, effectPosStepAction)
 	if !ok {
-		return
+		return false
 	}
 	if rec.CompletedAt == nil && e.resumePreflightConsumesTick(t, step, "workflow.effect-replay.skip") {
-		return
+		return true
 	}
-	e.replayPendingEffect(t, step, &def)
+	return e.replayPendingEffect(t, step, &def)
 }
 
-func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) {
+func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) bool {
 	reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
 	if !acquired {
 		e.resumeSkip.Log(e.logger, "workflow.effect-replay.skip", t.ID,
 			reason+"|"+step.ID,
 			"task_id", t.ID, "reason", reason, "step", step.ID)
-		return
+		return true
 	}
 
 	fresh, abort := e.resolveFreshTaskForResume(t, step, def)
 	if abort {
-		return
+		return true
 	}
 	if e.agents.HasRunningAgent(fresh.ID) || e.agents.IsDispatching(fresh.ID) {
 		e.clearResumeDispatching(fresh.ID)
-		return
+		return true
 	}
 	if e.dispatchGate != nil && !e.dispatchGate(fresh) {
 		e.clearResumeDispatching(t.ID)
-		return
+		return true
 	}
 
 	var err error
 	*def, err = e.store.Get(fresh.Workflow.WorkflowID)
 	if err != nil {
 		e.clearResumeDispatching(t.ID)
-		return
+		return true
 	}
 	step = def.StepByID(fresh.Workflow.CurrentStep)
 	if step == nil {
 		e.clearResumeDispatching(t.ID)
-		return
+		return true
 	}
 	rec, ok := currentStepEffectRecord(fresh, step, effectPosStepAction)
 	if !ok {
 		e.clearResumeDispatching(t.ID)
-		return
+		return true
 	}
 	if rec.CompletedAt != nil {
 		e.clearResumeDispatching(t.ID)
 		e.logger.Info("workflow.effect-replay.noop",
 			"task_id", fresh.ID, "step", step.ID, "effect", rec.ID.String())
 		metrics.OrchestratorEffectReplay(e.metricContext(), "already_completed")
-		return
+		return true
 	}
 	if e.effectReplayConsumedRetry(&fresh, step, t.ID) {
-		return
+		return true
 	}
 
 	e.logger.Info("workflow.effect-replay", "task_id", fresh.ID, "step", step.ID, "effect", rec.ID.String())
@@ -139,7 +154,7 @@ func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) {
 	if rErr != nil {
 		metrics.OrchestratorEffectReplay(e.metricContext(), "error")
 		e.surfaceStartFailure(fresh.ID, fresh.Status, rErr, fresh.Workflow, step.ID)
-		return
+		return true
 	}
 
 	metrics.OrchestratorEffectReplay(e.metricContext(), "replayed")
@@ -147,6 +162,7 @@ func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) {
 	e.clearTransientFetchRetry(fresh.ID, cleanupWorkflow, step.ID)
 	e.clearCircuitBreakerOnSuccess(fresh.ID, cleanupWorkflow, step.ID)
 	e.clearWatchdogReaskNote(fresh.ID, cleanupWorkflow)
+	return true
 }
 
 func (e *Engine) effectReplayConsumedRetry(t *TaskInfo, step *Step, claimTaskID string) bool {
