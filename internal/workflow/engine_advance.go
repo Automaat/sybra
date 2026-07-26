@@ -565,9 +565,6 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 				Status: "completed",
 				Output: wfExec.Variables["step."+step.ID+".output"],
 			}
-			if output.Output == "" {
-				output.Output = "skipped: effect already completed"
-			}
 		} else {
 			var execErr error
 			output, execErr = e.execSyncStep(taskID, step, wfExec, ctx, t)
