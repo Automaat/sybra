@@ -19,7 +19,7 @@ func (s *ConfigService) ReloadFromDisk() (ConfigMutationResult, error) {
 			result.Recovery = &ConfigRecovery{
 				Message: fmt.Sprintf("config reload failed and last-known-good restore failed: %v", restoreErr),
 			}
-			return result, fmt.Errorf("%w; restore last-known-good: %w", err, restoreErr)
+			return result, err
 		}
 		result.Recovery = &ConfigRecovery{
 			RestoredLastKnownGood: true,

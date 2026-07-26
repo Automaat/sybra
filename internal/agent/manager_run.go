@@ -315,7 +315,7 @@ func systemSandboxKey(cfg *RunConfig) string {
 		raw = strings.TrimSpace(string(cfg.Role))
 	}
 	if raw == "" {
-		raw = "system"
+		return "system-run"
 	}
 	raw = strings.ToLower(raw)
 	var b strings.Builder

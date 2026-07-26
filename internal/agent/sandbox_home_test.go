@@ -117,6 +117,12 @@ func TestPrepareRunConfig_SandboxHome_IsolatedSystemRun(t *testing.T) {
 	}
 }
 
+func TestSystemSandboxKey_EmptyIdentity(t *testing.T) {
+	if got := systemSandboxKey(&RunConfig{}); got != "system-run" {
+		t.Fatalf("systemSandboxKey(empty) = %q, want system-run", got)
+	}
+}
+
 // TestPrepareRunConfig_SandboxHome_NilResolverFailsClosed pins that a
 // task-scoped run with no resolver configured aborts before spawn rather than
 // silently inheriting the ambient/operator SYBRA_HOME.
