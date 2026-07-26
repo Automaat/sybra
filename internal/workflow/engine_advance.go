@@ -628,6 +628,9 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 				}
 				return nil, err
 			}
+			if wfExec == nil {
+				return nil, fmt.Errorf("completeStepEffect returned nil execution for task %s step %s", taskID, step.ID)
+			}
 		}
 		if nextStep == nil {
 			return comp, nil // workflow completed; caller fires onComplete after marker release
