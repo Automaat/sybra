@@ -646,6 +646,66 @@ func TestLinkedOwnPRHumanRequiredDrift(t *testing.T) {
 	}
 }
 
+func TestLinkedOwnPRHumanRequiredDriftIncludesPRFix(t *testing.T) {
+	completedAt := time.Now().UTC()
+	ts := completedAt.Add(-time.Minute)
+	drifted := &task.Task{
+		Status:       task.StatusHumanRequired,
+		PRNumber:     42,
+		UpdatedAt:    ts,
+		StatusReason: "",
+		Workflow: &workflow.Execution{
+			WorkflowID:  "pr-fix",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &completedAt,
+		},
+	}
+	if !linkedOwnPRHumanRequiredDrift(drifted, true) {
+		t.Fatal("expected completed pr-fix workflow to count as linked PR drift")
+	}
+}
+
+func TestReconcilePRPhasesReactivatesEmptyReasonAfterPRFix(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+
+	created := mkOwnPRTask(t, tasks, 42, nil)
+	completedAt := time.Now().UTC().Add(500 * time.Millisecond)
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		State:       workflow.ExecCompleted,
+		CompletedAt: &completedAt,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(""),
+		Workflow:     &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{
+		Number:         42,
+		ReviewDecision: "APPROVED",
+		Mergeable:      "MERGEABLE",
+		CIStatus:       "SUCCESS",
+	}})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("status = %q, want in-review", got.Status)
+	}
+	if got.StatusReason != "" {
+		t.Errorf("statusReason = %q, want cleared", got.StatusReason)
+	}
+}
+
 func TestReconcilePRPhasesDoesNotReactivateFreshManualHumanRequired(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 

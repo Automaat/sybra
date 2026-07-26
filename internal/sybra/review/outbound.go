@@ -315,7 +315,7 @@ func linkedOwnPRHumanRequiredDrift(t *task.Task, livePR bool) bool {
 	if t.Workflow == nil {
 		return false
 	}
-	if t.Workflow.WorkflowID != "simple-task-pr" || t.Workflow.State != workflow.ExecCompleted || t.Workflow.CompletedAt == nil {
+	if !completedOutboundPRWorkflow(t.Workflow) {
 		return false
 	}
 	completedAt := *t.Workflow.CompletedAt
@@ -323,6 +323,18 @@ func linkedOwnPRHumanRequiredDrift(t *task.Task, livePR bool) bool {
 		return false
 	}
 	return completedAt.Sub(t.UpdatedAt) <= linkedPRDriftWindow
+}
+
+func completedOutboundPRWorkflow(wf *workflow.Execution) bool {
+	if wf == nil || wf.State != workflow.ExecCompleted || wf.CompletedAt == nil {
+		return false
+	}
+	switch wf.WorkflowID {
+	case "simple-task-pr", "pr-fix":
+		return true
+	default:
+		return false
+	}
 }
 
 func staleImplementationWorkflowEligible(t *task.Task) bool {
