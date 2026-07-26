@@ -3196,6 +3196,17 @@ func TestE2E_StaleAgentCompletionAfterWorkflowTerminal(t *testing.T) {
 	if tkCompleted.Workflow.CurrentStep != "" {
 		t.Fatalf("precondition: current_step = %q, want empty", tkCompleted.Workflow.CurrentStep)
 	}
+	waitFor(t, 5*time.Second, "terminal workflow callbacks drain", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.State == workflow.ExecCompleted &&
+			tk.Workflow.CurrentStep == "" &&
+			!env.agents.HasRunningAgentForTask(created.ID) &&
+			env.pendingCompletions.Load() == 0
+	})
+	tkCompleted, _ = env.tasks.Get(created.ID)
 	historyBefore := len(tkCompleted.Workflow.StepHistory)
 	updatedAtBefore := tkCompleted.UpdatedAt
 

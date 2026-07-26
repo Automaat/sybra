@@ -264,6 +264,8 @@ export class EffectID {
 export class EffectRecord {
     "id": EffectID;
     "intentAt": string;
+    "owner"?: string;
+    "leaseExpiresAt"?: string | null;
     "completedAt"?: string | null;
 
     /** Creates a new EffectRecord instance. */

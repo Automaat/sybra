@@ -172,6 +172,8 @@ func TestClearStepRecords_ResetsCountForStep(t *testing.T) {
 	e.RecordStep(StepRecord{StepID: "run_test", Status: "failed"})
 	e.RecordStep(StepRecord{StepID: "run_test", Status: "failed"})
 	e.RecordStep(StepRecord{StepID: "implement", Status: "completed"})
+	e.RecordEffectIntent(makeID("run_test", 0), time.Now())
+	e.RecordEffectIntent(makeID("implement", 0), time.Now())
 
 	e.ClearStepRecords("run_test")
 
@@ -180,6 +182,12 @@ func TestClearStepRecords_ResetsCountForStep(t *testing.T) {
 	}
 	if got := e.CountStep("implement"); got != 1 {
 		t.Errorf("expected unrelated step records to survive, got %d", got)
+	}
+	if _, ok := e.EffectIDForStep("run_test", 0); ok {
+		t.Fatal("expected run_test effect log entries to be cleared")
+	}
+	if _, ok := e.EffectIDForStep("implement", 0); !ok {
+		t.Fatal("expected unrelated effect log entries to survive")
 	}
 
 	// Re-arming should let a fresh in-step retry budget accrue again.
@@ -361,5 +369,32 @@ func TestEffectLog_CloneDeepCopiesCompletedAt(t *testing.T) {
 	*cloned.EffectLog[0].CompletedAt = original.Add(time.Hour)
 	if !e.EffectLog[0].CompletedAt.Equal(original) {
 		t.Fatal("mutating clone's CompletedAt pointee should not affect original")
+	}
+}
+
+func TestEffectLog_CloneDeepCopiesLeaseExpiry(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Minute)
+	e.EffectLog = []EffectRecord{{
+		ID:             id,
+		IntentAt:       now,
+		Owner:          "engine-1",
+		LeaseExpiresAt: &expiresAt,
+	}}
+
+	cloned := e.Clone()
+	if cloned == nil {
+		t.Fatal("Clone of non-nil Execution returned nil")
+	}
+	if cloned.EffectLog[0].LeaseExpiresAt == e.EffectLog[0].LeaseExpiresAt {
+		t.Fatal("clone should not alias original's LeaseExpiresAt pointer")
+	}
+
+	original := *e.EffectLog[0].LeaseExpiresAt
+	*cloned.EffectLog[0].LeaseExpiresAt = original.Add(time.Hour)
+	if !e.EffectLog[0].LeaseExpiresAt.Equal(original) {
+		t.Fatal("mutating clone's LeaseExpiresAt pointee should not affect original")
 	}
 }

@@ -204,6 +204,62 @@ func TestHandleStatusChange_ReconcileExecutesPlanCritiqueFlag(t *testing.T) {
 	}
 }
 
+func TestHandleStatusChange_ReconcileSideEffectFencedByActiveClaim(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(newPlanCritiqueReconcileDef()); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engineA := NewEngine(store, tasks, agents, discardLogger())
+	engineB := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "plan-review",
+		Body:         "original body",
+		PlanCritique: "# Plan Review: REJECT\n\nMissing verification.",
+		Workflow: &Execution{
+			WorkflowID:  "plan-critique-reconcile",
+			CurrentStep: "flag_plan_critique_verdict",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	taskInfo, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	def, err := store.Get("plan-critique-reconcile")
+	if err != nil {
+		t.Fatalf("Get definition: %v", err)
+	}
+	step := def.StepByID("flag_plan_critique_verdict")
+	if step == nil {
+		t.Fatal("flag_plan_critique_verdict step missing")
+	}
+	if _, _, err := engineB.claimStepEffect("t1", taskInfo, step, effectPosStepAction); err != nil {
+		t.Fatalf("foreign claim: %v", err)
+	}
+
+	engineA.HandleStatusChange("t1", "plan-review")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Workflow.CurrentStep != "flag_plan_critique_verdict" {
+		t.Fatalf("CurrentStep = %q, want flag_plan_critique_verdict", got.Workflow.CurrentStep)
+	}
+	if got.Body != "original body" {
+		t.Fatalf("Body = %q, want original body", got.Body)
+	}
+	if _, ok := got.Workflow.Variables["step.flag_plan_critique_verdict.output"]; ok {
+		t.Fatal("flag output recorded despite active foreign claim")
+	}
+	if len(got.Workflow.EffectLog) != 1 || got.Workflow.EffectLog[0].Owner != engineB.ownerID {
+		t.Fatalf("effect log = %+v, want single active claim owned by engineB", got.Workflow.EffectLog)
+	}
+}
+
 func TestHandleStatusChange_DoesNotReconcileRunningRunAgentWithoutWaitForStatus(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.Save(newPlanCritiqueReconcileDef()); err != nil {

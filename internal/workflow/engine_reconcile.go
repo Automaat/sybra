@@ -78,6 +78,7 @@ func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, 
 	fields := e.transitionFields(t, t.Workflow)
 	if current.Type == StepSetStatus && current.Config.Status != "" {
 		fields["task.status"] = current.Config.Status
+		mustExecute = true
 	}
 	nextID, err := ResolveTransition(current.Next, fields)
 	if err != nil || nextID == "" {
@@ -100,6 +101,7 @@ func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, 
 			if step.Config.Status != "" {
 				fields["task.status"] = step.Config.Status
 			}
+			mustExecute = true
 		case StepRequireSidecar, StepFlagPlanCritique:
 			mustExecute = true
 		case StepCondition:
@@ -204,13 +206,13 @@ func (e *Engine) executeCurrentStepForStatusReconcile(taskID string, def *Defini
 	e.logger.Info("workflow.current-step.reconcile-status.execute",
 		"task_id", taskID, "from", t.Workflow.CurrentStep, "status", status)
 	switch current.Type {
-	case StepRunAgent:
+	case StepRunAgent, StepParallel, StepBestOfN:
 		return true, e.AdvanceStep(taskID, StepOutput{
 			StepID: current.ID,
 			Status: "completed",
 			Output: "status:" + status,
 		})
-	case StepCondition, StepRequireSidecar, StepFlagPlanCritique:
+	case StepCondition, StepSetStatus, StepRequireSidecar, StepFlagPlanCritique:
 		wf := t.Workflow.Clone()
 		if wf == nil {
 			// Unreachable: t.Workflow is non-nil whenever this function's
