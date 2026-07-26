@@ -150,8 +150,9 @@ func (s *workflowPermutationScenario) statusChange(status string) {
 func (s *workflowPermutationScenario) restart() {
 	s.t.Helper()
 	clonedTasks := newMemTasks()
-	for _, task := range mustListTasks(s.t, s.tasks) {
-		clonedTasks.Put(cloneWorkflowPermutationTask(task))
+	tasks := mustListTasks(s.t, s.tasks)
+	for i := range tasks {
+		clonedTasks.Put(cloneWorkflowPermutationTask(tasks[i]))
 	}
 	clonedAgents := cloneWorkflowPermutationAgents(s.agents)
 	clonedEngine := NewEngine(s.store, clonedTasks, clonedAgents, discardLogger())
@@ -332,12 +333,13 @@ func workflowPermutationParallelChildren(wf *Execution) []string {
 	return out
 }
 
-func workflowPermutationEffects(calls []startCall) ([]string, []string) {
+func workflowPermutationEffects(calls []startCall) (effectSet, effectCounts []string) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
 	counts := make(map[string]int)
-	for _, call := range calls {
+	for i := range calls {
+		call := &calls[i]
 		key := strings.Join([]string{workflowPermutationStepID(call.Prompt), call.Provider, call.Role}, "|")
 		counts[key]++
 	}
@@ -350,7 +352,9 @@ func workflowPermutationEffects(calls []startCall) ([]string, []string) {
 	for _, key := range keys {
 		countStrings = append(countStrings, fmt.Sprintf("%s=%d", key, counts[key]))
 	}
-	return keys, countStrings
+	effectSet = keys
+	effectCounts = countStrings
+	return effectSet, effectCounts
 }
 
 func workflowPermutationStepID(prompt string) string {

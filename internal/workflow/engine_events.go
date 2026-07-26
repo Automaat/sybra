@@ -936,8 +936,21 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 		e.surfaceStartFailure(taskID, t.Status, rErr, t.Workflow, step.ID)
 		return
 	}
-	e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
-	e.clearWatchdogReaskNote(taskID, t.Workflow)
+	cleanupWorkflow := e.workflowForPostDispatchCleanup(taskID)
+	e.clearCircuitBreakerOnSuccess(taskID, cleanupWorkflow, step.ID)
+	e.clearWatchdogReaskNote(taskID, cleanupWorkflow)
+}
+
+func (e *Engine) workflowForPostDispatchCleanup(taskID string) *Execution {
+	if taskID == "" {
+		return nil
+	}
+	fresh, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		e.logger.Error("workflow.post-dispatch-cleanup.get", "task_id", taskID, "err", err)
+		return nil
+	}
+	return fresh.Workflow
 }
 
 func (e *Engine) shouldRetryGhostPark(taskID, stepID string) bool {
@@ -1332,7 +1345,7 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 		return
 	}
 
-	e.finishResumeStalledStep(t.ID, &def, step, t.Workflow, fresh)
+	e.finishResumeStalledStep(t.ID, &def, step, fresh.Workflow, fresh)
 }
 
 // resolveFreshTaskForResume re-reads and reconciles the task's current step to guard
@@ -1400,9 +1413,10 @@ func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *S
 		e.surfaceStartFailure(taskID, fresh.Status, rErr, fresh.Workflow, step.ID)
 		return
 	}
-	e.clearTransientFetchRetry(fresh.ID, fresh.Workflow, step.ID)
-	e.clearCircuitBreakerOnSuccess(fresh.ID, fresh.Workflow, step.ID)
-	e.clearWatchdogReaskNote(fresh.ID, fresh.Workflow)
+	cleanupWorkflow := e.workflowForPostDispatchCleanup(taskID)
+	e.clearTransientFetchRetry(fresh.ID, cleanupWorkflow, step.ID)
+	e.clearCircuitBreakerOnSuccess(fresh.ID, cleanupWorkflow, step.ID)
+	e.clearWatchdogReaskNote(fresh.ID, cleanupWorkflow)
 }
 
 // handleWatchdogRetries checks both bounded watchdog stop-retry paths — a
