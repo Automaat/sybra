@@ -129,6 +129,9 @@ func (e *Engine) reconcileCurrentStepFromStatus(taskID string, t TaskInfo, def *
 		return t, false, nil
 	}
 	current := def.StepByID(t.Workflow.CurrentStep)
+	if fresh, reconciled, err := e.reconcileWaitHumanActionAlias(taskID, t, current, status); err != nil || reconciled {
+		return fresh, reconciled, err
+	}
 	if current != nil && current.Type == StepRunAgent {
 		if current.Config.WaitForStatus == status {
 			return t, false, nil
@@ -194,6 +197,52 @@ func (e *Engine) reconcileCurrentStepFromStatus(taskID string, t TaskInfo, def *
 		return TaskInfo{}, true, err
 	}
 	return fresh, true, nil
+}
+
+func (e *Engine) reconcileWaitHumanActionAlias(taskID string, t TaskInfo, current *Step, status string) (TaskInfo, bool, error) {
+	action, ok := waitHumanActionAlias(current, status)
+	if !ok {
+		return t, false, nil
+	}
+	if err := validateHumanAction(current, action); err != nil {
+		return TaskInfo{}, false, err
+	}
+	wf := t.Workflow.Clone()
+	if wf == nil {
+		return TaskInfo{}, false, errors.New("reconcile: cloned workflow is nil")
+	}
+	wf.SetVar("human_action", action)
+	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+		return TaskInfo{}, false, err
+	}
+	if err := e.AdvanceStep(taskID, StepOutput{
+		StepID: current.ID,
+		Status: "completed",
+		Output: action,
+	}); err != nil {
+		return TaskInfo{}, false, err
+	}
+	fresh, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return TaskInfo{}, true, err
+	}
+	e.logger.Info("workflow.current-step.reconcile-human-action",
+		"task_id", taskID, "step", current.ID, "status", status, "action", action)
+	return fresh, true, nil
+}
+
+func waitHumanActionAlias(step *Step, status string) (string, bool) {
+	if step == nil || step.Type != StepWaitHuman || step.Config.Status != "plan-review" {
+		return "", false
+	}
+	switch status {
+	case "todo":
+		return "approve", true
+	case "planning":
+		return "reject", true
+	default:
+		return "", false
+	}
 }
 
 func (e *Engine) executeCurrentStepForStatusReconcile(taskID string, def *Definition, current *Step, t TaskInfo, status string) (bool, error) {

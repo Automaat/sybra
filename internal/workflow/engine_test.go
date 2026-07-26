@@ -3045,7 +3045,7 @@ func TestResumeStalled_ReconcilesWaitHumanStatus(t *testing.T) {
 				ID:     "review_plan",
 				Name:   "Review Plan",
 				Type:   StepWaitHuman,
-				Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve", "reject"}},
+				Config: StepConfig{Status: "ready-pr", HumanActions: []string{"approve", "reject"}},
 				Next:   []Transition{{GoTo: ""}},
 			},
 		},
@@ -3058,7 +3058,7 @@ func TestResumeStalled_ReconcilesWaitHumanStatus(t *testing.T) {
 
 	tasks.Put(TaskInfo{
 		ID:     "t1",
-		Status: "todo",
+		Status: "in-progress",
 		Workflow: &Execution{
 			WorkflowID:  "wait-human-wf",
 			CurrentStep: "review_plan",
@@ -3070,8 +3070,8 @@ func TestResumeStalled_ReconcilesWaitHumanStatus(t *testing.T) {
 	engine.ResumeStalled()
 
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "plan-review" {
-		t.Fatalf("status = %q, want plan-review (wait_human status must be reconciled)", ti.Status)
+	if ti.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr (wait_human status must be reconciled)", ti.Status)
 	}
 	if agents.CallCount() != 0 {
 		t.Fatalf("wait_human step must not spawn an agent, got %d", agents.CallCount())
@@ -6693,6 +6693,36 @@ func TestPlanReuse_ApproveReconcilesMissedWaitForStatus(t *testing.T) {
 	}
 	if ti.Workflow.State != ExecCompleted {
 		t.Errorf("State = %q, want ExecCompleted", ti.Workflow.State)
+	}
+}
+
+func TestHandleStatusChange_PlanReviewTodoAliasApproves(t *testing.T) {
+	engine, tasks, _ := startPlanReuseAtReviewPlan(t)
+
+	tasks.SetStatus("t1", "todo")
+	engine.HandleStatusChange("t1", "todo")
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Fatalf("Status = %q, want in-progress", ti.Status)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
+	}
+}
+
+func TestResumeStalled_PlanReviewTodoAliasApproves(t *testing.T) {
+	engine, tasks, _ := startPlanReuseAtReviewPlan(t)
+
+	tasks.SetStatus("t1", "todo")
+	engine.ResumeStalled()
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Fatalf("Status = %q, want in-progress", ti.Status)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
 	}
 }
 
