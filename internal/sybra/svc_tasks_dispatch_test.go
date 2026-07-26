@@ -701,8 +701,8 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	if gotUmbrella.Workflow == nil || gotUmbrella.Workflow.WorkflowID != "old-workflow" || gotUmbrella.Workflow.State != workflow.ExecFailed {
 		t.Fatalf("synthetic umbrella task should be left alone, got %+v", gotUmbrella.Workflow)
 	}
-	if launcher.startCalls != 4 {
-		t.Fatalf("startCalls = %d, want 4 for idle/post-plan implementation and inbound review tasks", launcher.startCalls)
+	if launcher.startCalls != 6 {
+		t.Fatalf("startCalls = %d, want 6 for resumed planning, implementation, and inbound review tasks", launcher.startCalls)
 	}
 }
 
