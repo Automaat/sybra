@@ -1808,16 +1808,31 @@ func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
 		t.Fatal("fix_review step missing from simple-task-review")
 		return
 	}
-	// fix_review commits code changes, so verify_checks must re-run before
-	// tamper detection to keep verify_checks evidence fresh at the post-fix
-	// HEAD (and catch a fix that broke the suite) ahead of require_evidence.
+	// fix_review commits code changes, so the branch must be pushed
+	// deterministically, then verify_checks must re-run before tamper detection
+	// to keep verify_checks evidence fresh at the post-fix HEAD (and catch a
+	// fix that broke the suite) ahead of require_evidence.
+	push := rev.StepByID("push_review_fix_branch")
+	if push == nil {
+		t.Fatal("push_review_fix_branch step missing from simple-task-review")
+		return
+	}
+	if push.Type != StepPushBranch {
+		t.Fatalf("push_review_fix_branch type = %q, want %q", push.Type, StepPushBranch)
+	}
 	verify := rev.StepByID("verify_checks")
 	if verify == nil {
 		t.Fatal("verify_checks step missing from simple-task-review")
 		return
 	}
-	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "verify_checks" {
-		t.Errorf("fix_review goto = %q, want verify_checks", got)
+	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "push_review_fix_branch" {
+		t.Errorf("fix_review goto = %q, want push_review_fix_branch", got)
+	}
+	if got, _ := ResolveTransition(push.Next, map[string]string{"task.status": "ready-review"}); got != "verify_checks" {
+		t.Errorf("push_review_fix_branch goto = %q, want verify_checks", got)
+	}
+	if got, _ := ResolveTransition(push.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Errorf("push_review_fix_branch human-required goto = %q, want end", got)
 	}
 	if got, _ := ResolveTransition(verify.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
 		t.Errorf("verify_checks goto = %q, want detect_tampering", got)
