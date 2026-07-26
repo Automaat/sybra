@@ -669,7 +669,7 @@ func TestReconcilePRPhasesReactivatesEmptyReasonAfterPRFix(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 
 	created := mkOwnPRTask(t, tasks, 42, nil)
-	completedAt := time.Now().UTC().Add(500 * time.Millisecond)
+	completedAt := time.Now().UTC().Add(time.Minute)
 	wf := &workflow.Execution{
 		WorkflowID:  "pr-fix",
 		State:       workflow.ExecCompleted,
