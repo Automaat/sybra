@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,6 +113,62 @@ func TestRunStartupCleanupEmpty(t *testing.T) {
 	}
 	r.RunStartupCleanup(context.Background())
 	wg.Wait()
+}
+
+func TestRunStartupCleanup_ReplaysEffectsBeforeStaleRestart(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("startup replay ordering", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(created.ID, map[string]any{
+		"status":     string(task.StatusInProgress),
+		"project_id": "owner/repo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	var order []string
+	wfStub := &stubWorkflowEngine{callOrder: &order}
+	orch := &stubOrchestrator{
+		onStart: func() {
+			order = append(order, "restart")
+		},
+	}
+
+	var wg sync.WaitGroup
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		WorkflowEngine: wfStub,
+		Orchestrator:   orch,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+	r.RunStartupCleanup(context.Background())
+	wg.Wait()
+
+	if !slices.Equal(order, []string{"replay", "restart"}) {
+		t.Fatalf("startup order = %v, want [replay restart]", order)
+	}
 }
 
 func TestRunStartupCleanup_CleansOrphanedSandboxes(t *testing.T) {
@@ -1176,6 +1233,9 @@ type stubWorkflowEngine struct {
 	startWorkflowErr   error
 	completions        []workflow.AgentCompletion
 
+	replayCalls int
+	callOrder   *[]string
+
 	dispatchEventCalls  []map[string]string
 	dispatchEventResult string
 	dispatchEventErr    error
@@ -1194,6 +1254,13 @@ func (s *stubWorkflowEngine) DispatchEvent(_, _ string, extraFields, _ map[strin
 
 func (s *stubWorkflowEngine) HandleAgentComplete(_ string, c workflow.AgentCompletion) {
 	s.completions = append(s.completions, c)
+}
+
+func (s *stubWorkflowEngine) ReplayPersistedEffects() {
+	s.replayCalls++
+	if s.callOrder != nil {
+		*s.callOrder = append(*s.callOrder, "replay")
+	}
 }
 
 // TestRestartStalePRFixWorkflowRevertsToInReview verifies the root cause of the
@@ -2075,6 +2142,8 @@ func (s *recordingWorkflowStub) HandleAgentComplete(taskID string, _ workflow.Ag
 	_, _ = s.tasks.Update(taskID, task.Update{Workflow: &wf})
 }
 
+func (*recordingWorkflowStub) ReplayPersistedEffects() {}
+
 // TestRestartStaleConcurrentPathsDoNotDoubleFireHandleAgentComplete is a
 // regression test for sybra#2452's actual race, reproduced with real
 // goroutines rather than a pre-held claim: the periodic
@@ -2161,6 +2230,7 @@ type stubOrchestrator struct {
 	lastMode      string
 	lastPrompt    string
 	lastOneShot   bool
+	onStart       func()
 }
 
 func (s *stubOrchestrator) StartAgent(_, mode, prompt string, _, oneShot bool) (*agent.Agent, error) {
@@ -2168,6 +2238,9 @@ func (s *stubOrchestrator) StartAgent(_, mode, prompt string, _, oneShot bool) (
 	s.lastMode = mode
 	s.lastPrompt = prompt
 	s.lastOneShot = oneShot
+	if s.onStart != nil {
+		s.onStart()
+	}
 	return s.startReturned, s.startErr
 }
 

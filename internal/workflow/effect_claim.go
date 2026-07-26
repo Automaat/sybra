@@ -33,24 +33,34 @@ type EffectClaimResult struct {
 	Completed bool
 }
 
+func currentStepEffectRecord(t TaskInfo, step *Step, pos int) (EffectRecord, bool) {
+	if t.Workflow == nil {
+		return EffectRecord{}, false
+	}
+	rec, ok := t.Workflow.EffectRecordForStep(step.ID, pos)
+	if !ok {
+		return EffectRecord{}, false
+	}
+	currentSeq := executionStepSeq(t.Workflow)
+	if rec.ID.Generation != t.Generation || rec.ID.StepSeq < currentSeq {
+		return EffectRecord{}, false
+	}
+	return rec, true
+}
+
 func (e *Engine) effectClaimForStep(t TaskInfo, step *Step, pos int) EffectClaim {
 	stepID := step.ID
 	reuseCompleted := !isAsyncWorkflowStep(step.Type)
 	skippedCompleted := false
-	if t.Workflow != nil {
-		if existing, ok := t.Workflow.EffectIDForStep(stepID, pos); ok {
-			currentSeq := executionStepSeq(t.Workflow)
-			if rec, found := t.Workflow.effectRecord(existing); found && rec.ID.StepSeq >= currentSeq {
-				if rec.CompletedAt != nil && !reuseCompleted {
-					skippedCompleted = true
-				} else {
-					return EffectClaim{
-						EffectID: existing,
-						Owner:    e.ownerID,
-						LeaseTTL: e.effectLeaseTTL,
-						Now:      e.now(),
-					}
-				}
+	if rec, ok := currentStepEffectRecord(t, step, pos); ok {
+		if rec.CompletedAt != nil && !reuseCompleted {
+			skippedCompleted = true
+		} else {
+			return EffectClaim{
+				EffectID: rec.ID,
+				Owner:    e.ownerID,
+				LeaseTTL: e.effectLeaseTTL,
+				Now:      e.now(),
 			}
 		}
 	}

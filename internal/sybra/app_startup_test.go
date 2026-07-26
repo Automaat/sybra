@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // preventFetchTTLLeak guards against Startup's project.FetchTTL = 60s
@@ -250,6 +251,94 @@ func TestAppStartup_QueueInitFailureDegradesGracefully(t *testing.T) {
 	}
 }
 
+func TestQueueDrainPass_ReplaysPersistedEffectsBeforeResumeFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	store, err := task.NewStore(filepath.Join(home, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+
+	created, err := taskMgr.Create("queue replay", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := taskMgr.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusInProgress),
+		"workflow": &workflow.Execution{
+			WorkflowID:  "replay-set-status",
+			CurrentStep: "mark_testing",
+			State:       workflow.ExecWaiting,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err = taskMgr.UpdateMap(created.ID, map[string]any{
+		"workflow": &workflow.Execution{
+			WorkflowID:  "replay-set-status",
+			CurrentStep: "mark_testing",
+			State:       workflow.ExecWaiting,
+			EffectLog: []workflow.EffectRecord{{
+				ID: workflow.EffectID{
+					Generation: updated.Generation + 1,
+					StepSeq:    0,
+					StepID:     "mark_testing",
+					Pos:        0,
+				},
+				IntentAt: time.Now().UTC(),
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wfDir := filepath.Join(home, "workflows")
+	if err := os.MkdirAll(wfDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const yaml = `id: replay-set-status
+name: Replay Set Status
+steps:
+  - id: mark_testing
+    type: set_status
+    config:
+      status: testing
+`
+	if err := os.WriteFile(filepath.Join(wfDir, "replay-set-status.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	engine := workflow.NewEngine(wfStore, &taskAdapter{tasks: taskMgr}, &recordingAgentLauncher{}, discardLogger())
+	app := &App{
+		cfg:            config.DefaultConfig(),
+		workflowEngine: engine,
+	}
+
+	app.queueDrainPass(context.Background())
+
+	got, err := taskMgr.Get(updated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusTesting {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusTesting)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow = nil, want completed workflow after replay")
+	}
+	if got.Workflow.State != workflow.ExecCompleted || got.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want completed with empty current step", got.Workflow)
+	}
+}
+
 func TestAppShutdownBeforeStartupDoesNotPanic(t *testing.T) {
 	app := NewApp(slog.New(slog.DiscardHandler), &slog.LevelVar{}, startupTestConfig(t.TempDir()))
 
@@ -360,6 +449,9 @@ func assertStartupCoreWiring(t *testing.T, app *App, logger *slog.Logger, cfg *c
 	}
 	if app.agentCompletion == nil || app.recovery == nil {
 		t.Fatal("completion/recovery handlers were not initialized")
+	}
+	if app.recovery.WorkflowEngine != app.workflowEngine {
+		t.Fatal("recovery was not wired to the workflow engine")
 	}
 	if app.evaluationSvc == nil || app.routingSvc == nil {
 		t.Fatal("evaluation/routing services were not initialized before Startup returned")

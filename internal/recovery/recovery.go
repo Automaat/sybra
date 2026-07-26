@@ -43,6 +43,7 @@ type WorkflowRestarter interface {
 	// restarting a stale WorkflowID.
 	DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error)
 	HandleAgentComplete(taskID string, completion workflow.AgentCompletion)
+	ReplayPersistedEffects()
 }
 
 // PRResolver resolves the GitHub PR a task lost track of when its pr_number was
@@ -128,6 +129,9 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	r.cleanupOrphanedSandboxes(ctx)
 	r.cleanStaleRuns()
 	r.pruneAgentLogs()
+	if r.WorkflowEngine != nil {
+		r.WorkflowEngine.ReplayPersistedEffects()
+	}
 	r.RestartStaleInProgress(ctx)
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/dispatchorder"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
@@ -1423,6 +1424,7 @@ func (e *Engine) resumeStalledReconcileWaitHumanStatus(t TaskInfo, step *Step) {
 
 func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *Step, wf *Execution, fresh TaskInfo) {
 	e.logger.Info("workflow.resume-stalled", "task_id", taskID, "step", step.ID)
+	metrics.OrchestratorResumeStalledFallback(e.metricContext())
 	comp, rErr := e.executeSteps(taskID, def, step, wf)
 	rErr = normalizeExecuteStepsErr(rErr)
 	e.clearResumeDispatching(taskID)

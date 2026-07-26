@@ -1,0 +1,148 @@
+package workflow
+
+import (
+	"cmp"
+	"context"
+	"slices"
+
+	"github.com/Automaat/sybra/internal/dispatchorder"
+	"github.com/Automaat/sybra/internal/metrics"
+)
+
+func (e *Engine) metricContext() context.Context {
+	if e.ctx != nil {
+		return e.ctx
+	}
+	return context.Background()
+}
+
+// ReplayPersistedEffects re-enters the current workflow step when a persisted
+// step-effect intent exists without a matching completion. Completed records are
+// reconciled as a no-op so restart recovery can prefer durable effect state
+// over free-form task-status inference.
+func (e *Engine) ReplayPersistedEffects() {
+	if e.dispatchDisabled.Load() {
+		return
+	}
+
+	tasks, err := e.tasks.ListTasks()
+	if err != nil {
+		e.logger.Error("workflow.effect-replay.list", "err", err)
+		return
+	}
+
+	if e.dispatchComparator != nil {
+		slices.SortStableFunc(tasks, e.dispatchComparator())
+	} else {
+		slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
+			return cmp.Compare(dispatchorder.Rank(a.Status), dispatchorder.Rank(b.Status))
+		})
+	}
+
+	for i := range tasks {
+		e.replayPersistedEffectsTask(&tasks[i])
+	}
+}
+
+func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
+	if t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		return
+	}
+	if e.dispatchGate != nil && !e.dispatchGate(*t) {
+		return
+	}
+	switch t.Workflow.State {
+	case ExecCompleted, ExecFailed:
+		return
+	case ExecRunning, ExecWaiting:
+	default:
+		return
+	}
+	if e.agents.HasRunningAgent(t.ID) || e.agents.IsDispatching(t.ID) {
+		return
+	}
+
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil {
+		return
+	}
+	if _, ok := currentStepEffectRecord(*t, step, effectPosStepAction); !ok {
+		return
+	}
+
+	reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
+	if !acquired {
+		e.resumeSkip.Log(e.logger, "workflow.effect-replay.skip", t.ID,
+			reason+"|"+step.ID,
+			"task_id", t.ID, "reason", reason, "step", step.ID)
+		return
+	}
+
+	fresh, abort := e.refreshTaskForReplay(t.ID, t.Workflow)
+	if abort {
+		return
+	}
+	if e.dispatchGate != nil && !e.dispatchGate(fresh) {
+		e.clearResumeDispatching(t.ID)
+		return
+	}
+
+	def, err = e.store.Get(fresh.Workflow.WorkflowID)
+	if err != nil {
+		e.clearResumeDispatching(t.ID)
+		return
+	}
+	step = def.StepByID(fresh.Workflow.CurrentStep)
+	if step == nil {
+		e.clearResumeDispatching(t.ID)
+		return
+	}
+	rec, ok := currentStepEffectRecord(fresh, step, effectPosStepAction)
+	if !ok {
+		e.clearResumeDispatching(t.ID)
+		return
+	}
+	if rec.CompletedAt != nil {
+		e.clearResumeDispatching(t.ID)
+		e.logger.Info("workflow.effect-replay.noop",
+			"task_id", fresh.ID, "step", step.ID, "effect", rec.ID.String())
+		metrics.OrchestratorEffectReplay(e.metricContext(), "already_completed")
+		return
+	}
+
+	e.logger.Info("workflow.effect-replay", "task_id", fresh.ID, "step", step.ID, "effect", rec.ID.String())
+	comp, rErr := e.executeSteps(fresh.ID, &def, step, fresh.Workflow)
+	rErr = normalizeExecuteStepsErr(rErr)
+	e.clearResumeDispatching(fresh.ID)
+	e.fireComplete(comp)
+	e.drainPendingConflictRecovery(fresh.ID)
+	e.resumeError.Log(e.logger, "workflow.effect-replay.exec", fresh.ID, rErr, "task_id", fresh.ID)
+	if rErr != nil {
+		metrics.OrchestratorEffectReplay(e.metricContext(), "error")
+		e.surfaceStartFailure(fresh.ID, fresh.Status, rErr, fresh.Workflow, step.ID)
+		return
+	}
+
+	metrics.OrchestratorEffectReplay(e.metricContext(), "replayed")
+	cleanupWorkflow := e.workflowForPostDispatchCleanup(fresh.ID)
+	e.clearTransientFetchRetry(fresh.ID, cleanupWorkflow, step.ID)
+	e.clearCircuitBreakerOnSuccess(fresh.ID, cleanupWorkflow, step.ID)
+	e.clearWatchdogReaskNote(fresh.ID, cleanupWorkflow)
+}
+
+func (e *Engine) refreshTaskForReplay(taskID string, wf *Execution) (TaskInfo, bool) {
+	fresh, skip := e.shouldSkipResumeAfterFreshRead(taskID, wf)
+	if skip {
+		e.clearResumeDispatching(taskID)
+		return fresh, true
+	}
+	if e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) {
+		e.clearResumeDispatching(taskID)
+		return fresh, true
+	}
+	return fresh, false
+}

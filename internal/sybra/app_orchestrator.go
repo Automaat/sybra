@@ -177,6 +177,7 @@ func (a *App) queueDrainPass(ctx context.Context) {
 		// workflow.Engine derives its shell-step context from its own e.ctx
 		// field (Engine.SetContext, bound once from App's root ctx), not an
 		// explicit per-call parameter.
+		a.workflowEngine.ReplayPersistedEffects()
 		a.workflowEngine.ResumeStalled() //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
 	}
 }
