@@ -221,18 +221,37 @@ func workflowPermutationEvents() []workflowPermutationEvent {
 }
 
 func sampleWorkflowPermutationOrders(events []workflowPermutationEvent, limit int, seed int64) [][]workflowPermutationEvent {
-	perms := permuteWorkflowPermutationEvents(events)
-	if len(perms) <= limit {
-		return perms
+	if permutationCountAtMost(len(events), limit) {
+		return permuteWorkflowPermutationEvents(events)
 	}
 	rng := rand.New(rand.NewSource(seed))
-	idxs := rng.Perm(len(perms))[:limit]
-	slices.Sort(idxs)
-	out := make([][]workflowPermutationEvent, 0, len(idxs))
-	for _, idx := range idxs {
-		out = append(out, perms[idx])
+	seen := make(map[string]bool, limit)
+	out := make([][]workflowPermutationEvent, 0, limit)
+	for len(out) < limit {
+		perm := slices.Clone(events)
+		rng.Shuffle(len(perm), func(i, j int) { perm[i], perm[j] = perm[j], perm[i] })
+		key := strings.Join(workflowPermutationEventNames(perm), ",")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, perm)
 	}
 	return out
+}
+
+// permutationCountAtMost reports whether len(events)! <= limit without
+// materializing every permutation just to count them — the factorial grows
+// fast enough that doing so would defeat the point of sampling.
+func permutationCountAtMost(n, limit int) bool {
+	count := 1
+	for i := 2; i <= n; i++ {
+		count *= i
+		if count > limit {
+			return false
+		}
+	}
+	return count <= limit
 }
 
 func permuteWorkflowPermutationEvents(events []workflowPermutationEvent) [][]workflowPermutationEvent {
