@@ -26,7 +26,8 @@ func TestEffectIDComparison(t *testing.T) {
 	if first.String() != "g2:s3:plan:0" {
 		t.Fatalf("first.String() = %q, want g2:s3:plan:0", first.String())
 	}
-	if !first.Equal(first) {
+	firstCopy := first
+	if !first.Equal(firstCopy) {
 		t.Fatal("Equal must match identical ids")
 	}
 	if first.Equal(second) {
@@ -41,7 +42,8 @@ func TestEffectIDComparison(t *testing.T) {
 	if !laterStep.Less(nextGen) {
 		t.Fatal("next generation must sort after prior generation")
 	}
-	if got := nextGen.Compare(nextGen); got != 0 {
+	nextGenCopy := nextGen
+	if got := nextGen.Compare(nextGenCopy); got != 0 {
 		t.Fatalf("Compare(self) = %d, want 0", got)
 	}
 }

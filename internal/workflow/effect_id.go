@@ -141,8 +141,10 @@ func effectAnchorStepID(effects []Effect, idx int, fallback string) string {
 				if next.Step != nil {
 					return next.Step.ID
 				}
+			case EffectSetTaskStatus, EffectCompleteWorkflow, EffectFailWorkflow:
 			}
 		}
+	case EffectCompleteWorkflow, EffectFailWorkflow:
 	}
 	return fallback
 }

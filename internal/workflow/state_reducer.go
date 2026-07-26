@@ -201,7 +201,7 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 				)
 				return cloneEffects(effects), nil
 			}
-			return nil, nil
+			return cloneEffects(effects), nil
 		}
 
 		next, complete, err := reducerNextStep(desired, observed, exec, current)
