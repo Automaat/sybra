@@ -82,8 +82,12 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 		return
 	}
 
-	fresh, abort := e.refreshTaskForReplay(t.ID, t.Workflow)
+	fresh, abort := e.resolveFreshTaskForResume(t, step, &def)
 	if abort {
+		return
+	}
+	if e.agents.HasRunningAgent(fresh.ID) || e.agents.IsDispatching(fresh.ID) {
+		e.clearResumeDispatching(fresh.ID)
 		return
 	}
 	if e.dispatchGate != nil && !e.dispatchGate(fresh) {
@@ -132,17 +136,4 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 	e.clearTransientFetchRetry(fresh.ID, cleanupWorkflow, step.ID)
 	e.clearCircuitBreakerOnSuccess(fresh.ID, cleanupWorkflow, step.ID)
 	e.clearWatchdogReaskNote(fresh.ID, cleanupWorkflow)
-}
-
-func (e *Engine) refreshTaskForReplay(taskID string, wf *Execution) (TaskInfo, bool) {
-	fresh, skip := e.shouldSkipResumeAfterFreshRead(taskID, wf)
-	if skip {
-		e.clearResumeDispatching(taskID)
-		return fresh, true
-	}
-	if e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) {
-		e.clearResumeDispatching(taskID)
-		return fresh, true
-	}
-	return fresh, false
 }

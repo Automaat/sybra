@@ -221,6 +221,73 @@ func TestReplayPersistedEffects(t *testing.T) {
 		}
 	})
 
+	t.Run("pending intent reconciles stale downstream wait status", func(t *testing.T) {
+		store := newInlineTestStore(t, "replay-stale-status", `
+id: replay-stale-status
+name: Replay Stale Status
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      model: sonnet
+      wait_for_status: agent-finished
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: review_plan
+  - id: review_plan
+    type: wait_human
+    config:
+      status: plan-review
+    next:
+      - goto: ""
+`)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "plan-review",
+				AgentMode:  "headless",
+				Workflow: &Execution{
+					WorkflowID:  "replay-stale-status",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewEngine(store, tasks, agents, discardLogger())
+
+		engine.ReplayPersistedEffects()
+
+		if len(agents.calls) != 0 {
+			t.Fatalf("StartAgent calls = %d, want 0", len(agents.calls))
+		}
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Workflow == nil {
+			t.Fatal("workflow = nil, want active workflow")
+		}
+		if got.Workflow.CurrentStep != "review_plan" {
+			t.Fatalf("current step = %q, want review_plan", got.Workflow.CurrentStep)
+		}
+		if got.Workflow.State != ExecWaiting {
+			t.Fatalf("state = %q, want %q", got.Workflow.State, ExecWaiting)
+		}
+		if len(got.Workflow.EffectLog) != 1 || got.Workflow.EffectLog[0].CompletedAt != nil {
+			t.Fatalf("effect log = %+v, want original pending intent preserved", got.Workflow.EffectLog)
+		}
+	})
+
 	t.Run("completed async effect reconciles as no-op", func(t *testing.T) {
 		now := time.Now().UTC()
 		completedAt := now
