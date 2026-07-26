@@ -204,8 +204,10 @@ func (s *OrchestratorService) StartOrchestratorContext(ctx context.Context) erro
 		Role:                   agent.RoleOrchestrator,
 		Mode:                   "headless",
 		Dir:                    config.HomeDir(),
+		ReadOnlyDir:            true,
 		Prompt:                 orchestratorKickoffPrompt,
 		IgnoreConcurrencyLimit: true,
+		IsolateHome:            true,
 	}, s.abTesting, orchestratorABKey(), orchestratorRole))
 	if err != nil {
 		return fmt.Errorf("start orchestrator agent: %w", err)

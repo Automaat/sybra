@@ -256,9 +256,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 // injectSandboxHome routes every task-scoped agent subprocess's default
 // SYBRA_HOME through the per-task sandbox home, so no fresh agent (any
 // provider, any role) can resolve the operator's real ~/.sybra by default —
-// see #1576. System/probe runs with an empty TaskID (health checks,
-// orchestrator-internal probes) are the only ones allowed to skip this: they
-// have no task-scoped worktree/sandbox to isolate into.
+// see #1576. Taskless system runs skip this only when IsolateHome is false;
+// long-lived/judgment agents such as the orchestrator opt in so stale Sybra
+// source checkouts or sybra-cli invocations cannot rewrite the operator config.
 //
 // cfg.ExtraEnv is normalized before the trusted values are appended: any
 // existing SYBRA_HOME/SYBRA_CONTROL_HOME entries (caller-supplied or
@@ -266,32 +266,38 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 // control home are appended last, so they always win regardless of duplicate
 // env var resolution order in the target process.
 func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
-	if cfg.TaskID == "" {
-		return nil
+	sandboxKey := strings.TrimSpace(cfg.TaskID)
+	if sandboxKey == "" {
+		if !cfg.IsolateHome {
+			return nil
+		}
+		sandboxKey = systemSandboxKey(cfg)
 	}
+	cfg.sandboxKey = sandboxKey
+
 	m.mu.RLock()
 	resolve := m.sandboxHome
 	controlHome := m.controlHome
 	m.mu.RUnlock()
 	if resolve == nil {
-		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", "no sandbox home resolver configured")
-		return fmt.Errorf("agent.Run: no sandbox home resolver configured for task-scoped run %q", cfg.TaskID)
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "sandbox_key", sandboxKey, "err", "no sandbox home resolver configured")
+		return fmt.Errorf("agent.Run: no sandbox home resolver configured for run %q", sandboxKey)
 	}
-	dir, err := resolve(cfg.TaskID)
+	dir, err := resolve(sandboxKey)
 	if err != nil {
-		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", err)
-		return fmt.Errorf("agent.Run: resolve sandbox home for task %q: %w", cfg.TaskID, err)
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "sandbox_key", sandboxKey, "err", err)
+		return fmt.Errorf("agent.Run: resolve sandbox home for run %q: %w", sandboxKey, err)
 	}
 	if strings.TrimSpace(dir) == "" {
-		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", "resolver returned empty path")
-		return fmt.Errorf("agent.Run: sandbox home resolver returned empty path for task %q", cfg.TaskID)
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "sandbox_key", sandboxKey, "err", "resolver returned empty path")
+		return fmt.Errorf("agent.Run: sandbox home resolver returned empty path for run %q", sandboxKey)
 	}
 	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
 		if statErr == nil {
 			statErr = fmt.Errorf("%q is not a directory", dir)
 		}
-		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", statErr)
-		return fmt.Errorf("agent.Run: sandbox home %q for task %q is not accessible: %w", dir, cfg.TaskID, statErr)
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "sandbox_key", sandboxKey, "err", statErr)
+		return fmt.Errorf("agent.Run: sandbox home %q for run %q is not accessible: %w", dir, sandboxKey, statErr)
 	}
 
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_HOME", "SYBRA_CONTROL_HOME")
@@ -301,6 +307,41 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 	}
 	cfg.resolvedSandboxHome = dir
 	return nil
+}
+
+func systemSandboxKey(cfg *RunConfig) string {
+	raw := strings.TrimSpace(cfg.Name)
+	if raw == "" {
+		raw = strings.TrimSpace(string(cfg.Role))
+	}
+	if raw == "" {
+		return "system-run"
+	}
+	raw = strings.ToLower(raw)
+	var b strings.Builder
+	b.Grow(len("system-") + len(raw))
+	b.WriteString("system-")
+	lastDash := false
+	for _, r := range raw {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '.' || r == '-'
+		if !ok {
+			if lastDash {
+				continue
+			}
+			r = '-'
+		}
+		if r == '-' {
+			lastDash = true
+		} else {
+			lastDash = false
+		}
+		b.WriteRune(r)
+	}
+	key := strings.Trim(b.String(), "-.")
+	if key == "system" || key == "" {
+		return "system-run"
+	}
+	return key
 }
 
 func (m *Manager) injectGitHubToken(cfg *RunConfig) {
@@ -339,7 +380,11 @@ func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
 	if cfg.resolvedSandboxHome == "" {
 		return nil
 	}
-	goBuild := buildcache.TaskGoBuildDir(cfg.TaskID)
+	cacheKey := cfg.TaskID
+	if cacheKey == "" {
+		cacheKey = cfg.sandboxKey
+	}
+	goBuild := buildcache.TaskGoBuildDir(cacheKey)
 	goMod := buildcache.SharedGoModDir()
 	npm := buildcache.SharedNPMDir()
 	for _, d := range []string{goBuild, goMod, npm} {
