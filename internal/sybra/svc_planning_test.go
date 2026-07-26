@@ -197,8 +197,8 @@ func TestPlanningService_ApprovePlan_RecoversCompletedPlanReviewWorkflow(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != task.StatusInProgress {
-		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
+	if updated.Status != task.StatusTodo {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusTodo)
 	}
 	if updated.Workflow == nil || updated.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow = %+v, want completed", updated.Workflow)
@@ -288,8 +288,8 @@ func TestPlanningService_ApprovePlan_RecoversMarkdownOnlyMigrationPlan(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != task.StatusInProgress {
-		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
+	if updated.Status != task.StatusTodo {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusTodo)
 	}
 }
 
@@ -341,8 +341,72 @@ func TestPlanningService_ApprovePlan_RecoversManualVerificationContract(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != task.StatusInProgress {
-		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
+	if updated.Status != task.StatusTodo {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusTodo)
+	}
+}
+
+func TestPlanningService_ApprovePlan_StaleReviewPersistsTodoUnderStatusHook(t *testing.T) {
+	planSvc, taskSvc, a := setupPlanningService(t)
+	a.workflowEngine = taskSvc.workflowEngine
+	a.initStatusHook()
+
+	created, err := a.tasks.Create("approve stale plan without redispatch", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusPlanReview
+	completedAt := time.Now().UTC()
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "",
+		State:       workflow.ExecCompleted,
+		StepHistory: []workflow.StepRecord{{
+			StepID: "validate_plan_contract",
+			Status: "completed",
+		}},
+		StartedAt:   completedAt.Add(-time.Minute),
+		CompletedAt: &completedAt,
+	}
+	plan := "# Execution Plan\n\n## Steps\n1. Fix it."
+	planContract := validPlanningContract(created.ID)
+	planResearch := "researched relevant files"
+	planDecisions := "# Decisions\n\nNo open decisions."
+	planBrief := "safe to approve"
+	if _, err := a.tasks.Update(created.ID, task.Update{
+		Status:        &status,
+		Workflow:      &wf,
+		Plan:          &plan,
+		PlanContract:  &planContract,
+		PlanResearch:  &planResearch,
+		PlanDecisions: &planDecisions,
+		PlanBrief:     &planBrief,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := planSvc.ApprovePlan(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Fatalf("ApprovePlan status = %q, want %q", updated.Status, task.StatusTodo)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	after, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != task.StatusTodo {
+		t.Fatalf("status after hook = %q, want %q", after.Status, task.StatusTodo)
+	}
+	if after.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want empty", after.StatusReason)
+	}
+	if after.Workflow == nil || after.Workflow.WorkflowID != "simple-task-plan" || after.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow after hook = %+v, want completed simple-task-plan", after.Workflow)
 	}
 }
 
