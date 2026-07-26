@@ -338,17 +338,8 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	// written, recreating the #2176 hang through a different pair of critical
 	// sections than the ones the first fix closed (an adversarial review's
 	// second pass). resolveCompletionRoute folds both checks into one.
+	spawnedStep, routeStatus := e.resolveCompletionRoute(taskID, t.Workflow.CurrentStep, c)
 	defs := completionDefinitionCache{engine: e, task: t}
-	spawnedStep, routeStatus, duplicatedTerminal := e.resolvePersistedParallelCompletion(t.Workflow, c.AgentID)
-	if !duplicatedTerminal && routeStatus != taskStepTracked {
-		spawnedStep, routeStatus = e.resolveCompletionRoute(taskID, t.Workflow.CurrentStep, c)
-	}
-	if duplicatedTerminal {
-		e.logger.Info("workflow.agent-complete.bail",
-			"task_id", taskID, "agent_id", c.AgentID, "reason", "parallel-child-terminal-duplicate", "current_step", t.Workflow.CurrentStep)
-		e.clearAgentStep(c.AgentID)
-		return
-	}
 	switch routeStatus {
 	case taskStepTracked:
 		// c.AgentID owns spawnedStep. Falls through to the advancement logic
@@ -372,21 +363,16 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 			"task_id", taskID, "agent_id", c.AgentID, "reason", "start-in-flight", "current_step", spawnedStep)
 		return
 	case taskStepFree:
-		if def, ok := defs.get(); ok {
-			if step := def.StepByID(spawnedStep); step == nil || step.Type != StepRunAgent {
-				e.logger.Info("workflow.agent-complete.bail",
-					"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-non-agent-step", "current_step", spawnedStep)
-				e.clearAgentStep(c.AgentID)
-				return
-			}
-		} else {
-			e.logger.Info("workflow.agent-complete.bail",
-				"task_id", taskID, "agent_id", c.AgentID, "reason", "workflow-definition-unavailable", "current_step", spawnedStep)
-			e.clearAgentStep(c.AgentID)
-			return
-		}
 		// Neither a route nor a pending start exists for this task+step, so
 		// the role match below is what decides.
+		if def, ok := defs.get(); ok {
+			if current := def.StepByID(t.Workflow.CurrentStep); current != nil && current.Type == StepParallel {
+				if childStepID, ok := parallelChildStepByAgentID(t.Workflow, current.ID, c.AgentID); ok {
+					spawnedStep = childStepID
+					break
+				}
+			}
+		}
 		if runRole := agentRunRole(t.AgentRuns, c.AgentID); runRole != "" {
 			if def, ok := defs.get(); ok && !untrackedCompletionMatchesCurrentStep(def, spawnedStep, runRole) {
 				e.logger.Info("workflow.agent-complete.bail",
@@ -609,26 +595,6 @@ func (e *Engine) resolveCompletionRoute(taskID, currentStep string, c AgentCompl
 	return spawnedStep, taskStepBuffered
 }
 
-func (e *Engine) resolvePersistedParallelCompletion(wf *Execution, agentID string) (spawnedStep string, status taskStepStatus, duplicatedTerminal bool) {
-	if wf == nil || agentID == "" || wf.CurrentStep == "" {
-		return "", taskStepFree, false
-	}
-	rec := wf.ParallelInflight[wf.CurrentStep]
-	if rec == nil {
-		return "", taskStepFree, false
-	}
-	for childID, child := range rec.Children {
-		if child == nil || child.AgentID != agentID {
-			continue
-		}
-		if child.Status == "completed" || child.Status == "failed" {
-			return childID, taskStepFree, true
-		}
-		return childID, taskStepTracked, false
-	}
-	return "", taskStepFree, false
-}
-
 func pendingStepStartKey(taskID, stepID string) string {
 	return taskID + "|" + stepID
 }
@@ -675,6 +641,22 @@ func untrackedCompletionMatchesCurrentStep(def *Definition, stepID, runRole stri
 		return true
 	}
 	return step.Config.Role == runRole
+}
+
+func parallelChildStepByAgentID(wf *Execution, parentStepID, agentID string) (string, bool) {
+	if wf == nil || parentStepID == "" || agentID == "" {
+		return "", false
+	}
+	rec := wf.ParallelInflight[parentStepID]
+	if rec == nil {
+		return "", false
+	}
+	for childStepID, child := range rec.Children {
+		if child != nil && child.AgentID == agentID {
+			return childStepID, true
+		}
+	}
+	return "", false
 }
 
 // markStepStarting records that a run_agent step's agent-start sequence
