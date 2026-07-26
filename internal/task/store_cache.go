@@ -263,6 +263,7 @@ func cloneTask(t Task) Task {
 	clone.AllowedTools = slices.Clone(t.AllowedTools)
 	clone.Tags = slices.Clone(t.Tags)
 	clone.DependsOn = slices.Clone(t.DependsOn)
+	clone.DependsOnConditions = slices.Clone(t.DependsOnConditions)
 	clone.Attachments = slices.Clone(t.Attachments)
 	clone.AgentRuns = slices.Clone(t.AgentRuns)
 	if t.DueDate != nil {

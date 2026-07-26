@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
@@ -46,6 +47,12 @@ type Handler struct {
 	cfg            *config.Config
 	abTesting      func() abtest.Config
 	experience     *experience.Store
+	// intervention captures a genuine human-required unblock through the two
+	// automated exit paths this package owns (reconcileHumanRequiredBlockers,
+	// advanceClosedTaskPR). Late-bound via SetInterventionStore since it is
+	// only available after App.initLocalStores runs — nil degrades to a no-op
+	// (see intervention.Capture).
+	intervention *intervention.Store
 	// renovatePRsFn returns Renovate-bot PRs to fold into the monitor pass.
 	// FetchReviews uses author:@me which excludes bot-authored PRs, so without
 	// this hook a Renovate PR linked to a task by pr_number/branch never gets
@@ -154,6 +161,10 @@ type Handler struct {
 	// signal that decides whether a review task still needs an agent.
 	// Overridable in tests; nil falls back to github.FetchMyReviewState.
 	fetchMyReviewStateFn func(repo string, number int) (github.MyReviewState, error)
+	// dismissReviewFn reverses a review our own bot identity submitted on a PR
+	// it is reviewing (self-approval — see dismissSelfApproval). Overridable in
+	// tests; nil falls back to github.DismissReview.
+	dismissReviewFn func(repo string, number int, reviewID int64, message string) error
 	// viewerLoginFn returns the authenticated GitHub login (the identity the fix
 	// agent posts as), used to tell the agent's own thread replies from a human
 	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.
@@ -328,6 +339,20 @@ func (r *Handler) SetAutoMergeAppliedHook(fn func()) {
 
 func (r *Handler) SetABTestingSource(fn func() abtest.Config) {
 	r.abTesting = fn
+}
+
+// SetInterventionStore late-binds the intervention store (only constructed
+// after App.initLocalStores, before this Handler is built — see app.go).
+func (r *Handler) SetInterventionStore(store *intervention.Store) {
+	r.intervention = store
+}
+
+// recordInterventionOnUnblock is the review package's entry point into the
+// shared intervention.Capture pipeline — see its doc comment for why every
+// exit path from human-required must go through this one function instead of
+// each hooking its own guard/scrub/audit chain.
+func (r *Handler) recordInterventionOnUnblock(cur task.Task, target, reason string, class intervention.OperatorActionClass) {
+	intervention.Capture(r.intervention, r.cfg, r.projects, r.audit, r.logger, cur, target, reason, class)
 }
 
 func (r *Handler) abTestingConfig() abtest.Config {
@@ -1045,10 +1070,42 @@ func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, co
 	if c.State == "CLOSED" {
 		landedStatus = task.StatusCancelled
 	}
-	if _, err := r.tasks.Update(c.TaskID, task.Update{
-		Status:  task.Ptr(landedStatus),
-		Outcome: task.Ptr(base),
-	}); err != nil {
+	// Snapshot the pre-transition task, flip it to the landed status, and
+	// capture a human-required landing as an intervention — all under the
+	// per-task human-action lock so this can't race a concurrent operator
+	// dispatch (svc_tasks.go) or reconciler into a double intervention capture.
+	// The lock scope stops here: the bounded GitHub enrichment below must not
+	// hold a lock humans also need. Snapshot fetch is best-effort — an
+	// unresolved read just skips the capture rather than blocking the landing.
+	//
+	// The other automated exit path from human-required this package owns —
+	// see outbound.go's reconcileHumanRequiredBlockers and
+	// Handler.recordInterventionOnUnblock. A merged/closed PR landing a task
+	// that was parked human-required is Sybra noticing the blocker cleared,
+	// not an operator click, so it classifies the same as auto_recovery.
+	transition := func() error {
+		preTask, preErr := r.tasks.Get(c.TaskID)
+		if _, err := r.tasks.ApplyStatusEffect(c.TaskID, task.StatusEffect{
+			Source: "review.pr-monitor.closed-pr",
+			Update: task.Update{
+				Status:  task.Ptr(landedStatus),
+				Outcome: task.Ptr(base),
+			},
+		}); err != nil {
+			return err
+		}
+		if preErr == nil && preTask.Status == task.StatusHumanRequired {
+			r.recordInterventionOnUnblock(preTask, string(landedStatus),
+				fmt.Sprintf("automatic PR-landing advance: pr %s while parked human-required", strings.ToLower(c.State)), intervention.OperatorActionAutoRecovery)
+		}
+		return nil
+	}
+	// WorkflowEngine is only nil in narrow tests; run unlocked there.
+	if r.WorkflowEngine != nil {
+		if err := r.WorkflowEngine.WithHumanActionLock(c.TaskID, transition); err != nil {
+			return err
+		}
+	} else if err := transition(); err != nil {
 		return err
 	}
 	// The task just landed; any still-Running/Waiting workflow (e.g.
@@ -1474,9 +1531,12 @@ func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []githu
 		}
 		status := task.StatusInReview
 		statusReason := "pr-fix cancelled: " + reason + " resolved"
-		if _, updErr := r.tasks.Update(t.ID, task.Update{
-			Status:       &status,
-			StatusReason: &statusReason,
+		if _, updErr := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+			Source: "review.pr-monitor.cancel-resolved",
+			Update: task.Update{
+				Status:       &status,
+				StatusReason: &statusReason,
+			},
 		}); updErr != nil {
 			r.logger.Error("pr-monitor.cancel-resolved.status", "task_id", t.ID, "kind", reason, "err", updErr)
 			continue
@@ -1644,6 +1704,24 @@ func (r *Handler) includeKnownTaskPRs(ctx context.Context, tasks []task.Task, mo
 // own re-entry lane and must not also become a pr-fix candidate.
 // Branch-only matching stays gated on in-review to avoid false positives
 // from tasks that pushed a WIP branch without opening a PR yet.
+//
+// ready-pr, ready-review, and testing joined for the same class of bug
+// (sybra#2645/#2646): a task whose own workflow already opened a PR can sit
+// in any of these three lanes — ready-pr when its implement workflow
+// completed without a further status transition, ready-review/testing while
+// a *later* local review or test cycle (e.g. a post-push pr-fix loop, or a
+// PR-fix-triggered re-review) runs against the same already-open PR. None of
+// these lanes has any other mechanism watching GitHub for a real ci_failure
+// or review comment on that PR, so a check like Nilaway failing on every push
+// went unaddressed indefinitely (confirmed live: PR #2646 failed the same
+// Nilaway gate across 4+ pushes with no fix agent ever targeting it, and PR
+// #2645 sat at ready-pr with its `simple-task-implement` workflow already
+// `completed` — nothing left to drive it and pr-fix wasn't watching either).
+// Eligibility here only makes the task visible to the poll; canDispatch
+// (hasBlockingAgentForTask) still refuses to start a pr-fix agent while the
+// task's own workflow has a live agent running, so this cannot race an
+// in-flight local review/test loop — it only picks up the slack once that
+// loop is idle and something on GitHub still needs fixing.
 func prMonitorEligible(t *task.Task) bool {
 	if slices.Contains(t.Tags, "review") {
 		// Review tasks are inbound (reviewing someone else's PR), not tasks
@@ -1653,9 +1731,11 @@ func prMonitorEligible(t *task.Task) bool {
 	switch t.Status {
 	case task.StatusInReview:
 		return t.PRNumber != 0 || t.Branch != ""
-	case task.StatusInProgress:
-		// Only tasks that already have a PR — a branch alone isn't enough,
-		// still mid-implementation.
+	case task.StatusInProgress, task.StatusReadyPR, task.StatusReadyReview, task.StatusTesting:
+		// A PR number is required in every one of these lanes — a branch
+		// alone stays ineligible even past in-progress, since ready-review
+		// and testing also cover a pre-PR local loop (see prMonitorEligible
+		// doc comment above).
 		return t.PRNumber != 0
 	case task.StatusTodo:
 		// A handoff-tagged task is exempted from skipTaskCreatedWorkflow's
@@ -1769,10 +1849,13 @@ func (r *Handler) adoptOrphanPRs(ctx context.Context, tasks []task.Task, prs []g
 			continue
 		}
 		if match != nil {
-			updated, err := r.tasks.Update(t.ID, task.Update{
-				PRNumber:     task.Ptr(match.Number),
-				Status:       task.Ptr(task.StatusInReview),
-				StatusReason: task.Ptr(""),
+			updated, err := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+				Source: "review.pr-monitor.orphan-adopt",
+				Update: task.Update{
+					PRNumber:     task.Ptr(match.Number),
+					Status:       task.Ptr(task.StatusInReview),
+					StatusReason: task.Ptr(""),
+				},
 			})
 			if err != nil {
 				r.logger.Error("pr-monitor.orphan-adopt", "task_id", t.ID, "pr", match.Number, "err", err)
@@ -1869,11 +1952,14 @@ func (r *Handler) adoptOrphanMergedPR(ctx context.Context, t *task.Task) {
 	taskID, repo, branch := t.ID, t.ProjectID, t.Branch
 	const state = "MERGED"
 	base := classifyLandingOutcome(state)
-	updated, err := r.tasks.Update(taskID, task.Update{
-		PRNumber:     task.Ptr(prNum),
-		Status:       task.Ptr(task.StatusDone),
-		Outcome:      task.Ptr(base),
-		StatusReason: task.Ptr(""),
+	updated, err := r.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
+		Source: "review.pr-monitor.orphan-merged-adopt",
+		Update: task.Update{
+			PRNumber:     task.Ptr(prNum),
+			Status:       task.Ptr(task.StatusDone),
+			Outcome:      task.Ptr(base),
+			StatusReason: task.Ptr(""),
+		},
 	})
 	if err != nil {
 		r.logger.Error("pr-monitor.orphan-merged-adopt", "task_id", taskID, "pr", prNum, "err", err)

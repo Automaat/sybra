@@ -21,9 +21,12 @@ type HumanReviewConfig struct {
 	// Repo is the owner/name project_id assigned to local sybra-bug tasks.
 	// Defaults to "Automaat/sybra" when empty.
 	Repo string `yaml:"repo" json:"repo"`
-	// Model is the Claude model name or alias (e.g. "sonnet",
-	// "claude-haiku-4-5-20251001"). Defaults to
-	// "claude-haiku-4-5-20251001" when empty — diagnosis, not authoring.
+	// Model is a provider-neutral alias ("sonnet", "haiku", "opus") — never a
+	// concrete provider-specific model ID, since the spawned provider follows
+	// the machine's configured agent.provider (claude, codex, ...) and a
+	// literal like "claude-haiku-4-5-20251001" is rejected outright by a
+	// non-Claude provider's CLI (see #2639). Defaults to "haiku" when empty —
+	// diagnosis, not authoring.
 	Model string `yaml:"model" json:"model"`
 	// MaxPerHour caps how many review agents may be spawned in any rolling
 	// 60-minute window across all tasks on this machine. Zero falls back

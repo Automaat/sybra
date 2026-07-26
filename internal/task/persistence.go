@@ -30,42 +30,45 @@ type taskFrontmatter struct {
 	// Blocker matches Task's value type (not a pointer): blocker.State
 	// implements IsZeroer, so yaml.v3's omitempty already skips a zero value
 	// without needing pointer indirection to distinguish "unset" from "set".
-	Blocker                blocker.State       `yaml:"blocker,omitempty"`
-	HandoffSourceProvider  string              `yaml:"handoff_source_provider,omitempty"`
-	BlockedByIssue         string              `yaml:"blocked_by_issue,omitempty"`
-	UmbrellaIssue          string              `yaml:"umbrella_issue,omitempty"`
-	RefIssue               string              `yaml:"ref_issue,omitempty"`
-	DependsOn              []string            `yaml:"depends_on,omitempty"`
-	Reviewed               bool                `yaml:"reviewed,omitempty"`
-	RunRole                string              `yaml:"run_role,omitempty"`
-	SupervisorSteer        string              `yaml:"supervisor_steer,omitempty"`
-	ReviewPhase            string              `yaml:"review_phase,omitempty"`
-	ReviewedHeadSHA        string              `yaml:"reviewed_head_sha,omitempty"`
-	ReviewedHeadAttempts   int                 `yaml:"reviewed_head_attempts,omitempty"`
-	ReconcileFailures      int                 `yaml:"reconcile_failures,omitempty"`
-	PRPhase                string              `yaml:"pr_phase,omitempty"`
-	Priority               Priority            `yaml:"priority,omitempty"`
-	DueDate                *time.Time          `yaml:"due_date,omitempty"`
-	ClosedAt               *time.Time          `yaml:"closed_at,omitempty"`
-	Outcome                string              `yaml:"outcome,omitempty"`
-	MergeCommit            string              `yaml:"merge_commit,omitempty"`
-	MaxTurns               int                 `yaml:"max_turns,omitempty"`
-	RequirePermissions     *bool               `yaml:"require_permissions,omitempty"`
-	HeadlessPermissionMode string              `yaml:"headless_permission_mode,omitempty"`
-	ForkSubagent           bool                `yaml:"fork_subagent,omitempty"`
-	Sandbox                *bool               `yaml:"sandbox,omitempty"`
-	ReasoningEffort        string              `yaml:"reasoning_effort,omitempty"`
-	TestingCycleStartedAt  *time.Time          `yaml:"testing_cycle_started_at,omitempty"`
-	Attachments            []Attachment        `yaml:"attachments,omitempty"`
-	AgentRuns              []agentRunRecord    `yaml:"agent_runs,omitempty"`
-	Workflow               *workflow.Execution `yaml:"workflow,omitempty"`
-	CreatedAt              time.Time           `yaml:"created_at"`
-	UpdatedAt              time.Time           `yaml:"updated_at"`
-	StatusChangedAt        time.Time           `yaml:"status_changed_at,omitempty"`
-	AssignedNode           string              `yaml:"assigned_node,omitempty"`
-	NodeOverride           string              `yaml:"node_override,omitempty"`
-	MirrorRev              int64               `yaml:"mirror_rev,omitempty"`
-	MirrorUpdatedAt        *time.Time          `yaml:"mirror_updated_at,omitempty"`
+	Blocker                blocker.State           `yaml:"blocker,omitempty"`
+	HandoffSourceProvider  string                  `yaml:"handoff_source_provider,omitempty"`
+	BlockedByIssue         string                  `yaml:"blocked_by_issue,omitempty"`
+	UmbrellaIssue          string                  `yaml:"umbrella_issue,omitempty"`
+	RefIssue               string                  `yaml:"ref_issue,omitempty"`
+	DependsOn              []string                `yaml:"depends_on,omitempty"`
+	DependsOnConditions    []DepCondition          `yaml:"depends_on_conditions,omitempty"`
+	Reviewed               bool                    `yaml:"reviewed,omitempty"`
+	RunRole                string                  `yaml:"run_role,omitempty"`
+	SupervisorSteer        string                  `yaml:"supervisor_steer,omitempty"`
+	ReviewPhase            string                  `yaml:"review_phase,omitempty"`
+	ReviewedHeadSHA        string                  `yaml:"reviewed_head_sha,omitempty"`
+	ReviewedHeadAttempts   int                     `yaml:"reviewed_head_attempts,omitempty"`
+	ReconcileFailures      int                     `yaml:"reconcile_failures,omitempty"`
+	PRPhase                string                  `yaml:"pr_phase,omitempty"`
+	Priority               Priority                `yaml:"priority,omitempty"`
+	DueDate                *time.Time              `yaml:"due_date,omitempty"`
+	ClosedAt               *time.Time              `yaml:"closed_at,omitempty"`
+	Outcome                string                  `yaml:"outcome,omitempty"`
+	MergeCommit            string                  `yaml:"merge_commit,omitempty"`
+	MaxTurns               int                     `yaml:"max_turns,omitempty"`
+	RequirePermissions     *bool                   `yaml:"require_permissions,omitempty"`
+	HeadlessPermissionMode string                  `yaml:"headless_permission_mode,omitempty"`
+	ForkSubagent           bool                    `yaml:"fork_subagent,omitempty"`
+	Sandbox                *bool                   `yaml:"sandbox,omitempty"`
+	ReasoningEffort        string                  `yaml:"reasoning_effort,omitempty"`
+	TestingCycleStartedAt  *time.Time              `yaml:"testing_cycle_started_at,omitempty"`
+	Attachments            []Attachment            `yaml:"attachments,omitempty"`
+	AgentRuns              []agentRunRecord        `yaml:"agent_runs,omitempty"`
+	EffectLog              []workflow.EffectRecord `yaml:"effect_log,omitempty"`
+	Workflow               *workflow.Execution     `yaml:"workflow,omitempty"`
+	CreatedAt              time.Time               `yaml:"created_at"`
+	UpdatedAt              time.Time               `yaml:"updated_at"`
+	StatusChangedAt        time.Time               `yaml:"status_changed_at,omitempty"`
+	AssignedNode           string                  `yaml:"assigned_node,omitempty"`
+	NodeOverride           string                  `yaml:"node_override,omitempty"`
+	Generation             int64                   `yaml:"generation,omitempty"`
+	MirrorRev              int64                   `yaml:"mirror_rev,omitempty"`
+	MirrorUpdatedAt        *time.Time              `yaml:"mirror_updated_at,omitempty"`
 }
 
 type agentRunRecord struct {
@@ -131,6 +134,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		UmbrellaIssue:          fm.UmbrellaIssue,
 		RefIssue:               fm.RefIssue,
 		DependsOn:              fm.DependsOn,
+		DependsOnConditions:    fm.DependsOnConditions,
 		Reviewed:               fm.Reviewed,
 		RunRole:                fm.RunRole,
 		SupervisorSteer:        fm.SupervisorSteer,
@@ -153,11 +157,13 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		TestingCycleStartedAt:  fm.TestingCycleStartedAt,
 		Attachments:            fm.Attachments,
 		Workflow:               fm.Workflow,
+		EffectLog:              fm.EffectLog,
 		CreatedAt:              fm.CreatedAt,
 		UpdatedAt:              fm.UpdatedAt,
 		StatusChangedAt:        fm.StatusChangedAt,
 		AssignedNode:           fm.AssignedNode,
 		NodeOverride:           fm.NodeOverride,
+		Generation:             fm.Generation,
 		MirrorRev:              fm.MirrorRev,
 		MirrorUpdatedAt:        fm.MirrorUpdatedAt,
 		Body:                   body,
@@ -202,6 +208,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		UmbrellaIssue:          t.UmbrellaIssue,
 		RefIssue:               t.RefIssue,
 		DependsOn:              t.DependsOn,
+		DependsOnConditions:    t.DependsOnConditions,
 		Reviewed:               t.Reviewed,
 		RunRole:                t.RunRole,
 		SupervisorSteer:        t.SupervisorSteer,
@@ -224,12 +231,14 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		TestingCycleStartedAt:  t.TestingCycleStartedAt,
 		Attachments:            t.Attachments,
 		AgentRuns:              agentRunRecordsFromRuns(t.AgentRuns),
+		EffectLog:              t.EffectLog,
 		Workflow:               t.Workflow,
 		CreatedAt:              t.CreatedAt,
 		UpdatedAt:              t.UpdatedAt,
 		StatusChangedAt:        t.StatusChangedAt,
 		AssignedNode:           t.AssignedNode,
 		NodeOverride:           t.NodeOverride,
+		Generation:             t.Generation,
 		MirrorRev:              t.MirrorRev,
 		MirrorUpdatedAt:        t.MirrorUpdatedAt,
 	}

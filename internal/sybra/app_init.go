@@ -20,8 +20,10 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/diskreclaim"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
@@ -333,6 +335,7 @@ func (a *App) initLocalStores() {
 	a.initAttachments()
 	a.initArtifacts()
 	a.initExperience()
+	a.initIntervention()
 	a.initLearning()
 	a.initAgentQueue()
 }
@@ -358,6 +361,15 @@ func (a *App) initExperience() {
 		return
 	}
 	a.experience = store
+}
+
+func (a *App) initIntervention() {
+	store, err := intervention.New(a.cfg.InterventionsDir())
+	if err != nil {
+		a.logger.Warn("intervention.init.degraded", "err", err)
+		return
+	}
+	a.intervention = store
 }
 
 // initLearning constructs the Learning Digest store. A failure degrades to a
@@ -1063,6 +1075,11 @@ func (a *App) initAudit() {
 // directories left by tasks that no longer exist.
 func (a *App) initArtifacts() {
 	a.artifacts = artifact.New(config.ArtifactsDir())
+	// CompletionEvidence rides the same per-task artifact store/directory as
+	// every other harness artifact — one more named blob, not a second store
+	// to stand up or GC separately (initArtifacts' delete hook below already
+	// covers it via a.artifacts.Delete).
+	a.evidenceStore = evidence.NewStore(a.artifacts)
 	a.tasks.SetDeleteHook(func(id string) {
 		if err := a.artifacts.Delete(id); err != nil {
 			a.logger.Warn("artifact.gc.delete", "task_id", id, "err", err)
@@ -1192,6 +1209,9 @@ func (a *App) initWorkflowEngine() {
 	if a.artifacts != nil {
 		a.workflowEngine.SetArtifactRecorder(&artifactRecorderAdapter{store: a.artifacts})
 	}
+	if a.evidenceStore != nil {
+		a.workflowEngine.SetEvidenceRecorder(&evidenceRecorderAdapter{store: a.evidenceStore})
+	}
 	a.workflowEngine.SetContext(a.ctx)
 	// Recover worktree-prep rebase conflicts via the conflict pr-fix instead of
 	// escalating to a human. Wired here (not at construction) because the
@@ -1265,6 +1285,8 @@ func (a *App) configureWorkflowPolicies() {
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
 	a.workflowEngine.SetABTestingConfig(a.abTestingConfig())
 	a.configurePlanAutoApproval()
+	a.configureAdmissionPolicy()
+	a.configureEvidencePolicy()
 }
 
 func (a *App) configurePlanAutoApproval() {
@@ -1273,6 +1295,40 @@ func (a *App) configurePlanAutoApproval() {
 		a.logAudit(audit.EventPlanApproved, t.ID, "", map[string]any{
 			"auto":   true,
 			"reason": reason,
+		})
+	})
+}
+
+// configureAdmissionPolicy wires the admission_preflight step's config and
+// its audit hook. The hook writes admission.decided without making
+// internal/workflow import internal/audit — mirrors configurePlanAutoApproval.
+func (a *App) configureAdmissionPolicy() {
+	a.workflowEngine.SetAdmissionConfig(a.cfg.Admission)
+	a.workflowEngine.SetAdmissionDecisionHook(func(t workflow.TaskInfo, d workflow.AdmissionDecision) {
+		a.logAudit(audit.EventAdmissionDecided, t.ID, "", map[string]any{
+			"outcome":         d.Outcome,
+			"risk_tier":       d.RiskTier,
+			"permission_tier": d.PermissionTier,
+			"blocker_kind":    d.BlockerKind,
+			"reason":          d.Reason,
+		})
+	})
+}
+
+// configureEvidencePolicy wires the require_evidence step's config and its
+// audit hook. The hook writes completion_evidence.verified/blocked without
+// making internal/workflow import internal/audit — mirrors
+// configureAdmissionPolicy.
+func (a *App) configureEvidencePolicy() {
+	a.workflowEngine.SetEvidenceConfig(a.cfg.Agent.Evidence)
+	a.workflowEngine.SetEvidenceDecisionHook(func(t workflow.TaskInfo, d workflow.EvidenceDecision) {
+		event := audit.EventCompletionEvidenceVerified
+		if d.Outcome == "blocked" {
+			event = audit.EventCompletionEvidenceBlocked
+		}
+		a.logAudit(event, t.ID, "", map[string]any{
+			"outcome": d.Outcome,
+			"reason":  d.Reason,
 		})
 	})
 }

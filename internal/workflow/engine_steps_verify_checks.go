@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
@@ -143,6 +144,8 @@ type verifyFailureClassification struct {
 func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	if slices.Contains(t.Tags, verifyBlessedTag) {
 		e.logger.Info("workflow.verify-checks.blessed", "task_id", taskID)
+		e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofManual,
+			0, "human bless ("+verifyBlessedTag+" tag)", "blessed")
 		return stepDone(step, "blessed")
 	}
 	cmds, wtPath, timeout, skip := e.loadVerifyChecksInputs(taskID)
@@ -236,6 +239,8 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 
 	e.logger.Info("workflow.verify-checks.clean", "task_id", taskID, "commands", len(cmds))
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck,
+		0, strings.Join(cmds, " && "), report.OutputTail)
 	return stepDone(step, "clean")
 }
 
@@ -395,6 +400,7 @@ func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail stri
 	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: set human-required: %w", statusErr)
 	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)
 	e.logger.Warn("workflow.verify-checks.flagged", "task_id", taskID, "detail", detail)
 	return stepDone(step, "flagged")
 }
@@ -403,6 +409,7 @@ func (e *Engine) blockVerifyChecks(taskID string, step *Step, reason, detail str
 	if statusErr := e.tasks.UpdateTaskStatus(taskID, "blocked", reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: set blocked: %w", statusErr)
 	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)
 	e.logger.Warn("workflow.verify-checks.blocked", "task_id", taskID, "detail", detail)
 	return stepDone(step, "blocked")
 }

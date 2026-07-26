@@ -347,7 +347,8 @@ func (e *Engine) finalizeBestOfNParent(taskID string, def *Definition, parent *S
 		return comp, nil
 	}
 	e.logger.Info("workflow.best-of-n.advance", "task_id", taskID, "from", parent.ID, "to", nextStep.ID)
-	return e.executeSteps(taskID, def, nextStep, wfExec)
+	comp, err = e.executeSteps(taskID, def, nextStep, wfExec)
+	return comp, normalizeExecuteStepsErr(err)
 }
 
 // cleanupAllBestOfNAttempts best-effort removes every attempt worktree dir
@@ -420,7 +421,8 @@ func (e *Engine) failStepClosed(taskID string, def *Definition, step *Step, wfEx
 	if nextStep == nil {
 		return comp, nil
 	}
-	return e.executeSteps(taskID, def, nextStep, wfExec)
+	comp, err = e.executeSteps(taskID, def, nextStep, wfExec)
+	return comp, normalizeExecuteStepsErr(err)
 }
 
 // bestOfNManifestAttempt is one attempt's entry in the JSON manifest artifact

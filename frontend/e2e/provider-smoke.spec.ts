@@ -40,7 +40,6 @@ test.describe('Provider smoke: board', { tag: '@integration' }, () => {
       await goToSettings(page)
       await expect(page.locator('#agent-provider')).toBeVisible()
       await expect(page.locator('#agent-model')).toBeVisible()
-      await expect(page.locator('#agent-mode')).toBeVisible()
       await expect(page.locator('#agent-concurrency')).toBeVisible()
     })
   }

@@ -874,6 +874,23 @@ func (a *Agent) EnqueuePrompt(text string) {
 	a.mu.Unlock()
 }
 
+// TryEnqueuePrompt appends text to the pending queue iff its current length
+// is below max, checking and appending under a single lock acquisition.
+// Callers that check PendingPromptCount() and then call EnqueuePrompt() as
+// two separate steps leave a TOCTOU window: concurrent callers can each pass
+// the check while the queue is below max and all append, overshooting the
+// cap the check was meant to enforce. Returns the queue length after the
+// call and whether the prompt was enqueued.
+func (a *Agent) TryEnqueuePrompt(text string, limit int) (queueLen int, enqueued bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.convo.pendingPrompts) >= limit {
+		return len(a.convo.pendingPrompts), false
+	}
+	a.convo.pendingPrompts = append(a.convo.pendingPrompts, text)
+	return len(a.convo.pendingPrompts), true
+}
+
 // PopPendingPrompt returns the next queued prompt and a flag indicating
 // whether a value was popped.
 func (a *Agent) PopPendingPrompt() (string, bool) {
@@ -1717,8 +1734,7 @@ type RunConfig struct {
 	AssignmentUnit     string
 	AssignmentKey      string
 	DecisionVersion    int
-	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
-	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)
+	RequirePermissions bool // when true, suppress --dangerously-skip-permissions
 	// OneShot closes stdin after the first `result` event in conversational
 	// mode so the claude process exits naturally. Without this, interactive
 	// agents sit in StatePaused forever and onComplete never fires, stranding
@@ -1874,14 +1890,9 @@ type RunConfig struct {
 }
 
 // needsApprovalHook reports whether a run should wire the PreToolUse approval
-// hook. True when permissions are required or an interactive permission-mode is
-// set. Both the headless (provider_claude.go) and conversational
-// (runner_convo.go) call sites gate on this so a future change can't silently
-// desync them: headless runs never set PermissionMode (they use
-// HeadlessPermissionMode for the auto classifier), so for them it collapses to
-// RequirePermissions alone.
+// hook.
 func (cfg RunConfig) needsApprovalHook() bool {
-	return cfg.RequirePermissions || cfg.PermissionMode != ""
+	return cfg.RequirePermissions
 }
 
 // ConvoOutput returns a snapshot of the conversation event buffer.

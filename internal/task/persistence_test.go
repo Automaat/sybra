@@ -38,6 +38,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		BlockedByIssue:         "https://github.com/owner/repo/issues/2",
 		UmbrellaIssue:          "owner/repo#3",
 		DependsOn:              []string{"owner/repo#4"},
+		DependsOnConditions:    []DepCondition{{Ref: "owner/repo#4", Kind: DepConditionKindNote, Value: "confirm permutation coverage"}},
 		Reviewed:               true,
 		RunRole:                "pr-fix",
 		SupervisorSteer:        "read the failure",
@@ -100,6 +101,19 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 			HeadSHA:                 "def456",
 			SubagentCallCount:       2,
 		}},
+		EffectLog: []workflow.EffectRecord{{
+			ID: workflow.EffectID{
+				Generation: 2,
+				StepSeq:    4,
+				StepID:     "external:review_pr_monitor:deadbeef",
+				Pos:        0,
+			},
+			IntentAt: now.Add(-15 * time.Minute),
+			CompletedAt: func() *time.Time {
+				t := now.Add(-14 * time.Minute)
+				return &t
+			}(),
+		}},
 		Workflow: &workflow.Execution{
 			WorkflowID:  "workflow-1",
 			CurrentStep: "step-1",
@@ -112,6 +126,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		UpdatedAt:       now,
 		AssignedNode:    "pet-box",
 		NodeOverride:    "gpu-box",
+		Generation:      2,
 		MirrorRev:       7,
 		MirrorUpdatedAt: &completedAt,
 		Body:            "body",
@@ -255,6 +270,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.UmbrellaIssue = "owner/repo#789"
 	case "DependsOn":
 		task.DependsOn = []string{"owner/repo#321"}
+	case "DependsOnConditions":
+		task.DependsOnConditions = []DepCondition{{Ref: "owner/repo#321", Kind: DepConditionKindLabel, Value: "scope-confirmed"}}
 	case "Reviewed":
 		task.Reviewed = true
 	case "RunRole":
@@ -338,6 +355,20 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 			HeadSHA:                 "def456",
 			SubagentCallCount:       2,
 		}}
+	case "EffectLog":
+		task.EffectLog = []workflow.EffectRecord{{
+			ID: workflow.EffectID{
+				Generation: 3,
+				StepSeq:    9,
+				StepID:     "external:test:deadbeef",
+				Pos:        0,
+			},
+			IntentAt: now,
+			CompletedAt: func() *time.Time {
+				t := now.Add(time.Minute)
+				return &t
+			}(),
+		}}
 	case "Workflow":
 		task.Workflow = &workflow.Execution{
 			WorkflowID:  "workflow-1",
@@ -357,6 +388,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.AssignedNode = "pet-box"
 	case "NodeOverride":
 		task.NodeOverride = "gpu-box"
+	case "Generation":
+		task.Generation = 2
 	case "MirrorRev":
 		task.MirrorRev = 7
 	case "MirrorUpdatedAt":

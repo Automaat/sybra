@@ -192,8 +192,58 @@ func TestExecPushBranch_Success(t *testing.T) {
 	}
 }
 
-func TestExecPushBranch_PreflightAuthFailureParksBeforePush(t *testing.T) {
-	wtPath := t.TempDir()
+// TestExecPushBranch_PreflightFailureFallsThroughToSuccessfulPush covers the
+// #2386 false-block: the dry-run preflight probe can fail transiently (e.g. a
+// stale app-token cache) even though the real push would succeed. The step
+// must attempt the real push instead of parking on the probe alone.
+func TestExecPushBranch_PreflightFailureFallsThroughToSuccessfulPush(t *testing.T) {
+	bare, wtPath := newPRWorktree(t, "feat/existing-pr")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+	local := headSHA(t, wtPath)
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	preflight := &fakePushPreflighter{err: errors.New("github push credential preflight failed: gh auth status: Bad credentials")}
+	engine.SetPushCredentialPreflighter(preflight)
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	out, err := engine.execPushBranch("t1", newPushBranchStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
+	if err != nil {
+		t.Fatalf("execPushBranch: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if preflight.calls != 1 {
+		t.Fatalf("preflight calls = %d, want 1", preflight.calls)
+	}
+	if got := preflight.paths[0]; got != wtPath {
+		t.Fatalf("preflight path = %q, want %q", got, wtPath)
+	}
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "ready-pr" {
+		t.Fatalf("status = %q, want unchanged ready-pr (push succeeded despite the failed probe)", ti.Status)
+	}
+	// The real push must actually land on the remote — a silent no-op
+	// fallthrough would leave the bare repo without the branch head.
+	if got := strings.TrimSpace(runGitAt(t, bare, "rev-parse", "feat/existing-pr")); got != local {
+		t.Fatalf("bare remote head = %q, want %q (real push did not land)", got, local)
+	}
+}
+
+// TestExecPushBranch_PreflightAndPushBothFailParksForRetry covers the other
+// half of #2386: a preflight failure must not be the last word either — it's
+// only the real push's outcome that decides retry/escalation.
+func TestExecPushBranch_PreflightAndPushBothFailParksForRetry(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/existing-pr")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+	runGit(t, wtPath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "does-not-exist.git"))
+
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
 	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
@@ -209,21 +259,21 @@ func TestExecPushBranch_PreflightAuthFailureParksBeforePush(t *testing.T) {
 	if preflight.calls != 1 {
 		t.Fatalf("preflight calls = %d, want 1", preflight.calls)
 	}
-	if got := preflight.paths[0]; got != wtPath {
-		t.Fatalf("preflight path = %q, want %q", got, wtPath)
-	}
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ti.Status != "ready-pr" {
-		t.Fatalf("status = %q, want ready-pr", ti.Status)
+		t.Fatalf("status = %q, want ready-pr (parked)", ti.Status)
 	}
-	if !strings.HasPrefix(ti.StatusReason, prCreateAuthRetryReason+": ") || !strings.Contains(ti.StatusReason, "Bad credentials") {
-		t.Fatalf("status reason = %q, want auth retry reason with diagnostic detail", ti.StatusReason)
+	// Classification must be driven by the real push's error, not the
+	// preflight probe's — the push-retry counter increments, not the
+	// preflight-specific auth-retry counter.
+	if wfExec.Variables[prPushAttemptsVar] != "1" {
+		t.Fatalf("%s = %q, want 1", prPushAttemptsVar, wfExec.Variables[prPushAttemptsVar])
 	}
-	if wfExec.Variables[prCreateAuthAttemptsVar] != "1" {
-		t.Fatalf("%s = %q, want 1", prCreateAuthAttemptsVar, wfExec.Variables[prCreateAuthAttemptsVar])
+	if wfExec.Variables[prCreateAuthAttemptsVar] != "" {
+		t.Fatalf("%s = %q, want empty (classification came from the push error)", prCreateAuthAttemptsVar, wfExec.Variables[prCreateAuthAttemptsVar])
 	}
 }
 

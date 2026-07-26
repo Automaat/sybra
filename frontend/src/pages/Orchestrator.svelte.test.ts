@@ -96,9 +96,9 @@ describe('Orchestrator', () => {
     cleanup()
   })
 
-  it('renders Interactive Session heading', () => {
+  it('renders Orchestrator Session heading', () => {
     render(Orchestrator, { props: {} })
-    expect(screen.getByText('Interactive Session')).toBeDefined()
+    expect(screen.getByText('Orchestrator Session')).toBeDefined()
   })
 
   it('shows Stopped status initially', async () => {

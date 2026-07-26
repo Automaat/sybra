@@ -1050,18 +1050,24 @@ func TestBuiltinSimpleTaskPR_NoCodegenAfterTesting(t *testing.T) {
 		return
 	}
 
+	// sync_branch runs first so require_evidence evaluates the exact HEAD that
+	// will ship: a branch-moving sync must not slip an unverified merge/rebase
+	// past the evidence gate.
 	first := simple.FirstStep()
 	if first == nil || first.Type != StepSyncBranch {
 		t.Fatalf("FirstStep = %+v, want sync_branch first", first)
 	}
+	if len(first.Next) != 1 || first.Next[0].GoTo != "require_evidence" {
+		t.Fatalf("sync_branch.Next = %+v, want unconditional goto require_evidence", first.Next)
+	}
 
-	syncStep := simple.StepByID("sync_branch")
-	if syncStep == nil {
-		t.Fatal("sync_branch step not found in simple-task-pr")
+	evidenceStep := simple.StepByID("require_evidence")
+	if evidenceStep == nil {
+		t.Fatal("require_evidence step not found in simple-task-pr")
 		return
 	}
-	if len(syncStep.Next) != 1 || syncStep.Next[0].GoTo != "maybe_create_pr" {
-		t.Fatalf("sync_branch.Next = %+v, want unconditional goto maybe_create_pr", syncStep.Next)
+	if len(evidenceStep.Next) != 2 || evidenceStep.Next[len(evidenceStep.Next)-1].GoTo != "maybe_create_pr" {
+		t.Fatalf("require_evidence.Next = %+v, want a fallback goto maybe_create_pr", evidenceStep.Next)
 	}
 	if step := simple.StepByID("codegen_gate"); step != nil {
 		t.Fatalf("codegen_gate must not exist in simple-task-pr; got %+v", step)

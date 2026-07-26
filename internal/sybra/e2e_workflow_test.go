@@ -1537,6 +1537,34 @@ func TestE2E_ProviderMatrix_NoResult_DoesNotStall(t *testing.T) {
 	})
 }
 
+// createLegacyInteractiveTask simulates a task file that predates the
+// interactive-runner removal: agent_mode is no longer mintable through the
+// Manager/Store API (see task.ValidateMintableAgentMode), but a pre-existing
+// on-disk task carrying it must still load and drive legacy-compat paths
+// (resolveRunAgentMode's coercion, recoverStaleInteractive). Mints the task
+// headless through the normal API for correct ID/slug generation, then
+// overwrites the file directly before reloading it.
+func createLegacyInteractiveTask(t *testing.T, tasks *task.Manager, title string) task.Task {
+	t.Helper()
+	created, err := tasks.Create(title, "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.AgentMode = task.AgentModeInteractive
+	data, err := task.Marshal(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reloaded
+}
+
 // TestE2E_LegacyInteractiveTask_ImplementDispatchesHeadless locks in
 // backward compatibility for a task file carrying the legacy
 // agent_mode: interactive value (task.AgentModeInteractive stays a valid,
@@ -1553,10 +1581,7 @@ func TestE2E_LegacyInteractiveTask_ImplementDispatchesHeadless(t *testing.T) {
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
 		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "success"})
 
-		created, err := env.tasks.Create("legacy interactive task", "", "interactive")
-		if err != nil {
-			t.Fatal(err)
-		}
+		created := createLegacyInteractiveTask(t, env.tasks, "legacy interactive task")
 
 		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
@@ -1720,7 +1745,7 @@ func TestE2E_ResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	created, err := env.tasks.Create("stalled but live agent task", "", "interactive")
+	created, err := env.tasks.Create("stalled but live agent task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1906,10 +1931,7 @@ func TestE2E_RecoverStaleInteractive(t *testing.T) {
 	// evaluate is now a mechanical Go step that doesn't invoke fake-claude.
 	env := setupE2EMulti(t, []string{})
 
-	created, err := env.tasks.Create("stale interactive task", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, env.tasks, "stale interactive task")
 
 	// Put the task in the state that recoverStaleInteractive would encounter:
 	// interactive agent run already stopped, workflow waiting at implement.
@@ -3174,6 +3196,17 @@ func TestE2E_StaleAgentCompletionAfterWorkflowTerminal(t *testing.T) {
 	if tkCompleted.Workflow.CurrentStep != "" {
 		t.Fatalf("precondition: current_step = %q, want empty", tkCompleted.Workflow.CurrentStep)
 	}
+	waitFor(t, 5*time.Second, "terminal workflow callbacks drain", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.State == workflow.ExecCompleted &&
+			tk.Workflow.CurrentStep == "" &&
+			!env.agents.HasRunningAgentForTask(created.ID) &&
+			env.pendingCompletions.Load() == 0
+	})
+	tkCompleted, _ = env.tasks.Get(created.ID)
 	historyBefore := len(tkCompleted.Workflow.StepHistory)
 	updatedAtBefore := tkCompleted.UpdatedAt
 
@@ -4607,7 +4640,7 @@ func TestE2E_WaitForStatus_MismatchDoesNotAdvance(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("wait status mismatch", "", "interactive")
+	created, err := env.tasks.Create("wait status mismatch", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4638,7 +4671,7 @@ func TestE2E_WaitForStatus_ExactAdvancesOnce(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("wait status exact", "", "interactive")
+	created, err := env.tasks.Create("wait status exact", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4675,7 +4708,7 @@ func TestE2E_ReuseAgent_FallbackStartsNewWhenDead(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement", "interactive_implement"})
 	writeWorkflowFixture(t, env, "test-reuse-agent", testReuseAgentWorkflowYAML)
 
-	created, err := env.tasks.Create("reuse agent dead fallback", "", "interactive")
+	created, err := env.tasks.Create("reuse agent dead fallback", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4834,13 +4867,12 @@ func TestE2E_ProviderCrossUnavailable_FallsBackToDefault(t *testing.T) {
 	}
 }
 
-// TestE2E_VerifyCommits_BranchAtBaseMarksDone covers verify_commits when the
-// worktree HEAD matches origin/main (rebased branch with no commits ahead).
-// The implementation is already on origin from a prior merge, so the step
-// marks the task done and ends the workflow instead of routing to
-// set_ready_review (which would otherwise loop forever via the auto-restart
-// in svc_tasks.UpdateTask).
-func TestE2E_VerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
+// TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired covers verify_commits
+// when the worktree HEAD matches origin/main (branch has no commits ahead). The
+// workflow must surface this as human-required instead of silently marking the
+// task done: this git state is indistinguishable from an implementation agent
+// that reported success without committing anything.
+func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 	// triage is a deterministic classify_task step now — no scenario slot —
 	// so only "success" (implement) remains in the queue. The default
 	// classifier verdict (env.classifier) already routes to status=todo,
@@ -4875,17 +4907,17 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	})
 
 	tk, _ := env.tasks.Get(created.ID)
-	if tk.Status != task.StatusDone {
-		t.Fatalf("status = %q, want done", tk.Status)
+	if tk.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", tk.Status)
 	}
-	if !strings.Contains(tk.StatusReason, "already merged into base") {
+	if !strings.Contains(tk.StatusReason, "no commits") {
 		var verifyOut string
 		for i := range tk.Workflow.StepHistory {
 			if tk.Workflow.StepHistory[i].StepID == "verify_commits" {
 				verifyOut = tk.Workflow.StepHistory[i].Output
 			}
 		}
-		t.Fatalf("status_reason = %q, want 'already merged into base' (verify_commits output=%q)", tk.StatusReason, verifyOut)
+		t.Fatalf("status_reason = %q, want 'no commits' (verify_commits output=%q)", tk.StatusReason, verifyOut)
 	}
 	stepIDs := stepIDsFromHistory(tk.Workflow)
 	if !slices.Contains(stepIDs, "verify_commits") {
@@ -5005,7 +5037,7 @@ func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	created, err := env.tasks.Create("delete during run", "", "interactive")
+	created, err := env.tasks.Create("delete during run", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5325,7 +5357,7 @@ func TestE2E_StatusChangeAndAgentComplete_RaceSingleRecord(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-status-complete-race", testStatusCompleteRaceWorkflowYAML)
 
-	created, err := env.tasks.Create("status/complete race", "", "interactive")
+	created, err := env.tasks.Create("status/complete race", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5535,7 +5567,7 @@ func TestE2E_WorktreeDisappearsMidVerify_SkipsGracefully(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-verify-after-status", testVerifyAfterStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("worktree disappears", "", "interactive")
+	created, err := env.tasks.Create("worktree disappears", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5650,7 +5682,7 @@ func TestE2E_DeletedTask_RaceCallbacks_NoRecreate(t *testing.T) {
 
 func TestE2E_ResumeStalled_TightLoopIdempotent(t *testing.T) {
 	env := setupE2EProvider(t, "claude", "interactive_implement")
-	created, err := env.tasks.Create("resume tight loop", "", "interactive")
+	created, err := env.tasks.Create("resume tight loop", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5689,7 +5721,7 @@ func TestE2E_WaitForStatus_RepeatedIdenticalEvents_AdvanceOnce(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("repeat same status", "", "interactive")
+	created, err := env.tasks.Create("repeat same status", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5723,7 +5755,7 @@ func TestE2E_ProviderBinaryFlap_SecondStepFallsBackDeterministically(t *testing.
 	t.Setenv("FAKE_CODEX_ARGS_LOG", codexArgsLog)
 	t.Setenv("FAKE_CLAUDE_ARGS_LOG", claudeArgsLog)
 
-	created, err := env.tasks.Create("provider flap", "", "interactive")
+	created, err := env.tasks.Create("provider flap", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6116,7 +6148,7 @@ func TestE2E_StatusHookStorm_NoDuplicateAdvance(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("status storm", "", "interactive")
+	created, err := env.tasks.Create("status storm", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6312,19 +6344,43 @@ func TestE2E_InteractivePromptQueuePressure_NoDropOrCrash(t *testing.T) {
 		return s == agent.StateRunning || s == agent.StatePaused
 	})
 
+	// block_silent never completes a turn, so drainOrCloseHeadlessSteer never
+	// fires and nothing dequeues for the life of this test: sending more
+	// concurrent messages than agent.MaxPendingHeadlessSteerPrompts is
+	// expected to hit the cap and get rejected — that is the queue-full
+	// guardrail (internal/agent/runner_headless.go) working as designed, not
+	// a drop. Only assert "no drop or crash": every send resolves to either
+	// success or the documented capacity error, the number of successes
+	// never exceeds the cap, and the agent survives the burst.
+	const sendCount = 50
 	var wg sync.WaitGroup
-	errCh := make(chan error, 50)
-	for i := range 50 {
+	errCh := make(chan error, sendCount)
+	for i := range sendCount {
 		wg.Go(func() {
 			errCh <- env.agents.SendPromptToAgent(ag.ID, fmt.Sprintf("msg-%d", i))
 		})
 	}
 	wg.Wait()
 	close(errCh)
+	var succeeded, capacityRejected int
 	for err := range errCh {
-		if err != nil {
+		switch {
+		case err == nil:
+			succeeded++
+		case strings.Contains(err.Error(), "too many pending steer messages"):
+			capacityRejected++
+		default:
 			t.Fatalf("send prompt err: %v", err)
 		}
+	}
+	if succeeded+capacityRejected != sendCount {
+		t.Fatalf("succeeded(%d) + capacityRejected(%d) != sendCount(%d)", succeeded, capacityRejected, sendCount)
+	}
+	if succeeded != agent.MaxPendingHeadlessSteerPrompts {
+		t.Fatalf("succeeded = %d, want exactly %d (the queue cap, since nothing drains it during this test)", succeeded, agent.MaxPendingHeadlessSteerPrompts)
+	}
+	if got := ag.PendingPromptCount(); got != agent.MaxPendingHeadlessSteerPrompts {
+		t.Fatalf("PendingPromptCount = %d, want %d (no drop: every accepted send must still be queued)", got, agent.MaxPendingHeadlessSteerPrompts)
 	}
 	if err := env.agents.StopAgent(ag.ID); err != nil {
 		t.Fatal(err)
@@ -6426,7 +6482,7 @@ func TestE2E_StatusChange_AfterTerminal_NoMutation(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
 	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
 
-	created, err := env.tasks.Create("terminal status noop", "", "interactive")
+	created, err := env.tasks.Create("terminal status noop", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}

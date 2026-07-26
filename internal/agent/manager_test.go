@@ -1121,6 +1121,13 @@ func TestNormalizeModel(t *testing.T) {
 		{prov: "codex", model: "opus", want: "gpt-5.5"},
 		{prov: "codex", model: "haiku", want: "gpt-5.4-mini"},
 		{prov: "codex", model: "gpt-5.4[1m]", want: "gpt-5.4[1m]"}, // unchanged on codex path
+		// Foreign vendor literals: codex is not a multi-vendor gateway, so a
+		// Claude model ID reaching it directly (e.g. a role default set
+		// before failover ever triggers, see #2639) must still resolve to a
+		// codex-native model instead of being rejected by the CLI.
+		{prov: "codex", model: "claude-haiku-4-5-20251001", want: "gpt-5.4-mini"},
+		{prov: "codex", model: "claude-sonnet-4-6", want: "gpt-5.4"},
+		{prov: "codex", model: "claude-opus-4-20250514", want: "gpt-5.5"},
 	}
 
 	for _, tt := range tests {
@@ -1474,7 +1481,7 @@ func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
 	}
-	for range maxPendingHeadlessSteerPrompts {
+	for range MaxPendingHeadlessSteerPrompts {
 		a.EnqueuePrompt("queued")
 	}
 	putAgent(t, m, a)
@@ -1485,8 +1492,8 @@ func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
 		t.Fatal("expected queue overflow error")
 	}
 	assertConflictClientError(t, err)
-	if got := a.PendingPromptCount(); got != maxPendingHeadlessSteerPrompts {
-		t.Fatalf("PendingPromptCount = %d, want %d", got, maxPendingHeadlessSteerPrompts)
+	if got := a.PendingPromptCount(); got != MaxPendingHeadlessSteerPrompts {
+		t.Fatalf("PendingPromptCount = %d, want %d", got, MaxPendingHeadlessSteerPrompts)
 	}
 }
 

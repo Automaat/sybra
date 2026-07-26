@@ -171,7 +171,7 @@ func TestWebhookHandlerCreatesUnsignedTaskWithDefaultsAndMetadata(t *testing.T) 
 func TestWebhookHandlerCreatesSignedTask(t *testing.T) {
 	creator := &fakeWebhookTaskCreator{created: task.Task{ID: "task-signed"}}
 	handler := newWebhookHandler(testLogger(), "secret", creator, nil)
-	body := []byte(`{"title":"signed","mode":"interactive"}`)
+	body := []byte(`{"title":"signed","mode":"headless"}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
 	req.Header.Set(webhookSignatureHeader, webhookSignature("secret", body))
@@ -181,8 +181,23 @@ func TestWebhookHandlerCreatesSignedTask(t *testing.T) {
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", rr.Code)
 	}
-	if creator.gotMode != task.AgentModeInteractive {
-		t.Fatalf("mode = %q, want %q", creator.gotMode, task.AgentModeInteractive)
+	if creator.gotMode != task.AgentModeHeadless {
+		t.Fatalf("mode = %q, want %q", creator.gotMode, task.AgentModeHeadless)
+	}
+}
+
+func TestWebhookHandlerRejectsInteractiveMode(t *testing.T) {
+	creator := &fakeWebhookTaskCreator{created: task.Task{ID: "task-rejected"}}
+	handler := newWebhookHandler(testLogger(), "secret", creator, nil)
+	body := []byte(`{"title":"signed","mode":"interactive"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
+	req.Header.Set(webhookSignatureHeader, webhookSignature("secret", body))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
 	}
 }
 

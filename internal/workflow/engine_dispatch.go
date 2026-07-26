@@ -85,7 +85,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 	// The gate lives here, not on the exported Start*/Replace* entries: every
 	// one of them funnels through this function, so a caller cannot start a
 	// workflow by reaching past it.
-	if e.dispatchDisabled {
+	if e.dispatchDisabled.Load() {
 		return nil, ErrAutoDispatchDisabled
 	}
 	// Guard against sequential duplicate starts: the starting map only prevents
@@ -139,6 +139,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 
 	e.logger.Info("workflow.start", "task_id", taskID, "workflow", workflowID, "step", start.ID)
 	comp, err := e.executeSteps(taskID, &def, start, wfExec)
+	err = normalizeExecuteStepsErr(err)
 	if errors.Is(err, errBestOfNParked) {
 		return nil, errBestOfNParked
 	}
@@ -236,7 +237,7 @@ func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string
 // want to replace an active workflow should use ReplaceWorkflow or
 // ReplaceWorkflowForEvent.
 func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
-	if e.dispatchDisabled {
+	if e.dispatchDisabled.Load() {
 		return "", ErrAutoDispatchDisabled
 	}
 	// Serialize event-driven workflow dispatch attempts per task. The shared

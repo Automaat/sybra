@@ -41,12 +41,6 @@ vi.mock('../stores/tasks.svelte.js', () => ({
   },
 }))
 
-vi.mock('../stores/convo.svelte.js', () => ({
-  convoStore: {
-    conversations: new Map<string, unknown[]>(),
-  },
-}))
-
 vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...(args as [string, Handler])),
   RespondEscalation: (...args: unknown[]) => mockRespondEscalation(...args),

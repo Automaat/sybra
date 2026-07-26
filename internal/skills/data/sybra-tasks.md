@@ -42,7 +42,7 @@ sybra-cli --json delete <id>
 ## Task Fields
 
 - **status**: `new` | `todo` | `in-progress` | `in-review` | `human-required` | `done`
-- **mode**: `headless` (automated claude -p) | `interactive` (tmux session)
+- **mode**: `headless` (automated claude -p, steerable mid-run)
 - **tags**: comma-separated labels
 
 ## Workflow

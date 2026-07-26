@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/attribution"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 )
@@ -308,6 +309,8 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 		finalSource = finalCommitSourceAgent
 	}
 	e.recordFinalCommitState(taskID, wfExec, wtPath, finalSource)
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck,
+		0, "git log <base>..HEAD --oneline", string(output))
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
 }
 
@@ -435,20 +438,29 @@ func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExe
 			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.verify-commits.agent-failed", "task_id", taskID)
+		e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck, 1, "", reason)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "agent failed before commit: flipped to human-required"}
 	}
-	if branchMergedIntoBase(e.ctx, wtPath) {
-		reason := "branch already merged into base — implementation already on origin"
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "done", reason); statusErr != nil {
-			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
-		}
-		e.logger.Info("workflow.verify-commits.branch-merged", "task_id", taskID)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "branch merged into base: marked done"}
-	}
+	// branchMergedIntoBase(e.ctx, wtPath) used to gate a "done" verdict here,
+	// on the theory that HEAD == base could mean the fix already landed via a
+	// different branch. That check is unreachable-false in this exact spot:
+	// the caller only reaches verifyCommitsHandleEmptyOutput when
+	// gitLogAheadOfBase (baseRef..HEAD) already came back empty, and
+	// "baseRef..HEAD has no commits" and "HEAD is an ancestor of baseRef" are
+	// the same git fact stated two ways — merge-base --is-ancestor can never
+	// disagree with an empty log range. So this branch was true unconditionally
+	// on every call, silently marking done any task whose implementation agent
+	// reported success but committed nothing. Confirmed live: two foundational
+	// tasks under the durable-effects umbrella (issues #2658, #2659) landed
+	// `done` with prNumber 0 and a branch byte-identical to origin/main —
+	// zero code, zero diff. Always escalate instead, matching the sibling
+	// agent-failed case above: a human must see and explain "the agent
+	// reported success but committed nothing," never have it silently closed.
 	reason := "no commits pushed to branch"
 	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 		e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck, 1, "", reason)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "no commits: flipped to human-required"}
 }
 

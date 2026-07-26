@@ -559,6 +559,39 @@ func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 	}
 }
 
+// TestReloadFromDisk_EvidenceStaysPendingUntilRestart is the regression for the
+// silent-override bug: agent.evidence is restart-policy because the workflow
+// engine caches it once at init. A hot reload of only that flag must NOT copy
+// the new value into the live cfg (that would desync the engine from the store),
+// only surface it as pending until restart.
+func TestReloadFromDisk_EvidenceStaysPendingUntilRestart(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	origEvidence := svc.cfg.Agent.Evidence.Enabled
+
+	next := *svc.cfg
+	next.Agent.Evidence.Enabled = !origEvidence
+	writeConfigYAML(t, cfgPath, &next)
+
+	result, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if !slices.Contains(result.RestartRequired, "agent.evidence") {
+		t.Errorf("expected agent.evidence in restartRequired, got %+v", result)
+	}
+	if slices.Contains(result.Applied, "agent") {
+		t.Errorf("agent must not be applied for an evidence-only change, got %+v", result)
+	}
+	if svc.cfg.Agent.Evidence.Enabled != origEvidence {
+		t.Errorf("active cfg evidence flag updated without restart: got %v, want %v",
+			svc.cfg.Agent.Evidence.Enabled, origEvidence)
+	}
+	if svc.persisted == nil || svc.persisted.Agent.Evidence.Enabled != !origEvidence {
+		t.Errorf("persisted evidence flag = %v, want pending %v",
+			svc.persisted.Agent.Evidence.Enabled, !origEvidence)
+	}
+}
+
 func TestReloadFromDisk_NoFeedbackLoop(t *testing.T) {
 	// UpdateSettings saves to disk; watcher fires ReloadFromDisk; diff should
 	// be empty since disk now matches in-memory cfg.

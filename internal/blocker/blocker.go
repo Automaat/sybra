@@ -16,6 +16,29 @@ const (
 	KindReviewFixExhausted         Kind = "review_fix_exhausted"
 	KindTriageRetryExhausted       Kind = "triage_retry_exhausted"
 	KindWatchdogRateLimitExhausted Kind = "watchdog_rate_limit_exhausted"
+	// KindDependencyScopeUnmet marks a task blocked on a depends_on issue
+	// whose closure a prior agent/human run explicitly verified did NOT
+	// satisfy the scope this task actually needs (e.g. the closing PR only
+	// covered part of the referenced issue). Code names the specific
+	// depends_on ref the verdict applies to. The umbrella dependency gate
+	// (internal/sybra/app_umbrella_gate.go) trusts this over a bare "done"
+	// status: it never silently re-releases a child carrying this kind for
+	// one of its own depends_on refs — it escalates to human-required
+	// instead, so a fresh confirmation is required before the same,
+	// already-known-negative implementation cycle repeats (sybra#2637).
+	KindDependencyScopeUnmet Kind = "dependency_scope_unmet"
+	// KindDependencyConditionUnmet marks a task blocked on a task.DepCondition
+	// of kind "note" attached to one of its depends_on refs: the referenced
+	// task is Done, but the free-text acceptance note the condition names has
+	// not been confirmed by a human. Deliberately distinct from
+	// KindDependencyScopeUnmet — that kind marks a reactive verdict a prior
+	// agent/human run recorded *after* observing a closed dependency fall
+	// short of scope, whereas this kind marks a proactive condition set
+	// *before* the dependency ever closed. Keeping them separate means a
+	// human clearing one can never be misread as having confirmed the other
+	// (internal/sybra/app_umbrella_gate.go's holdUnmetConditions is the sole
+	// writer).
+	KindDependencyConditionUnmet Kind = "dependency_condition_unmet"
 )
 
 // Actor identifies which subsystem authored the blocker.
@@ -42,7 +65,7 @@ func (s State) IsZero() bool {
 
 func AllowsHumanRequired(kind Kind) bool {
 	switch kind {
-	case KindOperatorDecision, KindCredentialRequired, KindPolicyApproval:
+	case KindOperatorDecision, KindCredentialRequired, KindPolicyApproval, KindDependencyScopeUnmet, KindDependencyConditionUnmet:
 		return true
 	default:
 		return false

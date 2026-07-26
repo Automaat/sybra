@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/prcontent"
@@ -30,6 +31,8 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
+
+var errWorkflowEffectNoPersist = errors.New("workflow effect claim requires no persistence")
 
 // Compile-time interface checks.
 var (
@@ -51,6 +54,7 @@ var (
 	_ workflow.CheckConfigGetter      = (*checkConfigGetterAdapter)(nil)
 	_ workflow.ManualTestConfigGetter = (*manualTestConfigGetterAdapter)(nil)
 	_ workflow.ArtifactRecorder       = (*artifactRecorderAdapter)(nil)
+	_ workflow.EvidenceRecorder       = (*evidenceRecorderAdapter)(nil)
 	_ workflow.CostBudgetChecker      = (*agentAdapter)(nil)
 	_ workflow.AttemptWorktreeManager = (*attemptWorktreeAdapter)(nil)
 )
@@ -122,6 +126,19 @@ func (a *artifactRecorderAdapter) PutGeneric(taskID, name, stepID, content strin
 		Content: []byte(content),
 	})
 	return err
+}
+
+// evidenceRecorderAdapter bridges evidence.Store → workflow.EvidenceRecorder.
+type evidenceRecorderAdapter struct {
+	store *evidence.Store
+}
+
+func (a *evidenceRecorderAdapter) AppendCriterion(taskID string, entry evidence.CriterionEvidence) error {
+	return a.store.Append(taskID, entry)
+}
+
+func (a *evidenceRecorderAdapter) Evidence(taskID string) (evidence.CompletionEvidence, error) {
+	return a.store.Load(taskID)
 }
 
 // taskAdapter bridges task.Manager → workflow.TaskProvider.
@@ -231,6 +248,66 @@ func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	return err
 }
 
+func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	var fenceErr error
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if cur.Workflow == nil {
+			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.ClaimEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimConflict) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				fenceErr = claimErr
+				return task.Update{}, errWorkflowEffectNoPersist
+			}
+			return task.Update{}, claimErr
+		}
+		return task.Update{Workflow: &wf}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, fenceErr
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
+}
+
+func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	var fenceErr error
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if cur.Workflow == nil {
+			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.CompleteEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				fenceErr = claimErr
+				return task.Update{}, errWorkflowEffectNoPersist
+			}
+			return task.Update{}, claimErr
+		}
+		return task.Update{Workflow: &wf}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, fenceErr
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
+}
+
 func (a *taskAdapter) ConsumeSupervisorSteer(taskID, prompt string) (string, error) {
 	return agentorch.PrependSupervisorSteer(a.tasks, taskID, prompt)
 }
@@ -310,6 +387,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 	return workflow.TaskInfo{
 		ID:                    t.ID,
 		Title:                 t.Title,
+		Generation:            t.Generation,
 		Status:                string(t.Status),
 		StatusReason:          t.StatusReason,
 		Blocker:               t.Blocker,

@@ -2,13 +2,16 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
@@ -19,12 +22,19 @@ const (
 	maxSyncSteps   = 100 // depth limit for synchronous step chains
 	maxStepHistory = 50  // max step records kept per execution
 	shellTimeout   = 30 * time.Second
+	// Deliberately generous: effect leases have no heartbeat yet, so they must
+	// outlive the longest expected synchronous step execution to avoid false
+	// reclaims mid-step.
+	defaultEffectLeaseTTL = 30 * time.Minute
 )
 
 // TaskInfo is the subset of task data the engine needs.
 type TaskInfo struct {
-	ID           string
-	Title        string
+	ID    string
+	Title string
+	// Generation is the reducer-visible monotonic task version the effect-id
+	// scheme keys on until a dedicated persisted task-generation counter lands.
+	Generation   int64
 	Status       string
 	StatusReason string
 	Blocker      blocker.State
@@ -121,6 +131,8 @@ type TaskProvider interface {
 	// body (see stripTestFailuresSections).
 	ReplaceTaskBody(id, body string) error
 	SetWorkflow(id string, wf *Execution) error
+	ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
+	CompleteWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to
 	// prompt and clears it, so a re-dispatched (resumed) step's agent carries the
 	// correction exactly once. Returns prompt unchanged when none is pending.
@@ -317,6 +329,32 @@ type ArtifactRecorder interface {
 	PutGeneric(taskID, name, stepID, content string) error
 }
 
+// EvidenceRecorder persists durable per-task CompletionEvidence (deterministic
+// check outcomes, structured test verdicts, review findings) consulted by the
+// require_evidence step before a task may land. Engine operates with a nil
+// recorder — every call site is nil-guarded, and require_evidence itself
+// no-ops without one, so engine unit tests compile and pass unchanged.
+type EvidenceRecorder interface {
+	// AppendCriterion records one proof for a named criterion, replacing any
+	// existing entry for the same criterion. Best-effort: callers (the
+	// deterministic gate steps) must never let a recording failure alter
+	// their own pass/fail outcome or timing.
+	AppendCriterion(taskID string, entry evidence.CriterionEvidence) error
+	// Evidence returns the task's current CompletionEvidence. A task with no
+	// recorded evidence returns a zero value and no error.
+	Evidence(taskID string) (evidence.CompletionEvidence, error)
+}
+
+// EvidenceDecision summarizes one require_evidence step outcome, passed to
+// the hook installed via SetEvidenceDecisionHook — mirrors AdmissionDecision.
+type EvidenceDecision struct {
+	// Outcome is "verified" or "blocked".
+	Outcome string
+	// Reason is the full block reason on a "blocked" outcome, or "" on a
+	// "verified" outcome.
+	Reason string
+}
+
 // CompletionInfo is passed to the OnComplete callback when a workflow finishes.
 type CompletionInfo struct {
 	TaskID     string
@@ -357,14 +395,25 @@ type Engine struct {
 	manualTests      ManualTestConfigGetter
 	classifier       TaskClassifier
 	recorder         ArtifactRecorder
+	evidenceRecorder EvidenceRecorder
+	// evidence configures the require_evidence step (zero-value Enabled=false
+	// matches config.EvidenceConfig's own default — see SetEvidenceConfig).
+	evidence         config.EvidenceConfig
+	evidenceHook     func(TaskInfo, EvidenceDecision)
 	costBudget       CostBudgetChecker
 	attemptWorktrees AttemptWorktreeManager
 	onComplete       func(CompletionInfo)
 	dispatchGate     func(TaskInfo) bool
 	// dispatchDisabled is stored negated so the zero value keeps a
 	// struct-literal Engine dispatching, matching its behavior before this
-	// gate existed.
-	dispatchDisabled bool
+	// gate existed. atomic.Bool because SetAutoDispatch (config/lifecycle
+	// goroutines) and the read sites (startWorkflowCore, DispatchEvent,
+	// HandleStatusChange, ResumeStalled — all called from agent/workflow
+	// goroutines) run concurrently with no shared lock between them.
+	dispatchDisabled atomic.Bool
+	ownerID          string
+	effectLeaseTTL   time.Duration
+	now              func() time.Time
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
@@ -430,6 +479,38 @@ type Engine struct {
 	queueReconciler                  func()
 	autoApprovePlansWithoutDecisions bool
 	planAutoApproveHook              func(TaskInfo, string)
+	// admission configures the admission_preflight step's oversize checks
+	// (zero-value MaxAcceptanceCriteria/MaxChangeSurfaceFiles disables them,
+	// matching config.AdmissionConfig's own default). SetAdmissionConfig's
+	// doc comment covers Enabled.
+	admission config.AdmissionConfig
+	// admissionDecisionHook observes every admission_preflight outcome. It is
+	// used by the app layer to write the admission.decided audit event
+	// without making workflow import the audit package — mirrors
+	// planAutoApproveHook.
+	admissionDecisionHook func(TaskInfo, AdmissionDecision)
+}
+
+var effectOwnerSeq atomic.Uint64
+
+// AdmissionDecision summarizes one admission_preflight step outcome, passed
+// to the hook installed via SetAdmissionDecisionHook.
+type AdmissionDecision struct {
+	// Outcome is "admitted" or "blocked".
+	Outcome string
+	// RiskTier/PermissionTier echo the task's plan contract fields (empty
+	// when no contract is present), so evaluation can correlate predicted
+	// risk/clarity against the actual admission and eventual task outcome.
+	RiskTier       string
+	PermissionTier string
+	// BlockerKind is the blocker.Kind string set on a "blocked" outcome
+	// (empty on "admitted").
+	BlockerKind string
+	// Reason is the full block reason on a "blocked" outcome, or one of
+	// "admitted" (checks ran and passed) / "disabled" (admission.Enabled is
+	// false, no checks ran) on an "admitted" outcome — never empty, so
+	// consumers can distinguish a real pass from a skipped check.
+	Reason string
 }
 
 // defaultTestAttempts is the generous absolute backstop for the testing →
@@ -448,6 +529,9 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		store:                  store,
 		tasks:                  tasks,
 		agents:                 agents,
+		ownerID:                newEffectOwnerID(),
+		effectLeaseTTL:         defaultEffectLeaseTTL,
+		now:                    func() time.Time { return time.Now().UTC() },
 		logger:                 logger,
 		ctx:                    context.Background(),
 		inflightMutexes:        make(map[string]*sync.Mutex),
@@ -464,6 +548,10 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		resumeSkip:             logging.NewInfoThrottle(),
 		openPROnUnrunnableGate: true,
 	}
+}
+
+func newEffectOwnerID() string {
+	return fmt.Sprintf("workflow-engine-%d-%d", time.Now().UTC().UnixNano(), effectOwnerSeq.Add(1))
 }
 
 // SetContext binds a parent context to the engine. Shell steps use
@@ -492,13 +580,13 @@ func (e *Engine) SetDispatchGate(gate func(TaskInfo) bool) { e.dispatchGate = ga
 // agent starts (App.StartAgent, sybra-cli) never touch the engine and keep
 // working. Set orchestrator.scheduler_enabled true to opt an agent-only
 // instance back into workflows.
-func (e *Engine) SetAutoDispatch(on bool) { e.dispatchDisabled = !on }
+func (e *Engine) SetAutoDispatch(on bool) { e.dispatchDisabled.Store(!on) }
 
 // AutoDispatchEnabled reports whether this instance dispatches workflows. The
 // gate in startWorkflowCore is what actually enforces it; this lets a caller
 // avoid announcing an auto-start that is about to be refused, and avoid
 // spawning a goroutine that would only no-op.
-func (e *Engine) AutoDispatchEnabled() bool { return !e.dispatchDisabled }
+func (e *Engine) AutoDispatchEnabled() bool { return !e.dispatchDisabled.Load() }
 
 // SetAutoApprovePlansWithoutDecisions enables automatic approval of validated
 // simple-task plans whose decision sidecar explicitly says there are no open
@@ -512,6 +600,23 @@ func (e *Engine) SetAutoApprovePlansWithoutDecisions(enabled bool) {
 // the audit package.
 func (e *Engine) SetPlanAutoApproveHook(hook func(TaskInfo, string)) {
 	e.planAutoApproveHook = hook
+}
+
+// SetAdmissionConfig wires the admission_preflight step's oversize limits.
+// Enabled defaults false in a zero-value config (matching every other
+// Engine dependency's nil-safe default); the app layer resolves
+// config.AdmissionConfig's own default-true before calling this, so an
+// unwired Engine (e.g. in unit tests) safely runs the step as a no-op.
+func (e *Engine) SetAdmissionConfig(cfg config.AdmissionConfig) {
+	e.admission = cfg
+}
+
+// SetAdmissionDecisionHook installs an observer for every admission_preflight
+// outcome. It is used by the app layer to write the admission.decided audit
+// event without making workflow import the audit package — mirrors
+// SetPlanAutoApproveHook.
+func (e *Engine) SetAdmissionDecisionHook(hook func(TaskInfo, AdmissionDecision)) {
+	e.admissionDecisionHook = hook
 }
 
 // Defs returns the workflow definition store.
@@ -603,6 +708,25 @@ func (e *Engine) SetTaskClassifier(c TaskClassifier) { e.classifier = c }
 // disables artifact recording — all calls are nil-guarded so engine unit
 // tests remain unchanged.
 func (e *Engine) SetArtifactRecorder(r ArtifactRecorder) { e.recorder = r }
+
+// SetEvidenceRecorder wires an EvidenceRecorder that captures per-task
+// completion evidence for the require_evidence step. Leaving it unset
+// disables evidence recording and makes require_evidence a no-op — all calls
+// are nil-guarded so engine unit tests remain unchanged.
+func (e *Engine) SetEvidenceRecorder(r EvidenceRecorder) { e.evidenceRecorder = r }
+
+// SetEvidenceConfig wires the require_evidence step's Enabled flag. Leaving it
+// unset (zero value) keeps the gate disabled, matching
+// config.EvidenceConfig's own default-false.
+func (e *Engine) SetEvidenceConfig(cfg config.EvidenceConfig) { e.evidence = cfg }
+
+// SetEvidenceDecisionHook installs an observer for every require_evidence
+// outcome. Used by the app layer to write the completion_evidence.verified/
+// blocked audit events without making internal/workflow import internal/audit
+// — mirrors SetAdmissionDecisionHook.
+func (e *Engine) SetEvidenceDecisionHook(hook func(TaskInfo, EvidenceDecision)) {
+	e.evidenceHook = hook
+}
 
 // SetCostBudgetChecker wires the cumulative task cost-budget preflight used
 // by the `best_of_n` step (fan-out) and its judge run_agent step. Leaving it

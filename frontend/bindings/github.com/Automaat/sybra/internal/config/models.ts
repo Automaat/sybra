@@ -8,7 +8,6 @@ import { Create as $Create } from "@wailsio/runtime";
 export class AgentDefaults {
     "provider": string;
     "model": string;
-    "mode": string;
     "maxConcurrent": number;
     "researchMachineDir": string;
 
@@ -190,8 +189,7 @@ export class AgentDefaults {
      * DispatchJitterMs bounds a uniform random delay applied before headless
      * agent dispatch, so a wave of concurrently ready tasks does not all
      * probe the provider health gate in the same tick. 0 disables jitter.
-     * Never applied to interactive/chat dispatch. Default 1000 — set 0 to
-     * disable.
+     * Default 1000 — set 0 to disable.
      */
     "dispatchJitterMs": number;
 
@@ -270,6 +268,12 @@ export class AgentDefaults {
      */
     "classReservations": { [_ in string]?: number };
 
+    /**
+     * Evidence gates the workflow engine's require_evidence completion gate
+     * (agent.evidence.enabled — see config_evidence.go).
+     */
+    "evidence": EvidenceConfig;
+
     /** Creates a new AgentDefaults instance. */
     constructor($$source: Partial<AgentDefaults> = {}) {
         if (!("provider" in $$source)) {
@@ -277,9 +281,6 @@ export class AgentDefaults {
         }
         if (!("model" in $$source)) {
             this["model"] = "";
-        }
-        if (!("mode" in $$source)) {
-            this["mode"] = "";
         }
         if (!("maxConcurrent" in $$source)) {
             this["maxConcurrent"] = 0;
@@ -374,6 +375,9 @@ export class AgentDefaults {
         if (!("classReservations" in $$source)) {
             this["classReservations"] = {};
         }
+        if (!("evidence" in $$source)) {
+            this["evidence"] = (new EvidenceConfig());
+        }
 
         Object.assign(this, $$source);
     }
@@ -382,26 +386,30 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField29_0 = $$createType0;
-        const $$createField30_0 = $$createType1;
-        const $$createField31_0 = $$createType2;
-        const $$createField32_0 = $$createType3;
-        const $$createField33_0 = $$createType4;
+        const $$createField28_0 = $$createType0;
+        const $$createField29_0 = $$createType1;
+        const $$createField30_0 = $$createType2;
+        const $$createField31_0 = $$createType3;
+        const $$createField32_0 = $$createType4;
+        const $$createField33_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField29_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField28_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField30_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField29_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField31_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField30_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField32_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField31_0($$parsedSource["queue"]);
         }
         if ("classReservations" in $$parsedSource) {
-            $$parsedSource["classReservations"] = $$createField33_0($$parsedSource["classReservations"]);
+            $$parsedSource["classReservations"] = $$createField32_0($$parsedSource["classReservations"]);
+        }
+        if ("evidence" in $$parsedSource) {
+            $$parsedSource["evidence"] = $$createField33_0($$parsedSource["evidence"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }
@@ -490,6 +498,44 @@ export class BrowserConfig {
     static createFrom($$source: any = {}): BrowserConfig {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new BrowserConfig($$parsedSource as Partial<BrowserConfig>);
+    }
+}
+
+/**
+ * EvidenceConfig gates the workflow engine's require_evidence step (see
+ * internal/workflow/engine_steps_evidence.go), the final deterministic
+ * completion gate that blocks a task from landing until every criterion
+ * applicable to it (verify_checks, detect_tampering, the test-runner
+ * verdict, review) has fresh, passing evidence recorded for the task's
+ * current HEAD. Lives under AgentDefaults — resolved config key
+ * agent.evidence.enabled.
+ */
+export class EvidenceConfig {
+    /**
+     * Enabled turns the require_evidence gate on. Defaults false (see
+     * applyEvidenceDefaults) — the underlying producers (verify_checks,
+     * detect_tampering, codegen_gate, focused_checks, the test-runner, and
+     * review) always record evidence regardless of this flag, so enabling it
+     * later gates against history that was already being collected rather
+     * than starting cold.
+     */
+    "enabled": boolean;
+
+    /** Creates a new EvidenceConfig instance. */
+    constructor($$source: Partial<EvidenceConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EvidenceConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EvidenceConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EvidenceConfig($$parsedSource as Partial<EvidenceConfig>);
     }
 }
 
@@ -670,11 +716,15 @@ export class GitHubConfig {
 
     /**
      * AutoResolveCleanMerges is a kill-switch for the deterministic
-     * clean-merge fast-path: before dispatching a conflict-recovery agent,
-     * Sybra attempts a plain `git merge` of the PR's base branch in Go. When
-     * that merge creates a commit with no conflicting hunks, it is pushed and
-     * no agent is spawned; conflicts, no-op merges, and errors still fall
-     * through to the agent-assisted path. Default off (zero value = false).
+     * clean-merge fast-path used before dispatching any review/fix-review
+     * round on a PR: Sybra attempts a plain `git merge` of the PR's base
+     * branch in Go. For a lone conflict issue, a merge that creates a commit
+     * with no conflicting hunks is pushed and no agent is spawned; for every
+     * other issue (comments, ci_failure, coalesced sets), the same clean
+     * merge is pushed as a non-skipping pre-dispatch sync so the round never
+     * wastes a pass re-diagnosing a stale-diff artifact. Conflicts, no-op
+     * merges, and errors always fall through to the agent-assisted path.
+     * Default off (zero value = false).
      */
     "autoResolveCleanMerges": boolean;
 
@@ -761,8 +811,8 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField1_0 = $$createType5;
-        const $$createField13_0 = $$createType6;
+        const $$createField1_0 = $$createType6;
+        const $$createField13_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("polling" in $$parsedSource) {
             $$parsedSource["polling"] = $$createField1_0($$parsedSource["polling"]);
@@ -827,9 +877,9 @@ export class GitHubPollingConfig {
      * Creates a new GitHubPollingConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubPollingConfig {
-        const $$createField0_0 = $$createType7;
-        const $$createField1_0 = $$createType8;
-        const $$createField2_0 = $$createType8;
+        const $$createField0_0 = $$createType8;
+        const $$createField1_0 = $$createType9;
+        const $$createField2_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("issues" in $$parsedSource) {
             $$parsedSource["issues"] = $$createField0_0($$parsedSource["issues"]);
@@ -1032,10 +1082,10 @@ export class K8sJobsConfig {
      * Creates a new K8sJobsConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): K8sJobsConfig {
-        const $$createField3_0 = $$createType9;
-        const $$createField8_0 = $$createType11;
-        const $$createField9_0 = $$createType13;
-        const $$createField10_0 = $$createType15;
+        const $$createField3_0 = $$createType10;
+        const $$createField8_0 = $$createType12;
+        const $$createField9_0 = $$createType14;
+        const $$createField10_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("command" in $$parsedSource) {
             $$parsedSource["command"] = $$createField3_0($$parsedSource["command"]);
@@ -1168,7 +1218,7 @@ export class MonitorConfig {
      * Creates a new MonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorConfig {
-        const $$createField9_0 = $$createType16;
+        const $$createField9_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bottleneckHours" in $$parsedSource) {
             $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
@@ -1295,7 +1345,7 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
-        const $$createField6_0 = $$createType17;
+        const $$createField6_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
             $$parsedSource["pressure"] = $$createField6_0($$parsedSource["pressure"]);
@@ -1333,10 +1383,10 @@ export class PathDescriptor {
      * Creates a new PathDescriptor instance from a string or object.
      */
     static createFrom($$source: any = {}): PathDescriptor {
-        const $$createField2_0 = $$createType9;
-        const $$createField3_0 = $$createType9;
-        const $$createField4_0 = $$createType9;
-        const $$createField7_0 = $$createType9;
+        const $$createField2_0 = $$createType10;
+        const $$createField3_0 = $$createType10;
+        const $$createField4_0 = $$createType10;
+        const $$createField7_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("queryPaths" in $$parsedSource) {
             $$parsedSource["queryPaths"] = $$createField2_0($$parsedSource["queryPaths"]);
@@ -1417,7 +1467,7 @@ export class PlaywrightMCPConfig {
      * Creates a new PlaywrightMCPConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): PlaywrightMCPConfig {
-        const $$createField1_0 = $$createType9;
+        const $$createField1_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("extraArgs" in $$parsedSource) {
             $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
@@ -1679,12 +1729,12 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType18;
-        const $$createField1_0 = $$createType19;
-        const $$createField2_0 = $$createType19;
-        const $$createField3_0 = $$createType19;
-        const $$createField4_0 = $$createType19;
-        const $$createField5_0 = $$createType20;
+        const $$createField0_0 = $$createType19;
+        const $$createField1_0 = $$createType20;
+        const $$createField2_0 = $$createType20;
+        const $$createField3_0 = $$createType20;
+        const $$createField4_0 = $$createType20;
+        const $$createField5_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -1843,9 +1893,9 @@ export class RoutingSummary {
      * Creates a new RoutingSummary instance from a string or object.
      */
     static createFrom($$source: any = {}): RoutingSummary {
-        const $$createField6_0 = $$createType9;
-        const $$createField7_0 = $$createType22;
-        const $$createField8_0 = $$createType9;
+        const $$createField6_0 = $$createType10;
+        const $$createField7_0 = $$createType23;
+        const $$createField8_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("precedence" in $$parsedSource) {
             $$parsedSource["precedence"] = $$createField6_0($$parsedSource["precedence"]);
@@ -2018,7 +2068,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType9;
+        const $$createField6_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -2193,21 +2243,22 @@ const $$createType1 = PlaywrightMCPConfig.createFrom;
 const $$createType2 = K8sJobsConfig.createFrom;
 const $$createType3 = QueueConfig.createFrom;
 const $$createType4 = $Create.Map($Create.Any, $Create.Any);
-const $$createType5 = GitHubPollingConfig.createFrom;
-const $$createType6 = GitHubAppConfig.createFrom;
-const $$createType7 = GitHubPollingStreamConfig.createFrom;
-const $$createType8 = GitHubPRPollingConfig.createFrom;
-const $$createType9 = $Create.Array($Create.Any);
-const $$createType10 = K8sJobEnvVar.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = K8sJobSecretEnvVar.createFrom;
-const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = K8sJobVolume.createFrom;
-const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = $Create.Map($Create.Any, $Create.Any);
-const $$createType17 = PressureConfig.createFrom;
-const $$createType18 = ProviderHealthCheckConfig.createFrom;
-const $$createType19 = ProviderEntryConfig.createFrom;
-const $$createType20 = ProviderLimitsConfig.createFrom;
-const $$createType21 = RoutingEligibleVariant.createFrom;
-const $$createType22 = $Create.Array($$createType21);
+const $$createType5 = EvidenceConfig.createFrom;
+const $$createType6 = GitHubPollingConfig.createFrom;
+const $$createType7 = GitHubAppConfig.createFrom;
+const $$createType8 = GitHubPollingStreamConfig.createFrom;
+const $$createType9 = GitHubPRPollingConfig.createFrom;
+const $$createType10 = $Create.Array($Create.Any);
+const $$createType11 = K8sJobEnvVar.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = K8sJobSecretEnvVar.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = K8sJobVolume.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = $Create.Map($Create.Any, $Create.Any);
+const $$createType18 = PressureConfig.createFrom;
+const $$createType19 = ProviderHealthCheckConfig.createFrom;
+const $$createType20 = ProviderEntryConfig.createFrom;
+const $$createType21 = ProviderLimitsConfig.createFrom;
+const $$createType22 = RoutingEligibleVariant.createFrom;
+const $$createType23 = $Create.Array($$createType22);

@@ -3,7 +3,6 @@ package config
 type AgentDefaults struct {
 	Provider           string `yaml:"provider" json:"provider"`
 	Model              string `yaml:"model" json:"model"`
-	Mode               string `yaml:"mode" json:"mode"`
 	MaxConcurrent      int    `yaml:"max_concurrent" json:"maxConcurrent"`
 	ResearchMachineDir string `yaml:"research_machine_dir" json:"researchMachineDir"`
 	// PostResultCostUSD is a reactive per-run USD circuit breaker: Sybra checks
@@ -123,8 +122,7 @@ type AgentDefaults struct {
 	// DispatchJitterMs bounds a uniform random delay applied before headless
 	// agent dispatch, so a wave of concurrently ready tasks does not all
 	// probe the provider health gate in the same tick. 0 disables jitter.
-	// Never applied to interactive/chat dispatch. Default 1000 — set 0 to
-	// disable.
+	// Default 1000 — set 0 to disable.
 	DispatchJitterMs int `yaml:"dispatch_jitter_ms" json:"dispatchJitterMs"`
 	// SandboxMode sets the default OS-level process-sandbox posture for agent
 	// subprocesses (darwin: sandbox-exec seatbelt, linux: bwrap). "off"
@@ -177,6 +175,9 @@ type AgentDefaults struct {
 	// config validation. Empty/nil (the default) reproduces the pre-class-
 	// isolation single shared pool exactly — this feature is opt-in.
 	ClassReservations map[string]int `yaml:"class_reservations" json:"classReservations"`
+	// Evidence gates the workflow engine's require_evidence completion gate
+	// (agent.evidence.enabled — see config_evidence.go).
+	Evidence EvidenceConfig `yaml:"evidence" json:"evidence"`
 }
 
 // QueueConfig configures the agent-dispatch admission queue.

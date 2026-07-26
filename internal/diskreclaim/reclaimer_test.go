@@ -82,8 +82,11 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// makeCleanGitWorktree creates a real, initialized, clean git repo at path
-// so it passes cleanup's dirty-worktree safety check.
+// makeCleanGitWorktree creates a real, initialized, clean git repo at path,
+// pushed to a throwaway bare "origin" so it passes both cleanup's
+// dirty-worktree and unpushed-commits safety checks — matching production,
+// where every Sybra-managed worktree tracks the project's bare clone as
+// origin.
 func makeCleanGitWorktree(t *testing.T, path string) {
 	t.Helper()
 	mustMkdir(t, path)
@@ -93,6 +96,11 @@ func makeCleanGitWorktree(t *testing.T, path string) {
 	}
 	runGit(t, path, "add", "-A")
 	runGit(t, path, "commit", "-q", "-m", "init")
+
+	origin := t.TempDir()
+	runGit(t, origin, "init", "-q", "--bare")
+	runGit(t, path, "remote", "add", "origin", origin)
+	runGit(t, path, "push", "-q", "-u", "origin", "HEAD:refs/heads/main")
 }
 
 func TestReclaimerRunReclaimsSafeBucketsOnly(t *testing.T) {

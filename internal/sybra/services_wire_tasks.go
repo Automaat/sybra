@@ -21,6 +21,8 @@ func (a *App) wireTaskService() {
 	a.taskSvc.logger = a.logger
 	a.taskSvc.audit = a.audit
 	a.taskSvc.cfg = a.cfg
+	a.taskSvc.projects = a.projects
+	a.taskSvc.intervention = a.intervention
 	a.taskSvc.abTesting = a.abTestingConfig
 	a.taskSvc.assigner = a.assigner
 	a.taskSvc.recoverLostAgent = func(ctx context.Context, taskID string) error {

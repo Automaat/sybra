@@ -109,11 +109,12 @@ var headlessRetryBackoffs = []time.Duration{30 * time.Second, 60 * time.Second, 
 // stream_tooLong log lines.
 const headlessScannerBuffer = 4 * 1024 * 1024
 
-// maxPendingHeadlessSteerPrompts bounds queued operator guidance while a
+// MaxPendingHeadlessSteerPrompts bounds queued operator guidance while a
 // headless turn is still running. The queue is replayed into the survival
 // registry, so keep it finite rather than allowing a stuck turn to grow memory
-// and restart-replay state without limit.
-const maxPendingHeadlessSteerPrompts = 20
+// and restart-replay state without limit. Exported so e2e tests outside this
+// package can assert against the real cap instead of a duplicated literal.
+const MaxPendingHeadlessSteerPrompts = 20
 
 type preparedHeadlessAttempt struct {
 	cfg     RunConfig
@@ -313,8 +314,18 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	// has it. Non-steerable stdin-prompt: always resent on every attempt,
 	// matching what the old positional-argv delivery did unconditionally.
 	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
-		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
+		// Unlike a steer message, the initial prompt is the run's only chance to
+		// reach the child — on failure the child gets EOF having never seen the
+		// task, so a log-and-continue would silently strand the run. Fail the
+		// attempt instead of pressing on as if delivery succeeded.
+		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.convo.closeStdinPipe()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			_ = cmd.Wait()
+			return false, fmt.Errorf("deliver initial prompt: %w", writeErr)
 		}
 	} else if promptStdin != nil {
 		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
@@ -497,8 +508,22 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	// attempt, matching what the old positional-argv delivery did
 	// unconditionally.
 	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
-		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
+		// Unlike a steer message, the initial prompt is the run's only chance to
+		// reach the child — on failure the child gets EOF having never seen the
+		// task, so a log-and-continue would silently strand the detached run.
+		// Fail the attempt instead of pressing on as if delivery succeeded.
+		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.convo.closeStdinPipe()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+				// This process is the killed child's real OS parent, and the
+				// caller only starts its cmd.Wait() reaper after a successful
+				// start — so reap here to avoid leaking a zombie, mirroring the
+				// pipe variant's kill path.
+				_ = cmd.Wait()
+			}
+			return nil, fmt.Errorf("deliver initial prompt: %w", writeErr)
 		}
 	} else if promptStdin != nil {
 		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
@@ -914,8 +939,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	// Capture the session id as soon as it appears (init/system), not only on
 	// the terminal result. Claude/Codex report it at session start; without
 	// this a mid-run crash leaves the registry record with an empty session
-	// and restart-stale cold-restarts instead of resuming. Mirrors the
-	// conversational runner (runner_convo.go) and AddResultStats.
+	// and restart-stale cold-restarts instead of resuming. Mirrors AddResultStats.
 	if (event.Type == "init" || event.Type == "system") && event.SessionID != "" {
 		if a.GetSessionID() != event.SessionID {
 			a.SetSessionID(event.SessionID)
@@ -1250,17 +1274,16 @@ func (m *Manager) sendHeadlessSteerMessage(a *Agent, text string) error {
 	if a.isFinalizing() {
 		return conflictError(fmt.Sprintf("agent %s is finalizing and can no longer accept messages", a.ID))
 	}
-	if a.PendingPromptCount() >= maxPendingHeadlessSteerPrompts {
-		return conflictError(fmt.Sprintf("agent %s has too many pending steer messages (%d max)", a.ID, maxPendingHeadlessSteerPrompts))
+	queueLen, enqueued := a.TryEnqueuePrompt(text, MaxPendingHeadlessSteerPrompts)
+	if !enqueued {
+		return conflictError(fmt.Sprintf("agent %s has too many pending steer messages (%d max)", a.ID, MaxPendingHeadlessSteerPrompts))
 	}
-	a.EnqueuePrompt(text)
 	m.saveRegistry(m.ctx, a)
-	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", a.PendingPromptCount())
+	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", queueLen)
 
 	// Surface the sent message immediately in StreamOutput — the CLI only
 	// echoes tool-result/assistant turns back over stdout, never the
-	// injected user text itself (mirrors ConvoEvent's user_input in
-	// runner_convo.go's SendMessage).
+	// injected user text itself.
 	ev := StreamEvent{Type: "user_input", Content: text, Timestamp: time.Now().UTC()}
 	a.AppendOutput(ev)
 	m.emit(events.AgentOutput(a.ID), ev)

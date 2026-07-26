@@ -178,6 +178,20 @@ func (m *memTasks) Put(t TaskInfo) {
 	m.tasks[t.ID] = &t
 }
 
+// mustGetTask returns the task's current in-memory state, failing the test
+// if it was never Put — a guarded lookup so callers don't dereference a
+// possibly-absent map entry directly.
+func (m *memTasks) mustGetTask(t *testing.T, id string) TaskInfo {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tk, ok := m.tasks[id]
+	if !ok {
+		t.Fatalf("task %q not found", id)
+	}
+	return *tk
+}
+
 func (m *memTasks) SetGetTaskHook(hook func(id string, t *TaskInfo, count int)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -208,12 +222,8 @@ func (m *memTasks) GetTask(id string) (TaskInfo, error) {
 		m.onGet(id, t, m.gets[id])
 	}
 	cp := *t
-	// Shallow-copy the Execution struct so concurrent callers each get their
-	// own State field — mirroring the file-backed store which always
-	// deserializes a fresh object.
 	if t.Workflow != nil {
-		wf := *t.Workflow
-		cp.Workflow = &wf
+		cp.Workflow = t.Workflow.Clone()
 	}
 	return cp, nil
 }
@@ -383,6 +393,46 @@ func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	wfCopy := *wf
 	t.Workflow = &wfCopy
 	return nil
+}
+
+func (m *memTasks) ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return EffectClaimResult{}, fmt.Errorf("task %s not found", id)
+	}
+	if t.Workflow == nil {
+		return EffectClaimResult{}, fmt.Errorf("task %s has no workflow", id)
+	}
+	wf := t.Workflow.Clone()
+	result, err := wf.ClaimEffect(claim)
+	result.Workflow = wf
+	if err != nil {
+		return result, err
+	}
+	t.Workflow = wf
+	return result, nil
+}
+
+func (m *memTasks) CompleteWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return EffectClaimResult{}, fmt.Errorf("task %s not found", id)
+	}
+	if t.Workflow == nil {
+		return EffectClaimResult{}, fmt.Errorf("task %s has no workflow", id)
+	}
+	wf := t.Workflow.Clone()
+	result, err := wf.CompleteEffect(claim)
+	result.Workflow = wf
+	if err != nil {
+		return result, err
+	}
+	t.Workflow = wf
+	return result, nil
 }
 
 func (m *memTasks) WriteSidecar(id, kind, content string) error {
@@ -3100,6 +3150,53 @@ func TestResumeStalled_RunAgent(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_RunAgentAfterCompletedDispatchEffect(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	completedAt := time.Now().UTC()
+	tasks.Put(TaskInfo{
+		ID:         "t1",
+		Generation: 1,
+		Status:     "in-progress",
+		AgentMode:  "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecRunning,
+			Variables:   make(map[string]string),
+			EffectLog: []EffectRecord{{
+				ID:          EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+				IntentAt:    completedAt.Add(-time.Second),
+				Owner:       engine.ownerID,
+				CompletedAt: &completedAt,
+			}},
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if agents.CallCount() != 1 {
+		t.Fatalf("expected 1 agent start, got %d", agents.CallCount())
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if len(got.Workflow.EffectLog) != 2 {
+		t.Fatalf("effect log len = %d, want 2: %+v", len(got.Workflow.EffectLog), got.Workflow.EffectLog)
+	}
+	if got.Workflow.EffectLog[1].ID.StepSeq <= got.Workflow.EffectLog[0].ID.StepSeq {
+		t.Fatalf("new effect StepSeq = %d, want greater than prior completed StepSeq %d",
+			got.Workflow.EffectLog[1].ID.StepSeq, got.Workflow.EffectLog[0].ID.StepSeq)
+	}
+	if got.Workflow.EffectLog[1].CompletedAt == nil {
+		t.Fatalf("new dispatch effect was not completed: %+v", got.Workflow.EffectLog[1])
+	}
+}
+
 func TestResumeStalled_DispatchesRateLimitedProviderForFailover(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -4429,6 +4526,50 @@ func TestHandleHumanAction_NotWaiting(t *testing.T) {
 	err := engine.HandleHumanAction("t1", "approve", nil)
 	if err == nil {
 		t.Fatal("expected error for non-waiting task")
+	}
+}
+
+func TestHandleHumanAction_InvalidActionAlreadyWaitingDoesNotMutate(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "plan-review",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "review_plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{"existing": "value"},
+			StepHistory: []StepRecord{{StepID: "plan", Status: "completed"}},
+		},
+	})
+
+	err := engine.HandleHumanAction("t1", "bogus", nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid human action") {
+		t.Fatalf("HandleHumanAction error = %v, want invalid human action", err)
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("CurrentStep = %q, want review_plan", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.State != ExecWaiting {
+		t.Fatalf("State = %q, want %q", got.Workflow.State, ExecWaiting)
+	}
+	if _, ok := got.Workflow.Variables["human_action"]; ok {
+		t.Fatal("human_action var was set for rejected action")
+	}
+	if got.Workflow.Variables["existing"] != "value" {
+		t.Fatalf("existing var = %q, want value", got.Workflow.Variables["existing"])
+	}
+	if len(got.Workflow.StepHistory) != 1 || got.Workflow.StepHistory[0].StepID != "plan" {
+		t.Fatalf("StepHistory changed: %+v", got.Workflow.StepHistory)
 	}
 }
 
@@ -7757,7 +7898,7 @@ func runGitAt(t *testing.T, dir string, args ...string) string {
 }
 
 func gitCombinedAt(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -8389,12 +8530,17 @@ func TestExecVerifyCommits_FetchesMissingLocalHeadObject(t *testing.T) {
 	}
 }
 
-// TestExecVerifyCommits_BranchAtBaseMarksDone covers the case where the
-// agent committed nothing because the implementation was already on
-// origin/main (e.g. merged via a different branch). HEAD == origin/main, so
-// the task is marked done instead of human-required to avoid an infinite
-// auto-restart loop in svc_tasks.UpdateTask.
-func TestExecVerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
+// TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired covers the case where
+// the agent reported success but committed nothing: HEAD == origin/main. This
+// used to mark the task done on the theory that the fix might already be on
+// origin/main via a different branch, but that check (branchMergedIntoBase)
+// can never actually distinguish "already merged elsewhere" from "nothing was
+// committed" at this call site — an empty baseRef..HEAD log range and "HEAD
+// is an ancestor of baseRef" are the same git fact, so it was true on every
+// call. Confirmed live: two foundational tasks landed `done` with prNumber 0
+// and a branch byte-identical to origin/main — zero code shipped. A human
+// must see this instead.
+func TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -8411,25 +8557,31 @@ func TestExecVerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
 	}
-	if !strings.Contains(out.Output, "branch merged into base") {
-		t.Errorf("Output = %q, want 'branch merged into base'", out.Output)
+	if !strings.Contains(out.Output, "no commits") {
+		t.Errorf("Output = %q, want 'no commits'", out.Output)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "done" {
-		t.Errorf("task status = %q, want done", ti.Status)
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
 	}
-	if reason := tasks.Reason("t1"); !strings.Contains(reason, "already merged into base") {
-		t.Errorf("status reason = %q, want 'already merged into base'", reason)
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "no commits") {
+		t.Errorf("status reason = %q, want 'no commits'", reason)
 	}
 }
 
-// TestExecVerifyCommits_BranchAncestorOfBaseMarksDone covers the regression
-// from issue #670: HEAD is an ancestor of origin/main (branch tip equals an
-// older commit on main, with newer commits on top — typical of squash-merge
-// followed by additional PRs). `git log origin/main..HEAD` is empty AND
-// HEAD != base.tip, but the work is still on origin. Must flip to done, not
-// human-required.
-func TestExecVerifyCommits_BranchAncestorOfBaseMarksDone(t *testing.T) {
+// TestExecVerifyCommits_BranchAncestorOfBaseFlipsHumanRequired covers the
+// regression from issue #670: HEAD is an ancestor of origin/main (branch tip
+// equals an older commit on main, with newer commits on top — typical of
+// squash-merge followed by additional PRs). `git log origin/main..HEAD` is
+// empty AND HEAD != base.tip. #670 originally fixed this by marking the task
+// done outright (the theory: the work must already be on origin). That
+// theory cannot be verified from ancestry alone — "HEAD is an ancestor of
+// base because its own commits already landed" and "HEAD is an ancestor of
+// base because it never had any commits to begin with" are the same git
+// fact, indistinguishable by `merge-base --is-ancestor`. Silently marking
+// done was proven live to misfire on the second case (issues #2658, #2659
+// landed `done` with zero code). A human must confirm either way now.
+func TestExecVerifyCommits_BranchAncestorOfBaseFlipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -8446,12 +8598,12 @@ func TestExecVerifyCommits_BranchAncestorOfBaseMarksDone(t *testing.T) {
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
 	}
-	if !strings.Contains(out.Output, "branch merged into base") {
-		t.Errorf("Output = %q, want 'branch merged into base'", out.Output)
+	if !strings.Contains(out.Output, "no commits") {
+		t.Errorf("Output = %q, want 'no commits'", out.Output)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "done" {
-		t.Errorf("task status = %q, want done", ti.Status)
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
 	}
 }
 
@@ -8468,8 +8620,8 @@ func TestExecVerifyCommits_AgentFailedFlipsHumanRequired(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
-	// Same git state as TestExecVerifyCommits_BranchAtBaseMarksDone: HEAD ==
-	// origin/main, so branchMergedIntoBase would otherwise mark the task done.
+	// Same git state as TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired:
+	// HEAD == origin/main.
 	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 

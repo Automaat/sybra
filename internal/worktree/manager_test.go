@@ -300,6 +300,29 @@ func TestPathFor_TraversalSlugWouldEscape(t *testing.T) {
 	}
 }
 
+// makePushedGitDir creates a real git repo at dir with one committed file,
+// pushed to a throwaway bare "origin" — HasUnpushedCommits reports false for
+// it, matching a normal Sybra-managed worktree that has landed its work.
+func makePushedGitDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, dir, "git", "init", "-q")
+	mustRunInDir(t, dir, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, dir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, dir, "git", "add", "-A")
+	mustRunInDir(t, dir, "git", "commit", "-q", "-m", "init")
+
+	origin := t.TempDir()
+	mustRunInDir(t, origin, "git", "init", "-q", "--bare")
+	mustRunInDir(t, dir, "git", "remote", "add", "origin", origin)
+	mustRunInDir(t, dir, "git", "push", "-q", "-u", "origin", "HEAD:refs/heads/main")
+}
+
 func TestCleanupOrphaned(t *testing.T) {
 	dir := t.TempDir()
 	tasksDir := t.TempDir()
@@ -315,14 +338,11 @@ func TestCleanupOrphaned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create worktree dirs: one matching task (not done), one orphaned
-	if err := os.MkdirAll(filepath.Join(dir, tk.DirName()), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Create worktree dirs: one matching task (not done), one orphaned —
+	// both fully pushed, so the unpushed-commits guard does not interfere.
+	makePushedGitDir(t, filepath.Join(dir, tk.DirName()))
 	orphanDir := filepath.Join(dir, "orphan-12345678")
-	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	makePushedGitDir(t, orphanDir)
 
 	m := New(Config{
 		WorktreesDir: dir,
@@ -339,6 +359,157 @@ func TestCleanupOrphaned(t *testing.T) {
 	// Active task's dir should remain
 	if _, err := os.Stat(filepath.Join(dir, tk.DirName())); err != nil {
 		t.Error("active task dir should remain")
+	}
+}
+
+// TestManager_HasUnpushedCommits proves the resolver sandbox cleanup relies
+// on (#2593): it locates taskID's own worktree by ID and reports whether it
+// holds commits not on origin, and fails safe (false — nothing to protect)
+// when the task, its worktree, or an external adoption makes that check
+// inapplicable.
+func TestManager_HasUnpushedCommits(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+
+	pushedTask, err := store.Create("pushed task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(pushedTask.ID, task.Update{ProjectID: task.Ptr("owner/repo")}); err != nil {
+		t.Fatal(err)
+	}
+	makePushedGitDir(t, filepath.Join(dir, pushedTask.DirName()))
+
+	unpushedTask, err := store.Create("unpushed task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(unpushedTask.ID, task.Update{ProjectID: task.Ptr("owner/repo")}); err != nil {
+		t.Fatal(err)
+	}
+	unpushedDir := filepath.Join(dir, unpushedTask.DirName())
+	makePushedGitDir(t, unpushedDir)
+	if err := os.WriteFile(filepath.Join(unpushedDir, "f.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, unpushedDir, "git", "commit", "-q", "-am", "unpushed work")
+
+	adoptedTask, err := store.Create("adopted task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(adoptedTask.ID, task.Update{
+		ProjectID:   task.Ptr("owner/repo"),
+		WorktreeDir: task.Ptr("/some/externally/owned/checkout"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if got := m.HasUnpushedCommits(ctx, pushedTask.ID); got {
+		t.Error("fully pushed worktree reported as having unpushed commits")
+	}
+	if got := m.HasUnpushedCommits(ctx, unpushedTask.ID); !got {
+		t.Error("worktree with an unpushed commit reported as clean")
+	}
+	if got := m.HasUnpushedCommits(ctx, adoptedTask.ID); got {
+		t.Error("externally-adopted worktree must never be inspected")
+	}
+	if got := m.HasUnpushedCommits(ctx, "no-such-task"); got {
+		t.Error("missing task must report false (nothing to protect)")
+	}
+
+	// A deleted task's record is gone, but its worktree dir survives on disk
+	// still holding unpushed work — the exact case the guard must protect
+	// (#2593). Resolve it by directory name, not a live record.
+	deletedID := "aabbccdd"
+	deletedDir := filepath.Join(dir, "deleted-task-"+deletedID)
+	makePushedGitDir(t, deletedDir)
+	if err := os.WriteFile(filepath.Join(deletedDir, "f.txt"), []byte("c"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, deletedDir, "git", "commit", "-q", "-am", "unpushed work")
+	if got := m.HasUnpushedCommits(ctx, deletedID); !got {
+		t.Error("deleted task's worktree with an unpushed commit must be protected")
+	}
+}
+
+// TestCleanupOrphaned_PreservesUnpushedCommits proves an orphaned worktree
+// holding commits that never reached origin survives the sweep — the
+// guard added for #2593 must block deletion/reuse regardless of the
+// existing status/no-live-agent eligibility check.
+func TestCleanupOrphaned_PreservesUnpushedCommits(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+
+	orphanDir := filepath.Join(dir, "orphan-deadbeef")
+	makePushedGitDir(t, orphanDir)
+	if err := os.WriteFile(filepath.Join(orphanDir, "f.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, orphanDir, "git", "commit", "-q", "-am", "unpushed work")
+
+	m := New(Config{
+		WorktreesDir: dir,
+		Tasks:        taskMgr,
+		Logger:       discardLogger(),
+	})
+
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(orphanDir); err != nil {
+		t.Errorf("orphaned worktree with unpushed commits removed unexpectedly: %v", err)
+	}
+}
+
+// TestRemove_PreservesUnpushedCommits proves the per-task cleanup chokepoint
+// (fired on task completion, manual terminal transitions, and explicit
+// deletes) refuses to delete a worktree whose completed work never reached
+// origin — the #2593 scenario where a terminal-status task's finished-but-
+// unpushed diff would otherwise be destroyed before the periodic orphan sweep
+// with its identical guard ever runs.
+func TestRemove_PreservesUnpushedCommits(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+
+	tk, err := store.Create("unpushed task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(tk.ID, task.Update{ProjectID: task.Ptr("owner/repo")}); err != nil {
+		t.Fatal(err)
+	}
+	wtDir := filepath.Join(dir, tk.DirName())
+	makePushedGitDir(t, wtDir)
+	if err := os.WriteFile(filepath.Join(wtDir, "f.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtDir, "git", "commit", "-q", "-am", "unpushed work")
+
+	m.Remove(context.Background(), tk.ID)
+
+	if _, err := os.Stat(wtDir); err != nil {
+		t.Errorf("worktree with unpushed commits removed unexpectedly: %v", err)
 	}
 }
 

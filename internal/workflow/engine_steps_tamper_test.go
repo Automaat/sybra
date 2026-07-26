@@ -1021,6 +1021,33 @@ func TestExecDetectTampering_NoWorktreeSkips(t *testing.T) {
 	}
 }
 
+// TestExecDetectTampering_DiffErrorDoesNotClaimClean proves a genuine
+// diff/tooling failure (here: no git repository at the worktree path) is
+// reported honestly rather than as "clean" — the fail-open routing still
+// lets the task continue (no evidence recorded either — see the doc comment
+// on the diff-error branch), but operators/logs must not be told the diff
+// was actually checked and found clean when it never ran.
+func TestExecDetectTampering_DiffErrorDoesNotClaimClean(t *testing.T) {
+	t.Parallel()
+	wt := t.TempDir() // not a git repository — git diff fails
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output == "clean" {
+		t.Errorf("Output = %q, a diff/tooling error must not be reported as clean", out.Output)
+	}
+	if !strings.Contains(out.Output, "skipped") {
+		t.Errorf("Output = %q, want it to say the check was skipped", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status == "human-required" {
+		t.Errorf("status = %q, a diff error must not itself flip the task", ti.Status)
+	}
+}
+
 func TestExecDetectTampering_CleanImplChange(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -1781,8 +1808,22 @@ func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
 		t.Fatal("fix_review step missing from simple-task-review")
 		return
 	}
-	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
-		t.Errorf("fix_review goto = %q, want detect_tampering", got)
+	// fix_review commits code changes, so verify_checks must re-run before
+	// tamper detection to keep verify_checks evidence fresh at the post-fix
+	// HEAD (and catch a fix that broke the suite) ahead of require_evidence.
+	verify := rev.StepByID("verify_checks")
+	if verify == nil {
+		t.Fatal("verify_checks step missing from simple-task-review")
+		return
+	}
+	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "verify_checks" {
+		t.Errorf("fix_review goto = %q, want verify_checks", got)
+	}
+	if got, _ := ResolveTransition(verify.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
+		t.Errorf("verify_checks goto = %q, want detect_tampering", got)
+	}
+	if got, _ := ResolveTransition(verify.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Errorf("verify_checks human-required goto = %q, want end", got)
 	}
 	if got, _ := ResolveTransition(tamper.Next, map[string]string{"task.status": "human-required"}); got != "" {
 		t.Errorf("flagged detect_tampering goto = %q, want end", got)

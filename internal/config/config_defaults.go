@@ -825,6 +825,7 @@ func (c *Config) Directories() map[string]string {
 		"loop_agents":     c.LoopAgentsDir,
 		"artifacts":       ArtifactsDir(),
 		"experiences":     c.ExperiencesDir(),
+		"interventions":   c.InterventionsDir(),
 		"agentqueue":      AgentQueueDir(),
 		"learning":        LearningDir(),
 		"gh_issue_outbox": GHIssueOutboxDir(),
@@ -854,6 +855,12 @@ func LearningDir() string {
 
 func (c *Config) ExperiencesDir() string {
 	return filepath.Join(HomeDir(), "experience")
+}
+
+// InterventionsDir is the directory under ~/.sybra that persists
+// internal/intervention records.
+func (c *Config) InterventionsDir() string {
+	return filepath.Join(HomeDir(), "interventions")
 }
 
 func Load() (*ResolvedConfig, error) {
@@ -1084,6 +1091,68 @@ func (c *Config) ReviewHoldNitMaxLines() int {
 		return DefaultReviewHoldNitMaxLines
 	}
 	return c.ReviewHold.NitMaxLines
+}
+
+// Admission size limits default to 0 (disabled) — auto-splitting an
+// oversized task into a gated DAG is deferred (#2466 Fix point 5), so these
+// only ever flag a task for a human, never reshape it.
+const (
+	DefaultAdmissionMaxAcceptanceCriteria = 0
+	DefaultAdmissionMaxChangeSurfaceFiles = 0
+)
+
+// applyAdmissionDefaults defaults Enabled to true unless the file explicitly
+// disabled it — using file.Has (not the zero value) so an operator who
+// explicitly set `admission.enabled: false` is never silently re-enabled on
+// the next resolve, mirroring applySelfMonitorDefaults' DryRun handling.
+// True-by-default is safe here: a plan contract with no schema_version (every
+// contract generated before this feature shipped) validates unchanged, and
+// the size limits below stay off unless explicitly configured.
+func applyAdmissionDefaults(cfg *Config, file *FileConfig) {
+	if file == nil || !file.Has("admission", "enabled") {
+		cfg.Admission.Enabled = true
+	}
+	if cfg.Admission.MaxAcceptanceCriteria < 0 {
+		cfg.Admission.MaxAcceptanceCriteria = DefaultAdmissionMaxAcceptanceCriteria
+	}
+	if cfg.Admission.MaxChangeSurfaceFiles < 0 {
+		cfg.Admission.MaxChangeSurfaceFiles = DefaultAdmissionMaxChangeSurfaceFiles
+	}
+}
+
+// AdmissionEnabled reports whether admission_preflight's checks are active.
+// Nil-safe for test construction.
+func (c *Config) AdmissionEnabled() bool {
+	return c != nil && c.Admission.Enabled
+}
+
+// applyInterventionDefaults defaults Enabled to true unless the file
+// explicitly disabled it — mirroring applyAdmissionDefaults so an operator's
+// explicit `intervention.enabled: false` is never silently re-enabled on the
+// next resolve. Safe to default on: internal/intervention records are
+// local-only, scrub-guarded for work projects (see
+// TaskService.recordInterventionOnUnblock), and feed no deterministic
+// routing/admission/completion gate.
+func applyInterventionDefaults(cfg *Config, file *FileConfig) {
+	if file == nil || !file.Has("intervention", "enabled") {
+		cfg.Intervention.Enabled = true
+	}
+}
+
+// applyEvidenceDefaults leaves Agent.Evidence.Enabled at its zero value
+// (false) — unlike admission, this gate defaults OFF: it is new and its
+// producers (verify_checks, detect_tampering, etc.) need to have been
+// recording evidence for a while before the gate itself is safe to flip on
+// for in-flight tasks. No file.Has guard is needed since false is already
+// the zero value; kept as its own apply hook for parity with the other
+// config blocks and so future Evidence fields have a place to default.
+func applyEvidenceDefaults(cfg *Config, file *FileConfig) {
+}
+
+// EvidenceEnabled reports whether the require_evidence completion gate is
+// active. Nil-safe for test construction.
+func (c *Config) EvidenceEnabled() bool {
+	return c != nil && c.Agent.Evidence.Enabled
 }
 
 func applyExperienceDefaults(cfg *Config) {

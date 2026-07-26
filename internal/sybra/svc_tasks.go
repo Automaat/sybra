@@ -23,6 +23,8 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
@@ -45,7 +47,12 @@ type TaskService struct {
 	logger         *slog.Logger
 	audit          *audit.Logger
 	cfg            *config.Config
-	abTesting      func() abtest.Config
+	// projects and intervention back recordInterventionOnUnblock only; nil in
+	// tests that don't exercise the human-required unblock path (the method
+	// guards on both being non-nil before doing anything).
+	projects     *project.Store
+	intervention *intervention.Store
+	abTesting    func() abtest.Config
 	// assigner forwards a Tags/DependsOn edit to a follower-homed task's home
 	// node at write time (see UpdateTask) — the write-time counterpart to
 	// clusterlead.Mirror's detect-and-repair drift backstop. nil on a
@@ -944,7 +951,8 @@ func (s *TaskService) pushFieldEditToFollower(id string, updates map[string]any,
 	}
 	_, tagsEdited := updates["tags"]
 	_, depsEdited := updates["depends_on"]
-	if !tagsEdited && !depsEdited {
+	_, condsEdited := updates["depends_on_conditions"]
+	if !tagsEdited && !depsEdited && !condsEdited {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), fieldPushTimeout)
@@ -1131,7 +1139,31 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 	}
 
 	s.logDispatchAudit(id, target, string(cur.Status), reason, "dispatched")
+	s.recordInterventionOnUnblock(cur, target, reason, exceptAgentID)
 	return s.tasks.Get(id)
+}
+
+// recordInterventionOnUnblock captures a genuine operator-initiated unblock
+// of a human-required task through intervention.Capture (see
+// internal/intervention) — advisory context for a future replay fixture
+// (sybra#2454), never a routing/admission/completion gate. cur is the task as
+// it stood immediately before this dispatch's status write, so its
+// Status/Blocker/Workflow/StatusReason are exactly the system-state signal
+// being captured.
+//
+// This is one of three real exit paths from human-required — the other two
+// (automated PR-blocker reconciliation and automated PR-landing advance) are
+// hooked the same way from internal/sybra/review; all three route through the
+// same intervention.Capture so a fingerprint dedups identically regardless of
+// which path produced it. exceptAgentID=="" means a human clicked Dispatch;
+// non-empty means an automatic recovery path re-entered the workflow on the
+// operator's behalf.
+func (s *TaskService) recordInterventionOnUnblock(cur task.Task, target, reason, exceptAgentID string) {
+	class := intervention.OperatorActionHuman
+	if exceptAgentID != "" {
+		class = intervention.OperatorActionAutoRecovery
+	}
+	intervention.Capture(s.intervention, s.cfg, s.projects, s.audit, s.logger, cur, target, reason, class)
 }
 
 // logDispatchAudit records a human-required dispatch attempt and its outcome

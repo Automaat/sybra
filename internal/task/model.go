@@ -137,12 +137,29 @@ func AllAgentModes() []string {
 	return []string{AgentModeHeadless, AgentModeInteractive}
 }
 
-// ValidateAgentMode rejects unknown agent modes. Empty strings are rejected
-// here; callers that need to allow "unset" (e.g. parser legacy compat) must
-// guard the empty case before calling.
+// ValidateAgentMode rejects any agent mode not in validAgentModes, which
+// intentionally still includes the legacy AgentModeInteractive value: the
+// interactive runner itself was removed and no dispatch path honors it
+// anymore, but pre-existing task files carrying it must still parse (see
+// parser.go) and cluster-replicated tasks must still assign it. Empty
+// strings are rejected here; callers that need to allow "unset" (e.g. parser
+// legacy compat) must guard the empty case before calling. New or updated
+// tasks must use ValidateMintableAgentMode instead, which excludes
+// "interactive".
 func ValidateAgentMode(s string) (string, error) {
 	if !validAgentModes[s] {
 		return "", fmt.Errorf("invalid agent_mode %q (valid: %v)", s, AllAgentModes())
+	}
+	return s, nil
+}
+
+// ValidateMintableAgentMode rejects any agent mode that isn't currently
+// dispatchable. Use this — not ValidateAgentMode — whenever a task is being
+// newly created or its mode explicitly changed, so no path can mint a fresh
+// "interactive" task now that the interactive runner is gone.
+func ValidateMintableAgentMode(s string) (string, error) {
+	if s != AgentModeHeadless {
+		return "", fmt.Errorf("invalid agent_mode %q (valid: %v)", s, []string{AgentModeHeadless})
 	}
 	return s, nil
 }
@@ -288,6 +305,42 @@ type AgentRun struct {
 // Attachment re-exports the persisted task attachment metadata type.
 type Attachment = attachment.Attachment
 
+// DepConditionKindLabel and DepConditionKindNote are the DepCondition.Kind
+// values the umbrella dependency gate understands. Any other value fails
+// closed at gate time (held, never released, never escalated) rather than
+// being silently ignored or crashing — see holdUnmetConditions in
+// internal/sybra/app_umbrella_gate.go. Author-time input (CLI, HTTP API) is
+// validated against this pair before it ever reaches a task file; this
+// constant pair is the single source of truth both sides check against.
+const (
+	DepConditionKindLabel = "label"
+	DepConditionKindNote  = "note"
+)
+
+// DepCondition attaches a completion condition to one Task.DependsOn ref.
+// Ref must match a current DependsOn entry (by the same ref-matching rules
+// the gate uses elsewhere, e.g. matchesDepRef) or the condition is inert.
+//
+// Kind "label" mechanically checks the referenced closing issue's GitHub
+// labels (via cached github.FetchIssue) for Value's label name; it holds the
+// child while absent and self-heals the next time the gate ticks after the
+// label is applied — no escalation.
+//
+// Kind "note" never auto-satisfies: it holds the child and escalates to
+// human-required, naming Value as the free-text acceptance note a human must
+// confirm. Clearing the resulting blocker (blocker.KindDependencyConditionUnmet)
+// alone does not release the child — as long as this condition still names a
+// current DependsOn ref, the gate re-escalates on the next tick it becomes
+// ready again. A human must remove or edit the condition itself (once the
+// scope it names is confirmed to exist) to actually release the child; this
+// mirrors blocker.KindDependencyScopeUnmet's existing require-explicit-
+// human-confirmation design and is an accepted limitation, not a bug.
+type DepCondition struct {
+	Ref   string `json:"ref" yaml:"ref"`
+	Kind  string `json:"kind" yaml:"kind"`
+	Value string `json:"value" yaml:"value"`
+}
+
 // Task is the in-memory representation of a task markdown file: YAML
 // frontmatter (everything but Body) plus the GFM markdown Body. Store parses
 // and marshals it to/from tasks/<id>.md; planning/review/critique content
@@ -344,10 +397,27 @@ type Task struct {
 	// owner/repo#n shorthand) this task waits on — resolved by issue ref only,
 	// not task IDs. While the task is `blocked`, the gate holds it until every
 	// referenced task has reached `done`; an empty list releases immediately.
-	// Used only by umbrella child tasks.
+	// Used only by umbrella child tasks. Not exclusively planner-authored: the
+	// gate also folds in a ref it parses out of the body as a free-text
+	// "after #N" precondition on a different program's issue — one the
+	// planner's own schema can never emit, since it only allows refs among an
+	// umbrella's own sub-issues (see umbrella.ExternalBlockers) — and persists
+	// it here so it survives as structured state instead of being re-derived
+	// from prose every gate tick.
 	DependsOn []string `json:"dependsOn,omitempty"`
-	Reviewed  bool     `json:"reviewed"`
-	RunRole   string   `json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	// DependsOnConditions attaches an optional completion condition to one of
+	// DependsOn's refs, beyond that task simply reaching Done — the umbrella
+	// dependency gate (holdUnmetConditions in
+	// internal/sybra/app_umbrella_gate.go) enforces it before releasing a
+	// child. A condition whose Ref no longer names a current DependsOn entry
+	// is inert (never enforced), the same rule the gate already applies to a
+	// stale blocker.KindDependencyScopeUnmet verdict. See DepCondition for the
+	// supported Kind values (sybra#2649: a prior run closed a dependency
+	// issue via a narrower PR than the scope this task actually needed, and
+	// nothing structural caught it before a wasted implementation cycle).
+	DependsOnConditions []DepCondition `json:"dependsOnConditions,omitempty"`
+	Reviewed            bool           `json:"reviewed"`
+	RunRole             string         `json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
 	// SupervisorSteer is a one-shot corrective message left by the watchdog's
 	// headless nudge: it stops a looping headless agent (which has no mid-stream
 	// channel) and persists the steer here so the recovery loop re-dispatches
@@ -418,12 +488,16 @@ type Task struct {
 	// so route_test_result can exclude test-runner runs from prior cycles when
 	// counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
 	// and all test-runner runs count (correct for first-ever cycles).
-	TestingCycleStartedAt *time.Time          `json:"testingCycleStartedAt,omitempty"`
-	Attachments           []Attachment        `json:"attachments"`
-	AgentRuns             []AgentRun          `json:"agentRuns"`
-	Workflow              *workflow.Execution `json:"workflow,omitempty"`
-	CreatedAt             time.Time           `json:"createdAt"`
-	UpdatedAt             time.Time           `json:"updatedAt"`
+	TestingCycleStartedAt *time.Time   `json:"testingCycleStartedAt,omitempty"`
+	Attachments           []Attachment `json:"attachments"`
+	AgentRuns             []AgentRun   `json:"agentRuns"`
+	// EffectLog records durable intent/completion for observer-owned task
+	// status effects (pollers, monitor, recovery) that operate outside a live
+	// workflow execution.
+	EffectLog []workflow.EffectRecord `json:"effectLog,omitempty"`
+	Workflow  *workflow.Execution     `json:"workflow,omitempty"`
+	CreatedAt time.Time               `json:"createdAt"`
+	UpdatedAt time.Time               `json:"updatedAt"`
 	// StatusChangedAt marks the last time Status actually transitioned, as
 	// opposed to UpdatedAt which is bumped by any field write (tags, audit
 	// sidecars, status_reason, ...). Detectors that need to know "how long
@@ -434,6 +508,7 @@ type Task struct {
 
 	AssignedNode    string     `json:"assignedNode,omitempty"`
 	NodeOverride    string     `json:"nodeOverride,omitempty"`
+	Generation      int64      `json:"generation,omitempty"`
 	MirrorRev       int64      `json:"mirrorRev,omitempty"`
 	MirrorUpdatedAt *time.Time `json:"mirrorUpdatedAt,omitempty"`
 

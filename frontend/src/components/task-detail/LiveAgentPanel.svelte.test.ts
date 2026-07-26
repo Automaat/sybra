@@ -19,7 +19,6 @@ vi.mock('$lib/api', () => ({
 }))
 
 vi.mock('../StreamOutput.svelte', () => ({ default: () => {} }))
-vi.mock('../ChatView.svelte', () => ({ default: () => {} }))
 vi.mock('../ProviderLogo.svelte', () => ({ default: () => {} }))
 
 const LiveAgentPanel = (await import('./LiveAgentPanel.svelte')).default

@@ -226,6 +226,8 @@ steps:
 
                 {
                   "task_id": "{{.Task.ID}}",
+                  "schema_version": "2",
+                  "objective": "one-line statement of what 'done' means for this task",
                   "branch": "<current branch>",
                   "worktree": "<current working directory>",
                   "files": [
@@ -236,6 +238,8 @@ steps:
                     "internal/foo/legacy_test.go",
                     "testdata/*.golden"
                   ],
+                  "dependencies": ["other-task-id-or-external-resource-this-depends-on"],
+                  "required_capabilities": ["repo_write"],
                   "verification": [
                     {"command": "go test ./...", "expected": "tests pass"},
                     {"manual": "manual inspection or smoke test", "expected": "observable result"}
@@ -262,6 +266,14 @@ steps:
                 source criterion out of scope; if a source criterion needs a
                 human scope decision, record that in .sybra-plan-decisions and
                 keep it in the contract.
+
+                Always set schema_version to "2" and objective is required.
+                `dependencies` is optional: omit it or write `[]` when this
+                task has none. `required_capabilities` must be a subset of
+                this closed set: `repo_write`, `network`, `provider`,
+                `git_push` — omit it or write `[]` when the task needs none
+                beyond ordinary repo edits; do not invent new capability
+                names, admission_preflight rejects anything outside this set.
 
         Do NOT call sybra-cli update — Sybra will ingest your file as the
         task sidecars after you exit. Do NOT modify task fields directly.

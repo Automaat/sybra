@@ -25,7 +25,6 @@ vi.mock('$lib/agent-summary.js', () => ({
   summarizeAgent: (...args: unknown[]) => mockSummarize(...args),
 }))
 
-vi.mock('../ChatView.svelte', () => ({ default: () => {} }))
 vi.mock('../StreamOutput.svelte', () => ({ default: () => {} }))
 vi.mock('../ActionTimeline.svelte', () => ({ default: () => {} }))
 vi.mock('../ToolApproval.svelte', () => ({ default: () => {} }))

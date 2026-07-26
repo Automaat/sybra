@@ -21,10 +21,28 @@ const (
 	EventPlanApproved         = "plan.approved"
 	EventPlanRejected         = "plan.rejected"
 	EventEvalCompleted        = "eval.completed"
-	EventOrchestratorStart    = "orchestrator.started"
-	EventOrchestratorStop     = "orchestrator.stopped"
-	EventPRConflictDetected   = "pr_monitor.conflict_detected"
-	EventPRCIFailureDetected  = "pr_monitor.ci_failure_detected"
+	// EventAdmissionDecided records the workflow engine's admission_preflight
+	// step outcome (internal/workflow/engine_steps_admission.go) — "admitted"
+	// or "blocked" — plus the task's declared risk_tier/permission_tier and,
+	// on a block, the blocker.Kind and reason. Recorded on every dispatch,
+	// not just blocks, so evaluation can correlate predicted risk/clarity
+	// against actual task outcome.
+	EventAdmissionDecided = "admission.decided"
+	// EventCompletionEvidenceVerified records the workflow engine's
+	// require_evidence step (internal/workflow/engine_steps_evidence.go)
+	// finding every applicable criterion present, passing, and fresh for the
+	// task's current HEAD — the deterministic gate that lets a task proceed
+	// to PR landing.
+	EventCompletionEvidenceVerified = "completion_evidence.verified"
+	// EventCompletionEvidenceBlocked records require_evidence flipping a task
+	// to human-required because at least one required criterion was missing,
+	// failed, or stale (recorded against a revision other than current HEAD).
+	// Data carries the unmet criteria, never agent output.
+	EventCompletionEvidenceBlocked = "completion_evidence.blocked"
+	EventOrchestratorStart         = "orchestrator.started"
+	EventOrchestratorStop          = "orchestrator.stopped"
+	EventPRConflictDetected        = "pr_monitor.conflict_detected"
+	EventPRCIFailureDetected       = "pr_monitor.ci_failure_detected"
 	// EventPRCIFlakyDetected records that a ci_failure issue's failing check
 	// names all also show a passing outcome for the same head commit (see
 	// github.flakyOnlyFailure) — noise, not a deterministic regression. The
@@ -55,6 +73,14 @@ const (
 	// carries only the task ID (via the audit envelope) — never branch
 	// names, commit SHAs, or agent output.
 	EventBranchConflictAutoResolved = "pr_monitor.branch_conflict_auto_resolved"
+	// EventPRBranchStaleAutoSynced records that a PR branch was found behind
+	// its base between review/fix-review rounds and was brought up to date by
+	// a deterministic git merge (pushed) before the round's agent ran — so the
+	// round is spent on the real issue instead of a stale-diff artifact
+	// (#2609). Unlike EventPRConflictAutoResolved, this never skips the round:
+	// the triggering issue still needs the agent's attention. Data carries
+	// only pr — never PR titles, branch names, or agent output.
+	EventPRBranchStaleAutoSynced = "pr_monitor.branch_stale_auto_synced"
 	// EventPRBlockerReconciled records that a human-required task parked by
 	// the pr-monitor auto-fix-exhausted escalation (ci_failure or conflict)
 	// was moved back to in-review because a fresh probe found its linked PR
@@ -69,22 +95,36 @@ const (
 	// failing at or above the configured success-rate threshold. Logged
 	// instead of dispatching a fix agent or escalating to human-required.
 	// Data carries pr, repo, and the flaky check names — never agent output.
-	EventPRCIFlakeDetected         = "pr_monitor.ci_flake_detected"
-	EventReviewStarted             = "review.agent_started"
-	EventFixReviewStarted          = "fix_review.agent_started"
-	EventReviewPublished           = "review.published"
-	EventRenovateCIFix             = "renovate.ci_fix_started"
-	EventHealthReport              = "health.report"
-	EventAgentStartFailed          = "agent.start_failed"
-	EventProviderGateBlocked       = "provider.gate_blocked"
-	EventProviderModelIncompatible = "provider.model_incompatible"
-	EventHumanReviewSpawned        = "human_review.spawned"
-	EventHumanReviewVerdict        = "human_review.verdict"
-	EventHumanReviewIssue          = "human_review.issue_filed"
-	EventHumanReviewSkipped        = "human_review.skipped"
-	EventExperienceRecorded        = "experience.recorded"
-	EventExperienceSkipped         = "experience.skipped"
-	EventExperienceInjected        = "experience.injected"
+	EventPRCIFlakeDetected = "pr_monitor.ci_flake_detected"
+	EventReviewStarted     = "review.agent_started"
+	EventFixReviewStarted  = "fix_review.agent_started"
+	EventReviewPublished   = "review.published"
+	// EventReviewSelfApprovalDismissed records that our own bot identity's
+	// approval on an inbound review task's PR was detected and dismissed —
+	// the outcome-based backstop under the gh shim (#2198). Data carries pr
+	// and repo, never agent output.
+	EventReviewSelfApprovalDismissed = "review.self_approval_dismissed"
+	EventRenovateCIFix               = "renovate.ci_fix_started"
+	EventHealthReport                = "health.report"
+	EventAgentStartFailed            = "agent.start_failed"
+	EventProviderGateBlocked         = "provider.gate_blocked"
+	EventProviderModelIncompatible   = "provider.model_incompatible"
+	EventHumanReviewSpawned          = "human_review.spawned"
+	EventHumanReviewVerdict          = "human_review.verdict"
+	EventHumanReviewIssue            = "human_review.issue_filed"
+	EventHumanReviewSkipped          = "human_review.skipped"
+	EventExperienceRecorded          = "experience.recorded"
+	EventExperienceSkipped           = "experience.skipped"
+	EventExperienceInjected          = "experience.injected"
+	// EventInterventionRecorded records that a genuine human-required unblock
+	// was captured as a normalized intervention record (see
+	// internal/intervention). Data carries the record's fingerprint plus
+	// project_id (public) or project_key (work, opaque).
+	EventInterventionRecorded = "intervention.recorded"
+	// EventInterventionSkipped records that an unblock did not produce an
+	// intervention record — Data.reason is "project_unresolved" or
+	// "write_failed".
+	EventInterventionSkipped = "intervention.skipped"
 
 	// EventTaskLanded records a task's terminal outcome (merged/closed) with
 	// queue-inclusive and work-based timing for the evaluation scorecard.

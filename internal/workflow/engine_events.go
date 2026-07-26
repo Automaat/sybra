@@ -136,6 +136,18 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 	if err != nil {
 		return err
 	}
+	if t.Workflow != nil && t.Workflow.State == ExecWaiting && t.Workflow.CurrentStep != "" {
+		def, err := e.store.Get(t.Workflow.WorkflowID)
+		if err != nil {
+			return err
+		}
+		currentStep := def.StepByID(t.Workflow.CurrentStep)
+		if currentStep != nil && currentStep.Type == StepWaitHuman {
+			if err := validateHumanAction(currentStep, action); err != nil {
+				return err
+			}
+		}
+	}
 	t, err = e.advanceSatisfiedWaitForStatus(taskID, t)
 	if err != nil {
 		return err
@@ -154,8 +166,8 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 	if currentStep.Type != StepWaitHuman {
 		return fmt.Errorf("task %s is not at a wait_human step", taskID)
 	}
-	if len(currentStep.Config.HumanActions) > 0 && !slices.Contains(currentStep.Config.HumanActions, action) {
-		return fmt.Errorf("invalid human action %q for step %q", action, currentStep.ID)
+	if err := validateHumanAction(currentStep, action); err != nil {
+		return err
 	}
 
 	wfExec := t.Workflow
@@ -173,6 +185,13 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		Status: "completed",
 		Output: action,
 	})
+}
+
+func validateHumanAction(step *Step, action string) error {
+	if len(step.Config.HumanActions) > 0 && !slices.Contains(step.Config.HumanActions, action) {
+		return fmt.Errorf("invalid human action %q for step %q", action, step.ID)
+	}
+	return nil
 }
 
 // advanceSatisfiedWaitForStatus repairs stale workflow position before a human
@@ -226,7 +245,7 @@ func (e *Engine) advanceSatisfiedWaitForStatus(taskID string, t TaskInfo) (TaskI
 // Safe to call for any status change — no-ops when the current step does
 // not declare wait_for_status or when the status does not match.
 func (e *Engine) HandleStatusChange(taskID, newStatus string) {
-	if e.dispatchDisabled {
+	if e.dispatchDisabled.Load() {
 		return
 	}
 	t, err := e.tasks.GetTask(taskID)
@@ -365,6 +384,14 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	case taskStepFree:
 		// Neither a route nor a pending start exists for this task+step, so
 		// the role match below is what decides.
+		if def, ok := defs.get(); ok {
+			if current := def.StepByID(t.Workflow.CurrentStep); current != nil && current.Type == StepParallel {
+				if childStepID, ok := parallelChildStepByAgentID(t.Workflow, current.ID, c.AgentID); ok {
+					spawnedStep = childStepID
+					break
+				}
+			}
+		}
 		if runRole := agentRunRole(t.AgentRuns, c.AgentID); runRole != "" {
 			if def, ok := defs.get(); ok && !untrackedCompletionMatchesCurrentStep(def, spawnedStep, runRole) {
 				e.logger.Info("workflow.agent-complete.bail",
@@ -635,6 +662,22 @@ func untrackedCompletionMatchesCurrentStep(def *Definition, stepID, runRole stri
 	return step.Config.Role == runRole
 }
 
+func parallelChildStepByAgentID(wf *Execution, parentStepID, agentID string) (string, bool) {
+	if wf == nil || parentStepID == "" || agentID == "" {
+		return "", false
+	}
+	rec := wf.ParallelInflight[parentStepID]
+	if rec == nil {
+		return "", false
+	}
+	for childStepID, child := range rec.Children {
+		if child != nil && child.AgentID == agentID {
+			return childStepID, true
+		}
+	}
+	return "", false
+}
+
 // markStepStarting records that a run_agent step's agent-start sequence
 // (which may block for seconds on worktree prep) is underway for taskID/stepID,
 // before an agent ID exists to register in agentRoutes. Paired with
@@ -901,9 +944,11 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 
 	e.logger.Info(logPrefix, "task_id", taskID, "step", step.ID)
 	comp, rErr := e.executeSteps(taskID, def, step, t.Workflow)
+	rErr = normalizeExecuteStepsErr(rErr)
 	if rErr == nil && e.shouldRetryGhostPark(taskID, step.ID) {
 		e.logger.Info(logPrefix+".retry", "task_id", taskID, "step", step.ID)
 		comp, rErr = e.executeSteps(taskID, def, step, t.Workflow)
+		rErr = normalizeExecuteStepsErr(rErr)
 	}
 	e.fireComplete(comp)
 	e.drainPendingConflictRecovery(taskID)
@@ -912,8 +957,21 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 		e.surfaceStartFailure(taskID, t.Status, rErr, t.Workflow, step.ID)
 		return
 	}
-	e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
-	e.clearWatchdogReaskNote(taskID, t.Workflow)
+	cleanupWorkflow := e.workflowForPostDispatchCleanup(taskID)
+	e.clearCircuitBreakerOnSuccess(taskID, cleanupWorkflow, step.ID)
+	e.clearWatchdogReaskNote(taskID, cleanupWorkflow)
+}
+
+func (e *Engine) workflowForPostDispatchCleanup(taskID string) *Execution {
+	if taskID == "" {
+		return nil
+	}
+	fresh, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		e.logger.Error("workflow.post-dispatch-cleanup.get", "task_id", taskID, "err", err)
+		return nil
+	}
+	return fresh.Workflow
 }
 
 func (e *Engine) shouldRetryGhostPark(taskID, stepID string) bool {
@@ -1053,7 +1111,7 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 
 func isResumableStepType(t StepType) bool {
 	switch t {
-	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN:
+	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN, StepAdmissionPreflight:
 		return true
 	default:
 		return false
@@ -1189,7 +1247,7 @@ func (e *Engine) handleMissingStep(t *TaskInfo) {
 }
 
 func (e *Engine) ResumeStalled() {
-	if e.dispatchDisabled {
+	if e.dispatchDisabled.Load() {
 		return
 	}
 	// Prune stale admission-queue items (missing/terminal/in-progress tasks)
@@ -1308,7 +1366,7 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 		return
 	}
 
-	e.finishResumeStalledStep(t.ID, &def, step, t.Workflow, fresh)
+	e.finishResumeStalledStep(t.ID, &def, step, fresh.Workflow, fresh)
 }
 
 // resolveFreshTaskForResume re-reads and reconciles the task's current step to guard
@@ -1366,6 +1424,7 @@ func (e *Engine) resumeStalledReconcileWaitHumanStatus(t TaskInfo, step *Step) {
 func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *Step, wf *Execution, fresh TaskInfo) {
 	e.logger.Info("workflow.resume-stalled", "task_id", taskID, "step", step.ID)
 	comp, rErr := e.executeSteps(taskID, def, step, wf)
+	rErr = normalizeExecuteStepsErr(rErr)
 	e.clearResumeDispatching(taskID)
 	// Most resumable steps dispatch async work and return nil; sync retry steps
 	// such as verify_checks can finish the workflow here.
@@ -1376,9 +1435,10 @@ func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *S
 		e.surfaceStartFailure(taskID, fresh.Status, rErr, fresh.Workflow, step.ID)
 		return
 	}
-	e.clearTransientFetchRetry(fresh.ID, fresh.Workflow, step.ID)
-	e.clearCircuitBreakerOnSuccess(fresh.ID, fresh.Workflow, step.ID)
-	e.clearWatchdogReaskNote(fresh.ID, fresh.Workflow)
+	cleanupWorkflow := e.workflowForPostDispatchCleanup(taskID)
+	e.clearTransientFetchRetry(fresh.ID, cleanupWorkflow, step.ID)
+	e.clearCircuitBreakerOnSuccess(fresh.ID, cleanupWorkflow, step.ID)
+	e.clearWatchdogReaskNote(fresh.ID, cleanupWorkflow)
 }
 
 // handleWatchdogRetries checks both bounded watchdog stop-retry paths — a

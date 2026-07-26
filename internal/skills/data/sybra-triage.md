@@ -27,11 +27,10 @@ Classify pending tasks via the Go classifier. Go owns routing rules, tag validat
    - Rewrites the title into a clean imperative conventional-commit form (always, even if the input already looked fine)
    - Preserves the original title in the body
    - Assigns tags from the controlled vocabulary (backend, frontend, infra, docs, ci, auth, db, test + size + type), plus `noplan` and/or `trivial` when the task is small and trivially mechanical (dep bumps, CI fixes, typo/docs) so it skips planning (`noplan`) and, for the same class of task, also review + testing (`trivial`)
-   - Picks size (small|medium|large), type (bug|feature|refactor|review|chore|docs), and mode (headless|interactive)
+   - Picks size (small|medium|large) and type (bug|feature|refactor|review|chore|docs); mode is always `headless` (the interactive runner was removed)
    - Auto-matches a registered project if a github.com URL is in the title or body
    - Applies routing rules (work non-reviews → planning; medium/large features → planning; everything else → todo)
    - The plan/review/test workflows honor four escape-hatch tags on a task — `noplan` skips planning entirely (triage → implement, and for work tasks also skips the human plan-review gate), `nocritic` keeps planning but skips the plan critique, `trivial` skips both agentic code review and adversarial manual testing (straight to opening the PR after implementation), and `skip-testing` skips only adversarial manual testing after review has run. The classifier now **assigns `noplan` and/or `trivial` itself** for trivially mechanical small tasks, bounded by a deterministic floor (emitted only when size is `small` and type is not `feature`; `trivial` is additionally never emitted for type `bug` since it skips both verification gates; otherwise stripped in `ValidateVerdict`). `skip-testing` remains human/orchestrator-set only. Triage **preserves** any of these tags when already set, so a human/orchestrator can still force the opt-out on any task before triage and it survives unchanged.
-   - Forces `interactive` mode for `work` projects unless it's a PR review
    - Writes a `triage.classified` audit event
 
 3. Batch mode for larger queues:

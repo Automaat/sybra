@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -106,7 +107,10 @@ func (r *Handler) cancelSettledImplementationWorkflows(ctx context.Context, task
 		if t.PRNumber == 0 && pr.Number > 0 {
 			upd.PRNumber = task.Ptr(pr.Number)
 		}
-		updated, err := r.tasks.Update(t.ID, upd)
+		updated, err := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+			Source: "review.pr-monitor.cancel-implement",
+			Update: upd,
+		})
 		if err != nil {
 			r.logger.Error("pr-monitor.cancel-implement.status", "task_id", t.ID, "pr", pr.Number, "err", err)
 			continue
@@ -286,9 +290,12 @@ func (r *Handler) reactivateLinkedOwnPR(t *task.Task, livePR bool) *task.Task {
 	if !linkedOwnPRHumanRequiredDrift(t, livePR) {
 		return nil
 	}
-	updated, err := r.tasks.Update(t.ID, task.Update{
-		Status:       task.Ptr(task.StatusInReview),
-		StatusReason: task.Ptr(""),
+	updated, err := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+		Source: "review.pr-monitor.reactivate-linked-pr",
+		Update: task.Update{
+			Status:       task.Ptr(task.StatusInReview),
+			StatusReason: task.Ptr(""),
+		},
 	})
 	if err != nil {
 		r.logger.Error("pr-monitor.reactivate-linked-pr", "task_id", t.ID, "pr", t.PRNumber, "err", err)
@@ -547,17 +554,29 @@ func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs
 		}
 
 		priorReason := t.StatusReason
+		preTask := *t
 		tags := append(append([]string{}, t.Tags...), reconciledLatchTag)
-		updated, err := r.tasks.Update(t.ID, task.Update{
-			Status:       task.Ptr(task.StatusInReview),
-			StatusReason: task.Ptr(""),
-			Tags:         task.Ptr(tags),
+		updated, err := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+			Source: "review.pr-monitor.reconcile-blocker",
+			Update: task.Update{
+				Status:       task.Ptr(task.StatusInReview),
+				StatusReason: task.Ptr(""),
+				Tags:         task.Ptr(tags),
+			},
 		})
 		if err != nil {
 			r.logger.Error("pr-monitor.reconcile-blocker", "task_id", t.ID, "pr", t.PRNumber, "err", err)
 			continue
 		}
 		tasks[i] = updated
+		// One of the two automated exit paths from human-required this
+		// package owns — see Handler.recordInterventionOnUnblock. Blocked
+		// (not human-required) tasks reconciled here are out of this
+		// feature's scope.
+		if preTask.Status == task.StatusHumanRequired {
+			r.recordInterventionOnUnblock(preTask, string(task.StatusInReview),
+				fmt.Sprintf("automatic reconciliation: %s blocker cleared", kind), intervention.OperatorActionAutoRecovery)
+		}
 		if r.prTracker != nil {
 			r.prTracker.Clear(t.ID, kind)
 		}

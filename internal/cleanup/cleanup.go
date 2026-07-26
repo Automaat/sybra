@@ -28,6 +28,7 @@ import (
 	"github.com/Automaat/sybra/internal/buildcache"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -310,6 +311,72 @@ func gitStatusClean(path string) bool {
 	return len(bytes.TrimSpace(out)) == 0
 }
 
+// hasUnpushedCommits reports whether the worktree at path holds commits not
+// on any remote. Unlike gitStatusClean this is never bypassed by --force: a
+// clean-but-unpushed worktree holds finished work with no other copy, which
+// --force exists to blow past for merely-dirty (in-progress, discardable)
+// state, not completed-but-undelivered commits (#2593).
+func hasUnpushedCommits(path string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return project.HasUnpushedCommits(ctx, path)
+}
+
+// sandboxWorktreeHasUnpushedCommits reports whether the sandbox dir's owning
+// task has a git worktree still holding commits not on any remote. A sandbox
+// (~/.sybra/sandboxes/<taskID>) is a separate per-task data dir from the git
+// worktree, so this resolves the task's worktree path and defers to the same
+// git check scanWorktrees uses — an unattended diskreclaim pass must never
+// reap a sandbox tied to completed-but-unpushed work (#2593). Mirrors
+// worktree.Manager.HasUnpushedCommits. Returns false — nothing to protect —
+// when the task, its project, or worktree cannot be resolved, or when the
+// worktree is externally adopted (owned by the tool that created it, so its
+// git state is not Sybra's to protect).
+func (s *Scanner) sandboxWorktreeHasUnpushedCommits(snap snapshot, taskID string) bool {
+	if taskID == "" || taskID == unknownTaskID {
+		return false
+	}
+	wtPath, ok := s.sandboxWorktreePath(snap, taskID)
+	if !ok {
+		return false
+	}
+	return hasUnpushedCommits(wtPath)
+}
+
+// sandboxWorktreePath resolves the Sybra-managed worktree path for taskID. For
+// a live task it uses DirName(); for a deleted task (record gone from snap) it
+// falls back to scanning the worktrees dir for a directory whose embedded task
+// ID matches — the deleted-task case is exactly the one the unpushed-commits
+// guard must protect, yet a live record no longer exists to compute DirName()
+// from (#2593). Externally-adopted worktrees (WorktreeDir set) are never
+// resolved: they live outside WorktreesDir, so the directory scan never
+// surfaces them either.
+func (s *Scanner) sandboxWorktreePath(snap snapshot, taskID string) (string, bool) {
+	if t, exists := snap.byID[taskID]; exists {
+		if t.ProjectID == "" || t.WorktreeDir != "" {
+			return "", false
+		}
+		wtPath := filepath.Join(s.cfg.WorktreesDir, t.DirName())
+		if _, err := os.Stat(wtPath); err != nil {
+			return "", false
+		}
+		return wtPath, true
+	}
+	entries, err := os.ReadDir(s.cfg.WorktreesDir)
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if taskIDFromWorktreeDir(e.Name()) == taskID {
+			return filepath.Join(s.cfg.WorktreesDir, e.Name()), true
+		}
+	}
+	return "", false
+}
+
 // resolveBucketNames returns the bucket names Scan/Apply should consider:
 // opts.Only when set (already validated by the caller), otherwise every
 // known bucket name (still subject to each bucket's own gate check).
@@ -501,7 +568,11 @@ func (s *Scanner) scanSandboxes(snap snapshot) Bucket {
 		if isSymlink(p) {
 			continue
 		}
-		if ok, _ := eligible(snap, sandboxTaskIDFromDir(e.Name()), p, retention, disabled, s.now()); !ok {
+		taskID := sandboxTaskIDFromDir(e.Name())
+		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.now()); !ok {
+			continue
+		}
+		if s.sandboxWorktreeHasUnpushedCommits(snap, taskID) {
 			continue
 		}
 		size, err := dirSize(p)
@@ -563,6 +634,9 @@ func (s *Scanner) scanWorktrees(snap snapshot, opts Options) Bucket {
 		}
 		taskID := taskIDFromWorktreeDir(e.Name())
 		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.now()); !ok {
+			continue
+		}
+		if hasUnpushedCommits(p) {
 			continue
 		}
 		if !opts.Force && !gitStatusClean(p) {
@@ -713,12 +787,21 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 		if bucketName == BucketSandboxes {
 			taskID = sandboxTaskIDFromDir(taskID)
 		}
-		return eligible(snap, taskID, path, retention, disabled, s.now())
+		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.now()); !ok {
+			return false, reason
+		}
+		if bucketName == BucketSandboxes && s.sandboxWorktreeHasUnpushedCommits(snap, taskID) {
+			return false, "owning task worktree has commits not pushed to any remote"
+		}
+		return true, "eligible"
 	case BucketWorktrees:
 		retention, disabled := s.sandboxRetention()
 		taskID := taskIDFromWorktreeDir(filepath.Base(path))
 		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.now()); !ok {
 			return false, reason
+		}
+		if hasUnpushedCommits(path) {
+			return false, "worktree has commits not pushed to any remote"
 		}
 		if !opts.Force && !gitStatusClean(path) {
 			return false, "worktree has uncommitted changes"

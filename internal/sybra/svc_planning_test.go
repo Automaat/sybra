@@ -709,7 +709,7 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 
 	// Direct store write, not TaskService.CreateTask: the latter's auto-triage
 	// goroutine would race this test's manual workflow setup.
-	created, err := app.tasks.Create("status hook task", "", "interactive")
+	created, err := app.tasks.Create("status hook task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}

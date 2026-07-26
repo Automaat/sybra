@@ -425,13 +425,13 @@ func (s *Store) safePath(id string) (string, error) {
 
 // Create writes a new task file with a fresh 8-char ID, status "todo", and
 // type "normal". mode defaults to AgentModeHeadless when empty and is
-// validated via ValidateAgentMode. Use CreateFull to set additional fields
-// (tags, project, priority, ...) atomically at creation time.
+// validated via ValidateMintableAgentMode. Use CreateFull to set additional
+// fields (tags, project, priority, ...) atomically at creation time.
 func (s *Store) Create(title, body, mode string) (Task, error) {
 	if mode == "" {
 		mode = AgentModeHeadless
 	}
-	if _, err := ValidateAgentMode(mode); err != nil {
+	if _, err := ValidateMintableAgentMode(mode); err != nil {
 		return Task{}, err
 	}
 	now := time.Now().UTC()
@@ -441,6 +441,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
+		Generation:      1,
 		AgentMode:       mode,
 		Attachments:     []Attachment{},
 		CreatedAt:       now,
@@ -473,7 +474,7 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	if mode == "" {
 		mode = AgentModeHeadless
 	}
-	if _, err := ValidateAgentMode(mode); err != nil {
+	if _, err := ValidateMintableAgentMode(mode); err != nil {
 		return Task{}, err
 	}
 	now := time.Now().UTC()
@@ -483,6 +484,7 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
+		Generation:      1,
 		AgentMode:       mode,
 		Attachments:     []Attachment{},
 		CreatedAt:       now,
@@ -789,6 +791,9 @@ func applyLinkFields(t *Task, u Update) {
 	if u.DependsOn != nil {
 		t.DependsOn = slices.Clone(*u.DependsOn)
 	}
+	if u.DependsOnConditions != nil {
+		t.DependsOnConditions = slices.Clone(*u.DependsOnConditions)
+	}
 }
 
 func applyUpdateFields(t *Task, u Update) error {
@@ -841,7 +846,7 @@ func applyUpdateFields(t *Task, u Update) error {
 		t.SupervisorSteer = *u.SupervisorSteer
 	}
 	if u.AgentMode != nil {
-		if _, err := ValidateAgentMode(*u.AgentMode); err != nil {
+		if _, err := ValidateMintableAgentMode(*u.AgentMode); err != nil {
 			return err
 		}
 		t.AgentMode = *u.AgentMode
@@ -887,6 +892,9 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.Attachments != nil {
 		t.Attachments = slices.Clone(*u.Attachments)
 	}
+	if u.EffectLog != nil {
+		t.EffectLog = slices.Clone(*u.EffectLog)
+	}
 	return nil
 }
 
@@ -920,6 +928,7 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 		t.TestingCycleStartedAt = &now
 	}
 	statusChangedBackfill := statusChangedAtBackfill(t, now)
+	t.Generation++
 	t.UpdatedAt = now
 	if t.Status != prevStatus {
 		t.StatusChangedAt = now

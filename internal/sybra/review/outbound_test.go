@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -1070,6 +1072,61 @@ func TestReconcileHumanRequiredBlockersClearsOnCleanPR(t *testing.T) {
 	}
 	if !hasLatch {
 		t.Error("expected reconciledLatchTag after blocker reconciliation")
+	}
+}
+
+// TestReconcileHumanRequiredBlockersRecordsIntervention proves the
+// sybra#2468 plan-critic finding is fixed: reconcileHumanRequiredBlockers is
+// one of two automated exit paths from human-required that bypassed the
+// original single-hook design entirely, making the auto_recovery
+// classification unreachable. It must now record an intervention itself.
+func TestReconcileHumanRequiredBlockersRecordsIntervention(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+
+	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := projStore.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.projects = projStore
+	r.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
+	al, err := audit.NewLogger(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	r.audit = al
+	store, err := intervention.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.intervention = store
+
+	mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}}
+	r.reconcileHumanRequiredBlockers(all, prs)
+
+	records, err := store.Query(intervention.ProjectKey(proj), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
+	}
+	if records[0].OperatorActionClass != intervention.OperatorActionAutoRecovery {
+		t.Fatalf("OperatorActionClass = %q, want %q", records[0].OperatorActionClass, intervention.OperatorActionAutoRecovery)
+	}
+	if records[0].ToStatus != string(task.StatusInReview) {
+		t.Fatalf("ToStatus = %q, want %q", records[0].ToStatus, task.StatusInReview)
 	}
 }
 

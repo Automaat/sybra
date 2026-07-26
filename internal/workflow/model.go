@@ -182,6 +182,34 @@ const (
 	// session involved. Replaces a run_agent step that wrapped a full Sonnet
 	// agent invoking the /sybra-triage skill around this same classifier.
 	StepClassifyTask StepType = "classify_task"
+	// StepAdmissionPreflight runs deterministic pre-dispatch admission checks
+	// (plan contract schema/capability validation, oversize scope limits,
+	// push credential readiness) before any code-author agent is dispatched —
+	// see execAdmissionPreflight (engine_steps_admission.go). Scope/content
+	// problems (missing objective, unknown capability, oversize scope) and a
+	// non-transient credential failure both route through human-required —
+	// the former always blocker.KindOperatorDecision, the latter
+	// blocker.KindCredentialRequired — as terminal (no automatic re-attempts),
+	// matching blocker.AllowsHumanRequired. A transient/rate-limited
+	// credential-preflight error is NOT terminal: classifyAdmissionCredentialError
+	// parks the step for a bounded retry instead, mirroring push_branch/
+	// create_pr's identical classification of the same error. Resumable —
+	// see isResumableStepType — so a crash between persisting CurrentStep and
+	// executing it does not strand the task.
+	StepAdmissionPreflight StepType = "admission_preflight"
+	// StepRequireEvidence is the final deterministic completion gate: it
+	// asserts every criterion applicable to the task (verify_checks,
+	// detect_tampering, the test-runner verdict when testing ran, review when
+	// the task went through review) has a recorded CompletionEvidence entry
+	// that passed and is fresh for the task's current HEAD — see
+	// execRequireEvidence (engine_steps_evidence.go). A no-op when the
+	// require_evidence gate is disabled (config.EvidenceConfig.Enabled=false,
+	// the default) or when no evidence has ever been recorded for the task
+	// (an in-flight task from before evidence collection started). Otherwise,
+	// any missing, failed, or stale criterion flips the task to
+	// human-required with a terminal blocker.KindOperatorDecision — a human
+	// must re-run the missing proof, not retry the same dispatch.
+	StepRequireEvidence StepType = "require_evidence"
 )
 
 // Best-of-N attempt count bounds enforced by Definition.Validate. A floor of

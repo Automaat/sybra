@@ -27,6 +27,7 @@ type Config struct {
 	Triage         TriageConfig         `yaml:"triage" json:"triage"`
 	HumanReview    HumanReviewConfig    `yaml:"human_review" json:"humanReview"`
 	ReviewHold     ReviewHoldConfig     `yaml:"review_hold" json:"reviewHold"`
+	Admission      AdmissionConfig      `yaml:"admission" json:"admission"`
 	Monitor        MonitorConfig        `yaml:"monitor" json:"monitor"`
 	Watchdog       WatchdogConfig       `yaml:"watchdog" json:"watchdog"`
 	SelfMonitor    SelfMonitorConfig    `yaml:"self_monitor" json:"selfMonitor"`
@@ -35,6 +36,7 @@ type Config struct {
 	HarnessEvolve  HarnessEvolveConfig  `yaml:"harness_evolution" json:"harnessEvolution"`
 	PromptLab      PromptLabConfig      `yaml:"prompt_lab" json:"promptLab"`
 	Experience     ExperienceConfig     `yaml:"experience" json:"experience"`
+	Intervention   InterventionConfig   `yaml:"intervention" json:"intervention"`
 	ABTesting      abtest.Config        `yaml:"ab_testing" json:"abTesting"`
 	Routing        RoutingConfig        `yaml:"routing" json:"routing"`
 	Providers      ProvidersConfig      `yaml:"providers" json:"providers"`

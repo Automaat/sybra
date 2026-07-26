@@ -12,11 +12,11 @@ Regenerate with `go generate ./internal/config/...` after changing a struct tag 
 |---|---|---|
 | `instance` | Machine role, local routing, and operator-scoped UX defaults. | `instance`, `instance.project_types` |
 | `execution` | How Sybra launches and routes agent work across providers and local backends. | `execution.agent`, `execution.providers` |
-| `workflow` | Task-stage policy, planning/testing orchestration, and board-driven automation. | `workflow.orchestrator`, `workflow.testing`, `workflow.triage`, `workflow.umbrella` |
+| `workflow` | Task-stage policy, planning/testing orchestration, and board-driven automation. | `workflow.orchestrator`, `workflow.testing`, `workflow.triage`, `workflow.umbrella`, `workflow.admission` |
 | `integrations` | External systems Sybra talks to on the operator's behalf. | `integrations.notification`, `integrations.github`, `integrations.renovate`, `integrations.browser` |
 | `supervision` | Health checks, review escalation, and autonomous oversight loops. | `supervision.human_review`, `supervision.monitor`, `supervision.watchdog`, `supervision.self_monitor`, `supervision.evaluation`, `supervision.learning_digest`, `supervision.harness_evolution`, `supervision.prompt_lab` |
 | `storage` | Filesystem-backed retention and path layout under SYBRA_HOME. | `storage.attachments`, `storage.trash`, `storage.sandboxes`, `storage.task_snapshot`, `storage.paths` |
-| `observability` | Logs, audit, metrics, experimentation, and operator evidence retention. | `observability.logging`, `observability.audit`, `observability.metrics`, `observability.experience`, `observability.ab_testing` |
+| `observability` | Logs, audit, metrics, experimentation, and operator evidence retention. | `observability.logging`, `observability.audit`, `observability.metrics`, `observability.experience`, `observability.intervention`, `observability.ab_testing` |
 | `routing` | Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes. | `routing` |
 | `server` | Local API/server exposure and auth for the running Sybra instance. | `server` |
 | `webhook` | Inbound external task-creation webhook listener and request-signing controls. | `webhook` |
@@ -53,7 +53,6 @@ How Sybra launches and routes agent work across providers and local backends.
 |---|---|---|---|---|---|---|---|---|---|
 | `execution.agent.provider` | `string` | `"claude"` |  |  | `agent.provider` | `false` | `hot` |  |  |
 | `execution.agent.model` | `string` | `""` |  |  | `agent.model` | `false` | `hot` |  |  |
-| `execution.agent.mode` | `string` | `""` |  |  | `agent.mode` | `false` | `hot` |  |  |
 | `execution.agent.max_concurrent` | `int` | `25` |  |  | `agent.max_concurrent` | `false` | `hot` |  |  |
 | `execution.agent.research_machine_dir` | `string` | `""` |  |  | `agent.research_machine_dir` | `false` | `hot` |  |  |
 | `execution.agent.post_result_cost_usd` | `float64` | `5` |  |  | `agent.post_result_cost_usd`, `agent.max_cost_usd` | `false` | `hot` |  | PostResultCostUSD is a reactive per-run USD circuit breaker: Sybra checks it only when the provider emits a terminal result event, after that spend is already incurred. 0 (default in raw zero values, 5 in fresh installs) disables the breaker. |
@@ -76,7 +75,7 @@ How Sybra launches and routes agent work across providers and local backends.
 | `execution.agent.survive_restart` | `*bool` | _(nil)_ |  |  | `agent.survive_restart` | `false` | `hot` |  | SurviveRestart keeps agent subprocesses running across an app restart (detached, output streamed to their log files) and reattaches to them on the next startup. nil means not configured (defaults to true). Set false to revert to the legacy behaviour where agents are killed on shutdown and recovered via restart-stale. |
 | `execution.agent.approval_port` | `int` | `0` |  |  | `agent.approval_port` | `false` | `hot` |  | ApprovalPort pins the localhost port of the PreToolUse approval server. The hook URL is baked into a permission-gated agent's --settings at spawn, so a fixed port lets a detached agent's approval requests still resolve after a restart. 0 (default) binds a random port (no cross-restart approval survival). |
 | `execution.agent.headless_permission_mode` | `string` | `""` |  |  | `agent.headless_permission_mode` | `false` | `hot` |  | HeadlessPermissionMode sets the default permission posture for unattended headless claude runs. "bypass" (default) keeps the current --dangerously-skip-permissions behavior. "auto" emits --permission-mode auto which activates the Claude Code auto-mode classifier (blocks destructive ops such as rm -rf $HOME, force-push, terraform destroy). Empty treated as "bypass". |
-| `execution.agent.dispatch_jitter_ms` | `int` | `1000` |  |  | `agent.dispatch_jitter_ms` | `false` | `hot` |  | DispatchJitterMs bounds a uniform random delay applied before headless agent dispatch, so a wave of concurrently ready tasks does not all probe the provider health gate in the same tick. 0 disables jitter. Never applied to interactive/chat dispatch. Default 1000 — set 0 to disable. |
+| `execution.agent.dispatch_jitter_ms` | `int` | `1000` |  |  | `agent.dispatch_jitter_ms` | `false` | `hot` |  | DispatchJitterMs bounds a uniform random delay applied before headless agent dispatch, so a wave of concurrently ready tasks does not all probe the provider health gate in the same tick. 0 disables jitter. Default 1000 — set 0 to disable. |
 | `execution.agent.sandbox_mode` | `string` | `""` |  |  | `agent.sandbox_mode` | `false` | `hot` |  | SandboxMode sets the default OS-level process-sandbox posture for agent subprocesses (darwin: sandbox-exec seatbelt, linux: bwrap). "off" spawns unwrapped with no validation. "report" (default) validates and logs the resolved write allowlist (worktree/sandbox-home/tmp plus task-scoped git metadata) without ever wrapping the spawn, so a profile/wrapper defect can only affect an explicit "enforce" posture, never the default rollout posture. "enforce" actually wraps the spawn and blocks writes outside that allowlist, failing the spawn closed if the wrapper is unavailable. Empty treated as "report". |
 | `execution.agent.headless_steerable` | `*bool` | _(nil)_ |  |  | `agent.headless_steerable` | `false` | `hot` |  | HeadlessSteerable controls whether headless claude runs launch with the stdin/stream-json shape that accepts mid-run steer messages (instead of the legacy one-shot `-p <prompt>` invocation). nil means not configured (defaults to true). Set false to restore the legacy launch shape with no stdin transport — a config-only rollback with no code revert. |
 | `execution.agent.default_project_id` | `string` | `""` |  |  | `agent.default_project_id` | `false` | `hot` |  | DefaultProjectID pins the project a project-less task auto-assigns to when it needs an isolated worktree (e.g. a meta/self-referential task routed to the plan step). Without it, auto-assignment only fires when exactly one project is registered — on a machine with two or more projects, a project-less task can never dispatch and always ends up human-required. Empty means no default (falls back to the sole-project behavior). |
@@ -85,6 +84,7 @@ How Sybra launches and routes agent work across providers and local backends.
 | `execution.agent.k8s_jobs` | `K8sJobsConfig` | _(see below)_ |  |  |  | `false` |  |  | K8sJobs configures an experimental backend that runs headless agents as short-lived Kubernetes Jobs instead of local subprocesses. |
 | `execution.agent.queue` | `QueueConfig` | _(see below)_ |  |  |  | `false` |  |  | Queue configures the agent-dispatch admission queue (internal/agentqueue) that a workflow implementation dispatch falls back to when the agent pool is saturated, instead of erroring or wasting a worktree prep. |
 | `execution.agent.class_reservations` | `map[string]int` |  |  |  | `agent.class_reservations` | `false` | `hot` |  | ClassReservations reserves a configurable minimum number of concurrent slots per workload class ("implementation", "completion", "system" — see agent.Role.WorkloadClass), so one class saturating the shared pool (e.g. a retry storm of system/monitor work) cannot starve another. Keys outside the known class set, or a sum exceeding MaxConcurrent, fail config validation. Empty/nil (the default) reproduces the pre-class- isolation single shared pool exactly — this feature is opt-in. |
+| `execution.agent.evidence` | `EvidenceConfig` | _(see below)_ |  |  |  | `false` |  |  | Evidence gates the workflow engine's require_evidence completion gate (agent.evidence.enabled — see config_evidence.go). |
 
 ### PlaywrightMCPConfig (`execution.agent.playwright_mcp`)
 
@@ -149,6 +149,20 @@ QueueConfig configures the agent-dispatch admission queue.
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `execution.agent.queue.max_depth` | `int` | `0` |  |  | `agent.queue.max_depth` | `false` | `hot` |  | MaxDepth caps the number of distinct tasks the admission queue holds at once (agentqueue.Options.MaxDepth). 0 means unbounded. Once full, a new task that can't get a pool slot is rejected with a normal dispatch error instead of being queued. |
+
+### EvidenceConfig (`execution.agent.evidence`)
+
+EvidenceConfig gates the workflow engine's require_evidence step (see
+internal/workflow/engine_steps_evidence.go), the final deterministic
+completion gate that blocks a task from landing until every criterion
+applicable to it (verify_checks, detect_tampering, the test-runner
+verdict, review) has fresh, passing evidence recorded for the task's
+current HEAD. Lives under AgentDefaults — resolved config key
+agent.evidence.enabled.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `execution.agent.evidence.enabled` | `bool` | `false` |  |  | `agent.evidence.enabled` | `false` | `restart` |  | Enabled turns the require_evidence gate on. Defaults false (see applyEvidenceDefaults) — the underlying producers (verify_checks, detect_tampering, codegen_gate, focused_checks, the test-runner, and review) always record evidence regardless of this flag, so enabling it later gates against history that was already being collected rather than starting cold. |
 
 ### ProvidersConfig (`execution.providers`)
 
@@ -297,6 +311,21 @@ atomically applies the verdict (title, tags, size/type, mode, project).
 | `workflow.triage.poll` | `int` | `60` | `seconds` |  | `triage.poll_seconds`, `triage.poll` | `false` | `hot` |  |  |
 | `workflow.triage.model` | `string` | `""` |  |  | `triage.model` | `false` | `hot` |  |  |
 
+### AdmissionConfig (`workflow.admission`)
+
+AdmissionConfig gates the workflow engine's admission_preflight step (see
+internal/workflow/engine_steps_admission.go), a deterministic pre-dispatch
+check that rejects a task's plan contract for missing admission facts
+(objective, unrecognized required_capabilities), oversized scope, or a
+failing push-credential preflight — before any code-author agent is
+dispatched.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `workflow.admission.enabled` | `bool` | `true` |  |  | `admission.enabled` | `false` | `restart` |  | Enabled turns the admission_preflight step's checks on. Defaults true (see applyAdmissionDefaults) — safe because a contract with no schema_version (every contract generated before this feature shipped) validates exactly as it did before this migration, and the size limits below default to 0 (disabled), so enabling this does not retroactively block any in-flight task. |
+| `workflow.admission.max_acceptance_criteria` | `int` | `0` |  |  | `admission.max_acceptance_criteria` | `false` | `restart` |  | MaxAcceptanceCriteria caps a plan contract's acceptance_criteria count before admission_preflight flags the task as oversized (an operator_decision human-required, not an automatic split — auto-split is deferred, see #2466 Fix point 5). Zero disables the limit. |
+| `workflow.admission.max_change_surface_files` | `int` | `0` |  |  | `admission.max_change_surface_files` | `false` | `restart` |  | MaxChangeSurfaceFiles caps a plan contract's files count the same way. Zero disables the limit. |
+
 ## Integrations
 
 External systems Sybra talks to on the operator's behalf.
@@ -333,7 +362,7 @@ External systems Sybra talks to on the operator's behalf.
 | `integrations.github.renovate_slow` | `int` | `0` | `seconds` |  | `github.renovate_slow_seconds`, `github.renovate_slow` | `false` | `restart` |  |  |
 | `integrations.github.app` | `GitHubAppConfig` | _(see below)_ |  |  |  | `false` |  |  | App configures GitHub App installation-token auth. When enabled, Sybra mints a short-lived installation token and injects it into the gh subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall back to gh's own auth. |
 | `integrations.github.native_auto_merge` | `bool` | `false` |  |  | `github.native_auto_merge` | `false` | `restart` |  | NativeAutoMerge is a kill-switch for arming GitHub's native `gh pr merge --auto` on pet-project PRs once Sybra's own review/fix cycle is done and the base branch's protection supports it. It is an accelerator on top of the existing green-gated MergePR path, not a replacement — when unsupported or disabled the legacy merge stays the fallback. Default off (zero value = false). |
-| `integrations.github.auto_resolve_clean_merges` | `bool` | `false` |  |  | `github.auto_resolve_clean_merges` | `false` | `restart` |  | AutoResolveCleanMerges is a kill-switch for the deterministic clean-merge fast-path: before dispatching a conflict-recovery agent, Sybra attempts a plain `git merge` of the PR's base branch in Go. When that merge creates a commit with no conflicting hunks, it is pushed and no agent is spawned; conflicts, no-op merges, and errors still fall through to the agent-assisted path. Default off (zero value = false). |
+| `integrations.github.auto_resolve_clean_merges` | `bool` | `false` |  |  | `github.auto_resolve_clean_merges` | `false` | `restart` |  | AutoResolveCleanMerges is a kill-switch for the deterministic clean-merge fast-path used before dispatching any review/fix-review round on a PR: Sybra attempts a plain `git merge` of the PR's base branch in Go. For a lone conflict issue, a merge that creates a commit with no conflicting hunks is pushed and no agent is spawned; for every other issue (comments, ci_failure, coalesced sets), the same clean merge is pushed as a non-skipping pre-dispatch sync so the round never wastes a pass re-diagnosing a stale-diff artifact. Conflicts, no-op merges, and errors always fall through to the agent-assisted path. Default off (zero value = false). |
 | `integrations.github.flaky_detection` | `bool` | `false` |  |  | `github.flaky_detection` | `false` | `restart` |  | FlakyDetection is a kill-switch for same-commit CI flakiness classification. When true, a lone ci_failure issue is classified via ClassifyCIFlakiness (the head commit's full check-run history, not just the latest attempt) before it is escalated to a fix agent or a human: a check that both passed and failed on the same SHA at or above FlakySuccessThreshold is flaky, and gets a targeted rerun plus a distinct audit event instead. Default off (zero value = false). |
 | `integrations.github.flaky_success_threshold` | `float64` | `0` |  |  | `github.flaky_success_threshold` | `false` | `restart` |  | FlakySuccessThreshold is the minimum same-check success rate (0-1) for a currently-failing gating check to be classified flaky rather than deterministic. Zero falls back to the built-in default; see GitHubConfig.FlakyThreshold(). |
 
@@ -427,7 +456,7 @@ laptop with the source checkout, leave disabled on the server.
 | `supervision.human_review.enabled` | `bool` | `false` |  |  | `human_review.enabled` | `false` | `hot` |  |  |
 | `supervision.human_review.sybra_repo_dir` | `string` | `""` |  |  | `human_review.sybra_repo_dir` | `false` | `hot` |  | SybraRepoDir is the fallback working directory used only when a task has no worktree of its own (e.g. project-less, or the recorded worktree was cleaned up) — see humanReviewDispatchDir. It must be a dedicated checkout, distinct from auto_update.repo_dir: the review agent is dispatched with RunConfig.ReadOnlyDir=true in that fallback case, so the OS process sandbox denies writes to it under enforce regardless, but pointing it at the live deploy/build checkout is still wrong on principle — this diagnostic agent has no business sharing a directory that autoupdate concurrently ff-merges and builds from. |
 | `supervision.human_review.repo` | `string` | `""` |  |  | `human_review.repo` | `false` | `hot` |  | Repo is the owner/name project_id assigned to local sybra-bug tasks. Defaults to "Automaat/sybra" when empty. |
-| `supervision.human_review.model` | `string` | `""` |  |  | `human_review.model` | `false` | `hot` |  | Model is the Claude model name or alias (e.g. "sonnet", "claude-haiku-4-5-20251001"). Defaults to "claude-haiku-4-5-20251001" when empty — diagnosis, not authoring. |
+| `supervision.human_review.model` | `string` | `""` |  |  | `human_review.model` | `false` | `hot` |  | Model is a provider-neutral alias ("sonnet", "haiku", "opus") — never a concrete provider-specific model ID, since the spawned provider follows the machine's configured agent.provider (claude, codex, ...) and a literal like "claude-haiku-4-5-20251001" is rejected outright by a non-Claude provider's CLI (see #2639). Defaults to "haiku" when empty — diagnosis, not authoring. |
 | `supervision.human_review.max_per_hour` | `int` | `0` |  |  | `human_review.max_per_hour` | `false` | `hot` |  | MaxPerHour caps how many review agents may be spawned in any rolling 60-minute window across all tasks on this machine. Zero falls back to DefaultHumanReviewMaxPerHour. |
 | `supervision.human_review.issue_label` | `string` | `""` |  |  | `human_review.issue_label` | `false` | `hot` |  | IssueLabel is a legacy setting from the removed GitHub issue filing path. Defaults to "sybra-bug". |
 | `supervision.human_review.sybra_bug_action` | `string` | `""` |  |  | `human_review.sybra_bug_action` | `false` | `hot` |  | SybraBugAction controls the side-effect for sybra_bug verdicts: note_only (default), local_task, or block_only. The legacy file_issue value is accepted but treated as note_only. |
@@ -712,6 +741,17 @@ Scalar/root keys that live directly under this namespace.
 | `observability.experience.enabled` | `bool` | `false` |  |  | `experience.enabled` | `false` | `hot` |  |  |
 | `observability.experience.max_records` | `int` | `5` |  |  | `experience.max_records` | `false` | `hot` |  |  |
 | `observability.experience.ttl` | `int` | `0` | `days` |  | `experience.ttl_days`, `experience.ttl` | `false` | `hot` |  | TTLDays expires records older than this many days out of injection — a stale record can otherwise poison a prompt with advice that no longer matches the current codebase. 0 (default) disables expiry, so existing deployments are unaffected until an operator opts in. |
+
+### InterventionConfig (`observability.intervention`)
+
+InterventionConfig gates capture of genuine human-required unblocks into a
+normalized, fingerprint-deduplicated intervention record (see
+internal/intervention) — advisory memory for a future replay fixture
+(sybra#2454), never a deterministic gate.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `observability.intervention.enabled` | `bool` | `true` |  |  | `intervention.enabled` | `false` | `hot` |  | Enabled turns capture on. Defaults true (see applyInterventionDefaults) — safe because records are local-only, scrub-guarded for work projects, and feed no routing/admission/completion decision. |
 
 ### MetricsConfig (`observability.metrics`)
 

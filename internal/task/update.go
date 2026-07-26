@@ -2,10 +2,12 @@ package task
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/issueref"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -21,6 +23,7 @@ type Update struct {
 	BlockedByIssue        *string
 	UmbrellaIssue         *string
 	DependsOn             *[]string
+	DependsOnConditions   *[]DepCondition
 	AgentMode             *string
 	TaskType              *TaskType
 	Body                  *string
@@ -58,6 +61,7 @@ type Update struct {
 	MergeCommit           *string
 	TestingCycleStartedAt *time.Time
 	Attachments           *[]Attachment
+	EffectLog             *[]workflow.EffectRecord
 }
 
 func (u Update) writesSidecar() bool {
@@ -99,6 +103,8 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyPlainStringField(u, k, v)
 	case "depends_on":
 		return applyDependsOnField(u, k, v)
+	case "depends_on_conditions":
+		return applyDependsOnConditionsField(u, k, v)
 	case "handoff_source_provider":
 		return applyAgentProviderField(u, k, v)
 	case "priority":
@@ -317,7 +323,7 @@ func applyAgentModeField(u *Update, k string, v any) error {
 	if !ok {
 		return fmt.Errorf("field %q: want string, got %T", k, v)
 	}
-	mode, err := ValidateAgentMode(s)
+	mode, err := ValidateMintableAgentMode(s)
 	if err != nil {
 		return err
 	}
@@ -406,6 +412,83 @@ func applyDependsOnField(u *Update, k string, v any) error {
 		u.DependsOn = &parts
 	default:
 		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
+	}
+	return nil
+}
+
+// applyDependsOnConditionsField parses a full-replacement DependsOnConditions
+// list. This is the single validation boundary every caller goes through —
+// the CLI's --depends-on-condition flag, the HTTP API, and the Wails
+// binding — so a malformed or unknown Kind is rejected here at author time
+// rather than reaching a task file (see task.DepConditionKindLabel/Note and
+// holdUnmetConditions' fail-closed handling of the rare hand-edited-file case
+// that still slips past this).
+func applyDependsOnConditionsField(u *Update, k string, v any) error {
+	switch dv := v.(type) {
+	case []DepCondition:
+		conds := slices.Clone(dv)
+		if err := validateDepConditions(conds); err != nil {
+			return err
+		}
+		u.DependsOnConditions = &conds
+	case []any:
+		conds := make([]DepCondition, 0, len(dv))
+		for _, raw := range dv {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				return fmt.Errorf("field %q: want object element, got %T", k, raw)
+			}
+			c, err := depConditionFromMap(m)
+			if err != nil {
+				return err
+			}
+			conds = append(conds, c)
+		}
+		if err := validateDepConditions(conds); err != nil {
+			return err
+		}
+		u.DependsOnConditions = &conds
+	case nil:
+		empty := []DepCondition{}
+		u.DependsOnConditions = &empty
+	default:
+		return fmt.Errorf("field %q: want an array of {ref,kind,value} objects, got %T", k, v)
+	}
+	return nil
+}
+
+func depConditionFromMap(m map[string]any) (DepCondition, error) {
+	ref, _ := m["ref"].(string)
+	kind, _ := m["kind"].(string)
+	value, _ := m["value"].(string)
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return DepCondition{}, fmt.Errorf("depends_on_conditions: ref is required")
+	}
+	if kind != DepConditionKindLabel && kind != DepConditionKindNote {
+		return DepCondition{}, fmt.Errorf("depends_on_conditions: unknown kind %q for ref %q (valid: %s, %s)", kind, ref, DepConditionKindLabel, DepConditionKindNote)
+	}
+	if strings.TrimSpace(value) == "" {
+		return DepCondition{}, fmt.Errorf("depends_on_conditions: value is required for ref %q", ref)
+	}
+	return DepCondition{Ref: ref, Kind: kind, Value: value}, nil
+}
+
+// validateDepConditions rejects more than one condition per Ref — the gate
+// (holdUnmetConditions) only ever evaluates the first condition it finds for
+// a given ref, so a silently-accepted second condition on the same ref would
+// be silently inert rather than erroring where the mistake is made. The dedup
+// key is normalized via issueref.Normalize so a URL and its "owner/repo#n"
+// shorthand collapse to the same ref — the same equivalence matchesDepRef uses
+// at gate time, otherwise two spellings of one dep slip past this check.
+func validateDepConditions(conds []DepCondition) error {
+	seen := make(map[string]bool, len(conds))
+	for _, c := range conds {
+		key := issueref.Normalize(c.Ref)
+		if seen[key] {
+			return fmt.Errorf("depends_on_conditions: duplicate ref %q — only one condition per ref is supported", c.Ref)
+		}
+		seen[key] = true
 	}
 	return nil
 }

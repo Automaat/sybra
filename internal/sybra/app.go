@@ -34,10 +34,12 @@ import (
 	"github.com/Automaat/sybra/internal/diskreclaim"
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/logging"
@@ -87,7 +89,9 @@ type App struct {
 	audit             *audit.Logger
 	attachments       *attachment.Store
 	artifacts         *artifact.Store
+	evidenceStore     *evidence.Store
 	experience        *experience.Store
+	intervention      *intervention.Store
 	learning          *learning.Store
 	agentQueue        *agentqueue.Queue
 	stats             *stats.Store
@@ -150,6 +154,10 @@ type App struct {
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
+	// umbrellaFetchIssue fetches a dependency's closing issue to check a
+	// "label" DepCondition. nil defaults to github.FetchIssue; overridden in
+	// tests.
+	umbrellaFetchIssue func(repo string, number int) (github.Issue, error)
 
 	// umbrellaRecoveryMu guards umbrellaRecoveryInFlight — App-owned recovery
 	// coordination state (deliberately not a package-level map) for the
@@ -461,6 +469,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.agentOrch.SetContext(appCtx)
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 	a.reviewer.SetABTestingSource(a.abTestingConfig)
+	a.reviewer.SetInterventionStore(a.intervention)
 
 	a.initWorkflowEngine()
 
@@ -552,6 +561,21 @@ func (a *App) GetLifecyclePhases() evaluation.PhaseReport {
 		return evaluation.PhaseReport{}
 	}
 	return rep
+}
+
+// GetAutonomyTrend returns all-time / last-week / last-month autonomy
+// snapshots plus a week-by-week trend, so the Evaluation tab can show how
+// autonomy has moved over time instead of only the current rolling window.
+func (a *App) GetAutonomyTrend() evaluation.AutonomyTrend {
+	if a.evaluationSvc == nil {
+		return evaluation.AutonomyTrend{}
+	}
+	trend, err := a.evaluationSvc.AutonomyTrend(context.Background())
+	if err != nil {
+		a.logger.Warn("evaluation.autonomy_trend.failed", "err", err)
+		return evaluation.AutonomyTrend{}
+	}
+	return trend
 }
 
 // RunLearningDigestNow synchronously generates and persists a fresh Learning

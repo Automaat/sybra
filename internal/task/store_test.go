@@ -141,7 +141,7 @@ func TestStoreGet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	created, err := store.Create("Find me", "body", "interactive")
+	created, err := store.Create("Find me", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,13 +329,17 @@ func TestStoreUpdateAgentMode(t *testing.T) {
 	}
 
 	updated, err := store.Update(created.ID, Update{
-		AgentMode: Ptr("interactive"),
+		AgentMode: Ptr("headless"),
 	})
 	if err != nil {
 		t.Fatalf("update agent_mode: %v", err)
 	}
-	if updated.AgentMode != "interactive" {
-		t.Errorf("AgentMode = %q, want %q", updated.AgentMode, "interactive")
+	if updated.AgentMode != "headless" {
+		t.Errorf("AgentMode = %q, want %q", updated.AgentMode, "headless")
+	}
+
+	if _, err := store.Update(created.ID, Update{AgentMode: Ptr("interactive")}); err == nil {
+		t.Fatal("expected error updating agent_mode to removed interactive value")
 	}
 }
 

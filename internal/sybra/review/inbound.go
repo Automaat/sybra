@@ -247,25 +247,26 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 }
 
 // StaffCodeReviewPrompt returns the direct PR-review prompt shared by inbound
-// review automation and task enrichment. It authorizes creating an unsubmitted
-// pending review so headless agents do not stop to ask the operator, while
-// withholding submission and approval authority: these PRs are other people's
-// work, and an approval from the operator's account can satisfy a
-// required-reviewer gate. Kept in lockstep with the pr-review builtin workflow
-// prompts and backed by the gh PATH shim (agent.writeGhShim), which refuses
-// submitted review events if this instruction ever drifts.
+// review automation and task enrichment. It withholds only approval
+// authority: these PRs are other people's work, and an approval from the
+// operator's account can satisfy a required-reviewer gate. REQUEST_CHANGES
+// and COMMENT are feedback, not authority, so the prompt authorizes
+// submitting those directly instead of parking every review as an unsubmitted
+// pending draft. Kept in lockstep with the pr-review builtin workflow prompts
+// and backed by the gh PATH shim (agent.writeGhShim), which refuses submitted
+// APPROVE events if this instruction ever drifts.
 func StaffCodeReviewPrompt(projectID string, prNumber int) string {
 	return fmt.Sprintf(`Run /staff-code-review on https://github.com/%s/pull/%d
 
 This task is an authorized Sybra PR review for the linked project. Do not ask the operator for confirmation before posting your review.
 
-NEVER submit any review event. You have no approval authority, and a human must verify and submit the review on GitHub. Do not run `+"`gh pr review`"+`, do not run `+"`gh pr review --approve`"+`, and do not submit COMMENT, REQUEST_CHANGES, or APPROVE via `+"`gh api`"+`.
+You have no approval authority: NEVER submit an APPROVE review event. Do not run `+"`gh pr review --approve`"+` and do not submit `+"`event=APPROVE`"+` via `+"`gh api`"+`. REQUEST_CHANGES and COMMENT are feedback, not approval authority, so submit those directly instead of leaving them pending.
 
-Create exactly one PENDING (draft) pull-request review and leave it unsubmitted. Before creating it, fetch the PR head SHA and existing reviews; if a review for that head already contains the Sybra harness footer, do not create another review.
+Before posting, fetch the PR head SHA and existing reviews; if a review for that head already contains the Sybra harness footer, do not create another review.
 
-Use GitHub's review API so findings become inline comments, not one aggregated comment. Add each blocking correctness issue as a `+"`comments`"+` entry on the changed line it applies to. Put only the short verdict and summary in the draft review body. If the review is clean and has no inline findings, create a pending review with the clean summary body and no inline comments.
+Use GitHub's review API so findings become inline comments, not one aggregated comment. Add each blocking correctness issue as a `+"`comments`"+` entry on the changed line it applies to. Put only the short verdict and summary in the review body.
 
-Prefer `+"`gh api repos/%s/pulls/%d/reviews -X POST ...`"+` with explicit `+"`-f`"+`/`+"`-F`"+` fields such as `+"`comments[][path]`"+`, `+"`comments[][line]`"+`, `+"`comments[][side]=RIGHT`"+`, and `+"`comments[][body]`"+`. Omit `+"`event`"+` so GitHub leaves the review PENDING.
+Post via `+"`gh api repos/%s/pulls/%d/reviews -X POST ...`"+` with explicit `+"`-f`"+`/`+"`-F`"+` fields such as `+"`comments[][path]`"+`, `+"`comments[][line]`"+`, `+"`comments[][side]=RIGHT`"+`, and `+"`comments[][body]`"+`, then choose the event by verdict: at least one blocking finding, submit with `+"`-f event=REQUEST_CHANGES`"+`; no blocking finding but the review has notes worth surfacing, submit with `+"`-f event=COMMENT`"+`; nothing to say at all (fully clean, no findings), omit `+"`event`"+` so GitHub leaves the review PENDING for a human to approve.
 
 End the review summary and every review comment you post with a blank line then exactly this standalone harness attribution footer:
 
@@ -451,6 +452,10 @@ func (r *Handler) reconcileReviewPhases(tasks []task.Task, summary github.Review
 
 // reconcileReviewTask computes and applies the phase for a single review task.
 func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[string]github.PullRequest) {
+	key := reviewPRKey(t.ProjectID, t.PRNumber)
+	reqPR, inReq := requested[key]
+	apPR, inApproved := approved[key]
+
 	// An agent owning the PR short-circuits: surface "reviewing" without the
 	// extra GitHub round-trips.
 	if r.agents.HasRunningAgentForTask(t.ID) {
@@ -458,13 +463,13 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		// stale. Without clearing here the count never decays and a single fresh
 		// failure hours later can trip a circuit meant to catch a persistent one.
 		r.clearReconcileFailure(t)
+		// A running (possibly stuck/looping) review agent that already submitted a
+		// bogus approval would otherwise leave it live on GitHub for the whole run,
+		// since this branch skips the full self-approval path below (#2198).
+		r.reverseLiveSelfApproval(t, inApproved)
 		r.applyReviewPhase(t, computeReviewPhase(reviewSignals{AgentRunning: true}))
 		return
 	}
-
-	key := reviewPRKey(t.ProjectID, t.PRNumber)
-	reqPR, inReq := requested[key]
-	apPR, inApproved := approved[key]
 
 	// A conflicting PR is blocked on the author rebasing — surface "conflict" and
 	// sink it to the bottom of the lane, whatever the viewer's review state (the
@@ -488,6 +493,11 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	}
 	if res, decided := stickyConflictPhase(mergeable, t.ReviewPhase); decided {
 		r.clearReconcileFailure(t)
+		// The conflict phase outranks review state, but a self-approval is still a
+		// live green light on GitHub that native auto-merge would count the moment
+		// the conflict clears — reverse it now rather than waiting for the one poll
+		// where mergeability flips back and this branch stops short-circuiting.
+		r.reverseLiveSelfApproval(t, inApproved)
 		r.applyReviewPhase(t, res)
 		return
 	}
@@ -502,6 +512,11 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		return
 	}
 	r.clearReconcileFailure(t)
+
+	selfApproved := myState.Approved || inApproved
+	if selfApproved {
+		r.dismissSelfApproval(t, myState)
+	}
 
 	submitted := myState.Submitted || inApproved
 	headSHA := ""
@@ -545,7 +560,7 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	r.applyReviewPhase(t, computeReviewPhase(reviewSignals{
 		CostGuardrailStopped:      latestReviewRunStoppedByCostGuardrail(t),
 		HasDraft:                  myState.Pending,
-		ViewerApproved:            myState.Approved || inApproved,
+		SelfApproved:              selfApproved,
 		Submitted:                 submitted,
 		ReRequested:               inReq,
 		HeadSHA:                   headSHA,
@@ -553,6 +568,64 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		HeadLineageUnknown:        headLineageUnknown,
 		BaseOnlyMergeFromReviewed: baseOnlyMergeFromReviewed,
 	}))
+}
+
+// selfApprovalDismissMessage is left on GitHub's audit trail explaining why
+// an approval was reversed the moment it was detected.
+const selfApprovalDismissMessage = "Dismissed automatically by Sybra: our own bot identity approved its own review task, which can never stand in for a human review."
+
+// reverseLiveSelfApproval dismisses a live bot self-approval before the
+// agent-running and conflict short-circuits in reconcileReviewTask return,
+// which would otherwise skip the full self-approval path and leave a bogus
+// APPROVED review standing on GitHub for the whole agent run / conflict window.
+//
+// The REST round-trip is spent only when the cheap approvals-only summary leg
+// (inApproved) already flags an approval, so the common no-approval path keeps
+// the short-circuit's zero-round-trip cost. Escalation to human-required is not
+// attempted here — the short-circuit phases (reviewing/conflict) stand; the
+// full self-approval escalation runs on the next fall-through poll.
+func (r *Handler) reverseLiveSelfApproval(t *task.Task, inApproved bool) {
+	if !inApproved {
+		return
+	}
+	myStateFn := github.FetchMyReviewState
+	if r.fetchMyReviewStateFn != nil {
+		myStateFn = r.fetchMyReviewStateFn
+	}
+	myState, err := myStateFn(t.ProjectID, t.PRNumber)
+	if err != nil {
+		r.logger.Warn("review.self-approval.probe", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+		return
+	}
+	r.dismissSelfApproval(t, myState)
+}
+
+// dismissSelfApproval reverses an approval our own bot identity submitted on
+// a PR it is reviewing. This is never a legitimate green light — it means an
+// approval escaped the gh shim's PreToolUse-adjacent floor (internal/agent's
+// ghshim.go) or was otherwise submitted under the bot's own credentials
+// rather than a human's — so the outcome, not just the attempt, is caught and
+// reversed here (#2198).
+//
+// Best-effort: myState is only populated with a review ID when the REST
+// fetch itself observed the approval (myState.Approved), so an inApproved-only
+// detection (stale search-leg signal, REST already shows something else) has
+// nothing to dismiss yet — computeReviewPhase still keeps the task out of the
+// "approved" phase regardless. A dismissal failure is logged, never fatal:
+// escalating the task to human-required does not depend on it succeeding.
+func (r *Handler) dismissSelfApproval(t *task.Task, myState github.MyReviewState) {
+	if !myState.Approved || myState.ReviewID == 0 {
+		return
+	}
+	dismissFn := github.DismissReview
+	if r.dismissReviewFn != nil {
+		dismissFn = r.dismissReviewFn
+	}
+	if err := dismissFn(t.ProjectID, t.PRNumber, myState.ReviewID, selfApprovalDismissMessage); err != nil {
+		r.logger.Error("review.self-approval.dismiss-failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+		return
+	}
+	r.logAudit(audit.EventReviewSelfApprovalDismissed, t.ID, "", map[string]any{"pr": t.PRNumber, "repo": t.ProjectID})
 }
 
 func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {
