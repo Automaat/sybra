@@ -583,38 +583,10 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 				return nil, wrapDispatchErr(step.ID, execErr)
 			}
 		}
-		if step.Type == StepPromoteBestOfN {
-			// execPromoteBestOfN reloads and persists the freshest workflow state
-			// itself so it can preserve judge-step vars and the promoted canonical
-			// dir. Continue from that persisted copy rather than the stale pre-step
-			// wfExec passed into executeSteps.
-			fresh, err := e.tasks.GetTask(taskID)
-			if err != nil {
-				return nil, err
-			}
-			if fresh.Workflow != nil {
-				wfExec = fresh.Workflow
-			}
-		}
-
-		now := time.Now().UTC()
-		wfExec.RecordStep(StepRecord{
-			StepID:    step.ID,
-			Status:    output.Status,
-			Output:    truncate(output.Output, 4000),
-			StartedAt: now,
-			EndedAt:   now,
-		})
-		if output.Output != "" {
-			wfExec.SetVar("step."+step.ID+".output", truncate(output.Output, 2000))
-		}
-
-		// Re-read task for latest state (set_status changes task).
-		t, err = e.tasks.GetTask(taskID)
+		wfExec, t, err = e.recordSyncStepOutput(taskID, step, wfExec, output, t)
 		if err != nil {
 			return nil, err
 		}
-		t.Workflow = wfExec
 
 		nextStep, comp, nErr := e.resolveNext(taskID, def, step, wfExec, t)
 		if nErr != nil {
@@ -640,6 +612,45 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		step = nextStep
 	}
 	return nil, fmt.Errorf("workflow exceeded max sync step depth (%d)", maxSyncSteps)
+}
+
+// recordSyncStepOutput handles post-execution bookkeeping for a sync step:
+// it reloads the workflow state for BestOfN steps, records the step result,
+// and re-reads the task to pick up any status changes made by the step.
+func (e *Engine) recordSyncStepOutput(taskID string, step *Step, wfExec *Execution, output StepOutput, t TaskInfo) (*Execution, TaskInfo, error) {
+	if step.Type == StepPromoteBestOfN {
+		// execPromoteBestOfN reloads and persists the freshest workflow state
+		// itself so it can preserve judge-step vars and the promoted canonical
+		// dir. Continue from that persisted copy rather than the stale pre-step
+		// wfExec passed into executeSteps.
+		fresh, err := e.tasks.GetTask(taskID)
+		if err != nil {
+			return nil, t, err
+		}
+		if fresh.Workflow != nil {
+			wfExec = fresh.Workflow
+		}
+	}
+
+	now := time.Now().UTC()
+	wfExec.RecordStep(StepRecord{
+		StepID:    step.ID,
+		Status:    output.Status,
+		Output:    truncate(output.Output, 4000),
+		StartedAt: now,
+		EndedAt:   now,
+	})
+	if output.Output != "" {
+		wfExec.SetVar("step."+step.ID+".output", truncate(output.Output, 2000))
+	}
+
+	// Re-read task for latest state (set_status changes task).
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return nil, t, err
+	}
+	t.Workflow = wfExec
+	return wfExec, t, nil
 }
 
 func (e *Engine) claimAndRevalidateStepEffect(taskID string, step *Step, t *TaskInfo, wfExec **Execution) (EffectID, bool, error) {
