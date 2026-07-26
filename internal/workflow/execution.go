@@ -220,6 +220,12 @@ func (e *Execution) Clone() *Execution {
 	}
 	if e.EffectLog != nil {
 		cloned.EffectLog = slices.Clone(e.EffectLog)
+		for i := range cloned.EffectLog {
+			if cloned.EffectLog[i].CompletedAt != nil {
+				t := *cloned.EffectLog[i].CompletedAt
+				cloned.EffectLog[i].CompletedAt = &t
+			}
+		}
 	}
 	return &cloned
 }

@@ -339,3 +339,21 @@ func TestEffectLog_CloneIsolation(t *testing.T) {
 		t.Fatal("mutating clone's EffectLog should not affect original")
 	}
 }
+
+func TestEffectLog_CloneDeepCopiesCompletedAt(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	e.RecordEffectIntent(id, time.Now())
+	e.RecordEffectCompletion(id, time.Now())
+
+	cloned := e.Clone()
+	if cloned.EffectLog[0].CompletedAt == e.EffectLog[0].CompletedAt {
+		t.Fatal("clone should not alias original's CompletedAt pointer")
+	}
+
+	original := *e.EffectLog[0].CompletedAt
+	*cloned.EffectLog[0].CompletedAt = original.Add(time.Hour)
+	if !e.EffectLog[0].CompletedAt.Equal(original) {
+		t.Fatal("mutating clone's CompletedAt pointee should not affect original")
+	}
+}
