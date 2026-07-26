@@ -145,3 +145,46 @@ func TestReconcileRunnableBoardTasks_ConvergedInboundReviewIsNoOp(t *testing.T) 
 		t.Fatalf("second maintenance tick status = %q, want %q", afterSecond.Status, task.StatusInReview)
 	}
 }
+
+func TestDispatchPlanningWorkflow_CancelsQueuedImplementWorkflow(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		classifier: fakeTriageClassifier{},
+	})
+	a.workflowEngine = svc.workflowEngine
+
+	tk, err := a.tasks.Create("replan me", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.tasks.UpdateMap(tk.ID, map[string]any{
+		"status": string(task.StatusPlanning),
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-implement",
+			CurrentStep: "implement",
+			State:       workflow.ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchPlanningWorkflow(got.ID)
+
+	after, err := a.tasks.Get(got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Workflow == nil || after.Workflow.WorkflowID != "simple-task-plan" {
+		t.Fatalf("workflow = %+v, want simple-task-plan", after.Workflow)
+	}
+	if after.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed simple-task-plan handoff", after.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 implementation starts while cancelling queued workflow", launcher.startCalls)
+	}
+}

@@ -278,6 +278,13 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	if err != nil {
 		return "", fmt.Errorf("get task: %w", err)
 	}
+	if event == "task.status_changed" {
+		if want := extraFields["task.status"]; want != "" && t.Status != want {
+			e.logger.Info("workflow.dispatch.status-stale",
+				"task_id", taskID, "current_status", t.Status, "event_status", want)
+			return "", nil
+		}
+	}
 	if t.Workflow != nil &&
 		t.Workflow.State != ExecCompleted &&
 		t.Workflow.State != ExecFailed {

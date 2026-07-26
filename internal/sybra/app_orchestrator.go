@@ -388,7 +388,18 @@ func (a *App) dispatchPlanningWorkflow(taskID string) {
 		return
 	}
 	if t.Workflow != nil && t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed {
-		return
+		if t.Workflow.WorkflowID == "simple-task-implement" && !a.agents.HasRunningAgentForTask(taskID) {
+			if _, cancelErr := a.workflowEngine.CancelWorkflow(taskID, "planning reset: cancelled queued implementation workflow"); cancelErr != nil {
+				a.logger.Error("workflow.dispatch.planning.cancel-implement", "task_id", taskID, "err", cancelErr)
+				return
+			}
+			t, err = a.tasks.Get(taskID)
+			if err != nil {
+				return
+			}
+		} else {
+			return
+		}
 	}
 	if a.agents.HasRunningAgentForTask(taskID) {
 		return

@@ -85,3 +85,33 @@ func TestExecPushBranch_DivergedRecovery_ReplaceWorkflowSucceeds(t *testing.T) {
 		t.Fatalf("workflow = %+v, want test-recovery-target", ti.Workflow)
 	}
 }
+
+func TestDispatchEvent_StatusChangedIgnoresStaleStatus(t *testing.T) {
+	store := newStoreWithBuiltin(t, "simple-task-implement")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "planning",
+		StatusReason: "Plan rejected: executable contract is ungrounded to the current checkout",
+		AgentMode:    "headless",
+	})
+
+	wfID, err := engine.DispatchEvent("t1", "task.status_changed",
+		map[string]string{"task.status": "in-progress"}, nil)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if wfID != "" {
+		t.Fatalf("wfID = %q, want empty for stale status event", wfID)
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("expected no agent start on stale status event, got %d", agents.CallCount())
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow != nil {
+		t.Fatalf("workflow = %+v, want nil", ti.Workflow)
+	}
+}
