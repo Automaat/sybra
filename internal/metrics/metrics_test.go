@@ -28,6 +28,8 @@ func TestMetricsPipeline(t *testing.T) {
 	MonitorTick(context.Background())
 	MonitorAnomaly(context.Background(), "lost_agent")
 	OrchestratorTick(context.Background())
+	OrchestratorEffectReplay(context.Background(), "replayed")
+	OrchestratorResumeStalledFallback(context.Background())
 	ProviderProbe(context.Background(), "claude", true)
 	ProviderHealthFlip(context.Background(), "claude", false)
 	ProviderAuthFailure("claude")
@@ -60,6 +62,9 @@ func TestMetricsPipeline(t *testing.T) {
 	OrchestratorTick(context.Background())
 	OrchestratorStaleRestart(context.Background(), true)
 	OrchestratorStaleRestart(context.Background(), false)
+	OrchestratorEffectReplay(context.Background(), "replayed")
+	OrchestratorEffectReplay(context.Background(), "already_completed")
+	OrchestratorResumeStalledFallback(context.Background())
 	ProviderProbe(context.Background(), "claude", true)
 	ProviderProbe(context.Background(), "codex", false)
 	ProviderHealthFlip(context.Background(), "claude", false)
@@ -114,6 +119,8 @@ func TestMetricsPipeline(t *testing.T) {
 		"sybra_monitor_anomalies_total",
 		"sybra_orchestrator_ticks_total",
 		"sybra_orchestrator_stale_restarts_total",
+		"sybra_orchestrator_effect_replays_total",
+		"sybra_orchestrator_resume_stalled_fallbacks_total",
 		"sybra_tasks_by_status",
 		"sybra_agents_active",
 		"sybra_renovate_prs_fetched",
@@ -138,6 +145,8 @@ func TestMetricsPipeline(t *testing.T) {
 		`kind="lost_agent"`,
 		`kind="pr_gap"`,
 		`provider="claude"`,
+		`result="replayed"`,
+		`result="already_completed"`,
 		`from="claude"`,
 		`to="codex"`,
 		`state="healthy"`,

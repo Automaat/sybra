@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,6 +113,62 @@ func TestRunStartupCleanupEmpty(t *testing.T) {
 	}
 	r.RunStartupCleanup(context.Background())
 	wg.Wait()
+}
+
+func TestRunStartupCleanup_ReplaysEffectsBeforeStaleRestart(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("startup replay ordering", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(created.ID, map[string]any{
+		"status":     string(task.StatusInProgress),
+		"project_id": "owner/repo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	var order []string
+	wfStub := &stubWorkflowEngine{callOrder: &order}
+	orch := &stubOrchestrator{
+		onStart: func() {
+			order = append(order, "restart")
+		},
+	}
+
+	var wg sync.WaitGroup
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		WorkflowEngine: wfStub,
+		Orchestrator:   orch,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+	r.RunStartupCleanup(context.Background())
+	wg.Wait()
+
+	if !slices.Equal(order, []string{"replay", "replay:" + created.ID, "restart"}) {
+		t.Fatalf("startup order = %v, want [replay replay:%s restart]", order, created.ID)
+	}
 }
 
 func TestRunStartupCleanup_CleansOrphanedSandboxes(t *testing.T) {
@@ -1176,6 +1233,11 @@ type stubWorkflowEngine struct {
 	startWorkflowErr   error
 	completions        []workflow.AgentCompletion
 
+	replayCalls int
+	callOrder   *[]string
+	replayTasks []string
+	replayTask  bool
+
 	dispatchEventCalls  []map[string]string
 	dispatchEventResult string
 	dispatchEventErr    error
@@ -1194,6 +1256,21 @@ func (s *stubWorkflowEngine) DispatchEvent(_, _ string, extraFields, _ map[strin
 
 func (s *stubWorkflowEngine) HandleAgentComplete(_ string, c workflow.AgentCompletion) {
 	s.completions = append(s.completions, c)
+}
+
+func (s *stubWorkflowEngine) ReplayPersistedEffects() {
+	s.replayCalls++
+	if s.callOrder != nil {
+		*s.callOrder = append(*s.callOrder, "replay")
+	}
+}
+
+func (s *stubWorkflowEngine) ReplayPersistedEffectsForTask(taskID string) bool {
+	s.replayTasks = append(s.replayTasks, taskID)
+	if s.callOrder != nil {
+		*s.callOrder = append(*s.callOrder, "replay:"+taskID)
+	}
+	return s.replayTask
 }
 
 // TestRestartStalePRFixWorkflowRevertsToInReview verifies the root cause of the
@@ -2075,6 +2152,72 @@ func (s *recordingWorkflowStub) HandleAgentComplete(taskID string, _ workflow.Ag
 	_, _ = s.tasks.Update(taskID, task.Update{Workflow: &wf})
 }
 
+func (*recordingWorkflowStub) ReplayPersistedEffects() {}
+
+func (*recordingWorkflowStub) ReplayPersistedEffectsForTask(string) bool { return false }
+
+func TestRestartTaskIfStale_ReplaysPersistedEffectsBeforeFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	ctx := context.Background()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("stale replay", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tasks.UpdateMap(created.ID, map[string]any{
+		"status":     string(task.StatusInProgress),
+		"project_id": "owner/repo",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       workflow.ExecWaiting,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wfStub := &stubWorkflowEngine{replayTask: true}
+	orch := &stubOrchestrator{}
+	var wg sync.WaitGroup
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		WorkflowEngine: wfStub,
+		Orchestrator:   orch,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+
+	if err := r.RestartTaskIfStale(ctx, created.ID); err != nil {
+		t.Fatalf("RestartTaskIfStale: %v", err)
+	}
+	wg.Wait()
+
+	if !slices.Equal(wfStub.replayTasks, []string{created.ID}) {
+		t.Fatalf("task replay calls = %v, want [%s]", wfStub.replayTasks, created.ID)
+	}
+	if orch.startCalls != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 when workflow replay consumed the recovery tick", orch.startCalls)
+	}
+}
+
 // TestRestartStaleConcurrentPathsDoNotDoubleFireHandleAgentComplete is a
 // regression test for sybra#2452's actual race, reproduced with real
 // goroutines rather than a pre-held claim: the periodic
@@ -2161,6 +2304,7 @@ type stubOrchestrator struct {
 	lastMode      string
 	lastPrompt    string
 	lastOneShot   bool
+	onStart       func()
 }
 
 func (s *stubOrchestrator) StartAgent(_, mode, prompt string, _, oneShot bool) (*agent.Agent, error) {
@@ -2168,6 +2312,9 @@ func (s *stubOrchestrator) StartAgent(_, mode, prompt string, _, oneShot bool) (
 	s.lastMode = mode
 	s.lastPrompt = prompt
 	s.lastOneShot = oneShot
+	if s.onStart != nil {
+		s.onStart()
+	}
 	return s.startReturned, s.startErr
 }
 
