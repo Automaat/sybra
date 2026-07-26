@@ -8403,12 +8403,17 @@ func TestExecVerifyCommits_FetchesMissingLocalHeadObject(t *testing.T) {
 	}
 }
 
-// TestExecVerifyCommits_BranchAtBaseMarksDone covers the case where the
-// agent committed nothing because the implementation was already on
-// origin/main (e.g. merged via a different branch). HEAD == origin/main, so
-// the task is marked done instead of human-required to avoid an infinite
-// auto-restart loop in svc_tasks.UpdateTask.
-func TestExecVerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
+// TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired covers the case where
+// the agent reported success but committed nothing: HEAD == origin/main. This
+// used to mark the task done on the theory that the fix might already be on
+// origin/main via a different branch, but that check (branchMergedIntoBase)
+// can never actually distinguish "already merged elsewhere" from "nothing was
+// committed" at this call site — an empty baseRef..HEAD log range and "HEAD
+// is an ancestor of baseRef" are the same git fact, so it was true on every
+// call. Confirmed live: two foundational tasks landed `done` with prNumber 0
+// and a branch byte-identical to origin/main — zero code shipped. A human
+// must see this instead.
+func TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -8425,25 +8430,31 @@ func TestExecVerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
 	}
-	if !strings.Contains(out.Output, "branch merged into base") {
-		t.Errorf("Output = %q, want 'branch merged into base'", out.Output)
+	if !strings.Contains(out.Output, "no commits") {
+		t.Errorf("Output = %q, want 'no commits'", out.Output)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "done" {
-		t.Errorf("task status = %q, want done", ti.Status)
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
 	}
-	if reason := tasks.Reason("t1"); !strings.Contains(reason, "already merged into base") {
-		t.Errorf("status reason = %q, want 'already merged into base'", reason)
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "no commits") {
+		t.Errorf("status reason = %q, want 'no commits'", reason)
 	}
 }
 
-// TestExecVerifyCommits_BranchAncestorOfBaseMarksDone covers the regression
-// from issue #670: HEAD is an ancestor of origin/main (branch tip equals an
-// older commit on main, with newer commits on top — typical of squash-merge
-// followed by additional PRs). `git log origin/main..HEAD` is empty AND
-// HEAD != base.tip, but the work is still on origin. Must flip to done, not
-// human-required.
-func TestExecVerifyCommits_BranchAncestorOfBaseMarksDone(t *testing.T) {
+// TestExecVerifyCommits_BranchAncestorOfBaseFlipsHumanRequired covers the
+// regression from issue #670: HEAD is an ancestor of origin/main (branch tip
+// equals an older commit on main, with newer commits on top — typical of
+// squash-merge followed by additional PRs). `git log origin/main..HEAD` is
+// empty AND HEAD != base.tip. #670 originally fixed this by marking the task
+// done outright (the theory: the work must already be on origin). That
+// theory cannot be verified from ancestry alone — "HEAD is an ancestor of
+// base because its own commits already landed" and "HEAD is an ancestor of
+// base because it never had any commits to begin with" are the same git
+// fact, indistinguishable by `merge-base --is-ancestor`. Silently marking
+// done was proven live to misfire on the second case (issues #2658, #2659
+// landed `done` with zero code). A human must confirm either way now.
+func TestExecVerifyCommits_BranchAncestorOfBaseFlipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -8460,12 +8471,12 @@ func TestExecVerifyCommits_BranchAncestorOfBaseMarksDone(t *testing.T) {
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
 	}
-	if !strings.Contains(out.Output, "branch merged into base") {
-		t.Errorf("Output = %q, want 'branch merged into base'", out.Output)
+	if !strings.Contains(out.Output, "no commits") {
+		t.Errorf("Output = %q, want 'no commits'", out.Output)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "done" {
-		t.Errorf("task status = %q, want done", ti.Status)
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
 	}
 }
 
@@ -8482,8 +8493,8 @@ func TestExecVerifyCommits_AgentFailedFlipsHumanRequired(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
-	// Same git state as TestExecVerifyCommits_BranchAtBaseMarksDone: HEAD ==
-	// origin/main, so branchMergedIntoBase would otherwise mark the task done.
+	// Same git state as TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired:
+	// HEAD == origin/main.
 	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 

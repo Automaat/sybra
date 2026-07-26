@@ -4856,13 +4856,12 @@ func TestE2E_ProviderCrossUnavailable_FallsBackToDefault(t *testing.T) {
 	}
 }
 
-// TestE2E_VerifyCommits_BranchAtBaseMarksDone covers verify_commits when the
-// worktree HEAD matches origin/main (rebased branch with no commits ahead).
-// The implementation is already on origin from a prior merge, so the step
-// marks the task done and ends the workflow instead of routing to
-// set_ready_review (which would otherwise loop forever via the auto-restart
-// in svc_tasks.UpdateTask).
-func TestE2E_VerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
+// TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired covers verify_commits
+// when the worktree HEAD matches origin/main (branch has no commits ahead). The
+// workflow must surface this as human-required instead of silently marking the
+// task done: this git state is indistinguishable from an implementation agent
+// that reported success without committing anything.
+func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 	// triage is a deterministic classify_task step now — no scenario slot —
 	// so only "success" (implement) remains in the queue. The default
 	// classifier verdict (env.classifier) already routes to status=todo,
@@ -4897,17 +4896,17 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	})
 
 	tk, _ := env.tasks.Get(created.ID)
-	if tk.Status != task.StatusDone {
-		t.Fatalf("status = %q, want done", tk.Status)
+	if tk.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", tk.Status)
 	}
-	if !strings.Contains(tk.StatusReason, "already merged into base") {
+	if !strings.Contains(tk.StatusReason, "no commits") {
 		var verifyOut string
 		for i := range tk.Workflow.StepHistory {
 			if tk.Workflow.StepHistory[i].StepID == "verify_commits" {
 				verifyOut = tk.Workflow.StepHistory[i].Output
 			}
 		}
-		t.Fatalf("status_reason = %q, want 'already merged into base' (verify_commits output=%q)", tk.StatusReason, verifyOut)
+		t.Fatalf("status_reason = %q, want 'no commits' (verify_commits output=%q)", tk.StatusReason, verifyOut)
 	}
 	stepIDs := stepIDsFromHistory(tk.Workflow)
 	if !slices.Contains(stepIDs, "verify_commits") {
