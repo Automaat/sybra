@@ -925,11 +925,12 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 
 	e.logger.Info(logPrefix, "task_id", taskID, "step", step.ID)
 	comp, rErr := e.executeSteps(taskID, def, step, t.Workflow)
+	rErr = normalizeExecuteStepsErr(rErr)
 	if rErr == nil && e.shouldRetryGhostPark(taskID, step.ID) {
 		e.logger.Info(logPrefix+".retry", "task_id", taskID, "step", step.ID)
 		comp, rErr = e.executeSteps(taskID, def, step, t.Workflow)
+		rErr = normalizeExecuteStepsErr(rErr)
 	}
-	rErr = normalizeExecuteStepsErr(rErr)
 	e.fireComplete(comp)
 	e.drainPendingConflictRecovery(taskID)
 	e.resumeError.Log(e.logger, logPrefix+".exec", taskID, rErr, "task_id", taskID)
