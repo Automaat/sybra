@@ -622,7 +622,9 @@ func runSignalKill() {
 func runHang() {
 	emitSystem()
 	emitAssistant("Hanging...")
-	select {} // block until SIGTERM/SIGKILL arrives
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 // runMalformedPROutput emits a long stream of malformed PR-URL fragments
