@@ -41,6 +41,13 @@ func setupConfigSvc(t *testing.T) (svc *ConfigService, cfgPath string) {
 
 	cfgPath = filepath.Join(home, "config.yaml")
 	writeConfigYAML(t, cfgPath, seed)
+	rawSeed, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read seed config: %v", err)
+	}
+	if err := os.WriteFile(config.LastKnownGoodConfigPath(), rawSeed, 0o600); err != nil {
+		t.Fatalf("write last-known-good seed: %v", err)
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -289,35 +296,92 @@ func TestReloadFromDisk_LogLevel(t *testing.T) {
 
 func TestReloadFromDisk_InvalidYAML(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
+	before, err := os.ReadFile(config.LastKnownGoodConfigPath())
+	if err != nil {
+		t.Fatalf("read last-known-good: %v", err)
+	}
 
 	if err := os.WriteFile(cfgPath, []byte(":::invalid yaml{{{\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	origMax := svc.cfg.Agent.MaxConcurrent
-	_, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err == nil {
 		t.Fatal("expected error for invalid YAML, got nil")
 	}
+	if result.Recovery == nil || !result.Recovery.RestoredLastKnownGood {
+		t.Fatalf("expected last-known-good recovery on invalid YAML, got %+v", result.Recovery)
+	}
 	if svc.cfg.Agent.MaxConcurrent != origMax {
 		t.Errorf("cfg mutated on error: got %d, want %d", svc.cfg.Agent.MaxConcurrent, origMax)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config.yaml not restored after invalid YAML\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
 func TestReloadFromDisk_ValidationError(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
+	before, err := os.ReadFile(config.LastKnownGoodConfigPath())
+	if err != nil {
+		t.Fatalf("read last-known-good: %v", err)
+	}
 
 	next := *svc.cfg
 	next.Logging.Level = "verbose" // invalid
 	writeConfigYAML(t, cfgPath, &next)
 
 	origLevel := svc.cfg.Logging.Level
-	_, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
 	}
+	if result.Recovery == nil || !result.Recovery.RestoredLastKnownGood {
+		t.Fatalf("expected last-known-good recovery on validation error, got %+v", result.Recovery)
+	}
 	if svc.cfg.Logging.Level != origLevel {
 		t.Errorf("cfg.Logging.Level mutated on validation error")
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config.yaml not restored after validation error\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestReloadFromDisk_UnknownLegacyKeyRestoresLastKnownGood(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	before, err := os.ReadFile(config.LastKnownGoodConfigPath())
+	if err != nil {
+		t.Fatalf("read last-known-good: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, append(before, []byte("\ntodoist:\n  enabled: true\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.ReloadFromDisk()
+	if err == nil {
+		t.Fatal("expected unknown key error, got nil")
+	}
+	if !strings.Contains(err.Error(), "todoist") {
+		t.Fatalf("error = %v, want todoist unknown-key context", err)
+	}
+	if result.Recovery == nil || !result.Recovery.RestoredLastKnownGood {
+		t.Fatalf("expected last-known-good recovery on unknown key, got %+v", result.Recovery)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config.yaml not restored after unknown legacy key\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 

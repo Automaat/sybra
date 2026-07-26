@@ -65,6 +65,58 @@ func TestPrepareRunConfig_SandboxHome_SystemRunSkipsInjection(t *testing.T) {
 	}
 }
 
+// TestPrepareRunConfig_SandboxHome_IsolatedSystemRun pins the orchestrator
+// hardening: selected taskless system agents still get a sandbox SYBRA_HOME, so
+// stale sybra-cli/source invocations cannot rewrite the operator's real home.
+func TestPrepareRunConfig_SandboxHome_IsolatedSystemRun(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	sandboxDir := t.TempDir()
+	var gotKey string
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(key string) (string, error) {
+			gotKey = key
+			return sandboxDir, nil
+		},
+		ControlHome: "/real/home",
+	})
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		Name:        "Sybra Orchestrator",
+		Mode:        "headless",
+		Dir:         t.TempDir(),
+		IsolateHome: true,
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if gotKey != "system-sybra-orchestrator" {
+		t.Fatalf("sandbox key = %q, want system-sybra-orchestrator", gotKey)
+	}
+	base := sharedBuildCacheDir()
+	want := []string{
+		"SYBRA_HOME=" + sandboxDir,
+		"SYBRA_CONTROL_HOME=/real/home",
+		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
+		"GOCACHE=" + filepath.Join(base, "go-build", "system-sybra-orchestrator"),
+		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
+		"npm_config_cache=" + filepath.Join(base, "npm"),
+	}
+	if len(cfg.ExtraEnv) != len(want) {
+		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
+	}
+	for i, v := range want {
+		if cfg.ExtraEnv[i] != v {
+			t.Fatalf("ExtraEnv[%d] = %q, want %q (full: %v)", i, cfg.ExtraEnv[i], v, cfg.ExtraEnv)
+		}
+	}
+	if cfg.resolvedSandboxHome != sandboxDir {
+		t.Fatalf("resolvedSandboxHome = %q, want %q", cfg.resolvedSandboxHome, sandboxDir)
+	}
+	if cfg.sandboxKey != "system-sybra-orchestrator" {
+		t.Fatalf("sandboxKey = %q, want system-sybra-orchestrator", cfg.sandboxKey)
+	}
+}
+
 // TestPrepareRunConfig_SandboxHome_NilResolverFailsClosed pins that a
 // task-scoped run with no resolver configured aborts before spawn rather than
 // silently inheriting the ambient/operator SYBRA_HOME.
