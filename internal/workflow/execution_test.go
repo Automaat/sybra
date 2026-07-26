@@ -332,6 +332,9 @@ func TestEffectLog_CloneIsolation(t *testing.T) {
 	e.RecordEffectIntent(id, time.Now())
 
 	cloned := e.Clone()
+	if cloned == nil {
+		t.Fatal("Clone of non-nil Execution returned nil")
+	}
 	now2 := time.Now().Add(time.Second)
 	cloned.RecordEffectCompletion(id, now2)
 
@@ -347,6 +350,9 @@ func TestEffectLog_CloneDeepCopiesCompletedAt(t *testing.T) {
 	e.RecordEffectCompletion(id, time.Now())
 
 	cloned := e.Clone()
+	if cloned == nil {
+		t.Fatal("Clone of non-nil Execution returned nil")
+	}
 	if cloned.EffectLog[0].CompletedAt == e.EffectLog[0].CompletedAt {
 		t.Fatal("clone should not alias original's CompletedAt pointer")
 	}

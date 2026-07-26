@@ -10,10 +10,10 @@ import (
 // generation, StepID anchors the originating workflow step, and Pos
 // distinguishes sibling effects from the same reducer decision.
 type EffectID struct {
-	Generation int64
-	StepSeq    int
-	StepID     string
-	Pos        int
+	Generation int64  `yaml:"generation" json:"generation"`
+	StepSeq    int    `yaml:"step_seq" json:"stepSeq"`
+	StepID     string `yaml:"step_id" json:"stepID"`
+	Pos        int    `yaml:"pos" json:"pos"`
 }
 
 // IsZero reports whether the id has not been assigned yet.

@@ -248,6 +248,9 @@ func (e *Execution) RecordEffectIntent(id EffectID, now time.Time) {
 // RecordEffectCompletion marks an effect as applied.
 // No-op if the intent was never recorded or if completion is already set.
 func (e *Execution) RecordEffectCompletion(id EffectID, now time.Time) {
+	if e == nil {
+		return
+	}
 	for i := range e.EffectLog {
 		if e.EffectLog[i].ID.Equal(id) {
 			if e.EffectLog[i].CompletedAt == nil {
