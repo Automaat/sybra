@@ -1,0 +1,96 @@
+#!/bin/sh
+if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+	sawapprove=0
+	sawverdict=0
+	sawunknown=0
+	skipval=0
+	for arg in "$@"; do
+		# The previous token was a value-taking flag in its separate form, so
+		# this token is its value (a body, file path or repo) — never a flag.
+		# Classifying it would misread a body that starts with '-' (e.g. a
+		# markdown bullet or "-1, ...") as an unknown short-flag bundle.
+		if [ "$skipval" = 1 ]; then
+			skipval=0
+			continue
+		fi
+		case "$arg" in
+		--approve | --approve=*)
+			sawapprove=1
+			;;
+		--comment | --comment=* | --request-changes | --request-changes=*)
+			sawverdict=1
+			;;
+		--body | --body-file | --repo)
+			skipval=1
+			;;
+		--body=* | --body-file=* | --repo=* | --help)
+			;;
+		-*)
+			rest=${arg#-}
+			case "$rest" in
+			*[!abcrFR]*)
+				sawunknown=1
+				;;
+			*)
+				case "$rest" in *a*) sawapprove=1 ;; esac
+				case "$rest" in *c*) sawverdict=1 ;; esac
+				case "$rest" in *r*) sawverdict=1 ;; esac
+				# A short bundle ending in a value-taking flag (-b/-F/-R) takes
+				# the next argv token as its value; skip classifying it.
+				case "$rest" in *[bFR]) skipval=1 ;; esac
+				;;
+			esac
+			;;
+		esac
+	done
+	# Block APPROVE, and anything we cannot positively identify as
+	# REQUEST_CHANGES/COMMENT (unrecognized flags, or no verdict flag at all —
+	# the latter drops into gh's interactive prompt, which a headless agent
+	# cannot answer).
+	{ [ "$sawunknown" = 1 ] || [ "$sawapprove" = 1 ] || [ "$sawverdict" = 0 ]; } \
+		&& printf '%s\n' 'Blocked by Sybra: APPROVE is a human decision. Use --request-changes/--comment (or gh api -f event=REQUEST_CHANGES/COMMENT) to submit feedback, or gh api without an event to leave the review pending for a human to approve.' >&2 && exit 1
+fi
+if [ "$1" = "api" ]; then
+	sawhidden=0
+	sawreviews=0
+	for arg in "$@"; do
+		case "$arg" in
+		[Ee][Vv][Ee][Nn][Tt]=[Aa][Pp][Pp][Rr][Oo][Vv][Ee])
+			printf '%s\n' 'Blocked by Sybra: APPROVE is a human decision. Use --request-changes/--comment (or gh api -f event=REQUEST_CHANGES/COMMENT) to submit feedback, or gh api without an event to leave the review pending for a human to approve.' >&2
+			exit 1
+			;;
+		esac
+		case "$arg" in
+		# The review mutation can carry its event in a GraphQL variable, so argv
+		# never sees the submitted event beside EVENT. Agents have a sanctioned
+		# REST path for pending drafts, so block GraphQL review mutations.
+		*[Aa][Dd][Dd][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]* | *[Ss][Uu][Bb][Mm][Ii][Tt][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]*)
+			printf '%s\n' 'Blocked by Sybra: APPROVE is a human decision. Use --request-changes/--comment (or gh api -f event=REQUEST_CHANGES/COMMENT) to submit feedback, or gh api without an event to leave the review pending for a human to approve.' >&2
+			exit 1
+			;;
+		esac
+		# --input (or --input=path) swaps the whole request body for a file/stdin
+		# stream gh never parses, so an event field could ride along with nothing
+		# in argv to catch it. event=@path and, for graphql, query=@path are the
+		# same hole one field wide: gh api scopes a file value to exactly the
+		# named field, so body=@path or comments[][body]=@path can only ever
+		# become that field's string content — it cannot inject a sibling "event"
+		# key — but event=@path hides the submission verb itself, and query=@path
+		# hides a mutation that might embed one.
+		case "$arg" in
+		--input | --input=* | [Ee][Vv][Ee][Nn][Tt]=@* | [Qq][Uu][Ee][Rr][Yy]=@*)
+			sawhidden=1
+			;;
+		esac
+		# graphql counts as review-capable: addPullRequestReview reaches the same
+		# place as POST /pulls/N/reviews.
+		case "$arg" in
+		[Gg][Rr][Aa][Pp][Hh][Qq][Ll] | *[Pp][Uu][Ll][Ll][Ss]/*/[Rr][Ee][Vv][Ii][Ee][Ww][Ss]* | */[Rr][Ee][Vv][Ii][Ee][Ww][Ss])
+			sawreviews=1
+			;;
+		esac
+	done
+	# Refuse a review payload we cannot inspect rather than assume it is benign.
+	[ "$sawhidden$sawreviews" = "11" ] && printf '%s\n' 'Blocked by Sybra: APPROVE is a human decision. Use --request-changes/--comment (or gh api -f event=REQUEST_CHANGES/COMMENT) to submit feedback, or gh api without an event to leave the review pending for a human to approve.' >&2 && exit 1
+fi
+exec '/data/sybra/home/shims/gh' "$@"
