@@ -70,7 +70,11 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 	if step == nil {
 		return
 	}
-	if _, ok := currentStepEffectRecord(*t, step, effectPosStepAction); !ok {
+	rec, ok := currentStepEffectRecord(*t, step, effectPosStepAction)
+	if !ok {
+		return
+	}
+	if rec.CompletedAt == nil && e.resumePreflightConsumesTick(t, step, "workflow.effect-replay.skip") {
 		return
 	}
 
@@ -105,7 +109,7 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 		e.clearResumeDispatching(t.ID)
 		return
 	}
-	rec, ok := currentStepEffectRecord(fresh, step, effectPosStepAction)
+	rec, ok = currentStepEffectRecord(fresh, step, effectPosStepAction)
 	if !ok {
 		e.clearResumeDispatching(t.ID)
 		return
@@ -115,6 +119,14 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) {
 		e.logger.Info("workflow.effect-replay.noop",
 			"task_id", fresh.ID, "step", step.ID, "effect", rec.ID.String())
 		metrics.OrchestratorEffectReplay(e.metricContext(), "already_completed")
+		return
+	}
+	if e.handleTransientFetchRetry(&fresh, step) {
+		e.clearResumeDispatching(t.ID)
+		return
+	}
+	if e.handleWatchdogRateLimitRetry(&fresh, step) {
+		e.clearResumeDispatching(t.ID)
 		return
 	}
 
