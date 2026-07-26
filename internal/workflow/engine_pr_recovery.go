@@ -17,10 +17,12 @@ const alreadyFixedOnMainRecoveryReason = "requested change already satisfies ori
 // still clean with no commits ahead of the origin base. In that case Sybra has
 // enough deterministic proof to close the task itself instead of parking it.
 //
-// Agent text is only a trigger hint here. The close decision itself still
-// requires repo-state proof: no commits ahead, no uncommitted diff, and HEAD
-// reachable from the origin base.
-func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, currentStep *Step, wfExec *Execution, t TaskInfo, output StepOutput) (*CompletionInfo, bool, error) {
+// Agent text is only a trigger hint here. On agent-completion recovery the hint
+// must come from the current run's output, not a stale task status_reason from
+// an older human-required park. The close decision itself still requires
+// repo-state proof: no commits ahead, no uncommitted diff, and HEAD reachable
+// from the origin base.
+func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, currentStep *Step, wfExec *Execution, t TaskInfo, output StepOutput, duplicateSignal string) (*CompletionInfo, bool, error) {
 	if currentStep == nil || currentStep.Type != StepRunAgent || currentStep.Config.Role != "implementation" || output.Status != "completed" {
 		return nil, false, nil
 	}
@@ -30,7 +32,7 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	if wfExec != nil && wfExec.LastAgentStepFailed() {
 		return nil, false, nil
 	}
-	if !looksLikeAlreadyFixedOnMainVerdict(t.StatusReason + "\n" + output.Output) {
+	if !looksLikeAlreadyFixedOnMainVerdict(duplicateSignal) {
 		return nil, false, nil
 	}
 	if e.worktrees == nil {

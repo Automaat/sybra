@@ -283,7 +283,7 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 		StepID: step.ID,
 		Status: "completed",
 		Output: t.StatusReason,
-	}); recovered {
+	}, t.StatusReason); recovered {
 		if err != nil {
 			e.logger.Error("workflow.status-recover.err", "task_id", taskID, "step", step.ID, "status", newStatus, "err", err)
 			return

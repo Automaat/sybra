@@ -215,7 +215,7 @@ func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *St
 		return t, parked, nil, err
 	}
 	var recovered bool
-	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output)
+	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output, output.Output)
 	if recovered || err != nil {
 		return t, false, comp, err
 	}
