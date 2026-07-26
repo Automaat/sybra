@@ -14,6 +14,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/dispatchorder"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
@@ -1307,36 +1308,7 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 	if !isResumableStepType(step.Type) {
 		return
 	}
-	if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
-		retryAtStr := retryAt.Format(time.RFC3339)
-		e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
-			"retry_after|"+step.ID+"|"+retryAtStr,
-			"task_id", t.ID, "reason", "retry_after", "retry_after", retryAtStr, "step", step.ID)
-		return
-	}
-	retryableWatchdogStop := e.canRetryWatchdogStop(t, step)
-	retryableWorktreeRepair := e.canRetryWorktreeRepair(t, step)
-	if reason, skip := resumeSkipReasonForStatus(t.Status); skip &&
-		(reason != "human_required" || !retryableWatchdogStop) &&
-		(reason != "blocked" || !retryableWorktreeRepair) {
-		e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID,
-			reason+"|"+t.Status+"|"+step.ID,
-			"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)
-		return
-	}
-	if e.agents.HasRunningAgent(t.ID) {
-		return
-	}
-	if e.shouldSkipResumeForRateLimitedProvider(t, step) {
-		return
-	}
-	if retryableWatchdogStop && e.handleWatchdogStopRetry(t, step) {
-		return
-	}
-	if retryableWorktreeRepair && e.handleWorktreeRepairRetry(t, step) {
-		return
-	}
-	if e.handleWatchdogRetries(t, step) {
+	if e.resumePreflightConsumesTick(t, step, "workflow.resume-stalled.skip") {
 		return
 	}
 	reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
@@ -1367,6 +1339,42 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 	}
 
 	e.finishResumeStalledStep(t.ID, &def, step, fresh.Workflow, fresh)
+}
+
+func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent string) bool {
+	if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
+		retryAtStr := retryAt.Format(time.RFC3339)
+		e.resumeSkip.Log(e.logger, logEvent, t.ID,
+			"retry_after|"+step.ID+"|"+retryAtStr,
+			"task_id", t.ID, "reason", "retry_after", "retry_after", retryAtStr, "step", step.ID)
+		return true
+	}
+	retryableWatchdogStop := e.canRetryWatchdogStop(t, step)
+	retryableWorktreeRepair := e.canRetryWorktreeRepair(t, step)
+	if reason, skip := resumeSkipReasonForStatus(t.Status); skip &&
+		(reason != "human_required" || !retryableWatchdogStop) &&
+		(reason != "blocked" || !retryableWorktreeRepair) {
+		e.resumeSkip.Log(e.logger, logEvent, t.ID,
+			reason+"|"+t.Status+"|"+step.ID,
+			"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)
+		return true
+	}
+	if e.agents.HasRunningAgent(t.ID) {
+		return true
+	}
+	if e.shouldSkipResumeForRateLimitedProvider(t, step) {
+		return true
+	}
+	if retryableWatchdogStop && e.handleWatchdogStopRetry(t, step) {
+		return true
+	}
+	if retryableWorktreeRepair && e.handleWorktreeRepairRetry(t, step) {
+		return true
+	}
+	if e.handleWatchdogRetries(t, step) {
+		return true
+	}
+	return false
 }
 
 // resolveFreshTaskForResume re-reads and reconciles the task's current step to guard
@@ -1423,6 +1431,7 @@ func (e *Engine) resumeStalledReconcileWaitHumanStatus(t TaskInfo, step *Step) {
 
 func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *Step, wf *Execution, fresh TaskInfo) {
 	e.logger.Info("workflow.resume-stalled", "task_id", taskID, "step", step.ID)
+	metrics.OrchestratorResumeStalledFallback(e.metricContext())
 	comp, rErr := e.executeSteps(taskID, def, step, wf)
 	rErr = normalizeExecuteStepsErr(rErr)
 	e.clearResumeDispatching(taskID)

@@ -288,15 +288,25 @@ func (e *Execution) EffectPending(id EffectID) bool {
 	return false
 }
 
+// EffectRecordForStep returns the most-recently recorded effect whose StepID
+// and Pos match the given values.
+func (e *Execution) EffectRecordForStep(stepID string, pos int) (EffectRecord, bool) {
+	for i := range slices.Backward(e.EffectLog) {
+		if e.EffectLog[i].ID.StepID == stepID && e.EffectLog[i].ID.Pos == pos {
+			return cloneEffectRecord(e.EffectLog[i]), true
+		}
+	}
+	return EffectRecord{}, false
+}
+
 // EffectIDForStep returns the most-recently recorded EffectID whose StepID and
 // Pos match the given values, so a retried effect can reuse the same key.
 func (e *Execution) EffectIDForStep(stepID string, pos int) (EffectID, bool) {
-	for i := range slices.Backward(e.EffectLog) {
-		if e.EffectLog[i].ID.StepID == stepID && e.EffectLog[i].ID.Pos == pos {
-			return e.EffectLog[i].ID, true
-		}
+	rec, ok := e.EffectRecordForStep(stepID, pos)
+	if !ok {
+		return EffectID{}, false
 	}
-	return EffectID{}, false
+	return rec.ID, true
 }
 
 // AllChildrenDone reports whether every child reached a terminal status.

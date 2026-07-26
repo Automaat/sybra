@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,10 +23,12 @@ import (
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/dispatchorder"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // TestTaskFields_PlanCritiqueAndReplanCount locks the two fields the
@@ -128,6 +132,424 @@ func newInlineTestStore(t *testing.T, name, yaml string) *Store {
 		t.Fatalf("write inline workflow %s: %v", name, err)
 	}
 	return store
+}
+
+func TestReplayPersistedEffects(t *testing.T) {
+	t.Run("pending intent replays through executeSteps", func(t *testing.T) {
+		store := newTestStore(t)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewEngine(store, tasks, agents, discardLogger())
+
+		engine.ReplayPersistedEffects()
+
+		if len(agents.calls) != 1 {
+			t.Fatalf("StartAgent calls = %d, want 1", len(agents.calls))
+		}
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Workflow == nil {
+			t.Fatal("workflow = nil, want active workflow after replay")
+		}
+		if got.Workflow.CurrentStep != "implement" {
+			t.Fatalf("current step = %q, want implement", got.Workflow.CurrentStep)
+		}
+		if len(got.Workflow.StepHistory) != 0 {
+			t.Fatalf("step history = %+v, want no sync completion for async replay", got.Workflow.StepHistory)
+		}
+		if got.Workflow.EffectLog[0].CompletedAt == nil {
+			t.Fatalf("effect log = %+v, want completed replayed effect", got.Workflow.EffectLog)
+		}
+	})
+
+	t.Run("pending intent survives unrelated task generation change", func(t *testing.T) {
+		store := newTestStore(t)
+		originalID := EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction}
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 2,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       originalID,
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewEngine(store, tasks, agents, discardLogger())
+
+		engine.ReplayPersistedEffects()
+
+		if len(agents.calls) != 1 {
+			t.Fatalf("StartAgent calls = %d, want 1", len(agents.calls))
+		}
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Workflow.EffectLog) != 1 {
+			t.Fatalf("effect log len = %d, want 1: %+v", len(got.Workflow.EffectLog), got.Workflow.EffectLog)
+		}
+		if !got.Workflow.EffectLog[0].ID.Equal(originalID) {
+			t.Fatalf("effect ID = %s, want original %s", got.Workflow.EffectLog[0].ID.String(), originalID.String())
+		}
+		if got.Workflow.EffectLog[0].CompletedAt == nil {
+			t.Fatalf("effect log = %+v, want completed replayed effect", got.Workflow.EffectLog)
+		}
+	})
+
+	t.Run("pending intent reconciles stale downstream wait status", func(t *testing.T) {
+		store := newInlineTestStore(t, "replay-stale-status", `
+id: replay-stale-status
+name: Replay Stale Status
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      model: sonnet
+      wait_for_status: agent-finished
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: review_plan
+  - id: review_plan
+    type: wait_human
+    config:
+      status: plan-review
+    next:
+      - goto: ""
+`)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "plan-review",
+				AgentMode:  "headless",
+				Workflow: &Execution{
+					WorkflowID:  "replay-stale-status",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewEngine(store, tasks, agents, discardLogger())
+
+		engine.ReplayPersistedEffects()
+
+		if len(agents.calls) != 0 {
+			t.Fatalf("StartAgent calls = %d, want 0", len(agents.calls))
+		}
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Workflow == nil {
+			t.Fatal("workflow = nil, want active workflow")
+		}
+		if got.Workflow.CurrentStep != "review_plan" {
+			t.Fatalf("current step = %q, want review_plan", got.Workflow.CurrentStep)
+		}
+		if got.Workflow.State != ExecWaiting {
+			t.Fatalf("state = %q, want %q", got.Workflow.State, ExecWaiting)
+		}
+		if len(got.Workflow.EffectLog) != 1 || got.Workflow.EffectLog[0].CompletedAt != nil {
+			t.Fatalf("effect log = %+v, want original pending intent preserved", got.Workflow.EffectLog)
+		}
+	})
+
+	t.Run("pending intent waits for retry_after", func(t *testing.T) {
+		store := newInlineTestStore(t, "replay-verify", `
+id: replay-verify
+name: Replay Verify
+trigger:
+  on: task.created
+steps:
+  - id: verify_checks
+    type: verify_checks
+    next:
+      - goto: ""
+`)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "replay-verify",
+					CurrentStep: "verify_checks",
+					State:       ExecWaiting,
+					Variables: map[string]string{
+						workflowRetryAfterVar: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+					},
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "verify_checks", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewEngine(store, tasks, agents, discardLogger())
+
+		engine.ReplayPersistedEffects()
+
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Workflow == nil {
+			t.Fatal("workflow = nil, want active workflow")
+		}
+		if got.Workflow.CurrentStep != "verify_checks" {
+			t.Fatalf("current step = %q, want verify_checks", got.Workflow.CurrentStep)
+		}
+		if got.Workflow.EffectLog[0].CompletedAt != nil {
+			t.Fatalf("effect log = %+v, want pending effect while retry_after is in future", got.Workflow.EffectLog)
+		}
+	})
+
+	t.Run("task-scoped replay only touches requested task", func(t *testing.T) {
+		store := newTestStore(t)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+			"t2": {
+				ID:         "t2",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewEngine(store, tasks, agents, discardLogger())
+
+		if handled := engine.ReplayPersistedEffectsForTask("t2"); !handled {
+			t.Fatal("ReplayPersistedEffectsForTask returned false, want true")
+		}
+		if len(agents.calls) != 1 {
+			t.Fatalf("StartAgent calls = %d, want 1", len(agents.calls))
+		}
+		if agents.calls[0].TaskID != "t2" {
+			t.Fatalf("replayed task = %q, want t2", agents.calls[0].TaskID)
+		}
+		got1, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got1.Workflow.EffectLog[0].CompletedAt != nil {
+			t.Fatalf("t1 effect log = %+v, want pending untouched effect", got1.Workflow.EffectLog)
+		}
+		got2, err := tasks.GetTask("t2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got2.Workflow.EffectLog[0].CompletedAt == nil {
+			t.Fatalf("t2 effect log = %+v, want completed replayed effect", got2.Workflow.EffectLog)
+		}
+	})
+
+	t.Run("pending run_agent intent waits for provider cooldown", func(t *testing.T) {
+		store := newTestStore(t)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		agents.SetProviderRateLimited(true)
+		engine := NewEngine(store, tasks, agents, discardLogger())
+
+		engine.ReplayPersistedEffects()
+
+		if len(agents.calls) != 0 {
+			t.Fatalf("StartAgent calls = %d, want 0", len(agents.calls))
+		}
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Workflow.EffectLog[0].CompletedAt != nil {
+			t.Fatalf("effect log = %+v, want pending effect while provider is rate-limited", got.Workflow.EffectLog)
+		}
+	})
+
+	t.Run("completed async effect reconciles as no-op", func(t *testing.T) {
+		now := time.Now().UTC()
+		completedAt := now
+		store := newTestStore(t)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:          EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+						IntentAt:    now.Add(-time.Minute),
+						CompletedAt: &completedAt,
+					}},
+				},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewEngine(store, tasks, agents, discardLogger())
+
+		engine.ReplayPersistedEffects()
+
+		if len(agents.calls) != 0 {
+			t.Fatalf("StartAgent calls = %d, want 0", len(agents.calls))
+		}
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Workflow == nil {
+			t.Fatal("workflow = nil, want workflow preserved")
+		}
+		if got.Workflow.CurrentStep != "implement" {
+			t.Fatalf("current step = %q, want implement", got.Workflow.CurrentStep)
+		}
+		if got.Workflow.State != ExecWaiting {
+			t.Fatalf("state = %q, want %q", got.Workflow.State, ExecWaiting)
+		}
+		if len(got.Workflow.StepHistory) != 0 {
+			t.Fatalf("step history = %+v, want unchanged workflow", got.Workflow.StepHistory)
+		}
+	})
+}
+
+func TestResumeStalled_RecordsFallbackMetric(t *testing.T) {
+	if !metrics.Enabled() {
+		if err := metrics.Init(config.MetricsConfig{Enabled: true}); err != nil {
+			t.Fatalf("metrics.Init: %v", err)
+		}
+	}
+
+	before := workflowMetricValue(t, "sybra_orchestrator_resume_stalled_fallbacks_total", nil)
+
+	store := newTestStore(t)
+	tasks := &memTasks{tasks: map[string]*TaskInfo{
+		"t1": {
+			ID:         "t1",
+			Generation: 1,
+			Status:     "in-progress",
+			Workflow: &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: "implement",
+				State:       ExecWaiting,
+			},
+		},
+	}, gets: map[string]int{}}
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	engine.ResumeStalled()
+
+	if len(agents.calls) != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1", len(agents.calls))
+	}
+	after := workflowMetricValue(t, "sybra_orchestrator_resume_stalled_fallbacks_total", nil)
+	if after != before+1 {
+		t.Fatalf("fallback metric delta = %.0f, want 1 (before=%.0f after=%.0f)", after-before, before, after)
+	}
+}
+
+func workflowMetricValue(t *testing.T, name string, labels []string) float64 {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", http.NoBody)
+	rec := httptest.NewRecorder()
+	promhttp.Handler().ServeHTTP(rec, req)
+	for line := range strings.SplitSeq(rec.Body.String(), "\n") {
+		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, name) {
+			continue
+		}
+		matches := true
+		for _, label := range labels {
+			if !strings.Contains(line, label) {
+				matches = false
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		v, err := strconv.ParseFloat(fields[len(fields)-1], 64)
+		if err != nil {
+			t.Fatalf("parse metric %q from %q: %v", name, line, err)
+		}
+		return v
+	}
+	return 0
 }
 
 // --- In-memory TaskProvider ---

@@ -54,8 +54,10 @@ var (
 	monitorTicks     metric.Int64Counter
 	monitorAnomalies metric.Int64Counter
 
-	orchestratorTicks         metric.Int64Counter
-	orchestratorStaleRestarts metric.Int64Counter
+	orchestratorTicks                  metric.Int64Counter
+	orchestratorStaleRestarts          metric.Int64Counter
+	orchestratorEffectReplays          metric.Int64Counter
+	orchestratorResumeStalledFallbacks metric.Int64Counter
 
 	providerProbes        metric.Int64Counter
 	providerHealthFlips   metric.Int64Counter
@@ -291,9 +293,21 @@ func createOrchestratorInstruments() error {
 	); err != nil {
 		return err
 	}
-	orchestratorStaleRestarts, err = m.Int64Counter(
+	if orchestratorStaleRestarts, err = m.Int64Counter(
 		"sybra_orchestrator_stale_restarts_total",
 		metric.WithDescription("Orchestrator stale in-progress task restart attempts, by result."),
+	); err != nil {
+		return err
+	}
+	if orchestratorEffectReplays, err = m.Int64Counter(
+		"sybra_orchestrator_effect_replays_total",
+		metric.WithDescription("Persisted workflow effect replay decisions, by result."),
+	); err != nil {
+		return err
+	}
+	orchestratorResumeStalledFallbacks, err = m.Int64Counter(
+		"sybra_orchestrator_resume_stalled_fallbacks_total",
+		metric.WithDescription("ResumeStalled fallback executions after persisted effect replay."),
 	)
 	return err
 }
@@ -780,6 +794,21 @@ func OrchestratorStaleRestart(ctx context.Context, ok bool) {
 	}
 	orchestratorStaleRestarts.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("result", resultLabel(ok))))
+}
+
+func OrchestratorEffectReplay(ctx context.Context, result string) {
+	if orchestratorEffectReplays == nil {
+		return
+	}
+	orchestratorEffectReplays.Add(ctx, 1,
+		metric.WithAttributes(attribute.String("result", result)))
+}
+
+func OrchestratorResumeStalledFallback(ctx context.Context) {
+	if orchestratorResumeStalledFallbacks == nil {
+		return
+	}
+	orchestratorResumeStalledFallbacks.Add(ctx, 1)
 }
 
 func ProviderProbe(ctx context.Context, name string, ok bool) {
