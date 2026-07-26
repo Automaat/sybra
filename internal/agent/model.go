@@ -1749,6 +1749,12 @@ type RunConfig struct {
 	// and system-critical sessions; user-initiated runs leave this false so
 	// they surface a clear error instead of wasting a hopeless request.
 	IgnoreHealthGate bool
+	// IsolateHome routes SYBRA_HOME through a sandbox home even when TaskID is
+	// empty. Use this for taskless system agents that may run sybra-cli or old
+	// Sybra source checkouts: they still need to read the operator board via
+	// SYBRA_CONTROL_HOME, but must never be able to rewrite the operator's real
+	// config.yaml by inheriting ~/.sybra as their default home.
+	IsolateHome bool
 	// DisableProviderFailover keeps provider selection fixed for A/B variants:
 	// an unhealthy/limited provider fails the run instead of silently becoming a
 	// different provider while retaining stale variant attribution.
@@ -1871,6 +1877,9 @@ type RunConfig struct {
 	// injectSandboxHome, reused by injectProcessSandbox as one of the
 	// sandbox's allowed write roots. Never set by callers.
 	resolvedSandboxHome string
+	// sandboxKey is the task id or synthetic system-run id used for per-run
+	// sandbox/cache directories. Never set by callers.
+	sandboxKey string
 	// sandbox is the resolved OS-level process-sandbox spec for this run,
 	// computed once by injectProcessSandbox and consumed by wrapInvocation
 	// at each provider spawn site. Never set by callers.
