@@ -222,12 +222,8 @@ func (m *memTasks) GetTask(id string) (TaskInfo, error) {
 		m.onGet(id, t, m.gets[id])
 	}
 	cp := *t
-	// Shallow-copy the Execution struct so concurrent callers each get their
-	// own State field — mirroring the file-backed store which always
-	// deserializes a fresh object.
 	if t.Workflow != nil {
-		wf := *t.Workflow
-		cp.Workflow = &wf
+		cp.Workflow = t.Workflow.Clone()
 	}
 	return cp, nil
 }

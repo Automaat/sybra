@@ -592,6 +592,19 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			}
 			return nil, wrapDispatchErr(step.ID, execErr)
 		}
+		if step.Type == StepPromoteBestOfN {
+			// execPromoteBestOfN reloads and persists the freshest workflow state
+			// itself so it can preserve judge-step vars and the promoted canonical
+			// dir. Continue from that persisted copy rather than the stale pre-step
+			// wfExec passed into executeSteps.
+			fresh, err := e.tasks.GetTask(taskID)
+			if err != nil {
+				return nil, err
+			}
+			if fresh.Workflow != nil {
+				wfExec = fresh.Workflow
+			}
+		}
 
 		now := time.Now().UTC()
 		wfExec.RecordStep(StepRecord{
