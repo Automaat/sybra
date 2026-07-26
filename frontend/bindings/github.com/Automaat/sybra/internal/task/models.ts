@@ -581,6 +581,7 @@ export class Task {
     "statusChangedAt": string;
     "assignedNode"?: string;
     "nodeOverride"?: string;
+    "generation"?: number;
     "mirrorRev"?: number;
     "mirrorUpdatedAt"?: string | null;
     "body": string;
@@ -705,7 +706,7 @@ export class Task {
         const $$createField41_0 = $$createType5;
         const $$createField42_0 = $$createType7;
         const $$createField43_0 = $$createType9;
-        const $$createField59_0 = $$createType10;
+        const $$createField60_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -732,7 +733,7 @@ export class Task {
             $$parsedSource["workflow"] = $$createField43_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField59_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField60_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
