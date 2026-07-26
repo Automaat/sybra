@@ -280,10 +280,13 @@ func (s *Service) closeMergedHumanRequiredPRs(ctx context.Context, tasks []task.
 				continue
 			}
 		} else {
-			if _, err := s.tasks.Update(t.ID, task.Update{
-				Status:       task.Ptr(task.StatusDone),
-				StatusReason: task.Ptr("monitor: linked PR already merged"),
-				Outcome:      task.Ptr("merged"),
+			if _, err := s.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+				Source: "monitor.close-merged-human-required-pr",
+				Update: task.Update{
+					Status:       task.Ptr(task.StatusDone),
+					StatusReason: task.Ptr("monitor: linked PR already merged"),
+					Outcome:      task.Ptr("merged"),
+				},
 			}); err != nil {
 				s.logger.Warn("monitor.human-required-pr-merged.update_failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
 				continue

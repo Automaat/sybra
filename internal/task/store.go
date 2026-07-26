@@ -892,6 +892,9 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.Attachments != nil {
 		t.Attachments = slices.Clone(*u.Attachments)
 	}
+	if u.EffectLog != nil {
+		t.EffectLog = slices.Clone(*u.EffectLog)
+	}
 	return nil
 }
 

@@ -566,6 +566,13 @@ export class Task {
     "testingCycleStartedAt"?: string | null;
     "attachments": Attachment[];
     "agentRuns": AgentRun[];
+
+    /**
+     * EffectLog records durable intent/completion for observer-owned task
+     * status effects (pollers, monitor, recovery) that operate outside a live
+     * workflow execution.
+     */
+    "effectLog"?: workflow$0.EffectRecord[];
     "workflow"?: workflow$0.Execution | null;
     "createdAt": string;
     "updatedAt": string;
@@ -706,7 +713,8 @@ export class Task {
         const $$createField41_0 = $$createType5;
         const $$createField42_0 = $$createType7;
         const $$createField43_0 = $$createType9;
-        const $$createField60_0 = $$createType10;
+        const $$createField44_0 = $$createType11;
+        const $$createField61_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -729,11 +737,14 @@ export class Task {
         if ("agentRuns" in $$parsedSource) {
             $$parsedSource["agentRuns"] = $$createField42_0($$parsedSource["agentRuns"]);
         }
+        if ("effectLog" in $$parsedSource) {
+            $$parsedSource["effectLog"] = $$createField43_0($$parsedSource["effectLog"]);
+        }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField43_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField44_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField60_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField61_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -808,6 +819,7 @@ export class Update {
     "MergeCommit": string | null;
     "TestingCycleStartedAt": string | null;
     "Attachments": Attachment[] | null;
+    "EffectLog": workflow$0.EffectRecord[] | null;
 
     /** Creates a new Update instance. */
     constructor($$source: Partial<Update> = {}) {
@@ -949,6 +961,9 @@ export class Update {
         if (!("Attachments" in $$source)) {
             this["Attachments"] = null;
         }
+        if (!("EffectLog" in $$source)) {
+            this["EffectLog"] = null;
+        }
 
         Object.assign(this, $$source);
     }
@@ -957,12 +972,13 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField4_0 = $$createType11;
-        const $$createField7_0 = $$createType12;
-        const $$createField8_0 = $$createType13;
-        const $$createField12_0 = $$createType12;
-        const $$createField30_0 = $$createType14;
-        const $$createField45_0 = $$createType15;
+        const $$createField4_0 = $$createType13;
+        const $$createField7_0 = $$createType14;
+        const $$createField8_0 = $$createType15;
+        const $$createField12_0 = $$createType14;
+        const $$createField30_0 = $$createType16;
+        const $$createField45_0 = $$createType17;
+        const $$createField46_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Blocker" in $$parsedSource) {
             $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
@@ -982,6 +998,9 @@ export class Update {
         if ("Attachments" in $$parsedSource) {
             $$parsedSource["Attachments"] = $$createField45_0($$parsedSource["Attachments"]);
         }
+        if ("EffectLog" in $$parsedSource) {
+            $$parsedSource["EffectLog"] = $$createField46_0($$parsedSource["EffectLog"]);
+        }
         return new Update($$parsedSource as Partial<Update>);
     }
 }
@@ -995,11 +1014,14 @@ const $$createType4 = attachment$0.Attachment.createFrom;
 const $$createType5 = $Create.Array($$createType4);
 const $$createType6 = AgentRun.createFrom;
 const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = workflow$0.Execution.createFrom;
-const $$createType9 = $Create.Nullable($$createType8);
-const $$createType10 = $Create.Map($Create.Any, $Create.Any);
-const $$createType11 = $Create.Nullable($$createType1);
-const $$createType12 = $Create.Nullable($$createType0);
-const $$createType13 = $Create.Nullable($$createType3);
-const $$createType14 = $Create.Nullable($$createType9);
-const $$createType15 = $Create.Nullable($$createType5);
+const $$createType8 = workflow$0.EffectRecord.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = workflow$0.Execution.createFrom;
+const $$createType11 = $Create.Nullable($$createType10);
+const $$createType12 = $Create.Map($Create.Any, $Create.Any);
+const $$createType13 = $Create.Nullable($$createType1);
+const $$createType14 = $Create.Nullable($$createType0);
+const $$createType15 = $Create.Nullable($$createType3);
+const $$createType16 = $Create.Nullable($$createType11);
+const $$createType17 = $Create.Nullable($$createType5);
+const $$createType18 = $Create.Nullable($$createType9);

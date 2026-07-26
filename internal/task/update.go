@@ -61,6 +61,7 @@ type Update struct {
 	MergeCommit           *string
 	TestingCycleStartedAt *time.Time
 	Attachments           *[]Attachment
+	EffectLog             *[]workflow.EffectRecord
 }
 
 func (u Update) writesSidecar() bool {

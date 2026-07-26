@@ -206,6 +206,7 @@ func TestCheckDwell_EscalatesWhenNoLiveHeadlessAgent(t *testing.T) {
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required when no live headless agent backs the task", got.Status)
 	}
+	assertWatchdogEffectRecorded(t, got, "external:watchdog_dwell:", tk.Generation)
 }
 
 func TestCheckDwell_EscalatesUnblockedInProgressTask(t *testing.T) {
@@ -242,4 +243,5 @@ func TestCheckDwell_EscalatesUnblockedInProgressTask(t *testing.T) {
 	if got.StatusReason == "dwell exceeded size tag budget" {
 		t.Fatalf("status reason still has hardcoded string; want budget-specific reason")
 	}
+	assertWatchdogEffectRecorded(t, got, "external:watchdog_dwell:", tk.Generation)
 }
