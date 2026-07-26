@@ -210,7 +210,7 @@ func (e *Engine) advanceSatisfiedWaitForStatus(taskID string, t TaskInfo) (TaskI
 	if err != nil {
 		return t, err
 	}
-	if fresh, reconciled, rErr := e.reconcileCurrentStepFromStatus(taskID, t, &def, t.Status); rErr != nil {
+	if fresh, reconciled, rErr := e.reconcileCurrentStepFromStatusMode(taskID, t, &def, t.Status, false); rErr != nil {
 		return t, rErr
 	} else if reconciled {
 		return fresh, nil

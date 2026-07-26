@@ -125,12 +125,18 @@ func (e *Engine) findReachableWaitHumanByStatus(def *Definition, current *Step, 
 }
 
 func (e *Engine) reconcileCurrentStepFromStatus(taskID string, t TaskInfo, def *Definition, status string) (TaskInfo, bool, error) {
+	return e.reconcileCurrentStepFromStatusMode(taskID, t, def, status, true)
+}
+
+func (e *Engine) reconcileCurrentStepFromStatusMode(taskID string, t TaskInfo, def *Definition, status string, allowWaitHumanAlias bool) (TaskInfo, bool, error) {
 	if t.Workflow == nil || t.Workflow.CurrentStep == "" || status == "" {
 		return t, false, nil
 	}
 	current := def.StepByID(t.Workflow.CurrentStep)
-	if fresh, reconciled, err := e.reconcileWaitHumanActionAlias(taskID, t, current, status); err != nil || reconciled {
-		return fresh, reconciled, err
+	if allowWaitHumanAlias {
+		if fresh, reconciled, err := e.reconcileWaitHumanActionAlias(taskID, t, current, status); err != nil || reconciled {
+			return fresh, reconciled, err
+		}
 	}
 	if current != nil && current.Type == StepRunAgent {
 		if current.Config.WaitForStatus == status {
