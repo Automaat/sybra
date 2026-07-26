@@ -271,10 +271,18 @@ func TestApp_StatusHookRestartsTodoAndPlanningExternalUpdates(t *testing.T) {
 				t.Fatalf("Get: %v", err)
 			}
 			if got.Workflow == nil || got.Workflow.WorkflowID != "simple-task-plan" {
-				t.Fatalf("external %s update did not restart task.created workflow, got %+v", target, got.Workflow)
+				t.Fatalf("external %s update did not restart planning workflow, got %+v", target, got.Workflow)
 			}
 			if got.Workflow.State == workflow.ExecFailed {
 				t.Fatalf("external %s update kept stale failed workflow: %+v", target, got.Workflow)
+			}
+			if target == task.StatusPlanning {
+				if got.Workflow.RecordForStep("triage") != nil {
+					t.Fatalf("external planning update re-entered triage: %+v", got.Workflow.RecordForStep("triage"))
+				}
+				if got.Status == task.StatusInProgress {
+					t.Fatalf("external planning update flipped to %q, want planning-side status", got.Status)
+				}
 			}
 		})
 	}

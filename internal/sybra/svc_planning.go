@@ -42,7 +42,7 @@ func (s *PlanningService) PlanTask(id string) error {
 	if t.Workflow != nil && t.Workflow.State != "" {
 		return nil
 	}
-	if err := s.engine.StartWorkflow(id, "simple-task-plan"); err != nil {
+	if err := startPlanningWorkflowForTask(s.engine, t); err != nil {
 		// Concurrent auto-start (from CreateTask) holds the per-task start
 		// lock — that's also a no-op outcome from the user's perspective.
 		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {

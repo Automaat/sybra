@@ -6,6 +6,7 @@ import (
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 const (
@@ -87,4 +88,12 @@ func allowsTaskCreatedWorkflowWithPR(t task.Task) bool {
 	return (t.Status == task.StatusNew || t.Status == task.StatusTodo) &&
 		slices.Contains(t.Tags, "review") &&
 		!slices.Contains(t.Tags, "handoff-pr")
+}
+
+func startPlanningWorkflowForTask(engine *workflow.Engine, t task.Task) error {
+	startStepID := ""
+	if t.Status == task.StatusPlanning {
+		startStepID = "plan"
+	}
+	return engine.StartWorkflowFromStepWithVars(t.ID, "simple-task-plan", startStepID, nil)
 }
