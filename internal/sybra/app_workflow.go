@@ -325,6 +325,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 	return workflow.TaskInfo{
 		ID:                    t.ID,
 		Title:                 t.Title,
+		Generation:            t.MirrorRev,
 		Status:                string(t.Status),
 		StatusReason:          t.StatusReason,
 		Blocker:               t.Blocker,

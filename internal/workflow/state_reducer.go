@@ -42,6 +42,7 @@ const (
 
 // Effect is a plain-data reducer output.
 type Effect struct {
+	ID           EffectID
 	Kind         EffectKind
 	Workflow     *Execution
 	Status       string
@@ -53,6 +54,14 @@ type Effect struct {
 
 // Reduce converts desired/observed workflow state into plain-data effects.
 func Reduce(desired DesiredState, observed ObservedState) ([]Effect, error) {
+	effects, err := reduceEffects(desired, observed)
+	if err != nil {
+		return nil, err
+	}
+	return assignEffectIDs(desired, observed, effects), nil
+}
+
+func reduceEffects(desired DesiredState, observed ObservedState) ([]Effect, error) {
 	workflowID, err := reducerWorkflowID(desired)
 	if err != nil {
 		return nil, err
@@ -412,6 +421,7 @@ func cloneEffects(in []Effect) []Effect {
 	out := make([]Effect, len(in))
 	for i := range in {
 		out[i] = Effect{
+			ID:           in[i].ID,
 			Kind:         in[i].Kind,
 			Workflow:     in[i].Workflow.Clone(),
 			Status:       in[i].Status,

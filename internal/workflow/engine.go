@@ -25,8 +25,11 @@ const (
 
 // TaskInfo is the subset of task data the engine needs.
 type TaskInfo struct {
-	ID           string
-	Title        string
+	ID    string
+	Title string
+	// Generation is the reducer-visible monotonic task version the effect-id
+	// scheme keys on until a dedicated persisted task-generation counter lands.
+	Generation   int64
 	Status       string
 	StatusReason string
 	Blocker      blocker.State
