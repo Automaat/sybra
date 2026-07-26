@@ -689,7 +689,10 @@ func (a *App) initStatusHook() {
 
 		switch to {
 		case string(task.StatusTodo):
-			if !runsNoAgent {
+			// Human plan approval parks at todo as a stable post-review state;
+			// auto-reentering task.created here would immediately reopen the
+			// plan/implement pipeline and erase the approved transition.
+			if !runsNoAgent && from != string(task.StatusPlanReview) {
 				a.dispatchTaskCreatedWorkflow(taskID)
 			}
 		case string(task.StatusPlanning):
