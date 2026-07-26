@@ -274,8 +274,9 @@ steps:
         For each actionable finding (critical/high/medium severity), fix the code.
         Skip low-severity nitpicks and style-only comments.
 
-        When done, commit your changes (do NOT push yet — push happens with PR
-        creation). Sign commits with `git commit -s -S`.
+        When done, commit your changes (do NOT push yet — Sybra will push the
+        branch deterministically before verification and PR creation). Sign
+        commits with `git commit -s -S`.
         Use conventional commit format: `fix(review): address review comments`.
 
         Never weaken, skip, delete, or hardcode tests to satisfy a review
@@ -286,6 +287,27 @@ steps:
         {{getvar .Vars "watchdog_reask_note"}}
         {{- end}}
     next:
+      - goto: push_review_fix_branch
+
+  # Mechanical sync point: the fix-review agent is intentionally told not to
+  # push, so make the branch push an explicit workflow step before verifying
+  # the post-fix HEAD. A best-effort completion hook is not enough here: if a
+  # local fix commit is stranded, verify/testing/PR creation can observe a
+  # different branch state than the one the review fixer produced.
+  - id: push_review_fix_branch
+    name: Push Review Fix Branch
+    type: push_branch
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: blocked
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: verify_checks
 
   # Mechanical check (no LLM): re-run the project's checks.verify suite after
