@@ -488,12 +488,16 @@ type Task struct {
 	// so route_test_result can exclude test-runner runs from prior cycles when
 	// counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
 	// and all test-runner runs count (correct for first-ever cycles).
-	TestingCycleStartedAt *time.Time          `json:"testingCycleStartedAt,omitempty"`
-	Attachments           []Attachment        `json:"attachments"`
-	AgentRuns             []AgentRun          `json:"agentRuns"`
-	Workflow              *workflow.Execution `json:"workflow,omitempty"`
-	CreatedAt             time.Time           `json:"createdAt"`
-	UpdatedAt             time.Time           `json:"updatedAt"`
+	TestingCycleStartedAt *time.Time   `json:"testingCycleStartedAt,omitempty"`
+	Attachments           []Attachment `json:"attachments"`
+	AgentRuns             []AgentRun   `json:"agentRuns"`
+	// EffectLog records durable intent/completion for observer-owned task
+	// status effects (pollers, monitor, recovery) that operate outside a live
+	// workflow execution.
+	EffectLog []workflow.EffectRecord `json:"effectLog,omitempty"`
+	Workflow  *workflow.Execution     `json:"workflow,omitempty"`
+	CreatedAt time.Time               `json:"createdAt"`
+	UpdatedAt time.Time               `json:"updatedAt"`
 	// StatusChangedAt marks the last time Status actually transitioned, as
 	// opposed to UpdatedAt which is bumped by any field write (tags, audit
 	// sidecars, status_reason, ...). Detectors that need to know "how long
