@@ -53,7 +53,9 @@ export function GetSettings(): $CancellablePromise<$models.AppSettings> {
 /**
  * ReloadFromDisk re-reads ~/.sybra/config.yaml, validates it, diffs against
  * the persisted intent snapshot, and applies only hot-reloadable changes.
- * Restart-required values stay pending until process restart. Never writes to disk.
+ * Restart-required values stay pending until process restart. If an external
+ * writer leaves config.yaml unreadable or invalid, restore the last-known-good
+ * file so the process does not stay wedged on a broken operator config.
  */
 export function ReloadFromDisk(): $CancellablePromise<$models.ConfigMutationResult> {
     return $Call.ByID(742653545).then(($result: any) => {
