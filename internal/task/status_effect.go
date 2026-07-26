@@ -15,6 +15,8 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+const maxTaskEffectLog = 200
+
 // StatusEffect is one observer-owned task mutation recorded durably in
 // Task.EffectLog before it is considered applied.
 type StatusEffect struct {
@@ -67,6 +69,9 @@ func (m *Manager) ApplyStatusEffect(id string, eff StatusEffect) (Task, error) {
 	}
 	record.CompletedAt = &now
 	log = append(log, record)
+	if len(log) > maxTaskEffectLog {
+		log = log[len(log)-maxTaskEffectLog:]
+	}
 
 	u := eff.Update
 	u.EffectLog = &log
@@ -171,7 +176,11 @@ func sanitizeEffectSource(source string) string {
 	if b.Len() == 0 {
 		return "effect"
 	}
-	return strings.Trim(b.String(), "_")
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "effect"
+	}
+	return out
 }
 
 func statusValue(v *Status) string {
@@ -199,7 +208,9 @@ func tagsValue(v *[]string) string {
 	if v == nil {
 		return "<unset>"
 	}
-	return strings.Join(*v, ",")
+	tags := slices.Clone(*v)
+	slices.Sort(tags)
+	return strings.Join(tags, ",")
 }
 
 func blockerValue(v *blocker.State) string {

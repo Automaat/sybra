@@ -1,6 +1,8 @@
 package task
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/events"
@@ -147,5 +149,65 @@ func TestManagerApplyStatusEffect_ReappliesAfterGenerationChange(t *testing.T) {
 	}
 	if second.EffectLog[1].ID.StepSeq == first.EffectLog[0].ID.StepSeq {
 		t.Fatalf("second effect step seq = %d, want new seq", second.EffectLog[1].ID.StepSeq)
+	}
+}
+
+func TestManagerApplyStatusEffect_TrimsEffectLog(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	created, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := created
+	for i := 0; i < maxTaskEffectLog+5; i++ {
+		got, err = m.ApplyStatusEffect(created.ID, StatusEffect{
+			Source: fmt.Sprintf("watchdog.run.%03d", i),
+			Update: Update{
+				Status:       Ptr(StatusTodo),
+				StatusReason: Ptr(fmt.Sprintf("reason-%03d", i)),
+			},
+		})
+		if err != nil {
+			t.Fatalf("ApplyStatusEffect(%d): %v", i, err)
+		}
+	}
+
+	if len(got.EffectLog) != maxTaskEffectLog {
+		t.Fatalf("effect log len = %d, want %d", len(got.EffectLog), maxTaskEffectLog)
+	}
+	if got.EffectLog[0].ID.StepSeq != 6 {
+		t.Fatalf("first retained step seq = %d, want 6 after trimming 5 oldest records", got.EffectLog[0].ID.StepSeq)
+	}
+	if got.EffectLog[len(got.EffectLog)-1].ID.StepSeq != maxTaskEffectLog+5 {
+		t.Fatalf("last retained step seq = %d, want %d", got.EffectLog[len(got.EffectLog)-1].ID.StepSeq, maxTaskEffectLog+5)
+	}
+}
+
+func TestStatusEffectStepID_NormalizesTagOrder(t *testing.T) {
+	t.Parallel()
+
+	left := statusEffectStepID("watchdog.runrate", Update{
+		Status: Ptr(StatusBlocked),
+		Tags:   Ptr([]string{"backend", "bug"}),
+	})
+	right := statusEffectStepID("watchdog.runrate", Update{
+		Status: Ptr(StatusBlocked),
+		Tags:   Ptr([]string{"bug", "backend"}),
+	})
+
+	if left != right {
+		t.Fatalf("step IDs differ for reordered tags: %q vs %q", left, right)
+	}
+}
+
+func TestStatusEffectStepID_FallsBackForPunctuationOnlySource(t *testing.T) {
+	t.Parallel()
+
+	stepID := statusEffectStepID("---", Update{Status: Ptr(StatusDone)})
+	if !strings.HasPrefix(stepID, "external:effect:") {
+		t.Fatalf("step ID = %q, want external:effect: prefix", stepID)
 	}
 }
