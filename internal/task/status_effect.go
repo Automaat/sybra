@@ -23,8 +23,9 @@ type StatusEffect struct {
 }
 
 // ApplyStatusEffect applies a poller/watchdog/recovery-owned status mutation
-// exactly once per logical effect signature. Replays of the same Source+Update
-// reuse the same effect identity and become a no-op after completion.
+// exactly once per consumed task generation and logical effect signature.
+// Replays of the same Source+Update after completion become a no-op until
+// another task mutation advances the generation.
 func (m *Manager) ApplyStatusEffect(id string, eff StatusEffect) (Task, error) {
 	source := strings.TrimSpace(eff.Source)
 	if source == "" {
@@ -44,14 +45,14 @@ func (m *Manager) ApplyStatusEffect(id string, eff StatusEffect) (Task, error) {
 	}
 
 	stepID := statusEffectStepID(source, eff.Update)
-	if statusEffectApplied(cur.EffectLog, stepID) {
+	if statusEffectApplied(cur.EffectLog, cur.Generation-1, stepID) {
 		mu.Unlock()
 		return cur, nil
 	}
 
 	now := time.Now().UTC()
 	log := slices.Clone(cur.EffectLog)
-	idempotencyID, ok := statusEffectIDForStep(log, stepID)
+	idempotencyID, ok := statusEffectIDForStep(log, cur.Generation, stepID)
 	if !ok {
 		idempotencyID = workflow.EffectID{
 			Generation: cur.Generation,
@@ -97,18 +98,18 @@ func (m *Manager) ApplyStatusEffect(id string, eff StatusEffect) (Task, error) {
 	return t, nil
 }
 
-func statusEffectApplied(log []workflow.EffectRecord, stepID string) bool {
+func statusEffectApplied(log []workflow.EffectRecord, generation int64, stepID string) bool {
 	for i := range slices.Backward(log) {
-		if log[i].ID.StepID == stepID && log[i].CompletedAt != nil {
+		if log[i].ID.Generation == generation && log[i].ID.StepID == stepID && log[i].CompletedAt != nil {
 			return true
 		}
 	}
 	return false
 }
 
-func statusEffectIDForStep(log []workflow.EffectRecord, stepID string) (workflow.EffectID, bool) {
+func statusEffectIDForStep(log []workflow.EffectRecord, generation int64, stepID string) (workflow.EffectID, bool) {
 	for i := range slices.Backward(log) {
-		if log[i].ID.StepID == stepID {
+		if log[i].ID.Generation == generation && log[i].ID.StepID == stepID {
 			return log[i].ID, true
 		}
 	}

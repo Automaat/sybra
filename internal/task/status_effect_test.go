@@ -93,3 +93,59 @@ func TestManagerApplyStatusEffect_DedupesCompletedEffect(t *testing.T) {
 		t.Fatalf("events = %v, want only create+first update", names)
 	}
 }
+
+func TestManagerApplyStatusEffect_ReappliesAfterGenerationChange(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	created, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	eff := StatusEffect{
+		Source: "recovery.start-failure",
+		Update: Update{
+			Status:       Ptr(StatusHumanRequired),
+			StatusReason: Ptr("agent start failed"),
+		},
+	}
+	first, err := m.ApplyStatusEffect(created.ID, eff)
+	if err != nil {
+		t.Fatalf("first ApplyStatusEffect: %v", err)
+	}
+	if first.Status != StatusHumanRequired {
+		t.Fatalf("first status = %q, want %q", first.Status, StatusHumanRequired)
+	}
+
+	retried, err := m.Update(created.ID, Update{
+		Status:       Ptr(StatusInProgress),
+		StatusReason: Ptr(""),
+	})
+	if err != nil {
+		t.Fatalf("retry Update: %v", err)
+	}
+	if retried.Generation == first.EffectLog[0].ID.Generation {
+		t.Fatalf("retry generation = %d, want different from first effect generation", retried.Generation)
+	}
+
+	second, err := m.ApplyStatusEffect(created.ID, eff)
+	if err != nil {
+		t.Fatalf("second ApplyStatusEffect: %v", err)
+	}
+	if second.Status != StatusHumanRequired {
+		t.Fatalf("second status = %q, want %q", second.Status, StatusHumanRequired)
+	}
+	if len(second.EffectLog) != 2 {
+		t.Fatalf("effect log len after retry = %d, want 2", len(second.EffectLog))
+	}
+	if second.EffectLog[1].ID.Generation != retried.Generation {
+		t.Fatalf("second effect generation = %d, want retry generation %d", second.EffectLog[1].ID.Generation, retried.Generation)
+	}
+	if second.EffectLog[1].ID.StepID != first.EffectLog[0].ID.StepID {
+		t.Fatalf("second effect step id = %q, want %q", second.EffectLog[1].ID.StepID, first.EffectLog[0].ID.StepID)
+	}
+	if second.EffectLog[1].ID.StepSeq == first.EffectLog[0].ID.StepSeq {
+		t.Fatalf("second effect step seq = %d, want new seq", second.EffectLog[1].ID.StepSeq)
+	}
+}
