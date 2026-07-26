@@ -278,13 +278,6 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	if err != nil {
 		return "", fmt.Errorf("get task: %w", err)
 	}
-	if event == "task.status_changed" {
-		if want := extraFields["task.status"]; want != "" && t.Status != want {
-			e.logger.Info("workflow.dispatch.status-stale",
-				"task_id", taskID, "current_status", t.Status, "event_status", want)
-			return "", nil
-		}
-	}
 	if t.Workflow != nil &&
 		t.Workflow.State != ExecCompleted &&
 		t.Workflow.State != ExecFailed {
@@ -295,6 +288,13 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	if def == nil {
 		return "", nil
 	}
+	if event == "task.status_changed" && statusDispatchRequiresCurrentTaskStatus(def) {
+		if want := extraFields["task.status"]; want != "" && t.Status != want {
+			e.logger.Info("workflow.dispatch.status-stale",
+				"task_id", taskID, "workflow", def.ID, "current_status", t.Status, "event_status", want)
+			return "", nil
+		}
+	}
 	comp, sErr := e.startWorkflowLocked(taskID, def.ID, "", vars)
 	if errors.Is(sErr, errBestOfNParked) {
 		sErr = nil
@@ -304,6 +304,18 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	}
 	completion = comp
 	return def.ID, nil
+}
+
+func statusDispatchRequiresCurrentTaskStatus(def *Definition) bool {
+	if def == nil {
+		return false
+	}
+	switch def.ID {
+	case "simple-task-implement", "simple-task-best-of-n-implement":
+		return true
+	default:
+		return false
+	}
 }
 
 // ReplaceWorkflowForEvent matches event exactly like DispatchEvent, then
