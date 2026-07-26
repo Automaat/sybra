@@ -240,6 +240,17 @@ type Watchdog struct {
 	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
 }
 
+func (w *Watchdog) applyStatusEffect(taskID, source string, status task.Status, reason string) error {
+	_, err := w.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
+		Source: source,
+		Update: task.Update{
+			Status:       task.Ptr(status),
+			StatusReason: task.Ptr(reason),
+		},
+	})
+	return err
+}
+
 // New creates a Watchdog. cfg.Model selects the cheap judge model and
 // cfg.LoopThreshold tunes the real-time loop trigger.
 func New(
@@ -597,10 +608,7 @@ func (w *Watchdog) hardStop(ag *agent.Agent, reason string, stall, total time.Du
 		"id", ag.ID, "task_id", ag.TaskID, "reason", reason,
 		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
 	if ag.TaskID != "" {
-		if _, err := w.tasks.Update(ag.TaskID, task.Update{
-			Status:       task.Ptr(task.StatusInProgress),
-			StatusReason: task.Ptr("watchdog hang: " + reason + " deadline exceeded"),
-		}); err != nil {
+		if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.hard-stop", task.StatusInProgress, "watchdog hang: "+reason+" deadline exceeded"); err != nil {
 			w.logger.Error("agent.watchdog.hard_deadline.task.update", "task_id", ag.TaskID, "err", err)
 		}
 	}
@@ -729,10 +737,7 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 					reason = "watchdog: " + verdict.Reason
 				}
 			}
-			if _, err := w.tasks.Update(ag.TaskID, task.Update{
-				Status:       task.Ptr(status),
-				StatusReason: task.Ptr(reason),
-			}); err != nil {
+			if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.stop", status, reason); err != nil {
 				w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 			}
 		}
@@ -801,10 +806,7 @@ func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Age
 	if trigger == "budget" {
 		judgeReason = watchdogreason.BudgetStop(verdict.Reason)
 	}
-	if _, err := w.tasks.Update(ag.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusInProgress),
-		StatusReason: task.Ptr("watchdog hang: verifying before deciding — " + judgeReason),
-	}); err != nil {
+	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.verify.pending", task.StatusInProgress, "watchdog hang: verifying before deciding — "+judgeReason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	confirmedStopped := true
@@ -817,10 +819,7 @@ func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Age
 	if confirmedStopped {
 		status, reason = w.verdictStatusFromVerify(ctx, ag.TaskID, judgeReason)
 	}
-	if _, err := w.tasks.Update(ag.TaskID, task.Update{
-		Status:       task.Ptr(status),
-		StatusReason: task.Ptr(reason),
-	}); err != nil {
+	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.verify.result", status, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 }
@@ -876,10 +875,7 @@ func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict age
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.rate_limit.untracked",
 			"id", ag.ID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
-	} else if _, err := w.tasks.Update(ag.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusInProgress),
-		StatusReason: task.Ptr(reason),
-	}); err != nil {
+	} else if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.rate-limit", task.StatusInProgress, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	if w.recordProviderSignal != nil {
@@ -934,10 +930,7 @@ func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.Insp
 	if verdict.Reason != "" {
 		reason = rewardHackingRetryStatusReason + ": " + verdict.Reason
 	}
-	if _, err := w.tasks.Update(ag.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusInProgress),
-		StatusReason: task.Ptr(reason),
-	}); err != nil {
+	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.reward-hacking-retry", task.StatusInProgress, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	if err := w.stopAgent(ag.ID); err != nil {
@@ -975,10 +968,7 @@ func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Dura
 	reason := watchdogreason.RateLimit(zeroOutputReason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.zero_output_stall.untracked", "id", ag.ID, "provider", ag.Provider)
-	} else if _, err := w.tasks.Update(ag.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusInProgress),
-		StatusReason: task.Ptr(reason),
-	}); err != nil {
+	} else if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.zero-output-stall", task.StatusInProgress, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	if w.recordProviderSignal != nil {

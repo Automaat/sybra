@@ -9,6 +9,22 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+func assertWatchdogEffectRecorded(t *testing.T, got task.Task, wantPrefix string, wantGeneration int64) {
+	t.Helper()
+	if len(got.EffectLog) != 1 {
+		t.Fatalf("effect log len = %d, want 1", len(got.EffectLog))
+	}
+	if got.EffectLog[0].CompletedAt == nil {
+		t.Fatal("completed_at not recorded")
+	}
+	if got.EffectLog[0].ID.Generation != wantGeneration {
+		t.Fatalf("effect generation = %d, want %d", got.EffectLog[0].ID.Generation, wantGeneration)
+	}
+	if !strings.HasPrefix(got.EffectLog[0].ID.StepID, wantPrefix) {
+		t.Fatalf("effect step id = %q, want prefix %q", got.EffectLog[0].ID.StepID, wantPrefix)
+	}
+}
+
 func newInProgressTask(t *testing.T, mgr *task.Manager) task.Task {
 	t.Helper()
 	tk, err := mgr.Create("burst task", "## Description\nsome work", "headless")
@@ -60,6 +76,7 @@ func TestCheckRunRate_EscalatesBurstOfSameRole(t *testing.T) {
 	if !strings.Contains(got.StatusReason, "run_rate") || !strings.Contains(got.StatusReason, "implementation") {
 		t.Fatalf("status reason = %q, want it to mention run_rate and the role", got.StatusReason)
 	}
+	assertWatchdogEffectRecorded(t, got, "external:watchdog_runrate:", tk.Generation)
 }
 
 func TestCheckRunRate_SkipsBelowThreshold(t *testing.T) {
@@ -180,6 +197,7 @@ func TestCheckRunRate_EscalatesBurstOnInReviewTask(t *testing.T) {
 	if !strings.Contains(got.StatusReason, "run_rate") || !strings.Contains(got.StatusReason, "pr-fix") {
 		t.Fatalf("status reason = %q, want it to mention run_rate and pr-fix", got.StatusReason)
 	}
+	assertWatchdogEffectRecorded(t, got, "external:watchdog_runrate:", tk.Generation)
 }
 
 func TestCheckRunRate_DoesNotSumAcrossRoles(t *testing.T) {

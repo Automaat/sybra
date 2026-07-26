@@ -75,12 +75,25 @@ func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 		if u.Outcome != nil {
 			f.tasks[i].Outcome = *u.Outcome
 		}
+		if u.PRNumber != nil {
+			f.tasks[i].PRNumber = *u.PRNumber
+		}
+		if u.Tags != nil {
+			f.tasks[i].Tags = append([]string(nil), (*u.Tags)...)
+		}
+		if u.EffectLog != nil {
+			f.tasks[i].EffectLog = append([]workflow.EffectRecord(nil), (*u.EffectLog)...)
+		}
 		if u.Workflow != nil {
 			f.tasks[i].Workflow = *u.Workflow
 		}
 		return f.tasks[i], nil
 	}
 	return task.Task{}, errNotFound
+}
+
+func (f *fakeTasks) ApplyStatusEffect(id string, eff task.StatusEffect) (task.Task, error) {
+	return f.Update(id, eff.Update)
 }
 
 func (f *fakeTasks) UpdateRun(taskID, agentID string, patch task.RunPatch) error {

@@ -126,7 +126,10 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	// itself.
 	if lastRun := lastAgentRun(&t); lastRun != nil && (lastRun.Role == "pr-fix" || lastRun.Role == "test-fix") {
 		r.Logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
-		if _, updErr := r.Tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); updErr != nil {
+		if _, updErr := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+			Source: "recovery.restart-stale.pr-fix-run",
+			Update: task.Update{Status: task.Ptr(task.StatusInReview)},
+		}); updErr != nil {
 			r.Logger.Error("restart-stale.revert", "task_id", t.ID, "err", updErr)
 		}
 		return
@@ -270,9 +273,12 @@ func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 		r.Logger.Info("restart-stale.revert-to-review",
 			"task_id", t.ID, "reason", "pr_fix_workflow_not_restartable")
 		reason := "pr-fix terminal workflow is not restartable without PR-event context"
-		if _, updErr := r.Tasks.Update(t.ID, task.Update{
-			Status:       task.Ptr(task.StatusInReview),
-			StatusReason: &reason,
+		if _, updErr := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+			Source: "recovery.restart-stale.pr-fix-workflow",
+			Update: task.Update{
+				Status:       task.Ptr(task.StatusInReview),
+				StatusReason: &reason,
+			},
 		}); updErr != nil {
 			r.Logger.Error("restart-stale.revert", "task_id", t.ID, "err", updErr)
 		}
@@ -349,9 +355,12 @@ func (r *Recovery) convergeReviewOnPlanWorkflow(t *task.Task) bool {
 	if t.ProjectID == "" || t.PRNumber == 0 {
 		reason := "review task stranded on a terminal plan workflow with no project/PR context to resume pr-review"
 		r.Logger.Warn("restart-stale.review-on-plan.no-context", "task_id", t.ID)
-		if _, updErr := r.Tasks.Update(t.ID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(reason),
+		if _, updErr := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+			Source: "recovery.restart-stale.review-on-plan-no-context",
+			Update: task.Update{
+				Status:       task.Ptr(task.StatusHumanRequired),
+				StatusReason: task.Ptr(reason),
+			},
 		}); updErr != nil {
 			r.Logger.Error("restart-stale.review-on-plan.park-failed", "task_id", t.ID, "err", updErr)
 		}
@@ -410,9 +419,12 @@ func (r *Recovery) recoverCancelledPRFix(t *task.Task) bool {
 	status := task.StatusInReview
 	reason := "pr-fix cancelled: " + strings.TrimPrefix(cancelReason, "pr-monitor: ")
 	r.Logger.Info("restart-stale.revert-cancelled-pr-fix", "task_id", t.ID, "reason", reason)
-	if _, updErr := r.Tasks.Update(t.ID, task.Update{
-		Status:       &status,
-		StatusReason: &reason,
+	if _, updErr := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+		Source: "recovery.restart-stale.cancelled-pr-fix",
+		Update: task.Update{
+			Status:       &status,
+			StatusReason: &reason,
+		},
 	}); updErr != nil {
 		r.Logger.Error("restart-stale.revert-cancelled-pr-fix.failed", "task_id", t.ID, "err", updErr)
 		return false
@@ -455,7 +467,10 @@ func (r *Recovery) surfaceStartFailure(ctx context.Context, taskID string, curre
 	if !failure.Blocker.IsZero() {
 		update.Blocker = &failure.Blocker
 	}
-	if _, uErr := r.Tasks.Update(taskID, update); uErr != nil {
+	if _, uErr := r.Tasks.ApplyStatusEffect(taskID, task.StatusEffect{
+		Source: "recovery.restart-stale.start-failure",
+		Update: update,
+	}); uErr != nil {
 		r.Logger.Error("restart-stale.surface", "task_id", taskID, "err", uErr)
 	}
 }

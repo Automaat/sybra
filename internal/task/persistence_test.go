@@ -101,6 +101,19 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 			HeadSHA:                 "def456",
 			SubagentCallCount:       2,
 		}},
+		EffectLog: []workflow.EffectRecord{{
+			ID: workflow.EffectID{
+				Generation: 2,
+				StepSeq:    4,
+				StepID:     "external:review_pr_monitor:deadbeef",
+				Pos:        0,
+			},
+			IntentAt: now.Add(-15 * time.Minute),
+			CompletedAt: func() *time.Time {
+				t := now.Add(-14 * time.Minute)
+				return &t
+			}(),
+		}},
 		Workflow: &workflow.Execution{
 			WorkflowID:  "workflow-1",
 			CurrentStep: "step-1",
@@ -341,6 +354,20 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 			TestFailureFingerprint:  "fp",
 			HeadSHA:                 "def456",
 			SubagentCallCount:       2,
+		}}
+	case "EffectLog":
+		task.EffectLog = []workflow.EffectRecord{{
+			ID: workflow.EffectID{
+				Generation: 3,
+				StepSeq:    9,
+				StepID:     "external:test:deadbeef",
+				Pos:        0,
+			},
+			IntentAt: now,
+			CompletedAt: func() *time.Time {
+				t := now.Add(time.Minute)
+				return &t
+			}(),
 		}}
 	case "Workflow":
 		task.Workflow = &workflow.Execution{

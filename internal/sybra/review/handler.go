@@ -1085,9 +1085,12 @@ func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, co
 	// not an operator click, so it classifies the same as auto_recovery.
 	transition := func() error {
 		preTask, preErr := r.tasks.Get(c.TaskID)
-		if _, err := r.tasks.Update(c.TaskID, task.Update{
-			Status:  task.Ptr(landedStatus),
-			Outcome: task.Ptr(base),
+		if _, err := r.tasks.ApplyStatusEffect(c.TaskID, task.StatusEffect{
+			Source: "review.pr-monitor.closed-pr",
+			Update: task.Update{
+				Status:  task.Ptr(landedStatus),
+				Outcome: task.Ptr(base),
+			},
 		}); err != nil {
 			return err
 		}
@@ -1528,9 +1531,12 @@ func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []githu
 		}
 		status := task.StatusInReview
 		statusReason := "pr-fix cancelled: " + reason + " resolved"
-		if _, updErr := r.tasks.Update(t.ID, task.Update{
-			Status:       &status,
-			StatusReason: &statusReason,
+		if _, updErr := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+			Source: "review.pr-monitor.cancel-resolved",
+			Update: task.Update{
+				Status:       &status,
+				StatusReason: &statusReason,
+			},
 		}); updErr != nil {
 			r.logger.Error("pr-monitor.cancel-resolved.status", "task_id", t.ID, "kind", reason, "err", updErr)
 			continue
@@ -1843,10 +1849,13 @@ func (r *Handler) adoptOrphanPRs(ctx context.Context, tasks []task.Task, prs []g
 			continue
 		}
 		if match != nil {
-			updated, err := r.tasks.Update(t.ID, task.Update{
-				PRNumber:     task.Ptr(match.Number),
-				Status:       task.Ptr(task.StatusInReview),
-				StatusReason: task.Ptr(""),
+			updated, err := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+				Source: "review.pr-monitor.orphan-adopt",
+				Update: task.Update{
+					PRNumber:     task.Ptr(match.Number),
+					Status:       task.Ptr(task.StatusInReview),
+					StatusReason: task.Ptr(""),
+				},
 			})
 			if err != nil {
 				r.logger.Error("pr-monitor.orphan-adopt", "task_id", t.ID, "pr", match.Number, "err", err)
@@ -1943,11 +1952,14 @@ func (r *Handler) adoptOrphanMergedPR(ctx context.Context, t *task.Task) {
 	taskID, repo, branch := t.ID, t.ProjectID, t.Branch
 	const state = "MERGED"
 	base := classifyLandingOutcome(state)
-	updated, err := r.tasks.Update(taskID, task.Update{
-		PRNumber:     task.Ptr(prNum),
-		Status:       task.Ptr(task.StatusDone),
-		Outcome:      task.Ptr(base),
-		StatusReason: task.Ptr(""),
+	updated, err := r.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
+		Source: "review.pr-monitor.orphan-merged-adopt",
+		Update: task.Update{
+			PRNumber:     task.Ptr(prNum),
+			Status:       task.Ptr(task.StatusDone),
+			Outcome:      task.Ptr(base),
+			StatusReason: task.Ptr(""),
+		},
 	})
 	if err != nil {
 		r.logger.Error("pr-monitor.orphan-merged-adopt", "task_id", taskID, "pr", prNum, "err", err)

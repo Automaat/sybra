@@ -16,6 +16,7 @@ type taskAPI interface {
 	List() ([]task.Task, error)
 	Get(id string) (task.Task, error)
 	Update(id string, u task.Update) (task.Task, error)
+	ApplyStatusEffect(id string, eff task.StatusEffect) (task.Task, error)
 	UpdateRun(taskID, agentID string, patch task.RunPatch) error
 }
 
@@ -178,12 +179,14 @@ func (r *remediator) refreshHumanRequiredStuck(a Anomaly) (string, error) {
 // instead of bouncing between in-progress and human-required forever.
 func (r *remediator) retryKnownLostAgentStuck(a Anomaly, t task.Task) (string, error) {
 	tags := append(slices.Clone(t.Tags), monitorAutoRetriedTag)
-	upd := task.Update{
-		Status:       task.Ptr(task.StatusInProgress),
-		StatusReason: task.Ptr("monitor: stall matches an already-tracked lost_agent investigation; auto-retrying"),
-		Tags:         &tags,
-	}
-	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
+	if _, err := r.tasks.ApplyStatusEffect(a.TaskID, task.StatusEffect{
+		Source: "monitor.stuck-human-blocked.retry-known-lost-agent",
+		Update: task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: task.Ptr("monitor: stall matches an already-tracked lost_agent investigation; auto-retrying"),
+			Tags:         &tags,
+		},
+	}); err != nil {
 		return "", fmt.Errorf("retry known lost_agent stuck task %s: %w", a.TaskID, err)
 	}
 	return string(a.Kind) + ":retry:" + a.TaskID, nil
