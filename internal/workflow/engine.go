@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,10 @@ const (
 	maxSyncSteps   = 100 // depth limit for synchronous step chains
 	maxStepHistory = 50  // max step records kept per execution
 	shellTimeout   = 30 * time.Second
+	// Deliberately generous: effect leases have no heartbeat yet, so they must
+	// outlive the longest expected synchronous step execution to avoid false
+	// reclaims mid-step.
+	defaultEffectLeaseTTL = 30 * time.Minute
 )
 
 // TaskInfo is the subset of task data the engine needs.
@@ -126,6 +131,8 @@ type TaskProvider interface {
 	// body (see stripTestFailuresSections).
 	ReplaceTaskBody(id, body string) error
 	SetWorkflow(id string, wf *Execution) error
+	ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
+	CompleteWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to
 	// prompt and clears it, so a re-dispatched (resumed) step's agent carries the
 	// correction exactly once. Returns prompt unchanged when none is pending.
@@ -404,6 +411,9 @@ type Engine struct {
 	// HandleStatusChange, ResumeStalled — all called from agent/workflow
 	// goroutines) run concurrently with no shared lock between them.
 	dispatchDisabled atomic.Bool
+	ownerID          string
+	effectLeaseTTL   time.Duration
+	now              func() time.Time
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
@@ -481,6 +491,8 @@ type Engine struct {
 	admissionDecisionHook func(TaskInfo, AdmissionDecision)
 }
 
+var effectOwnerSeq atomic.Uint64
+
 // AdmissionDecision summarizes one admission_preflight step outcome, passed
 // to the hook installed via SetAdmissionDecisionHook.
 type AdmissionDecision struct {
@@ -517,6 +529,9 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		store:                  store,
 		tasks:                  tasks,
 		agents:                 agents,
+		ownerID:                newEffectOwnerID(),
+		effectLeaseTTL:         defaultEffectLeaseTTL,
+		now:                    func() time.Time { return time.Now().UTC() },
 		logger:                 logger,
 		ctx:                    context.Background(),
 		inflightMutexes:        make(map[string]*sync.Mutex),
@@ -533,6 +548,22 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		resumeSkip:             logging.NewInfoThrottle(),
 		openPROnUnrunnableGate: true,
 	}
+}
+
+func newEffectOwnerID() string {
+	return fmt.Sprintf("workflow-engine-%d-%d", time.Now().UTC().UnixNano(), effectOwnerSeq.Add(1))
+}
+
+func (e *Engine) setEffectLeaseTTLForTest(ttl time.Duration) {
+	e.effectLeaseTTL = ttl
+}
+
+func (e *Engine) setNowForTest(now func() time.Time) {
+	if now == nil {
+		e.now = func() time.Time { return time.Now().UTC() }
+		return
+	}
+	e.now = func() time.Time { return now().UTC() }
 }
 
 // SetContext binds a parent context to the engine. Shell steps use

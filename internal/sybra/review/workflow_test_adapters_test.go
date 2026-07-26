@@ -1,6 +1,7 @@
 package review
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,6 +13,8 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
+
+var errWorkflowEffectNoPersist = errors.New("workflow effect claim requires no persistence")
 
 // taskAdapter and agentAdapter are minimal test-only stand-ins for the real
 // bridges (internal/sybra's private taskAdapter/agentAdapter) that let a
@@ -124,6 +127,62 @@ func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err
+}
+
+func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if cur.Workflow == nil {
+			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.ClaimEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimConflict) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				return task.Update{}, errWorkflowEffectNoPersist
+			}
+			return task.Update{}, claimErr
+		}
+		return task.Update{Workflow: &wf}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, nil
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
+}
+
+func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if cur.Workflow == nil {
+			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.CompleteEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				return task.Update{}, errWorkflowEffectNoPersist
+			}
+			return task.Update{}, claimErr
+		}
+		return task.Update{Workflow: &wf}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, nil
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
 }
 
 func (a *taskAdapter) ConsumeSupervisorSteer(taskID, prompt string) (string, error) {

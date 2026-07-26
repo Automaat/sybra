@@ -395,6 +395,46 @@ func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	return nil
 }
 
+func (m *memTasks) ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return EffectClaimResult{}, fmt.Errorf("task %s not found", id)
+	}
+	if t.Workflow == nil {
+		return EffectClaimResult{}, fmt.Errorf("task %s has no workflow", id)
+	}
+	wf := t.Workflow.Clone()
+	result, err := wf.ClaimEffect(claim)
+	result.Workflow = wf
+	if err != nil {
+		return result, err
+	}
+	t.Workflow = wf
+	return result, nil
+}
+
+func (m *memTasks) CompleteWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return EffectClaimResult{}, fmt.Errorf("task %s not found", id)
+	}
+	if t.Workflow == nil {
+		return EffectClaimResult{}, fmt.Errorf("task %s has no workflow", id)
+	}
+	wf := t.Workflow.Clone()
+	result, err := wf.CompleteEffect(claim)
+	result.Workflow = wf
+	if err != nil {
+		return result, err
+	}
+	t.Workflow = wf
+	return result, nil
+}
+
 func (m *memTasks) WriteSidecar(id, kind, content string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

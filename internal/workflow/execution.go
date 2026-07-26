@@ -12,9 +12,11 @@ const maxEffectLog = 200
 // It is stored on Execution.EffectLog so retried effects can reuse their
 // original EffectID as an idempotency key.
 type EffectRecord struct {
-	ID          EffectID   `yaml:"id" json:"id"`
-	IntentAt    time.Time  `yaml:"intent_at" json:"intentAt"`
-	CompletedAt *time.Time `yaml:"completed_at,omitempty" json:"completedAt,omitempty"`
+	ID             EffectID   `yaml:"id" json:"id"`
+	IntentAt       time.Time  `yaml:"intent_at" json:"intentAt"`
+	Owner          string     `yaml:"owner,omitempty" json:"owner,omitempty"`
+	LeaseExpiresAt *time.Time `yaml:"lease_expires_at,omitempty" json:"leaseExpiresAt,omitempty"`
+	CompletedAt    *time.Time `yaml:"completed_at,omitempty" json:"completedAt,omitempty"`
 }
 
 // ExecState tracks the overall execution state.
@@ -221,6 +223,10 @@ func (e *Execution) Clone() *Execution {
 	if e.EffectLog != nil {
 		cloned.EffectLog = slices.Clone(e.EffectLog)
 		for i := range cloned.EffectLog {
+			if cloned.EffectLog[i].LeaseExpiresAt != nil {
+				t := *cloned.EffectLog[i].LeaseExpiresAt
+				cloned.EffectLog[i].LeaseExpiresAt = &t
+			}
 			if cloned.EffectLog[i].CompletedAt != nil {
 				t := *cloned.EffectLog[i].CompletedAt
 				cloned.EffectLog[i].CompletedAt = &t
@@ -392,7 +398,9 @@ func (e *Execution) CountStep(stepID string) int {
 // its persistent count (see StepCounts), resetting CountStep(stepID) to 0.
 // Used when a step is deliberately re-armed for a fresh attempt cycle (e.g.
 // route-level auto-retry) so its own in-step max_retries budget is not seen
-// as already exhausted by prior cycles.
+// as already exhausted by prior cycles. It also drops any effect-log records
+// anchored to that step so the fresh attempt gets a fresh claim ID instead of
+// being fenced by a prior completed attempt's durable effect lease.
 func (e *Execution) ClearStepRecords(stepID string) {
 	if len(e.StepHistory) > 0 {
 		kept := e.StepHistory[:0]
@@ -404,6 +412,15 @@ func (e *Execution) ClearStepRecords(stepID string) {
 		e.StepHistory = kept
 	}
 	delete(e.StepCounts, stepID)
+	if len(e.EffectLog) > 0 {
+		kept := e.EffectLog[:0]
+		for i := range e.EffectLog {
+			if e.EffectLog[i].ID.StepID != stepID {
+				kept = append(kept, e.EffectLog[i])
+			}
+		}
+		e.EffectLog = kept
+	}
 }
 
 // RecordForStep returns the latest record for a given step ID, or nil.
