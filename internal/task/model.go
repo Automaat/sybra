@@ -504,6 +504,7 @@ type Task struct {
 
 	AssignedNode    string     `json:"assignedNode,omitempty"`
 	NodeOverride    string     `json:"nodeOverride,omitempty"`
+	Generation      int64      `json:"generation,omitempty"`
 	MirrorRev       int64      `json:"mirrorRev,omitempty"`
 	MirrorUpdatedAt *time.Time `json:"mirrorUpdatedAt,omitempty"`
 

@@ -98,16 +98,20 @@ vi.mock('$lib/api', () => ({
   GetAttachmentURL: (...args: unknown[]) => mockGetAttachmentURL(...args),
 }))
 
-vi.mock('@skeletonlabs/skeleton-svelte', () => ({
-  SegmentedControl: Object.assign(() => {}, {
-    Control: () => {},
-    Indicator: () => {},
-    Item: Object.assign(() => {}, {
-      ItemText: () => {},
-      ItemHiddenInput: () => {},
+vi.mock('@skeletonlabs/skeleton-svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@skeletonlabs/skeleton-svelte')>()
+  return {
+    ...actual,
+    SegmentedControl: Object.assign(() => {}, {
+      Control: () => {},
+      Indicator: () => {},
+      Item: Object.assign(() => {}, {
+        ItemText: () => {},
+        ItemHiddenInput: () => {},
+      }),
     }),
-  }),
-}))
+  }
+})
 
 vi.mock('../components/StreamOutput.svelte', () => ({ default: () => {} }))
 vi.mock('../components/StatusBadge.svelte', () => ({ default: () => {} }))
@@ -217,7 +221,11 @@ describe('TaskDetail', () => {
     await vi.waitFor(() => {
       expect(screen.getByText('Delete task')).toBeDefined()
     })
-    screen.getByText('Delete task').click()
+    await fireEvent.click(screen.getByText('Delete task'))
+    await vi.waitFor(() => {
+      expect(screen.getByText('Delete "Test Task"? This cannot be undone.')).toBeDefined()
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await vi.waitFor(() => {
       expect(mockRemove).toHaveBeenCalledWith('task-1')
       expect(ondelete).toHaveBeenCalled()
