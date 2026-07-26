@@ -303,7 +303,8 @@ func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *
 		return comp, nil
 	}
 	e.logger.Info("workflow.parallel.advance", "task_id", taskID, "from", parent.ID, "to", nextStep.ID, "status", parentStatus)
-	return e.executeSteps(taskID, def, nextStep, wfExec)
+	comp, err = e.executeSteps(taskID, def, nextStep, wfExec)
+	return comp, normalizeExecuteStepsErr(err)
 }
 
 // summarizeChildOutputs renders a compact "child=status" summary that

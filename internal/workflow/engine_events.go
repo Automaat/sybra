@@ -929,6 +929,7 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 		e.logger.Info(logPrefix+".retry", "task_id", taskID, "step", step.ID)
 		comp, rErr = e.executeSteps(taskID, def, step, t.Workflow)
 	}
+	rErr = normalizeExecuteStepsErr(rErr)
 	e.fireComplete(comp)
 	e.drainPendingConflictRecovery(taskID)
 	e.resumeError.Log(e.logger, logPrefix+".exec", taskID, rErr, "task_id", taskID)
@@ -1403,6 +1404,7 @@ func (e *Engine) resumeStalledReconcileWaitHumanStatus(t TaskInfo, step *Step) {
 func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *Step, wf *Execution, fresh TaskInfo) {
 	e.logger.Info("workflow.resume-stalled", "task_id", taskID, "step", step.ID)
 	comp, rErr := e.executeSteps(taskID, def, step, wf)
+	rErr = normalizeExecuteStepsErr(rErr)
 	e.clearResumeDispatching(taskID)
 	// Most resumable steps dispatch async work and return nil; sync retry steps
 	// such as verify_checks can finish the workflow here.

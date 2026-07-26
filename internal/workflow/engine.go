@@ -554,18 +554,6 @@ func newEffectOwnerID() string {
 	return fmt.Sprintf("workflow-engine-%d-%d", time.Now().UTC().UnixNano(), effectOwnerSeq.Add(1))
 }
 
-func (e *Engine) setEffectLeaseTTLForTest(ttl time.Duration) {
-	e.effectLeaseTTL = ttl
-}
-
-func (e *Engine) setNowForTest(now func() time.Time) {
-	if now == nil {
-		e.now = func() time.Time { return time.Now().UTC() }
-		return
-	}
-	e.now = func() time.Time { return now().UTC() }
-}
-
 // SetContext binds a parent context to the engine. Shell steps use
 // context.WithTimeout(parent, shellTimeout) so they are cancelled when
 // the parent context is cancelled (e.g. on app shutdown).

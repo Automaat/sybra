@@ -139,6 +139,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 
 	e.logger.Info("workflow.start", "task_id", taskID, "workflow", workflowID, "step", start.ID)
 	comp, err := e.executeSteps(taskID, &def, start, wfExec)
+	err = normalizeExecuteStepsErr(err)
 	if errors.Is(err, errBestOfNParked) {
 		return nil, errBestOfNParked
 	}
