@@ -47,12 +47,17 @@ func (id EffectID) Compare(other EffectID) int {
 		return -1
 	case id.StepSeq > other.StepSeq:
 		return 1
+	}
+	if cmp := strings.Compare(id.StepID, other.StepID); cmp != 0 {
+		return cmp
+	}
+	switch {
 	case id.Pos < other.Pos:
 		return -1
 	case id.Pos > other.Pos:
 		return 1
 	}
-	return strings.Compare(id.StepID, other.StepID)
+	return 0
 }
 
 func (id EffectID) String() string {
@@ -67,6 +72,7 @@ func assignEffectIDs(desired DesiredState, observed ObservedState, effects []Eff
 		return effects
 	}
 	currentStepID, currentSeq := initialEffectCursor(desired, observed)
+	pos := 0
 	for i := range effects {
 		stepID := effectAnchorStepID(effects, i, currentStepID)
 		switch {
@@ -77,13 +83,15 @@ func assignEffectIDs(desired DesiredState, observed ObservedState, effects []Eff
 		case stepID != currentStepID:
 			currentSeq++
 			currentStepID = stepID
+			pos = 0
 		}
 		effects[i].ID = EffectID{
 			Generation: observed.Task.Generation,
 			StepSeq:    currentSeq,
 			StepID:     stepID,
-			Pos:        i,
+			Pos:        pos,
 		}
+		pos++
 	}
 	return effects
 }

@@ -441,6 +441,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
+		Generation:      1,
 		AgentMode:       mode,
 		Attachments:     []Attachment{},
 		CreatedAt:       now,
@@ -483,6 +484,7 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
+		Generation:      1,
 		AgentMode:       mode,
 		Attachments:     []Attachment{},
 		CreatedAt:       now,
@@ -923,6 +925,7 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 		t.TestingCycleStartedAt = &now
 	}
 	statusChangedBackfill := statusChangedAtBackfill(t, now)
+	t.Generation++
 	t.UpdatedAt = now
 	if t.Status != prevStatus {
 		t.StatusChangedAt = now
