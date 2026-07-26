@@ -47,14 +47,16 @@ func (w *Watchdog) checkRunRate(now time.Time) {
 		reason := fmt.Sprintf("run_rate: %d %q runs within %v — dispatch loop suspected", count, role, w.runWindow)
 		w.logger.Info("watchdog.runrate.escalate",
 			"task_id", t.ID, "role", role, "count", count, "window_m", w.runWindow.Minutes())
-		if _, err := w.tasks.Update(t.ID, task.Update{
+		if err := w.applyStatusEffect(
+			t.ID,
+			"watchdog.runrate",
 			// A burst-loop breaker is a machine-stop condition, not a request
 			// for human triage. Parking it blocked prevents ResumeStalled and
 			// restart/reattach recovery from immediately re-dispatching the same
 			// storm again.
-			Status:       task.Ptr(task.StatusBlocked),
-			StatusReason: task.Ptr(reason),
-		}); err != nil {
+			task.StatusBlocked,
+			reason,
+		); err != nil {
 			w.logger.Error("watchdog.runrate.update", "task_id", t.ID, "err", err)
 		}
 	}
