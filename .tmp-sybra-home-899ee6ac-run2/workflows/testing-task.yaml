@@ -1,0 +1,92 @@
+id: testing-task
+name: Manual Testing
+description: 'Adversarially test the implemented feature against the task description by running the real app/cluster in an isolated per-task sandbox. Goal: PROVE the feature does not behave as the task requires. Pass → ready-pr (a PR is opened). Fail → back to in-progress for re-implementation, until the attempt cap, then human-required. No human in the loop and no test-plan review.'
+trigger:
+    "on": task.status_changed
+    conditions:
+        - field: task.status
+          operator: equals
+          value: testing
+steps:
+    - id: maybe_test
+      name: Testing Decision
+      type: condition
+      config: {}
+      next:
+        - when:
+            field: task.tags
+            operator: contains
+            value: trivial
+          goto: skip_testing
+        - when:
+            field: task.tags
+            operator: contains
+            value: skip-testing
+          goto: skip_testing
+        - when:
+            field: task.tags
+            operator: contains
+            value: chore
+          goto: maybe_skip_chore_size
+        - goto: run_test
+    - id: maybe_skip_chore_size
+      name: Chore Testing Size Decision
+      type: condition
+      config: {}
+      next:
+        - when:
+            field: task.tags
+            operator: contains
+            value: small
+          goto: maybe_skip_chore_test_tag
+        - goto: run_test
+    - id: maybe_skip_chore_test_tag
+      name: Chore Testing Risk Decision
+      type: condition
+      config: {}
+      next:
+        - when:
+            field: task.tags
+            operator: contains
+            value: test
+          goto: run_test
+        - goto: skip_testing
+    - id: skip_testing
+      name: Skip Testing
+      type: set_status
+      config:
+        status: ready-pr
+        status_reason: testing skipped by task tag
+      next:
+        - goto: ""
+    - id: run_test
+      name: Adversarial Testing
+      type: run_agent
+      config:
+        role: test-runner
+        mode: headless
+        model: sonnet
+        provider: cross
+        prompt: |-
+            Adversarially test task {{.Task.ID}} using the /sybra-test skill. {{if getvar .Vars "testing_reask_note"}} RETRY GUIDANCE — your previous test report was rejected: {{getvar .Vars "testing_reask_note"}} {{end}} {{if .Task.ManualTest.Kind}}This project's .sybra.yaml declares a manual_test surface:
+              - kind: {{.Task.ManualTest.Kind}}
+              - command: {{.Task.ManualTest.Command}}
+              - health_url: {{.Task.ManualTest.HealthURL}}
+              - probe_commands:
+            {{range .Task.ManualTest.ProbeCommands}}    - {{.}} {{end}}Prefer this surface for black-box testing unless the task scope clearly makes it irrelevant. {{end}} {{if acceptanceledger .Task.Body}} The task body carries a persistent acceptance ledger of distinct prior product bugs. Reproduce and re-verify EVERY ledger entry against the CURRENT worktree on every pass. PASS only if all ledger entries hold simultaneously, plus your normal manual-testing evidence says you could not break the feature.
+            {{acceptanceledger .Task.Body}} {{end}} Before looking for defects, derive a cheap acceptance probe from the task when possible. For sweep/refactor wording like "everywhere", "all", "single utility", "unified", or "no raw X remains", run a repo-wide grep/test invariant that would catch missed call sites. Include that command in the failure report when it fails.
+            Follow the /sybra-test skill's Output Contract exactly: for plain-text output the FINAL line MUST be exactly `TEST_VERDICT: PASS` or `TEST_VERDICT: FAIL`; when your provider enforces this step's output_schema, return the JSON verdict object instead. Do NOT call `sybra-cli update` or mutate the task — Sybra ingests your final report and appends it to the task atomically.
+        needs_worktree: true
+        max_retries: 1
+        output_schema: '{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string","enum":["web","cli","server","desktop","k8s","library","docs","none"]},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"},"url":{"type":"string"}},"required":["command","expected","actual","observed","output","status","url"],"additionalProperties":false},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","expected","actual","observed","output","status"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","actual","observed","output","status"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}'
+      next:
+        - goto: route_test
+    - id: route_test
+      name: Route Test Result
+      type: route_test_result
+      config: {}
+      next:
+        - goto: ""
+builtin: true
+created_at: 2026-07-26T20:31:55.930329773Z
+updated_at: 2026-07-26T20:31:55.930329773Z

@@ -1,0 +1,75 @@
+id: branch-conflict-fix
+name: Branch Conflict Fix
+description: Recover a worktree-prep conflict on the task's own branch via a bounded headless pr-fix sub-run, then resume the task's original interrupted workflow/stage. The injected prompt decides whether this is a no-PR base-merge recovery or a PR-backed same-branch divergence recovery. Contains no PR-tail steps (link_pr_and_review, ensure_pr_closes_issue, rerequest_review, route_pr_fix_result's PR-relink path); it only repairs the task branch itself and then hands control back to the interrupted stage.
+trigger:
+    "on": task.status_changed
+    conditions:
+        - field: task.tags
+          operator: contains
+          value: __never_dispatch_branch_conflict_fix__
+steps:
+    - id: set_recovering
+      name: Mark Recovering
+      type: set_status
+      config:
+        status: in-progress
+        status_reason: recovering from a branch conflict
+      next:
+        - goto: fix
+    - id: fix
+      name: Fix Branch Conflict
+      type: run_agent
+      config:
+        role: pr-fix
+        mode: headless
+        model: sonnet
+        prompt: '{{ getvar .Vars "prompt" }}'
+      next:
+        - goto: route_result
+    - id: route_result
+      name: Route Fix Result
+      type: route_pr_fix_result
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - goto: verify_commits
+    - id: verify_commits
+      name: Verify Commits
+      type: verify_commits
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - when:
+            field: task.status
+            operator: equals
+            value: done
+          goto: ""
+        - goto: detect_tampering
+    - id: detect_tampering
+      name: Detect Test Tampering
+      type: detect_tampering
+      config: {}
+      next:
+        - when:
+            field: task.status
+            operator: equals
+            value: human-required
+          goto: ""
+        - goto: resume_original
+    - id: resume_original
+      name: Resume Interrupted Workflow
+      type: resume_workflow
+      config: {}
+      next:
+        - goto: ""
+builtin: true
+created_at: 2026-07-26T20:31:55.923853848Z
+updated_at: 2026-07-26T20:31:55.923853848Z
