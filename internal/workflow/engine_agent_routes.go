@@ -68,6 +68,7 @@ func (e *Engine) clearAgentStep(taskID, agentID string) {
 	if agentID == "" {
 		return
 	}
+	defer e.clearPendingAgentStep(taskID, agentID)
 	if taskID == "" {
 		tasks, err := e.tasks.ListTasks()
 		if err != nil {

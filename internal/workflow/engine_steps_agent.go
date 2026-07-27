@@ -324,6 +324,7 @@ func (e *Engine) persistStartedAgent(taskID string, step *Step, wfExec *Executio
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 		return e.deferStartedAgentRoute(taskID, step.ID, agentID, err)
 	}
+	e.clearPendingAgentStep(taskID, agentID)
 	return nil
 }
 

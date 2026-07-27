@@ -95,4 +95,40 @@ func TestHandleAgentComplete_AfterRoutePersistFailureStillAdvances(t *testing.T)
 	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); tracked {
 		t.Fatal("agent route still tracked after completion")
 	}
+	if _, tracked := engine.pendingRoutes[pendingAgentRouteKey("t1", "agent-1")]; tracked {
+		t.Fatal("pending route still tracked after completion")
+	}
+}
+
+func TestPersistStartedAgent_ClearsStalePendingRouteOnSuccessfulPersist(t *testing.T) {
+	store := newTestStore(t)
+	def, err := store.Get("test-simple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := def.StepByID("implement")
+	if step == nil {
+		t.Fatal("implement step missing")
+	}
+
+	tasks := newMemTasks()
+	wfExec := &Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless", Workflow: wfExec})
+
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.setPendingAgentStep("t1", "agent-1", "implement")
+
+	if err := engine.persistStartedAgent("t1", step, wfExec, "agent-1", "claude", "", "", "", "", ""); err != nil {
+		t.Fatalf("persistStartedAgent: %v", err)
+	}
+	if stepID, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); !tracked || stepID != "implement" {
+		t.Fatalf("workflow route = (%q,%v), want implement,true", stepID, tracked)
+	}
+	if _, tracked := engine.pendingRoutes[pendingAgentRouteKey("t1", "agent-1")]; tracked {
+		t.Fatal("pending route still tracked after successful persist")
+	}
 }
