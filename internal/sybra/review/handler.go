@@ -800,6 +800,9 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 		kinds = append(kinds, string(issues[i].Kind))
 	}
 	r.logger.Info("reviews.task-issues", "task_id", taskID, "kinds", kinds)
+	if !r.cancelStalePlanningWorkflowForPRTask(taskID) {
+		return
+	}
 	if r.hasBlockingAgentForTask(ctx, taskID) {
 		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "running_agent")
 		return
@@ -882,6 +885,30 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	case merge != nil:
 		r.handleAutoMerge(ctx, *merge)
 	}
+}
+
+func (r *Handler) cancelStalePlanningWorkflowForPRTask(taskID string) bool {
+	if r.WorkflowEngine == nil || r.tasks == nil {
+		return true
+	}
+	t, err := r.tasks.Get(taskID)
+	if err != nil {
+		r.logger.Warn("reviews.cancel-stale-plan.get", "task_id", taskID, "err", err)
+		return false
+	}
+	if t.PRNumber == 0 || t.Workflow == nil || t.Workflow.WorkflowID != "simple-task-plan" {
+		return true
+	}
+	if t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed {
+		return true
+	}
+	step, err := r.WorkflowEngine.CancelWorkflow(taskID, "pr-monitor: linked PR supersedes planning workflow")
+	if err != nil {
+		r.logger.Error("reviews.cancel-stale-plan", "task_id", taskID, "err", err)
+		return false
+	}
+	r.logger.Info("reviews.cancel-stale-plan", "task_id", taskID, "step", step, "pr", t.PRNumber)
+	return true
 }
 
 func prRefCacheKey(repo string, number int) string {

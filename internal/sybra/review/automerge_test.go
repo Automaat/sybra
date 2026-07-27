@@ -1600,6 +1600,83 @@ func TestHandleTaskPRIssues_ExhaustedRetryParksOnlyWhenNoSiblingHandleable(t *te
 	}
 }
 
+func TestHandleTaskPRIssues_CancelsStalePlanWorkflowForLinkedPR(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
+		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("linked PR stuck in plan review", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitingPlan := &workflow.Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "review_plan",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"step.flag_plan_critique_verdict.output": "verdict: REJECT"},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   task.Ptr(task.StatusHumanRequired),
+		PRNumber: task.Ptr(17669),
+		Workflow: &waitingPlan,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:          logger,
+		tasks:           tasks,
+		agents:          agentMgr,
+		prTracker:       github.NewIssueTracker(time.Minute),
+		WorkflowEngine:  engine,
+		pushPreflightFn: stubPushPreflight(nil),
+	}
+	pr := github.PullRequest{
+		Number: 17669, Repository: "o/r", HeadRefName: "feat", HeadSHA: "sha1",
+		URL: "https://github.com/o/r/pull/17669", FeedbackSig: "review-feedback",
+	}
+
+	r.handleTaskPRIssues(context.Background(), created.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: created.ID, PR: pr},
+	})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow missing after PR issue dispatch")
+	}
+	if got.Workflow.WorkflowID != "test-pr-fix" {
+		t.Fatalf("workflow id = %q, want test-pr-fix; stale plan workflow was not cancelled", got.Workflow.WorkflowID)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress from PR-fix workflow", got.Status)
+	}
+	if got.PRNumber != 17669 {
+		t.Fatalf("PRNumber = %d, want preserved linked PR 17669", got.PRNumber)
+	}
+}
+
 // TestHandleKnownPRConflictsViaREST_SkipsCommentsWithoutGraphQLThreadData locks
 // the REST-degraded fallback's kind filter: when GraphQL budget is exhausted and
 // the monitor falls back to REST-sourced PR fetches (no thread-resolution data),
