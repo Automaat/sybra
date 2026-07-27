@@ -103,6 +103,9 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 // at the parent level) and writes results into the ChildStatus slot
 // instead of mutating wfExec.State directly.
 func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *Execution, parentCtx TemplateContext, dir string, status *ChildStatus) error {
+	if status == nil {
+		return fmt.Errorf("parallel child %q has no status", child.ID)
+	}
 	// Render the child prompt with a context that points at the child step
 	// so {{.Step.ID}} et al. resolve correctly inside the prompt template.
 	childCtx := parentCtx

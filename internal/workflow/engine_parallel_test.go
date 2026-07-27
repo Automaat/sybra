@@ -603,7 +603,14 @@ func TestParallel_CompletionRoutesViaPendingAgentStepAfterPersistFailure(t *test
 	if parent == nil || child == nil {
 		t.Fatal("test-parallel definition missing expected steps")
 	}
-	status := wfExec.ParallelInflight["plan"].Children["plan_a"]
+	rec := wfExec.ParallelInflight["plan"]
+	if rec == nil {
+		t.Fatal("parallel inflight record missing")
+	}
+	status := rec.Children["plan_a"]
+	if status == nil {
+		t.Fatal("parallel child status missing")
+	}
 	ctx := TemplateContext{Task: TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec}, Step: *parent, Vars: wfExec.Variables, Workflow: wfExec}
 
 	tasks.failSetWorkflowN = 1
@@ -618,7 +625,7 @@ func TestParallel_CompletionRoutesViaPendingAgentStepAfterPersistFailure(t *test
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Success: true, Result: "done", Provider: "claude"})
 
 	got := mustWorkflow(t, tasks, "t1")
-	rec := got.ParallelInflight["plan"]
+	rec = got.ParallelInflight["plan"]
 	if rec == nil || rec.Children["plan_a"] == nil {
 		t.Fatal("parallel inflight child missing after completion")
 	}

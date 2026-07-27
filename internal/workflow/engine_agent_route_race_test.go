@@ -110,6 +110,9 @@ func TestExecRunAgent_CompletionBufferedAcrossRoutePersistFailureStillAdvances(t
 		Config: StepConfig{Role: "triage", Prompt: "test"},
 	}
 	wfExec := ti.Workflow.Clone()
+	if wfExec == nil {
+		t.Fatal("workflow clone is nil")
+	}
 	ctx := TemplateContext{Task: ti, Step: *step, Vars: wfExec.Variables}
 
 	var wg sync.WaitGroup

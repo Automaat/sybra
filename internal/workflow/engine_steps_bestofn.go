@@ -169,6 +169,9 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 // (VariantID=attempt_N, AssignmentUnit=bestofn-attempt) independent of the
 // trimmable Execution state above.
 func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Execution, parentCtx TemplateContext, attemptID string, status *AttemptStatus) error {
+	if status == nil {
+		return fmt.Errorf("best-of-n attempt %q has no status", attemptID)
+	}
 	mode := step.Config.Mode
 	if mode == "" || mode == "interactive" {
 		// Attempts must terminate on their own so the parent can advance —

@@ -722,7 +722,14 @@ func TestBestOfN_CompletionRoutesViaPendingAttemptAfterPersistFailure(t *testing
 	if parent == nil {
 		t.Fatal("bestofn-test definition missing attempts step")
 	}
-	status := wfExec.BestOfNInflight["attempts"].Attempts[bestOfNAttemptID(1)]
+	rec := wfExec.BestOfNInflight["attempts"]
+	if rec == nil {
+		t.Fatal("best-of-n inflight record missing")
+	}
+	status := rec.Attempts[bestOfNAttemptID(1)]
+	if status == nil {
+		t.Fatal("best-of-n attempt status missing")
+	}
 	ctx := TemplateContext{Task: TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec}, Step: *parent, Vars: wfExec.Variables, Workflow: wfExec}
 
 	tasks.failSetWorkflowN = 1
@@ -738,12 +745,16 @@ func TestBestOfN_CompletionRoutesViaPendingAttemptAfterPersistFailure(t *testing
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Success: true, Result: "winner", Provider: "claude"})
 
 	got := mustWorkflow(t, tasks, "t1")
-	rec := got.BestOfNInflight["attempts"]
+	rec = got.BestOfNInflight["attempts"]
 	if rec == nil || rec.Attempts[bestOfNAttemptID(1)] == nil {
 		t.Fatal("best-of-n inflight attempt missing after completion")
 	}
-	if rec.Attempts[bestOfNAttemptID(1)].Status != "completed" {
-		t.Fatalf("attempt_1 status = %q, want completed", rec.Attempts[bestOfNAttemptID(1)].Status)
+	attempt := rec.Attempts[bestOfNAttemptID(1)]
+	if attempt == nil {
+		t.Fatal("best-of-n attempt missing after completion")
+	}
+	if attempt.Status != "completed" {
+		t.Fatalf("attempt_1 status = %q, want completed", attempt.Status)
 	}
 	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); tracked {
 		t.Fatal("pending route still tracked after attempt completion")
