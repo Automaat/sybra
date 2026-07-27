@@ -496,7 +496,8 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 	if err != nil || t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked {
 		return
 	}
-	reason := exhaustedFixReason(github.MaxRetries, issue.Kind)
+	maxRetries := r.prFixMaxRetries()
+	reason := exhaustedFixReason(maxRetries, issue.Kind)
 	tags := slices.DeleteFunc(slices.Clone(t.Tags), func(tag string) bool {
 		return tag == reconciledLatchTag
 	})
@@ -518,11 +519,18 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 	r.prTracker.Clear(issue.TaskID, issue.Kind)
 	r.logAudit(audit.EventPRFixExhausted, issue.TaskID, "", map[string]any{
 		"pr": issue.PR.Number, "repo": issue.PR.Repository,
-		"kind": string(issue.Kind), "attempts": github.MaxRetries,
+		"kind": string(issue.Kind), "attempts": maxRetries,
 	})
 	r.logger.Warn("pr-monitor.fix-exhausted",
 		"task_id", issue.TaskID, "pr", issue.PR.Number,
-		"kind", string(issue.Kind), "attempts", github.MaxRetries)
+		"kind", string(issue.Kind), "attempts", maxRetries)
+}
+
+func (r *Handler) prFixMaxRetries() int {
+	if r == nil || r.prTracker == nil {
+		return github.MaxRetries
+	}
+	return r.prTracker.MaxRetries()
 }
 
 // exhaustedFixIsFlaky reports whether an exhausted ci_failure issue should
@@ -619,6 +627,7 @@ func (r *Handler) handleFlakyCI(issue github.PRIssue) {
 	}
 
 	if r.prTracker != nil && r.prTracker.AtCap(t.ID, ciInfraRerunKind) {
+		maxRetries := r.prFixMaxRetries()
 		tags := slices.DeleteFunc(slices.Clone(t.Tags), func(tag string) bool {
 			return tag == reconciledLatchTag
 		})
@@ -633,7 +642,7 @@ func (r *Handler) handleFlakyCI(issue github.PRIssue) {
 		r.prTracker.Clear(t.ID, ciInfraRerunKind)
 		r.logAudit(audit.EventPRFixExhausted, t.ID, "", map[string]any{
 			"pr": issue.PR.Number, "repo": issue.PR.Repository,
-			"kind": string(ciInfraRerunKind), "attempts": github.MaxRetries,
+			"kind": string(ciInfraRerunKind), "attempts": maxRetries,
 		})
 		r.logger.Warn("pr-monitor.ci-flaky.exhausted", "task_id", t.ID, "pr", issue.PR.Number)
 		return

@@ -3571,3 +3571,50 @@ func TestDurableFixBudgetSpent_CountsPersistedRunsAtHead(t *testing.T) {
 		t.Error("budget spent for a head the agents never ran against; a push must reset the budget")
 	}
 }
+
+func TestDurableFixBudgetSpent_UsesConfiguredRetryCap(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		prTracker: github.NewIssueTrackerWithMaxRetries(time.Minute, 10),
+	}
+
+	created, err := tasks.Create("looping pr", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range github.MaxRetries {
+		if err := store.AddRun(created.ID, task.AgentRun{
+			AgentID: fmt.Sprintf("a%d", i),
+			Role:    string(agent.RolePRFix),
+			HeadSHA: "sha-head",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r.durableFixBudgetSpent(created.ID, "sha-head") {
+		t.Fatal("default retry count spent budget even though configured cap is higher")
+	}
+
+	for i := github.MaxRetries; i < 10; i++ {
+		if err := store.AddRun(created.ID, task.AgentRun{
+			AgentID: fmt.Sprintf("a%d", i),
+			Role:    string(agent.RolePRFix),
+			HeadSHA: "sha-head",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !r.durableFixBudgetSpent(created.ID, "sha-head") {
+		t.Fatal("budget not spent after configured retry cap")
+	}
+}

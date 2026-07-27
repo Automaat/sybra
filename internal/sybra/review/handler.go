@@ -1624,6 +1624,10 @@ func (r *Handler) durableFixBudgetSpent(taskID, headSHA string) bool {
 	if headSHA == "" || r.tasks == nil {
 		return false
 	}
+	maxRetries := r.prFixMaxRetries()
+	if maxRetries < 0 {
+		return false
+	}
 	t, err := r.tasks.Get(taskID)
 	if err != nil {
 		return false
@@ -1634,11 +1638,11 @@ func (r *Handler) durableFixBudgetSpent(taskID, headSHA string) bool {
 			spent++
 		}
 	}
-	if spent < github.MaxRetries {
+	if spent < maxRetries {
 		return false
 	}
 	r.logger.Warn("pr-monitor.fix-budget.durable-exhausted",
-		"task_id", taskID, "head_sha", headSHA, "attempts", spent, "max", github.MaxRetries)
+		"task_id", taskID, "head_sha", headSHA, "attempts", spent, "max", maxRetries)
 	return true
 }
 

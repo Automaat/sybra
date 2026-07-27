@@ -452,7 +452,7 @@ func (a *App) Startup(ctx context.Context) error {
 	}
 	a.initProviderHealth(schedulerCtx, emit)
 
-	a.prTracker = github.NewIssueTracker(30 * time.Minute)
+	a.prTracker = github.NewIssueTrackerWithMaxRetries(30*time.Minute, a.cfg.GitHub.PRFixRetries())
 
 	configureProjectGitDefaults()
 	// Initialize domain services (dependency order: worktrees → agentOrch → reviewer, workflow)

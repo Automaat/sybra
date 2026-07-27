@@ -213,3 +213,46 @@ func TestIssueTracker(t *testing.T) {
 		}
 	})
 }
+
+func TestIssueTracker_CustomMaxRetries(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	tracker := NewIssueTrackerWithMaxRetries(30*time.Minute, 10)
+	tracker.now = func() time.Time { return now }
+
+	for i := range 10 {
+		sha := fmt.Sprintf("sha-%d", i)
+		if got := tracker.Decide("t1", PRIssueConflict, sha, ""); got != DispatchHandle {
+			t.Fatalf("attempt %d decision = %v, want Handle", i+1, got)
+		}
+		tracker.MarkHandled("t1", PRIssueConflict, sha)
+		now = now.Add(31 * time.Minute)
+	}
+
+	if got := tracker.Retries("t1", PRIssueConflict); got != 10 {
+		t.Fatalf("retries = %d, want 10", got)
+	}
+	if got := tracker.Decide("t1", PRIssueConflict, "sha-10", ""); got != DispatchExhausted {
+		t.Fatalf("after custom cap decision = %v, want Exhausted", got)
+	}
+}
+
+func TestIssueTracker_NegativeMaxRetriesDisablesCap(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	tracker := NewIssueTrackerWithMaxRetries(30*time.Minute, -1)
+	tracker.now = func() time.Time { return now }
+
+	for i := range MaxRetries + 5 {
+		sha := fmt.Sprintf("sha-%d", i)
+		if got := tracker.Decide("t1", PRIssueConflict, sha, ""); got != DispatchHandle {
+			t.Fatalf("attempt %d decision = %v, want Handle", i+1, got)
+		}
+		tracker.MarkHandled("t1", PRIssueConflict, sha)
+		now = now.Add(31 * time.Minute)
+	}
+
+	if tracker.AtCap("t1", PRIssueConflict) {
+		t.Fatal("unlimited tracker reported AtCap=true")
+	}
+}
