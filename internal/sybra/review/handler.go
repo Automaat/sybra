@@ -1485,16 +1485,13 @@ func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []githu
 	if r.WorkflowEngine == nil {
 		return
 	}
-	// Index live issues per task so we can answer "kind K still present
-	// for task T?" in O(1).
-	liveByTask := make(map[string]map[string]bool, len(tasks))
+	// Index live issues per task so we can answer "does this PR still need
+	// pr-fix work?" without relying on which kind originally dispatched the
+	// workflow. A comment-triggered workflow may still be the only active fixer
+	// when CI turns red later in the PR lifecycle.
+	liveByTask := make(map[string][]github.PRIssue, len(tasks))
 	for i := range issues {
-		set := liveByTask[issues[i].TaskID]
-		if set == nil {
-			set = make(map[string]bool, 2)
-			liveByTask[issues[i].TaskID] = set
-		}
-		set[string(issues[i].Kind)] = true
+		liveByTask[issues[i].TaskID] = append(liveByTask[issues[i].TaskID], issues[i])
 	}
 
 	for i := range tasks {
@@ -1509,10 +1506,10 @@ func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []githu
 		if len(kinds) == 0 {
 			continue
 		}
-		if anyKindLive(liveByTask[t.ID], kinds) {
-			continue // at least one coalesced kind still holds — let the workflow proceed
+		if workflowCoversLiveBlockingPRFixIssues(kinds, liveByTask[t.ID]) {
+			continue // this workflow is still assigned to all live blocking work
 		}
-		if pr, ok := prIndex[t.ID]; ok && anyKindIndeterminate(pr, kinds) {
+		if pr, ok := prIndex[t.ID]; ok && prFixCancelIndeterminate(pr) {
 			r.logger.Info("pr-monitor.cancel-resolved.deferred", "task_id", t.ID, "kinds", strings.Join(kinds, "+"))
 			continue
 		}
@@ -1560,14 +1557,39 @@ func coalescedWorkflowKinds(vars map[string]string) []string {
 	return nil
 }
 
-// anyKindLive reports whether at least one of kinds is present in live.
-func anyKindLive(live map[string]bool, kinds []string) bool {
-	for _, kind := range kinds {
-		if live[kind] {
-			return true
+// workflowCoversLiveBlockingPRFixIssues reports whether the active workflow is
+// assigned to every live blocking issue kind. A new unassigned kind must replace
+// the stale workflow so the next dispatch prompt covers the current PR state.
+func workflowCoversLiveBlockingPRFixIssues(workflowKinds []string, issues []github.PRIssue) bool {
+	if len(workflowKinds) == 0 {
+		return false
+	}
+	kinds := make(map[string]struct{}, len(workflowKinds))
+	for _, kind := range workflowKinds {
+		kinds[kind] = struct{}{}
+	}
+	found := false
+	for i := range issues {
+		if !isLiveBlockingPRFixIssue(issues[i]) {
+			continue
+		}
+		found = true
+		if _, ok := kinds[string(issues[i].Kind)]; !ok {
+			return false
 		}
 	}
-	return false
+	return found
+}
+
+func isLiveBlockingPRFixIssue(issue github.PRIssue) bool {
+	switch issue.Kind {
+	case github.PRIssueConflict, github.PRIssueComments:
+		return true
+	case github.PRIssueCIFailure:
+		return !issue.PR.CIFlaky
+	default:
+		return false
+	}
 }
 
 // The in-memory tracker resets every process start, so on a host that redeploys faster than the cooldown its budget never accumulates. EXC:FILE011:load-bearing-invariant
@@ -1593,14 +1615,12 @@ func (r *Handler) durableFixBudgetSpent(taskID, headSHA string) bool {
 	return true
 }
 
-// A kind's absence is not evidence of resolution while the live PR cannot answer it. EXC:FILE011:load-bearing-invariant
-func anyKindIndeterminate(pr github.PullRequest, kinds []string) bool {
-	for _, kind := range kinds {
-		if github.PRIssueIndeterminate(pr, github.PRIssueKind(kind)) {
-			return true
-		}
-	}
-	return false
+// The absence of live issues is not evidence of resolution while the PR's CI
+// or mergeability is still unsettled. Comments-only workflows must also defer
+// in this state instead of cancelling before the PR proves green.
+func prFixCancelIndeterminate(pr github.PullRequest) bool {
+	return github.PRIssueIndeterminate(pr, github.PRIssueCIFailure) ||
+		github.PRIssueIndeterminate(pr, github.PRIssueConflict)
 }
 
 func reviewNeedsAttention(summary github.ReviewSummary) bool {
