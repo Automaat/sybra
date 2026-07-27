@@ -1506,8 +1506,8 @@ func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []githu
 		if len(kinds) == 0 {
 			continue
 		}
-		if hasLiveBlockingPRFixIssue(liveByTask[t.ID]) {
-			continue // some fixable work is still live on this PR — let the workflow proceed
+		if workflowCoversLiveBlockingPRFixIssues(kinds, liveByTask[t.ID]) {
+			continue // this workflow is still assigned to all live blocking work
 		}
 		if pr, ok := prIndex[t.ID]; ok && prFixCancelIndeterminate(pr) {
 			r.logger.Info("pr-monitor.cancel-resolved.deferred", "task_id", t.ID, "kinds", strings.Join(kinds, "+"))
@@ -1557,21 +1557,39 @@ func coalescedWorkflowKinds(vars map[string]string) []string {
 	return nil
 }
 
-// hasLiveBlockingPRFixIssue reports whether the live issue set still contains
-// actionable work for pr-fix. Confirmed flaky CI is handled by the rerun/flake
-// path, so it must not pin a completed comments/conflict workflow open.
-func hasLiveBlockingPRFixIssue(issues []github.PRIssue) bool {
+// workflowCoversLiveBlockingPRFixIssues reports whether the active workflow is
+// assigned to every live blocking issue kind. A new unassigned kind must replace
+// the stale workflow so the next dispatch prompt covers the current PR state.
+func workflowCoversLiveBlockingPRFixIssues(workflowKinds []string, issues []github.PRIssue) bool {
+	if len(workflowKinds) == 0 {
+		return false
+	}
+	kinds := make(map[string]struct{}, len(workflowKinds))
+	for _, kind := range workflowKinds {
+		kinds[kind] = struct{}{}
+	}
+	found := false
 	for i := range issues {
-		switch issues[i].Kind {
-		case github.PRIssueConflict, github.PRIssueComments:
-			return true
-		case github.PRIssueCIFailure:
-			if !issues[i].PR.CIFlaky {
-				return true
-			}
+		if !isLiveBlockingPRFixIssue(issues[i]) {
+			continue
+		}
+		found = true
+		if _, ok := kinds[string(issues[i].Kind)]; !ok {
+			return false
 		}
 	}
-	return false
+	return found
+}
+
+func isLiveBlockingPRFixIssue(issue github.PRIssue) bool {
+	switch issue.Kind {
+	case github.PRIssueConflict, github.PRIssueComments:
+		return true
+	case github.PRIssueCIFailure:
+		return !issue.PR.CIFlaky
+	default:
+		return false
+	}
 }
 
 // The in-memory tracker resets every process start, so on a host that redeploys faster than the cooldown its budget never accumulates. EXC:FILE011:load-bearing-invariant

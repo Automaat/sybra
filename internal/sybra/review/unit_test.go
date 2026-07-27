@@ -3125,10 +3125,10 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 	}
 }
 
-// A comments-triggered workflow may still be the only active pr-fix run when
-// CI turns red later. Cancelling just because comments resolved would strand a
-// live deterministic failure until a future poll re-dispatches.
-func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileCIFailing(t *testing.T) {
+// A comments-triggered workflow is not assigned to a ci_failure that appears
+// later. Cancel it so the same monitor pass can dispatch a CI fixer instead of
+// letting the stale comments prompt strand the failure.
+func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowThenDispatchesCIFailure(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -3142,7 +3142,8 @@ func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileCIFailing(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := workflow.SyncBuiltins(wfStore); err != nil {
+	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
+		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
@@ -3175,25 +3176,38 @@ func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileCIFailing(t *te
 	}
 
 	r := &Handler{
-		logger:         logger,
-		tasks:          tasks,
-		prTracker:      github.NewIssueTracker(time.Minute),
-		WorkflowEngine: engine,
+		logger:          logger,
+		tasks:           tasks,
+		agents:          agentMgr,
+		prTracker:       github.NewIssueTracker(time.Minute),
+		WorkflowEngine:  engine,
+		pushPreflightFn: stubPushPreflight(nil),
 	}
 
 	pr := github.PullRequest{Number: 44, CIStatus: "FAILURE", HasPendingChecks: false, Mergeable: "MERGEABLE"}
-	r.cancelResolvedPRFixWorkflows(all, []github.PRIssue{
+	issues := []github.PRIssue{
 		{Kind: github.PRIssueCIFailure, TaskID: created.ID, PR: pr},
-	}, map[string]github.PullRequest{
+	}
+	r.cancelResolvedPRFixWorkflows(all, issues, map[string]github.PullRequest{
 		created.ID: pr,
 	})
+	r.handleMatchedPRIssues(context.Background(), issues)
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
-		t.Fatalf("workflow state = %+v, want still waiting; resolved comments must not cancel an active pr-fix while CI is red", got.Workflow)
+	if got.Workflow == nil {
+		t.Fatal("no replacement workflow dispatched")
+	}
+	if got.Workflow.Variables["pr_issue_kind"] != string(github.PRIssueCIFailure) {
+		t.Fatalf("pr_issue_kind = %q, want %q", got.Workflow.Variables["pr_issue_kind"], github.PRIssueCIFailure)
+	}
+	if !strings.Contains(got.Workflow.Variables["prompt"], "Fix failing CI") {
+		t.Fatalf("replacement prompt did not assign the CI failure:\n%s", got.Workflow.Variables["prompt"])
+	}
+	if retries := r.prTracker.Retries(created.ID, github.PRIssueCIFailure); retries != 1 {
+		t.Fatalf("ci_failure retries = %d, want 1", retries)
 	}
 }
 
