@@ -699,6 +699,26 @@ const prFixTamperingRules = "Never weaken, skip, delete, or hardcode tests, " +
 	"`--force-with-lease`, `commit --amend`, rebase onto a pushed base). Append a " +
 	"new commit instead; a force-push can destroy work this PR depends on."
 
+func prFixLiveStateGuard(pr github.PullRequest) string {
+	repoFlag := ""
+	if repo := strings.TrimSpace(pr.Repository); repo != "" {
+		repoFlag = " --repo " + repo
+	}
+	return fmt.Sprintf(
+		"Before any \"already fixed\" / \"already merged\" / \"no work needed\" conclusion, re-check the LIVE PR state:\n"+
+			"```sh\n"+
+			"LIVE_BASE=$(gh pr view %d%s --json baseRefName --jq .baseRefName)\n"+
+			"git fetch origin \"+refs/heads/$LIVE_BASE:refs/remotes/origin/$LIVE_BASE\"\n"+
+			"gh pr view %d%s --json state,mergeable,baseRefName\n"+
+			"```\n\n"+
+			"- Do not trust NOTES.md, a prior run's recorded merge commit, or an unchanged local worktree as proof the PR is still mergeable.\n"+
+			"- Treat GitHub's current `mergeable` value plus the freshly fetched `refs/remotes/origin/$LIVE_BASE` as the source of truth.\n"+
+			"- If GitHub says `mergeable=CONFLICTING`, or the refreshed base branch creates a new conflict, resolve that live conflict now instead of reporting `continue` or \"no work needed\" from stale local state.\n"+
+			"- If the live probe shows the PR no longer needs a code change from this run, stop without pushing and report `SYBRA_PR_FIX_RESULT: human-required` with a short reason describing the live remote state.",
+		pr.Number, repoFlag, pr.Number, repoFlag,
+	)
+}
+
 // prFixPushPrompt renders the create-pr-equivalent push snippet for a pr-fix
 // agent. When fenced is true it emits a standalone ```sh block (optionally
 // preceded by intro); when false it emits only the command lines so the caller
@@ -832,6 +852,9 @@ func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix
 			fmt.Fprintf(&b, "=== Issue %d: %s ===\n%s\n\n", i+1, fixKindLabel(issues[i].Kind), body)
 		}
 		prompt = strings.TrimRight(b.String(), "\n")
+	}
+	if len(issues) > 0 {
+		prompt += "\n\n" + prFixLiveStateGuard(issues[0].PR)
 	}
 	if holdSuffix != "" && slices.ContainsFunc(issues, func(i github.PRIssue) bool {
 		return i.Kind == github.PRIssueComments
