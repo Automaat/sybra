@@ -142,6 +142,12 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
 	}
+	tk, err = tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDirDC(t, bare, "git", "-c", "safe.bareRepository=all", "update-ref", "-d", "refs/heads/"+tk.Branch)
+	mustRunInDirDC(t, wtPath, "git", "update-ref", "-d", "refs/remotes/origin/"+tk.Branch)
 	mustRunInDirDC(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDirDC(t, wtPath, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
