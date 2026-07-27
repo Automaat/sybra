@@ -748,21 +748,27 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 		tasks:  tasks,
 	}
 	r.createReviewTaskWithTriage(github.PullRequest{
-		Number: 2708,
-		Title:  "docs: explain precedence",
-		URL:    "https://github.com/kumahq/kuma-website/pull/2708",
-		Author: "slonka",
-	}, "kumahq/kuma-website", func(t task.Task) {
+		Number:        2708,
+		Title:         "docs: explain precedence",
+		URL:           "https://github.com/owner/repo/pull/2708",
+		Author:        "contributor",
+		HeadRefName:   "fix/docs",
+		HeadRepoOwner: "contributor",
+		HeadRepo:      "contributor/repo",
+	}, "owner/repo", func(t task.Task) {
 		got <- t
 	})
 
 	select {
 	case reviewTask := <-got:
-		if reviewTask.ProjectID != "kumahq/kuma-website" {
-			t.Fatalf("ProjectID = %q, want kumahq/kuma-website", reviewTask.ProjectID)
+		if reviewTask.ProjectID != "owner/repo" {
+			t.Fatalf("ProjectID = %q, want owner/repo", reviewTask.ProjectID)
 		}
 		if reviewTask.PRNumber != 2708 {
 			t.Fatalf("PRNumber = %d, want 2708", reviewTask.PRNumber)
+		}
+		if reviewTask.Branch != "" {
+			t.Fatalf("Branch = %q, want empty for forked PR head", reviewTask.Branch)
 		}
 		if reviewTask.Status != task.StatusTodo {
 			t.Fatalf("Status = %q, want %q", reviewTask.Status, task.StatusTodo)
@@ -777,6 +783,41 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 	}
 	if len(files) != 1 {
 		t.Fatalf("created files = %d, want 1", len(files))
+	}
+}
+
+func TestCreateReviewTaskStoresSameRepoHeadBranch(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "tasks")
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	got := make(chan task.Task, 1)
+
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
+	}
+	r.createReviewTaskWithTriage(github.PullRequest{
+		Number:        2709,
+		Title:         "fix: owned branch",
+		URL:           "https://github.com/owner/repo/pull/2709",
+		Author:        "owner",
+		HeadRefName:   "fix/owned",
+		HeadRepoOwner: "owner",
+		HeadRepo:      "owner/repo",
+	}, "owner/repo", func(t task.Task) {
+		got <- t
+	})
+
+	select {
+	case reviewTask := <-got:
+		if reviewTask.Branch != "fix/owned" {
+			t.Fatalf("Branch = %q, want same-repo head branch", reviewTask.Branch)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("triage was not called")
 	}
 }
 
@@ -2042,29 +2083,212 @@ func TestAdoptOrphanPRs_OpenTakesPrecedence(t *testing.T) {
 	}
 }
 
-func TestHasReviewTask_ScopedByProject(t *testing.T) {
+func TestHasActiveLocalPROwner_ScopedByProject(t *testing.T) {
 	r := &Handler{}
 	existing := []task.Task{
-		{ProjectID: "org/a", PRNumber: 42, Tags: []string{"review"}},
-		{ProjectID: "org/a", PRNumber: 7, Tags: []string{"backend"}}, // not a review task
+		{ProjectID: "org/a", PRNumber: 42, Branch: "feat/review", Status: task.StatusInReview, Tags: []string{"review"}},
+		{ProjectID: "org/a", PRNumber: 7, Branch: "feat/linked", Status: task.StatusInReview, Tags: []string{"backend"}},     // implementation task owns the PR
+		{ProjectID: "org/a", PRNumber: 9, Branch: "feat/closed", Status: task.StatusDone, Tags: []string{"backend"}},         // historical task is closed
+		{ProjectID: "org/a", PRNumber: 0, Branch: "feat/unlinked", Status: task.StatusInProgress, Tags: []string{"backend"}}, // PR number not stamped yet
+		{ProjectID: "org/a", PRNumber: 100, Branch: "feat/other-pr", Status: task.StatusInReview, Tags: []string{"backend"}}, // different linked PR owns this branch
 	}
 	tests := []struct {
 		name      string
 		projectID string
 		prNumber  int
+		branch    string
+		headRepo  string
 		want      bool
 	}{
-		{"same project + number is a duplicate", "org/a", 42, true},
-		{"same number, different project is not", "org/b", 42, false},
-		{"same project, different number is not", "org/a", 99, false},
-		{"matching number without review tag is not", "org/a", 7, false},
+		{"same project + number review task is a duplicate", "org/a", 42, "", "", true},
+		{"same number, different project is not", "org/b", 42, "feat/review", "org/a", false},
+		{"same project, different number is not", "org/a", 99, "", "", false},
+		{"matching active implementation task owns PR number", "org/a", 7, "", "", true},
+		{"matching active implementation task owns same-repo PR branch before number is stamped", "org/a", 99, "feat/unlinked", "org/a", true},
+		{"matching branch on different linked PR does not own PR", "org/a", 99, "feat/other-pr", "org/a", false},
+		{"matching branch from different-owner fork does not own PR", "org/a", 99, "feat/unlinked", "contributor/a", false},
+		{"matching branch from same-owner fork does not own PR", "org/a", 99, "feat/unlinked", "org/a-fork", false},
+		{"matching branch without head repo does not own PR", "org/a", 99, "feat/unlinked", "", false},
+		{"same branch, different project is not", "org/b", 99, "feat/unlinked", "org/a", false},
+		{"matching terminal implementation task does not own PR", "org/a", 9, "feat/closed", "org/a", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := r.hasReviewTask(existing, tt.projectID, tt.prNumber); got != tt.want {
-				t.Errorf("hasReviewTask(%q, %d) = %v, want %v", tt.projectID, tt.prNumber, got, tt.want)
+			if got := r.hasActiveLocalPROwner(existing, tt.projectID, tt.prNumber, tt.branch, tt.headRepo); got != tt.want {
+				t.Errorf("hasActiveLocalPROwner(%q, %d, %q, %q) = %v, want %v", tt.projectID, tt.prNumber, tt.branch, tt.headRepo, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMaybeCreateReviewTasksSkipsBranchOwnedPRBeforeNumberLinked(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projects.CreateMeta("https://github.com/owner/repo", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.CreateFull("implementation owns branch", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInProgress),
+		ProjectID: task.Ptr("owner/repo"),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:   slog.New(slog.DiscardHandler),
+		tasks:    tasks,
+		projects: projects,
+	}
+	existing, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.maybeCreateReviewTasks(existing, []github.PullRequest{{
+		Number:        123,
+		Repository:    "owner/repo",
+		HeadRefName:   "feat/x",
+		HeadRepoOwner: "owner",
+		HeadRepo:      "owner/repo",
+		Title:         "owned branch",
+		URL:           "https://github.com/owner/repo/pull/123",
+	}})
+
+	got, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("tasks len = %d, want only existing implementation task: %+v", len(got), got)
+	}
+}
+
+func TestMaybeCreateReviewTasksDoesNotSkipForkPRWithSameBranchName(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projects.CreateMeta("https://github.com/owner/repo", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.CreateFull("implementation owns local branch", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInProgress),
+		ProjectID: task.Ptr("owner/repo"),
+		Branch:    task.Ptr("fix/shared"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	triaged := make(chan struct{})
+	r := &Handler{
+		logger:   slog.New(slog.DiscardHandler),
+		tasks:    tasks,
+		projects: projects,
+		fetchPRStatsFn: func(string, int) (github.PRStats, error) {
+			return github.PRStats{}, nil
+		},
+		startReviewAgentFn: func(task.Task, bool) error {
+			close(triaged)
+			return nil
+		},
+	}
+	existing, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.maybeCreateReviewTasks(existing, []github.PullRequest{{
+		Number:        456,
+		Repository:    "owner/repo",
+		HeadRefName:   "fix/shared",
+		HeadRepoOwner: "owner",
+		HeadRepo:      "owner/repo-fork",
+		Title:         "fork branch",
+		URL:           "https://github.com/owner/repo/pull/456",
+	}})
+
+	got, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("tasks len = %d, want implementation plus inbound review: %+v", len(got), got)
+	}
+	select {
+	case <-triaged:
+	case <-time.After(time.Second):
+		t.Fatal("triage did not complete")
+	}
+}
+
+func TestReconcileReviewPhasesCancelsDuplicateOwnedPRReviewTask(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	owner, err := tasks.CreateFull("implement owned PR", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("owner/repo"),
+		Branch:    task.Ptr("feature/owned-pr-owner"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewTags := []string{"review"}
+	dup, err := tasks.CreateFull("Review: owned PR", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		Tags:      &reviewTags,
+		ProjectID: task.Ptr("owner/repo"),
+		PRNumber:  task.Ptr(123),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcileReviewPhases(all, github.ReviewSummary{
+		ReviewRequested: []github.PullRequest{{
+			Number:        123,
+			Repository:    "owner/repo",
+			HeadRefName:   "feature/owned-pr-owner",
+			HeadRepoOwner: "owner",
+			HeadRepo:      "owner/repo",
+			Mergeable:     "MERGEABLE",
+			HeadSHA:       "head",
+		}},
+	})
+
+	got, err := tasks.Get(dup.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusCancelled {
+		t.Fatalf("status = %q, want cancelled", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, owner.ID) {
+		t.Fatalf("status_reason = %q, want owner task %s", got.StatusReason, owner.ID)
 	}
 }
 

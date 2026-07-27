@@ -36,7 +36,8 @@ type restPR struct {
 		Ref  string `json:"ref"`
 		SHA  string `json:"sha"`
 		Repo struct {
-			Owner struct {
+			FullName string `json:"full_name"`
+			Owner    struct {
 				Login string `json:"login"`
 			} `json:"owner"`
 		} `json:"repo"`
@@ -118,6 +119,7 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		IsDraft:            pr.Draft,
 		HeadRefName:        pr.Head.Ref,
 		HeadRepoOwner:      pr.Head.Repo.Owner.Login,
+		HeadRepo:           pr.Head.Repo.FullName,
 		HeadSHA:            pr.Head.SHA,
 		BaseRefName:        pr.Base.Ref,
 		Mergeable:          restMergeable(pr.MergeableState),
