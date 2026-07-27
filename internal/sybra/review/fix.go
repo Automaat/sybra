@@ -1230,7 +1230,7 @@ func (r *Handler) dispatchPRIssueWithOptions(ctx context.Context, t task.Task, p
 	}
 
 	for i := range handle {
-		r.prTracker.MarkHandled(t.ID, handle[i].Kind, handle[i].PR.HeadSHA)
+		r.prTracker.MarkHandled(t.ID, handle[i].Kind, r.prIssueDispatchSHA(ctx, handle[i]))
 	}
 	r.logAudit(audit.EventPRFixAgentStarted, t.ID, "", map[string]any{
 		"issue": string(primary.Kind), "kinds": strings.Join(kinds, ","),

@@ -82,11 +82,11 @@ func TestIssueTracker(t *testing.T) {
 		}
 	})
 
-	t.Run("new sha within cooldown is still blocked", func(t *testing.T) {
+	t.Run("new sha within cooldown is handleable", func(t *testing.T) {
 		tracker.MarkHandled("t6", PRIssueCIFailure, "sha-a")
 		now = now.Add(5 * time.Minute) // within cooldown
-		if tracker.ShouldHandle("t6", PRIssueCIFailure, "sha-b") {
-			t.Fatal("expected ShouldHandle=false: new SHA but within cooldown")
+		if !tracker.ShouldHandle("t6", PRIssueCIFailure, "sha-b") {
+			t.Fatal("expected ShouldHandle=true: new SHA should bypass cooldown")
 		}
 	})
 
