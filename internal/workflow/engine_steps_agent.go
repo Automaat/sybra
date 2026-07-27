@@ -285,6 +285,28 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 		return fmt.Errorf("start agent: %w", err)
 	}
+	return e.persistStartedAgent(taskID, step, wfExec, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir)
+}
+
+func resolveRunAgentMode(mode string, ctx TemplateContext) string {
+	if strings.Contains(mode, "{{") {
+		rendered, err := RenderTemplate(mode, ctx)
+		if err == nil {
+			mode = rendered
+		}
+	}
+	// A legacy task file can still carry agent_mode: interactive (kept as a
+	// load-only value), which the implement step templates straight through
+	// {{.Task.AgentMode}}. Interactive dispatch no longer exists — coerce it
+	// to headless here so AdmitDispatch and StartAgent both see the real mode,
+	// matching spawnBestOfNAttempt/spawnParallelChild.
+	if mode == "" || mode == "interactive" {
+		return "headless"
+	}
+	return mode
+}
+
+func (e *Engine) persistStartedAgent(taskID string, step *Step, wfExec *Execution, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir string) error {
 	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
 		wfExec.SetVar(WorkflowVarDir, startedDir)
 	}
@@ -310,24 +332,6 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		e.HandleAgentComplete(taskID, buffered)
 	}
 	return nil
-}
-
-func resolveRunAgentMode(mode string, ctx TemplateContext) string {
-	if strings.Contains(mode, "{{") {
-		rendered, err := RenderTemplate(mode, ctx)
-		if err == nil {
-			mode = rendered
-		}
-	}
-	// A legacy task file can still carry agent_mode: interactive (kept as a
-	// load-only value), which the implement step templates straight through
-	// {{.Task.AgentMode}}. Interactive dispatch no longer exists — coerce it
-	// to headless here so AdmitDispatch and StartAgent both see the real mode,
-	// matching spawnBestOfNAttempt/spawnParallelChild.
-	if mode == "" || mode == "interactive" {
-		return "headless"
-	}
-	return mode
 }
 
 func (e *Engine) parkRunAgentStartError(taskID, stepID string, wfExec *Execution, err error) (bool, error) {
