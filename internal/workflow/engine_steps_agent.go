@@ -279,6 +279,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
+		e.clearBufferedCompletions(taskID, step.ID)
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
 			return parkErr
 		}
@@ -296,7 +297,19 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	wfExec.SetAgentRoute(agentID, step.ID)
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
-	return e.tasks.SetWorkflow(taskID, wfExec)
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		e.clearBufferedCompletions(taskID, step.ID)
+		return err
+	}
+	for _, buffered := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {
+		if buffered.AgentID != agentID {
+			e.logger.Info("workflow.agent-complete.bail",
+				"task_id", taskID, "agent_id", buffered.AgentID, "reason", "buffered-stale", "current_step", step.ID)
+			continue
+		}
+		e.HandleAgentComplete(taskID, buffered)
+	}
+	return nil
 }
 
 func resolveRunAgentMode(mode string, ctx TemplateContext) string {

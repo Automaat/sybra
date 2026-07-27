@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -130,12 +131,12 @@ func (e *Engine) clearAgentStepsForTask(taskID string) {
 	}
 	t.Workflow.ClearAgentRoutes()
 	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
+	e.clearBufferedCompletionsForTask(taskID)
 }
 
-// markStepStarting / unmarkStepStartingAndTakePending are test-only
-// compatibility shims for the deleted pending-start machinery. They now model
-// the same state through the current step's pending action effect instead of an
-// Engine-local buffer.
+// markStepStarting preserves test compatibility for the deleted pending-start
+// machinery. unmarkStepStartingAndTakePending drains completions that arrived
+// before execRunAgent could persist the returned agent route.
 func (e *Engine) markStepStarting(taskID, stepID string) {
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil || t.Workflow == nil {
@@ -152,6 +153,9 @@ func (e *Engine) markStepStarting(taskID, stepID string) {
 }
 
 func (e *Engine) unmarkStepStartingAndTakePending(taskID, stepID string) []AgentCompletion {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil || t.Workflow == nil {
 		return nil
@@ -164,7 +168,7 @@ func (e *Engine) unmarkStepStartingAndTakePending(taskID, stepID string) []Agent
 		break
 	}
 	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
-	return nil
+	return e.takeBufferedCompletionsLocked(taskID, stepID)
 }
 
 func (e *Engine) clearPendingStepEffect(taskID string, id EffectID) {
@@ -187,4 +191,50 @@ func (e *Engine) clearPendingStepEffect(taskID string, id EffectID) {
 	}
 	t.Workflow.EffectLog = kept
 	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
+	e.clearBufferedCompletions(taskID, id.StepID)
+}
+
+func pendingCompletionKey(taskID, stepID string) string {
+	return taskID + "\x00" + stepID
+}
+
+func (e *Engine) bufferCompletionLocked(taskID, stepID string, c AgentCompletion) {
+	if taskID == "" || stepID == "" {
+		return
+	}
+	if e.pendingComplete == nil {
+		e.pendingComplete = make(map[string][]AgentCompletion)
+	}
+	key := pendingCompletionKey(taskID, stepID)
+	e.pendingComplete[key] = append(e.pendingComplete[key], c)
+}
+
+func (e *Engine) takeBufferedCompletionsLocked(taskID, stepID string) []AgentCompletion {
+	if e.pendingComplete == nil {
+		return nil
+	}
+	key := pendingCompletionKey(taskID, stepID)
+	pending := e.pendingComplete[key]
+	delete(e.pendingComplete, key)
+	return slices.Clone(pending)
+}
+
+func (e *Engine) clearBufferedCompletions(taskID, stepID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_ = e.takeBufferedCompletionsLocked(taskID, stepID)
+}
+
+func (e *Engine) clearBufferedCompletionsForTask(taskID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pendingComplete == nil || taskID == "" {
+		return
+	}
+	prefix := taskID + "\x00"
+	for key := range e.pendingComplete {
+		if strings.HasPrefix(key, prefix) {
+			delete(e.pendingComplete, key)
+		}
+	}
 }

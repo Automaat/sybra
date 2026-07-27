@@ -568,6 +568,7 @@ func (e *Engine) resolveCompletionRouteLocked(t TaskInfo, c AgentCompletion) (sp
 		}
 	}
 	if routeStepPending(t, spawnedStep) {
+		e.bufferCompletionLocked(t.ID, spawnedStep, c)
 		return spawnedStep, taskStepBuffered
 	}
 	return spawnedStep, taskStepFree
