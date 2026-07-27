@@ -5,10 +5,6 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
-
 /**
  * Operation is a single tracked background operation.
  */
@@ -20,8 +16,8 @@ export class Operation {
     "phase"?: string;
     "projectId"?: string;
     "taskId"?: string;
-    "startedAt": time$0.Time;
-    "completedAt"?: time$0.Time;
+    "startedAt": string;
+    "completedAt"?: string;
     "error"?: string;
 
     /** Creates a new Operation instance. */
@@ -39,7 +35,7 @@ export class Operation {
             this["status"] = Status.$zero;
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);
