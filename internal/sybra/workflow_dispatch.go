@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
@@ -71,6 +72,19 @@ func skipTaskCreatedWorkflow(t task.Task) bool {
 		return true
 	}
 	return false
+}
+
+// hasApprovedPlanContract reports whether t already carries a structurally
+// valid plan contract — the signal that a StatusTodo task reached todo via
+// simple-task-plan's set_todo_and_end hand-off (a completed plan + optional
+// critique cycle) rather than as a brand-new, never-triaged task. A brand new
+// task never has a non-empty PlanContract, so this is a safe, low-cost check
+// with no false positives against the ordinary new-task path.
+func hasApprovedPlanContract(t task.Task) bool {
+	if strings.TrimSpace(t.PlanContract) == "" {
+		return false
+	}
+	return len(workflow.ValidatePlanContractForTask(t.PlanContract, t.ID, t.Body)) == 0
 }
 
 func allowsTaskCreatedWorkflowWithPR(t task.Task) bool {

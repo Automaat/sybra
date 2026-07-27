@@ -7128,6 +7128,32 @@ func TestAutoApprovePlanReview_InvalidContractStaysWaiting(t *testing.T) {
 	assertRemainsPlanReviewWaiting(t, tasks, "t1", 200*time.Millisecond)
 }
 
+func TestAutoApprovePlanReview_RefineVerdictStaysWaiting(t *testing.T) {
+	engine, tasks := startAutoApprovePlanReview(t, TaskInfo{
+		ID:            "t1",
+		Status:        "planning",
+		PlanDecisions: "# Decisions\n\nNo open decisions. The recommended execution contract is fully specified.",
+		PlanContract:  validPlanContract("t1"),
+		PlanCritique:  "## Verdict: REFINE\n\nMissing caller file in the file list; compile will break.",
+	})
+	engine.SetAutoApprovePlansWithoutDecisions(true)
+
+	if err := engine.execWaitHuman("t1", autoApproveReviewStep(), &Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "review_plan",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A REFINE verdict names concrete blockers a human must look at even
+	// though the decisions sidecar has nothing left for a human to choose
+	// between — "no open decisions" is not the same as "safe to execute
+	// as-is". Auto-approve must not paper over that.
+	assertRemainsPlanReviewWaiting(t, tasks, "t1", 200*time.Millisecond)
+}
+
 func startAutoApprovePlanReview(t *testing.T, task TaskInfo) (*Engine, *memTasks) {
 	t.Helper()
 	store, err := NewStore(t.TempDir())
