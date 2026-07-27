@@ -325,6 +325,35 @@ func TestApp_MaybeStartWorkflowForExternalTask_RemoteMirrorDoesNotReroute(t *tes
 	}
 }
 
+// TestApp_MaybeStartWorkflowForExternalTask_UnroutedTodoWithPlanContractStillRoutes
+// guards against a regression where the approved-plan-contract skip (added to
+// stop a todo task with an already-approved plan from being swept back into
+// triage) accidentally short-circuited cluster routing too. A todo task that
+// belongs to a follower's project and has no AssignedNode yet must still be
+// routed/assigned on the leader, even though it already carries a valid plan
+// contract.
+func TestApp_MaybeStartWorkflowForExternalTask_UnroutedTodoWithPlanContractStillRoutes(t *testing.T) {
+	fixture := setupRemoteMirrorFixture(t)
+
+	unrouted := task.Task{
+		ID:           "ext-unrouted",
+		Title:        "unrouted with plan contract",
+		Status:       task.StatusTodo,
+		AgentMode:    task.AgentModeHeadless,
+		ProjectID:    "owner/pet",
+		PlanContract: validTestPlanContract("ext-unrouted"),
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	path := fixture.write(unrouted)
+	fixture.app.maybeStartWorkflowForExternalTask(path)
+	fixture.app.wg.Wait()
+
+	if got := fixture.assignedTasks(); len(got) != 1 {
+		t.Fatalf("unrouted todo task with a plan contract was routed %d times, want 1", len(got))
+	}
+}
+
 func TestApp_MaybeStartWorkflowForExternalTask_RemoteMirrorBatchStaysIdle(t *testing.T) {
 	fixture := setupRemoteMirrorFixture(t)
 
