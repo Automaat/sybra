@@ -89,6 +89,10 @@ type GitHubConfig struct {
 	// merges, and errors always fall through to the agent-assisted path. Default
 	// off (zero value = false).
 	AutoResolveCleanMerges bool `yaml:"auto_resolve_clean_merges" json:"autoResolveCleanMerges"`
+	// PRFixMaxRetries caps automated pr-fix attempts per task and PR issue kind
+	// before the PR monitor parks the task for a human. Zero falls back to the
+	// built-in default; a negative value disables this per-issue cap.
+	PRFixMaxRetries int `yaml:"pr_fix_max_retries" json:"prFixMaxRetries"`
 	// FlakyDetection is a kill-switch for same-commit CI flakiness
 	// classification. When true, a lone ci_failure issue is classified via
 	// ClassifyCIFlakiness (the head commit's full check-run history, not just

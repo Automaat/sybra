@@ -2013,6 +2013,28 @@ func TestLoadGitHubFlakyDetection(t *testing.T) {
 	}
 }
 
+func TestGitHubConfig_PRFixRetries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cfg  GitHubConfig
+		want int
+	}{
+		{"unset falls back to default", GitHubConfig{}, DefaultPRFixMaxRetries},
+		{"zero falls back to default", GitHubConfig{PRFixMaxRetries: 0}, DefaultPRFixMaxRetries},
+		{"explicit override", GitHubConfig{PRFixMaxRetries: 10}, 10},
+		{"negative disables cap", GitHubConfig{PRFixMaxRetries: -1}, -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.PRFixRetries(); got != tt.want {
+				t.Errorf("PRFixRetries() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGitHubConfig_FlakyThreshold(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

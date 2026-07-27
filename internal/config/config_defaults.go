@@ -395,6 +395,7 @@ const (
 	DefaultIssuesSeconds                = 600 // was 300
 	DefaultRenovateFastSeconds          = 120 // was 60
 	DefaultRenovateSlowSeconds          = 600 // was 300
+	DefaultPRFixMaxRetries              = 3
 	// DefaultFlakySuccessThreshold is the fallback same-check success rate
 	// (0-1) above which a currently-failing gating check is classified
 	// flaky rather than deterministic. See GitHubConfig.FlakyThreshold.
@@ -528,6 +529,15 @@ func (c GitHubConfig) RenovateFast() time.Duration {
 }
 func (c GitHubConfig) RenovateSlow() time.Duration {
 	return secsOr(c.RenovateSlowSeconds, DefaultRenovateSlowSeconds)
+}
+
+// PRFixRetries resolves the per-task/per-issue automated pr-fix retry cap.
+// Zero (unset) preserves the built-in default. Negative disables the cap.
+func (c GitHubConfig) PRFixRetries() int {
+	if c.PRFixMaxRetries == 0 {
+		return DefaultPRFixMaxRetries
+	}
+	return c.PRFixMaxRetries
 }
 
 // FlakyThreshold resolves the configured same-check success-rate threshold
