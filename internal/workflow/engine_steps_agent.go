@@ -188,7 +188,7 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	}
 }
 
-func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {
+func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) error {
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
@@ -257,62 +257,35 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// treated as untracked and dropped rather than counted against the step's
 	// retry budget. The agent spawned just below becomes the only tracked one.
 	e.clearAgentStepsForTask(taskID)
+	wfExec.ClearAgentRoutes()
 
 	// mode is coerced to headless in resolveRunAgentMode, so no run_agent step
 	// dispatches an interactive one-shot anymore — a steerable headless run
 	// finalizes on its first completed turn on its own (drainOrCloseHeadlessSteer).
 	oneShot := false
 
-	// The step-starting marker below brackets the (potentially multi-second,
-	// worktree-prep-bound) StartAgent call, so a stale/untracked agent
-	// completion arriving mid-start (e.g. a reattached agent from a prior
-	// step) sees this step as claimed instead of falling through to the
-	// "nothing tracked yet, credit the current step" fallback in
-	// HandleAgentComplete. The deferred unmark clears it once this function
-	// is done, at which point either agentRoutes (success) or the
-	// parked/failed step state takes over.
-	//
-	// A completion for this very start can also beat the agentRoutes write a
-	// few lines down. Unlike spawnParallelChild and startBestOfNAttempt,
-	// e.mu is not held across the StartAgent call here on purpose: this is
-	// the hot path and worktree prep can be slow. HandleAgentComplete
-	// buffers a completion that arrives in that window instead of dropping
-	// it (#2176's hang was exactly that silent drop). The deferred replay
-	// hands it back once this function's outcome — route registered, or
-	// parked/failed — is settled.
-	e.markStepStarting(taskID, step.ID)
+	// The step-action effect intent is already persisted before execRunAgent is
+	// entered, so an untracked completion that lands while StartAgent is
+	// blocking still sees a durable "dispatch in progress" claim via
+	// routeStepPending. Do not hold e.mu across StartAgent: review recovery can
+	// legitimately try to queue another workflow while the launcher is blocked.
 	defer func() {
-		for _, buffered := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {
-			e.HandleAgentComplete(taskID, buffered)
+		if recovered := recover(); recovered != nil {
+			if len(effectIDs) > 0 {
+				e.clearPendingStepEffect(taskID, effectIDs[0])
+			}
+			panic(recovered)
 		}
 	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
+		e.clearBufferedCompletions(taskID, step.ID)
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
 			return parkErr
 		}
 		return fmt.Errorf("start agent: %w", err)
 	}
-	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
-		wfExec.SetVar(WorkflowVarDir, startedDir)
-	}
-	if baselineRef != "" {
-		wfExec.SetVar(tamperBaselineVar(step.ID), baselineRef)
-	}
-	if cleanRetryRef != "" {
-		delete(wfExec.Variables, cleanRetryKey)
-	}
-
-	// Track which task+step this agent was spawned for so HandleAgentComplete
-	// can detect stale completions (e.g. duplicate agent from a ResumeStalled
-	// race) rather than blindly crediting the current step.
-	e.mu.Lock()
-	e.agentRoutes[agentID] = agentRoute{taskID: taskID, stepID: step.ID}
-	e.mu.Unlock()
-
-	wfExec.State = ExecWaiting
-	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
-	return e.tasks.SetWorkflow(taskID, wfExec)
+	return e.persistStartedAgent(taskID, step, wfExec, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir)
 }
 
 func resolveRunAgentMode(mode string, ctx TemplateContext) string {
@@ -331,6 +304,35 @@ func resolveRunAgentMode(mode string, ctx TemplateContext) string {
 		return "headless"
 	}
 	return mode
+}
+
+func (e *Engine) persistStartedAgent(taskID string, step *Step, wfExec *Execution, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir string) error {
+	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
+		wfExec.SetVar(WorkflowVarDir, startedDir)
+	}
+	if baselineRef != "" {
+		wfExec.SetVar(tamperBaselineVar(step.ID), baselineRef)
+	}
+	if cleanRetryRef != "" {
+		delete(wfExec.Variables, cleanRetryKey)
+	}
+	wfExec.SetAgentRoute(agentID, step.ID)
+	wfExec.State = ExecWaiting
+	e.setPendingAgentStep(taskID, agentID, step.ID)
+	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return e.deferStartedAgentRoute(taskID, step.ID, agentID, err)
+	}
+	e.clearPendingAgentStep(taskID, agentID)
+	for _, buffered := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {
+		if buffered.AgentID != agentID {
+			e.logger.Info("workflow.agent-complete.bail",
+				"task_id", taskID, "agent_id", buffered.AgentID, "reason", "buffered-stale", "current_step", step.ID)
+			continue
+		}
+		e.HandleAgentComplete(taskID, buffered)
+	}
+	return nil
 }
 
 func (e *Engine) parkRunAgentStartError(taskID, stepID string, wfExec *Execution, err error) (bool, error) {

@@ -13,7 +13,7 @@ var errBestOfNParked = errors.New("best-of-n parked waiting for attempt completi
 
 // bestOfNAttemptSep separates a best_of_n parent step ID from a synthetic
 // attempt ID (e.g. "implement_n::attempt_2") in the compound stepID stashed
-// in agentRoutes for an attempt agent. Attempts have no corresponding YAML
+// in the persisted agent route for an attempt agent. Attempts have no corresponding YAML
 // Step (unlike `parallel` children), so they cannot be looked up via
 // Definition.StepByID — loadAdvanceContext instead detects this separator and
 // routes to the best-of-N attempt path. "::" cannot collide with a real
@@ -169,6 +169,9 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 // (VariantID=attempt_N, AssignmentUnit=bestofn-attempt) independent of the
 // trimmable Execution state above.
 func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Execution, parentCtx TemplateContext, attemptID string, status *AttemptStatus) error {
+	if status == nil {
+		return fmt.Errorf("best-of-n attempt %q has no status", attemptID)
+	}
 	mode := step.Config.Mode
 	if mode == "" || mode == "interactive" {
 		// Attempts must terminate on their own so the parent can advance —
@@ -214,19 +217,24 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 		Model:          model,
 	}
 
-	// Hold e.mu across StartAgent so a fast-exiting agent's completion cannot
-	// race past the agentRoutes registration below (mirrors spawnParallelChild).
+	// Hold e.mu until the attempt route is durably persisted on the workflow.
 	e.mu.Lock()
 	agentID, _, _, startErr := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, false, false, step.Config.OutputSchema, "", assignment)
 	if startErr != nil {
 		e.mu.Unlock()
 		return fmt.Errorf("start agent: %w", startErr)
 	}
-	e.agentRoutes[agentID] = agentRoute{taskID: taskID, stepID: bestOfNAttemptStepKey(step.ID, attemptID)}
-	e.mu.Unlock()
-
 	status.AgentID = agentID
 	status.Status = "pending"
+	stepKey := bestOfNAttemptStepKey(step.ID, attemptID)
+	wfExec.SetAgentRoute(agentID, stepKey)
+	e.setPendingAgentStepLocked(taskID, agentID, stepKey)
+	err = e.tasks.SetWorkflow(taskID, wfExec)
+	e.mu.Unlock()
+	if err != nil {
+		return e.deferStartedAgentRoute(taskID, stepKey, agentID, err)
+	}
+	e.clearPendingAgentStep(taskID, agentID)
 	e.logger.Info("workflow.best-of-n.spawn",
 		"task_id", taskID, "parent", step.ID, "attempt", attemptID,
 		"agent_id", agentID, "provider", provider, "dir", dir)

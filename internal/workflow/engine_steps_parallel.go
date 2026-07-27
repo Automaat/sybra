@@ -12,7 +12,7 @@ import (
 // (validated at definition load time); planning is read-only so contention
 // on the worktree is benign. The parent step advances to its `next` only
 // after every child has terminated; per-child completions are routed
-// through AdvanceStep via the existing agentRoutes mapping.
+// through AdvanceStep via the workflow's persisted agent routes.
 //
 // Returns a non-nil *CompletionInfo when every child terminates at spawn time
 // and the parent's `next` ends the workflow synchronously — threaded up to the
@@ -103,6 +103,9 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 // at the parent level) and writes results into the ChildStatus slot
 // instead of mutating wfExec.State directly.
 func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *Execution, parentCtx TemplateContext, dir string, status *ChildStatus) error {
+	if status == nil {
+		return fmt.Errorf("parallel child %q has no status", child.ID)
+	}
 	// Render the child prompt with a context that points at the child step
 	// so {{.Step.ID}} et al. resolve correctly inside the prompt template.
 	childCtx := parentCtx
@@ -144,10 +147,10 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	// can advance (mode is forced to headless above).
 	oneShot := false
 
-	// Hold e.mu across StartAgent so HandleAgentComplete (which acquires
-	// e.mu via lookupAgentStep) cannot race past the agentRoutes registration.
-	// Fast-exiting agents (e.g. fail_exit in tests) can otherwise complete
-	// before agentRoutes is populated, causing the wrong step to advance.
+	// Hold e.mu until the child route is durably persisted on the workflow.
+	// Fast-exiting children can otherwise complete before their agent→step route
+	// is visible outside this goroutine, recreating the stale-completion bug the
+	// old process-local agentRoutes map used to paper over.
 	e.mu.Lock()
 	agentID, _, baselineRef, err := e.agents.StartAgent(taskID, child.Config.Role, mode, model, provider, prompt, dir, child.Config.AllowedTools, child.Config.NeedsWorktree, oneShot, child.Config.OutputSchema, "", assignment)
 	if err != nil {
@@ -157,15 +160,17 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	if baselineRef != "" {
 		wfExec.SetVar(tamperBaselineVar(child.ID), baselineRef)
 	}
-	// agentRoutes key uses the *child* step ID. StepByID recurses into
-	// Parallel children so the lookup in lookupAgentStep / AdvanceStep
-	// returns the right step config.
-	e.agentRoutes[agentID] = agentRoute{taskID: taskID, stepID: child.ID}
-	e.mu.Unlock()
-
 	status.AgentID = agentID
 	status.Provider = provider
 	status.Status = "pending"
+	wfExec.SetAgentRoute(agentID, child.ID)
+	e.setPendingAgentStepLocked(taskID, agentID, child.ID)
+	err = e.tasks.SetWorkflow(taskID, wfExec)
+	e.mu.Unlock()
+	if err != nil {
+		return e.deferStartedAgentRoute(taskID, child.ID, agentID, err)
+	}
+	e.clearPendingAgentStep(taskID, agentID)
 	e.logger.Info("workflow.parallel.spawn",
 		"task_id", taskID, "parent", parent.ID, "child", child.ID,
 		"role", child.Config.Role, "agent_id", agentID, "provider", provider)

@@ -555,15 +555,16 @@ func workflowMetricValue(t *testing.T, name string, labels []string) float64 {
 // --- In-memory TaskProvider ---
 
 type memTasks struct {
-	mu              sync.Mutex
-	tasks           map[string]*TaskInfo
-	reasons         map[string]string
-	steers          map[string]string
-	gets            map[string]int
-	onGet           func(id string, t *TaskInfo, count int)
-	appendErr       error
-	failGet         bool
-	failSetWorkflow bool
+	mu               sync.Mutex
+	tasks            map[string]*TaskInfo
+	reasons          map[string]string
+	steers           map[string]string
+	gets             map[string]int
+	onGet            func(id string, t *TaskInfo, count int)
+	appendErr        error
+	failGet          bool
+	failSetWorkflow  bool
+	failSetWorkflowN int
 }
 
 func newMemTasks() *memTasks {
@@ -803,17 +804,17 @@ func (m *memTasks) ReplaceTaskBody(id, body string) error {
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.failSetWorkflow {
+	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
+		if m.failSetWorkflowN > 0 {
+			m.failSetWorkflowN--
+		}
 		return fmt.Errorf("simulated write failure for task %s", id)
 	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
 	}
-	// Store a copy so the engine's wfExec pointer is decoupled from the
-	// store — mirrors the file-backed store which always serializes/deserializes.
-	wfCopy := *wf
-	t.Workflow = &wfCopy
+	t.Workflow = wf.Clone()
 	return nil
 }
 
@@ -890,6 +891,26 @@ func (m *memTasks) WriteSidecar(id, kind, content string) error {
 		return fmt.Errorf("unknown sidecar kind %q", kind)
 	}
 	return nil
+}
+
+func setWorkflowAgentRoute(t *testing.T, tasks *memTasks, taskID, agentID, stepID string) {
+	t.Helper()
+	ti, err := tasks.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("GetTask(%s): %v", taskID, err)
+	}
+	if ti.Workflow == nil {
+		t.Fatalf("task %s has no workflow", taskID)
+	}
+	ti.Workflow.SetAgentRoute(agentID, stepID)
+	if err := tasks.SetWorkflow(taskID, ti.Workflow); err != nil {
+		t.Fatalf("SetWorkflow(%s): %v", taskID, err)
+	}
+}
+
+func lookupWorkflowAgentRoute(t *testing.T, engine *Engine, taskID, agentID string) (string, bool) {
+	t.Helper()
+	return engine.lookupAgentStep(taskID, agentID)
 }
 
 // SetStatus is a test helper to simulate an agent changing task status.
@@ -3746,14 +3767,14 @@ func TestRescheduleRateLimitedAgent_RerunsCurrentStep(t *testing.T) {
 			Variables:   make(map[string]string),
 		},
 	})
-	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
 
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
 	if agents.CallCount() != 1 {
 		t.Fatalf("expected replacement agent start, got %d", agents.CallCount())
 	}
-	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "limited-agent"); tracked {
 		t.Fatal("rate-limited agent step mapping was not cleared")
 	}
 }
@@ -3806,7 +3827,7 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 					Variables:   vars,
 				},
 			})
-			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+			setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
 
 			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -3826,7 +3847,7 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 			if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != tc.wantRetry {
 				t.Fatalf("rate-limit retry var = %q, want %q", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")], tc.wantRetry)
 			}
-			if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+			if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "limited-agent"); tracked {
 				t.Fatal("rate-limited agent step mapping was not cleared")
 			}
 		})
@@ -4039,7 +4060,7 @@ func TestRescheduleRateLimitedAgent_ParksWhileProviderRateLimitedNoFailover(t *t
 					Variables:   vars,
 				},
 			})
-			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+			setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
 
 			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -4061,7 +4082,7 @@ func TestRescheduleRateLimitedAgent_ParksWhileProviderRateLimitedNoFailover(t *t
 			if _, tripped := got.Workflow.Variables[circuitBreakerFailureKey("implement")]; tripped {
 				t.Fatalf("circuit breaker recorded a failure for a transient rate limit: %v", got.Workflow.Variables)
 			}
-			if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+			if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "limited-agent"); tracked {
 				t.Fatal("rate-limited agent step mapping was not cleared")
 			}
 		})
@@ -4073,11 +4094,22 @@ func TestRescheduleRateLimitedAgent_EmptyTaskIDClearsTrackedAgent(t *testing.T) 
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
-	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
 
 	engine.RescheduleRateLimitedAgent("", "limited-agent")
 
-	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "limited-agent"); tracked {
 		t.Fatal("tracked agent step mapping should be cleared for empty task IDs")
 	}
 	if got := agents.CallCount(); got != 0 {
@@ -4105,7 +4137,7 @@ func TestRescheduleRateLimitedAgent_SkippedInflightDoesNotConsumeWatchdogRetry(t
 			},
 		},
 	})
-	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
 
 	mu := engine.taskInflightMutex("t1")
 	mu.Lock()
@@ -4150,7 +4182,7 @@ func TestRescheduleRateLimitedAgent_SkippedSharedClaimDoesNotConsumeWatchdogRetr
 			},
 		},
 	})
-	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
 
 	agents.SetDispatchClaimed("t1", true)
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
@@ -4193,7 +4225,7 @@ func TestRescheduleRateLimitedAgent_SkipsBlockedStatus(t *testing.T) {
 			},
 		},
 	})
-	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
 
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -4213,7 +4245,7 @@ func TestRescheduleRateLimitedAgent_SkipsBlockedStatus(t *testing.T) {
 	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != strconv.Itoa(maxWatchdogRateLimitRetries) {
 		t.Fatalf("rate-limit retry var = %q, want %d", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")], maxWatchdogRateLimitRetries)
 	}
-	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "limited-agent"); tracked {
 		t.Fatal("rate-limited agent step mapping was not cleared")
 	}
 }
@@ -4239,8 +4271,8 @@ func TestRescheduleRateLimitedAgent_HoldsDispatchClaimAcrossRescheduleAttempt(t 
 		},
 	})
 
-	engine.agentRoutes["limited-agent-1"] = agentRoute{taskID: "t1", stepID: "implement"}
-	engine.agentRoutes["limited-agent-2"] = agentRoute{taskID: "t1", stepID: "implement"}
+	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent-1", "implement")
+	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent-2", "implement")
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -4294,7 +4326,7 @@ func TestRescheduleCheckpointedAgent_RerunsCurrentStepSameWorktree(t *testing.T)
 			},
 		},
 	})
-	engine.agentRoutes["checkpoint-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+	setWorkflowAgentRoute(t, tasks, "t1", "checkpoint-agent", "implement")
 
 	engine.RescheduleCheckpointedAgent("t1", "checkpoint-agent")
 
@@ -4314,7 +4346,7 @@ func TestRescheduleCheckpointedAgent_RerunsCurrentStepSameWorktree(t *testing.T)
 	if got.Workflow.Variables["step.implement.checkpoint_count"] != "2" {
 		t.Fatalf("checkpoint count = %q, want 2", got.Workflow.Variables["step.implement.checkpoint_count"])
 	}
-	if _, tracked := engine.lookupAgentStep("checkpoint-agent"); tracked {
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "checkpoint-agent"); tracked {
 		t.Fatal("checkpointed agent step mapping was not cleared")
 	}
 }
@@ -4341,7 +4373,7 @@ func TestRescheduleCheckpointedAgent_RetriesGhostDispatchPark(t *testing.T) {
 			},
 		},
 	})
-	engine.agentRoutes["checkpoint-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+	setWorkflowAgentRoute(t, tasks, "t1", "checkpoint-agent", "implement")
 
 	engine.RescheduleCheckpointedAgent("t1", "checkpoint-agent")
 
@@ -4370,7 +4402,7 @@ func TestRescheduleCheckpointedAgent_ParksAtCap(t *testing.T) {
 			},
 		},
 	})
-	engine.agentRoutes["checkpoint-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+	setWorkflowAgentRoute(t, tasks, "t1", "checkpoint-agent", "implement")
 
 	engine.RescheduleCheckpointedAgent("t1", "checkpoint-agent")
 
@@ -4405,7 +4437,7 @@ func TestHandleAgentComplete_CheckpointFailedParksWithoutRetry(t *testing.T) {
 			State:       ExecWaiting,
 		},
 	})
-	engine.agentRoutes["checkpoint-agent"] = agentRoute{taskID: "t1", stepID: "triage"}
+	setWorkflowAgentRoute(t, tasks, "t1", "checkpoint-agent", "triage")
 
 	engine.HandleAgentComplete("t1", AgentCompletion{
 		AgentID:          "checkpoint-agent",
@@ -4442,7 +4474,7 @@ func TestHandleAgentComplete_CheckpointFailedParksWithoutRetry(t *testing.T) {
 	if len(got.Workflow.StepHistory) != 1 || got.Workflow.StepHistory[0].Status != "failed" {
 		t.Fatalf("step history = %+v, want one failed triage record", got.Workflow.StepHistory)
 	}
-	if _, tracked := engine.lookupAgentStep("checkpoint-agent"); tracked {
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "checkpoint-agent"); tracked {
 		t.Fatal("checkpoint_failed agent step mapping was not cleared")
 	}
 }
@@ -4472,7 +4504,7 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 			},
 		},
 	})
-	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "plan_a"}
+	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "plan_a")
 
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -4482,10 +4514,10 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	if got := agents.LastCall(); got.Prompt != "Plan A t1" {
 		t.Fatalf("unexpected replacement call: %+v", got)
 	}
-	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "limited-agent"); tracked {
 		t.Fatal("rate-limited child step mapping was not cleared")
 	}
-	if spawnedStep, tracked := engine.lookupAgentStep("agent-1"); !tracked || spawnedStep != "plan_a" {
+	if spawnedStep, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); !tracked || spawnedStep != "plan_a" {
 		t.Fatalf("replacement child mapping = (%q, %v), want plan_a/true", spawnedStep, tracked)
 	}
 	updated, err := tasks.GetTask("t1")
@@ -4566,7 +4598,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t 
 					},
 				},
 			})
-			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "plan_a"}
+			setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "plan_a")
 
 			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -4586,7 +4618,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t 
 			if got.Workflow.Variables[watchdogRateLimitRetryKey("plan_a")] != tc.wantRetry {
 				t.Fatalf("rate-limit retry var = %q, want %q", got.Workflow.Variables[watchdogRateLimitRetryKey("plan_a")], tc.wantRetry)
 			}
-			if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+			if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "limited-agent"); tracked {
 				t.Fatal("rate-limited child step mapping was not cleared")
 			}
 		})
@@ -4985,7 +5017,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildSkipsTerminalStatusAfterFreshRe
 					},
 				},
 			})
-			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "plan_a"}
+			setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "plan_a")
 			tasks.SetGetTaskHook(func(id string, task *TaskInfo, count int) {
 				if id == "t1" && count == 2 {
 					task.Status = tc.status
@@ -4997,7 +5029,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildSkipsTerminalStatusAfterFreshRe
 			if got := agents.CallCount(); got != 0 {
 				t.Fatalf("expected 0 replacement agent starts after status flipped to %s, got %d", tc.status, got)
 			}
-			if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+			if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "limited-agent"); tracked {
 				t.Fatal("rate-limited child step mapping was not cleared")
 			}
 			got, err := tasks.GetTask("t1")
@@ -6254,12 +6286,12 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 // core of the simple-task-pr cascade bug: a stale/untracked agent completion
 // (e.g. a reattached agent from a step that already advanced) arrives while
 // the CURRENT step's real agent is still being started — StartAgent hasn't
-// returned yet, so agentRoutes has no entry for it. Before the
-// pendingStepStart guard, HandleAgentComplete's untracked fallback credited
-// this to the current step (nothing tracked yet → not a phantom) and
-// advanced the workflow without the real agent ever having run. The guard
-// closes that window: a step marked as starting is treated as "claimed" even
-// before its agent ID exists.
+// returned yet, so the durable route has not been published yet. Before the
+// pending-intent guard, HandleAgentComplete's untracked fallback credited this
+// to the current step (nothing tracked yet → not a phantom) and advanced the
+// workflow without the real agent ever having run. The guard closes that
+// window: a step marked as starting is treated as "claimed" even before its
+// agent ID exists.
 func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -6277,14 +6309,14 @@ func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) 
 
 	// Workflow is now parked on "implement" with its real agent tracked. Drop
 	// the tracking entry to simulate the real agent's StartAgent call still
-	// being in flight (agentRoutes not yet populated) — but mark the step as
+	// being in flight (route not yet persisted) — but mark the step as
 	// starting, as execRunAgent now does before calling StartAgent.
 	ti, _ := tasks.GetTask("t1")
 	if ti.Workflow.CurrentStep != "implement" {
 		t.Fatalf("precondition: current step = %q, want implement", ti.Workflow.CurrentStep)
 	}
 	realAgentID := agents.LastID()
-	engine.clearAgentStep(realAgentID)
+	engine.clearAgentStep("t1", realAgentID)
 	engine.markStepStarting("t1", "implement")
 
 	// A stale, untracked completion (e.g. a reattached agent from an earlier
@@ -6370,7 +6402,7 @@ func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 		t.Fatalf("precondition: current step = %q, want implement", ti.Workflow.CurrentStep)
 	}
 	realAgentID := agents.LastID()
-	engine.clearAgentStep(realAgentID)
+	engine.clearAgentStep("t1", realAgentID)
 
 	// Two concurrent dispatchers race for the same step: the eventual loser
 	// must not clear the winner's in-flight claim.
@@ -7866,7 +7898,7 @@ func TestExecStampPRAttribution_EditErrorIsSoftFail(t *testing.T) {
 // "task X is not waiting for human action".
 //
 // The fix: HandleAgentComplete uses the step the agent was actually spawned
-// for (tracked in engine.agentRoutes), and AdvanceStep drops completions whose
+// for (tracked on the workflow), and AdvanceStep drops completions whose
 // StepID doesn't match the workflow's current step.
 func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 	store := newTestStore(t)
@@ -7893,7 +7925,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 
 	// Inject a duplicate plan agent as if a ResumeStalled ticker fired
 	// during the interactive-spawn window and raced the first agent. The
-	// engine.agentRoutes mapping records what execRunAgent would have set.
+	// workflow route records what execRunAgent would have set.
 	agents.mu.Lock()
 	agents.counter++
 	planAgent2 := fmt.Sprintf("agent-%d", agents.counter)
@@ -7901,9 +7933,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 	agents.running["t1"] = planAgent2
 	agents.roles["t1/plan"] = planAgent2
 	agents.mu.Unlock()
-	engine.mu.Lock()
-	engine.agentRoutes[planAgent2] = agentRoute{taskID: "t1", stepID: "plan"}
-	engine.mu.Unlock()
+	setWorkflowAgentRoute(t, tasks, "t1", planAgent2, "plan")
 
 	// Agent 1 completes first → workflow advances to review_plan/wait_human.
 	agents.SimulateComplete("t1")
@@ -8242,11 +8272,11 @@ func TestExecRunAgent_ResourcePressureParksWithoutConsumingSteer(t *testing.T) {
 	}
 }
 
-// TestExecRunAgent_TracksSpawnedStep verifies that execRunAgent populates
-// the engine.agentRoutes map so HandleAgentComplete can route completions
-// back to the right step. Without this mapping, a delayed completion from
-// a duplicate agent would be credited to whatever CurrentStep happens to
-// be at the moment — the exact bug that corrupted review_plan.
+// TestExecRunAgent_TracksSpawnedStep verifies that execRunAgent persists the
+// workflow agent route so HandleAgentComplete can route completions back to
+// the right step. Without this mapping, a delayed completion from a duplicate
+// agent would be credited to whatever CurrentStep happens to be at the moment
+// — the exact bug that corrupted review_plan.
 func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -8276,14 +8306,10 @@ func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 	}
 
 	agentID := agents.LastID()
-	engine.mu.Lock()
-	gotEntry, tracked := engine.agentRoutes[agentID]
-	engine.mu.Unlock()
-	if !tracked {
+	if gotStep, tracked := lookupWorkflowAgentRoute(t, engine, "t1", agentID); !tracked {
 		t.Fatalf("agentRoutes missing entry for agent %s", agentID)
-	}
-	if gotEntry.stepID != "plan" {
-		t.Errorf("agentRoutes[%s].stepID = %q, want plan", agentID, gotEntry.stepID)
+	} else if gotStep != "plan" {
+		t.Errorf("agentRoutes[%s] = %q, want plan", agentID, gotStep)
 	}
 
 	// Completing the agent must clear its mapping so the map doesn't grow
@@ -8292,10 +8318,7 @@ func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 	agents.SimulateComplete("t1")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: agentID, Result: "done", Success: true})
 
-	engine.mu.Lock()
-	_, stillThere := engine.agentRoutes[agentID]
-	engine.mu.Unlock()
-	if stillThere {
+	if _, stillThere := lookupWorkflowAgentRoute(t, engine, "t1", agentID); stillThere {
 		t.Errorf("agentRoutes still has %s after completion — mapping leaked", agentID)
 	}
 }

@@ -36,6 +36,11 @@ type Execution struct {
 	State       ExecState         `yaml:"state" json:"state"`
 	StepHistory []StepRecord      `yaml:"step_history,omitempty" json:"stepHistory"`
 	Variables   map[string]string `yaml:"variables,omitempty" json:"variables"`
+	// AgentRoutes durably records which async workflow step each still-live
+	// agent was spawned for. This replaces the process-local engine map so
+	// duplicate or late completions keep routing to the step they actually
+	// belong to across restarts and resume races.
+	AgentRoutes map[string]string `yaml:"agent_routes,omitempty" json:"agentRoutes,omitempty"`
 	StartedAt   time.Time         `yaml:"started_at" json:"startedAt"`
 	CompletedAt *time.Time        `yaml:"completed_at,omitempty" json:"completedAt"`
 	// Recovered is set when the execution was advanced by a stale-session
@@ -172,6 +177,9 @@ func (e *Execution) Clone() *Execution {
 	}
 	if e.Variables != nil {
 		cloned.Variables = maps.Clone(e.Variables)
+	}
+	if e.AgentRoutes != nil {
+		cloned.AgentRoutes = maps.Clone(e.AgentRoutes)
 	}
 	if e.StepCounts != nil {
 		cloned.StepCounts = maps.Clone(e.StepCounts)
@@ -348,6 +356,67 @@ func (e *Execution) SetVar(key, value string) {
 		e.Variables = make(map[string]string)
 	}
 	e.Variables[key] = value
+}
+
+// SetAgentRoute records which step an async agent was spawned for.
+func (e *Execution) SetAgentRoute(agentID, stepID string) {
+	if e == nil || agentID == "" || stepID == "" {
+		return
+	}
+	if e.AgentRoutes == nil {
+		e.AgentRoutes = make(map[string]string)
+	}
+	e.AgentRoutes[agentID] = stepID
+}
+
+// AgentRoute returns the step an async agent was spawned for.
+func (e *Execution) AgentRoute(agentID string) (string, bool) {
+	if e == nil || agentID == "" {
+		return "", false
+	}
+	stepID, ok := e.AgentRoutes[agentID]
+	return stepID, ok
+}
+
+// ClearAgentRoute drops one persisted async-agent route.
+func (e *Execution) ClearAgentRoute(agentID string) {
+	if e == nil || agentID == "" || e.AgentRoutes == nil {
+		return
+	}
+	delete(e.AgentRoutes, agentID)
+	if len(e.AgentRoutes) == 0 {
+		e.AgentRoutes = nil
+	}
+}
+
+// ClearAgentRoutes removes every persisted async-agent route and blanks any
+// mirrored agent IDs from in-flight fan-out state, so stopped agents cannot
+// later satisfy a superseded step.
+func (e *Execution) ClearAgentRoutes() {
+	if e == nil {
+		return
+	}
+	e.AgentRoutes = nil
+	for _, parent := range e.ParallelInflight {
+		if parent == nil {
+			continue
+		}
+		for _, child := range parent.Children {
+			if child != nil && child.Status == "pending" {
+				child.AgentID = ""
+			}
+		}
+	}
+	for _, parent := range e.BestOfNInflight {
+		if parent == nil {
+			continue
+		}
+		for _, attempt := range parent.Attempts {
+			if attempt != nil && attempt.Status == "pending" {
+				attempt.AgentID = ""
+			}
+		}
+	}
 }
 
 // RecordStep appends a step record, trims history to maxStepHistory, and

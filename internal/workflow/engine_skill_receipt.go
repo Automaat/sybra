@@ -108,7 +108,8 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 	switch {
 	case currentStep.Type == StepRunAgent && currentStep.ID == spawnedStep:
 		e.logger.Warn("workflow.skill-receipt.retry", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill)
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
+		clearAgentRouteFromWorkflow(fresh.Workflow, agentID)
 		e.rescheduleRunAgent(taskID, agentID, currentStep, fresh, def, "workflow.skill-receipt-reschedule", nil)
 		return true
 	case currentStep.Type == StepParallel && parallelHasChild(currentStep, spawnedStep):
@@ -117,7 +118,8 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 			return false
 		}
 		e.logger.Warn("workflow.skill-receipt.retry", "task_id", taskID, "parent", currentStep.ID, "child", spawnedStep, "skill", run.RequestedSkill)
-		e.clearAgentStep(agentID)
+		e.clearAgentStep(taskID, agentID)
+		clearAgentRouteFromWorkflow(fresh.Workflow, agentID)
 		e.rescheduleSkillReceiptParallelChild(taskID, currentStep, child)
 		return true
 	default:
