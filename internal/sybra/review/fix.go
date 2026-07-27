@@ -41,7 +41,6 @@ const prFixWorkflowID = "pr-fix"
 
 const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
 const sameBranchConflictRetryKind = github.PRIssueTaskBranchConflict
-const branchRecreateKind = github.PRIssueBranchRecreate
 const ciInfraRerunKind = github.PRIssueKind("ci_infra_rerun")
 
 const wtFailureLimit = 5
@@ -69,7 +68,6 @@ type taskBranchConflictRecoverySpec struct {
 	retryKind      github.PRIssueKind
 	branchOverride string
 	remoteOverride string
-	allowRecreate  bool
 	prompt         func(context.Context, task.Task, string) string
 }
 
@@ -652,7 +650,7 @@ func ciFailurePrompt(pr github.PullRequest) string {
 		pr.HeadRefName, pr.Number,
 		ciFailureDiagnosisRules(pr.BaseRefName),
 		prFixTamperingRules,
-		prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
+		prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true),
 	)
 }
 
@@ -694,15 +692,11 @@ const prFixTamperingRules = "Never weaken, skip, delete, or hardcode tests, " +
 // agent. When fenced is true it emits a standalone ```sh block (optionally
 // preceded by intro); when false it emits only the command lines so the caller
 // can splice them into an already-open code fence without nesting.
-//
-// allowHistoryRewrite is only for no-PR recovery paths, where a rebase and
-// force-with-lease are safe because no external PR depends on the branch shape
-// yet.
-func prFixPushPrompt(branch, intro string, fenced, allowHistoryRewrite bool) string {
-	return prFixPushPromptWithRemote(branch, intro, fenced, allowHistoryRewrite, "")
+func prFixPushPrompt(branch, intro string, fenced bool) string {
+	return prFixPushPromptWithRemote(branch, intro, fenced, "")
 }
 
-func prFixPushPromptWithRemote(branch, intro string, fenced, allowHistoryRewrite bool, remote string) string {
+func prFixPushPromptWithRemote(branch, intro string, fenced bool, remote string) string {
 	var b strings.Builder
 	if fenced && intro != "" {
 		b.WriteString(intro)
@@ -720,9 +714,6 @@ func prFixPushPromptWithRemote(branch, intro string, fenced, allowHistoryRewrite
 	b.WriteString("PREFLIGHT_REF=HEAD:refs/heads/sybra-preflight/$(git rev-parse --verify HEAD)\n")
 	b.WriteString("git push --dry-run \"$PUSH_REMOTE\" \"$PREFLIGHT_REF\"\n")
 	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
-	if allowHistoryRewrite {
-		fmt.Fprintf(&b, "\n# If you rebased or otherwise rewrote this branch's history, use lease-protected force-push instead.\ngit push --force-with-lease \"$PUSH_REMOTE\" HEAD:%s", branch)
-	}
 	if fenced {
 		b.WriteString("\n```")
 	}
@@ -1356,7 +1347,10 @@ func (r *Handler) prFixParkedOnConflict(taskID string) bool {
 // an exhausted no-PR branch-conflict retry budget, or an already-in-flight
 // recovery for this task
 // (branchRecoveryMu/branchRecoveryInFlight) all return false so the caller
-// (agentorch.MarkRebaseBlocked helper) escalates to human-required as before. Never loops:
+// (agentorch.MarkRebaseBlocked helper) escalates to human-required as before.
+// Exhausting this path never recreates or deletes a task branch: the branch
+// may already belong to a PR despite stale task metadata, and GitHub must
+// remain the source of truth. Never loops:
 // a conflict discovered while resolving THIS conflict re-enters
 // agentorch.MarkRebaseBlocked -> RecoverStaleBranchConflict -> here, and the in-flight
 // marker (still held from the outer call, since this method runs
@@ -1364,9 +1358,11 @@ func (r *Handler) prFixParkedOnConflict(taskID string) bool {
 // immediately.
 func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	return r.recoverTaskBranchConflict(context.Background(), t, taskBranchConflictRecoverySpec{
-		retryKind:     branchConflictRetryKind,
-		allowRecreate: true,
-		prompt:        branchConflictPrompt,
+		retryKind: branchConflictRetryKind,
+		// A task without pr_number is not proof that no PR exists. Once a
+		// branch has been pushed, automatic recreation could delete an active
+		// or recoverable PR. Escalate after the retry budget instead.
+		prompt: branchConflictPrompt,
 	})
 }
 
@@ -1418,9 +1414,6 @@ func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, sp
 		t.Branch = spec.branchOverride
 	}
 	if r.prTracker.AtCap(taskID, spec.retryKind) {
-		if spec.allowRecreate && r.recreateExhaustedNoPRBranch(ctx, t) {
-			return true
-		}
 		r.markConflictRecoveryExhausted(taskID, spec.retryKind)
 		return false
 	}
@@ -1482,39 +1475,6 @@ func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, sp
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
 	return r.dispatchBranchConflictRecovery(ctx, taskID, dir, spec.prompt(ctx, t, base), t, headSHA, resume, hadActiveWorkflow, spec.retryKind)
-}
-
-func (r *Handler) recreateExhaustedNoPRBranch(ctx context.Context, t task.Task) bool {
-	taskID := t.ID
-	if r.worktrees == nil || r.WorkflowEngine == nil {
-		return false
-	}
-	if r.prTracker.AtCap(taskID, branchRecreateKind) {
-		return false
-	}
-	if err := r.worktrees.RecreateFromBase(ctx, t); err != nil {
-		r.logger.Warn("pr-monitor.branch-recreate.failed", "task_id", taskID, "err", err)
-		return false
-	}
-	if r.WorkflowEngine.HasActiveWorkflow(taskID) {
-		if _, cancelErr := r.WorkflowEngine.CancelWorkflow(taskID, "branch recreated from fresh base"); cancelErr != nil {
-			r.logger.Error("pr-monitor.branch-recreate.cancel", "task_id", taskID, "err", cancelErr)
-			return false
-		}
-	}
-	reason := "branch recreated from a fresh base after conflict recovery was exhausted; re-implementing (diverged commits saved under refs/sybra-backup)"
-	if _, err := r.tasks.Update(taskID, task.Update{
-		Status:       task.Ptr(task.StatusInProgress),
-		StatusReason: task.Ptr(reason),
-	}); err != nil {
-		r.logger.Error("pr-monitor.branch-recreate.status", "task_id", taskID, "err", err)
-		return false
-	}
-	r.prTracker.MarkHandled(taskID, branchRecreateKind, "")
-	r.prTracker.Clear(taskID, branchConflictRetryKind)
-	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{"recreated": true})
-	r.logger.Info("pr-monitor.branch-recreate.done", "task_id", taskID)
-	return true
 }
 
 func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictResumeState {
@@ -1869,8 +1829,8 @@ func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 // branchConflictPrompt is the no-PR analog of buildConflictPrompt: there is no
 // PR head to reference, so it resolves the task's own branch (t.Branch, set
 // by PrepareForBranchFix before this is called). Unlike the PR-backed conflict
-// prompt, this path may allow a rebase plus force-with-lease because no PR
-// exists yet.
+// prompt, this path is merge-only: Sybra never rewrites a pushed branch, even
+// when task metadata says there is no PR.
 func branchConflictPrompt(ctx context.Context, t task.Task, base string) string {
 	branch := t.Branch
 	if branch == "" {
@@ -1889,21 +1849,22 @@ func branchConflictPrompt(ctx context.Context, t task.Task, base string) string 
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
 			"# will fail with \"nothing to commit\".\n"+
-			"# If a merge becomes too tangled, you may instead rebase onto\n"+
+			"# If a merge becomes too tangled, stop and report a concrete blocker;\n"+
+			"# do not rebase or rewrite the branch history.\n"+
 			"# refs/remotes/origin/%s, resolve the conflicts there, and finish with a\n"+
-			"# lease-protected force-push because no PR exists yet.\n"+
+			"# normal additive commit and push.\n"+
 			"%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
 			"- Use `refs/remotes/origin/%s` (not `origin/%s`) to avoid ambiguous refs\n"+
 			"- Push to `fork` (not `origin`) when a `fork` remote exists — the branch was opened from the fork\n"+
-			"- Prefer a merge; if you must rebase before the first PR exists, push the rewritten branch back with `--force-with-lease`\n"+
+			"- Do not rebase, amend, force-push, or rewrite existing commits\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
 			"- Before pushing, run tests for touched code as a single blocking foreground command (e.g. `go test ./pkg/foo/...`) and wait for it to exit — never background a test run or narrate/poll its progress; if it has not finished within a couple of minutes, stop and report a blocker instead of waiting indefinitely\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes",
-		branch, base, project.CommitSignFlags(ctx), base, prFixPushPrompt(branch, "", false, true), base, base,
+		branch, base, project.CommitSignFlags(ctx), base, prFixPushPrompt(branch, "", false), base, base,
 	)
 }
 
@@ -1935,7 +1896,7 @@ func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) s
 			"%s\n"+
 			"```\n\n"+
 			"After pushing, summarize what conflicted and how you resolved it.",
-		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx), prFixPushPromptWithRemote(branch, "", false, false, remote),
+		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx), prFixPushPromptWithRemote(branch, "", false, remote),
 	)
 }
 
@@ -2016,7 +1977,7 @@ func commentsPrompt(ctx context.Context, pr github.PullRequest) string {
 			"`fix(review): address PR review comments` (type(scope) required by "+
 			"repo hooks). Sign the commit with `git commit %s`.\n\n"+
 			"%s",
-		pr.URL, pr.Number, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
+		pr.URL, pr.Number, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true),
 	)
 }
 
@@ -2067,6 +2028,6 @@ func buildConflictPrompt(ctx context.Context, pr github.PullRequest, filesCtx st
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
-		pr.HeadRefName, pr.Number, baseRef, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "", false, false), baseRef, filesCtx,
+		pr.HeadRefName, pr.Number, baseRef, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "", false), baseRef, filesCtx,
 	)
 }
