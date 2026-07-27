@@ -727,6 +727,13 @@ export class GitHubConfig {
     "autoResolveCleanMerges": boolean;
 
     /**
+     * PRFixMaxRetries caps automated pr-fix attempts per task and PR issue kind
+     * before the PR monitor parks the task for a human. Zero falls back to the
+     * built-in default; a negative value disables this per-issue cap.
+     */
+    "prFixMaxRetries": number;
+
+    /**
      * FlakyDetection is a kill-switch for same-commit CI flakiness
      * classification. When true, a lone ci_failure issue is classified via
      * ClassifyCIFlakiness (the head commit's full check-run history, not just
@@ -794,6 +801,9 @@ export class GitHubConfig {
         }
         if (!("autoResolveCleanMerges" in $$source)) {
             this["autoResolveCleanMerges"] = false;
+        }
+        if (!("prFixMaxRetries" in $$source)) {
+            this["prFixMaxRetries"] = 0;
         }
         if (!("flakyDetection" in $$source)) {
             this["flakyDetection"] = false;
