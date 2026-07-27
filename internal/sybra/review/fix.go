@@ -1113,7 +1113,12 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 		return false
 	}
 
-	r.prTracker.MarkHandled(t.ID, github.PRIssueConflict, mergedHead)
+	pr.HeadSHA = mergedHead
+	r.prTracker.MarkHandled(t.ID, github.PRIssueConflict, r.prIssueDispatchSHA(ctx, github.PRIssue{
+		Kind:   github.PRIssueConflict,
+		TaskID: t.ID,
+		PR:     pr,
+	}))
 	r.evictReadyPRCache(pr.Repository, pr.Number)
 	r.logAudit(audit.EventPRConflictAutoResolved, t.ID, "", map[string]any{
 		"pr": pr.Number, "issue": string(github.PRIssueConflict),

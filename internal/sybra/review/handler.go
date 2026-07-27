@@ -904,7 +904,7 @@ func (r *Handler) prIssueDispatchSHA(ctx context.Context, issue github.PRIssue) 
 	baseSHA, err := fetchBaseSHA(ctx, issue.PR.Repository, issue.PR.Number)
 	if err != nil || baseSHA == "" {
 		r.logger.Warn("reviews.dispatch.conflict-base-sha",
-			"task_id", issue.TaskID, "pr", issue.PR.Number, "err", err)
+			"task_id", issue.TaskID, "repo", issue.PR.Repository, "pr", issue.PR.Number, "err", err)
 		return sha
 	}
 	return sha + ":" + baseSHA
