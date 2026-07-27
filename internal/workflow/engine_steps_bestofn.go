@@ -223,12 +223,15 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	}
 	status.AgentID = agentID
 	status.Status = "pending"
-	wfExec.SetAgentRoute(agentID, bestOfNAttemptStepKey(step.ID, attemptID))
+	stepKey := bestOfNAttemptStepKey(step.ID, attemptID)
+	wfExec.SetAgentRoute(agentID, stepKey)
+	e.setPendingAgentStepLocked(taskID, agentID, stepKey)
 	err = e.tasks.SetWorkflow(taskID, wfExec)
 	e.mu.Unlock()
 	if err != nil {
-		return err
+		return e.deferStartedAgentRoute(taskID, stepKey, agentID, err)
 	}
+	e.clearPendingAgentStep(taskID, agentID)
 	e.logger.Info("workflow.best-of-n.spawn",
 		"task_id", taskID, "parent", step.ID, "attempt", attemptID,
 		"agent_id", agentID, "provider", provider, "dir", dir)

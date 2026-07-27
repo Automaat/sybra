@@ -58,6 +58,9 @@ func (e *Engine) lookupAgentStep(taskID, agentID string) (string, bool) {
 	if taskID == "" || agentID == "" {
 		return "", false
 	}
+	if stepID, ok := e.lookupPendingAgentStep(taskID, agentID); ok {
+		return stepID, true
+	}
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil || t.Workflow == nil {
 		return "", false
@@ -69,6 +72,7 @@ func (e *Engine) clearAgentStep(taskID, agentID string) {
 	if agentID == "" {
 		return
 	}
+	e.clearPendingAgentStep(taskID, agentID)
 	if taskID == "" {
 		tasks, err := e.tasks.ListTasks()
 		if err != nil {
@@ -90,6 +94,117 @@ func (e *Engine) clearAgentStep(taskID, agentID string) {
 		return
 	}
 	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
+}
+
+func pendingAgentRouteKey(taskID, agentID string) string {
+	return taskID + "\x00" + agentID
+}
+
+func (e *Engine) setPendingAgentStep(taskID, agentID, stepID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.setPendingAgentStepLocked(taskID, agentID, stepID)
+}
+
+func (e *Engine) setPendingAgentStepLocked(taskID, agentID, stepID string) {
+	if taskID == "" || agentID == "" || stepID == "" {
+		return
+	}
+	if e.pendingRoutes == nil {
+		e.pendingRoutes = make(map[string]string)
+	}
+	e.pendingRoutes[pendingAgentRouteKey(taskID, agentID)] = stepID
+}
+
+func (e *Engine) lookupPendingAgentStep(taskID, agentID string) (string, bool) {
+	if taskID == "" || agentID == "" {
+		return "", false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	stepID, ok := e.pendingRoutes[pendingAgentRouteKey(taskID, agentID)]
+	return stepID, ok
+}
+
+func (e *Engine) clearPendingAgentStep(taskID, agentID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.clearPendingAgentStepLocked(taskID, agentID)
+}
+
+func (e *Engine) clearPendingAgentStepLocked(taskID, agentID string) {
+	if e.pendingRoutes == nil || agentID == "" {
+		return
+	}
+	if taskID != "" {
+		delete(e.pendingRoutes, pendingAgentRouteKey(taskID, agentID))
+		return
+	}
+	suffix := "\x00" + agentID
+	for key := range e.pendingRoutes {
+		if strings.HasSuffix(key, suffix) {
+			delete(e.pendingRoutes, key)
+		}
+	}
+}
+
+func (e *Engine) clearPendingAgentStepsForTask(taskID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pendingRoutes == nil || taskID == "" {
+		return
+	}
+	prefix := taskID + "\x00"
+	for key := range e.pendingRoutes {
+		if strings.HasPrefix(key, prefix) {
+			delete(e.pendingRoutes, key)
+		}
+	}
+}
+
+func (e *Engine) takeBufferedCompletionsForAgent(taskID, stepID, agentID string) []AgentCompletion {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pendingComplete == nil || taskID == "" || stepID == "" || agentID == "" {
+		return nil
+	}
+	key := pendingCompletionKey(taskID, stepID)
+	pending := e.pendingComplete[key]
+	if len(pending) == 0 {
+		return nil
+	}
+	kept := make([]AgentCompletion, 0, len(pending))
+	matched := make([]AgentCompletion, 0, len(pending))
+	for _, c := range pending {
+		if c.AgentID == agentID {
+			matched = append(matched, c)
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if len(kept) == 0 {
+		delete(e.pendingComplete, key)
+	} else {
+		e.pendingComplete[key] = kept
+	}
+	return matched
+}
+
+func (e *Engine) replayBufferedCompletionsForAgent(taskID, stepID, agentID string) bool {
+	replayed := false
+	for _, c := range e.takeBufferedCompletionsForAgent(taskID, stepID, agentID) {
+		replayed = true
+		e.HandleAgentComplete(taskID, c)
+	}
+	return replayed
+}
+
+func (e *Engine) deferStartedAgentRoute(taskID, stepID, agentID string, err error) error {
+	e.setPendingAgentStep(taskID, agentID, stepID)
+	replayed := e.replayBufferedCompletionsForAgent(taskID, stepID, agentID)
+	e.logger.Warn("workflow.agent-route.defer",
+		"task_id", taskID, "step", stepID, "agent_id", agentID, "replayed_buffered", replayed, "err", err)
+	return errWorkflowYield
 }
 
 func clearAgentRouteFromWorkflow(wf *Execution, agentID string) bool {
@@ -131,6 +246,7 @@ func (e *Engine) clearAgentStepsForTask(taskID string) {
 	}
 	t.Workflow.ClearAgentRoutes()
 	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
+	e.clearPendingAgentStepsForTask(taskID)
 	e.clearBufferedCompletionsForTask(taskID)
 }
 

@@ -161,11 +161,13 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	status.Provider = provider
 	status.Status = "pending"
 	wfExec.SetAgentRoute(agentID, child.ID)
+	e.setPendingAgentStepLocked(taskID, agentID, child.ID)
 	err = e.tasks.SetWorkflow(taskID, wfExec)
 	e.mu.Unlock()
 	if err != nil {
-		return err
+		return e.deferStartedAgentRoute(taskID, child.ID, agentID, err)
 	}
+	e.clearPendingAgentStep(taskID, agentID)
 	e.logger.Info("workflow.parallel.spawn",
 		"task_id", taskID, "parent", parent.ID, "child", child.ID,
 		"role", child.Config.Role, "agent_id", agentID, "provider", provider)

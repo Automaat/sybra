@@ -555,15 +555,16 @@ func workflowMetricValue(t *testing.T, name string, labels []string) float64 {
 // --- In-memory TaskProvider ---
 
 type memTasks struct {
-	mu              sync.Mutex
-	tasks           map[string]*TaskInfo
-	reasons         map[string]string
-	steers          map[string]string
-	gets            map[string]int
-	onGet           func(id string, t *TaskInfo, count int)
-	appendErr       error
-	failGet         bool
-	failSetWorkflow bool
+	mu               sync.Mutex
+	tasks            map[string]*TaskInfo
+	reasons          map[string]string
+	steers           map[string]string
+	gets             map[string]int
+	onGet            func(id string, t *TaskInfo, count int)
+	appendErr        error
+	failGet          bool
+	failSetWorkflow  bool
+	failSetWorkflowN int
 }
 
 func newMemTasks() *memTasks {
@@ -803,7 +804,10 @@ func (m *memTasks) ReplaceTaskBody(id, body string) error {
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.failSetWorkflow {
+	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
+		if m.failSetWorkflowN > 0 {
+			m.failSetWorkflowN--
+		}
 		return fmt.Errorf("simulated write failure for task %s", id)
 	}
 	t, ok := m.tasks[id]

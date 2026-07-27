@@ -555,6 +555,9 @@ func (e *Engine) resolveCompletionRouteLocked(t TaskInfo, c AgentCompletion) (sp
 	if stepID, ok := t.Workflow.AgentRoute(c.AgentID); ok {
 		return stepID, taskStepTracked
 	}
+	if stepID, ok := e.pendingRoutes[pendingAgentRouteKey(t.ID, c.AgentID)]; ok {
+		return stepID, taskStepTracked
+	}
 	spawnedStep = t.Workflow.CurrentStep
 	if stepID, ok := parallelChildStepByAgentID(t.Workflow, spawnedStep, c.AgentID); ok {
 		return stepID, taskStepTracked

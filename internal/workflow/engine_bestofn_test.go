@@ -694,6 +694,62 @@ func TestBestOfN_ResumeDoesNotDoubleDispatchTerminalAttempts(t *testing.T) {
 	}
 }
 
+func TestBestOfN_CompletionRoutesViaPendingAttemptAfterPersistFailure(t *testing.T) {
+	engine, tasks, _, _, _ := newBestOfNTestEngine(t, 2)
+
+	wfExec := &Execution{
+		WorkflowID:  "bestofn-test",
+		CurrentStep: "attempts",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		BestOfNInflight: map[string]*BestOfNInflight{
+			"attempts": {
+				ParentStepID: "attempts",
+				Attempts: map[string]*AttemptStatus{
+					bestOfNAttemptID(1): {AttemptID: bestOfNAttemptID(1), Status: "pending"},
+					bestOfNAttemptID(2): {AttemptID: bestOfNAttemptID(2), Status: "pending"},
+				},
+			},
+		},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec})
+
+	def, err := engine.store.Get("bestofn-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := def.StepByID("attempts")
+	if parent == nil {
+		t.Fatal("bestofn-test definition missing attempts step")
+	}
+	status := wfExec.BestOfNInflight["attempts"].Attempts[bestOfNAttemptID(1)]
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec}, Step: *parent, Vars: wfExec.Variables, Workflow: wfExec}
+
+	tasks.failSetWorkflowN = 1
+	err = engine.spawnBestOfNAttempt("t1", parent, wfExec, ctx, bestOfNAttemptID(1), status)
+	if !errors.Is(err, errWorkflowYield) {
+		t.Fatalf("spawnBestOfNAttempt err = %v, want errWorkflowYield", err)
+	}
+	stepKey := bestOfNAttemptStepKey("attempts", bestOfNAttemptID(1))
+	if got, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); !tracked || got != stepKey {
+		t.Fatalf("pending route = (%q,%v), want %q,true", got, tracked, stepKey)
+	}
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Success: true, Result: "winner", Provider: "claude"})
+
+	got := mustWorkflow(t, tasks, "t1")
+	rec := got.BestOfNInflight["attempts"]
+	if rec == nil || rec.Attempts[bestOfNAttemptID(1)] == nil {
+		t.Fatal("best-of-n inflight attempt missing after completion")
+	}
+	if rec.Attempts[bestOfNAttemptID(1)].Status != "completed" {
+		t.Fatalf("attempt_1 status = %q, want completed", rec.Attempts[bestOfNAttemptID(1)].Status)
+	}
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); tracked {
+		t.Fatal("pending route still tracked after attempt completion")
+	}
+}
+
 // --- helpers ---
 
 func mustTaskInfo(t *testing.T, tasks *memTasks, id string) TaskInfo {

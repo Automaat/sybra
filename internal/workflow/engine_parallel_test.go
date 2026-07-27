@@ -567,6 +567,69 @@ func TestParallel_PlanDraftSidecarKeyedByStepID(t *testing.T) {
 	}
 }
 
+func TestParallel_CompletionRoutesViaPendingAgentStepAfterPersistFailure(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStoreWith(t, "test-parallel.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wfExec := &Execution{
+		WorkflowID:  "test-parallel",
+		CurrentStep: "plan",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		ParallelInflight: map[string]*ParallelChildren{
+			"plan": {
+				ParentStepID: "plan",
+				Children: map[string]*ChildStatus{
+					"plan_a": {Status: "pending"},
+					"plan_b": {Status: "pending"},
+				},
+			},
+		},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec})
+
+	def, err := store.Get("test-parallel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := def.StepByID("plan")
+	child := def.StepByID("plan_a")
+	if parent == nil || child == nil {
+		t.Fatal("test-parallel definition missing expected steps")
+	}
+	status := wfExec.ParallelInflight["plan"].Children["plan_a"]
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec}, Step: *parent, Vars: wfExec.Variables, Workflow: wfExec}
+
+	tasks.failSetWorkflowN = 1
+	err = engine.spawnParallelChild("t1", parent, child, wfExec, ctx, "", status)
+	if !errors.Is(err, errWorkflowYield) {
+		t.Fatalf("spawnParallelChild err = %v, want errWorkflowYield", err)
+	}
+	if stepID, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); !tracked || stepID != "plan_a" {
+		t.Fatalf("pending route = (%q,%v), want plan_a,true", stepID, tracked)
+	}
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Success: true, Result: "done", Provider: "claude"})
+
+	got := mustWorkflow(t, tasks, "t1")
+	rec := got.ParallelInflight["plan"]
+	if rec == nil || rec.Children["plan_a"] == nil {
+		t.Fatal("parallel inflight child missing after completion")
+	}
+	if rec.Children["plan_a"].Status != "completed" {
+		t.Fatalf("plan_a status = %q, want completed", rec.Children["plan_a"].Status)
+	}
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); tracked {
+		t.Fatal("pending route still tracked after child completion")
+	}
+}
+
 // --- helpers ---
 
 func mustWorkflow(t *testing.T, tasks *memTasks, id string) *Execution {
