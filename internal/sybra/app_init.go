@@ -997,6 +997,23 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 			}
 			return
 		}
+		// A StatusTodo task can mean two different things: brand new (no plan
+		// sidecars yet) or the "stable post-review resting state" that
+		// set_todo_and_end deliberately lands on after a human/auto-approved
+		// plan-review (see simple-task-plan.yaml's set_todo_and_end comment).
+		// Re-running task.created/triage on the latter overwrites its status
+		// back to "planning" and mints a brand-new plan agent, discarding the
+		// approved contract — the classifier has no memory of the prior
+		// planning cycle. Skip re-dispatch for a todo task that already
+		// carries a structurally valid plan contract; it stays parked until
+		// something explicitly promotes it to in-progress (UI/CLI start),
+		// exactly like a human-required task that clears via ship-as-is.
+		// Scoped to after the runsTaskLocally routing block above so a
+		// non-local task with an approved contract still gets routed/assigned
+		// to its home node instead of stalling unrouted on the leader.
+		if t.Status == task.StatusTodo && hasApprovedPlanContract(t) {
+			return
+		}
 		// pr-fix / ordinary existing-PR tasks are driven outside task.created.
 		// Explicit handoff entry points are the exception: they intentionally
 		// route through task.created even when a PR number is already known.

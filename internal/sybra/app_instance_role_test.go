@@ -195,6 +195,87 @@ steps:
 	}
 }
 
+func TestDispatchTaskCreatedWorkflowSkipsApprovedTodoPlan(t *testing.T) {
+	// Reproduces #997b365c's stall→reset loop: a todo task that already
+	// carries a valid, approved plan contract must not be swept back into
+	// task.created/triage (which would overwrite it to "planning" and mint a
+	// brand-new plan agent, discarding the approved contract). A todo task
+	// with no plan contract — the ordinary brand-new path — must still
+	// dispatch normally.
+	const createdWF = `id: probe-created
+name: Probe Created
+trigger:
+  on: task.created
+steps:
+  - id: mark_planning
+    name: Mark Planning
+    type: set_status
+    config:
+      status: planning
+    next:
+      - goto: ""
+`
+	cases := []struct {
+		name            string
+		hasPlanContract bool
+		wantDispatch    bool
+	}{
+		{name: "todo with approved plan contract stays parked", hasPlanContract: true, wantDispatch: false},
+		{name: "brand new todo with no plan contract still dispatches", hasPlanContract: false, wantDispatch: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := setupApp(t)
+			a.cfg = config.DefaultConfig()
+
+			wfDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(wfDir, "probe-created.yaml"), []byte(createdWF), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			wfStore, err := workflow.NewStore(wfDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ta := &taskAdapter{tasks: a.tasks}
+			aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
+			a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+			a.applyInstanceRole()
+
+			created, err := a.tasks.Create("todo plan-contract probe", "", "headless")
+			if err != nil {
+				t.Fatal(err)
+			}
+			planContract := ""
+			if tc.hasPlanContract {
+				planContract = validTestPlanContract(created.ID)
+			}
+			if _, err := a.tasks.Update(created.ID, task.Update{
+				Status:       task.Ptr(task.StatusTodo),
+				PlanContract: task.Ptr(planContract),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			a.dispatchTaskCreatedWorkflow(created.ID)
+			a.wg.Wait()
+
+			tk, err := a.tasks.Get(created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := tk.Workflow != nil; got != tc.wantDispatch {
+				t.Fatalf("workflow attached = %v, want %v", got, tc.wantDispatch)
+			}
+			if tc.wantDispatch && tk.Status != task.StatusPlanning {
+				t.Errorf("status = %q, want planning (probe workflow ran)", tk.Status)
+			}
+			if !tc.wantDispatch && tk.Status != task.StatusTodo {
+				t.Errorf("status = %q, want todo (dispatch skipped, task left parked)", tk.Status)
+			}
+		})
+	}
+}
+
 func TestTaskCreatedDispatchRespectsInstanceRole(t *testing.T) {
 	const createdWF = `id: probe-created
 name: Probe Created

@@ -744,6 +744,16 @@ func (e *Engine) shouldAutoApprovePlanReview(t TaskInfo) bool {
 	if PlanHasOpenDecisions(t.PlanDecisions) {
 		return false
 	}
+	// "No open decisions" only means nothing needs a human's judgment call —
+	// it says nothing about whether the plan-critic found the contract itself
+	// unsafe to execute. A REFINE/REJECT verdict names concrete blockers (e.g.
+	// a compile-breaking gap in the file list) that execFlagPlanCritique's own
+	// doc comment says review_plan is supposed to require an explicit human
+	// look at, regardless of open decisions. Auto-approving through that flag
+	// silently discarded every REFINE finding straight into implementation.
+	if verdict := parsePlanCritiqueVerdict(t.PlanCritique); verdict == "REFINE" || verdict == "REJECT" {
+		return false
+	}
 	if strings.TrimSpace(t.PlanContract) == "" {
 		return false
 	}
