@@ -62,6 +62,40 @@ func TestCoalescedFixPrompt(t *testing.T) {
 	}
 }
 
+func TestCoalescedFixPrompt_RequiresLivePRReprobeBeforeNoOp(t *testing.T) {
+	t.Parallel()
+
+	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
+	prompt := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, "")
+
+	for _, want := range []string{
+		"LIVE_BASE=$(gh pr view 7 --repo o/r --json baseRefName --jq .baseRefName)",
+		"gh pr view 7 --repo o/r --json state,mergeable,baseRefName",
+		"Do not trust NOTES.md",
+		"mergeable=CONFLICTING",
+		"SYBRA_PR_FIX_RESULT: human-required",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCoalescedFixPrompt_AddsLivePRReprobeGuardOnce(t *testing.T) {
+	t.Parallel()
+
+	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
+	prompt := coalescedFixPrompt(context.Background(), []github.PRIssue{
+		{Kind: github.PRIssueConflict, PR: pr},
+		{Kind: github.PRIssueComments, PR: pr},
+		{Kind: github.PRIssueCIFailure, PR: pr},
+	}, "")
+
+	if got := strings.Count(prompt, "LIVE_BASE=$(gh pr view 7 --repo o/r --json baseRefName --jq .baseRefName)"); got != 1 {
+		t.Fatalf("live re-probe guard count = %d, want 1:\n%s", got, prompt)
+	}
+}
+
 // TestDispatchFixIssues_ReviewHoldSetsParkVar is the regression guard for the
 // blocking review finding: relying on the prompt sentinel is unsafe because
 // dispatchPRIssue appends PRFixResultContract AFTER the hold suffix, and in push
