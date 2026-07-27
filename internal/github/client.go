@@ -222,6 +222,7 @@ const prQuery = `query($q: String!) {
         url
         headRefName
         headRepositoryOwner { login }
+        headRepository { nameWithOwner }
         isDraft
         mergeable
         createdAt
@@ -369,6 +370,9 @@ type gqlPR struct {
 	HeadRepositoryOwner struct {
 		Login string `json:"login"`
 	} `json:"headRepositoryOwner"`
+	HeadRepository *struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"headRepository"`
 	BaseRefName    string `json:"baseRefName"`
 	IsDraft        bool   `json:"isDraft"`
 	Mergeable      string `json:"mergeable"`
@@ -526,6 +530,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		URL:               n.URL,
 		HeadRefName:       n.HeadRefName,
 		HeadRepoOwner:     n.HeadRepositoryOwner.Login,
+		HeadRepo:          headRepositoryNameWithOwner(n),
 		BaseRefName:       n.BaseRefName,
 		HeadSHA:           headSHA,
 		Repository:        n.Repository.NameWithOwner,
@@ -548,6 +553,13 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		UpdatedAt:         n.UpdatedAt,
 		AutoMergeEnabled:  n.AutoMergeRequest != nil,
 	}
+}
+
+func headRepositoryNameWithOwner(n *gqlPR) string {
+	if n == nil || n.HeadRepository == nil {
+		return ""
+	}
+	return n.HeadRepository.NameWithOwner
 }
 
 // reviewFeedbackSig fingerprints a PR's reviewer feedback so the pr-fix retry

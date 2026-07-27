@@ -31,11 +31,15 @@ func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID st
 	// simple-task-plan claim the task.created workflow slot before pr-review
 	// can match — causing triage loops and incorrect status transitions.
 	tags := []string{"review"}
-	t, err := r.tasks.CreateFull(title, body, "headless", task.Update{
+	u := task.Update{
 		Tags:      &tags,
 		ProjectID: task.Ptr(projectID),
 		PRNumber:  task.Ptr(pr.Number),
-	})
+	}
+	if projectHeadRepoMatches(projectID, pr.HeadRepo) && pr.HeadRefName != "" {
+		u.Branch = task.Ptr(pr.HeadRefName)
+	}
+	t, err := r.tasks.CreateFull(title, body, "headless", u)
 	if err != nil {
 		r.logger.Error("review.create-task", "pr", pr.Number, "err", err)
 		return
@@ -304,24 +308,60 @@ func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.P
 		if matches[i].PR.ReviewDecision == "APPROVED" {
 			continue
 		}
-		if r.hasReviewTask(tasks, matches[i].ProjectID, matches[i].PR.Number) {
+		if r.hasActiveLocalPROwner(tasks, matches[i].ProjectID, matches[i].PR.Number, matches[i].PR.HeadRefName, matches[i].PR.HeadRepo) {
 			continue
 		}
 		r.createReviewTask(matches[i].PR, matches[i].ProjectID)
 	}
 }
 
-func (r *Handler) hasReviewTask(tasks []task.Task, projectID string, prNumber int) bool {
+func (r *Handler) hasActiveLocalPROwner(tasks []task.Task, projectID string, prNumber int, branch, headRepo string) bool {
 	for i := range tasks {
-		// PR numbers are per-repo, so a review task only suppresses another
-		// PR with the same number when they belong to the same project.
-		if tasks[i].ProjectID == projectID &&
-			tasks[i].PRNumber == prNumber &&
-			slices.Contains(tasks[i].Tags, "review") {
+		// PR numbers are per-repo, so an existing local owner only suppresses
+		// another PR with the same number when they belong to the same project.
+		// This is intentionally broader than "has review tag": self-authored
+		// Sybra PRs are already owned by their implementation task. Branch is a
+		// secondary key for the window before create-pr/link-pr has stamped the
+		// implementation task's PR number, but only for same-repo heads; forked PR
+		// branch names are not unique.
+		if taskOwnsPR(tasks[i], "", projectID, prNumber, branch, headRepo, false) {
 			return true
 		}
 	}
 	return false
+}
+
+func activeNonReviewPROwner(tasks []task.Task, reviewTaskID, projectID string, prNumber int, branch, headRepo string) (string, bool) {
+	for i := range tasks {
+		if !taskOwnsPR(tasks[i], reviewTaskID, projectID, prNumber, branch, headRepo, true) {
+			continue
+		}
+		return tasks[i].ID, true
+	}
+	return "", false
+}
+
+func taskOwnsPR(t task.Task, reviewTaskID, projectID string, prNumber int, branch, headRepo string, excludeReviewTasks bool) bool {
+	if (reviewTaskID != "" && t.ID == reviewTaskID) ||
+		t.ProjectID != projectID ||
+		task.IsTerminalStatus(t.Status) ||
+		(excludeReviewTasks && slices.Contains(t.Tags, "review")) {
+		return false
+	}
+	if prNumber != 0 && t.PRNumber == prNumber {
+		return true
+	}
+	if t.PRNumber != 0 {
+		return false
+	}
+	return branch != "" && t.Branch == branch && projectHeadRepoMatches(projectID, headRepo)
+}
+
+func projectHeadRepoMatches(projectID, headRepo string) bool {
+	if projectID == "" || headRepo == "" {
+		return false
+	}
+	return strings.EqualFold(projectID, headRepo)
 }
 
 // reviewPRKey identifies a PR within a repo for summary lookups.
@@ -444,6 +484,30 @@ func (r *Handler) reconcileReviewPhases(tasks []task.Task, summary github.Review
 			continue
 		}
 		if t.PRNumber == 0 || t.ProjectID == "" {
+			continue
+		}
+		key := reviewPRKey(t.ProjectID, t.PRNumber)
+		branch := t.Branch
+		headRepo := ""
+		if pr, ok := requested[key]; ok {
+			headRepo = pr.HeadRepo
+			if branch == "" {
+				branch = pr.HeadRefName
+			}
+		} else if pr, ok := approved[key]; ok {
+			headRepo = pr.HeadRepo
+			if branch == "" {
+				branch = pr.HeadRefName
+			}
+		}
+		if ownerID, ok := activeNonReviewPROwner(tasks, t.ID, t.ProjectID, t.PRNumber, branch, headRepo); ok {
+			reason := fmt.Sprintf("Duplicate: PR is already tracked by active task %s", ownerID)
+			if _, err := r.tasks.Update(t.ID, task.Update{
+				Status:       task.Ptr(task.StatusCancelled),
+				StatusReason: task.Ptr(reason),
+			}); err != nil {
+				r.logger.Error("review.duplicate-owner.cancel", "task_id", t.ID, "owner_task_id", ownerID, "err", err)
+			}
 			continue
 		}
 		r.reconcileReviewTask(t, requested, approved)

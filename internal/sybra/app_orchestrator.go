@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -289,6 +290,13 @@ func (a *App) fetchPRHeadSHAFunc() func(ctx context.Context, repo string, number
 	return github.FetchPRHeadSHAContext
 }
 
+func (a *App) fetchPRFunc() func(ctx context.Context, repo string, number int) (github.PullRequest, error) {
+	if a.fetchPR != nil {
+		return a.fetchPR
+	}
+	return github.FetchPRMetaContext
+}
+
 func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) {
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
@@ -303,8 +311,31 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 	if !inboundReviewNeedsAgent(t) {
 		return
 	}
+	if ownerID := a.activeNonReviewPROwner(t); ownerID != "" {
+		a.logger.Info("workflow.dispatch.inbound-review.skip-owned-pr", "task_id", taskID, "owner_task_id", ownerID, "repo", t.ProjectID, "pr", t.PRNumber)
+		return
+	}
 	if !a.runsTaskLocally(t) {
 		return
+	}
+	if t.Branch == "" && a.hasActiveUnlinkedPROwnerCandidate(t) {
+		prCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		pr, err := a.fetchPRFunc()(prCtx, t.ProjectID, t.PRNumber)
+		cancel()
+		if err != nil {
+			a.logger.Warn("workflow.dispatch.inbound-review.pr", "task_id", taskID, "err", err)
+			return
+		}
+		if strings.EqualFold(pr.HeadRepo, t.ProjectID) && pr.HeadRefName != "" {
+			t.Branch = pr.HeadRefName
+			if _, err := a.tasks.Update(taskID, task.Update{Branch: task.Ptr(pr.HeadRefName)}); err != nil {
+				a.logger.Error("workflow.dispatch.inbound-review.branch-stamp", "task_id", taskID, "err", err)
+			}
+			if ownerID := a.activeNonReviewPROwner(t); ownerID != "" {
+				a.logger.Info("workflow.dispatch.inbound-review.skip-owned-pr", "task_id", taskID, "owner_task_id", ownerID, "repo", t.ProjectID, "pr", t.PRNumber)
+				return
+			}
+		}
 	}
 	if t.Workflow != nil && t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed {
 		return
@@ -448,6 +479,55 @@ func inboundReviewNeedsAgent(t task.Task) bool {
 	default:
 		return false
 	}
+}
+
+func (a *App) activeNonReviewPROwner(t task.Task) string {
+	if a.tasks == nil || t.ProjectID == "" || t.PRNumber == 0 {
+		return ""
+	}
+	tasks, err := a.tasks.List()
+	if err != nil {
+		a.logger.Warn("workflow.dispatch.inbound-review.owner-list", "task_id", t.ID, "err", err)
+		return ""
+	}
+	for i := range tasks {
+		if tasks[i].ID == t.ID ||
+			tasks[i].ProjectID != t.ProjectID ||
+			task.IsTerminalStatus(tasks[i].Status) ||
+			isInboundReviewTask(tasks[i]) {
+			continue
+		}
+		if t.PRNumber != 0 && tasks[i].PRNumber == t.PRNumber {
+			return tasks[i].ID
+		}
+		if tasks[i].PRNumber == 0 && t.Branch != "" && tasks[i].Branch == t.Branch {
+			return tasks[i].ID
+		}
+	}
+	return ""
+}
+
+func (a *App) hasActiveUnlinkedPROwnerCandidate(t task.Task) bool {
+	if a.tasks == nil || t.ProjectID == "" {
+		return false
+	}
+	tasks, err := a.tasks.List()
+	if err != nil {
+		a.logger.Warn("workflow.dispatch.inbound-review.owner-list", "task_id", t.ID, "err", err)
+		return false
+	}
+	for i := range tasks {
+		if tasks[i].ID == t.ID ||
+			tasks[i].ProjectID != t.ProjectID ||
+			tasks[i].PRNumber != 0 ||
+			tasks[i].Branch == "" ||
+			task.IsTerminalStatus(tasks[i].Status) ||
+			isInboundReviewTask(tasks[i]) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (a *App) drainManualQueue(ctx context.Context) {

@@ -14,6 +14,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     labels: [],
     headRefName: 'feature/test',
     headRepoOwner: 'org',
+    headRepo: 'org/repo',
     headSha: 'abc1234',
     baseRefName: 'main',
     autoMergeEnabled: false,

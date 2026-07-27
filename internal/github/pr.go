@@ -110,10 +110,18 @@ type PRReviewComment struct {
 
 // FetchPR fetches a single pull request by repo (owner/repo) and number.
 func FetchPR(repo string, number int) (PullRequest, error) {
-	return fetchPRWith(defaultExecer, repo, number)
+	return fetchPRMetaContextWith(context.Background(), defaultExecer, repo, number)
 }
 
 func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
+	return fetchPRMetaContextWith(context.Background(), e, repo, number)
+}
+
+func FetchPRMetaContext(ctx context.Context, repo string, number int) (PullRequest, error) {
+	return fetchPRMetaContextWith(ctx, defaultExecer, repo, number)
+}
+
+func fetchPRMetaContextWith(ctx context.Context, e execer, repo string, number int) (PullRequest, error) {
 	key := prCacheKey(repo, number)
 	if runtimeCacheEnabled(e) {
 		if cached, ok := prCache.Get(key); ok {
@@ -121,8 +129,8 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 		}
 	}
 
-	out, err := e.run("pr", "view", strconv.Itoa(number),
-		"--repo", repo, "--json", "number,title,body,url,headRefName,headRepositoryOwner,author,labels")
+	out, err := runE(ctx, e, "pr", "view", strconv.Itoa(number),
+		"--repo", repo, "--json", "number,title,body,url,headRefName,headRepositoryOwner,headRepository,author,labels")
 	if err != nil {
 		return PullRequest{}, fmt.Errorf("gh pr view %d: %s: %w", number, strings.TrimSpace(string(out)), err)
 	}
@@ -135,6 +143,9 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 		HeadRepositoryOwner struct {
 			Login string `json:"login"`
 		} `json:"headRepositoryOwner"`
+		HeadRepository *struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"headRepository"`
 		Author struct {
 			Login string `json:"login"`
 		} `json:"author"`
@@ -154,12 +165,17 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 	if len(parts) == 2 {
 		repoName = parts[1]
 	}
+	headRepo := ""
+	if raw.HeadRepository != nil {
+		headRepo = raw.HeadRepository.NameWithOwner
+	}
 	pr := PullRequest{
 		Number:        raw.Number,
 		Title:         raw.Title,
 		URL:           raw.URL,
 		HeadRefName:   raw.HeadRefName,
 		HeadRepoOwner: raw.HeadRepositoryOwner.Login,
+		HeadRepo:      headRepo,
 		Repository:    repo,
 		RepoName:      repoName,
 		Author:        raw.Author.Login,

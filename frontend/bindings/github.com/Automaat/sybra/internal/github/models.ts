@@ -127,6 +127,7 @@ export class PullRequest {
     "labels": string[];
     "headRefName": string;
     "headRepoOwner": string;
+    "headRepo": string;
     "headSha": string;
 
     /**
@@ -270,6 +271,9 @@ export class PullRequest {
         if (!("headRepoOwner" in $$source)) {
             this["headRepoOwner"] = "";
         }
+        if (!("headRepo" in $$source)) {
+            this["headRepo"] = "";
+        }
         if (!("headSha" in $$source)) {
             this["headSha"] = "";
         }
@@ -361,6 +365,7 @@ export class RenovatePR {
     "labels": string[];
     "headRefName": string;
     "headRepoOwner": string;
+    "headRepo": string;
     "headSha": string;
 
     /**
@@ -506,6 +511,9 @@ export class RenovatePR {
         if (!("headRepoOwner" in $$source)) {
             this["headRepoOwner"] = "";
         }
+        if (!("headRepo" in $$source)) {
+            this["headRepo"] = "";
+        }
         if (!("headSha" in $$source)) {
             this["headSha"] = "";
         }
@@ -581,13 +589,13 @@ export class RenovatePR {
      */
     static createFrom($$source: any = {}): RenovatePR {
         const $$createField7_0 = $$createType0;
-        const $$createField30_0 = $$createType2;
+        const $$createField31_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("labels" in $$parsedSource) {
             $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
         }
         if ("checkRuns" in $$parsedSource) {
-            $$parsedSource["checkRuns"] = $$createField30_0($$parsedSource["checkRuns"]);
+            $$parsedSource["checkRuns"] = $$createField31_0($$parsedSource["checkRuns"]);
         }
         return new RenovatePR($$parsedSource as Partial<RenovatePR>);
     }
