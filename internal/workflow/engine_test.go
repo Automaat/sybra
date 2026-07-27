@@ -6282,69 +6282,6 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	}
 }
 
-// TestHandleAgentComplete_PendingStepStartDropsStaleCompletion reproduces the
-// core of the simple-task-pr cascade bug: a stale/untracked agent completion
-// (e.g. a reattached agent from a step that already advanced) arrives while
-// the CURRENT step's real agent is still being started — StartAgent hasn't
-// returned yet, so the durable route has not been published yet. Before the
-// pending-intent guard, HandleAgentComplete's untracked fallback credited this
-// to the current step (nothing tracked yet → not a phantom) and advanced the
-// workflow without the real agent ever having run. The guard closes that
-// window: a step marked as starting is treated as "claimed" even before its
-// agent ID exists.
-func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
-
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
-	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
-		t.Fatal(err)
-	}
-	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Workflow is now parked on "implement" with its real agent tracked. Drop
-	// the tracking entry to simulate the real agent's StartAgent call still
-	// being in flight (route not yet persisted) — but mark the step as
-	// starting, as execRunAgent now does before calling StartAgent.
-	ti, _ := tasks.GetTask("t1")
-	if ti.Workflow.CurrentStep != "implement" {
-		t.Fatalf("precondition: current step = %q, want implement", ti.Workflow.CurrentStep)
-	}
-	realAgentID := agents.LastID()
-	engine.clearAgentStep("t1", realAgentID)
-	engine.markStepStarting("t1", "implement")
-
-	// A stale, untracked completion (e.g. a reattached agent from an earlier
-	// step) lands while the replacement start is underway.
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
-
-	tiAfter, _ := tasks.GetTask("t1")
-	if tiAfter.Workflow.CurrentStep != "implement" {
-		t.Fatalf("CurrentStep = %q, want implement — stale completion must not advance a step still being dispatched",
-			tiAfter.Workflow.CurrentStep)
-	}
-	if len(tiAfter.Workflow.StepHistory) != 2 {
-		t.Fatalf("StepHistory = %+v, want only the triage/set_in_progress records — stale completion must not be recorded",
-			tiAfter.Workflow.StepHistory)
-	}
-
-	// Once the pending start clears (StartAgent returned and registered the real
-	// agent), a genuinely untracked completion for THIS step still falls back
-	// to crediting the current step, as designed for manual/recovery agents.
-	engine.unmarkStepStartingAndTakePending("t1", "implement")
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
-
-	tiFinal, _ := tasks.GetTask("t1")
-	if tiFinal.Workflow.CurrentStep == "implement" {
-		t.Fatalf("CurrentStep still implement — untracked completion should advance once pending start cleared")
-	}
-}
-
 func TestHandleAgentComplete_UntrackedRoleMismatchDoesNotAdvanceCurrentStep(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -6379,51 +6316,6 @@ func TestHandleAgentComplete_UntrackedRoleMismatchDoesNotAdvanceCurrentStep(t *t
 	}
 	if len(ti.Workflow.StepHistory) != 0 {
 		t.Fatalf("StepHistory = %+v, want no recorded implementation completion", ti.Workflow.StepHistory)
-	}
-}
-
-func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
-
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
-	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
-		t.Fatal(err)
-	}
-	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"}); err != nil {
-		t.Fatal(err)
-	}
-
-	ti, _ := tasks.GetTask("t1")
-	if ti.Workflow.CurrentStep != "implement" {
-		t.Fatalf("precondition: current step = %q, want implement", ti.Workflow.CurrentStep)
-	}
-	realAgentID := agents.LastID()
-	engine.clearAgentStep("t1", realAgentID)
-
-	// Two concurrent dispatchers race for the same step: the eventual loser
-	// must not clear the winner's in-flight claim.
-	engine.markStepStarting("t1", "implement")
-	engine.markStepStarting("t1", "implement")
-	engine.unmarkStepStartingAndTakePending("t1", "implement")
-
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
-
-	tiAfter, _ := tasks.GetTask("t1")
-	if tiAfter.Workflow.CurrentStep != "implement" {
-		t.Fatalf("CurrentStep = %q, want implement — one losing dispatcher must not clear the winner's claim",
-			tiAfter.Workflow.CurrentStep)
-	}
-
-	engine.unmarkStepStartingAndTakePending("t1", "implement")
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
-
-	tiFinal, _ := tasks.GetTask("t1")
-	if tiFinal.Workflow.CurrentStep == "implement" {
-		t.Fatalf("CurrentStep still implement — claim should clear after final unmark")
 	}
 }
 
@@ -7243,7 +7135,7 @@ func assertRemainsPlanReviewWaiting(t *testing.T, tasks *memTasks, id string, wi
 	}
 }
 
-func TestPlanReuse_ApproveReconcilesMissedWaitForStatus(t *testing.T) {
+func TestPlanReuse_ApproveDoesNotRepairMissedWaitForStatus(t *testing.T) {
 	store := newTestStoreWith(t, "test-plan-reuse.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -7263,16 +7155,19 @@ func TestPlanReuse_ApproveReconcilesMissedWaitForStatus(t *testing.T) {
 		t.Fatalf("precondition: CurrentStep = %q, want plan", stuck.Workflow.CurrentStep)
 	}
 
-	if err := engine.HandleHumanAction("t1", "approve", nil); err != nil {
-		t.Fatalf("approve should reconcile stale wait_for_status step: %v", err)
+	if err := engine.HandleHumanAction("t1", "approve", nil); err == nil {
+		t.Fatal("approve succeeded on stale wait_for_status step, want error")
 	}
 
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "in-progress" {
-		t.Errorf("Status = %q, want in-progress", ti.Status)
+	if ti.Status != "plan-review" {
+		t.Errorf("Status = %q, want plan-review", ti.Status)
 	}
-	if ti.Workflow.State != ExecCompleted {
-		t.Errorf("State = %q, want ExecCompleted", ti.Workflow.State)
+	if ti.Workflow == nil || ti.Workflow.CurrentStep != "plan" {
+		t.Fatalf("CurrentStep = %v, want plan", ti.Workflow)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Errorf("State = %q, want %q", ti.Workflow.State, ExecWaiting)
 	}
 }
 

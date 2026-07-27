@@ -149,10 +149,6 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 			}
 		}
 	}
-	t, err = e.advanceSatisfiedWaitForStatus(taskID, t)
-	if err != nil {
-		return err
-	}
 	if t.Workflow == nil || t.Workflow.State != ExecWaiting {
 		return fmt.Errorf("task %s is not waiting for human action", taskID)
 	}
@@ -195,47 +191,6 @@ func validateHumanAction(step *Step, action string) error {
 	return nil
 }
 
-// advanceSatisfiedWaitForStatus repairs stale workflow position before a human
-// action. First it reconciles a direct task.Status write onto any downstream
-// visible wait_human gate, then it falls back to the narrower "run_agent
-// already has its wait_for_status" repair for missed status-hook events.
-func (e *Engine) advanceSatisfiedWaitForStatus(taskID string, t TaskInfo) (TaskInfo, error) {
-	if t.Workflow == nil || t.Workflow.CurrentStep == "" {
-		return t, nil
-	}
-	if t.Workflow.State != ExecWaiting && t.Workflow.State != ExecRunning {
-		return t, nil
-	}
-
-	def, err := e.store.Get(t.Workflow.WorkflowID)
-	if err != nil {
-		return t, err
-	}
-	if fresh, reconciled, rErr := e.reconcileCurrentStepFromStatus(taskID, t, &def, t.Status); rErr != nil {
-		return t, rErr
-	} else if reconciled {
-		return fresh, nil
-	}
-	step := def.StepByID(t.Workflow.CurrentStep)
-	if step == nil {
-		return t, fmt.Errorf("step %s not found in workflow %s", t.Workflow.CurrentStep, def.ID)
-	}
-	if step.Type != StepRunAgent || step.Config.WaitForStatus == "" || step.Config.WaitForStatus != t.Status {
-		return t, nil
-	}
-
-	e.logger.Info("workflow.wait-for-status.reconcile",
-		"task_id", taskID, "step", step.ID, "status", t.Status)
-	if err := e.AdvanceStep(taskID, StepOutput{
-		StepID: step.ID,
-		Status: "completed",
-		Output: "status:" + t.Status,
-	}); err != nil {
-		return TaskInfo{}, err
-	}
-	return e.tasks.GetTask(taskID)
-}
-
 // HandleStatusChange is called when a task's status transitions. If the
 // current workflow step is a run_agent configured with a matching
 // wait_for_status, the workflow advances past it. This is how interactive /
@@ -263,12 +218,6 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 
 	def, err := e.store.Get(t.Workflow.WorkflowID)
 	if err != nil {
-		return
-	}
-	if _, reconciled, rErr := e.reconcileCurrentStepFromStatus(taskID, t, &def, newStatus); rErr != nil {
-		e.logger.Error("workflow.status-reconcile.err", "task_id", taskID, "status", newStatus, "err", rErr)
-		return
-	} else if reconciled {
 		return
 	}
 	step := def.StepByID(t.Workflow.CurrentStep)
@@ -333,15 +282,18 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 // found" error loop that followed workflow completion in older versions —
 // but that legitimacy still needs to be visible when diagnosing a stall.
 func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
+	e.acquireInflight(taskID)
 	e.mu.Lock()
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		e.mu.Unlock()
+		e.releaseInflight(taskID)
 		e.logger.Error("workflow.agent-complete.get", "task_id", taskID, "err", err)
 		return
 	}
 	spawnedStep, routeStatus := e.resolveCompletionRouteLocked(t, c)
 	e.mu.Unlock()
+	e.releaseInflight(taskID)
 	if e.handleAgentCompleteInitialBail(taskID, t, c) {
 		e.clearAgentStep(taskID, c.AgentID)
 		return
@@ -364,12 +316,18 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 			"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-ignored", "current_step", spawnedStep)
 		e.clearAgentStep(taskID, c.AgentID)
 		return
-	case taskStepBuffered:
-		e.logger.Info("workflow.agent-complete.buffered",
-			"task_id", taskID, "agent_id", c.AgentID, "reason", "effect-pending", "current_step", spawnedStep)
-		return
+	case taskStepPending:
+		if def, ok := defs.get(); ok {
+			runRole := agentRunRole(t.AgentRuns, c.AgentID)
+			if !pendingEffectCompletionMatchesCurrentStep(def, spawnedStep, runRole) {
+				e.logger.Info("workflow.agent-complete.bail",
+					"task_id", taskID, "agent_id", c.AgentID, "reason", "pending-effect-role-mismatch", "current_step", spawnedStep)
+				e.clearAgentStep(taskID, c.AgentID)
+				return
+			}
+		}
 	case taskStepFree:
-		// Neither a route nor a pending start exists for this task+step, so
+		// Neither a route nor a pending step effect exists for this task+step, so
 		// the role match below is what decides.
 		if runRole := agentRunRole(t.AgentRuns, c.AgentID); runRole != "" {
 			if def, ok := defs.get(); ok && !untrackedCompletionMatchesCurrentStep(def, spawnedStep, runRole) {
@@ -382,8 +340,8 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	}
 
 	// A run_agent step declaring wait_for_status only completes on a matching
-	// HandleStatusChange (see the wait_for_status branch below and
-	// advanceSatisfiedWaitForStatus) — the step's own agent finishing a turn
+	// HandleStatusChange (see the wait_for_status branch below) — the step's
+	// own agent finishing a turn
 	// must never independently satisfy it. Interactive agents used to
 	// guarantee this for free by never exiting mid-conversation, so this
 	// callback simply never fired while a status match was pending; a
@@ -539,15 +497,14 @@ const (
 	// task+step — that agent legitimately owns it, so the completion is a
 	// phantom.
 	taskStepRouted
-	// taskStepBuffered means the step's action effect is still pending, so the
-	// dispatch that owns it is still publishing its durable route/state.
-	taskStepBuffered
+	// taskStepPending means the current step still owns a pending action effect,
+	// but no durable route was published for this agent ID.
+	taskStepPending
 )
 
 // resolveCompletionRouteLocked resolves one completion against the workflow's
 // persisted agent routes plus the current step's pending effect intent. Caller
-// holds e.mu so spawn-time route publication and completion-time reads cannot
-// interleave.
+// holds e.mu while reading the route tables.
 func (e *Engine) resolveCompletionRouteLocked(t TaskInfo, c AgentCompletion) (spawnedStep string, status taskStepStatus) {
 	if t.Workflow == nil {
 		return "", taskStepFree
@@ -571,8 +528,7 @@ func (e *Engine) resolveCompletionRouteLocked(t TaskInfo, c AgentCompletion) (sp
 		}
 	}
 	if routeStepPending(t, spawnedStep) {
-		e.bufferCompletionLocked(t.ID, spawnedStep, c)
-		return spawnedStep, taskStepBuffered
+		return spawnedStep, taskStepPending
 	}
 	return spawnedStep, taskStepFree
 }
@@ -616,6 +572,20 @@ func untrackedCompletionMatchesCurrentStep(def *Definition, stepID, runRole stri
 	}
 	step := def.StepByID(stepID)
 	if step == nil || step.Type != StepRunAgent || step.Config.Role == "" {
+		return true
+	}
+	return step.Config.Role == runRole
+}
+
+func pendingEffectCompletionMatchesCurrentStep(def *Definition, stepID, runRole string) bool {
+	if def == nil || stepID == "" {
+		return false
+	}
+	step := def.StepByID(stepID)
+	if step == nil || step.Type != StepRunAgent {
+		return false
+	}
+	if step.Config.Role == "" || runRole == "" {
 		return true
 	}
 	return step.Config.Role == runRole
@@ -1173,9 +1143,6 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 		e.handleMissingStep(t)
 		return
 	}
-	if e.resumeStalledReconciledStatus(*t, &def) {
-		return
-	}
 	e.resumeStalledReconcileWaitHumanStatus(*t, step)
 
 	if !isResumableStepType(step.Type) {
@@ -1250,45 +1217,17 @@ func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent s
 	return false
 }
 
-// resolveFreshTaskForResume re-reads and reconciles the task's current step to guard
-// against stale snapshots from concurrent ResumeStalled calls: by the time we pass the
-// preflight, a prior goroutine may have already advanced the workflow past this step.
-// It clears the resume-dispatching claim itself whenever it returns abort=true.
+// resolveFreshTaskForResume re-reads the task to guard against stale snapshots
+// from concurrent ResumeStalled calls: by the time we pass the preflight, a
+// prior goroutine may have already advanced the workflow past this step. It
+// clears the resume-dispatching claim itself whenever it returns abort=true.
 func (e *Engine) resolveFreshTaskForResume(t *TaskInfo, step *Step, def *Definition) (TaskInfo, bool) {
 	fresh, skip := e.shouldSkipResumeAfterFreshRead(t.ID, t.Workflow)
 	if skip {
 		e.clearResumeDispatching(t.ID)
 		return fresh, true
 	}
-	if _, reconciled, rErr := e.reconcileCurrentStepFromStatus(t.ID, fresh, def, fresh.Status); rErr != nil {
-		e.clearResumeDispatching(t.ID)
-		e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-status-step", t.ID, rErr, "task_id", t.ID)
-		return fresh, true
-	} else if reconciled {
-		e.clearResumeDispatching(t.ID)
-		return fresh, true
-	}
-	nextFresh, reconciled, rErr := e.reconcileCurrentStepFromPriorCondition(t.ID, fresh, def)
-	if rErr != nil {
-		e.clearResumeDispatching(t.ID)
-		e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-condition", t.ID, rErr, "task_id", t.ID)
-		return fresh, true
-	}
-	if reconciled {
-		e.clearResumeDispatching(t.ID)
-		return fresh, true
-	}
-	return nextFresh, false
-}
-
-func (e *Engine) resumeStalledReconciledStatus(t TaskInfo, def *Definition) bool {
-	if _, reconciled, err := e.reconcileCurrentStepFromStatus(t.ID, t, def, t.Status); err != nil {
-		e.resumeError.Log(e.logger, "workflow.resume-stalled.reconcile-status-step", t.ID, err, "task_id", t.ID)
-		return true
-	} else if reconciled {
-		return true
-	}
-	return false
+	return fresh, false
 }
 
 func (e *Engine) resumeStalledReconcileWaitHumanStatus(t TaskInfo, step *Step) {
