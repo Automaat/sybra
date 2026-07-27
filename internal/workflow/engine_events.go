@@ -1324,6 +1324,11 @@ func (e *Engine) resumeStalledRerouteStaleConditionBranch(t *TaskInfo, def *Defi
 	}
 
 	wf := t.Workflow.Clone()
+	if wf == nil {
+		e.logger.Warn("workflow.resume-stalled.condition-reroute.clone",
+			"task_id", t.ID, "condition", condition.ID, "step", step.ID)
+		return true
+	}
 	wf.CurrentStep = condition.ID
 	wf.State = ExecRunning
 	wf.CompletedAt = nil
