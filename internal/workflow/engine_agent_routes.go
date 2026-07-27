@@ -111,16 +111,6 @@ func (e *Engine) setPendingAgentStepLocked(taskID, agentID, stepID string) {
 	e.pendingRoutes[pendingAgentRouteKey(taskID, agentID)] = stepID
 }
 
-func (e *Engine) lookupPendingAgentStep(taskID, agentID string) (string, bool) {
-	if taskID == "" || agentID == "" {
-		return "", false
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	stepID, ok := e.pendingRoutes[pendingAgentRouteKey(taskID, agentID)]
-	return stepID, ok
-}
-
 func (e *Engine) clearPendingAgentStep(taskID, agentID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
