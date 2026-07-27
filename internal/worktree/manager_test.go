@@ -1,7 +1,6 @@
 package worktree
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1513,6 +1512,9 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
 	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	mustRunInDir(t, wtPath, "git", "push", "origin", "--delete", branch)
+	mustRunInDir(t, wtPath, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
 
 	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
@@ -1581,12 +1583,6 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	}
 	mustRunInDir(t, h.src, "git", "add", "README.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
-
-	// First re-prepare hits the genuine, unresolvable-via-rebase conflict —
-	// same as TestPrepareForTask_RebaseConflictFailsClosed.
-	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); !errors.Is(err, ErrRebaseFailed) {
-		t.Fatalf("PrepareForTask error = %v, want ErrRebaseFailed", err)
-	}
 
 	// Simulate recoverBranchConflictNoPR: fetch base, merge it into the
 	// branch (never a rebase), resolve the conflict, commit, and push — this
@@ -1814,16 +1810,11 @@ func TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed(t *testing.T) {
 	}
 }
 
-// TestPrepareForTask_RebaseFailureRecoversViaMerge proves the merge fallback
-// in reconcileAndRebase: a task branch whose commits, replayed individually,
-// hit an intermediate patch-apply conflict against the new base — even though
-// the branch's *net* content change doesn't actually overlap with upstream's
-// edit — fails a plain rebase but succeeds via merge. The branch adds then
-// reverts a line (net no-op) while upstream edits a different line the
-// now-stale intermediate commit's patch context no longer matches; rebasing
-// commit-by-commit conflicts on that mismatched context, but a single
-// three-way merge of final states has nothing to reconcile.
-func TestPrepareForTask_RebaseFailureRecoversViaMerge(t *testing.T) {
+// TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge proves Sybra's
+// no-proactive-base-merge policy: even when a task branch's final tree could be
+// merged cleanly, a rebase failure must not be silently converted into a merge
+// commit. Conflict recovery owns merge commits.
+func TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge(t *testing.T) {
 	h := prepareHarness(t, nil, 30*time.Second)
 
 	tk, err := h.tasks.Store().Create("recoverable task", "", "headless")
@@ -1842,6 +1833,9 @@ func TestPrepareForTask_RebaseFailureRecoversViaMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
 	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	mustRunInDir(t, wtPath, "git", "push", "origin", "--delete", branch)
+	mustRunInDir(t, wtPath, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
 
 	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
@@ -1881,29 +1875,18 @@ func TestPrepareForTask_RebaseFailureRecoversViaMerge(t *testing.T) {
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
 
 	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
-	if err != nil {
-		t.Fatalf("PrepareForTask should recover via merge fallback, got err: %v", err)
+	if !errors.Is(err, ErrRebaseFailed) {
+		t.Fatalf("PrepareForTask error = %v, want ErrRebaseFailed", err)
 	}
-	if gotPath == "" {
-		t.Fatal("PrepareForTask path is empty, want a recovered worktree path")
+	if gotPath != "" {
+		t.Fatal("PrepareForTask path is non-empty after failed rebase")
 	}
-
-	got, err := os.ReadFile(filepath.Join(gotPath, "README.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, upstream) {
-		t.Fatalf("README.md = %q, want upstream's content %q (branch's net change was a no-op)", got, upstream)
-	}
-
-	// The recovery must be a real merge commit, not a rebase — a subsequent
-	// push must never need to force.
-	out, err := exec.Command("git", "-C", gotPath, "log", "--merges", "-1", "--format=%H").Output()
+	out, err := exec.Command("git", "-C", wtPath, "log", "--merges", "-1", "--format=%H").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(strings.TrimSpace(string(out))) == 0 {
-		t.Fatal("expected a merge commit on the recovered branch, found none")
+	if len(strings.TrimSpace(string(out))) != 0 {
+		t.Fatalf("unexpected merge commit after failed rebase: %s", out)
 	}
 }
 

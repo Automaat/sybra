@@ -14,20 +14,19 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-// TestReconcileAndRebase_PushedBranchMergesNotRebases is the regression guard
-// for the recurring "branch diverged from remote": a branch that already exists
-// on its push remote (open PR) must be integrated with base via merge, never
-// rebase. Rebasing rewrites the pushed commits' SHAs, and since Sybra never
-// force-pushes, the local head then diverges from the remote and loops through
-// conflict recovery forever. An unpushed branch is still rebased.
-func TestReconcileAndRebase_PushedBranchMergesNotRebases(t *testing.T) {
+// TestReconcileAndRebase_PushedBranchSkipsBaseSync is the regression guard for
+// Sybra's no-proactive-base-merge policy: a branch that already exists on its
+// push remote must not be merged with base just to refresh it. Unpushed branches
+// are still rebased before first publication.
+func TestReconcileAndRebase_PushedBranchSkipsBaseSync(t *testing.T) {
 	for _, tc := range []struct {
-		name           string
-		push           bool
-		wantOrigPreset bool
+		name               string
+		push               bool
+		wantBaseIntegrated bool
+		wantOrigPresent    bool
 	}{
-		{name: "pushed branch merges (SHAs preserved, no divergence)", push: true, wantOrigPreset: true},
-		{name: "unpushed branch rebases (linear history)", push: false, wantOrigPreset: false},
+		{name: "pushed branch skips base sync", push: true, wantBaseIntegrated: false, wantOrigPresent: true},
+		{name: "unpushed branch rebases", push: false, wantBaseIntegrated: true, wantOrigPresent: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -93,18 +92,18 @@ func TestReconcileAndRebase_PushedBranchMergesNotRebases(t *testing.T) {
 			isAncestor := func(a, b string) bool {
 				return exec.Command("git", "-C", wt, "merge-base", "--is-ancestor", a, b).Run() == nil
 			}
-			if !isAncestor(baseSHA, head) {
-				t.Fatalf("base %s not integrated into feat HEAD %s", baseSHA, head)
+			if got := isAncestor(baseSHA, head); got != tc.wantBaseIntegrated {
+				t.Fatalf("base %s integrated into feat HEAD %s = %v, want %v", baseSHA, head, got, tc.wantBaseIntegrated)
 			}
-			if got := isAncestor(featSHA, head); got != tc.wantOrigPreset {
-				t.Fatalf("pre-reconcile commit %s ancestor-of-HEAD = %v, want %v (pushed=%v)", featSHA, got, tc.wantOrigPreset, tc.push)
+			if got := isAncestor(featSHA, head); got != tc.wantOrigPresent {
+				t.Fatalf("pre-reconcile commit %s ancestor-of-HEAD = %v, want %v (pushed=%v)", featSHA, got, tc.wantOrigPresent, tc.push)
 			}
 			if tc.push {
-				// The local bare remote makes the post-merge push deterministic:
-				// a clean fast-forward returns nil. Any error (divergence or
-				// otherwise) is a regression.
+				if head != featSHA {
+					t.Fatalf("pushed branch HEAD moved from %s to %s", featSHA, head)
+				}
 				if err := project.PushSync(ctx, wt, "feat"); err != nil {
-					t.Fatalf("PushSync after merging a pushed branch = %v, want nil (clean fast-forward)", err)
+					t.Fatalf("PushSync after skipped base sync = %v, want nil", err)
 				}
 			}
 		})

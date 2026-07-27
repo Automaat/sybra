@@ -65,17 +65,14 @@ const (
 
 func (r SyncResult) String() string { return string(r) }
 
-// SyncTaskBranch proactively reconciles a task's existing worktree branch with
-// the project's default branch, reusing the exact same reconcile→rebase→merge
-// strategy as PrepareForTask's reused-worktree path (reconcileAndRebase) so
-// there is only ever one merge policy. It is intentionally non-blocking: it
-// never mutates task status, never escalates to human-required, and any
-// error is returned alongside a SyncResult so the caller can log/record the
-// outcome and continue the workflow regardless. This differs deliberately from
-// PrepareForTask: there, the same ErrRebaseFailed blocks another authoring run
-// because the next agent cannot safely proceed on a conflicted branch; here,
-// sync_branch is an opportunistic pre-PR refresh, so conflict/failure leaves
-// the task no worse off than skipping the step and is only recorded.
+// SyncTaskBranch reconciles a task's existing worktree branch with its own
+// remote tracking branch, reusing the same no-proactive-base-merge policy as
+// PrepareForTask's reused-worktree path (reconcileAndRebase). It is
+// intentionally non-blocking: it never mutates task status, never escalates to
+// human-required, and any error is returned alongside a SyncResult so the caller
+// can log/record the outcome and continue the workflow regardless. It does not
+// merge the project's default branch just to refresh a stale PR; base-branch
+// merges are reserved for explicit conflict-resolution paths.
 //
 // Skips (SyncSkipped, nil) when there is no existing worktree for the task, or
 // the worktree is externally adopted (t.WorktreeDir set) — adopted worktrees
@@ -320,15 +317,14 @@ func (m *Manager) runPrepareSetup(ctx context.Context, taskID, wtPath string, pr
 // It first adopts any commits pushed to the remote branch since this worktree's
 // local ref was last updated (e.g. a review fix pushed from another
 // clone/machine), so the rebase carries them forward instead of a later
-// force-push dropping them. Rebasing must then succeed before the agent runs —
-// continuing from a stale branch makes downstream diff gates scan historical
-// commits. If the rebase fails, it falls back to an additive merge (see
-// MergeOnto) before giving up, since most staleness under concurrent agents
-// is not a genuine content conflict. The rebase and merge-fallback failures
-// wrap ErrRebaseFailed so the caller can surface a repairable worktree. The
-// reconcile step is different: it performs a network fetch/ls-remote, and a
-// transient connectivity blip there (SSH/DNS/timeout) looks identical to a
-// genuine failure unless distinguished — so that case wraps ErrTransientFetch
+// force-push dropping them. Unpushed local branches are then rebased onto the
+// configured base so they stay linear before first publication. Already-pushed
+// branches are deliberately not rebased or merged with base: Sybra must not add
+// merge commits just to refresh a branch, and it must not rewrite published
+// history. GitHub PR state and the dedicated conflict-recovery paths own base
+// conflict resolution. The reconcile step performs a network fetch/ls-remote,
+// and a transient connectivity blip there (SSH/DNS/timeout) looks identical to
+// a genuine failure unless distinguished — so that case wraps ErrTransientFetch
 // instead, which callers must never escalate to human-required.
 func (m *Manager) reconcileAndRebase(ctx context.Context, wtPath, wtBranch, baseRef string, onPhase func(string)) error {
 	callPhase(onPhase, "Reconciling with remote…")
@@ -338,30 +334,13 @@ func (m *Manager) reconcileAndRebase(ctx context.Context, wtPath, wtBranch, base
 		}
 		return fmt.Errorf("%w: reconcile %s with remote: %w", ErrRebaseFailed, wtBranch, err)
 	}
-	// Rebasing rewrites SHAs, so rebasing an already-pushed branch diverges it
-	// from the remote; Sybra never force-pushes, so that loops through conflict
-	// recovery forever (the recurring "branch diverged from remote" that stalls
-	// autonomy). Merge base into a pushed branch instead — it keeps the pushed
-	// SHAs and stays fast-forwardable; only a genuine conflict escalates.
 	if project.BranchPushed(ctx, wtPath, wtBranch) {
-		callPhase(onPhase, "Merging base into pushed branch…")
-		if mergeErr := project.MergeOnto(ctx, wtPath, baseRef); mergeErr != nil {
-			return fmt.Errorf("%w: merge %s into pushed branch %s: %w", ErrRebaseFailed, baseRef, wtBranch, mergeErr)
-		}
-		m.logger.Info("worktree.pushed-branch-merged-base", "branch", wtBranch, "base", baseRef)
+		m.logger.Info("worktree.pushed-branch-skip-base-sync", "branch", wtBranch, "base", baseRef)
 		return nil
 	}
 	callPhase(onPhase, fmt.Sprintf("Rebasing onto %s…", baseRef))
 	if rebaseErr := project.RebaseOnto(ctx, wtPath, baseRef); rebaseErr != nil {
-		// A rebase failure on an unpushed branch is usually base moving under
-		// concurrent agents, not a content conflict. Try an additive merge
-		// before giving up; only a real conflict surfaces ErrRebaseFailed.
-		callPhase(onPhase, "Rebase failed, trying merge…")
-		if mergeErr := project.MergeOnto(ctx, wtPath, baseRef); mergeErr != nil {
-			return fmt.Errorf("%w: rebase %s onto %s: %w (merge fallback also failed: %w)",
-				ErrRebaseFailed, wtBranch, baseRef, rebaseErr, mergeErr)
-		}
-		m.logger.Info("worktree.rebase-recovered-via-merge", "branch", wtBranch, "base", baseRef)
+		return fmt.Errorf("%w: rebase %s onto %s: %w", ErrRebaseFailed, wtBranch, baseRef, rebaseErr)
 	}
 	return nil
 }
