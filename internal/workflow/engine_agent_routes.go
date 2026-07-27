@@ -1,6 +1,9 @@
 package workflow
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // routeStepPending reports whether the task's current step is still inside its
 // claimed step-action effect window: intent persisted, completion not yet
@@ -10,8 +13,7 @@ func routeStepPending(t TaskInfo, stepID string) bool {
 		return false
 	}
 	currentSeq := executionStepSeq(t.Workflow)
-	for i := len(t.Workflow.EffectLog) - 1; i >= 0; i-- {
-		rec := t.Workflow.EffectLog[i]
+	for _, rec := range slices.Backward(t.Workflow.EffectLog) {
 		if rec.ID.StepID == stepID && rec.ID.Pos == effectPosStepAction && rec.ID.StepSeq >= currentSeq && rec.CompletedAt == nil {
 			return true
 		}
@@ -130,17 +132,6 @@ func (e *Engine) clearAgentStepsForTask(taskID string) {
 	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
 }
 
-// resolveCompletionRoute is kept as a thin compatibility wrapper for tests.
-func (e *Engine) resolveCompletionRoute(taskID, _ string, c AgentCompletion) (string, taskStepStatus) {
-	t, err := e.tasks.GetTask(taskID)
-	if err != nil {
-		return "", taskStepFree
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.resolveCompletionRouteLocked(t, c)
-}
-
 // markStepStarting / unmarkStepStartingAndTakePending are test-only
 // compatibility shims for the deleted pending-start machinery. They now model
 // the same state through the current step's pending action effect instead of an
@@ -165,8 +156,7 @@ func (e *Engine) unmarkStepStartingAndTakePending(taskID, stepID string) []Agent
 	if err != nil || t.Workflow == nil {
 		return nil
 	}
-	for i := len(t.Workflow.EffectLog) - 1; i >= 0; i-- {
-		rec := t.Workflow.EffectLog[i]
+	for _, rec := range slices.Backward(t.Workflow.EffectLog) {
 		if rec.ID.StepID != stepID || rec.ID.Pos != effectPosStepAction || rec.CompletedAt != nil {
 			continue
 		}
