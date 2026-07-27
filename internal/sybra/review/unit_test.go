@@ -3125,6 +3125,219 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 	}
 }
 
+// A comments-triggered workflow may still be the only active pr-fix run when
+// CI turns red later. Cancelling just because comments resolved would strand a
+// live deterministic failure until a future poll re-dispatches.
+func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileCIFailing(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("comments workflow, red CI", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr44 := 44
+	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr44}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"pr_issue_kind": "comments"},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:         logger,
+		tasks:          tasks,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		WorkflowEngine: engine,
+	}
+
+	pr := github.PullRequest{Number: 44, CIStatus: "FAILURE", HasPendingChecks: false, Mergeable: "MERGEABLE"}
+	r.cancelResolvedPRFixWorkflows(all, []github.PRIssue{
+		{Kind: github.PRIssueCIFailure, TaskID: created.ID, PR: pr},
+	}, map[string]github.PullRequest{
+		created.ID: pr,
+	})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
+		t.Fatalf("workflow state = %+v, want still waiting; resolved comments must not cancel an active pr-fix while CI is red", got.Workflow)
+	}
+}
+
+// A confirmed flaky failure is handled by the separate rerun/flake path, so it
+// must not keep a comments-only pr-fix workflow pinned open forever once the
+// comments themselves are resolved.
+func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowWhenRemainingCIIsFlaky(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("comments workflow, flaky CI", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr46 := 46
+	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr46}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"pr_issue_kind": "comments"},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:         logger,
+		tasks:          tasks,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		WorkflowEngine: engine,
+	}
+
+	pr := github.PullRequest{Number: 46, CIStatus: "FAILURE", CIFlaky: true, HasPendingChecks: false, Mergeable: "MERGEABLE"}
+	r.cancelResolvedPRFixWorkflows(all, []github.PRIssue{
+		{Kind: github.PRIssueCIFailure, TaskID: created.ID, PR: pr},
+	}, map[string]github.PullRequest{
+		created.ID: pr,
+	})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow state = %+v, want completed; a confirmed flaky CI failure must not block comments-resolved cancellation", got.Workflow)
+	}
+}
+
+// Comments resolving while checks are still in flight is not settled state:
+// the same run may still land red, so the active pr-fix workflow must survive
+// until GitHub can actually answer the CI question.
+func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileChecksPending(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("comments workflow, pending CI", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr45 := 45
+	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr45}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"pr_issue_kind": "comments"},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:         logger,
+		tasks:          tasks,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		WorkflowEngine: engine,
+	}
+
+	r.cancelResolvedPRFixWorkflows(all, nil, map[string]github.PullRequest{
+		created.ID: {Number: 45, CIStatus: "PENDING", HasPendingChecks: true, Mergeable: "MERGEABLE"},
+	})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
+		t.Fatalf("workflow state = %+v, want still waiting; resolved comments must not cancel an active pr-fix while checks are pending", got.Workflow)
+	}
+}
+
 // Once checks land green the ci_failure really is resolved, so the cancel must
 // still fire — the deferral is about unknowable state, not about never cancelling.
 func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T) {
