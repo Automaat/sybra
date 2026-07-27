@@ -108,24 +108,24 @@ func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 }
 
-func TestBranchConflictPrompt_ForbidsHistoryRewrite(t *testing.T) {
+func TestBranchConflictPrompt_AllowsRebaseBeforePRExists(t *testing.T) {
 	t.Parallel()
 
 	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main")
 
 	for _, want := range []string{
 		"git merge refs/remotes/origin/main",
-		"do not rebase or rewrite the branch history",
-		"Do not rebase, amend, force-push, or rewrite existing commits",
+		"you may instead rebase onto",
+		"refs/remotes/origin/main, resolve the conflicts there",
+		"Prefer a merge; if you must rebase before the first PR exists, push the rewritten branch back with `--force-with-lease`",
+		"git push --force-with-lease \"$PUSH_REMOTE\" HEAD:fix/example",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("branch conflict prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	for _, forbidden := range []string{"git rebase", "force-with-lease", "--force", "you may instead rebase"} {
-		if strings.Contains(prompt, forbidden) {
-			t.Fatalf("branch conflict prompt still permits history rewrite (%q):\n%s", forbidden, prompt)
-		}
+	if strings.Contains(prompt, "Do not force-push or rewrite existing commits — this is a merge, never a rebase") {
+		t.Fatalf("branch conflict prompt still forbids rebase/force-push before PR creation:\n%s", prompt)
 	}
 }
 
