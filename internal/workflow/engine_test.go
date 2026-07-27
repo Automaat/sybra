@@ -3646,6 +3646,113 @@ func TestResumeStalled_WaitHumanStatusRespectsSkipStatuses(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_ReroutesStaleConditionBranch(t *testing.T) {
+	store := newInlineTestStore(t, "condition-reroute", `
+id: condition-reroute
+steps:
+  - id: maybe_critique
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: nocritic
+        goto: critique_plan
+      - goto: review_plan
+  - id: critique_plan
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      prompt: critique
+    next:
+      - goto: review_plan
+  - id: review_plan
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions: [approve, reject]
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	now := time.Now().UTC()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "planning",
+		Tags:   []string{"nocritic"},
+		Workflow: &Execution{
+			WorkflowID:  "condition-reroute",
+			CurrentStep: "critique_plan",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+			StepHistory: []StepRecord{{
+				StepID:    "maybe_critique",
+				Status:    "completed",
+				StartedAt: now.Add(-time.Minute),
+				EndedAt:   now.Add(-time.Minute),
+			}},
+			EffectLog: []EffectRecord{
+				{
+					ID:          EffectID{Generation: 1, StepSeq: 0, StepID: "maybe_critique", Pos: effectPosStepAction},
+					IntentAt:    now.Add(-time.Minute),
+					CompletedAt: &now,
+				},
+				{
+					ID:       EffectID{Generation: 1, StepSeq: 1, StepID: "critique_plan", Pos: effectPosStepAction},
+					IntentAt: now.Add(-time.Minute),
+				},
+			},
+		},
+	})
+	def, err := store.Get("condition-reroute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := def.StepByID("critique_plan")
+	if step == nil {
+		t.Fatal("critique_plan step missing")
+	}
+	pre, _ := tasks.GetTask("t1")
+	condition := latestConditionPredecessor(&def, pre.Workflow, step.ID)
+	if condition == nil {
+		t.Fatal("precondition: condition predecessor not detected")
+	}
+	nextID, err := ResolveTransition(condition.Next, engine.transitionFields(pre, pre.Workflow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextID != "review_plan" {
+		t.Fatalf("precondition: condition routes to %q, want review_plan", nextID)
+	}
+
+	engine.ResumeStalled()
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow == nil {
+		t.Fatal("workflow missing")
+	}
+	if ti.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("CurrentStep = %q, want review_plan", ti.Workflow.CurrentStep)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Fatalf("State = %q, want %q", ti.Workflow.State, ExecWaiting)
+	}
+	if ti.Status != "plan-review" {
+		t.Fatalf("Status = %q, want plan-review", ti.Status)
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("critique agent dispatched %d times, want 0", agents.CallCount())
+	}
+	for _, rec := range ti.Workflow.EffectLog {
+		if rec.ID.StepID == "critique_plan" {
+			t.Fatalf("stale critique_plan effect was not cleared: %+v", ti.Workflow.EffectLog)
+		}
+	}
+}
+
 func TestResumeStalled_RunAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -7135,7 +7242,7 @@ func assertRemainsPlanReviewWaiting(t *testing.T, tasks *memTasks, id string, wi
 	}
 }
 
-func TestPlanReuse_ApproveDoesNotRepairMissedWaitForStatus(t *testing.T) {
+func TestPlanReuse_ApproveRepairsMissedWaitForStatus(t *testing.T) {
 	store := newTestStoreWith(t, "test-plan-reuse.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -7155,19 +7262,19 @@ func TestPlanReuse_ApproveDoesNotRepairMissedWaitForStatus(t *testing.T) {
 		t.Fatalf("precondition: CurrentStep = %q, want plan", stuck.Workflow.CurrentStep)
 	}
 
-	if err := engine.HandleHumanAction("t1", "approve", nil); err == nil {
-		t.Fatal("approve succeeded on stale wait_for_status step, want error")
+	if err := engine.HandleHumanAction("t1", "approve", nil); err != nil {
+		t.Fatal(err)
 	}
 
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "plan-review" {
-		t.Errorf("Status = %q, want plan-review", ti.Status)
+	if ti.Status != "in-progress" {
+		t.Errorf("Status = %q, want in-progress", ti.Status)
 	}
-	if ti.Workflow == nil || ti.Workflow.CurrentStep != "plan" {
-		t.Fatalf("CurrentStep = %v, want plan", ti.Workflow)
+	if ti.Workflow == nil || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("CurrentStep = %v, want completed workflow", ti.Workflow)
 	}
-	if ti.Workflow.State != ExecWaiting {
-		t.Errorf("State = %q, want %q", ti.Workflow.State, ExecWaiting)
+	if ti.Workflow.State != ExecCompleted {
+		t.Errorf("State = %q, want %q", ti.Workflow.State, ExecCompleted)
 	}
 }
 

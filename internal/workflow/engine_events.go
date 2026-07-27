@@ -161,6 +161,29 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		return fmt.Errorf("step %s not found in workflow %s", t.Workflow.CurrentStep, def.ID)
 	}
 	if currentStep.Type != StepWaitHuman {
+		recovered, rErr := e.recoverMissedWaitForStatusHumanGate(taskID, t, &def, currentStep, action)
+		if rErr != nil {
+			return rErr
+		}
+		if recovered {
+			t, err = e.tasks.GetTask(taskID)
+			if err != nil {
+				return err
+			}
+			if t.Workflow == nil {
+				return fmt.Errorf("task %s is not waiting for human action", taskID)
+			}
+			def, err = e.store.Get(t.Workflow.WorkflowID)
+			if err != nil {
+				return err
+			}
+			currentStep = def.StepByID(t.Workflow.CurrentStep)
+			if currentStep == nil {
+				return fmt.Errorf("step %s not found in workflow %s", t.Workflow.CurrentStep, def.ID)
+			}
+		}
+	}
+	if currentStep.Type != StepWaitHuman {
 		return fmt.Errorf("task %s is not at a wait_human step", taskID)
 	}
 	if err := validateHumanAction(currentStep, action); err != nil {
@@ -182,6 +205,40 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		Status: "completed",
 		Output: action,
 	})
+}
+
+func (e *Engine) recoverMissedWaitForStatusHumanGate(taskID string, t TaskInfo, def *Definition, step *Step, action string) (bool, error) {
+	if t.Workflow == nil || step == nil || step.Type != StepRunAgent ||
+		step.Config.WaitForStatus == "" || step.Config.WaitForStatus != t.Status {
+		return false, nil
+	}
+	nextID, err := ResolveTransition(step.Next, e.transitionFields(t, t.Workflow))
+	if err != nil {
+		return false, err
+	}
+	if nextID == "" {
+		return false, nil
+	}
+	nextStep := def.StepByID(nextID)
+	if nextStep == nil {
+		return false, fmt.Errorf("next step %s not found in workflow %s", nextID, def.ID)
+	}
+	if nextStep.Type != StepWaitHuman {
+		return false, nil
+	}
+	if err := validateHumanAction(nextStep, action); err != nil {
+		return false, err
+	}
+	e.logger.Info("workflow.human-action.recover-status",
+		"task_id", taskID, "from", step.ID, "to", nextStep.ID, "status", t.Status)
+	if err := e.AdvanceStep(taskID, StepOutput{
+		StepID: step.ID,
+		Status: "completed",
+		Output: "recovered missed wait_for_status " + t.Status,
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func validateHumanAction(step *Step, action string) error {
@@ -1145,6 +1202,9 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 		return
 	}
 	e.resumeStalledReconcileWaitHumanStatus(*t, step)
+	if e.resumeStalledRerouteStaleConditionBranch(t, &def, step) {
+		return
+	}
 
 	if !isResumableStepType(step.Type) {
 		return
@@ -1240,6 +1300,68 @@ func (e *Engine) resumeStalledReconcileWaitHumanStatus(t TaskInfo, step *Step) {
 				"task_id", t.ID, "step", step.ID, "from", t.Status, "to", step.Config.Status)
 		}
 	}
+}
+
+func (e *Engine) resumeStalledRerouteStaleConditionBranch(t *TaskInfo, def *Definition, step *Step) bool {
+	if t == nil || t.Workflow == nil || step == nil || e.agents.HasRunningAgent(t.ID) {
+		return false
+	}
+	if _, skip := resumeSkipReasonForStatus(t.Status); skip {
+		return false
+	}
+	condition := latestConditionPredecessor(def, t.Workflow, step.ID)
+	if condition == nil {
+		return false
+	}
+	nextID, err := ResolveTransition(condition.Next, e.transitionFields(*t, t.Workflow))
+	if err != nil {
+		e.logger.Warn("workflow.resume-stalled.condition-reroute.transition",
+			"task_id", t.ID, "condition", condition.ID, "step", step.ID, "err", err)
+		return false
+	}
+	if nextID == step.ID {
+		return false
+	}
+
+	wf := t.Workflow.Clone()
+	wf.CurrentStep = condition.ID
+	wf.State = ExecRunning
+	wf.CompletedAt = nil
+	wf.ClearStepRecords(condition.ID)
+	wf.ClearStepRecords(step.ID)
+	if err := e.tasks.SetWorkflow(t.ID, wf); err != nil {
+		e.logger.Warn("workflow.resume-stalled.condition-reroute.persist",
+			"task_id", t.ID, "condition", condition.ID, "step", step.ID, "err", err)
+		return true
+	}
+
+	e.logger.Info("workflow.resume-stalled.condition-reroute",
+		"task_id", t.ID, "condition", condition.ID, "from", step.ID, "to", nextID)
+	comp, rErr := e.executeSteps(t.ID, def, condition, wf)
+	rErr = normalizeExecuteStepsErr(rErr)
+	e.fireComplete(comp)
+	e.resumeError.Log(e.logger, "workflow.resume-stalled.condition-reroute.exec", t.ID, rErr, "task_id", t.ID)
+	if rErr != nil {
+		e.surfaceStartFailure(t.ID, t.Status, rErr, wf, condition.ID)
+	}
+	return true
+}
+
+func latestConditionPredecessor(def *Definition, wf *Execution, currentStepID string) *Step {
+	if def == nil || wf == nil || len(wf.StepHistory) == 0 || currentStepID == "" {
+		return nil
+	}
+	last := wf.StepHistory[len(wf.StepHistory)-1]
+	step := def.StepByID(last.StepID)
+	if step == nil || step.Type != StepCondition {
+		return nil
+	}
+	for i := range step.Next {
+		if step.Next[i].GoTo == currentStepID {
+			return step
+		}
+	}
+	return nil
 }
 
 func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *Step, wf *Execution, fresh TaskInfo) {
