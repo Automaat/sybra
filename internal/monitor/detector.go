@@ -129,6 +129,10 @@ const monitorAutoRetriedTag = "monitor:auto-retried"
 // task it files for a KindLostAgent anomaly (see internal/sybra/monitor_sink.go).
 const lostAgentInvestigationTag = "monitor:" + string(KindLostAgent)
 
+// untriagedInvestigationTag is the tag monitorRoutingSink stamps on a local
+// task it files for a KindUntriaged anomaly.
+const untriagedInvestigationTag = "monitor:" + string(KindUntriaged)
+
 // affectedTaskMarkerPrefix precedes the origin task id in a deterministic
 // issue body's "## Affected task" section (see DeterministicIssueBody). Used
 // to recover which task an investigation task was filed for.
@@ -175,6 +179,38 @@ func openLostAgentInvestigations(tasks []task.Task) map[string]openLostAgentInve
 		if prev, ok := out[originID]; !ok || prev.observedAt.Before(observedAt) {
 			out[originID] = openLostAgentInvestigation{observedAt: observedAt}
 		}
+	}
+	return out
+}
+
+// openUntriagedInvestigations returns the open investigation fingerprint for
+// each task that already has a monitor-filed untriaged chore tracking it.
+// Used to auto-close stale investigations once the source task is triaged or
+// deleted, even after a process restart where in-memory runState is empty.
+func openUntriagedInvestigations(tasks []task.Task) map[string]string {
+	out := make(map[string]string)
+	for i := range tasks {
+		t := &tasks[i]
+		if task.IsTerminalStatus(t.Status) {
+			continue
+		}
+		if !slices.Contains(t.Tags, untriagedInvestigationTag) {
+			continue
+		}
+		idx := strings.Index(t.Body, affectedTaskMarkerPrefix)
+		if idx < 0 {
+			continue
+		}
+		rest := t.Body[idx+len(affectedTaskMarkerPrefix):]
+		originID, _, ok := strings.Cut(rest, "`")
+		if !ok || originID == "" {
+			continue
+		}
+		fp := Fingerprint(KindUntriaged, originID, nil)
+		if !strings.Contains(t.Body, "- Fingerprint: `"+fp+"`") {
+			continue
+		}
+		out[originID] = fp
 	}
 	return out
 }

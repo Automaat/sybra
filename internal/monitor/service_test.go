@@ -586,6 +586,92 @@ func TestServiceTick_LostAgentAutoCloseRetriesAfterTransientFailure(t *testing.T
 	}
 }
 
+func TestServiceTick_UntriagedAutoClosesAfterTriage(t *testing.T) {
+	now := time.Date(2026, 7, 27, 18, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	source := mkTaskAt(now, "source", task.StatusTodo, func(t *task.Task) {
+		t.Tags = []string{"small"}
+	})
+	investigation := mkTaskAt(now, "investigation", task.StatusTodo, func(t *task.Task) {
+		t.Tags = []string{string(task.FlagSybraBug), string(task.FlagScrubbed), untriagedInvestigationTag}
+		t.Body = DeterministicIssueBody(Anomaly{
+			Kind:        KindUntriaged,
+			TaskID:      source.ID,
+			Severity:    SeverityInfo,
+			Fingerprint: Fingerprint(KindUntriaged, source.ID, nil),
+			DetectedAt:  now.Add(-time.Hour),
+		})
+	})
+	tasks := &fakeTasks{tasks: []task.Task{source, investigation}}
+	sink := &fakeSink{closeNext: true}
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		Sink:   sink,
+		Logger: slog.New(slog.DiscardHandler),
+		Now:    func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(sink.closed) != 1 {
+		t.Fatalf("want 1 close attempt, got %d", len(sink.closed))
+	}
+	if sink.closed[0].Kind != KindUntriaged || sink.closed[0].TaskID != source.ID {
+		t.Fatalf("closed = %+v, want untriaged for %q", sink.closed[0], source.ID)
+	}
+	if report.IssuesClosed != 1 {
+		t.Fatalf("issuesClosed = %d, want 1", report.IssuesClosed)
+	}
+	if report.IssuesOpened != 0 || report.IssuesUpdated != 0 {
+		t.Fatalf("want no issue submissions, got opened=%d updated=%d", report.IssuesOpened, report.IssuesUpdated)
+	}
+}
+
+func TestServiceTick_UntriagedAutoClosesWhenSourceTaskDeleted(t *testing.T) {
+	now := time.Date(2026, 7, 27, 18, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	investigation := mkTaskAt(now, "investigation", task.StatusTodo, func(t *task.Task) {
+		t.Tags = []string{string(task.FlagSybraBug), string(task.FlagScrubbed), untriagedInvestigationTag}
+		t.Body = DeterministicIssueBody(Anomaly{
+			Kind:        KindUntriaged,
+			TaskID:      "missing-source",
+			Severity:    SeverityInfo,
+			Fingerprint: Fingerprint(KindUntriaged, "missing-source", nil),
+			DetectedAt:  now.Add(-time.Hour),
+		})
+	})
+	tasks := &fakeTasks{tasks: []task.Task{investigation}}
+	sink := &fakeSink{closeNext: true}
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		Sink:   sink,
+		Logger: slog.New(slog.DiscardHandler),
+		Now:    func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(sink.closed) != 1 {
+		t.Fatalf("want 1 close attempt, got %d", len(sink.closed))
+	}
+	if sink.closed[0].TaskID != "missing-source" {
+		t.Fatalf("closed task id = %q, want missing-source", sink.closed[0].TaskID)
+	}
+	if report.IssuesClosed != 1 {
+		t.Fatalf("issuesClosed = %d, want 1", report.IssuesClosed)
+	}
+}
+
 // TestServiceTick_LostAgentRemediationFailureFilesImmediately covers the
 // other half of "file only after remediation has failed at least once": an
 // outright remediation error (e.g. a task-store write conflict) must file on

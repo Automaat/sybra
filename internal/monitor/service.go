@@ -241,6 +241,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		report.IssuesOpened = opened
 		report.IssuesUpdated = updated
 		report.IssuesClosed = s.closeRecoveredLostAgents(ctx, report.Anomalies)
+		report.IssuesClosed += s.closeRecoveredUntriaged(ctx, tasks, now)
 	}
 
 	s.state.recordReport(report, now)
@@ -576,6 +577,46 @@ func (s *Service) closeRecoveredLostAgents(ctx context.Context, anoms []Anomaly)
 		if didClose {
 			closed++
 			s.logger.Info("monitor.lost_agent.autoclosed", "task_id", c.taskID, "fingerprint", c.filedFP)
+		}
+	}
+	return closed
+}
+
+// closeRecoveredUntriaged auto-closes any previously-filed untriaged
+// investigation whose source task is no longer untriaged — either because it
+// was triaged successfully or because it was deleted outright. Unlike
+// lost_agent this is resolved on the first clear tick: once a task has mode +
+// tags again, the monitor chore is stale immediately.
+func (s *Service) closeRecoveredUntriaged(ctx context.Context, tasks []task.Task, now time.Time) int {
+	closer, ok := s.sink.(IssueCloser)
+	if !ok {
+		return 0
+	}
+	active := make(map[string]bool)
+	for i := range tasks {
+		t := &tasks[i]
+		if detectUntriaged(t, now) != nil {
+			active[t.ID] = true
+		}
+	}
+	open := openUntriagedInvestigations(tasks)
+	if len(open) == 0 {
+		return 0
+	}
+	closed := 0
+	for taskID, fp := range open {
+		if active[taskID] {
+			continue
+		}
+		a := Anomaly{Kind: KindUntriaged, TaskID: taskID, Fingerprint: fp}
+		didClose, err := closer.CloseIfOpen(ctx, a, "monitor: source task is no longer untriaged; auto-closing.")
+		if err != nil {
+			s.logger.Warn("monitor.untriaged.autoclose_failed", "task_id", taskID, "fingerprint", fp, "err", err)
+			continue
+		}
+		if didClose {
+			closed++
+			s.logger.Info("monitor.untriaged.autoclosed", "task_id", taskID, "fingerprint", fp)
 		}
 	}
 	return closed
