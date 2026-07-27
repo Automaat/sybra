@@ -715,16 +715,14 @@ export class GitHubConfig {
     "nativeAutoMerge": boolean;
 
     /**
-     * AutoResolveCleanMerges is a kill-switch for the deterministic
-     * clean-merge fast-path used before dispatching any review/fix-review
-     * round on a PR: Sybra attempts a plain `git merge` of the PR's base
-     * branch in Go. For a lone conflict issue, a merge that creates a commit
-     * with no conflicting hunks is pushed and no agent is spawned; for every
-     * other issue (comments, ci_failure, coalesced sets), the same clean
-     * merge is pushed as a non-skipping pre-dispatch sync so the round never
-     * wastes a pass re-diagnosing a stale-diff artifact. Conflicts, no-op
-     * merges, and errors always fall through to the agent-assisted path.
-     * Default off (zero value = false).
+     * AutoResolveCleanMerges is a kill-switch for the deterministic clean-merge
+     * fast-path used only for a single conflict issue on a PR: Sybra attempts a
+     * plain `git merge` of the PR's base branch in Go. A merge that creates a
+     * commit with no conflicting hunks is pushed and no agent is spawned.
+     * Comments, CI failures, and coalesced issue sets never use this path; Sybra
+     * does not merge base just to refresh a stale branch. Conflicts, no-op
+     * merges, and errors always fall through to the agent-assisted path. Default
+     * off (zero value = false).
      */
     "autoResolveCleanMerges": boolean;
 

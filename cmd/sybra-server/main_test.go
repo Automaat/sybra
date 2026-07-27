@@ -430,7 +430,7 @@ func TestStartWebhookServerDisabledNoop(t *testing.T) {
 }
 
 func TestStartWebhookServerFailsOnBindError(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

@@ -716,6 +716,18 @@ func setupConflictRecoveryHarness(t *testing.T) conflictRecoveryHarness {
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
 	}
+	tk, err = taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-c", "safe.bareRepository=all", "-C", bare, "update-ref", "-d", "refs/heads/" + tk.Branch},
+		{"-C", wtPath, "update-ref", "-d", "refs/remotes/origin/" + tk.Branch},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
 	for _, args := range [][]string{
 		{"-C", wtPath, "config", "user.email", "test@test.com"},
 		{"-C", wtPath, "config", "user.name", "Test"},
