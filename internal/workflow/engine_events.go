@@ -282,18 +282,19 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 // found" error loop that followed workflow completion in older versions —
 // but that legitimacy still needs to be visible when diagnosing a stall.
 func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
-	e.acquireInflight(taskID)
+	routeMu := e.taskRouteMutex(taskID)
+	routeMu.Lock()
 	e.mu.Lock()
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		e.mu.Unlock()
-		e.releaseInflight(taskID)
+		routeMu.Unlock()
 		e.logger.Error("workflow.agent-complete.get", "task_id", taskID, "err", err)
 		return
 	}
 	spawnedStep, routeStatus := e.resolveCompletionRouteLocked(t, c)
 	e.mu.Unlock()
-	e.releaseInflight(taskID)
+	routeMu.Unlock()
 	if e.handleAgentCompleteInitialBail(taskID, t, c) {
 		e.clearAgentStep(taskID, c.AgentID)
 		return

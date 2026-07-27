@@ -190,8 +190,9 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) error {
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
-	e.acquireInflight(taskID)
-	defer e.releaseInflight(taskID)
+	routeMu := e.taskRouteMutex(taskID)
+	routeMu.Lock()
+	defer routeMu.Unlock()
 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {

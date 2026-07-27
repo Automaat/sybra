@@ -325,6 +325,17 @@ func (e *Engine) taskInflightMutex(taskID string) *sync.Mutex {
 	return mu
 }
 
+func (e *Engine) taskRouteMutex(taskID string) *sync.Mutex {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	mu, ok := e.routeMutexes[taskID]
+	if !ok {
+		mu = &sync.Mutex{}
+		e.routeMutexes[taskID] = mu
+	}
+	return mu
+}
+
 // advanceContext bundles everything AdvanceStep needs to act on a single
 // step completion. ParallelParent is non-nil when the resolved Step is a
 // child of an in-flight `parallel` block.

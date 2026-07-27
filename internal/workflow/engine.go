@@ -412,6 +412,7 @@ type Engine struct {
 	ctx              context.Context
 	mu               sync.Mutex
 	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
+	routeMutexes     map[string]*sync.Mutex     // taskID → serialize run_agent route publication vs completion reads
 	dispatching      map[string]struct{}        // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
 	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
 	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
@@ -519,6 +520,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		logger:                 logger,
 		ctx:                    context.Background(),
 		inflightMutexes:        make(map[string]*sync.Mutex),
+		routeMutexes:           make(map[string]*sync.Mutex),
 		dispatching:            make(map[string]struct{}),
 		starting:               make(map[string]struct{}),
 		humanAction:            make(map[string]struct{}),
