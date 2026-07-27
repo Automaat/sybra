@@ -134,7 +134,10 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 				}
 				delete(pending, name)
 				delete(deadlines, name)
-				w.emitFor(name, op)
+				// fsnotify reports an atomic replacement as Create for the new
+				// inode, even though the task file already existed. Use the
+				// directory snapshot to preserve the semantic event type.
+				w.emitFor(name, op, known)
 			}
 			timerCh = resetDebounceTimer(timer, deadlines)
 			if w.refreshSnapshot(known) {
@@ -234,7 +237,7 @@ func (w *Watcher) reconcile(known map[string]time.Time, pending map[string]fsnot
 		switch {
 		case !existed:
 			w.logger.Warn("watcher.reconcile.recovered", "op", "created", "file", name)
-			w.emitFor(name, fsnotify.Create)
+			w.emitFor(name, fsnotify.Create, known)
 		case !prev.Equal(mtime):
 			// mtime-only diff: a write that preserves the mtime (coarse
 			// filesystem resolution, or a tool that restores it on save) is
@@ -242,7 +245,7 @@ func (w *Watcher) reconcile(known map[string]time.Time, pending map[string]fsnot
 			// covers those; reconcile only recovers writes that also moved the
 			// mtime but produced no OS event.
 			w.logger.Warn("watcher.reconcile.recovered", "op", "updated", "file", name)
-			w.emitFor(name, fsnotify.Write)
+			w.emitFor(name, fsnotify.Write, known)
 		}
 		known[name] = mtime
 	}
@@ -291,11 +294,16 @@ func stopTimer(timer *time.Timer) {
 	}
 }
 
-func (w *Watcher) emitFor(name string, op fsnotify.Op) {
+func (w *Watcher) emitFor(name string, op fsnotify.Op, known map[string]time.Time) {
 	switch {
 	case op.Has(fsnotify.Create):
-		w.logger.Info("watcher.event", "op", "created", "file", name)
-		w.emit(events.TaskCreated, name)
+		if _, existed := known[name]; existed {
+			w.logger.Debug("watcher.event", "op", "updated", "file", name)
+			w.emit(events.TaskUpdated, name)
+		} else {
+			w.logger.Info("watcher.event", "op", "created", "file", name)
+			w.emit(events.TaskCreated, name)
+		}
 	case op.Has(fsnotify.Write):
 		w.logger.Debug("watcher.event", "op", "updated", "file", name)
 		w.emit(events.TaskUpdated, name)
