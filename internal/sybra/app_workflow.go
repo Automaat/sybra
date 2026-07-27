@@ -178,6 +178,7 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 	if err != nil {
 		return err
 	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
 	u := task.Update{Status: &st}
 	if reason != "" {
 		u.StatusReason = &reason
@@ -191,12 +192,67 @@ func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker
 	if err != nil {
 		return err
 	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
 	u := task.Update{Status: &st, Blocker: &state}
 	if reason != "" {
 		u.StatusReason = &reason
 	}
 	_, err = a.tasks.Update(id, u)
 	return err
+}
+
+func (a *taskAdapter) normalizeHumanRequiredReason(taskID string, status task.Status, reason string) string {
+	if status != task.StatusHumanRequired {
+		return reason
+	}
+	if strings.TrimSpace(reason) != "" {
+		return reason
+	}
+	cur, err := a.tasks.Get(taskID)
+	if err != nil {
+		return reason
+	}
+	if strings.TrimSpace(cur.StatusReason) != "" {
+		return cur.StatusReason
+	}
+	return fallbackHumanRequiredReason(cur)
+}
+
+func fallbackHumanRequiredReason(t task.Task) string {
+	if len(t.AgentRuns) > 0 {
+		if reason := fallbackHumanRequiredReasonFromRun(t, t.AgentRuns[len(t.AgentRuns)-1]); reason != "" {
+			return reason
+		}
+	}
+	if t.Workflow != nil && strings.TrimSpace(t.Workflow.CurrentStep) != "" {
+		return fmt.Sprintf("workflow step %s escalated to human-required without recording a reason", t.Workflow.CurrentStep)
+	}
+	return "task escalated to human-required without recording a reason"
+}
+
+func fallbackHumanRequiredReasonFromRun(t task.Task, run task.AgentRun) string {
+	role := strings.TrimSpace(run.Role)
+	if role == "" {
+		role = "agent"
+	} else {
+		role += " agent"
+	}
+	runLabel := role + " run"
+	if agentID := strings.TrimSpace(run.AgentID); agentID != "" {
+		runLabel += " " + agentID
+	}
+	step := ""
+	if t.Workflow != nil && strings.TrimSpace(t.Workflow.CurrentStep) != "" {
+		step = " at workflow step " + t.Workflow.CurrentStep
+	}
+	switch {
+	case strings.TrimSpace(run.Outcome) == "" && strings.TrimSpace(run.Result) == "":
+		return runLabel + step + " stopped without a recorded outcome or result"
+	case strings.TrimSpace(run.Outcome) == "":
+		return runLabel + step + " stopped without a recorded outcome"
+	default:
+		return ""
+	}
 }
 
 func (a *taskAdapter) UpdateTaskPR(id string, prNumber int) error {
