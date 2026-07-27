@@ -358,68 +358,6 @@ func TestReduceTransitionFields(t *testing.T) {
 	}
 }
 
-func TestReduceAsyncBoundaryCompatibility(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
-	desired := DesiredState{
-		Definition: Definition{ID: "wf", Steps: []Step{
-			{ID: "fan_out", Type: StepParallel, Next: []Transition{{GoTo: "review"}}},
-			{ID: "best", Type: StepBestOfN, Next: []Transition{{GoTo: "review"}}},
-			{ID: "review", Type: StepWaitHuman, Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve"}}},
-		}},
-		WorkflowID: "wf",
-	}
-
-	cases := []struct {
-		name string
-		exec *Execution
-	}{
-		{
-			name: "parallel boundary not yet spawned still blocks",
-			exec: &Execution{WorkflowID: "wf", CurrentStep: "fan_out", State: ExecWaiting},
-		},
-		{
-			name: "parallel boundary still incomplete",
-			exec: &Execution{
-				WorkflowID:  "wf",
-				CurrentStep: "fan_out",
-				State:       ExecWaiting,
-				ParallelInflight: map[string]*ParallelChildren{
-					"fan_out": {
-						ParentStepID: "fan_out",
-						Children: map[string]*ChildStatus{
-							"child_a": {Status: "completed"},
-							"child_b": {Status: "pending"},
-						},
-					},
-				},
-			},
-		},
-		{
-			name: "best of n boundary not yet spawned still blocks",
-			exec: &Execution{WorkflowID: "wf", CurrentStep: "best", State: ExecWaiting},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			effects, err := Reduce(desired, ObservedState{
-				Now:       now,
-				Task:      TaskInfo{ID: "t1", Status: "plan-review"},
-				Execution: tc.exec,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(effects) != 0 {
-				t.Fatalf("effects = %#v, want no status-preview skip across incomplete async boundary", effects)
-			}
-		})
-	}
-}
-
 func requireKinds(t *testing.T, effects []Effect, want ...EffectKind) {
 	t.Helper()
 	got := make([]EffectKind, len(effects))

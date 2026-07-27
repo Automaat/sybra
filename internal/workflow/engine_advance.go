@@ -325,6 +325,17 @@ func (e *Engine) taskInflightMutex(taskID string) *sync.Mutex {
 	return mu
 }
 
+func (e *Engine) taskRouteMutex(taskID string) *sync.Mutex {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	mu, ok := e.routeMutexes[taskID]
+	if !ok {
+		mu = &sync.Mutex{}
+		e.routeMutexes[taskID] = mu
+	}
+	return mu
+}
+
 // advanceContext bundles everything AdvanceStep needs to act on a single
 // step completion. ParallelParent is non-nil when the resolved Step is a
 // child of an in-flight `parallel` block.
@@ -850,21 +861,7 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 // be rejected as re-entrant (the bug that left synchronous mechanical workflows
 // — e.g. simple-task-handoff — never starting their successor).
 func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfExec *Execution, t TaskInfo) (*Step, *CompletionInfo, error) {
-	fields := taskFields(t)
-	for k, v := range wfExec.Variables {
-		fields["vars."+k] = v
-	}
-	if wfExec.Recovered {
-		fields["vars.recovered"] = "true"
-	}
-	// Engine-level config, not task state, so taskFields cannot supply it.
-	// Inverted on purpose: a zero-value engine field must still mean the
-	// review cycle runs, so an engine built without SetReviewUntilClean
-	// follows the documented default instead of silently shipping
-	// single-pass review.
-	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled)
-	fields["task.review_budget_exceeded"] = strconv.FormatBool(e.reviewBudgetExceeded(t))
-
+	fields := e.transitionFields(t, wfExec)
 	nextID, tErr := ResolveTransition(current.Next, fields)
 	if tErr != nil {
 		e.logger.Error("workflow.transition.failed", "task_id", taskID, "step", current.ID, "err", tErr)
@@ -900,6 +897,24 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 		return nil, nil, err
 	}
 	return nextStep, nil, nil
+}
+
+func (e *Engine) transitionFields(t TaskInfo, wfExec *Execution) map[string]string {
+	fields := taskFields(t)
+	for k, v := range wfExec.Variables {
+		fields["vars."+k] = v
+	}
+	if wfExec.Recovered {
+		fields["vars.recovered"] = "true"
+	}
+	// Engine-level config, not task state, so taskFields cannot supply it.
+	// Inverted on purpose: a zero-value engine field must still mean the
+	// review cycle runs, so an engine built without SetReviewUntilClean
+	// follows the documented default instead of silently shipping
+	// single-pass review.
+	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled)
+	fields["task.review_budget_exceeded"] = strconv.FormatBool(e.reviewBudgetExceeded(t))
+	return fields
 }
 
 // reviewBudgetExceeded reports whether t has spent its review budget for

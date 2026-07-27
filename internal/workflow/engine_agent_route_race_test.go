@@ -1,12 +1,11 @@
 package workflow
 
 import (
-	"errors"
-	"sync"
 	"testing"
+	"time"
 )
 
-func TestExecRunAgent_CompletionRacingRouteRegistrationIsNotDropped(t *testing.T) {
+func TestHandleAgentComplete_WaitsForRunAgentRoutePublication(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -14,72 +13,50 @@ func TestExecRunAgent_CompletionRacingRouteRegistrationIsNotDropped(t *testing.T
 	agents.startGate = make(chan struct{})
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
-	tasks.Put(TaskInfo{
-		ID:        "t1",
-		Status:    "todo",
-		AgentMode: "headless",
-		Workflow: &Execution{
-			WorkflowID:  "test-simple",
-			CurrentStep: "triage",
-			State:       ExecWaiting,
-			Variables:   map[string]string{},
-		},
-	})
-	engine.markStepStarting("t1", "triage")
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- engine.StartWorkflow("t1", "test-simple")
+	}()
+
+	<-agents.startEntered
+	completeDone := make(chan struct{})
+	go func() {
+		engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Success: true, Result: "triaged"})
+		close(completeDone)
+	}()
+
+	select {
+	case <-completeDone:
+		t.Fatal("completion advanced before route publication finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ti.Workflow == nil {
-		t.Fatal("task workflow is nil after markStepStarting")
+	if ti.Workflow == nil || ti.Workflow.CurrentStep != "triage" {
+		t.Fatalf("current step = %v, want triage while StartAgent is still blocked", ti.Workflow)
 	}
 
-	step := &Step{
-		ID:     "triage",
-		Type:   StepRunAgent,
-		Config: StepConfig{Role: "triage", Prompt: "test"},
+	close(agents.startGate)
+	if err := <-startDone; err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
 	}
-	wfExec := ti.Workflow.Clone()
-	if wfExec == nil {
-		t.Fatal("Clone() returned nil workflow")
-	}
-	ctx := TemplateContext{Task: ti, Step: *step, Vars: wfExec.Variables}
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	var runErr error
-	go func() {
-		defer wg.Done()
-		runErr = engine.execRunAgent("t1", step, wfExec, ctx)
-	}()
-
-	<-agents.startEntered
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Success: true, Result: "triaged"})
+	<-completeDone
 
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Workflow.CurrentStep != "triage" {
-		t.Fatalf("current step = %q, want triage before route registration", got.Workflow.CurrentStep)
-	}
-
-	close(agents.startGate)
-	wg.Wait()
-	if runErr != nil {
-		t.Fatalf("execRunAgent: %v", runErr)
-	}
-
-	got, err = tasks.GetTask("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Workflow.CurrentStep == "triage" {
-		t.Fatal("buffered completion was not replayed after route registration")
+	if got.Workflow == nil || got.Workflow.CurrentStep == "triage" {
+		t.Fatalf("workflow did not advance after completion: %+v", got.Workflow)
 	}
 }
 
-func TestExecRunAgent_CompletionBufferedAcrossRoutePersistFailureStillAdvances(t *testing.T) {
+func TestHandleAgentComplete_AfterRoutePersistFailureStillAdvances(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -87,68 +64,71 @@ func TestExecRunAgent_CompletionBufferedAcrossRoutePersistFailureStillAdvances(t
 	agents.startGate = make(chan struct{})
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
-	tasks.Put(TaskInfo{
-		ID:        "t1",
-		Status:    "todo",
-		AgentMode: "headless",
-		Workflow: &Execution{
-			WorkflowID:  "test-simple",
-			CurrentStep: "triage",
-			State:       ExecWaiting,
-			Variables:   map[string]string{},
-		},
-	})
-	engine.markStepStarting("t1", "triage")
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 
-	ti, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	step := &Step{
-		ID:     "triage",
-		Type:   StepRunAgent,
-		Config: StepConfig{Role: "triage", Prompt: "test"},
-	}
-	wfExec := ti.Workflow.Clone()
-	if wfExec == nil {
-		t.Fatal("workflow clone is nil")
-	}
-	ctx := TemplateContext{Task: ti, Step: *step, Vars: wfExec.Variables}
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	var runErr error
+	startDone := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		runErr = engine.execRunAgent("t1", step, wfExec, ctx)
+		startDone <- engine.StartWorkflow("t1", "test-simple")
 	}()
 
 	<-agents.startEntered
 	tasks.failSetWorkflowN = 1
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Success: true, Result: "triaged"})
+	completeDone := make(chan struct{})
+	go func() {
+		engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Success: true, Result: "triaged"})
+		close(completeDone)
+	}()
+
+	close(agents.startGate)
+	if err := <-startDone; err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	<-completeDone
 
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Workflow.CurrentStep != "triage" {
-		t.Fatalf("current step = %q, want triage before StartAgent returns", got.Workflow.CurrentStep)
+	if got.Workflow == nil || got.Workflow.CurrentStep == "triage" {
+		t.Fatalf("workflow did not advance after deferred route publication: %+v", got.Workflow)
 	}
-
-	close(agents.startGate)
-	wg.Wait()
-	if !errors.Is(runErr, errWorkflowYield) {
-		t.Fatalf("execRunAgent err = %v, want errWorkflowYield", runErr)
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); tracked {
+		t.Fatal("agent route still tracked after completion")
 	}
+	if _, tracked := engine.pendingRoutes[pendingAgentRouteKey("t1", "agent-1")]; tracked {
+		t.Fatal("pending route still tracked after completion")
+	}
+}
 
-	got, err = tasks.GetTask("t1")
+func TestPersistStartedAgent_ClearsStalePendingRouteOnSuccessfulPersist(t *testing.T) {
+	store := newTestStore(t)
+	def, err := store.Get("test-simple")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Workflow.CurrentStep == "triage" {
-		t.Fatal("buffered completion was lost after route persistence failed")
+	step := def.StepByID("implement")
+	if step == nil {
+		t.Fatal("implement step missing")
 	}
-	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); tracked {
-		t.Fatal("agent route still tracked after buffered completion replay")
+
+	tasks := newMemTasks()
+	wfExec := &Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless", Workflow: wfExec})
+
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.setPendingAgentStep("t1", "agent-1", "implement")
+
+	if err := engine.persistStartedAgent("t1", step, wfExec, "agent-1", "claude", "", "", "", "", ""); err != nil {
+		t.Fatalf("persistStartedAgent: %v", err)
+	}
+	if stepID, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); !tracked || stepID != "implement" {
+		t.Fatalf("workflow route = (%q,%v), want implement,true", stepID, tracked)
+	}
+	if _, tracked := engine.pendingRoutes[pendingAgentRouteKey("t1", "agent-1")]; tracked {
+		t.Fatal("pending route still tracked after successful persist")
 	}
 }

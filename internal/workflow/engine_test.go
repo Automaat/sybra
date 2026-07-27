@@ -221,7 +221,7 @@ func TestReplayPersistedEffects(t *testing.T) {
 		}
 	})
 
-	t.Run("pending intent reconciles stale downstream wait status", func(t *testing.T) {
+	t.Run("pending intent does not reconcile stale downstream wait status", func(t *testing.T) {
 		store := newInlineTestStore(t, "replay-stale-status", `
 id: replay-stale-status
 name: Replay Stale Status
@@ -267,8 +267,8 @@ steps:
 
 		engine.ReplayPersistedEffects()
 
-		if len(agents.calls) != 0 {
-			t.Fatalf("StartAgent calls = %d, want 0", len(agents.calls))
+		if len(agents.calls) != 1 {
+			t.Fatalf("StartAgent calls = %d, want 1", len(agents.calls))
 		}
 		got, err := tasks.GetTask("t1")
 		if err != nil {
@@ -277,14 +277,14 @@ steps:
 		if got.Workflow == nil {
 			t.Fatal("workflow = nil, want active workflow")
 		}
-		if got.Workflow.CurrentStep != "review_plan" {
-			t.Fatalf("current step = %q, want review_plan", got.Workflow.CurrentStep)
+		if got.Workflow.CurrentStep != "implement" {
+			t.Fatalf("current step = %q, want implement", got.Workflow.CurrentStep)
 		}
 		if got.Workflow.State != ExecWaiting {
 			t.Fatalf("state = %q, want %q", got.Workflow.State, ExecWaiting)
 		}
-		if len(got.Workflow.EffectLog) != 1 || got.Workflow.EffectLog[0].CompletedAt != nil {
-			t.Fatalf("effect log = %+v, want original pending intent preserved", got.Workflow.EffectLog)
+		if len(got.Workflow.EffectLog) != 1 || got.Workflow.EffectLog[0].CompletedAt == nil {
+			t.Fatalf("effect log = %+v, want replayed effect completed", got.Workflow.EffectLog)
 		}
 	})
 
@@ -3646,6 +3646,113 @@ func TestResumeStalled_WaitHumanStatusRespectsSkipStatuses(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_ReroutesStaleConditionBranch(t *testing.T) {
+	store := newInlineTestStore(t, "condition-reroute", `
+id: condition-reroute
+steps:
+  - id: maybe_critique
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: nocritic
+        goto: critique_plan
+      - goto: review_plan
+  - id: critique_plan
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      prompt: critique
+    next:
+      - goto: review_plan
+  - id: review_plan
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions: [approve, reject]
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	now := time.Now().UTC()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "planning",
+		Tags:   []string{"nocritic"},
+		Workflow: &Execution{
+			WorkflowID:  "condition-reroute",
+			CurrentStep: "critique_plan",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+			StepHistory: []StepRecord{{
+				StepID:    "maybe_critique",
+				Status:    "completed",
+				StartedAt: now.Add(-time.Minute),
+				EndedAt:   now.Add(-time.Minute),
+			}},
+			EffectLog: []EffectRecord{
+				{
+					ID:          EffectID{Generation: 1, StepSeq: 0, StepID: "maybe_critique", Pos: effectPosStepAction},
+					IntentAt:    now.Add(-time.Minute),
+					CompletedAt: &now,
+				},
+				{
+					ID:       EffectID{Generation: 1, StepSeq: 1, StepID: "critique_plan", Pos: effectPosStepAction},
+					IntentAt: now.Add(-time.Minute),
+				},
+			},
+		},
+	})
+	def, err := store.Get("condition-reroute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := def.StepByID("critique_plan")
+	if step == nil {
+		t.Fatal("critique_plan step missing")
+	}
+	pre, _ := tasks.GetTask("t1")
+	condition := latestConditionPredecessor(&def, pre.Workflow, step.ID)
+	if condition == nil {
+		t.Fatal("precondition: condition predecessor not detected")
+	}
+	nextID, err := ResolveTransition(condition.Next, engine.transitionFields(pre, pre.Workflow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextID != "review_plan" {
+		t.Fatalf("precondition: condition routes to %q, want review_plan", nextID)
+	}
+
+	engine.ResumeStalled()
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow == nil {
+		t.Fatal("workflow missing")
+	}
+	if ti.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("CurrentStep = %q, want review_plan", ti.Workflow.CurrentStep)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Fatalf("State = %q, want %q", ti.Workflow.State, ExecWaiting)
+	}
+	if ti.Status != "plan-review" {
+		t.Fatalf("Status = %q, want plan-review", ti.Status)
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("critique agent dispatched %d times, want 0", agents.CallCount())
+	}
+	for _, rec := range ti.Workflow.EffectLog {
+		if rec.ID.StepID == "critique_plan" {
+			t.Fatalf("stale critique_plan effect was not cleared: %+v", ti.Workflow.EffectLog)
+		}
+	}
+}
+
 func TestResumeStalled_RunAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -6282,69 +6389,6 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	}
 }
 
-// TestHandleAgentComplete_PendingStepStartDropsStaleCompletion reproduces the
-// core of the simple-task-pr cascade bug: a stale/untracked agent completion
-// (e.g. a reattached agent from a step that already advanced) arrives while
-// the CURRENT step's real agent is still being started — StartAgent hasn't
-// returned yet, so the durable route has not been published yet. Before the
-// pending-intent guard, HandleAgentComplete's untracked fallback credited this
-// to the current step (nothing tracked yet → not a phantom) and advanced the
-// workflow without the real agent ever having run. The guard closes that
-// window: a step marked as starting is treated as "claimed" even before its
-// agent ID exists.
-func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
-
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
-	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
-		t.Fatal(err)
-	}
-	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Workflow is now parked on "implement" with its real agent tracked. Drop
-	// the tracking entry to simulate the real agent's StartAgent call still
-	// being in flight (route not yet persisted) — but mark the step as
-	// starting, as execRunAgent now does before calling StartAgent.
-	ti, _ := tasks.GetTask("t1")
-	if ti.Workflow.CurrentStep != "implement" {
-		t.Fatalf("precondition: current step = %q, want implement", ti.Workflow.CurrentStep)
-	}
-	realAgentID := agents.LastID()
-	engine.clearAgentStep("t1", realAgentID)
-	engine.markStepStarting("t1", "implement")
-
-	// A stale, untracked completion (e.g. a reattached agent from an earlier
-	// step) lands while the replacement start is underway.
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
-
-	tiAfter, _ := tasks.GetTask("t1")
-	if tiAfter.Workflow.CurrentStep != "implement" {
-		t.Fatalf("CurrentStep = %q, want implement — stale completion must not advance a step still being dispatched",
-			tiAfter.Workflow.CurrentStep)
-	}
-	if len(tiAfter.Workflow.StepHistory) != 2 {
-		t.Fatalf("StepHistory = %+v, want only the triage/set_in_progress records — stale completion must not be recorded",
-			tiAfter.Workflow.StepHistory)
-	}
-
-	// Once the pending start clears (StartAgent returned and registered the real
-	// agent), a genuinely untracked completion for THIS step still falls back
-	// to crediting the current step, as designed for manual/recovery agents.
-	engine.unmarkStepStartingAndTakePending("t1", "implement")
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
-
-	tiFinal, _ := tasks.GetTask("t1")
-	if tiFinal.Workflow.CurrentStep == "implement" {
-		t.Fatalf("CurrentStep still implement — untracked completion should advance once pending start cleared")
-	}
-}
-
 func TestHandleAgentComplete_UntrackedRoleMismatchDoesNotAdvanceCurrentStep(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -6379,51 +6423,6 @@ func TestHandleAgentComplete_UntrackedRoleMismatchDoesNotAdvanceCurrentStep(t *t
 	}
 	if len(ti.Workflow.StepHistory) != 0 {
 		t.Fatalf("StepHistory = %+v, want no recorded implementation completion", ti.Workflow.StepHistory)
-	}
-}
-
-func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
-
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
-	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
-		t.Fatal(err)
-	}
-	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"}); err != nil {
-		t.Fatal(err)
-	}
-
-	ti, _ := tasks.GetTask("t1")
-	if ti.Workflow.CurrentStep != "implement" {
-		t.Fatalf("precondition: current step = %q, want implement", ti.Workflow.CurrentStep)
-	}
-	realAgentID := agents.LastID()
-	engine.clearAgentStep("t1", realAgentID)
-
-	// Two concurrent dispatchers race for the same step: the eventual loser
-	// must not clear the winner's in-flight claim.
-	engine.markStepStarting("t1", "implement")
-	engine.markStepStarting("t1", "implement")
-	engine.unmarkStepStartingAndTakePending("t1", "implement")
-
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
-
-	tiAfter, _ := tasks.GetTask("t1")
-	if tiAfter.Workflow.CurrentStep != "implement" {
-		t.Fatalf("CurrentStep = %q, want implement — one losing dispatcher must not clear the winner's claim",
-			tiAfter.Workflow.CurrentStep)
-	}
-
-	engine.unmarkStepStartingAndTakePending("t1", "implement")
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
-
-	tiFinal, _ := tasks.GetTask("t1")
-	if tiFinal.Workflow.CurrentStep == "implement" {
-		t.Fatalf("CurrentStep still implement — claim should clear after final unmark")
 	}
 }
 
@@ -7243,7 +7242,7 @@ func assertRemainsPlanReviewWaiting(t *testing.T, tasks *memTasks, id string, wi
 	}
 }
 
-func TestPlanReuse_ApproveReconcilesMissedWaitForStatus(t *testing.T) {
+func TestPlanReuse_ApproveRepairsMissedWaitForStatus(t *testing.T) {
 	store := newTestStoreWith(t, "test-plan-reuse.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -7264,15 +7263,18 @@ func TestPlanReuse_ApproveReconcilesMissedWaitForStatus(t *testing.T) {
 	}
 
 	if err := engine.HandleHumanAction("t1", "approve", nil); err != nil {
-		t.Fatalf("approve should reconcile stale wait_for_status step: %v", err)
+		t.Fatal(err)
 	}
 
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "in-progress" {
 		t.Errorf("Status = %q, want in-progress", ti.Status)
 	}
+	if ti.Workflow == nil || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("CurrentStep = %v, want completed workflow", ti.Workflow)
+	}
 	if ti.Workflow.State != ExecCompleted {
-		t.Errorf("State = %q, want ExecCompleted", ti.Workflow.State)
+		t.Errorf("State = %q, want %q", ti.Workflow.State, ExecCompleted)
 	}
 }
 

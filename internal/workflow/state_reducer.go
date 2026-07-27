@@ -115,9 +115,6 @@ func reduceEffects(desired DesiredState, observed ObservedState) ([]Effect, erro
 		return reduceCompletedStep(desired, observed, exec, current)
 	}
 
-	if effects, ok, err := previewWaitHumanByStatus(desired, observed, exec, current); ok || err != nil {
-		return effects, err
-	}
 	return reduceCurrentStep(desired, observed, exec, current, nil)
 }
 
@@ -260,59 +257,6 @@ func reducerNextStep(desired DesiredState, observed ObservedState, exec *Executi
 		return nil, false, fmt.Errorf("next step %s not found in workflow %s", nextID, exec.WorkflowID)
 	}
 	return next, false, nil
-}
-
-func previewWaitHumanByStatus(desired DesiredState, observed ObservedState, exec *Execution, current *Step) ([]Effect, bool, error) {
-	status := observed.Task.Status
-	if status == "" {
-		return nil, false, nil
-	}
-	if current.Type != StepParallel && current.Type != StepBestOfN {
-		return nil, false, nil
-	}
-	if !reducerAsyncBoundaryComplete(exec, current) {
-		return nil, false, nil
-	}
-	fields := reducerTransitionFields(desired, observed, exec)
-	nextID, err := ResolveTransition(current.Next, fields)
-	if err != nil || nextID == "" {
-		return nil, false, err
-	}
-	for range maxSyncSteps {
-		step := desired.Definition.StepByID(nextID)
-		if step == nil {
-			return nil, false, fmt.Errorf("next step %s not found in workflow %s", nextID, exec.WorkflowID)
-		}
-		switch step.Type {
-		case StepWaitHuman:
-			if step.Config.Status != status {
-				return nil, false, nil
-			}
-			reconciled := exec.Clone()
-			if reconciled == nil {
-				return nil, false, fmt.Errorf("execution clone is nil")
-			}
-			reconciled.CurrentStep = step.ID
-			reconciled.State = ExecWaiting
-			return []Effect{
-				newWorkflowEffect(EffectSetWorkflowState, reconciled),
-				{Kind: EffectWaitHuman, Step: cloneStep(step), HumanActions: slices.Clone(step.Config.HumanActions)},
-			}, true, nil
-		case StepSetStatus:
-			if step.Config.Status != "" {
-				fields["task.status"] = step.Config.Status
-			}
-		case StepCondition:
-			// Keep walking.
-		default:
-			return nil, false, nil
-		}
-		nextID, err = ResolveTransition(step.Next, fields)
-		if err != nil || nextID == "" {
-			return nil, false, err
-		}
-	}
-	return nil, false, fmt.Errorf("workflow exceeded max sync step depth (%d)", maxSyncSteps)
 }
 
 func reducerParksExistingExecution(step *Step) bool {
