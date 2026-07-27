@@ -264,23 +264,13 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// finalizes on its first completed turn on its own (drainOrCloseHeadlessSteer).
 	oneShot := false
 
-	// Serialize completion routing against spawn until the persisted route is on
-	// the workflow itself. A completion that arrives during StartAgent now waits
-	// on e.mu and then reads the durable route/effect state instead of racing a
-	// process-local pending-start buffer.
-	e.mu.Lock()
-	spawnLocked := true
-	defer func() {
-		if spawnLocked {
-			e.mu.Unlock()
-		}
-	}()
+	// The step-action effect intent is already persisted before execRunAgent is
+	// entered, so an untracked completion that lands while StartAgent is
+	// blocking still sees a durable "dispatch in progress" claim via
+	// routeStepPending. Do not hold e.mu across StartAgent: review recovery can
+	// legitimately try to queue another workflow while the launcher is blocked.
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			if spawnLocked {
-				e.mu.Unlock()
-				spawnLocked = false
-			}
 			if len(effectIDs) > 0 {
 				e.clearPendingStepEffect(taskID, effectIDs[0])
 			}
@@ -289,8 +279,6 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
-		e.mu.Unlock()
-		spawnLocked = false
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
 			return parkErr
 		}
@@ -308,10 +296,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	wfExec.SetAgentRoute(agentID, step.ID)
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
-	err = e.tasks.SetWorkflow(taskID, wfExec)
-	e.mu.Unlock()
-	spawnLocked = false
-	return err
+	return e.tasks.SetWorkflow(taskID, wfExec)
 }
 
 func resolveRunAgentMode(mode string, ctx TemplateContext) string {
