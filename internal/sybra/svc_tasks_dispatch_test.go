@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/reviewbudget"
@@ -1200,6 +1201,160 @@ func TestDispatchInboundReview_SkipsAlreadyReviewedHead(t *testing.T) {
 	}
 	if headCalls.Load() == 0 {
 		t.Fatal("never asked GitHub for the head; the guard cannot be honest about local state alone")
+	}
+}
+
+func TestDispatchInboundReview_SkipsPRAlreadyOwnedByImplementationTask(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		t.Fatal("head lookup must not run for a PR owned by an implementation task")
+		return "", nil
+	}
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	tk, err := a.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("feat/owned-pr-12345678")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.CreateFull("implementation owns PR", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr(tk.ProjectID),
+		PRNumber:  task.Ptr(tk.PRNumber),
+		Branch:    task.Ptr("feat/owned-pr-12345678"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want no active pr-review for PR owned by implementation task", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
+	}
+}
+
+func TestDispatchInboundReview_SkipsSameRepoBranchAlreadyOwnedByImplementationTask(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		t.Fatal("head lookup must not run for a same-repo branch owned by an implementation task")
+		return "", nil
+	}
+
+	tk := newInboundReviewTask(t, a, 152, "needs-approval")
+	tk, err := a.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("feat/owned-branch-12345678")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.CreateFull("implementation owns branch before PR number", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr(tk.ProjectID),
+		Branch:    task.Ptr("feat/owned-branch-12345678"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want no active pr-review for branch owned by implementation task", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
+	}
+}
+
+func TestDispatchInboundReview_SkipsLegacyBranchEmptyReviewWhenFetchedPROwnedByImplementationBranch(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPR = func(context.Context, string, int) (github.PullRequest, error) {
+		return github.PullRequest{
+			Number:      154,
+			Repository:  "Automaat/lightroom-mcp",
+			HeadRefName: "feat/legacy-owned-branch-12345678",
+			HeadRepo:    "Automaat/lightroom-mcp",
+		}, nil
+	}
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		t.Fatal("head lookup must not run after fetched PR proves branch ownership")
+		return "", nil
+	}
+
+	tk := newInboundReviewTask(t, a, 154, "needs-approval")
+	if tk.Branch != "" {
+		t.Fatalf("test setup expected legacy branch-empty review task, got branch %q", tk.Branch)
+	}
+	if _, err := a.tasks.CreateFull("implementation owns branch before PR number", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr(tk.ProjectID),
+		Branch:    task.Ptr("feat/legacy-owned-branch-12345678"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Branch != "feat/legacy-owned-branch-12345678" {
+		t.Fatalf("branch = %q, want fetched same-repo branch stamped", got.Branch)
+	}
+	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want no active pr-review for fetched branch owned by implementation task", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
+	}
+}
+
+func TestDispatchInboundReview_DoesNotSkipSameBranchOwnedByDifferentPR(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	headLookupCalled := false
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		headLookupCalled = true
+		return "", errors.New("stop after ownership guard")
+	}
+
+	tk := newInboundReviewTask(t, a, 153, "needs-approval")
+	tk, err := a.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("feat/shared-branch-12345678")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPR := 100
+	if _, err := a.tasks.CreateFull("implementation owns a different PR", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr(tk.ProjectID),
+		PRNumber:  task.Ptr(otherPR),
+		Branch:    task.Ptr("feat/shared-branch-12345678"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	if !headLookupCalled {
+		t.Fatal("head lookup was not called; dispatch incorrectly skipped on branch owned by a different PR")
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 after injected head lookup error", launcher.startCalls)
 	}
 }
 

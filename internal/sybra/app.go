@@ -78,6 +78,7 @@ type App struct {
 	wg              sync.WaitGroup
 	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
 	fetchPRHeadSHA    func(ctx context.Context, repo string, number int) (string, error)
+	fetchPR           func(ctx context.Context, repo string, number int) (github.PullRequest, error)
 	tasks             *task.Manager
 	projects          *project.Store
 	loopAgents        *loopagent.Store
