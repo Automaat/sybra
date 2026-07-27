@@ -221,7 +221,7 @@ func TestReplayPersistedEffects(t *testing.T) {
 		}
 	})
 
-	t.Run("pending intent reconciles stale downstream wait status", func(t *testing.T) {
+	t.Run("pending intent does not reconcile stale downstream wait status", func(t *testing.T) {
 		store := newInlineTestStore(t, "replay-stale-status", `
 id: replay-stale-status
 name: Replay Stale Status
@@ -267,8 +267,8 @@ steps:
 
 		engine.ReplayPersistedEffects()
 
-		if len(agents.calls) != 0 {
-			t.Fatalf("StartAgent calls = %d, want 0", len(agents.calls))
+		if len(agents.calls) != 1 {
+			t.Fatalf("StartAgent calls = %d, want 1", len(agents.calls))
 		}
 		got, err := tasks.GetTask("t1")
 		if err != nil {
@@ -277,14 +277,14 @@ steps:
 		if got.Workflow == nil {
 			t.Fatal("workflow = nil, want active workflow")
 		}
-		if got.Workflow.CurrentStep != "review_plan" {
-			t.Fatalf("current step = %q, want review_plan", got.Workflow.CurrentStep)
+		if got.Workflow.CurrentStep != "implement" {
+			t.Fatalf("current step = %q, want implement", got.Workflow.CurrentStep)
 		}
 		if got.Workflow.State != ExecWaiting {
 			t.Fatalf("state = %q, want %q", got.Workflow.State, ExecWaiting)
 		}
-		if len(got.Workflow.EffectLog) != 1 || got.Workflow.EffectLog[0].CompletedAt != nil {
-			t.Fatalf("effect log = %+v, want original pending intent preserved", got.Workflow.EffectLog)
+		if len(got.Workflow.EffectLog) != 1 || got.Workflow.EffectLog[0].CompletedAt == nil {
+			t.Fatalf("effect log = %+v, want replayed effect completed", got.Workflow.EffectLog)
 		}
 	})
 
