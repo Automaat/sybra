@@ -398,8 +398,13 @@ func TestAtomicRenameOverExistingEmitsUpdate(t *testing.T) {
 			t.Errorf("got %s event after atomic rename; file still exists — should have been update. events=%v", ev.TaskDeleted, seen)
 		}
 	}
+	for _, e := range seen {
+		if e == ev.TaskCreated {
+			t.Errorf("got %s event after replacing an existing file; should have been update. events=%v", ev.TaskCreated, seen)
+		}
+	}
 	if len(seen) == 0 {
-		t.Errorf("expected at least one create/update event after atomic rename; got none")
+		t.Errorf("expected at least one update event after atomic rename; got none")
 	}
 }
 
