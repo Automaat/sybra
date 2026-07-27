@@ -9,8 +9,14 @@ func routeStepPending(t TaskInfo, stepID string) bool {
 	if t.Workflow == nil || stepID == "" || t.Workflow.CurrentStep != stepID {
 		return false
 	}
-	rec, ok := currentStepEffectRecord(t, &Step{ID: stepID}, effectPosStepAction)
-	return ok && rec.CompletedAt == nil
+	currentSeq := executionStepSeq(t.Workflow)
+	for i := len(t.Workflow.EffectLog) - 1; i >= 0; i-- {
+		rec := t.Workflow.EffectLog[i]
+		if rec.ID.StepID == stepID && rec.ID.Pos == effectPosStepAction && rec.ID.StepSeq >= currentSeq && rec.CompletedAt == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func parallelChildStepByAgentID(wf *Execution, parentStepID, agentID string) (string, bool) {
@@ -169,4 +175,26 @@ func (e *Engine) unmarkStepStartingAndTakePending(taskID, stepID string) []Agent
 	}
 	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
 	return nil
+}
+
+func (e *Engine) clearPendingStepEffect(taskID string, id EffectID) {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil || id.IsZero() {
+		return
+	}
+	kept := t.Workflow.EffectLog[:0]
+	changed := false
+	for i := range t.Workflow.EffectLog {
+		rec := t.Workflow.EffectLog[i]
+		if rec.ID.Equal(id) && rec.CompletedAt == nil {
+			changed = true
+			continue
+		}
+		kept = append(kept, rec)
+	}
+	if !changed {
+		return
+	}
+	t.Workflow.EffectLog = kept
+	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
 }

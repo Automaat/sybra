@@ -188,7 +188,7 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	}
 }
 
-func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {
+func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) error {
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
@@ -257,6 +257,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// treated as untracked and dropped rather than counted against the step's
 	// retry budget. The agent spawned just below becomes the only tracked one.
 	e.clearAgentStepsForTask(taskID)
+	wfExec.ClearAgentRoutes()
 
 	// mode is coerced to headless in resolveRunAgentMode, so no run_agent step
 	// dispatches an interactive one-shot anymore — a steerable headless run
@@ -268,9 +269,28 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// on e.mu and then reads the durable route/effect state instead of racing a
 	// process-local pending-start buffer.
 	e.mu.Lock()
+	spawnLocked := true
+	defer func() {
+		if spawnLocked {
+			e.mu.Unlock()
+		}
+	}()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if spawnLocked {
+				e.mu.Unlock()
+				spawnLocked = false
+			}
+			if len(effectIDs) > 0 {
+				e.clearPendingStepEffect(taskID, effectIDs[0])
+			}
+			panic(recovered)
+		}
+	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		e.mu.Unlock()
+		spawnLocked = false
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
 			return parkErr
 		}
@@ -290,6 +310,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
 	err = e.tasks.SetWorkflow(taskID, wfExec)
 	e.mu.Unlock()
+	spawnLocked = false
 	return err
 }
 

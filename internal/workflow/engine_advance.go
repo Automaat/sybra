@@ -714,7 +714,7 @@ func (e *Engine) executeAsyncWorkflowStep(taskID string, def *Definition, step *
 		if comp, handled, bErr := e.preflightRunAgentBudget(taskID, def, step, wfExec); handled {
 			return true, comp, wrapDispatchErr(step.ID, bErr)
 		}
-		if err := e.execRunAgent(taskID, step, wfExec, ctx); err != nil {
+		if err := e.execRunAgent(taskID, step, wfExec, ctx, effectID); err != nil {
 			return true, nil, wrapDispatchErr(step.ID, err)
 		}
 		if !e.agents.HasRunningAgent(taskID) {
