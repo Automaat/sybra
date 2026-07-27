@@ -109,6 +109,9 @@ type Handler struct {
 	// review-task's PR is still open. Overridable in tests; nil falls back to
 	// github.FetchPRState.
 	fetchPRStateFn func(repo string, number int) (github.PRState, error)
+	// fetchPRBaseSHAFn reads the PR base SHA for conflict retry identity.
+	// Overridable in tests; nil falls back to github.FetchPRBaseSHAContext.
+	fetchPRBaseSHAFn func(ctx context.Context, repo string, number int) (string, error)
 	// fetchKnownPRFn fetches one linked PR without using a GitHub search leg.
 	// Used by the single-PR conflict-recovery path. Overridable in tests; nil
 	// falls back to github.FetchPRForMonitor.
@@ -318,6 +321,7 @@ func New(
 		fetchThreads:        github.FetchReviewThreads,
 		resolveThread:       github.ResolveReviewThread,
 		fetchHeadStateFn:    github.FetchPRHeadState,
+		fetchPRBaseSHAFn:    github.FetchPRBaseSHAContext,
 		cfg:                 cfg,
 		experience:          experienceStore,
 		tryCleanMergeFn:     project.TryCleanMerge,
@@ -836,15 +840,16 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 			}
 			continue
 		}
-		// Only the comments kind carries a feedback fingerprint; conflict,
-		// ci_failure, and ready_to_merge fall back to SHA-only gating.
+		// Only the comments kind carries a feedback fingerprint. Conflict
+		// issues use a head+base identity because the base can move underneath
+		// an unchanged PR head and create a new conflict that deserves a retry.
 		var sig string
 		if issues[i].Kind == github.PRIssueComments {
 			sig = issues[i].PR.FeedbackSig
 		}
 		decision := github.DispatchHandle
 		if r.prTracker != nil {
-			decision = r.prTracker.Decide(taskID, issues[i].Kind, issues[i].PR.HeadSHA, sig)
+			decision = r.prTracker.Decide(taskID, issues[i].Kind, r.prIssueDispatchSHA(ctx, issues[i]), sig)
 		}
 		switch decision {
 		case github.DispatchHandle:
@@ -885,6 +890,24 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	case merge != nil:
 		r.handleAutoMerge(ctx, *merge)
 	}
+}
+
+func (r *Handler) prIssueDispatchSHA(ctx context.Context, issue github.PRIssue) string {
+	sha := issue.PR.HeadSHA
+	if issue.Kind != github.PRIssueConflict || issue.PR.Repository == "" || issue.PR.Number <= 0 || sha == "" {
+		return sha
+	}
+	fetchBaseSHA := r.fetchPRBaseSHAFn
+	if fetchBaseSHA == nil {
+		fetchBaseSHA = github.FetchPRBaseSHAContext
+	}
+	baseSHA, err := fetchBaseSHA(ctx, issue.PR.Repository, issue.PR.Number)
+	if err != nil || baseSHA == "" {
+		r.logger.Warn("reviews.dispatch.conflict-base-sha",
+			"task_id", issue.TaskID, "repo", issue.PR.Repository, "pr", issue.PR.Number, "err", err)
+		return sha
+	}
+	return sha + ":" + baseSHA
 }
 
 func (r *Handler) cancelStalePlanningWorkflowForPRTask(taskID string) bool {

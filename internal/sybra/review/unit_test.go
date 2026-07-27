@@ -83,6 +83,42 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	}
 }
 
+func TestConflictDispatchIdentityIncludesBaseSHA(t *testing.T) {
+	t.Parallel()
+
+	baseSHA := "base-1"
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		prTracker: github.NewIssueTracker(time.Minute),
+		fetchPRBaseSHAFn: func(context.Context, string, int) (string, error) {
+			return baseSHA, nil
+		},
+	}
+	issue := github.PRIssue{
+		Kind:   github.PRIssueConflict,
+		TaskID: "task-1",
+		PR: github.PullRequest{
+			Repository: "owner/repo",
+			Number:     42,
+			HeadSHA:    "head-1",
+		},
+	}
+
+	key := r.prIssueDispatchSHA(context.Background(), issue)
+	if got := r.prTracker.Decide(issue.TaskID, issue.Kind, key, ""); got != github.DispatchHandle {
+		t.Fatalf("first conflict decision = %v, want handle", got)
+	}
+	r.prTracker.MarkHandled(issue.TaskID, issue.Kind, key)
+	if got := r.prTracker.Decide(issue.TaskID, issue.Kind, r.prIssueDispatchSHA(context.Background(), issue), ""); got != github.DispatchSkip {
+		t.Fatalf("same head/base decision = %v, want skip", got)
+	}
+
+	baseSHA = "base-2"
+	if got := r.prTracker.Decide(issue.TaskID, issue.Kind, r.prIssueDispatchSHA(context.Background(), issue), ""); got != github.DispatchHandle {
+		t.Fatalf("same head with new base decision = %v, want handle", got)
+	}
+}
+
 func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
 	t.Parallel()
 

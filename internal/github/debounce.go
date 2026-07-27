@@ -93,6 +93,9 @@ func (t *IssueTracker) Decide(taskID string, kind PRIssueKind, sha, sig string) 
 	if sha != "" && t.lastSHA[key] == sha {
 		return DispatchSkip
 	}
+	if sha != "" && t.lastSHA[key] != "" && t.lastSHA[key] != sha {
+		return DispatchHandle
+	}
 	last, ok := t.handled[key]
 	if !ok {
 		return DispatchHandle
