@@ -8,6 +8,9 @@ import { Create as $Create } from "@wailsio/runtime";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as limits$0 from "../limits/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
 
 /**
  * GroupedStat is an aggregate keyed by a dimension (project, mode, etc).
@@ -150,7 +153,7 @@ export class RunRecord {
     "toolCalls"?: number;
     "subagentCallCount"?: number;
     "outcome": string;
-    "timestamp": string;
+    "timestamp": time$0.Time;
 
     /** Creates a new RunRecord instance. */
     constructor($$source: Partial<RunRecord> = {}) {
@@ -176,7 +179,7 @@ export class RunRecord {
             this["outcome"] = "";
         }
         if (!("timestamp" in $$source)) {
-            this["timestamp"] = "0001-01-01T00:00:00.000Z";
+            this["timestamp"] = null;
         }
 
         Object.assign(this, $$source);

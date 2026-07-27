@@ -14,6 +14,9 @@ import * as blocker$0 from "../blocker/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as workflow$0 from "../workflow/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
 
 /**
  * AgentRun records one dispatch of an agent process against a task: what was
@@ -84,7 +87,7 @@ export class AgentRun {
      * ("cost" or "turns"). Empty for ordinary completions.
      */
     "escalationReason"?: string;
-    "startedAt": string;
+    "startedAt": time$0.Time;
     "costUsd": number;
     "premiumRequests"?: number;
     "prompt"?: string;
@@ -173,7 +176,7 @@ export class AgentRun {
             this["state"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = "0001-01-01T00:00:00.000Z";
+            this["startedAt"] = null;
         }
         if (!("costUsd" in $$source)) {
             this["costUsd"] = 0;
@@ -285,7 +288,7 @@ export class ReviewComment {
     "line": number;
     "body": string;
     "resolved": boolean;
-    "createdAt": string;
+    "createdAt": time$0.Time;
 
     /** Creates a new ReviewComment instance. */
     constructor($$source: Partial<ReviewComment> = {}) {
@@ -302,7 +305,7 @@ export class ReviewComment {
             this["resolved"] = false;
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = "0001-01-01T00:00:00.000Z";
+            this["createdAt"] = null;
         }
 
         Object.assign(this, $$source);
@@ -495,8 +498,8 @@ export class Task {
      */
     "prPhase"?: string;
     "priority"?: Priority;
-    "dueDate"?: string | null;
-    "closedAt"?: string | null;
+    "dueDate"?: time$0.Time | null;
+    "closedAt"?: time$0.Time | null;
 
     /**
      * Outcome records how a task's own PR concluded: "merged", "merged_with_edits",
@@ -563,7 +566,7 @@ export class Task {
      * counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
      * and all test-runner runs count (correct for first-ever cycles).
      */
-    "testingCycleStartedAt"?: string | null;
+    "testingCycleStartedAt"?: time$0.Time | null;
     "attachments": Attachment[];
     "agentRuns": AgentRun[];
 
@@ -574,8 +577,8 @@ export class Task {
      */
     "effectLog"?: workflow$0.EffectRecord[];
     "workflow"?: workflow$0.Execution | null;
-    "createdAt": string;
-    "updatedAt": string;
+    "createdAt": time$0.Time;
+    "updatedAt": time$0.Time;
 
     /**
      * StatusChangedAt marks the last time Status actually transitioned, as
@@ -585,12 +588,12 @@ export class Task {
      * dispatch-latency grace window) must key off this field, not UpdatedAt —
      * see internal/monitor/detector.go.
      */
-    "statusChangedAt": string;
+    "statusChangedAt": time$0.Time;
     "assignedNode"?: string;
     "nodeOverride"?: string;
     "generation"?: number;
     "mirrorRev"?: number;
-    "mirrorUpdatedAt"?: string | null;
+    "mirrorUpdatedAt"?: time$0.Time | null;
     "body": string;
     "plan"?: string;
     "planContract"?: string;
@@ -680,13 +683,13 @@ export class Task {
             this["agentRuns"] = [];
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = "0001-01-01T00:00:00.000Z";
+            this["createdAt"] = null;
         }
         if (!("updatedAt" in $$source)) {
-            this["updatedAt"] = "0001-01-01T00:00:00.000Z";
+            this["updatedAt"] = null;
         }
         if (!("statusChangedAt" in $$source)) {
-            this["statusChangedAt"] = "0001-01-01T00:00:00.000Z";
+            this["statusChangedAt"] = null;
         }
         if (!("body" in $$source)) {
             this["body"] = "";
@@ -802,7 +805,7 @@ export class Update {
     "ReconcileFailures": number | null;
     "PRPhase": string | null;
     "Priority": Priority | null;
-    "DueDate": string | null;
+    "DueDate": time$0.Time | null;
     "Workflow": workflow$0.Execution | null;
     "Plan": string | null;
     "PlanContract": string | null;
@@ -817,7 +820,7 @@ export class Update {
     "ReasoningEffort": string | null;
     "Outcome": string | null;
     "MergeCommit": string | null;
-    "TestingCycleStartedAt": string | null;
+    "TestingCycleStartedAt": time$0.Time | null;
     "Attachments": Attachment[] | null;
     "EffectLog": workflow$0.EffectRecord[] | null;
 

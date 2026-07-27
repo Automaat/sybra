@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
+
 /**
  * Digest is one periodic retrospective: what worked, what didn't, and what
  * to try next, along with typed takeaways for prompt/skill/model experiments
@@ -15,9 +19,9 @@ import { Create as $Create } from "@wailsio/runtime";
  */
 export class Digest {
     "schemaVersion": number;
-    "generatedAt": string;
-    "since": string;
-    "until": string;
+    "generatedAt": time$0.Time;
+    "since": time$0.Time;
+    "until": time$0.Time;
     "reportDigest": string;
     "projectType"?: string;
     "authorProvider"?: string;
@@ -37,13 +41,13 @@ export class Digest {
             this["schemaVersion"] = 0;
         }
         if (!("generatedAt" in $$source)) {
-            this["generatedAt"] = "0001-01-01T00:00:00.000Z";
+            this["generatedAt"] = null;
         }
         if (!("since" in $$source)) {
-            this["since"] = "0001-01-01T00:00:00.000Z";
+            this["since"] = null;
         }
         if (!("until" in $$source)) {
-            this["until"] = "0001-01-01T00:00:00.000Z";
+            this["until"] = null;
         }
         if (!("reportDigest" in $$source)) {
             this["reportDigest"] = "";
@@ -131,7 +135,7 @@ export class EvidenceRef {
 export class Status {
     "enabled": boolean;
     "last"?: Digest | null;
-    "nextRun": string;
+    "nextRun": time$0.Time;
 
     /** Creates a new Status instance. */
     constructor($$source: Partial<Status> = {}) {
@@ -139,7 +143,7 @@ export class Status {
             this["enabled"] = false;
         }
         if (!("nextRun" in $$source)) {
-            this["nextRun"] = "0001-01-01T00:00:00.000Z";
+            this["nextRun"] = null;
         }
 
         Object.assign(this, $$source);

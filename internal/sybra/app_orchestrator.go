@@ -294,9 +294,7 @@ func (a *App) fetchPRFunc() func(ctx context.Context, repo string, number int) (
 	if a.fetchPR != nil {
 		return a.fetchPR
 	}
-	return func(_ context.Context, repo string, number int) (github.PullRequest, error) {
-		return github.FetchPR(repo, number)
-	}
+	return github.FetchPRMetaContext
 }
 
 func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) {

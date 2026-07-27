@@ -501,7 +501,7 @@ func (r *Handler) reconcileReviewPhases(tasks []task.Task, summary github.Review
 			}
 		}
 		if ownerID, ok := activeNonReviewPROwner(tasks, t.ID, t.ProjectID, t.PRNumber, branch, headRepo); ok {
-			reason := fmt.Sprintf("Duplicate: PR is already tracked by task %s; outbound PR monitor owns this self-authored PR", ownerID)
+			reason := fmt.Sprintf("Duplicate: PR is already tracked by active task %s", ownerID)
 			if _, err := r.tasks.Update(t.ID, task.Update{
 				Status:       task.Ptr(task.StatusCancelled),
 				StatusReason: task.Ptr(reason),
