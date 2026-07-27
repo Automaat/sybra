@@ -29,6 +29,9 @@ func TestExecRunAgent_CompletionRacingRouteRegistrationIsNotDropped(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	if ti.Workflow == nil {
+		t.Fatal("task workflow is nil after markStepStarting")
+	}
 
 	step := &Step{
 		ID:     "triage",
@@ -36,6 +39,9 @@ func TestExecRunAgent_CompletionRacingRouteRegistrationIsNotDropped(t *testing.T
 		Config: StepConfig{Role: "triage", Prompt: "test"},
 	}
 	wfExec := ti.Workflow.Clone()
+	if wfExec == nil {
+		t.Fatal("Clone() returned nil workflow")
+	}
 	ctx := TemplateContext{Task: ti, Step: *step, Vars: wfExec.Variables}
 
 	var wg sync.WaitGroup
