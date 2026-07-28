@@ -41,8 +41,9 @@ const (
 	// watchdogRewardHackingStatusPrefix must stay in sync with
 	// internal/watchdog/agent.go's rewardHackingRetryStatusReason — the
 	// watchdog writes this exact status-reason prefix when it retries a
-	// reward_hacking stop on a fix-review agent (#2229), and
-	// handleWatchdogRewardHackingRetry below pattern-matches on it.
+	// recoverable reward_hacking stop (fix-review, implementation, or
+	// planning), and handleWatchdogRewardHackingRetry below pattern-matches
+	// on it.
 	watchdogRewardHackingStatusPrefix   = "watchdog: reward-hacking retry"
 	watchdogRewardHackingRetryVarPrefix = "watchdog.reward_hacking_retry."
 	// maxWatchdogRewardHackingRetries is deliberately 1, not the generic hang
@@ -1592,16 +1593,13 @@ func buildWatchdogReaskNote(attempt int) string {
 	return b.String()
 }
 
-// handleWatchdogRewardHackingRetry re-dispatches a fix-review step's agent
-// once, fresh, when the watchdog stopped it for a reward_hacking pattern that
-// it judged retriable (internal/watchdog/agent.go's
-// retriableRewardHackingFixReview — a concrete, unaddressed review finding
-// still exists to point the retry at). Bounded by its own dedicated budget
-// (maxWatchdogRewardHackingRetries), separate from the generic hang budget,
-// since this is a narrower and more targeted retry than a plain no-output
-// hang. Exhausting it escalates to human-required, same as every other
-// bounded watchdog retry.
+// handleWatchdogRewardHackingRetry re-dispatches a recoverable reward_hacking
+// stop from the same workflow state. fix-review keeps its narrow one-shot
+// budget and sidecar-focused steer; planning and implementation reuse the
+// generic watchdog-stop budget so search-loop stalls recover from the same
+// worktree/notes before escalating.
 func (e *Engine) handleWatchdogRewardHackingRetry(t *TaskInfo, step *Step) bool {
+	maxRetries := watchdogRewardHackingRetryLimit(step)
 	return e.boundedRetry(t, step, boundedRetryPolicy{
 		name: "watchdog-reward-hacking",
 		applies: func(_ *Engine, t *TaskInfo, step *Step) bool {
@@ -1612,20 +1610,20 @@ func (e *Engine) handleWatchdogRewardHackingRetry(t *TaskInfo, step *Step) bool 
 		// HasRunningAgent already returned false.
 		busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
 		counterKey: watchdogRewardHackingRetryKey,
-		max:        maxWatchdogRewardHackingRetries,
+		max:        maxRetries,
 		onArm: func(_ *Engine, t *TaskInfo, step *Step, attempt int) {
 			cleanRef := t.Workflow.Variables[tamperBaselineVar(step.ID)]
 			if cleanRef == "" {
 				cleanRef = "HEAD"
 			}
 			t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
-			t.Workflow.SetVar(watchdogReaskNoteVar, buildRewardHackingReaskNote(attempt))
+			t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildRewardHackingReaskNote(step, attempt, maxRetries))
 		},
 		onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
 			return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
 		},
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
-			reason := fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatch(es) — review finding still unaddressed", attempts)
+			reason := watchdogRewardHackingExhaustionReason(step, attempts)
 			t.Workflow.State = ExecFailed
 			if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 				e.logger.Error("workflow.watchdog-reward-hacking.persist", "task_id", t.ID, "step", step.ID, "err", err)
@@ -1637,6 +1635,23 @@ func (e *Engine) handleWatchdogRewardHackingRetry(t *TaskInfo, step *Step) bool 
 			e.logger.Warn("workflow.watchdog-reward-hacking.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
 		},
 	})
+}
+
+func watchdogRewardHackingRetryLimit(step *Step) int {
+	if step != nil && step.Config.Role == "fix-review" {
+		return maxWatchdogRewardHackingRetries
+	}
+	return maxWatchdogStopRetries
+}
+
+func watchdogRewardHackingExhaustionReason(step *Step, attempts int) string {
+	if step != nil && step.Config.Role == "fix-review" {
+		return fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatch(es) — review finding still unaddressed", attempts)
+	}
+	if step != nil && (step.Config.Role == "plan" || step.Config.Role == "plan-critic") {
+		return fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatch(es) — planning kept looping despite reusable artifacts", attempts)
+	}
+	return fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatch(es) — implementation kept looping without forward progress", attempts)
 }
 
 func isWatchdogRewardHackingReason(reason string) bool {
@@ -1662,17 +1677,27 @@ func clearWatchdogRewardHackingRetry(wf *Execution, stepID string) {
 }
 
 // buildRewardHackingReaskNote builds the steer prepended to a re-dispatched
-// fix-review prompt: the previous attempt looped without editing anything, so
-// point it straight at the finding the reviewer already located instead of
-// re-reading unrelated files.
-func buildRewardHackingReaskNote(attempt int) string {
+// reward-hacking retry. The guidance is role-aware: fix-review should act on
+// the named review finding; planning should refine existing artifacts; and
+// implementation should continue from the existing worktree/NOTES instead of
+// restarting broad search.
+func buildRewardHackingReaskNote(step *Step, attempt, maxRetries int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⚠️ Your previous run on this step was TERMINATED because the watchdog detected a "+
 		"reward-hacking pattern — repeating the same non-editing action (reading/navigating) instead of "+
-		"making progress — attempt %d of %d.\n\n", attempt, maxWatchdogRewardHackingRetries)
-	b.WriteString("The previous attempt stalled reading unrelated files; the code review sidecar already " +
-		"names the fix location. Read it, then edit that exact file directly — do not re-read unrelated " +
-		"files or repeat prior investigation.\n\n")
+		"making progress — attempt %d of %d.\n\n", attempt, maxRetries)
+	switch {
+	case step != nil && step.Config.Role == "fix-review":
+		b.WriteString("The previous attempt stalled reading unrelated files; the code review sidecar already " +
+			"names the fix location. Read it, then edit that exact file directly — do not re-read unrelated " +
+			"files or repeat prior investigation.\n\n")
+	case step != nil && (step.Config.Role == "plan" || step.Config.Role == "plan-critic"):
+		b.WriteString("Reusable planning artifacts already exist in the worktree. Refine the existing plan/contract " +
+			"directly, close the gaps, and stop re-reading unrelated files or restarting discovery from scratch.\n\n")
+	default:
+		b.WriteString("Continue from the current worktree and NOTES: inspect the latest concrete errors/diff, then " +
+			"edit the relevant code directly. Do not restart broad repo exploration or repeat prior searches.\n\n")
+	}
 	b.WriteString("If you are genuinely blocked on understanding the finding, STOP and mark the task " +
 		"human-required with the specific blocker instead of looping.")
 	return b.String()

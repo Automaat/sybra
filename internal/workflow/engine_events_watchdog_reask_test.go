@@ -327,7 +327,7 @@ func TestHandleWatchdogRewardHackingRetry_SetsReaskNoteOnRetry(t *testing.T) {
 		Workflow:     wf,
 	}
 
-	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent})
+	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent, Config: StepConfig{Role: "fix-review"}})
 	if escalated {
 		t.Fatal("first reward-hacking stop should retry, not escalate")
 	}
@@ -378,7 +378,7 @@ func TestHandleWatchdogRewardHackingRetry_ExhaustedBudgetEscalates(t *testing.T)
 		Workflow:     wf,
 	}
 
-	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent})
+	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent, Config: StepConfig{Role: "fix-review"}})
 	if !escalated {
 		t.Fatal("exhausted reward-hacking retry budget should escalate")
 	}
@@ -399,8 +399,17 @@ func TestHandleWatchdogRewardHackingRetry_ExhaustedBudgetEscalates(t *testing.T)
 
 func TestBuildRewardHackingReaskNote_AttemptCount(t *testing.T) {
 	t.Parallel()
-	if got := buildRewardHackingReaskNote(1); !strings.Contains(got, "attempt 1 of 1") {
-		t.Fatalf("buildRewardHackingReaskNote(1) = %q", got)
+	if got := buildRewardHackingReaskNote(&Step{Config: StepConfig{Role: "fix-review"}}, 1, 1); !strings.Contains(got, "attempt 1 of 1") {
+		t.Fatalf("buildRewardHackingReaskNote(fix-review) = %q", got)
+	}
+	if got := buildRewardHackingReaskNote(&Step{Config: StepConfig{Role: "plan"}}, 2, 2); !strings.Contains(got, "attempt 2 of 2") {
+		t.Fatalf("buildRewardHackingReaskNote(plan) = %q", got)
+	}
+	if got := buildRewardHackingReaskNote(&Step{Config: StepConfig{Role: "plan"}}, 1, 2); !strings.Contains(got, "Reusable planning artifacts") {
+		t.Fatalf("plan reward-hacking note missing planning guidance:\n%s", got)
+	}
+	if got := buildRewardHackingReaskNote(&Step{Config: StepConfig{Role: "implementation"}}, 1, 2); !strings.Contains(got, "current worktree and NOTES") {
+		t.Fatalf("implementation reward-hacking note missing worktree guidance:\n%s", got)
 	}
 }
 
@@ -465,7 +474,7 @@ steps:
 		StatusReason: "watchdog: reward-hacking retry: still looping",
 		Workflow:     fresh.Workflow,
 	}
-	if escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent}); escalated {
+	if escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent, Config: StepConfig{Role: "fix-review"}}); escalated {
 		t.Fatal("reward-hacking retry budget should have reset after a successful round, not escalate immediately")
 	}
 }

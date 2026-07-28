@@ -129,6 +129,10 @@ steps:
         `<type>/<other-slug>-<other-id>`, IGNORE them — they belong to
         other concurrent tasks against the same project repo and have
         nothing to do with you.
+        {{- if getvar .Vars "watchdog_reask_note"}}
+
+        {{getvar .Vars "watchdog_reask_note"}}
+        {{- end}}
 
         Process:
           1. Run: sybra-cli --json get {{.Task.ID}}
@@ -450,6 +454,10 @@ steps:
         /plan-critic skill. Use the planning research, decisions, and brief as
         context, but judge whether the compact execution contract is safe to
         implement.
+        {{- if getvar .Vars "watchdog_reask_note"}}
+
+        {{getvar .Vars "watchdog_reask_note"}}
+        {{- end}}
 
         Steps:
           1. Run: sybra-cli --json get {{.Task.ID}}

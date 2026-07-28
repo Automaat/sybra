@@ -601,6 +601,119 @@ func TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates(t *testing.T
 	}
 }
 
+func TestApplyVerdict_RewardHackingImplementationRetries(t *testing.T) {
+	for _, trigger := range []string{"loop", "budget"} {
+		t.Run(trigger, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+
+			stopped := false
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { stopped = true; return nil },
+			}
+
+			w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: "implementation:demo", TaskID: tk.ID}, trigger, agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "repeated repo searches without editing",
+				Recommendation: "stop",
+				ReasonKind:     "reward_hacking",
+			})
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusInProgress {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+			}
+			if got.StatusReason != "watchdog: reward-hacking retry: repeated repo searches without editing" {
+				t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
+			}
+			if !stopped {
+				t.Fatal("stopAgent not called on retriable implementation reward_hacking stop")
+			}
+		})
+	}
+}
+
+func TestApplyVerdict_RewardHackingPlanningWithArtifactsRetries(t *testing.T) {
+	for _, role := range []agent.Role{agent.RolePlan, agent.RolePlanCritic} {
+		t.Run(string(role), func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+			status := task.StatusPlanning
+			plan := "# Execution Plan\n\n- refine the existing contract"
+			if _, err := tasks.Update(tk.ID, task.Update{Status: &status, Plan: &plan}); err != nil {
+				t.Fatalf("seed planning artifacts: %v", err)
+			}
+
+			stopped := false
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { stopped = true; return nil },
+			}
+
+			w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: role.AgentName("demo"), TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "kept re-reading files instead of refining the plan",
+				Recommendation: "stop",
+				ReasonKind:     "reward_hacking",
+			})
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusPlanning {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
+			}
+			if got.StatusReason != "watchdog: reward-hacking retry: kept re-reading files instead of refining the plan" {
+				t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
+			}
+			if !stopped {
+				t.Fatal("stopAgent not called on retriable planning reward_hacking stop")
+			}
+		})
+	}
+}
+
+func TestApplyVerdict_RewardHackingPlanningWithoutArtifactsEscalates(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	status := task.StatusPlanning
+	if _, err := tasks.Update(tk.ID, task.Update{Status: &status}); err != nil {
+		t.Fatalf("set planning status: %v", err)
+	}
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: agent.RolePlan.AgentName("demo"), TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "kept searching without producing a plan artifact",
+		Recommendation: "stop",
+		ReasonKind:     "reward_hacking",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.StatusReason != "watchdog: reward_hacking: kept searching without producing a plan artifact" {
+		t.Fatalf("status_reason = %q, want structured watchdog reason", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on non-retriable planning reward_hacking stop")
+	}
+}
+
 // TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst covers #2147/#2155:
 // an unclassified ("") loop stop is exactly the ambiguous case the judge's own
 // prompt steers toward when reward-hacking is merely possible — re-run verify
