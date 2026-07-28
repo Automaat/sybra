@@ -87,6 +87,15 @@ func hasApprovedPlanContract(t task.Task) bool {
 	return len(workflow.ValidatePlanContractForTask(t.PlanContract, t.ID, t.Body)) == 0
 }
 
+func hasBlockingPlanCritique(t task.Task) bool {
+	switch workflow.PlanCritiqueVerdict(t.PlanCritique) {
+	case "REFINE", "REJECT":
+		return true
+	default:
+		return false
+	}
+}
+
 func allowsTaskCreatedWorkflowWithPR(t task.Task) bool {
 	if slices.Contains(t.Tags, "handoff") {
 		return true

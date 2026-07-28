@@ -758,6 +758,54 @@ func TestDispatchPlanningWorkflow_RejectedPlanDoesNotRedispatchImplementation(t 
 	}
 }
 
+func TestDispatchPlanningWorkflow_BlockingPlanCritiqueDoesNotRestartPlanning(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	created, err := a.tasks.Create("critiqued plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"status":        string(task.StatusPlanning),
+		"plan_critique": "## Verdict: REFINE\n\nFix the execution order.",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlockingPlanCritique(before) {
+		t.Fatalf("test setup did not persist blocking critique: %q", before.PlanCritique)
+	}
+	if before.Workflow == nil || before.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("test setup workflow = %+v, want completed", before.Workflow)
+	}
+
+	a.dispatchPlanningWorkflow(created.ID)
+
+	got, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "existing plan critique verdict is REFINE") {
+		t.Fatalf("status_reason = %q, want blocking critique reason", got.StatusReason)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
+	}
+}
+
 func TestDispatchFromHumanRequired_InReviewFlipsStatusOnly(t *testing.T) {
 	launcher := &fakeAgentLauncher{}
 	svc, a := setupDispatchTestService(t, launcher)

@@ -428,6 +428,18 @@ func (a *App) dispatchPlanningWorkflow(taskID string) {
 	if a.agents.HasRunningAgentForTask(taskID) {
 		return
 	}
+	if hasBlockingPlanCritique(t) {
+		reason := "planning blocked: existing plan critique verdict is " +
+			workflow.PlanCritiqueVerdict(t.PlanCritique) +
+			"; use plan review reject to re-plan, or clear the stale planning artifacts before restarting"
+		if _, err := a.tasks.Update(taskID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(reason),
+		}); err != nil {
+			a.logger.Error("workflow.dispatch.planning.blocked", "task_id", taskID, "err", err)
+		}
+		return
+	}
 	if err := startPlanningWorkflowForTask(a.workflowEngine, t); err != nil &&
 		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) &&
 		!errors.Is(err, workflow.ErrAutoDispatchDisabled) {
