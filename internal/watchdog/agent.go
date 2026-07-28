@@ -898,7 +898,6 @@ func (w *Watchdog) retriableRewardHackingStatus(ag *agent.Agent) (task.Status, b
 	default:
 		return "", false
 	}
-
 	t, err := w.tasks.Get(ag.TaskID)
 	if err != nil {
 		return "", false

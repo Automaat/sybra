@@ -1544,6 +1544,54 @@ func TestTriageRetry_Exhausted(t *testing.T) {
 	}
 }
 
+func TestPlanningRetry_ExhaustedParksHumanRequired(t *testing.T) {
+	store := newInlineTestStore(t, "simple-task-plan", `
+id: simple-task-plan
+name: test planning retry
+trigger:
+  on: task.created
+steps:
+  - id: plan
+    type: run_agent
+    config:
+      role: plan
+      max_retries: 1
+    next:
+      - goto: done
+  - id: done
+    type: set_status
+    config:
+      status: todo
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "headless"})
+	if err := engine.StartWorkflowFromStepWithVars("t1", "simple-task-plan", "plan", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		agents.SimulateComplete("t1")
+		if err := engine.AdvanceStep("t1", StepOutput{StepID: "plan", Status: "failed", Output: "planner crashed"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "planning plan retry budget exhausted") ||
+		!strings.Contains(ti.StatusReason, "planner crashed") {
+		t.Fatalf("status_reason = %q, want retry exhaustion with output", ti.StatusReason)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecFailed || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want failed terminal workflow", ti.Workflow)
+	}
+}
+
 func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1736,7 +1784,6 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 		name       string
 		status     string
 		stepID     string
-		role       string
 		workflowID string
 		retries    string
 		plan       string
@@ -1750,7 +1797,6 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 			name:       "implementation retries from same worktree",
 			status:     "in-progress",
 			stepID:     "implement",
-			role:       "implementation",
 			workflowID: "test-simple",
 			wantStarts: 1,
 			wantStatus: "in-progress",
@@ -1761,7 +1807,6 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 			name:       "planning retries when plan artifacts exist",
 			status:     "planning",
 			stepID:     "plan",
-			role:       "plan",
 			workflowID: "test-simple",
 			plan:       "# Execution Plan\n\n- retry from existing artifacts",
 			wantStarts: 1,
@@ -1773,7 +1818,6 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 			name:       "implementation exhaustion escalates",
 			status:     "in-progress",
 			stepID:     "implement",
-			role:       "implementation",
 			workflowID: "test-simple",
 			retries:    "2",
 			wantStarts: 0,

@@ -72,7 +72,7 @@ func canonicalVerdict(word string) string {
 	}
 }
 
-// parsePlanCritiqueVerdict extracts the verdict word from a plan-critique
+// PlanCritiqueVerdict extracts the verdict word from a plan-critique
 // sidecar, checking three locations in order of how closely they match the
 // skill's actual current contract: the "## Verdict: <VERDICT>" line
 // (current), the older "# Plan Review: <VERDICT>" title line, and finally
@@ -82,7 +82,7 @@ func canonicalVerdict(word string) string {
 // "" — treated identically to APPROVE by the caller — when none of the three
 // yield a recognizable verdict, preserving today's "any non-empty sidecar is
 // fine" behavior for critics that don't follow the contract at all.
-func parsePlanCritiqueVerdict(content string) string {
+func PlanCritiqueVerdict(content string) string {
 	for _, re := range []*regexp.Regexp{verdictColonLineRe, planReviewTitleRe, verdictSectionRe} {
 		m := re.FindStringSubmatch(content)
 		if m == nil {
@@ -93,4 +93,8 @@ func parsePlanCritiqueVerdict(content string) string {
 		}
 	}
 	return ""
+}
+
+func parsePlanCritiqueVerdict(content string) string {
+	return PlanCritiqueVerdict(content)
 }

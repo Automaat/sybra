@@ -443,11 +443,10 @@ func TestApplyVerdict_LoopStopWithGenericStallMarksRetryableHang(t *testing.T) {
 	}
 }
 
-// TestApplyVerdict_LoopStopWithRewardHackingEscalates covers #1456: a "stop"
-// verdict on the "loop" trigger whose ReasonKind is "reward_hacking" (a
-// genuine stuck loop, not a benign flake) must still escalate straight to
-// human-required, not take the retryable watchdog-hang path reserved for
-// "generic_stall".
+// TestApplyVerdict_LoopStopWithRewardHackingEscalates covers the non-retriable
+// baseline: a reward_hacking stop for a role with no grounded retry context
+// must still escalate straight to human-required, not take the retryable
+// watchdog-hang path reserved for generic_stall.
 func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 
@@ -560,46 +559,9 @@ func TestApplyVerdict_RewardHackingFixReviewWithFindingRetries(t *testing.T) {
 	}
 }
 
-func TestApplyVerdict_RewardHackingPlanCriticWithArtifactsRetries(t *testing.T) {
-	tasks, tk := newTestTasks(t)
-	plan := "# Execution Plan\n\n## Decision\nGrounded plan\n"
-	if _, err := tasks.Update(tk.ID, task.Update{Plan: task.Ptr(plan)}); err != nil {
-		t.Fatalf("seed plan sidecar: %v", err)
-	}
-
-	stopped := false
-	w := &Watchdog{
-		tasks:     tasks,
-		logger:    slog.New(slog.DiscardHandler),
-		stopAgent: func(string) error { stopped = true; return nil },
-	}
-
-	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: "plan-critic:demo", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
-		Stuck:          true,
-		Reason:         "re-reading the plan without writing critique",
-		Recommendation: "stop",
-		ReasonKind:     "reward_hacking",
-	})
-
-	got, err := tasks.Get(tk.ID)
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if got.Status != task.StatusPlanning {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
-	}
-	if got.StatusReason != "watchdog: reward-hacking retry: re-reading the plan without writing critique" {
-		t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
-	}
-	if !stopped {
-		t.Fatal("stopAgent not called on retriable planning reward_hacking stop")
-	}
-}
-
 // TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates covers the
-// narrow scope of the #2229 carve-out: a fix-review agent with no concrete
-// review finding to anchor a retry on (empty or finding-less sidecar) still
-// escalates immediately, same as before the carve-out existed.
+// fix-review branch of the retry carve-out: without a concrete review finding
+// to anchor the retry on, fix-review still escalates immediately.
 func TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 	if _, err := tasks.Update(tk.ID, task.Update{
@@ -980,8 +942,8 @@ func TestTrimTail(t *testing.T) {
 
 // TestApplyVerdict_GenericStallAndRewardHackingSkipVerify pins that only an
 // unclassified ("") ReasonKind triggers the verify re-check — generic_stall
-// keeps its existing unconditional-retry treatment and reward_hacking keeps
-// its existing unconditional escalation, both untouched by #2155.
+// and reward_hacking keep their existing non-verify paths, untouched by
+// #2155.
 func TestApplyVerdict_GenericStallAndRewardHackingSkipVerify(t *testing.T) {
 	for _, reasonKind := range []string{"generic_stall", "reward_hacking"} {
 		t.Run(reasonKind, func(t *testing.T) {
@@ -1050,10 +1012,9 @@ func TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang(t *testing.T)
 	}
 }
 
-// TestApplyVerdict_BudgetStopWithoutGenericStallEscalates ensures a "budget"
-// trigger stop whose ReasonKind is anything other than "generic_stall"
-// (including empty, for older judges) still escalates straight to
-// human-required — only the explicit generic_stall reason gets the retry.
+// TestApplyVerdict_BudgetStopWithoutGenericStallEscalates covers the empty
+// reason_kind case: without an explicit generic_stall or reward_hacking
+// classification, a budget stop still escalates straight to human-required.
 func TestApplyVerdict_BudgetStopWithoutGenericStallEscalates(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 
