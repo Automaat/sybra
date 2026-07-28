@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/routing"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
@@ -620,6 +621,32 @@ func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 	}
 	if svc.agents.LimitPolicy().ProviderEnabled[limits.ProviderCodex] {
 		t.Fatal("manager limit policy stayed stale after provider reload")
+	}
+}
+
+func TestReloadFromDisk_RefreshesProviderHealthRuntimeFlags(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.providerHealth = provider.New(provider.Config{
+		ClaudeEnabled:   svc.cfg.Providers.Claude.Enabled,
+		CodexEnabled:    svc.cfg.Providers.Codex.Enabled,
+		CopilotEnabled:  svc.cfg.Providers.Copilot.Enabled,
+		OpenCodeEnabled: svc.cfg.Providers.OpenCode.Enabled,
+		AutoFailover:    svc.cfg.Providers.AutoFailover,
+	}, nil, slog.New(slog.DiscardHandler))
+
+	next := *svc.cfg
+	next.Providers.AutoFailover = false
+	next.Providers.Codex.Enabled = false
+	writeConfigYAML(t, cfgPath, &next)
+
+	if _, err := svc.ReloadFromDisk(); err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if svc.providerHealth.AutoFailover() {
+		t.Fatal("provider health auto-failover flag stayed stale after provider reload")
+	}
+	if got := svc.providerHealth.Snapshot()["codex"]; got.Reason != "disabled" {
+		t.Fatalf("codex health reason = %q, want disabled", got.Reason)
 	}
 }
 
