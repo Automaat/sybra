@@ -190,6 +190,9 @@ func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, cur
 	if done, bErr := e.blockRetryExhaustedTriageIfNeeded(taskID, currentStep, wfExec, output.Output); done || bErr != nil {
 		return true, bErr
 	}
+	if done, bErr := e.blockRetryExhaustedPlanningIfNeeded(taskID, def, currentStep, wfExec, output.Output, retries); done || bErr != nil {
+		return true, bErr
+	}
 	return false, nil
 }
 
@@ -1045,6 +1048,25 @@ func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wf
 		NextAction: "wait_for_operator_reclassify",
 		Exhausted:  true,
 	}); err != nil {
+		return true, err
+	}
+	now := time.Now().UTC()
+	wfExec.State = ExecFailed
+	wfExec.CompletedAt = &now
+	wfExec.CurrentStep = ""
+	return true, e.tasks.SetWorkflow(taskID, wfExec)
+}
+
+func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definition, step *Step, wfExec *Execution, output string, attempts int) (bool, error) {
+	if def.ID != "simple-task-plan" || (step.Config.Role != "plan" && step.Config.Role != "plan-critic") {
+		return false, nil
+	}
+	role := step.Config.Role
+	reason := fmt.Sprintf("planning %s retry budget exhausted after %d attempt(s)", role, attempts)
+	if trimmed := strings.TrimSpace(output); trimmed != "" {
+		reason += ": " + truncate(trimmed, 500)
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 		return true, err
 	}
 	now := time.Now().UTC()
