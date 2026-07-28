@@ -249,8 +249,8 @@ func TestApplyVerdict_EscalateLeavesTaskRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusPlanning {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
 	}
 	if got.StatusReason != "" {
 		t.Fatalf("status_reason = %q, want empty", got.StatusReason)
@@ -395,8 +395,8 @@ func TestApplyVerdict_StallStopMarksRetryableHang(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusPlanning {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
 	}
 	if got.StatusReason != "watchdog hang: no stream activity" {
 		t.Fatalf("status_reason = %q, want retryable watchdog hang marker", got.StatusReason)
@@ -432,8 +432,8 @@ func TestApplyVerdict_LoopStopWithGenericStallMarksRetryableHang(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusPlanning {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
 	}
 	if got.StatusReason != "watchdog hang: repeating identical investigation commands" {
 		t.Fatalf("status_reason = %q, want retryable watchdog hang marker", got.StatusReason)
