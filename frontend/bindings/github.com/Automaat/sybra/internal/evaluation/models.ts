@@ -11,16 +11,13 @@ import * as abtest$0 from "../abtest/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as config$0 from "../config/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
 
 /**
  * AutonomySnapshot is autonomy over one arbitrary [Since, Until] window.
  */
 export class AutonomySnapshot {
-    "since": time$0.Time;
-    "until": time$0.Time;
+    "since": string;
+    "until": string;
     "tasksLanded": number;
     "autonomousLandings": number;
     "autonomyRate": number;
@@ -28,10 +25,10 @@ export class AutonomySnapshot {
     /** Creates a new AutonomySnapshot instance. */
     constructor($$source: Partial<AutonomySnapshot> = {}) {
         if (!("since" in $$source)) {
-            this["since"] = null;
+            this["since"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("until" in $$source)) {
-            this["until"] = null;
+            this["until"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("tasksLanded" in $$source)) {
             this["tasksLanded"] = 0;
@@ -61,7 +58,7 @@ export class AutonomySnapshot {
  * moved over time instead of only the current rolling scorecard window.
  */
 export class AutonomyTrend {
-    "generatedAt": time$0.Time;
+    "generatedAt": string;
     "overall": AutonomySnapshot;
     "lastWeek": AutonomySnapshot;
     "lastMonth": AutonomySnapshot;
@@ -70,7 +67,7 @@ export class AutonomyTrend {
     /** Creates a new AutonomyTrend instance. */
     constructor($$source: Partial<AutonomyTrend> = {}) {
         if (!("generatedAt" in $$source)) {
-            this["generatedAt"] = null;
+            this["generatedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("overall" in $$source)) {
             this["overall"] = (new AutonomySnapshot());
@@ -121,8 +118,8 @@ export class AutonomyTrend {
  * see ComputeAutonomyTrend's nanosecond trim.
  */
 export class AutonomyWeekPoint {
-    "weekStart": time$0.Time;
-    "weekEnd": time$0.Time;
+    "weekStart": string;
+    "weekEnd": string;
     "tasksLanded": number;
     "autonomousLandings": number;
     "autonomyRate": number;
@@ -130,10 +127,10 @@ export class AutonomyWeekPoint {
     /** Creates a new AutonomyWeekPoint instance. */
     constructor($$source: Partial<AutonomyWeekPoint> = {}) {
         if (!("weekStart" in $$source)) {
-            this["weekStart"] = null;
+            this["weekStart"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("weekEnd" in $$source)) {
-            this["weekEnd"] = null;
+            this["weekEnd"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("tasksLanded" in $$source)) {
             this["tasksLanded"] = 0;
@@ -594,8 +591,8 @@ export class ExperimentSampleStatus {
  * PhaseReport is the per-phase lifecycle-duration breakdown over a window.
  */
 export class PhaseReport {
-    "since": time$0.Time;
-    "until": time$0.Time;
+    "since": string;
+    "until": string;
 
     /**
      * landed tasks analyzed
@@ -607,10 +604,10 @@ export class PhaseReport {
     /** Creates a new PhaseReport instance. */
     constructor($$source: Partial<PhaseReport> = {}) {
         if (!("since" in $$source)) {
-            this["since"] = null;
+            this["since"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("until" in $$source)) {
-            this["until"] = null;
+            this["until"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("cohort" in $$source)) {
             this["cohort"] = 0;
@@ -743,9 +740,9 @@ export class RateEstimate {
  * Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
  */
 export class Report {
-    "generatedAt": time$0.Time;
-    "since": time$0.Time;
-    "until": time$0.Time;
+    "generatedAt": string;
+    "since": string;
+    "until": string;
     "overall": Scorecard;
     "byProvider"?: Breakdown[];
     "byRole"?: Breakdown[];
@@ -767,13 +764,13 @@ export class Report {
     /** Creates a new Report instance. */
     constructor($$source: Partial<Report> = {}) {
         if (!("generatedAt" in $$source)) {
-            this["generatedAt"] = null;
+            this["generatedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("since" in $$source)) {
-            this["since"] = null;
+            this["since"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("until" in $$source)) {
-            this["until"] = null;
+            this["until"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("overall" in $$source)) {
             this["overall"] = (new Scorecard());
