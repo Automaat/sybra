@@ -412,6 +412,26 @@ func TestBuiltinSimpleTaskImplement_DisclosesDownstreamVerification(t *testing.T
 	}
 }
 
+func TestBuiltinSimpleTaskPlan_RewardHackingRetryNotesReachAgents(t *testing.T) {
+	t.Parallel()
+
+	plan := mustBuiltinDefinition(t, "simple-task-plan")
+	for _, stepID := range []string{"plan", "critique_plan"} {
+		step := plan.StepByID(stepID)
+		if step == nil {
+			t.Fatalf("%s step not found in simple-task-plan", stepID)
+		}
+		for _, want := range []string{
+			`{{- if getvar .Vars "watchdog_reask_note"}}`,
+			`{{getvar .Vars "watchdog_reask_note"}}`,
+		} {
+			if !strings.Contains(step.Config.Prompt, want) {
+				t.Fatalf("%s prompt must include reward-hacking retry note block %q, got:\n%s", stepID, want, step.Config.Prompt)
+			}
+		}
+	}
+}
+
 func TestBuiltinPromptLabAuthor_OwnsPromptLabImplementation(t *testing.T) {
 	t.Parallel()
 

@@ -613,7 +613,7 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		updates["depends_on_conditions"] = depConds
 	}
 	if len(updates) > 0 {
-		t, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
+		t, _, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
 		if err != nil {
 			return fatal(jsonOut, "update after create: %v", err)
 		}
@@ -676,11 +676,25 @@ func createTaskViaAPIOrFS(s *task.Manager, api *apiClient, title, body, mode str
 	return s.Create(title, body, mode)
 }
 
-func updateTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string, updates map[string]any) (task.Task, error) {
+func updateTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string, updates map[string]any) (task.Task, bool, error) {
 	if updated, handled, apiErr := viaAPI[task.Task](api, "TaskService", "UpdateTask", id, updates); handled {
-		return updated, apiErr
+		return updated, true, apiErr
 	}
-	return s.UpdateMap(id, updates)
+	updated, err := s.UpdateMap(id, updates)
+	return updated, false, err
+}
+
+func appendManualDecisionProgress(taskID, from, to, reason string) {
+	if strings.TrimSpace(taskID) == "" || strings.TrimSpace(from) == "" || strings.TrimSpace(to) == "" {
+		return
+	}
+	store := artifact.New(config.ArtifactsDir())
+	if err := store.AppendProgress(taskID, artifact.ProgressEntry{
+		Kind:    artifact.ProgressKindDecision,
+		Message: artifact.ManualDecisionMessage(from, to, reason),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: progress decision log append failed for task %s: %v\n", taskID, err)
+	}
 }
 
 // cmdHandoff creates a task pre-tagged for a Sybra workflow entry point. It
@@ -1189,9 +1203,17 @@ func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		}
 	}
 
-	t, err := updateTaskViaAPIOrFS(s, api, id, updates)
+	before, err := getTaskViaAPIOrFS(s, api, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
+	}
+
+	t, handledByAPI, err := updateTaskViaAPIOrFS(s, api, id, updates)
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if !handledByAPI && before.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
+		appendManualDecisionProgress(t.ID, string(before.Status), string(t.Status), t.StatusReason)
 	}
 
 	if jsonOut {
@@ -1568,8 +1590,12 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 		if *projectID != "" {
 			u.ProjectID = task.Ptr(*projectID)
 		}
-		if _, err := s.Update(id, u); err != nil {
+		updated, err := s.Update(id, u)
+		if err != nil {
 			return fatal(jsonOut, "%v", err)
+		}
+		if t.Status == task.StatusHumanRequired && updated.Status != task.StatusHumanRequired {
+			appendManualDecisionProgress(updated.ID, string(t.Status), string(updated.Status), updated.StatusReason)
 		}
 		reopened = append(reopened, id)
 	}
@@ -1594,7 +1620,7 @@ func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "pr-number must be a positive integer, got %q", args[1])
 	}
 
-	t, err := s.Get(id)
+	t, err := getTaskViaAPIOrFS(s, api, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1606,9 +1632,13 @@ func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		updates["status_reason"] = ""
 	}
 
-	t, err = updateTaskViaAPIOrFS(s, api, id, updates)
+	prev := t
+	t, handledByAPI, err := updateTaskViaAPIOrFS(s, api, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
+	}
+	if !handledByAPI && prev.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
+		appendManualDecisionProgress(t.ID, string(prev.Status), string(t.Status), t.StatusReason)
 	}
 
 	if jsonOut {

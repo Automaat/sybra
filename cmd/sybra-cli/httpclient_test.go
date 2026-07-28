@@ -165,6 +165,64 @@ func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestUpdate_UsesHTTPModeWhenTaskOnlyExistsOnServer(t *testing.T) {
+	home := t.TempDir()
+	_ = useDefaultHTTPCLIHome(t, home)
+
+	serverTasksDir := t.TempDir()
+	serverStore, err := task.NewStore(serverTasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTasks := task.NewManager(serverStore, nil)
+	created, err := serverTasks.Create("api only target", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	port := startFakeAPIServer(t, serverTasksDir)
+	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
+
+	code, out := runCLI(t, "--json", "update", created.ID, "--status", "todo", "--status-reason", "via http only")
+	if code != 0 {
+		t.Fatalf("update over HTTP mode should not require a local task file, got exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.ID != created.ID || got.Status != task.StatusTodo || got.StatusReason != "via http only" {
+		t.Fatalf("updated task = %+v, want server task updated through HTTP", got)
+	}
+}
+
+func TestLinkPR_UsesHTTPModeWhenTaskOnlyExistsOnServer(t *testing.T) {
+	home := t.TempDir()
+	_ = useDefaultHTTPCLIHome(t, home)
+
+	serverTasksDir := t.TempDir()
+	serverStore, err := task.NewStore(serverTasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTasks := task.NewManager(serverStore, nil)
+	created, err := serverTasks.Create("api only pr target", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	port := startFakeAPIServer(t, serverTasksDir)
+	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
+
+	code, out := runCLI(t, "--json", "link-pr", created.ID, "123")
+	if code != 0 {
+		t.Fatalf("link-pr over HTTP mode should not require a local task file, got exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.ID != created.ID || got.PRNumber != 123 || got.Status != task.StatusInReview {
+		t.Fatalf("linked task = %+v, want server task updated through HTTP", got)
+	}
+}
+
 func TestUpdate_FailsClosedWhenNoServerAndFilesystemReadOnly(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := useDefaultHTTPCLIHome(t, home)
