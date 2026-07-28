@@ -1778,7 +1778,7 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 			retries:    "2",
 			wantStarts: 0,
 			wantStatus: "human-required",
-			wantReason: "watchdog: reward-hacking retry budget exhausted after 2 clean re-dispatch(es) — implementation kept looping without forward progress",
+			wantReason: "watchdog: reward-hacking retry budget exhausted after 2 clean re-dispatches",
 			wantRetry:  "2",
 		},
 	}
