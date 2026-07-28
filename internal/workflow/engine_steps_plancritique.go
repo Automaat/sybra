@@ -72,7 +72,7 @@ func canonicalVerdict(word string) string {
 	}
 }
 
-// parsePlanCritiqueVerdict extracts the verdict word from a plan-critique
+// PlanCritiqueVerdict extracts the verdict word from a plan-critique
 // sidecar, checking three locations in order of how closely they match the
 // skill's actual current contract: the "## Verdict: <VERDICT>" line
 // (current), the older "# Plan Review: <VERDICT>" title line, and finally
