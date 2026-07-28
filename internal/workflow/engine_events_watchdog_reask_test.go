@@ -338,8 +338,11 @@ func TestHandleWatchdogRewardHackingRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	if !strings.Contains(note, "attempt 1 of 1") {
 		t.Fatalf("reask note missing attempt count:\n%s", note)
 	}
-	if !strings.Contains(note, "sidecar already") {
-		t.Fatalf("reask note should point at the sidecar's named location:\n%s", note)
+	if !strings.Contains(note, "existing task sidecars") {
+		t.Fatalf("reask note should point at existing workflow context:\n%s", note)
+	}
+	if !strings.Contains(note, "Do not repeat the same search/read sequence") {
+		t.Fatalf("reask note should prohibit repeating the same search loop:\n%s", note)
 	}
 	if !strings.Contains(note, "human-required") {
 		t.Fatalf("reask note should offer the human-required escape hatch:\n%s", note)

@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdogreason"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func TestStallLimit(t *testing.T) {
@@ -557,6 +558,111 @@ func TestApplyVerdict_RewardHackingFixReviewWithFindingRetries(t *testing.T) {
 				t.Fatal("stopAgent not called on retriable reward_hacking stop")
 			}
 		})
+	}
+}
+
+// TestApplyVerdict_RewardHackingWorkflowRolesRetry covers search-loop false
+// positives: a reward_hacking stop on plan, plan-critic, or implementation
+// with an active workflow should retry once through the workflow engine instead
+// of parking human-required immediately. The retry budget still lives in
+// workflow, so a second identical stop escalates there.
+func TestApplyVerdict_RewardHackingWorkflowRolesRetry(t *testing.T) {
+	tests := []struct {
+		name       string
+		role       agent.Role
+		workflowID string
+		stepID     string
+	}{
+		{"implementation", agent.RoleImplementation, "simple-task-implement", "implement"},
+		{"plan", agent.RolePlan, "simple-task-plan", "plan"},
+		{"plan-critic", agent.RolePlanCritic, "simple-task-plan", "critique_plan"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+			wf := &workflow.Execution{
+				WorkflowID:  tc.workflowID,
+				CurrentStep: tc.stepID,
+				State:       workflow.ExecWaiting,
+				Variables:   map[string]string{},
+				AgentRoutes: map[string]string{},
+				StartedAt:   time.Now().UTC(),
+				CompletedAt: nil,
+				StepCounts:  map[string]int{},
+			}
+			if _, err := tasks.Update(tk.ID, task.Update{
+				Workflow: &wf,
+			}); err != nil {
+				t.Fatalf("seed workflow: %v", err)
+			}
+
+			stopped := false
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { stopped = true; return nil },
+			}
+
+			w.applyVerdict(t.Context(), &agent.Agent{
+				ID:     "a1",
+				Name:   tc.role.AgentName("demo"),
+				TaskID: tk.ID,
+			}, "loop", agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "repeating the same search/edit sequence after restart",
+				Recommendation: "stop",
+				ReasonKind:     "reward_hacking",
+			})
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusInProgress {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+			}
+			if got.StatusReason != "watchdog: reward-hacking retry: repeating the same search/edit sequence after restart" {
+				t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
+			}
+			if !stopped {
+				t.Fatal("stopAgent not called on retriable reward_hacking stop")
+			}
+		})
+	}
+}
+
+func TestApplyVerdict_RewardHackingWorkflowRoleWithoutWorkflowEscalates(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(t.Context(), &agent.Agent{
+		ID:     "a1",
+		Name:   agent.RoleImplementation.AgentName("demo"),
+		TaskID: tk.ID,
+	}, "loop", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "looping without workflow context",
+		Recommendation: "stop",
+		ReasonKind:     "reward_hacking",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(got.StatusReason, "looping without workflow context") {
+		t.Fatalf("status_reason = %q, want original watchdog reason", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on non-retriable reward_hacking stop")
 	}
 }
 

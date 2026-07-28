@@ -41,14 +41,15 @@ const (
 	// watchdogRewardHackingStatusPrefix must stay in sync with
 	// internal/watchdog/agent.go's rewardHackingRetryStatusReason — the
 	// watchdog writes this exact status-reason prefix when it retries a
-	// reward_hacking stop on a fix-review agent (#2229), and
-	// handleWatchdogRewardHackingRetry below pattern-matches on it.
+	// reward_hacking stop with enough workflow context to make one clean
+	// re-dispatch useful, and handleWatchdogRewardHackingRetry below
+	// pattern-matches on it.
 	watchdogRewardHackingStatusPrefix   = "watchdog: reward-hacking retry"
 	watchdogRewardHackingRetryVarPrefix = "watchdog.reward_hacking_retry."
 	// maxWatchdogRewardHackingRetries is deliberately 1, not the generic hang
-	// budget's 2: this path only fires when the review sidecar already names
-	// the fix location, so a fresh agent that still can't land it after one
-	// steered retry is a genuine stuck loop, not a flake.
+	// budget's 2: this path only fires when there is concrete workflow context
+	// for a fresh retry, so a new agent that repeats the same pattern after one
+	// steered retry is a real stuck loop, not a flake.
 	maxWatchdogRewardHackingRetries = 1
 	transientFetchRetryVarPrefix    = "transient_fetch.retry."
 	maxTransientFetchRetries        = 2
@@ -1592,11 +1593,9 @@ func buildWatchdogReaskNote(attempt int) string {
 	return b.String()
 }
 
-// handleWatchdogRewardHackingRetry re-dispatches a fix-review step's agent
+// handleWatchdogRewardHackingRetry re-dispatches the current run_agent step
 // once, fresh, when the watchdog stopped it for a reward_hacking pattern that
-// it judged retriable (internal/watchdog/agent.go's
-// retriableRewardHackingFixReview — a concrete, unaddressed review finding
-// still exists to point the retry at). Bounded by its own dedicated budget
+// it judged retriable. Bounded by its own dedicated budget
 // (maxWatchdogRewardHackingRetries), separate from the generic hang budget,
 // since this is a narrower and more targeted retry than a plain no-output
 // hang. Exhausting it escalates to human-required, same as every other
@@ -1625,7 +1624,7 @@ func (e *Engine) handleWatchdogRewardHackingRetry(t *TaskInfo, step *Step) bool 
 			return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
 		},
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
-			reason := fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatch(es) — review finding still unaddressed", attempts)
+			reason := fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatch(es) — agent repeated the same non-progress pattern", attempts)
 			t.Workflow.State = ExecFailed
 			if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 				e.logger.Error("workflow.watchdog-reward-hacking.persist", "task_id", t.ID, "step", step.ID, "err", err)
@@ -1662,19 +1661,19 @@ func clearWatchdogRewardHackingRetry(wf *Execution, stepID string) {
 }
 
 // buildRewardHackingReaskNote builds the steer prepended to a re-dispatched
-// fix-review prompt: the previous attempt looped without editing anything, so
-// point it straight at the finding the reviewer already located instead of
-// re-reading unrelated files.
+// prompt: the previous attempt looped without making progress, so make the
+// retry resume from existing task artifacts/notes and force a concrete next
+// action instead of repeating investigation.
 func buildRewardHackingReaskNote(attempt int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⚠️ Your previous run on this step was TERMINATED because the watchdog detected a "+
 		"reward-hacking pattern — repeating the same non-editing action (reading/navigating) instead of "+
 		"making progress — attempt %d of %d.\n\n", attempt, maxWatchdogRewardHackingRetries)
-	b.WriteString("The previous attempt stalled reading unrelated files; the code review sidecar already " +
-		"names the fix location. Read it, then edit that exact file directly — do not re-read unrelated " +
-		"files or repeat prior investigation.\n\n")
-	b.WriteString("If you are genuinely blocked on understanding the finding, STOP and mark the task " +
-		"human-required with the specific blocker instead of looping.")
+	b.WriteString("Do not restart broad investigation. Read the existing task sidecars, NOTES.md, and the " +
+		"latest command output, then take the next concrete action allowed by this step's instructions. " +
+		"Do not repeat the same search/read sequence.\n\n")
+	b.WriteString("If you are genuinely blocked, STOP and mark the task human-required with the specific " +
+		"blocker instead of looping.")
 	return b.String()
 }
 
