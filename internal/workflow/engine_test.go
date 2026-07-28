@@ -1779,6 +1779,116 @@ func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing
 	}
 }
 
+func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
+	tests := []struct {
+		name       string
+		role       string
+		status     string
+		stepID     string
+		workflowID string
+		retries    string
+		plan       string
+		wantStarts int
+		wantStatus string
+		wantReason string
+		wantRetry  string
+		wantClean  string
+	}{
+		{
+			name:       "implementation retries from same worktree",
+			role:       "implementation",
+			status:     "in-progress",
+			stepID:     "implement",
+			workflowID: "test-simple",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantRetry:  "1",
+			wantClean:  "HEAD",
+		},
+		{
+			name:       "planning retries when plan artifacts exist",
+			role:       "plan",
+			status:     "planning",
+			stepID:     "plan",
+			workflowID: "test-simple",
+			plan:       "# Execution Plan\n\n- retry from existing artifacts",
+			wantStarts: 1,
+			wantStatus: "planning",
+			wantRetry:  "1",
+			wantClean:  "HEAD",
+		},
+		{
+			name:       "implementation exhaustion escalates",
+			role:       "implementation",
+			status:     "in-progress",
+			stepID:     "implement",
+			workflowID: "test-simple",
+			retries:    "2",
+			wantStarts: 0,
+			wantStatus: "human-required",
+			wantReason: "watchdog: reward-hacking retry budget exhausted after 2 clean re-dispatches",
+			wantRetry:  "2",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+			vars := map[string]string{}
+			if tc.retries != "" {
+				vars[watchdogRewardHackingRetryKey(tc.stepID)] = tc.retries
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Role:         tc.role,
+				Status:       tc.status,
+				StatusReason: "watchdog: reward-hacking retry: repeated search without editing",
+				AgentMode:    "headless",
+				Plan:         tc.plan,
+				Workflow: &Execution{
+					WorkflowID:  tc.workflowID,
+					CurrentStep: tc.stepID,
+					State:       ExecWaiting,
+					Variables:   vars,
+					StartedAt:   time.Now().UTC(),
+				},
+			})
+
+			engine.ResumeStalled()
+
+			if got := agents.CallCount(); got != tc.wantStarts {
+				t.Fatalf("StartAgent calls = %d, want %d", got, tc.wantStarts)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.StatusReason != tc.wantReason {
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
+			}
+			if got.Workflow.Variables[watchdogRewardHackingRetryKey(tc.stepID)] != tc.wantRetry {
+				t.Fatalf("reward-hacking retry var = %q, want %q", got.Workflow.Variables[watchdogRewardHackingRetryKey(tc.stepID)], tc.wantRetry)
+			}
+			if tc.wantStatus == "human-required" && got.Workflow.State != ExecFailed {
+				t.Fatalf("workflow state = %q, want ExecFailed after retry exhaustion", got.Workflow.State)
+			}
+			if tc.wantStarts > 0 {
+				if got := agents.calls[0].CleanRetryRef; got != tc.wantClean {
+					t.Fatalf("clean retry ref = %q, want %q", got, tc.wantClean)
+				}
+				if got.Workflow.Variables[watchdogHangCleanRetryKey(tc.stepID)] != "" {
+					t.Fatalf("clean retry marker = %q, want cleared after dispatch", got.Workflow.Variables[watchdogHangCleanRetryKey(tc.stepID)])
+				}
+			}
+		})
+	}
+}
+
 func TestResumeStalled_WorktreeRepairRetriesThenExhausts(t *testing.T) {
 	tests := []struct {
 		name       string

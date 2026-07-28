@@ -327,7 +327,7 @@ func TestHandleWatchdogRewardHackingRetry_SetsReaskNoteOnRetry(t *testing.T) {
 		Workflow:     wf,
 	}
 
-	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent})
+	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent, Config: StepConfig{Role: "fix-review"}})
 	if escalated {
 		t.Fatal("first reward-hacking stop should retry, not escalate")
 	}
@@ -338,11 +338,11 @@ func TestHandleWatchdogRewardHackingRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	if !strings.Contains(note, "attempt 1 of 1") {
 		t.Fatalf("reask note missing attempt count:\n%s", note)
 	}
-	if !strings.Contains(note, "existing task sidecars") {
-		t.Fatalf("reask note should point at existing workflow context:\n%s", note)
+	if !strings.Contains(note, "code review sidecar already names the fix location") {
+		t.Fatalf("reask note should point directly at the existing review finding:\n%s", note)
 	}
-	if !strings.Contains(note, "Do not repeat the same search/read sequence") {
-		t.Fatalf("reask note should prohibit repeating the same search loop:\n%s", note)
+	if !strings.Contains(note, "do not re-read unrelated files") {
+		t.Fatalf("reask note should prohibit repeating unrelated file reads:\n%s", note)
 	}
 	if !strings.Contains(note, "human-required") {
 		t.Fatalf("reask note should offer the human-required escape hatch:\n%s", note)
@@ -354,6 +354,43 @@ func TestHandleWatchdogRewardHackingRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	}
 	if fresh.StatusReason != "" {
 		t.Fatalf("status_reason = %q, want cleared so the workflow resumes cleanly", fresh.StatusReason)
+	}
+}
+
+func TestHandleWatchdogRewardHackingRetry_ImplementationUsesImplementationBudget(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: reward-hacking retry: re-reading the same files without changing code",
+		Workflow:     wf,
+	})
+	ti := TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: reward-hacking retry: re-reading the same files without changing code",
+		Workflow:     wf,
+	}
+
+	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation"}})
+	if escalated {
+		t.Fatal("first implementation reward-hacking stop should retry, not escalate")
+	}
+	note := wf.Variables[watchdogReaskNoteVar]
+	if !strings.Contains(note, "attempt 1 of 2") {
+		t.Fatalf("reask note missing implementation attempt budget:\n%s", note)
+	}
+	if !strings.Contains(note, "NOTES.md") {
+		t.Fatalf("reask note should steer implementation toward existing worktree context:\n%s", note)
 	}
 }
 
@@ -381,7 +418,7 @@ func TestHandleWatchdogRewardHackingRetry_ExhaustedBudgetEscalates(t *testing.T)
 		Workflow:     wf,
 	}
 
-	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent})
+	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent, Config: StepConfig{Role: "fix-review"}})
 	if !escalated {
 		t.Fatal("exhausted reward-hacking retry budget should escalate")
 	}
@@ -400,10 +437,48 @@ func TestHandleWatchdogRewardHackingRetry_ExhaustedBudgetEscalates(t *testing.T)
 	}
 }
 
-func TestBuildRewardHackingReaskNote_AttemptCount(t *testing.T) {
+func TestBuildRewardHackingFixReviewReaskNote_AttemptCount(t *testing.T) {
 	t.Parallel()
-	if got := buildRewardHackingReaskNote(1); !strings.Contains(got, "attempt 1 of 1") {
-		t.Fatalf("buildRewardHackingReaskNote(1) = %q", got)
+	if got := buildRewardHackingFixReviewReaskNote(1); !strings.Contains(got, "attempt 1 of 1") {
+		t.Fatalf("buildRewardHackingFixReviewReaskNote(1) = %q", got)
+	}
+}
+
+func TestResumeStalled_WatchdogRewardHackingPlanCriticRendersRetryNote(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "simple-task-plan")); err != nil {
+		t.Fatalf("save simple-task-plan: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "planning",
+		StatusReason: "watchdog: reward-hacking retry: re-reading the plan without writing critique",
+		Plan:         "# Execution Plan\n\n## Decision\nGrounded plan\n",
+		PlanContract: `{"task_id":"t1","verification":[{"command":"go test ./...","expected":"pass"}],"acceptance_criteria":["done"]}`,
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "critique_plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1", got)
+	}
+	prompt := agents.calls[0].Prompt
+	if !strings.Contains(prompt, "watchdog detected a reward-hacking pattern") {
+		t.Fatalf("critique_plan prompt missing reward-hacking context:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "plan-critique run") {
+		t.Fatalf("critique_plan prompt missing stage-specific retry guidance:\n%s", prompt)
 	}
 }
 
@@ -468,7 +543,7 @@ steps:
 		StatusReason: "watchdog: reward-hacking retry: still looping",
 		Workflow:     fresh.Workflow,
 	}
-	if escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent}); escalated {
+	if escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "fix_review", Type: StepRunAgent, Config: StepConfig{Role: "fix-review"}}); escalated {
 		t.Fatal("reward-hacking retry budget should have reset after a successful round, not escalate immediately")
 	}
 }
