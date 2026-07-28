@@ -146,6 +146,7 @@ export class StreamEvent {
      */
     "error_type"?: string;
     "error_status"?: number;
+    "terminal_reason"?: string;
 
     /**
      * PlanSteps is populated when the assistant calls TodoWrite; contains the
@@ -202,22 +203,22 @@ export class StreamEvent {
      * Creates a new StreamEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): StreamEvent {
-        const $$createField14_0 = $$createType8;
-        const $$createField15_0 = $$createType6;
+        const $$createField15_0 = $$createType8;
         const $$createField16_0 = $$createType6;
-        const $$createField18_0 = $$createType5;
+        const $$createField17_0 = $$createType6;
+        const $$createField19_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("plan_steps" in $$parsedSource) {
-            $$parsedSource["plan_steps"] = $$createField14_0($$parsedSource["plan_steps"]);
+            $$parsedSource["plan_steps"] = $$createField15_0($$parsedSource["plan_steps"]);
         }
         if ("plugin_errors" in $$parsedSource) {
-            $$parsedSource["plugin_errors"] = $$createField15_0($$parsedSource["plugin_errors"]);
+            $$parsedSource["plugin_errors"] = $$createField16_0($$parsedSource["plugin_errors"]);
         }
         if ("background_task_ids" in $$parsedSource) {
-            $$parsedSource["background_task_ids"] = $$createField16_0($$parsedSource["background_task_ids"]);
+            $$parsedSource["background_task_ids"] = $$createField17_0($$parsedSource["background_task_ids"]);
         }
         if ("limit_snapshot" in $$parsedSource) {
-            $$parsedSource["limit_snapshot"] = $$createField18_0($$parsedSource["limit_snapshot"]);
+            $$parsedSource["limit_snapshot"] = $$createField19_0($$parsedSource["limit_snapshot"]);
         }
         return new StreamEvent($$parsedSource as Partial<StreamEvent>);
     }
