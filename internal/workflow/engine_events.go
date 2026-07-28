@@ -678,6 +678,14 @@ func (e *Engine) RescheduleInterruptedAgent(taskID, agentID string) {
 		e.clearAgentStep(taskID, agentID)
 		return
 	}
+	if reason, skip := resumeSkipReasonForStatus(t.Status); skip && reason != "human_required" {
+		e.clearAgentStep(taskID, agentID)
+		clearAgentRouteFromWorkflow(t.Workflow, agentID)
+		if err := e.tasks.SetWorkflow(taskID, t.Workflow); err != nil {
+			e.logger.Error("workflow.interrupted-reschedule.clear-route", "task_id", taskID, "agent_id", agentID, "reason", reason, "err", err)
+		}
+		return
+	}
 	def, err := e.store.Get(t.Workflow.WorkflowID)
 	if err != nil {
 		e.clearAgentStep(taskID, agentID)

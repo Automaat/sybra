@@ -14,6 +14,9 @@ import * as config$0 from "../config/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as monitor$0 from "../monitor/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
 
 /**
  * AgentQueueSnapshot is the read-only queued-agent view exposed to the GUI.
@@ -60,7 +63,7 @@ export class AgentQueueSnapshotItem {
     "status": string;
     "manual": boolean;
     "mode": string;
-    "enqueued": string;
+    "enqueued": time$0.Time;
 
     /** Creates a new AgentQueueSnapshotItem instance. */
     constructor($$source: Partial<AgentQueueSnapshotItem> = {}) {
@@ -92,7 +95,7 @@ export class AgentQueueSnapshotItem {
             this["mode"] = "";
         }
         if (!("enqueued" in $$source)) {
-            this["enqueued"] = "0001-01-01T00:00:00.000Z";
+            this["enqueued"] = null;
         }
 
         Object.assign(this, $$source);
@@ -569,8 +572,8 @@ export class LoggingSettings {
  */
 export class LoopAgentRun {
     "agentId": string;
-    "startedAt": string;
-    "finishedAt": string;
+    "startedAt": time$0.Time;
+    "finishedAt": time$0.Time;
     "costUsd": number;
     "state": string;
     "durationS": number;
@@ -581,10 +584,10 @@ export class LoopAgentRun {
             this["agentId"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = "0001-01-01T00:00:00.000Z";
+            this["startedAt"] = null;
         }
         if (!("finishedAt" in $$source)) {
-            this["finishedAt"] = "0001-01-01T00:00:00.000Z";
+            this["finishedAt"] = null;
         }
         if (!("costUsd" in $$source)) {
             this["costUsd"] = 0;
@@ -813,7 +816,7 @@ export class TaskArtifactDTO {
      */
     "taskId": string;
     "stepId"?: string;
-    "createdAt": string;
+    "createdAt": time$0.Time;
 
     /**
      * SourcePath is the agent-output file that was imported (forensic only).
@@ -840,7 +843,7 @@ export class TaskArtifactDTO {
             this["taskId"] = "";
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = "0001-01-01T00:00:00.000Z";
+            this["createdAt"] = null;
         }
         if (!("size" in $$source)) {
             this["size"] = 0;
@@ -859,7 +862,7 @@ export class TaskArtifactDTO {
 }
 
 export class TaskAuditEventDTO {
-    "ts": string;
+    "ts": time$0.Time;
     "type": string;
     "taskId"?: string;
     "agentId"?: string;
@@ -868,7 +871,7 @@ export class TaskAuditEventDTO {
     /** Creates a new TaskAuditEventDTO instance. */
     constructor($$source: Partial<TaskAuditEventDTO> = {}) {
         if (!("ts" in $$source)) {
-            this["ts"] = "0001-01-01T00:00:00.000Z";
+            this["ts"] = null;
         }
         if (!("type" in $$source)) {
             this["type"] = "";

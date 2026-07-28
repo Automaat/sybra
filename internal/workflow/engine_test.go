@@ -3925,6 +3925,46 @@ func TestRescheduleInterruptedAgent_UnparksHumanRequiredCurrentStep(t *testing.T
 	}
 }
 
+func TestRescheduleInterruptedAgent_SkipsBlockedAndTerminalStatuses(t *testing.T) {
+	for _, status := range []string{"blocked", "done", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+
+			tasks.Put(TaskInfo{
+				ID:        "t1",
+				Status:    status,
+				AgentMode: "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   make(map[string]string),
+				},
+			})
+			setWorkflowAgentRoute(t, tasks, "t1", "interrupted-agent", "implement")
+
+			engine.RescheduleInterruptedAgent("t1", "interrupted-agent")
+
+			if got := agents.CallCount(); got != 0 {
+				t.Fatalf("replacement agent starts = %d, want 0", got)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != status {
+				t.Fatalf("status = %q, want %q", got.Status, status)
+			}
+			if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "interrupted-agent"); tracked {
+				t.Fatal("interrupted agent step mapping was not cleared")
+			}
+		})
+	}
+}
+
 func TestInterruptedRecoveryStatus_PlanningWorkflow(t *testing.T) {
 	t.Parallel()
 

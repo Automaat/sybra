@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
+
 /**
  * Attachment is the persisted metadata for a task-owned local blob.
  */
@@ -14,7 +18,7 @@ export class Attachment {
     "contentType": string;
     "sizeBytes": number;
     "path": string;
-    "createdAt": string;
+    "createdAt": time$0.Time;
 
     /** Creates a new Attachment instance. */
     constructor($$source: Partial<Attachment> = {}) {
@@ -34,7 +38,7 @@ export class Attachment {
             this["path"] = "";
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = "0001-01-01T00:00:00.000Z";
+            this["createdAt"] = null;
         }
 
         Object.assign(this, $$source);
