@@ -853,6 +853,10 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 // retry implementation after a human-required escalation.
 func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	cur, _ := s.tasks.Get(id)
+	decisionReason := ""
+	if reason, ok := updates["status_reason"].(string); ok {
+		decisionReason = reason
+	}
 
 	if status, ok := updates["status"].(string); ok {
 		// Reject status regressions while an agent is running on this task.
@@ -880,7 +884,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	if err != nil {
 		return t, err
 	}
-	s.appendManualHumanRequiredDecision(cur, t, t.StatusReason)
+	s.appendManualHumanRequiredDecision(cur, t, decisionReason)
 	s.wg.Go(func() {
 		// UpdateTask is a Wails-bound method the frontend awaits synchronously;
 		// the follower push carries a bounded remote round trip, so run it

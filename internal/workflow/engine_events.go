@@ -41,18 +41,13 @@ const (
 	// watchdogRewardHackingStatusPrefix must stay in sync with
 	// internal/watchdog/agent.go's rewardHackingRetryStatusReason — the
 	// watchdog writes this exact status-reason prefix when it retries a
-	// reward_hacking stop with enough workflow context to make one clean
-	// re-dispatch useful, and handleWatchdogRewardHackingRetry below
-	// pattern-matches on it.
+	// reward_hacking stop on a role with grounded recovery context, and
+	// handleWatchdogRewardHackingRetry below pattern-matches on it.
 	watchdogRewardHackingStatusPrefix   = "watchdog: reward-hacking retry"
 	watchdogRewardHackingRetryVarPrefix = "watchdog.reward_hacking_retry."
-	// maxWatchdogRewardHackingRetries is deliberately 1, not the generic hang
-	// budget's 2: this path only fires when there is concrete workflow context
-	// for a fresh retry, so a new agent that repeats the same pattern after one
-	// steered retry is a real stuck loop, not a flake.
-	maxWatchdogRewardHackingRetries = 1
-	transientFetchRetryVarPrefix    = "transient_fetch.retry."
-	maxTransientFetchRetries        = 2
+	maxWatchdogRewardHackingRetries     = 1
+	transientFetchRetryVarPrefix        = "transient_fetch.retry."
+	maxTransientFetchRetries            = 2
 	// worktreeRepairRetryVarPrefix/maxWorktreeRepairRetries bound the automated
 	// retry budget for tasks parked blocked with blocker.KindWorktreeRepair
 	// (disk-space exhaustion or a failed rebase — see start_error.go). These
@@ -1593,14 +1588,23 @@ func buildWatchdogReaskNote(attempt int) string {
 	return b.String()
 }
 
-// handleWatchdogRewardHackingRetry re-dispatches the current run_agent step
-// once, fresh, when the watchdog stopped it for a reward_hacking pattern that
-// it judged retriable. Bounded by its own dedicated budget
-// (maxWatchdogRewardHackingRetries), separate from the generic hang budget,
-// since this is a narrower and more targeted retry than a plain no-output
-// hang. Exhausting it escalates to human-required, same as every other
-// bounded watchdog retry.
+type watchdogRewardHackingRetryProfile struct {
+	max             int
+	note            func(attempt int) string
+	exhaustedReason func(attempts int) string
+}
+
+// handleWatchdogRewardHackingRetry re-dispatches a run_agent step whose last
+// run was stopped for reward_hacking but still had grounded context to resume
+// from: implementation continues from the same worktree/NOTES, planning roles
+// refine existing planning artifacts, and fix-review keeps its existing
+// sidecar-location retry. Exhausting the per-role budget escalates to
+// human-required.
 func (e *Engine) handleWatchdogRewardHackingRetry(t *TaskInfo, step *Step) bool {
+	profile, ok := rewardHackingRetryProfile(t, step)
+	if !ok {
+		return false
+	}
 	return e.boundedRetry(t, step, boundedRetryPolicy{
 		name: "watchdog-reward-hacking",
 		applies: func(_ *Engine, t *TaskInfo, step *Step) bool {
@@ -1611,20 +1615,20 @@ func (e *Engine) handleWatchdogRewardHackingRetry(t *TaskInfo, step *Step) bool 
 		// HasRunningAgent already returned false.
 		busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
 		counterKey: watchdogRewardHackingRetryKey,
-		max:        maxWatchdogRewardHackingRetries,
+		max:        profile.max,
 		onArm: func(_ *Engine, t *TaskInfo, step *Step, attempt int) {
 			cleanRef := t.Workflow.Variables[tamperBaselineVar(step.ID)]
 			if cleanRef == "" {
 				cleanRef = "HEAD"
 			}
 			t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
-			t.Workflow.SetVar(watchdogReaskNoteVar, buildRewardHackingReaskNote(attempt))
+			t.Workflow.SetVar(watchdogReaskNoteVar, profile.note(attempt))
 		},
 		onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
 			return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
 		},
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
-			reason := fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatch(es) — agent repeated the same non-progress pattern", attempts)
+			reason := profile.exhaustedReason(attempts)
 			t.Workflow.State = ExecFailed
 			if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 				e.logger.Error("workflow.watchdog-reward-hacking.persist", "task_id", t.ID, "step", step.ID, "err", err)
@@ -1638,6 +1642,44 @@ func (e *Engine) handleWatchdogRewardHackingRetry(t *TaskInfo, step *Step) bool 
 	})
 }
 
+func rewardHackingRetryProfile(t *TaskInfo, step *Step) (watchdogRewardHackingRetryProfile, bool) {
+	if t == nil || t.Workflow == nil || step == nil || step.Type != StepRunAgent || !isWatchdogRewardHackingReason(t.StatusReason) {
+		return watchdogRewardHackingRetryProfile{}, false
+	}
+	switch step.Config.Role {
+	case "fix-review":
+		return watchdogRewardHackingRetryProfile{
+			max:  maxWatchdogRewardHackingRetries,
+			note: buildRewardHackingFixReviewReaskNote,
+			exhaustedReason: func(attempts int) string {
+				return fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatch(es) — review finding still unaddressed", attempts)
+			},
+		}, true
+	case "implementation":
+		return watchdogRewardHackingRetryProfile{
+			max: maxWatchdogStopRetries,
+			note: func(attempt int) string {
+				return buildRewardHackingImplementationReaskNote(attempt, maxWatchdogStopRetries)
+			},
+			exhaustedReason: func(attempts int) string {
+				return fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatches", attempts)
+			},
+		}, true
+	case "plan", "plan-critic":
+		return watchdogRewardHackingRetryProfile{
+			max: maxWatchdogRewardHackingRetries,
+			note: func(attempt int) string {
+				return buildRewardHackingPlanningReaskNote(step.Config.Role, attempt, maxWatchdogRewardHackingRetries)
+			},
+			exhaustedReason: func(attempts int) string {
+				return fmt.Sprintf("watchdog: reward-hacking retry budget exhausted after %d clean re-dispatch(es) — planning stage kept looping without converging", attempts)
+			},
+		}, true
+	default:
+		return watchdogRewardHackingRetryProfile{}, false
+	}
+}
+
 func isWatchdogRewardHackingReason(reason string) bool {
 	reason = strings.TrimSpace(reason)
 	return reason == watchdogRewardHackingStatusPrefix || strings.HasPrefix(reason, watchdogRewardHackingStatusPrefix+":")
@@ -1648,11 +1690,9 @@ func watchdogRewardHackingRetryKey(stepID string) string {
 }
 
 // clearWatchdogRewardHackingRetry drops the per-step reward-hacking retry
-// counter once that step's run completes cleanly. Without this, the same
-// step ID (e.g. fix_review, which loops back through code_review each
-// round) would carry an already-exhausted counter into a later, unrelated
-// round and escalate to human-required on the very first reward_hacking stop
-// of that round instead of retrying once as designed (#2229).
+// counter once that step's run completes cleanly. Without this, a later,
+// unrelated round of the same step ID would inherit an already-exhausted
+// counter and escalate immediately instead of getting its own bounded retry.
 func clearWatchdogRewardHackingRetry(wf *Execution, stepID string) {
 	if wf == nil || wf.Variables == nil || stepID == "" {
 		return
@@ -1660,20 +1700,53 @@ func clearWatchdogRewardHackingRetry(wf *Execution, stepID string) {
 	delete(wf.Variables, watchdogRewardHackingRetryKey(stepID))
 }
 
-// buildRewardHackingReaskNote builds the steer prepended to a re-dispatched
-// prompt: the previous attempt looped without making progress, so make the
-// retry resume from existing task artifacts/notes and force a concrete next
-// action instead of repeating investigation.
-func buildRewardHackingReaskNote(attempt int) string {
+// buildRewardHackingFixReviewReaskNote builds the steer prepended to a
+// re-dispatched fix-review prompt: the previous attempt looped without editing
+// anything, so point it straight at the finding the reviewer already located
+// instead of re-reading unrelated files.
+func buildRewardHackingFixReviewReaskNote(attempt int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⚠️ Your previous run on this step was TERMINATED because the watchdog detected a "+
 		"reward-hacking pattern — repeating the same non-editing action (reading/navigating) instead of "+
 		"making progress — attempt %d of %d.\n\n", attempt, maxWatchdogRewardHackingRetries)
-	b.WriteString("Do not restart broad investigation. Read the existing task sidecars, NOTES.md, and the " +
-		"latest command output, then take the next concrete action allowed by this step's instructions. " +
-		"Do not repeat the same search/read sequence.\n\n")
-	b.WriteString("If you are genuinely blocked, STOP and mark the task human-required with the specific " +
-		"blocker instead of looping.")
+	b.WriteString("The previous attempt stalled reading unrelated files; the code review sidecar already " +
+		"names the fix location. Read it, then edit that exact file directly — do not re-read unrelated " +
+		"files or repeat prior investigation.\n\n")
+	b.WriteString("If you are genuinely blocked on understanding the finding, STOP and mark the task " +
+		"human-required with the specific blocker instead of looping.")
+	return b.String()
+}
+
+func buildRewardHackingImplementationReaskNote(attempt, maxRetries int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️ Your previous implementation run was TERMINATED because the watchdog detected a "+
+		"reward-hacking pattern — repeating the same investigation or command instead of changing code or approach — attempt %d of %d.\n\n",
+		attempt, maxRetries)
+	b.WriteString("Continue from the current worktree state, not from scratch:\n")
+	b.WriteString("- Read `NOTES.md`, `git status --short`, and the current diff before more repo-wide exploration.\n")
+	b.WriteString("- Reuse the progress already on this branch; change the code or command that failed instead of re-reading unrelated files.\n")
+	b.WriteString("- Keep checks focused to the files you touched; do not fall back to the full suite.\n")
+	b.WriteString("- If you are genuinely blocked, STOP and mark the task human-required with the specific blocker instead of looping.\n")
+	return b.String()
+}
+
+func buildRewardHackingPlanningReaskNote(role string, attempt, maxRetries int) string {
+	var b strings.Builder
+	stage := "planning"
+	if role == "plan-critic" {
+		stage = "plan-critique"
+	}
+	fmt.Fprintf(&b, "⚠️ Your previous %s run was TERMINATED because the watchdog detected a reward-hacking pattern — repeating navigation or rereads without advancing the planning artifacts — attempt %d of %d.\n\n",
+		stage, attempt, maxRetries)
+	b.WriteString("Refine the existing planning artifacts instead of restarting broad exploration:\n")
+	if role == "plan-critic" {
+		b.WriteString("- Start from the current plan contract/plan/brief and produce grounded critique against those artifacts.\n")
+		b.WriteString("- Do not spend another turn re-reading unrelated source files unless the existing contract points to a real gap.\n")
+	} else {
+		b.WriteString("- Reuse the current plan research/decisions/brief/contract where possible and tighten the weak spot that caused the loop.\n")
+		b.WriteString("- Do not restart repository-wide discovery unless the existing artifacts are missing a concrete file, symbol, or verification step.\n")
+	}
+	b.WriteString("- If the planning artifact is truly unusable, STOP and mark the task human-required with the specific blocker instead of looping.\n")
 	return b.String()
 }
 

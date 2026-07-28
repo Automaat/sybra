@@ -832,10 +832,19 @@ func (m *Manager) ProviderCanFailover(name string) bool {
 		return false
 	}
 	resolved := prov.Name()
-	healthy := func(p string) bool {
-		return g == nil || g.IsHealthy(p)
+	enabled := func(p string) bool {
+		return providerPolicyEnabled(lp, p)
 	}
-	if g != nil && g.Failover(resolved) != "" {
+	healthy := func(p string) bool {
+		return enabled(p) && (g == nil || g.IsHealthy(p))
+	}
+	if g != nil {
+		alt := g.Failover(resolved)
+		if alt != "" && healthy(alt) {
+			return true
+		}
+	}
+	if !enabled(resolved) && firstHealthyProvider(resolved, providerid.All(), healthy) != "" {
 		return true
 	}
 	if lg == nil {

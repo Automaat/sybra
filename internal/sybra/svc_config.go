@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
@@ -27,6 +28,7 @@ type ConfigService struct {
 	notifier       *notification.Emitter
 	agents         *agent.Manager
 	limits         *limits.Store
+	providerHealth *provider.Checker
 	workflowEngine *workflow.Engine
 	logger         *slog.Logger
 	policy         func() limits.Policy
@@ -399,7 +401,31 @@ func (s *ConfigService) applyHotChangesLocked(result ConfigMutationResult, nextA
 	if slices.Contains(result.Applied, "agent") {
 		s.applyAgentGuardrails(*nextActive)
 	}
+	if providerHealthRuntimeChanged(result.Applied) {
+		s.applyProviderHealthRuntime(*nextActive)
+	}
 	return nil
+}
+
+func providerHealthRuntimeChanged(paths []string) bool {
+	for _, path := range paths {
+		switch path {
+		case "providers.auto_failover", "providers.claude", "providers.codex", "providers.copilot", "providers.opencode":
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ConfigService) applyProviderHealthRuntime(cfg config.Config) {
+	if s.providerHealth == nil {
+		return
+	}
+	s.providerHealth.SetAutoFailover(cfg.Providers.AutoFailover)
+	s.providerHealth.SetProviderEnabled("claude", cfg.Providers.Claude.Enabled)
+	s.providerHealth.SetProviderEnabled("codex", cfg.Providers.Codex.Enabled)
+	s.providerHealth.SetProviderEnabled("copilot", cfg.Providers.Copilot.Enabled)
+	s.providerHealth.SetProviderEnabled("opencode", cfg.Providers.OpenCode.Enabled)
 }
 
 func (s *ConfigService) applyAgentGuardrails(cfg config.Config) {

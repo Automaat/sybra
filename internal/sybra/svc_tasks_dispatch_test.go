@@ -1244,6 +1244,41 @@ func TestUpdateTask_HumanRequiredUnblockAppendsDecisionProgress(t *testing.T) {
 	}
 }
 
+func TestUpdateTask_HumanRequiredUnblockWithoutReasonDoesNotReuseStaleStatusReason(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.artifacts = artifact.New(t.TempDir())
+	tk := newHumanRequiredTask(t, a, 0)
+	stale := "watchdog: loop stop: stale reason from prior escalation"
+	if _, err := a.tasks.Update(tk.ID, task.Update{StatusReason: &stale}); err != nil {
+		t.Fatalf("seed stale status_reason: %v", err)
+	}
+
+	updated, err := svc.UpdateTask(tk.ID, map[string]any{
+		"status": string(task.StatusTodo),
+	})
+	if err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Fatalf("status = %q, want %q", updated.Status, task.StatusTodo)
+	}
+
+	entries, err := svc.artifacts.ReadProgress(tk.ID)
+	if err != nil {
+		t.Fatalf("ReadProgress: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1: %+v", len(entries), entries)
+	}
+	if entries[0].Kind != artifact.ProgressKindDecision {
+		t.Fatalf("kind = %q, want %q", entries[0].Kind, artifact.ProgressKindDecision)
+	}
+	if got := entries[0].Message; got != "Operator decision: moved task from human-required to todo" {
+		t.Fatalf("message = %q, want transition without stale status_reason", got)
+	}
+}
+
 func TestDispatchFromHumanRequired_AppendsDecisionProgress(t *testing.T) {
 	launcher := &fakeAgentLauncher{}
 	svc, a := setupDispatchTestService(t, launcher)
