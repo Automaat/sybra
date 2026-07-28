@@ -625,6 +625,9 @@ func (m *Manager) resolveHeadlessAttemptExit(a *Agent, waitErr error, stderrOut 
 	// quota exhaustion as an exit-0 result event, so classify provider health
 	// even when the process itself looked successful.
 	attemptEvents := attemptEventsFrom(a.Output(), prevLen)
+	if toolUseAborted(attemptEvents) {
+		a.SetError(ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
+	}
 	switch {
 	case waitErr != nil:
 		a.SetExitErr(waitErr)
@@ -652,6 +655,9 @@ func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
 		return
 	}
 	evs := attemptEventsFrom(a.Output(), prevLen)
+	if toolUseAborted(evs) {
+		a.SetError(ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
+	}
 	if streamErr := resultStreamError(evs); streamErr != nil {
 		a.SetExitErr(streamErr)
 		m.reportProviderHealthSignal(a, "", evs)
@@ -662,6 +668,20 @@ func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
 		return
 	}
 	a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
+}
+
+func toolUseAborted(streamEvents []StreamEvent) bool {
+	for i := range slices.Backward(streamEvents) {
+		e := streamEvents[i]
+		if e.Type != "result" {
+			continue
+		}
+		content := strings.ToLower(e.Content)
+		return e.TerminalReason == "aborted_tools" ||
+			strings.Contains(content, "request interrupted by user for tool use") ||
+			strings.Contains(content, "tool use was rejected")
+	}
+	return false
 }
 
 // logAttemptStderr logs a completed attempt's captured stderr. Codex (and

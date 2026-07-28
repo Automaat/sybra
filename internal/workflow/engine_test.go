@@ -3886,6 +3886,56 @@ func TestRescheduleRateLimitedAgent_RerunsCurrentStep(t *testing.T) {
 	}
 }
 
+func TestRescheduleInterruptedAgent_UnparksHumanRequiredCurrentStep(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "human-required",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+		},
+	})
+	if err := tasks.UpdateTaskStatus("t1", "human-required", "provider run aborted after tool use was rejected"); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	setWorkflowAgentRoute(t, tasks, "t1", "interrupted-agent", "implement")
+
+	engine.RescheduleInterruptedAgent("t1", "interrupted-agent")
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("expected replacement agent start, got %d", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "in-progress" || got.StatusReason != "" {
+		t.Fatalf("status/reason = %q/%q, want in-progress with empty reason", got.Status, got.StatusReason)
+	}
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "interrupted-agent"); tracked {
+		t.Fatal("interrupted agent step mapping was not cleared")
+	}
+}
+
+func TestInterruptedRecoveryStatus_PlanningWorkflow(t *testing.T) {
+	t.Parallel()
+
+	if got := interruptedRecoveryStatus("simple-task-plan"); got != "planning" {
+		t.Fatalf("interruptedRecoveryStatus(simple-task-plan) = %q, want planning", got)
+	}
+	if got := interruptedRecoveryStatus("simple-task-implement"); got != "in-progress" {
+		t.Fatalf("interruptedRecoveryStatus(simple-task-implement) = %q, want in-progress", got)
+	}
+}
+
 func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 	tests := []struct {
 		name       string

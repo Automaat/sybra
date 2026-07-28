@@ -46,8 +46,9 @@ type StreamEvent struct {
 	Timestamp       time.Time `json:"timestamp"`
 	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
 	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
-	ErrorType   string `json:"error_type,omitempty"`
-	ErrorStatus int    `json:"error_status,omitempty"`
+	ErrorType      string `json:"error_type,omitempty"`
+	ErrorStatus    int    `json:"error_status,omitempty"`
+	TerminalReason string `json:"terminal_reason,omitempty"`
 	// PlanSteps is populated when the assistant calls TodoWrite; contains the
 	// latest snapshot of the agent's todo list at this point in the stream.
 	PlanSteps []PlanStep `json:"plan_steps,omitempty"`

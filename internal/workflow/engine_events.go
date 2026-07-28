@@ -658,6 +658,62 @@ func (e *Engine) ClearAgentStep(taskID, agentID string) {
 	e.clearAgentStep(taskID, agentID)
 }
 
+// RescheduleInterruptedAgent re-drives a run_agent step interrupted by a
+// rejected tool use. Some providers surface that interruption as
+// human-required before completion routing runs, so this path may narrowly
+// unpark the task when the interrupted agent is still the workflow's tracked
+// agent for the current step.
+func (e *Engine) RescheduleInterruptedAgent(taskID, agentID string) {
+	if taskID == "" {
+		e.clearAgentStep(taskID, agentID)
+		e.logger.Warn("workflow.interrupted-reschedule.untracked", "agent_id", agentID)
+		return
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil || step.Type != StepRunAgent {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	spawnedStep, tracked := e.lookupAgentStep(taskID, agentID)
+	if !tracked || spawnedStep != step.ID {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	e.clearAgentStep(taskID, agentID)
+	clearAgentRouteFromWorkflow(t.Workflow, agentID)
+	if t.Status == "human-required" {
+		status := interruptedRecoveryStatus(t.Workflow.WorkflowID)
+		if err := e.tasks.UpdateTaskStatus(taskID, status, ""); err != nil {
+			e.logger.Error("workflow.interrupted-reschedule.unpark", "task_id", taskID, "step", step.ID, "err", err)
+			return
+		}
+		t.Status = status
+		t.StatusReason = ""
+	}
+	e.rescheduleRunAgent(taskID, agentID, step, t, &def, "workflow.interrupted-reschedule", nil)
+}
+
+func interruptedRecoveryStatus(workflowID string) string {
+	if workflowID == "simple-task-plan" {
+		return "planning"
+	}
+	return "in-progress"
+}
+
 // RescheduleRateLimitedAgent immediately re-drives the run_agent step that a
 // rate-limited agent was executing. It excludes the completing agent from the
 // running-agent check because headless done closes only after onComplete returns.

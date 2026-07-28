@@ -22,6 +22,7 @@ type AgentCompletion struct {
 type CompletionWorkflow interface {
 	HandleAgentComplete(taskID string, c AgentCompletion)
 	ClearAgentStep(taskID, agentID string)
+	RescheduleInterruptedAgent(taskID, agentID string)
 	RescheduleRateLimitedAgent(taskID, agentID string)
 	RescheduleCheckpointedAgent(taskID, agentID string)
 	DispatchEvent(taskID, event string, extra map[string]string, vars map[string]string) (string, error)

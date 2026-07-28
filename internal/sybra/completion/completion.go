@@ -493,10 +493,10 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 
 // notifyWorkflowEngine advances the workflow engine for a completed agent.
 // Returns false if the caller should return immediately. Signal kills and
-// Sybra-initiated stops stall for recovery; rate limits and malformed tool
-// calls immediately re-drive the same step so provider failover can choose a
-// healthy peer. Auth failures fall through (need human login) — they take the
-// normal failed path.
+// Sybra-initiated stops stall for recovery; rate limits, malformed tool calls,
+// and rejected-tool interruptions immediately re-drive the same step so
+// provider failover can choose a healthy peer. Auth failures fall through
+// (need human login) and take the normal failed path.
 //
 // Load-bearing: PR #722's SIGINT-first path lets default Go binaries (e.g.
 // fake-claude in tests) exit with code 2 (NOT WaitStatus.Signaled), so
@@ -514,14 +514,16 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 	if h.workflowEngine == nil {
 		return true
 	}
-	stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, exitErr)
+	stalled, rateLimited, malformedTool, toolUseAborted, stopStalled, checkpointStopped := classifyStall(ag, exitErr)
 	if stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
-			"signaled", isSignalKill(exitErr), "stopped", stopStalled, "rate_limited", rateLimited, "malformed_tool", malformedTool, "checkpoint", checkpointStopped)
+			"signaled", isSignalKill(exitErr), "stopped", stopStalled, "rate_limited", rateLimited, "malformed_tool", malformedTool, "tool_use_aborted", toolUseAborted, "checkpoint", checkpointStopped)
 		switch {
 		case checkpointStopped:
 			h.workflowEngine.RescheduleCheckpointedAgent(ag.TaskID, ag.ID)
+		case toolUseAborted:
+			h.workflowEngine.RescheduleInterruptedAgent(ag.TaskID, ag.ID)
 		case rateLimited || malformedTool:
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
 		default:
@@ -539,15 +541,16 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 	return true
 }
 
-// classifyStall reports whether a completion is a retryable stall — signal
-// kill, stop-before-result, provider rate limit, or malformed tool call —
-// rather than the agent's actual terminal outcome. buildRunPatch and
+// classifyStall reports whether a completion is a retryable stall: signal
+// kill, stop-before-result, provider rate limit, malformed tool call, or
+// rejected-tool interruption rather than the agent's actual terminal outcome. buildRunPatch and
 // notifyWorkflowEngine both key off this so the persisted AgentRun.Outcome and
 // the workflow's Success signal can never diverge: a stalled run is retried,
 // so it must be neither a persisted success nor a persisted failure.
-func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, malformedTool, stopStalled, checkpointStopped bool) {
+func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, malformedTool, toolUseAborted, stopStalled, checkpointStopped bool) {
 	rateLimited = isRateLimitedRun(ag, exitErr)
 	malformedTool = ag.GetErrorKind() == "malformed_tool_call"
+	toolUseAborted = isToolUseAbortedRun(ag)
 	// Cost guardrails intentionally hard-stop the subprocess, but they are a
 	// budget failure, not an infra stall. Let them flow through the bounded
 	// failed-completion path instead of ClearAgentStep/ResumeStalled.
@@ -555,8 +558,8 @@ func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, malfor
 	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpointFailed
 	checkpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
 	stopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !checkpointFailed && !checkpointStopped
-	stalled = isSignalKill(exitErr) || stopStalled || rateLimited || malformedTool || checkpointStopped
-	return stalled, rateLimited, malformedTool, stopStalled, checkpointStopped
+	stalled = isSignalKill(exitErr) || stopStalled || rateLimited || malformedTool || toolUseAborted || checkpointStopped
+	return stalled, rateLimited, malformedTool, toolUseAborted, stopStalled, checkpointStopped
 }
 
 // runTerminalOutcome derives the AgentRun.Outcome value for a completed run:
@@ -564,7 +567,7 @@ func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, malfor
 // otherwise success/failure keyed off the same exitErr notifyWorkflowEngine
 // uses for AgentCompletion.Success.
 func runTerminalOutcome(ag *agent.Agent, exitErr error) string {
-	if stalled, _, _, _, _ := classifyStall(ag, exitErr); stalled {
+	if stalled, _, _, _, _, _ := classifyStall(ag, exitErr); stalled {
 		return ""
 	}
 	if exitErr == nil {
@@ -791,7 +794,7 @@ func (h *Handler) captureHeadSHA(taskID string) string {
 // non-nil, so it is recorded as completed rather than inflating the role's
 // failure_rate with a run that was never actually a failure.
 func (h *Handler) runOutcome(ag *agent.Agent, role agent.Role, exitErr error, resultContent string) string {
-	if stalled, _, _, stopStalled, checkpointStopped := classifyStall(ag, exitErr); stalled {
+	if stalled, _, _, _, stopStalled, checkpointStopped := classifyStall(ag, exitErr); stalled {
 		switch {
 		case h.isSupersededStop(ag.TaskID):
 			return runoutcome.Superseded
@@ -934,6 +937,10 @@ func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
 // as an exit-0 result, so the agent error kind is authoritative.
 func isRateLimitedRun(ag *agent.Agent, exitErr error) bool {
 	return ag.GetErrorKind() == "rate_limit"
+}
+
+func isToolUseAbortedRun(ag *agent.Agent) bool {
+	return ag.GetErrorKind() == agent.ErrorKindToolUseAborted
 }
 
 // isSignalKill reports whether err represents a process killed by an OS signal.
