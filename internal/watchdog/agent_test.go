@@ -568,14 +568,16 @@ func TestApplyVerdict_RewardHackingFixReviewWithFindingRetries(t *testing.T) {
 // workflow, so a second identical stop escalates there.
 func TestApplyVerdict_RewardHackingWorkflowRolesRetry(t *testing.T) {
 	tests := []struct {
-		name       string
-		role       agent.Role
-		workflowID string
-		stepID     string
+		name          string
+		role          agent.Role
+		workflowID    string
+		stepID        string
+		initialStatus task.Status
+		wantStatus    task.Status
 	}{
-		{"implementation", agent.RoleImplementation, "simple-task-implement", "implement"},
-		{"plan", agent.RolePlan, "simple-task-plan", "plan"},
-		{"plan-critic", agent.RolePlanCritic, "simple-task-plan", "critique_plan"},
+		{"implementation", agent.RoleImplementation, "simple-task-implement", "implement", task.StatusInProgress, task.StatusInProgress},
+		{"plan", agent.RolePlan, "simple-task-plan", "plan", task.StatusPlanning, task.StatusPlanning},
+		{"plan-critic", agent.RolePlanCritic, "simple-task-plan", "critique_plan", task.StatusPlanning, task.StatusPlanning},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -591,6 +593,7 @@ func TestApplyVerdict_RewardHackingWorkflowRolesRetry(t *testing.T) {
 				StepCounts:  map[string]int{},
 			}
 			if _, err := tasks.Update(tk.ID, task.Update{
+				Status:   task.Ptr(tc.initialStatus),
 				Workflow: &wf,
 			}); err != nil {
 				t.Fatalf("seed workflow: %v", err)
@@ -618,8 +621,8 @@ func TestApplyVerdict_RewardHackingWorkflowRolesRetry(t *testing.T) {
 			if err != nil {
 				t.Fatalf("get task: %v", err)
 			}
-			if got.Status != task.StatusInProgress {
-				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
 			}
 			if got.StatusReason != "watchdog: reward-hacking retry: repeating the same search/edit sequence after restart" {
 				t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)

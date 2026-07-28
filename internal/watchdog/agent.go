@@ -929,15 +929,22 @@ func hasUnaddressedReviewFinding(codeReview string) bool {
 
 // stopForRewardHackingRetry handles a "stop" verdict whose ReasonKind is
 // "reward_hacking" when retriableRewardHackingStop has already confirmed there
-// is enough context to retry once. The task is left in-progress (not
-// human-required) with a distinct status-reason prefix the workflow engine's
-// handleWatchdogRewardHackingRetry recognizes on the next ResumeStalled tick.
+// is enough context to retry once. The task is left in its current active
+// status (not human-required) with a distinct status-reason prefix the workflow
+// engine's handleWatchdogRewardHackingRetry recognizes on the next
+// ResumeStalled tick.
+// Keep the current workflow phase status so a planning retry does not trigger
+// the implementation status workflow before the planner/critic can retry.
 func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.InspectorVerdict) {
 	reason := rewardHackingRetryStatusReason
 	if verdict.Reason != "" {
 		reason = rewardHackingRetryStatusReason + ": " + verdict.Reason
 	}
-	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.reward-hacking-retry", task.StatusInProgress, reason); err != nil {
+	status := task.StatusInProgress
+	if t, err := w.tasks.Get(ag.TaskID); err == nil && t.Status != "" {
+		status = t.Status
+	}
+	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.reward-hacking-retry", status, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	if err := w.stopAgent(ag.ID); err != nil {
