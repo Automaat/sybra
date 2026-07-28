@@ -1203,7 +1203,7 @@ func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		}
 	}
 
-	before, err := s.Get(id)
+	before, err := getTaskViaAPIOrFS(s, api, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1620,7 +1620,7 @@ func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "pr-number must be a positive integer, got %q", args[1])
 	}
 
-	t, err := s.Get(id)
+	t, err := getTaskViaAPIOrFS(s, api, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
