@@ -30,6 +30,10 @@ import (
 type State string
 
 const (
+	ErrorKindToolUseAborted = "tool_use_aborted"
+)
+
+const (
 	StateIdle    State = "idle"
 	StateQueued  State = "queued"
 	StateRunning State = "running"

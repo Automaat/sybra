@@ -114,6 +114,17 @@ func TestRunOutcome(t *testing.T) {
 			want: "stalled",
 		},
 		{
+			name: "tool_use_aborted_is_a_stall",
+			role: agent.RoleImplementation,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.SetError(agent.ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
+				return ag
+			},
+			exitErr: errBoom,
+			want:    "stalled",
+		},
+		{
 			// A budget breach is a deliberate hard-stop, not an infra stall —
 			// it must stay countable as a real failure (classifyStall).
 			name: "cost_guardrail_stop_stays_a_failure",
@@ -522,10 +533,10 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		ag.MarkStopped()
 		ag.SetEscalationReason("checkpoint")
 
-		stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, nil)
-		if !stalled || rateLimited || malformedTool || stopStalled || !checkpointStopped {
-			t.Fatalf("classifyStall(checkpoint) = stalled=%v rateLimited=%v malformedTool=%v stopStalled=%v checkpointStopped=%v",
-				stalled, rateLimited, malformedTool, stopStalled, checkpointStopped)
+		stall := classifyStall(ag, nil)
+		if !stall.Stalled || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || stall.StopStalled || !stall.CheckpointStopped {
+			t.Fatalf("classifyStall(checkpoint) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.StopStalled, stall.CheckpointStopped)
 		}
 	})
 
@@ -534,10 +545,10 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		ag.MarkStopped()
 		ag.SetEscalationReason("checkpoint_failed")
 
-		stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, errors.New("checkpoint commit failed"))
-		if stalled || rateLimited || malformedTool || stopStalled || checkpointStopped {
-			t.Fatalf("classifyStall(checkpoint_failed) = stalled=%v rateLimited=%v malformedTool=%v stopStalled=%v checkpointStopped=%v",
-				stalled, rateLimited, malformedTool, stopStalled, checkpointStopped)
+		stall := classifyStall(ag, errors.New("checkpoint commit failed"))
+		if stall.Stalled || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || stall.StopStalled || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(checkpoint_failed) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.StopStalled, stall.CheckpointStopped)
 		}
 	})
 
@@ -545,10 +556,21 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		ag := &agent.Agent{}
 		ag.SetError("malformed_tool_call", "tool rejected malformed input")
 
-		stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, nil)
-		if !stalled || rateLimited || !malformedTool || stopStalled || checkpointStopped {
-			t.Fatalf("classifyStall(malformed_tool_call) = stalled=%v rateLimited=%v malformedTool=%v stopStalled=%v checkpointStopped=%v",
-				stalled, rateLimited, malformedTool, stopStalled, checkpointStopped)
+		stall := classifyStall(ag, nil)
+		if !stall.Stalled || stall.RateLimited || !stall.MalformedTool || stall.ToolUseAborted || stall.StopStalled || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(malformed_tool_call) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.StopStalled, stall.CheckpointStopped)
+		}
+	})
+
+	t.Run("tool use aborted stalls for retry", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
+
+		stall := classifyStall(ag, errors.New("provider result error provider_error"))
+		if !stall.Stalled || stall.RateLimited || stall.MalformedTool || !stall.ToolUseAborted || stall.StopStalled || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(tool_use_aborted) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.StopStalled, stall.CheckpointStopped)
 		}
 	})
 }

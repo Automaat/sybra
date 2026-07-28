@@ -52,6 +52,7 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 			ev.ReasoningTokens = e.Result.ReasoningTokens
 			ev.ErrorType = e.Result.ErrorType
 			ev.ErrorStatus = e.Result.ErrorStatus
+			ev.TerminalReason = e.Result.TerminalReason
 		}
 
 	}
@@ -130,6 +131,7 @@ func codexEventToStreamEvent(e CodexEvent) StreamEvent {
 			ev.ReasoningTokens = e.Result.ReasoningTokens
 			ev.ErrorType = e.Result.ErrorType
 			ev.ErrorStatus = e.Result.ErrorStatus
+			ev.TerminalReason = e.Result.TerminalReason
 		}
 	}
 	return ev
@@ -170,6 +172,7 @@ func copilotEventToStreamEvent(e CopilotEvent) StreamEvent {
 			ev.PremiumRequests = e.Result.PremiumRequests
 			ev.ErrorType = e.Result.ErrorType
 			ev.ErrorStatus = e.Result.ErrorStatus
+			ev.TerminalReason = e.Result.TerminalReason
 		}
 	}
 	return ev
@@ -219,6 +222,7 @@ func opencodeEventToStreamEvent(e OpenCodeEvent) StreamEvent {
 			ev.ReasoningTokens = e.Result.ReasoningTokens
 			ev.ErrorType = e.Result.ErrorType
 			ev.ErrorStatus = e.Result.ErrorStatus
+			ev.TerminalReason = e.Result.TerminalReason
 		}
 	}
 	return ev

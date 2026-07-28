@@ -28,6 +28,7 @@ type ClaudeResult struct {
 	Subtype                  string
 	Text                     string
 	SessionID                string
+	TerminalReason           string
 	CostUSD                  float64
 	InputTokens              int
 	OutputTokens             int
@@ -113,6 +114,7 @@ type claudeEnvelope struct {
 	ParentToolUseID string                `json:"parent_tool_use_id,omitempty"`
 	Message         *claudeMessagePayload `json:"message"`
 	Result          string                `json:"result"`
+	TerminalReason  string                `json:"terminal_reason"`
 	TotalCostUSD    float64               `json:"total_cost_usd"`
 	IsError         bool                  `json:"is_error"`
 	APIStatus       int                   `json:"api_error_status"`
@@ -1111,12 +1113,13 @@ func extractToolResultsTyped(msg *claudeMessagePayload) []ToolResultBlock {
 
 func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
 	r := ClaudeResult{
-		Subtype:      raw.Subtype,
-		Text:         raw.Result,
-		SessionID:    raw.SessionID,
-		CostUSD:      sanitizeCostUSD(raw.TotalCostUSD),
-		InputTokens:  raw.TotalInputTokens,
-		OutputTokens: raw.TotalOutputTokens,
+		Subtype:        raw.Subtype,
+		Text:           raw.Result,
+		SessionID:      raw.SessionID,
+		TerminalReason: raw.TerminalReason,
+		CostUSD:        sanitizeCostUSD(raw.TotalCostUSD),
+		InputTokens:    raw.TotalInputTokens,
+		OutputTokens:   raw.TotalOutputTokens,
 	}
 	if raw.Usage != nil {
 		// usage.input_tokens / usage.output_tokens are the canonical Claude

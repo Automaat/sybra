@@ -491,6 +491,26 @@ func TestResultStreamError(t *testing.T) {
 	}
 }
 
+func TestParseClaudeLine_ResultTerminalReason(t *testing.T) {
+	t.Parallel()
+
+	line := []byte(`{"type":"result","subtype":"error_during_execution","terminal_reason":"aborted_tools","is_error":true,"result":"interrupted"}`)
+	ev, err := ParseClaudeLine(line)
+	if err != nil {
+		t.Fatalf("ParseClaudeLine: %v", err)
+	}
+	if ev.Result == nil {
+		t.Fatal("Result = nil")
+	}
+	if ev.Result.TerminalReason != "aborted_tools" {
+		t.Fatalf("TerminalReason = %q, want aborted_tools", ev.Result.TerminalReason)
+	}
+	stream := claudeEventToStreamEvent(ev)
+	if stream.TerminalReason != "aborted_tools" {
+		t.Fatalf("StreamEvent.TerminalReason = %q, want aborted_tools", stream.TerminalReason)
+	}
+}
+
 func TestLastHeadlessResultMarksStructuredError(t *testing.T) {
 	a := &Agent{}
 	a.AppendOutput(StreamEvent{Type: "result", Content: "You've hit your weekly limit", ErrorType: "rate_limit", ErrorStatus: 429})
