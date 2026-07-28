@@ -60,6 +60,59 @@ func TestGateProvider_UnhealthyWithFailover(t *testing.T) {
 	}
 }
 
+func TestGateProvider_SkipsDisabledHealthFailoverTarget(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{"claude": false, "codex": true, "copilot": true},
+		failover: map[string]string{"claude": "copilot"},
+		reasons:  map[string]string{"claude": "rate_limited"},
+	})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "claude",
+		LimitPolicy: limits.Policy{
+			ProviderEnabled: map[string]bool{
+				limits.ProviderClaude:  true,
+				limits.ProviderCodex:   true,
+				limits.ProviderCopilot: false,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceRuntimeConfig: %v", err)
+	}
+
+	got, err := m.gateProvider(RunConfig{Provider: "claude"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "codex" {
+		t.Fatalf("provider = %q, want codex", got)
+	}
+}
+
+func TestGateProvider_ConfigDisabledRequestedProviderFailsOver(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true, "copilot": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "copilot",
+		LimitPolicy: limits.Policy{
+			ProviderEnabled: map[string]bool{
+				limits.ProviderCodex:   true,
+				limits.ProviderCopilot: false,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceRuntimeConfig: %v", err)
+	}
+
+	got, err := m.gateProvider(RunConfig{Provider: "copilot"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "codex" {
+		t.Fatalf("provider = %q, want codex", got)
+	}
+}
+
 // TestPrepareRunConfig_InteractiveFailsOverLikeHeadless is a regression guard
 // for the "interactive doesn't fail over" premise: it does. Both modes resolve
 // the provider through the same prepareRunConfig -> gateProvider path, so an

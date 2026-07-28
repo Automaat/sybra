@@ -9,6 +9,7 @@ func (a *App) wireConfigService() {
 	a.configSvc.notifier = a.notifier
 	a.configSvc.agents = a.agents
 	a.configSvc.limits = a.limits
+	a.configSvc.providerHealth = a.providerHealth
 	a.configSvc.workflowEngine = a.workflowEngine
 	a.configSvc.logger = a.logger
 	a.configSvc.policy = a.limitPolicy

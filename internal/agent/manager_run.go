@@ -1139,44 +1139,30 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (resolvedProvider, rout
 	maxInFlight := m.maxInFlightPerProvider
 	live := maps.Clone(m.liveByProvider)
 	m.mu.RUnlock()
+	enabled := func(p string) bool {
+		return providerPolicyEnabled(lp, p)
+	}
 	underCap := func(p string) bool {
 		return maxInFlight <= 0 || live[p] < maxInFlight
 	}
 	healthy := func(p string) bool {
-		return (g == nil || g.IsHealthy(p)) && underCap(p)
+		return enabled(p) && (g == nil || g.IsHealthy(p)) && underCap(p)
 	}
 	candidateProviders := providerid.All()
+	if !enabled(resolved) {
+		var disabledEvents []providerGateEvent
+		resolved, routingReason, disabledEvents, err = failoverDisabledProvider(resolved, routingReason, cfg, candidateProviders, healthy)
+		gateEvents = append(gateEvents, disabledEvents...)
+		if err != nil {
+			return "", routingReason, gateEvents, err
+		}
+	}
 	if g != nil && !g.IsHealthy(resolved) {
-		if cfg.DisableProviderFailover {
-			reason := g.Reason(resolved)
-			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", routingReason, gateEvents, newProviderUnhealthy(resolved, reason)
-		}
-		alt := g.Failover(resolved)
-		if alt != "" && !underCap(alt) {
-			// g.Failover only consults health, so its pick may already be at
-			// its in-flight cap. AutoFailover being enabled is established by
-			// alt != "", so it's safe to look for another peer that is both
-			// healthy and under cap before settling for the at-cap pick.
-			if capAlt := firstHealthyProvider(resolved, candidateProviders, healthy); capAlt != "" {
-				alt = capAlt
-			}
-		}
-		if alt != "" {
-			altProv, err := lookupProvider(alt)
-			if err != nil {
-				return "", routingReason, gateEvents, err
-			}
-			gateEvents = append(gateEvents, providerGateEvent{
-				kind: "failover", from: resolved, to: altProv.Name(),
-				reason: g.Reason(resolved), logKey: "agent.run.failover", logLevel: "warn", taskID: cfg.TaskID,
-			})
-			resolved = altProv.Name()
-			routingReason = "failover"
-		} else {
-			reason := g.Reason(resolved)
-			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", routingReason, gateEvents, newProviderUnhealthy(resolved, reason)
+		var healthEvents []providerGateEvent
+		resolved, routingReason, healthEvents, err = failoverUnhealthyProvider(resolved, routingReason, cfg, candidateProviders, g, healthy)
+		gateEvents = append(gateEvents, healthEvents...)
+		if err != nil {
+			return "", routingReason, gateEvents, err
 		}
 	}
 	if lg == nil {
@@ -1236,6 +1222,65 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (resolvedProvider, rout
 	} else {
 		return m.softLimitLastResort(resolved, routingReason, reason, gateEvents, cfg.TaskID)
 	}
+}
+
+func providerPolicyEnabled(policy limits.Policy, providerName string) bool {
+	if ok, exists := policy.ProviderEnabled[providerName]; exists && !ok {
+		return false
+	}
+	return true
+}
+
+func failoverDisabledProvider(resolved, routingReason string, cfg RunConfig, candidates []string, healthy func(string) bool) (selectedProvider, selectedRoutingReason string, gateEvents []providerGateEvent, err error) {
+	reason := "provider disabled"
+	if cfg.DisableProviderFailover {
+		return "", routingReason,
+			[]providerGateEvent{{kind: "gated", provider: resolved, reason: reason}},
+			newProviderUnhealthy(resolved, reason)
+	}
+	alt := firstHealthyProvider(resolved, candidates, healthy)
+	if alt == "" {
+		return "", routingReason,
+			[]providerGateEvent{{kind: "gated", provider: resolved, reason: reason}},
+			newProviderUnhealthy(resolved, reason)
+	}
+	return alt, "failover",
+		[]providerGateEvent{{
+			kind: "failover", from: resolved, to: alt,
+			reason: reason, logKey: "agent.run.failover", logLevel: "warn", taskID: cfg.TaskID,
+		}},
+		nil
+}
+
+func failoverUnhealthyProvider(resolved, routingReason string, cfg RunConfig, candidates []string, g provider.HealthGate, healthy func(string) bool) (selectedProvider, selectedRoutingReason string, gateEvents []providerGateEvent, err error) {
+	reason := g.Reason(resolved)
+	if cfg.DisableProviderFailover {
+		return "", routingReason,
+			[]providerGateEvent{{kind: "gated", provider: resolved, reason: reason}},
+			newProviderUnhealthy(resolved, reason)
+	}
+	alt := g.Failover(resolved)
+	if alt != "" && !healthy(alt) {
+		// g.Failover only consults the health checker. Runtime policy and
+		// in-flight caps live in the agent manager, so revalidate the pick
+		// before accepting it as a runnable provider.
+		alt = firstHealthyProvider(resolved, candidates, healthy)
+	}
+	if alt == "" {
+		return "", routingReason,
+			[]providerGateEvent{{kind: "gated", provider: resolved, reason: reason}},
+			newProviderUnhealthy(resolved, reason)
+	}
+	altProv, err := lookupProvider(alt)
+	if err != nil {
+		return "", routingReason, nil, err
+	}
+	return altProv.Name(), "failover",
+		[]providerGateEvent{{
+			kind: "failover", from: resolved, to: altProv.Name(),
+			reason: reason, logKey: "agent.run.failover", logLevel: "warn", taskID: cfg.TaskID,
+		}},
+		nil
 }
 
 func (m *Manager) softLimitLastResort(resolved, routingReason, reason string, gateEvents []providerGateEvent, taskID string) (selectedProvider, selectedRoutingReason string, updatedGateEvents []providerGateEvent, err error) {
