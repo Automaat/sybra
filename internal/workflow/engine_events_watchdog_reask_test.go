@@ -354,6 +354,43 @@ func TestHandleWatchdogRewardHackingRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	}
 }
 
+func TestHandleWatchdogRewardHackingRetry_ImplementationUsesImplementationBudget(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: reward-hacking retry: re-reading the same files without changing code",
+		Workflow:     wf,
+	})
+	ti := TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: reward-hacking retry: re-reading the same files without changing code",
+		Workflow:     wf,
+	}
+
+	escalated := engine.handleWatchdogRewardHackingRetry(&ti, &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation"}})
+	if escalated {
+		t.Fatal("first implementation reward-hacking stop should retry, not escalate")
+	}
+	note := wf.Variables[watchdogReaskNoteVar]
+	if !strings.Contains(note, "attempt 1 of 2") {
+		t.Fatalf("reask note missing implementation attempt budget:\n%s", note)
+	}
+	if !strings.Contains(note, "NOTES.md") {
+		t.Fatalf("reask note should steer implementation toward existing worktree context:\n%s", note)
+	}
+}
+
 func TestHandleWatchdogRewardHackingRetry_ExhaustedBudgetEscalates(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
@@ -397,19 +434,48 @@ func TestHandleWatchdogRewardHackingRetry_ExhaustedBudgetEscalates(t *testing.T)
 	}
 }
 
-func TestBuildRewardHackingReaskNote_AttemptCount(t *testing.T) {
+func TestBuildRewardHackingFixReviewReaskNote_AttemptCount(t *testing.T) {
 	t.Parallel()
-	if got := buildRewardHackingReaskNote(&Step{Config: StepConfig{Role: "fix-review"}}, 1, 1); !strings.Contains(got, "attempt 1 of 1") {
-		t.Fatalf("buildRewardHackingReaskNote(fix-review) = %q", got)
+	if got := buildRewardHackingFixReviewReaskNote(1); !strings.Contains(got, "attempt 1 of 1") {
+		t.Fatalf("buildRewardHackingFixReviewReaskNote(1) = %q", got)
 	}
-	if got := buildRewardHackingReaskNote(&Step{Config: StepConfig{Role: "plan"}}, 2, 2); !strings.Contains(got, "attempt 2 of 2") {
-		t.Fatalf("buildRewardHackingReaskNote(plan) = %q", got)
+}
+
+func TestResumeStalled_WatchdogRewardHackingPlanCriticRendersRetryNote(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "simple-task-plan")); err != nil {
+		t.Fatalf("save simple-task-plan: %v", err)
 	}
-	if got := buildRewardHackingReaskNote(&Step{Config: StepConfig{Role: "plan"}}, 1, 2); !strings.Contains(got, "Reusable planning artifacts") {
-		t.Fatalf("plan reward-hacking note missing planning guidance:\n%s", got)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "planning",
+		StatusReason: "watchdog: reward-hacking retry: re-reading the plan without writing critique",
+		Plan:         "# Execution Plan\n\n## Decision\nGrounded plan\n",
+		PlanContract: `{"task_id":"t1","verification":[{"command":"go test ./...","expected":"pass"}],"acceptance_criteria":["done"]}`,
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "critique_plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1", got)
 	}
-	if got := buildRewardHackingReaskNote(&Step{Config: StepConfig{Role: "implementation"}}, 1, 2); !strings.Contains(got, "current worktree and NOTES") {
-		t.Fatalf("implementation reward-hacking note missing worktree guidance:\n%s", got)
+	prompt := agents.calls[0].Prompt
+	if !strings.Contains(prompt, "watchdog detected a reward-hacking pattern") {
+		t.Fatalf("critique_plan prompt missing reward-hacking context:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "plan-critique run") {
+		t.Fatalf("critique_plan prompt missing stage-specific retry guidance:\n%s", prompt)
 	}
 }
 

@@ -688,18 +688,16 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 			w.stopAndVerifyAmbiguousLoop(ctx, ag, trigger, verdict)
 			return
 		}
-		// Reward-hacking loop/budget stops are usually terminal, but a narrow
-		// subset can safely retry from the same workflow state instead of
-		// parking human-required immediately:
-		//   - fix-review with a concrete finding already named in the sidecar
-		//   - implementation, resuming from the same worktree/NOTES
-		//   - plan / plan-critic when reusable planning artifacts already exist
-		// Anything outside those bounded lanes still escalates as before.
-		if ag.TaskID != "" && verdict.ReasonKind == "reward_hacking" && (trigger == "loop" || trigger == "budget") {
-			if status, ok := w.retriableRewardHackingStatus(ag); ok {
-				w.stopForRewardHackingRetry(ag, verdict, status)
-				return
-			}
+		// #2229 plus #2687: reward_hacking stops are retryable only when the
+		// workflow still has grounded context to continue from. That is true
+		// for implementation (same worktree/NOTES), for planning roles when
+		// planning artifacts already exist, and for fix-review when the code
+		// review sidecar still names a concrete finding location. Everything
+		// else still escalates immediately.
+		if ag.TaskID != "" && verdict.ReasonKind == "reward_hacking" && (trigger == "loop" || trigger == "budget") &&
+			w.retriableRewardHacking(ag) {
+			w.stopForRewardHackingRetry(ag, verdict)
+			return
 		}
 		// Set the task state before stopping so the completion callback sees the
 		// intended recovery path. rate_limit is already handled above regardless
@@ -888,35 +886,48 @@ func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict age
 		"id", ag.ID, "task_id", ag.TaskID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
 }
 
-// retriableRewardHackingStatus reports whether a reward_hacking "stop" verdict
-// for ag should be retried instead of escalated, and if so which non-terminal
-// task status should be restored for the retry. fix-review stays narrowly
-// scoped to a concrete review finding; implementation always resumes from the
-// same worktree/NOTES; planning roles retry only once they have reusable plan
-// artifacts to refine instead of starting discovery from scratch.
-func (w *Watchdog) retriableRewardHackingStatus(ag *agent.Agent) (task.Status, bool) {
+// retriableRewardHacking reports whether a reward_hacking "stop" verdict for
+// ag should be retried instead of escalated. The retry requires existing
+// workflow context to continue from: implementation reuses the same
+// worktree/NOTES, planning reuses already-written planning artifacts, and
+// fix-review reuses a concrete review finding.
+func (w *Watchdog) retriableRewardHacking(ag *agent.Agent) bool {
+	switch ag.EffectiveRole() {
+	case agent.RoleImplementation:
+		return true
+	case agent.RolePlan, agent.RolePlanCritic, agent.RoleFixReview:
+	default:
+		return false
+	}
+
 	t, err := w.tasks.Get(ag.TaskID)
 	if err != nil {
-		return "", false
+		return false
 	}
-	role := ag.Role
-	if role == "" {
-		var ok bool
-		role, ok = agent.ParseRoleFromName(ag.Name)
-		if !ok {
-			return "", false
+	switch ag.EffectiveRole() {
+	case agent.RolePlan, agent.RolePlanCritic:
+		return hasUsablePlanningArtifacts(t)
+	case agent.RoleFixReview:
+		return hasUnaddressedReviewFinding(t.CodeReview)
+	default:
+		return false
+	}
+}
+
+func hasUsablePlanningArtifacts(t task.Task) bool {
+	for _, content := range []string{
+		t.Plan,
+		t.PlanContract,
+		t.PlanResearch,
+		t.PlanDecisions,
+		t.PlanBrief,
+		t.PlanCritique,
+	} {
+		if strings.TrimSpace(content) != "" {
+			return true
 		}
 	}
-	switch role {
-	case agent.RoleFixReview:
-		return task.StatusInProgress, hasUnaddressedReviewFinding(t.CodeReview)
-	case agent.RoleImplementation:
-		return task.StatusInProgress, true
-	case agent.RolePlan, agent.RolePlanCritic:
-		return task.StatusPlanning, hasUsablePlanningArtifacts(t)
-	default:
-		return "", false
-	}
+	return false
 }
 
 // hasUnaddressedReviewFinding reports whether a code-review sidecar still
@@ -929,38 +940,25 @@ func hasUnaddressedReviewFinding(codeReview string) bool {
 	return strings.Contains(codeReview, "Location:")
 }
 
-func hasUsablePlanningArtifacts(t task.Task) bool {
-	for _, artifact := range []string{
-		t.PlanContract,
-		t.Plan,
-		t.PlanResearch,
-		t.PlanDecisions,
-		t.PlanBrief,
-	} {
-		if strings.TrimSpace(artifact) != "" {
-			return true
-		}
-	}
-	return false
-}
-
 // stopForRewardHackingRetry handles a "stop" verdict whose ReasonKind is
-// "reward_hacking" on a workflow-owned role that has a bounded recovery path.
-// The task stays on its active workflow status (planning/in-progress) with a
-// distinct status-reason prefix the workflow engine recognizes on the next
-// ResumeStalled tick and re-dispatches from the same worktree/notes.
-func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.InspectorVerdict, status task.Status) {
+// "reward_hacking" on a role that retriableRewardHacking has already
+// confirmed can continue from existing grounded context. The task is left
+// in-progress (not human-required) with a distinct status-reason prefix the
+// workflow engine recognizes on the next ResumeStalled tick and re-dispatches
+// with role-specific guidance, before falling back to human-required once that
+// bounded retry budget is exhausted.
+func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.InspectorVerdict) {
 	reason := rewardHackingRetryStatusReason
 	if verdict.Reason != "" {
 		reason = rewardHackingRetryStatusReason + ": " + verdict.Reason
 	}
-	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.reward-hacking-retry", status, reason); err != nil {
+	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.reward-hacking-retry", task.StatusInProgress, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	if err := w.stopAgent(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
 	}
-	w.logger.Info("agent.watchdog.reward_hacking.retry", "id", ag.ID, "task_id", ag.TaskID, "role", ag.EffectiveRole(), "status", status, "reason", verdict.Reason)
+	w.logger.Info("agent.watchdog.reward_hacking.retry", "id", ag.ID, "task_id", ag.TaskID, "reason", verdict.Reason)
 }
 
 // rewardHackingRetryStatusReason must stay in sync with
