@@ -1717,11 +1717,11 @@ func buildRewardHackingFixReviewReaskNote(attempt int) string {
 	return b.String()
 }
 
-func buildRewardHackingImplementationReaskNote(attempt, max int) string {
+func buildRewardHackingImplementationReaskNote(attempt, maxRetries int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⚠️ Your previous implementation run was TERMINATED because the watchdog detected a "+
 		"reward-hacking pattern — repeating the same investigation or command instead of changing code or approach — attempt %d of %d.\n\n",
-		attempt, max)
+		attempt, maxRetries)
 	b.WriteString("Continue from the current worktree state, not from scratch:\n")
 	b.WriteString("- Read `NOTES.md`, `git status --short`, and the current diff before more repo-wide exploration.\n")
 	b.WriteString("- Reuse the progress already on this branch; change the code or command that failed instead of re-reading unrelated files.\n")
@@ -1730,14 +1730,14 @@ func buildRewardHackingImplementationReaskNote(attempt, max int) string {
 	return b.String()
 }
 
-func buildRewardHackingPlanningReaskNote(role string, attempt, max int) string {
+func buildRewardHackingPlanningReaskNote(role string, attempt, maxRetries int) string {
 	var b strings.Builder
 	stage := "planning"
 	if role == "plan-critic" {
 		stage = "plan-critique"
 	}
 	fmt.Fprintf(&b, "⚠️ Your previous %s run was TERMINATED because the watchdog detected a reward-hacking pattern — repeating navigation or rereads without advancing the planning artifacts — attempt %d of %d.\n\n",
-		stage, attempt, max)
+		stage, attempt, maxRetries)
 	b.WriteString("Refine the existing planning artifacts instead of restarting broad exploration:\n")
 	if role == "plan-critic" {
 		b.WriteString("- Start from the current plan contract/plan/brief and produce grounded critique against those artifacts.\n")
