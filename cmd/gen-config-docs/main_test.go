@@ -38,12 +38,14 @@ func TestWalkRendersRepeatedLocalStructsAtEachYAMLPath(t *testing.T) {
 		"| `routing` | Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes. | `routing` |",
 		"## Routing",
 		"### RoutingConfig (`routing`)",
-		"| `webhook` | Inbound external task-creation webhook listener and request-signing controls. | `webhook` |",
-		"## Webhook",
-		"### WebhookConfig (`webhook`)",
+		"### GitHubWebhookConfig (`integrations.github.webhook`)",
+		"| `integrations.github.webhook.enabled` |",
 	} {
 		if !strings.Contains(doc, want) {
 			t.Fatalf("generated docs missing %q", want)
 		}
+	}
+	if strings.Contains(doc, "### WebhookConfig (`webhook`)") {
+		t.Fatal("generated docs retained the deprecated top-level WebhookConfig section")
 	}
 }

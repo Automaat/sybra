@@ -55,7 +55,7 @@ func configToSettings(c *config.Config) AppSettings {
 			ABTestingMinSamplesPerVariant: c.ABTesting.MinSamplesPerVariant,
 			Summary:                       config.BuildRoutingSummary(c),
 		},
-		GitHub:       c.GitHub,
+		GitHub:       githubSettingsWithoutSecrets(c.GitHub),
 		Monitor:      c.Monitor,
 		SelfMonitor:  c.SelfMonitor,
 		Triage:       c.Triage,

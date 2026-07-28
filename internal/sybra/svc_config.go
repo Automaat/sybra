@@ -69,7 +69,7 @@ func (s *ConfigService) GetSettings() AppSettings {
 			ABTestingMinSamplesPerVariant: c.ABTesting.MinSamplesPerVariant,
 			Summary:                       config.BuildRoutingSummary(c),
 		},
-		GitHub:       c.GitHub,
+		GitHub:       githubSettingsWithoutSecrets(c.GitHub),
 		Monitor:      c.Monitor,
 		SelfMonitor:  c.SelfMonitor,
 		Triage:       c.Triage,
@@ -522,6 +522,12 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 		next.ABTesting.MinSamplesPerVariant = settings.ProviderRouting.ABTestingMinSamplesPerVariant
 	}
 	next.GitHub = settings.GitHub
+	if next.GitHub.Webhook.Secret == config.RedactedPlaceholder {
+		next.GitHub.Webhook.Secret = existing.GitHub.Webhook.Secret
+	}
+	if next.GitHub.Webhook.TaskSecret == config.RedactedPlaceholder {
+		next.GitHub.Webhook.TaskSecret = existing.GitHub.Webhook.TaskSecret
+	}
 	next.Monitor = settings.Monitor
 	next.SelfMonitor = settings.SelfMonitor
 	next.Triage = settings.Triage

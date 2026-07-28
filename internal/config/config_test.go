@@ -594,6 +594,54 @@ func TestMigrateRawConfig_RelocatesLegacyGitHubReviewRoundsPerHour(t *testing.T)
 	}
 }
 
+func TestMigrateRawConfigMovesWebhookUnderGitHub(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"webhook:",
+		"  enabled: true",
+		"  port: 9093",
+		"  secret: task-secret",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(result.MigratedRaw)
+	for _, want := range []string{
+		"integrations:",
+		"  github:",
+		"    webhook:",
+		"      enabled: true",
+		"      port: 9093",
+		"      task_enabled: true",
+		"      task_secret: task-secret",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("migrated config missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "\nwebhook:") {
+		t.Fatalf("migrated config retained top-level webhook:\n%s", text)
+	}
+	var foundSecretMove bool
+	for _, move := range result.Moves {
+		if move.From != "webhook.secret" {
+			continue
+		}
+		foundSecretMove = true
+		if move.To != "integrations.github.webhook.task_secret" {
+			t.Fatalf("webhook secret move target = %q", move.To)
+		}
+		if move.ValueFrom != RedactedPlaceholder || move.ValueTo != RedactedPlaceholder {
+			t.Fatalf("webhook secret move leaked value: %#v", move)
+		}
+	}
+	if !foundSecretMove {
+		t.Fatalf("migration moves missing webhook.secret: %#v", result.Moves)
+	}
+}
+
 func TestMigrateRawConfigRewritesGuardrailAliasesAndPreservesExplicitReviewLoop(t *testing.T) {
 	raw := []byte(strings.Join([]string{
 		"agent:",

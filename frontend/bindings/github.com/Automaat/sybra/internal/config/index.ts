@@ -13,6 +13,7 @@ export {
     GitHubPRPollingConfig,
     GitHubPollingConfig,
     GitHubPollingStreamConfig,
+    GitHubWebhookConfig,
     K8sJobEnvVar,
     K8sJobSecretEnvVar,
     K8sJobVolume,

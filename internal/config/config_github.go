@@ -1,5 +1,9 @@
 package config
 
+// DefaultGitHubWebhookCommandPrefix is the literal command token accepted in
+// issue and pull-request comments when GitHub webhook ingestion is configured.
+const DefaultGitHubWebhookCommandPrefix = "/sybra"
+
 type GitHubPollingConfig struct {
 	Issues      GitHubPollingStreamConfig `yaml:"issues" json:"issues"`
 	SybraPRs    GitHubPRPollingConfig     `yaml:"sybra_prs" json:"sybraPrs"`
@@ -66,8 +70,11 @@ type GitHubConfig struct {
 	// dedup/creation path. Empty (default) disables the feature — existing
 	// installs see no behavior change.
 	MentionTriggerPhrase string `yaml:"mention_trigger_phrase" json:"mentionTriggerPhrase"`
-	RenovateFastSeconds  int    `yaml:"renovate_fast_seconds" json:"renovateFastSeconds"`
-	RenovateSlowSeconds  int    `yaml:"renovate_slow_seconds" json:"renovateSlowSeconds"`
+	// Webhook configures the GitHub App webhook listener, authentication, and
+	// comment commands.
+	Webhook             GitHubWebhookConfig `yaml:"webhook" json:"webhook"`
+	RenovateFastSeconds int                 `yaml:"renovate_fast_seconds" json:"renovateFastSeconds"`
+	RenovateSlowSeconds int                 `yaml:"renovate_slow_seconds" json:"renovateSlowSeconds"`
 	// App configures GitHub App installation-token auth. When enabled, Sybra
 	// mints a short-lived installation token and injects it into the gh
 	// subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall
@@ -106,6 +113,29 @@ type GitHubConfig struct {
 	// deterministic. Zero falls back to the built-in default; see
 	// GitHubConfig.FlakyThreshold().
 	FlakySuccessThreshold float64 `yaml:"flaky_success_threshold" json:"flakySuccessThreshold"`
+}
+
+// GitHubWebhookConfig controls GitHub App deliveries sent to
+// POST /webhook/github.
+type GitHubWebhookConfig struct {
+	// Enabled starts the inbound GitHub webhook listener.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Port is the dedicated webhook listener port.
+	Port int `yaml:"port" json:"port"`
+	// Secret authenticates X-Hub-Signature-256. It is intentionally distinct
+	// from TaskSecret, which authenticates POST /webhook/task. Empty disables
+	// GitHub comment-command ingestion.
+	Secret string `yaml:"secret" json:"secret" secret:"true"`
+	// CommandPrefix is the literal slash-command prefix accepted in issue and
+	// pull-request comments, for example "/sybra". The supported commands are
+	// "<prefix> ship" and "<prefix> review".
+	CommandPrefix string `yaml:"command_prefix" json:"commandPrefix"`
+	// TaskEnabled exposes the generic POST /webhook/task sibling route. Legacy
+	// top-level webhook.enabled configurations are migrated with this enabled.
+	TaskEnabled bool `yaml:"task_enabled" json:"taskEnabled"`
+	// TaskSecret authenticates the generic route's X-Sybra-Signature header.
+	// A non-empty value also enables the route.
+	TaskSecret string `yaml:"task_secret" json:"taskSecret" secret:"true"`
 }
 
 // GitHubAppConfig holds GitHub App installation-token credentials. The private

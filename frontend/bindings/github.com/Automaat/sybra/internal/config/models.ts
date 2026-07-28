@@ -693,6 +693,12 @@ export class GitHubConfig {
      * installs see no behavior change.
      */
     "mentionTriggerPhrase": string;
+
+    /**
+     * Webhook configures the GitHub App webhook listener, authentication, and
+     * comment commands.
+     */
+    "webhook": GitHubWebhookConfig;
     "renovateFastSeconds": number;
     "renovateSlowSeconds": number;
 
@@ -787,6 +793,9 @@ export class GitHubConfig {
         if (!("mentionTriggerPhrase" in $$source)) {
             this["mentionTriggerPhrase"] = "";
         }
+        if (!("webhook" in $$source)) {
+            this["webhook"] = (new GitHubWebhookConfig());
+        }
         if (!("renovateFastSeconds" in $$source)) {
             this["renovateFastSeconds"] = 0;
         }
@@ -820,13 +829,17 @@ export class GitHubConfig {
      */
     static createFrom($$source: any = {}): GitHubConfig {
         const $$createField1_0 = $$createType6;
-        const $$createField13_0 = $$createType7;
+        const $$createField11_0 = $$createType7;
+        const $$createField14_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("polling" in $$parsedSource) {
             $$parsedSource["polling"] = $$createField1_0($$parsedSource["polling"]);
         }
+        if ("webhook" in $$parsedSource) {
+            $$parsedSource["webhook"] = $$createField11_0($$parsedSource["webhook"]);
+        }
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField13_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField14_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
     }
@@ -885,9 +898,9 @@ export class GitHubPollingConfig {
      * Creates a new GitHubPollingConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubPollingConfig {
-        const $$createField0_0 = $$createType8;
-        const $$createField1_0 = $$createType9;
-        const $$createField2_0 = $$createType9;
+        const $$createField0_0 = $$createType9;
+        const $$createField1_0 = $$createType10;
+        const $$createField2_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("issues" in $$parsedSource) {
             $$parsedSource["issues"] = $$createField0_0($$parsedSource["issues"]);
@@ -924,6 +937,80 @@ export class GitHubPollingStreamConfig {
     static createFrom($$source: any = {}): GitHubPollingStreamConfig {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new GitHubPollingStreamConfig($$parsedSource as Partial<GitHubPollingStreamConfig>);
+    }
+}
+
+/**
+ * GitHubWebhookConfig controls GitHub App deliveries sent to
+ * POST /webhook/github.
+ */
+export class GitHubWebhookConfig {
+    /**
+     * Enabled starts the inbound GitHub webhook listener.
+     */
+    "enabled": boolean;
+
+    /**
+     * Port is the dedicated webhook listener port.
+     */
+    "port": number;
+
+    /**
+     * Secret authenticates X-Hub-Signature-256. It is intentionally distinct
+     * from TaskSecret, which authenticates POST /webhook/task. Empty disables
+     * GitHub comment-command ingestion.
+     */
+    "secret": string;
+
+    /**
+     * CommandPrefix is the literal slash-command prefix accepted in issue and
+     * pull-request comments, for example "/sybra". The supported commands are
+     * "<prefix> ship" and "<prefix> review".
+     */
+    "commandPrefix": string;
+
+    /**
+     * TaskEnabled exposes the generic POST /webhook/task sibling route. Legacy
+     * top-level webhook.enabled configurations are migrated with this enabled.
+     */
+    "taskEnabled": boolean;
+
+    /**
+     * TaskSecret authenticates the generic route's X-Sybra-Signature header.
+     * A non-empty value also enables the route.
+     */
+    "taskSecret": string;
+
+    /** Creates a new GitHubWebhookConfig instance. */
+    constructor($$source: Partial<GitHubWebhookConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("port" in $$source)) {
+            this["port"] = 0;
+        }
+        if (!("secret" in $$source)) {
+            this["secret"] = "";
+        }
+        if (!("commandPrefix" in $$source)) {
+            this["commandPrefix"] = "";
+        }
+        if (!("taskEnabled" in $$source)) {
+            this["taskEnabled"] = false;
+        }
+        if (!("taskSecret" in $$source)) {
+            this["taskSecret"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubWebhookConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubWebhookConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitHubWebhookConfig($$parsedSource as Partial<GitHubWebhookConfig>);
     }
 }
 
@@ -1090,10 +1177,10 @@ export class K8sJobsConfig {
      * Creates a new K8sJobsConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): K8sJobsConfig {
-        const $$createField3_0 = $$createType10;
-        const $$createField8_0 = $$createType12;
-        const $$createField9_0 = $$createType14;
-        const $$createField10_0 = $$createType16;
+        const $$createField3_0 = $$createType11;
+        const $$createField8_0 = $$createType13;
+        const $$createField9_0 = $$createType15;
+        const $$createField10_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("command" in $$parsedSource) {
             $$parsedSource["command"] = $$createField3_0($$parsedSource["command"]);
@@ -1226,7 +1313,7 @@ export class MonitorConfig {
      * Creates a new MonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorConfig {
-        const $$createField9_0 = $$createType17;
+        const $$createField9_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bottleneckHours" in $$parsedSource) {
             $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
@@ -1353,7 +1440,7 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
-        const $$createField6_0 = $$createType18;
+        const $$createField6_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
             $$parsedSource["pressure"] = $$createField6_0($$parsedSource["pressure"]);
@@ -1391,10 +1478,10 @@ export class PathDescriptor {
      * Creates a new PathDescriptor instance from a string or object.
      */
     static createFrom($$source: any = {}): PathDescriptor {
-        const $$createField2_0 = $$createType10;
-        const $$createField3_0 = $$createType10;
-        const $$createField4_0 = $$createType10;
-        const $$createField7_0 = $$createType10;
+        const $$createField2_0 = $$createType11;
+        const $$createField3_0 = $$createType11;
+        const $$createField4_0 = $$createType11;
+        const $$createField7_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("queryPaths" in $$parsedSource) {
             $$parsedSource["queryPaths"] = $$createField2_0($$parsedSource["queryPaths"]);
@@ -1475,7 +1562,7 @@ export class PlaywrightMCPConfig {
      * Creates a new PlaywrightMCPConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): PlaywrightMCPConfig {
-        const $$createField1_0 = $$createType10;
+        const $$createField1_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("extraArgs" in $$parsedSource) {
             $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
@@ -1737,12 +1824,12 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType19;
-        const $$createField1_0 = $$createType20;
-        const $$createField2_0 = $$createType20;
-        const $$createField3_0 = $$createType20;
-        const $$createField4_0 = $$createType20;
-        const $$createField5_0 = $$createType21;
+        const $$createField0_0 = $$createType20;
+        const $$createField1_0 = $$createType21;
+        const $$createField2_0 = $$createType21;
+        const $$createField3_0 = $$createType21;
+        const $$createField4_0 = $$createType21;
+        const $$createField5_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -1901,9 +1988,9 @@ export class RoutingSummary {
      * Creates a new RoutingSummary instance from a string or object.
      */
     static createFrom($$source: any = {}): RoutingSummary {
-        const $$createField6_0 = $$createType10;
-        const $$createField7_0 = $$createType23;
-        const $$createField8_0 = $$createType10;
+        const $$createField6_0 = $$createType11;
+        const $$createField7_0 = $$createType24;
+        const $$createField8_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("precedence" in $$parsedSource) {
             $$parsedSource["precedence"] = $$createField6_0($$parsedSource["precedence"]);
@@ -2076,7 +2163,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType10;
+        const $$createField6_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -2253,20 +2340,21 @@ const $$createType3 = QueueConfig.createFrom;
 const $$createType4 = $Create.Map($Create.Any, $Create.Any);
 const $$createType5 = EvidenceConfig.createFrom;
 const $$createType6 = GitHubPollingConfig.createFrom;
-const $$createType7 = GitHubAppConfig.createFrom;
-const $$createType8 = GitHubPollingStreamConfig.createFrom;
-const $$createType9 = GitHubPRPollingConfig.createFrom;
-const $$createType10 = $Create.Array($Create.Any);
-const $$createType11 = K8sJobEnvVar.createFrom;
-const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = K8sJobSecretEnvVar.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = K8sJobVolume.createFrom;
-const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = $Create.Map($Create.Any, $Create.Any);
-const $$createType18 = PressureConfig.createFrom;
-const $$createType19 = ProviderHealthCheckConfig.createFrom;
-const $$createType20 = ProviderEntryConfig.createFrom;
-const $$createType21 = ProviderLimitsConfig.createFrom;
-const $$createType22 = RoutingEligibleVariant.createFrom;
-const $$createType23 = $Create.Array($$createType22);
+const $$createType7 = GitHubWebhookConfig.createFrom;
+const $$createType8 = GitHubAppConfig.createFrom;
+const $$createType9 = GitHubPollingStreamConfig.createFrom;
+const $$createType10 = GitHubPRPollingConfig.createFrom;
+const $$createType11 = $Create.Array($Create.Any);
+const $$createType12 = K8sJobEnvVar.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = K8sJobSecretEnvVar.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = K8sJobVolume.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = $Create.Map($Create.Any, $Create.Any);
+const $$createType19 = PressureConfig.createFrom;
+const $$createType20 = ProviderHealthCheckConfig.createFrom;
+const $$createType21 = ProviderEntryConfig.createFrom;
+const $$createType22 = ProviderLimitsConfig.createFrom;
+const $$createType23 = RoutingEligibleVariant.createFrom;
+const $$createType24 = $Create.Array($$createType23);

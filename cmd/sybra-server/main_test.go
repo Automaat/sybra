@@ -40,6 +40,8 @@ func okHandler() http.Handler {
 type fakeWebhookTaskCreator struct {
 	created task.Task
 	err     error
+	listed  []task.Task
+	listErr error
 
 	gotTitle string
 	gotBody  string
@@ -58,6 +60,13 @@ func (f *fakeWebhookTaskCreator) CreateTaskWithInit(title, body, mode string, in
 		return task.Task{}, f.err
 	}
 	return f.created, nil
+}
+
+func (f *fakeWebhookTaskCreator) ListTasks() ([]task.Task, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return append([]task.Task(nil), f.listed...), nil
 }
 
 type recordedEvent struct {
@@ -420,7 +429,7 @@ func TestWebhookHandlerRejectsTaskCreationDuringDrain(t *testing.T) {
 }
 
 func TestStartWebhookServerDisabledNoop(t *testing.T) {
-	srv, errCh, err := startWebhookServerWithHandler(t.Context(), config.WebhookConfig{}, okHandler(), testLogger())
+	srv, errCh, err := startWebhookServerWithHandler(t.Context(), config.GitHubWebhookConfig{}, okHandler(), testLogger())
 	if err != nil {
 		t.Fatalf("startWebhookServerWithHandler: %v", err)
 	}
@@ -436,7 +445,7 @@ func TestStartWebhookServerFailsOnBindError(t *testing.T) {
 	}
 	defer ln.Close()
 
-	cfg := config.WebhookConfig{Enabled: true, Port: ln.Addr().(*net.TCPAddr).Port}
+	cfg := config.GitHubWebhookConfig{Enabled: true, Port: ln.Addr().(*net.TCPAddr).Port}
 	srv, errCh, err := startWebhookServerWithHandler(t.Context(), cfg, okHandler(), testLogger())
 	if err == nil {
 		if srv != nil {
