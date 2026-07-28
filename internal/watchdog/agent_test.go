@@ -14,7 +14,6 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdogreason"
-	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func TestStallLimit(t *testing.T) {
@@ -444,11 +443,10 @@ func TestApplyVerdict_LoopStopWithGenericStallMarksRetryableHang(t *testing.T) {
 	}
 }
 
-// TestApplyVerdict_LoopStopWithRewardHackingEscalates covers #1456: a "stop"
-// verdict on the "loop" trigger whose ReasonKind is "reward_hacking" (a
-// genuine stuck loop, not a benign flake) must still escalate straight to
-// human-required, not take the retryable watchdog-hang path reserved for
-// "generic_stall".
+// TestApplyVerdict_LoopStopWithRewardHackingEscalates covers the non-retriable
+// baseline: a reward_hacking stop for a role with no grounded retry context
+// must still escalate straight to human-required, not take the retryable
+// watchdog-hang path reserved for generic_stall.
 func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 
@@ -459,7 +457,7 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
-	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: "review:demo", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "repeating the same failing fix with fabricated progress",
 		Recommendation: "stop",
@@ -491,7 +489,7 @@ func TestApplyVerdict_LoopStopWithRewardHackingEmptyReasonPersistsKind(t *testin
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
-	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: "review:demo", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
 		Stuck:          true,
 		Recommendation: "stop",
 		ReasonKind:     "reward_hacking",
@@ -561,115 +559,9 @@ func TestApplyVerdict_RewardHackingFixReviewWithFindingRetries(t *testing.T) {
 	}
 }
 
-// TestApplyVerdict_RewardHackingWorkflowRolesRetry covers search-loop false
-// positives: a reward_hacking stop on plan, plan-critic, or implementation
-// with an active workflow should retry once through the workflow engine instead
-// of parking human-required immediately. The retry budget still lives in
-// workflow, so a second identical stop escalates there.
-func TestApplyVerdict_RewardHackingWorkflowRolesRetry(t *testing.T) {
-	tests := []struct {
-		name       string
-		role       agent.Role
-		workflowID string
-		stepID     string
-	}{
-		{"implementation", agent.RoleImplementation, "simple-task-implement", "implement"},
-		{"plan", agent.RolePlan, "simple-task-plan", "plan"},
-		{"plan-critic", agent.RolePlanCritic, "simple-task-plan", "critique_plan"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			tasks, tk := newTestTasks(t)
-			wf := &workflow.Execution{
-				WorkflowID:  tc.workflowID,
-				CurrentStep: tc.stepID,
-				State:       workflow.ExecWaiting,
-				Variables:   map[string]string{},
-				AgentRoutes: map[string]string{},
-				StartedAt:   time.Now().UTC(),
-				CompletedAt: nil,
-				StepCounts:  map[string]int{},
-			}
-			if _, err := tasks.Update(tk.ID, task.Update{
-				Workflow: &wf,
-			}); err != nil {
-				t.Fatalf("seed workflow: %v", err)
-			}
-
-			stopped := false
-			w := &Watchdog{
-				tasks:     tasks,
-				logger:    slog.New(slog.DiscardHandler),
-				stopAgent: func(string) error { stopped = true; return nil },
-			}
-
-			w.applyVerdict(t.Context(), &agent.Agent{
-				ID:     "a1",
-				Name:   tc.role.AgentName("demo"),
-				TaskID: tk.ID,
-			}, "loop", agent.InspectorVerdict{
-				Stuck:          true,
-				Reason:         "repeating the same search/edit sequence after restart",
-				Recommendation: "stop",
-				ReasonKind:     "reward_hacking",
-			})
-
-			got, err := tasks.Get(tk.ID)
-			if err != nil {
-				t.Fatalf("get task: %v", err)
-			}
-			if got.Status != task.StatusInProgress {
-				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
-			}
-			if got.StatusReason != "watchdog: reward-hacking retry: repeating the same search/edit sequence after restart" {
-				t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
-			}
-			if !stopped {
-				t.Fatal("stopAgent not called on retriable reward_hacking stop")
-			}
-		})
-	}
-}
-
-func TestApplyVerdict_RewardHackingWorkflowRoleWithoutWorkflowEscalates(t *testing.T) {
-	tasks, tk := newTestTasks(t)
-	stopped := false
-	w := &Watchdog{
-		tasks:     tasks,
-		logger:    slog.New(slog.DiscardHandler),
-		stopAgent: func(string) error { stopped = true; return nil },
-	}
-
-	w.applyVerdict(t.Context(), &agent.Agent{
-		ID:     "a1",
-		Name:   agent.RoleImplementation.AgentName("demo"),
-		TaskID: tk.ID,
-	}, "loop", agent.InspectorVerdict{
-		Stuck:          true,
-		Reason:         "looping without workflow context",
-		Recommendation: "stop",
-		ReasonKind:     "reward_hacking",
-	})
-
-	got, err := tasks.Get(tk.ID)
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
-	}
-	if !strings.Contains(got.StatusReason, "looping without workflow context") {
-		t.Fatalf("status_reason = %q, want original watchdog reason", got.StatusReason)
-	}
-	if !stopped {
-		t.Fatal("stopAgent not called on non-retriable reward_hacking stop")
-	}
-}
-
 // TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates covers the
-// narrow scope of the #2229 carve-out: a fix-review agent with no concrete
-// review finding to anchor a retry on (empty or finding-less sidecar) still
-// escalates immediately, same as before the carve-out existed.
+// fix-review branch of the retry carve-out: without a concrete review finding
+// to anchor the retry on, fix-review still escalates immediately.
 func TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 	if _, err := tasks.Update(tk.ID, task.Update{
@@ -704,6 +596,119 @@ func TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates(t *testing.T
 	}
 	if !stopped {
 		t.Fatal("stopAgent not called on non-retriable reward_hacking stop")
+	}
+}
+
+func TestApplyVerdict_RewardHackingImplementationRetries(t *testing.T) {
+	for _, trigger := range []string{"loop", "budget"} {
+		t.Run(trigger, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+
+			stopped := false
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { stopped = true; return nil },
+			}
+
+			w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: "implementation:demo", TaskID: tk.ID}, trigger, agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "repeated repo searches without editing",
+				Recommendation: "stop",
+				ReasonKind:     "reward_hacking",
+			})
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusInProgress {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+			}
+			if got.StatusReason != "watchdog: reward-hacking retry: repeated repo searches without editing" {
+				t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
+			}
+			if !stopped {
+				t.Fatal("stopAgent not called on retriable implementation reward_hacking stop")
+			}
+		})
+	}
+}
+
+func TestApplyVerdict_RewardHackingPlanningWithArtifactsRetries(t *testing.T) {
+	for _, role := range []agent.Role{agent.RolePlan, agent.RolePlanCritic} {
+		t.Run(string(role), func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+			status := task.StatusPlanning
+			plan := "# Execution Plan\n\n- refine the existing contract"
+			if _, err := tasks.Update(tk.ID, task.Update{Status: &status, Plan: &plan}); err != nil {
+				t.Fatalf("seed planning artifacts: %v", err)
+			}
+
+			stopped := false
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { stopped = true; return nil },
+			}
+
+			w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: role.AgentName("demo"), TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "kept re-reading files instead of refining the plan",
+				Recommendation: "stop",
+				ReasonKind:     "reward_hacking",
+			})
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusPlanning {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
+			}
+			if got.StatusReason != "watchdog: reward-hacking retry: kept re-reading files instead of refining the plan" {
+				t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
+			}
+			if !stopped {
+				t.Fatal("stopAgent not called on retriable planning reward_hacking stop")
+			}
+		})
+	}
+}
+
+func TestApplyVerdict_RewardHackingPlanningWithoutArtifactsEscalates(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	status := task.StatusPlanning
+	if _, err := tasks.Update(tk.ID, task.Update{Status: &status}); err != nil {
+		t.Fatalf("set planning status: %v", err)
+	}
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: agent.RolePlan.AgentName("demo"), TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "kept searching without producing a plan artifact",
+		Recommendation: "stop",
+		ReasonKind:     "reward_hacking",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.StatusReason != "watchdog: reward_hacking: kept searching without producing a plan artifact" {
+		t.Fatalf("status_reason = %q, want structured watchdog reason", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on non-retriable planning reward_hacking stop")
 	}
 }
 
@@ -937,8 +942,8 @@ func TestTrimTail(t *testing.T) {
 
 // TestApplyVerdict_GenericStallAndRewardHackingSkipVerify pins that only an
 // unclassified ("") ReasonKind triggers the verify re-check — generic_stall
-// keeps its existing unconditional-retry treatment and reward_hacking keeps
-// its existing unconditional escalation, both untouched by #2155.
+// and reward_hacking keep their existing non-verify paths, untouched by
+// #2155.
 func TestApplyVerdict_GenericStallAndRewardHackingSkipVerify(t *testing.T) {
 	for _, reasonKind := range []string{"generic_stall", "reward_hacking"} {
 		t.Run(reasonKind, func(t *testing.T) {
@@ -1007,59 +1012,74 @@ func TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang(t *testing.T)
 	}
 }
 
-// TestApplyVerdict_BudgetStopWithoutGenericStallEscalates ensures a "budget"
-// trigger stop whose ReasonKind is anything other than "generic_stall"
-// (including empty, for older judges) still escalates straight to
-// human-required — only the explicit generic_stall reason gets the retry.
-func TestApplyVerdict_BudgetStopWithoutGenericStallEscalates(t *testing.T) {
-	tests := []struct {
-		name       string
-		kind       string
-		wantReason string
-	}{
-		{
-			name:       "empty kind",
-			kind:       "",
-			wantReason: "watchdog: budget stop: burned through budget with no forward progress",
-		},
-		{
-			name:       "reward_hacking",
-			kind:       "reward_hacking",
-			wantReason: "watchdog: reward_hacking: burned through budget with no forward progress",
-		},
+// TestApplyVerdict_BudgetStopWithoutReasonKindEscalates covers the empty
+// reason_kind case: without an explicit classification, a budget stop still
+// escalates straight to human-required.
+func TestApplyVerdict_BudgetStopWithoutReasonKindEscalates(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			tasks, tk := newTestTasks(t)
 
-			stopped := false
-			w := &Watchdog{
-				tasks:     tasks,
-				logger:    slog.New(slog.DiscardHandler),
-				stopAgent: func(string) error { stopped = true; return nil },
-			}
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "budget", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "burned through budget with no forward progress",
+		Recommendation: "stop",
+		ReasonKind:     "",
+	})
 
-			w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "budget", agent.InspectorVerdict{
-				Stuck:          true,
-				Reason:         "burned through budget with no forward progress",
-				Recommendation: "stop",
-				ReasonKind:     tc.kind,
-			})
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.StatusReason != "watchdog: budget stop: burned through budget with no forward progress" {
+		t.Fatalf("status_reason = %q, want budget-stop marker", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on budget stop verdict")
+	}
+}
 
-			got, err := tasks.Get(tk.ID)
-			if err != nil {
-				t.Fatalf("get task: %v", err)
-			}
-			if got.Status != task.StatusHumanRequired {
-				t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
-			}
-			if got.StatusReason != tc.wantReason {
-				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
-			}
-			if !stopped {
-				t.Fatal("stopAgent not called on budget stop verdict")
-			}
-		})
+func TestApplyVerdict_BudgetRewardHackingImplementationRetries(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(t.Context(), &agent.Agent{
+		ID:     "a1",
+		Name:   "implementation:demo",
+		TaskID: tk.ID,
+	}, "budget", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "burned through budget re-reading the same files",
+		Recommendation: "stop",
+		ReasonKind:     "reward_hacking",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if got.StatusReason != "watchdog: reward-hacking retry: burned through budget re-reading the same files" {
+		t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on reward_hacking budget stop")
 	}
 }
 

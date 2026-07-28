@@ -688,16 +688,17 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 			w.stopAndVerifyAmbiguousLoop(ctx, ag, trigger, verdict)
 			return
 		}
-		// #2229: a reward_hacking stop with concrete workflow context
-		// is retried once via the workflow engine's reward-hacking retry budget
-		// instead of escalating immediately. That covers fix-review runs with a
-		// named finding, plus plan/plan-critic/implementation runs whose workflow
-		// can re-dispatch the same step from existing sidecars/NOTES.md. Unknown
-		// or context-free runs still fall through to human-required.
-		if ag.TaskID != "" && verdict.ReasonKind == "reward_hacking" && (trigger == "loop" || trigger == "budget") &&
-			w.retriableRewardHackingStop(ag) {
-			w.stopForRewardHackingRetry(ag, verdict)
-			return
+		// #2229 plus #2687: reward_hacking stops are retryable only when the
+		// workflow still has grounded context to continue from. That is true
+		// for implementation (same worktree/NOTES), for planning roles when
+		// planning artifacts already exist, and for fix-review when the code
+		// review sidecar still names a concrete finding location. Everything
+		// else still escalates immediately.
+		if ag.TaskID != "" && verdict.ReasonKind == "reward_hacking" && (trigger == "loop" || trigger == "budget") {
+			if status, ok := w.retriableRewardHackingStatus(ag); ok {
+				w.stopForRewardHackingRetry(ag, verdict, status)
+				return
+			}
 		}
 		// Set the task state before stopping so the completion callback sees the
 		// intended recovery path. rate_limit is already handled above regardless
@@ -886,35 +887,45 @@ func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict age
 		"id", ag.ID, "task_id", ag.TaskID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
 }
 
-// retriableRewardHackingStop reports whether a reward_hacking "stop" verdict
-// for ag should be retried instead of escalated. The retry is deliberately
-// bounded in internal/workflow: this helper only decides whether there is
-// enough concrete context to make one clean re-dispatch useful.
-func (w *Watchdog) retriableRewardHackingStop(ag *agent.Agent) bool {
+// retriableRewardHackingStatus reports whether a reward_hacking "stop"
+// verdict for ag should be retried instead of escalated, and if so which
+// active task status should be restored for the retry.
+func (w *Watchdog) retriableRewardHackingStatus(ag *agent.Agent) (task.Status, bool) {
+	switch ag.EffectiveRole() {
+	case agent.RoleImplementation:
+		return task.StatusInProgress, true
+	case agent.RolePlan, agent.RolePlanCritic, agent.RoleFixReview:
+	default:
+		return "", false
+	}
 	t, err := w.tasks.Get(ag.TaskID)
 	if err != nil {
-		return false
+		return "", false
 	}
-	role := ag.EffectiveRole()
-	if role == agent.RoleFixReview {
-		return hasUnaddressedReviewFinding(t.CodeReview)
+	switch ag.EffectiveRole() {
+	case agent.RolePlan, agent.RolePlanCritic:
+		return task.StatusPlanning, hasUsablePlanningArtifacts(t)
+	case agent.RoleFixReview:
+		return task.StatusInProgress, hasUnaddressedReviewFinding(t.CodeReview)
+	default:
+		return "", false
 	}
-	if !rewardHackingRoleCanRetry(role) {
-		return false
-	}
-	if t.Workflow == nil || strings.TrimSpace(t.Workflow.CurrentStep) == "" {
-		return false
-	}
-	return true
 }
 
-func rewardHackingRoleCanRetry(role agent.Role) bool {
-	switch role {
-	case agent.RoleImplementation, agent.RolePlan, agent.RolePlanCritic:
-		return true
-	default:
-		return false
+func hasUsablePlanningArtifacts(t task.Task) bool {
+	for _, content := range []string{
+		t.Plan,
+		t.PlanContract,
+		t.PlanResearch,
+		t.PlanDecisions,
+		t.PlanBrief,
+		t.PlanCritique,
+	} {
+		if strings.TrimSpace(content) != "" {
+			return true
+		}
 	}
+	return false
 }
 
 // hasUnaddressedReviewFinding reports whether a code-review sidecar still
@@ -928,16 +939,16 @@ func hasUnaddressedReviewFinding(codeReview string) bool {
 }
 
 // stopForRewardHackingRetry handles a "stop" verdict whose ReasonKind is
-// "reward_hacking" when retriableRewardHackingStop has already confirmed there
-// is enough context to retry once. The task is left in-progress (not
-// human-required) with a distinct status-reason prefix the workflow engine's
-// handleWatchdogRewardHackingRetry recognizes on the next ResumeStalled tick.
-func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.InspectorVerdict) {
+// "reward_hacking" on a role that retriableRewardHackingStatus has already
+// confirmed can continue from existing grounded context. The task is restored
+// to its active workflow status with a distinct status-reason prefix the
+// workflow engine recognizes on the next ResumeStalled tick.
+func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.InspectorVerdict, status task.Status) {
 	reason := rewardHackingRetryStatusReason
 	if verdict.Reason != "" {
 		reason = rewardHackingRetryStatusReason + ": " + verdict.Reason
 	}
-	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.reward-hacking-retry", task.StatusInProgress, reason); err != nil {
+	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.reward-hacking-retry", status, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	if err := w.stopAgent(ag.ID); err != nil {
