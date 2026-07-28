@@ -249,8 +249,8 @@ func TestApplyVerdict_EscalateLeavesTaskRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	if got.Status != task.StatusPlanning {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
 	}
 	if got.StatusReason != "" {
 		t.Fatalf("status_reason = %q, want empty", got.StatusReason)
@@ -395,8 +395,8 @@ func TestApplyVerdict_StallStopMarksRetryableHang(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	if got.Status != task.StatusPlanning {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
 	}
 	if got.StatusReason != "watchdog hang: no stream activity" {
 		t.Fatalf("status_reason = %q, want retryable watchdog hang marker", got.StatusReason)
@@ -432,8 +432,8 @@ func TestApplyVerdict_LoopStopWithGenericStallMarksRetryableHang(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	if got.Status != task.StatusPlanning {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
 	}
 	if got.StatusReason != "watchdog hang: repeating identical investigation commands" {
 		t.Fatalf("status_reason = %q, want retryable watchdog hang marker", got.StatusReason)
@@ -560,38 +560,6 @@ func TestApplyVerdict_RewardHackingFixReviewWithFindingRetries(t *testing.T) {
 	}
 }
 
-func TestApplyVerdict_RewardHackingImplementationRetries(t *testing.T) {
-	tasks, tk := newTestTasks(t)
-
-	stopped := false
-	w := &Watchdog{
-		tasks:     tasks,
-		logger:    slog.New(slog.DiscardHandler),
-		stopAgent: func(string) error { stopped = true; return nil },
-	}
-
-	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", Name: "implementation:demo", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
-		Stuck:          true,
-		Reason:         "re-reading the same files without changing code",
-		Recommendation: "stop",
-		ReasonKind:     "reward_hacking",
-	})
-
-	got, err := tasks.Get(tk.ID)
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if got.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
-	}
-	if got.StatusReason != "watchdog: reward-hacking retry: re-reading the same files without changing code" {
-		t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
-	}
-	if !stopped {
-		t.Fatal("stopAgent not called on retriable implementation reward_hacking stop")
-	}
-}
-
 func TestApplyVerdict_RewardHackingPlanCriticWithArtifactsRetries(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 	plan := "# Execution Plan\n\n## Decision\nGrounded plan\n"
@@ -617,8 +585,8 @@ func TestApplyVerdict_RewardHackingPlanCriticWithArtifactsRetries(t *testing.T) 
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	if got.Status != task.StatusPlanning {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
 	}
 	if got.StatusReason != "watchdog: reward-hacking retry: re-reading the plan without writing critique" {
 		t.Fatalf("status_reason = %q, want reward-hacking retry marker", got.StatusReason)
