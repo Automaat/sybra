@@ -40,6 +40,8 @@ func okHandler() http.Handler {
 type fakeWebhookTaskCreator struct {
 	created task.Task
 	err     error
+	listed  []task.Task
+	listErr error
 
 	gotTitle string
 	gotBody  string
@@ -58,6 +60,13 @@ func (f *fakeWebhookTaskCreator) CreateTaskWithInit(title, body, mode string, in
 		return task.Task{}, f.err
 	}
 	return f.created, nil
+}
+
+func (f *fakeWebhookTaskCreator) ListTasks() ([]task.Task, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return append([]task.Task(nil), f.listed...), nil
 }
 
 type recordedEvent struct {

@@ -419,6 +419,7 @@ const webhookSignatureHeader = "X-Sybra-Signature"
 
 type webhookTaskCreator interface {
 	CreateTaskWithInit(title, body, mode string, init task.Update) (task.Task, error)
+	ListTasks() ([]task.Task, error)
 }
 
 type webhookAdmissionFunc func() error
@@ -453,6 +454,16 @@ func resolveWebhookTaskCreator(app *sybra.App) (webhookTaskCreator, error) {
 }
 
 func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCreator, admit webhookAdmissionFunc) http.Handler {
+	return newWebhookHandlerWithGitHub(logger, secret, config.GitHubConfig{}, creator, admit)
+}
+
+func newWebhookHandlerWithGitHub(
+	logger *slog.Logger,
+	secret string,
+	githubCfg config.GitHubConfig,
+	creator webhookTaskCreator,
+	admit webhookAdmissionFunc,
+) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webhook/task", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -516,6 +527,7 @@ func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCr
 		}
 		writeWebhookJSON(w, http.StatusCreated, webhookTaskResponse{TaskID: created.ID})
 	})
+	mux.Handle("/webhook/github", newGitHubWebhookHandler(logger, githubCfg, secret, creator, admit))
 	return mux
 }
 
@@ -588,7 +600,12 @@ func startWebhookServer(ctx context.Context, cfg *config.Config, app *sybra.App,
 	admit := func() error {
 		return app.HTTPAdmission("TaskService", "CreateTask", httpapi.MethodMeta{})
 	}
-	return startWebhookServerWithHandler(ctx, cfg.Webhook, newWebhookHandler(logger, cfg.Webhook.Secret, creator, admit), logger)
+	return startWebhookServerWithHandler(
+		ctx,
+		cfg.Webhook,
+		newWebhookHandlerWithGitHub(logger, cfg.Webhook.Secret, cfg.GitHub, creator, admit),
+		logger,
+	)
 }
 
 func startWebhookServerWithHandler(ctx context.Context, cfg config.WebhookConfig, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
