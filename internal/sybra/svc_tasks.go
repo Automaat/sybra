@@ -880,6 +880,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	if err != nil {
 		return t, err
 	}
+	s.appendManualHumanRequiredDecision(cur, t, t.StatusReason)
 	s.wg.Go(func() {
 		// UpdateTask is a Wails-bound method the frontend awaits synchronously;
 		// the follower push carries a bounded remote round trip, so run it
@@ -1139,8 +1140,30 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 	}
 
 	s.logDispatchAudit(id, target, string(cur.Status), reason, "dispatched")
+	if exceptAgentID == "" {
+		s.appendDecisionProgress(id, artifact.ManualDecisionMessage(string(cur.Status), target, reason))
+	}
 	s.recordInterventionOnUnblock(cur, target, reason, exceptAgentID)
 	return s.tasks.Get(id)
+}
+
+func (s *TaskService) appendManualHumanRequiredDecision(before, after task.Task, reason string) {
+	if before.Status != task.StatusHumanRequired || after.Status == task.StatusHumanRequired {
+		return
+	}
+	s.appendDecisionProgress(after.ID, artifact.ManualDecisionMessage(string(before.Status), string(after.Status), reason))
+}
+
+func (s *TaskService) appendDecisionProgress(taskID, message string) {
+	if s.artifacts == nil || strings.TrimSpace(message) == "" {
+		return
+	}
+	if err := s.artifacts.AppendProgress(taskID, artifact.ProgressEntry{
+		Kind:    artifact.ProgressKindDecision,
+		Message: message,
+	}); err != nil && s.logger != nil {
+		s.logger.Warn("task.progress.append_failed", "task_id", taskID, "kind", artifact.ProgressKindDecision, "err", err)
+	}
 }
 
 // recordInterventionOnUnblock captures a genuine operator-initiated unblock
