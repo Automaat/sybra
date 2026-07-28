@@ -698,6 +698,10 @@ func defaultSeedConfig() *Config {
 			Author:  "app/renovate",
 		},
 		GitHub: GitHubConfig{
+			Webhook: GitHubWebhookConfig{
+				CommandPrefix: DefaultGitHubWebhookCommandPrefix,
+				Port:          DefaultWebhookPort,
+			},
 			Polling: GitHubPollingConfig{
 				Issues:      GitHubPollingStreamConfig{Enabled: true},
 				SybraPRs:    GitHubPRPollingConfig{Enabled: true},
@@ -743,9 +747,6 @@ func defaultSeedConfig() *Config {
 		},
 		Cluster: ClusterConfig{
 			Role: ClusterRoleStandalone,
-		},
-		Webhook: WebhookConfig{
-			Port: DefaultWebhookPort,
 		},
 		Orchestrator: OrchestratorConfig{
 			Role: InstanceRoleFull,

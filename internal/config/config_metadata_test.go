@@ -7,7 +7,12 @@ import (
 
 func TestSecretYAMLPaths(t *testing.T) {
 	got := SecretYAMLPaths()
-	for _, want := range []string{"server.auth_token", "webhook.secret"} {
+	for _, want := range []string{
+		"server.auth_token",
+		"github.webhook.secret",
+		"github.webhook.task_secret",
+		"webhook.secret",
+	} {
 		if !slices.Contains(got, want) {
 			t.Fatalf("SecretYAMLPaths() missing %q: %v", want, got)
 		}
@@ -34,14 +39,18 @@ func TestSecretYAMLPaths(t *testing.T) {
 func TestRedactedCopy(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Server.AuthToken = "server-secret"
-	cfg.Webhook.Secret = "webhook-secret"
+	cfg.GitHub.Webhook.Secret = "github-webhook-secret"
+	cfg.GitHub.Webhook.TaskSecret = "webhook-secret"
 
 	redacted := RedactedCopy(cfg)
 	if redacted.Server.AuthToken != RedactedPlaceholder {
 		t.Fatalf("server auth token = %q, want %q", redacted.Server.AuthToken, RedactedPlaceholder)
 	}
-	if redacted.Webhook.Secret != RedactedPlaceholder {
-		t.Fatalf("webhook secret = %q, want %q", redacted.Webhook.Secret, RedactedPlaceholder)
+	if redacted.GitHub.Webhook.Secret != RedactedPlaceholder {
+		t.Fatalf("GitHub webhook secret = %q, want %q", redacted.GitHub.Webhook.Secret, RedactedPlaceholder)
+	}
+	if redacted.GitHub.Webhook.TaskSecret != RedactedPlaceholder {
+		t.Fatalf("GitHub task webhook secret = %q, want %q", redacted.GitHub.Webhook.TaskSecret, RedactedPlaceholder)
 	}
 	if redacted.Logging.Level != cfg.Logging.Level {
 		t.Fatalf("non-secret field changed: logging.level %q -> %q", cfg.Logging.Level, redacted.Logging.Level)

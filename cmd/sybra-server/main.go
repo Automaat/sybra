@@ -10,6 +10,7 @@
 //	SYBRA_HOST       HTTP listen host (default: all interfaces; a configured
 //	                   cluster.bind_addr(s) wins over this)
 //	SYBRA_AUTH_TOKEN Bearer token for the HTTP control plane
+//	SYBRA_GITHUB_WEBHOOK_SECRET GitHub App webhook signing secret
 //	SYBRA_STATIC_DIR Directory to serve as /; set to frontend/dist for SPA
 //	                   (optional — omit to skip static file serving)
 package main
@@ -419,6 +420,7 @@ const webhookSignatureHeader = "X-Sybra-Signature"
 
 type webhookTaskCreator interface {
 	CreateTaskWithInit(title, body, mode string, init task.Update) (task.Task, error)
+	ListTasks() ([]task.Task, error)
 }
 
 type webhookAdmissionFunc func() error
@@ -453,8 +455,30 @@ func resolveWebhookTaskCreator(app *sybra.App) (webhookTaskCreator, error) {
 }
 
 func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCreator, admit webhookAdmissionFunc) http.Handler {
+	return newWebhookMux(logger, secret, true, config.GitHubConfig{}, creator, admit)
+}
+
+func newWebhookHandlerWithGitHub(
+	logger *slog.Logger,
+	secret string,
+	githubCfg config.GitHubConfig,
+	creator webhookTaskCreator,
+	admit webhookAdmissionFunc,
+) http.Handler {
+	taskRouteEnabled := githubCfg.Webhook.TaskEnabled || strings.TrimSpace(secret) != ""
+	return newWebhookMux(logger, secret, taskRouteEnabled, githubCfg, creator, admit)
+}
+
+func newWebhookMux(
+	logger *slog.Logger,
+	secret string,
+	taskRouteEnabled bool,
+	githubCfg config.GitHubConfig,
+	creator webhookTaskCreator,
+	admit webhookAdmissionFunc,
+) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/webhook/task", func(w http.ResponseWriter, r *http.Request) {
+	taskHandler := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeWebhookError(w, logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
@@ -515,7 +539,11 @@ func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCr
 			return
 		}
 		writeWebhookJSON(w, http.StatusCreated, webhookTaskResponse{TaskID: created.ID})
-	})
+	}
+	if taskRouteEnabled {
+		mux.HandleFunc("/webhook/task", taskHandler)
+	}
+	mux.Handle("/webhook/github", newGitHubWebhookHandler(logger, githubCfg, creator, admit))
 	return mux
 }
 
@@ -578,7 +606,7 @@ func writeWebhookAdmissionError(w http.ResponseWriter, logger *slog.Logger, err 
 }
 
 func startWebhookServer(ctx context.Context, cfg *config.Config, app *sybra.App, logger *slog.Logger) (*http.Server, chan error, error) {
-	if cfg == nil || !cfg.Webhook.Enabled {
+	if cfg == nil || !cfg.GitHub.Webhook.Enabled {
 		return nil, nil, nil
 	}
 	creator, err := resolveWebhookTaskCreator(app)
@@ -588,10 +616,11 @@ func startWebhookServer(ctx context.Context, cfg *config.Config, app *sybra.App,
 	admit := func() error {
 		return app.HTTPAdmission("TaskService", "CreateTask", httpapi.MethodMeta{})
 	}
-	return startWebhookServerWithHandler(ctx, cfg.Webhook, newWebhookHandler(logger, cfg.Webhook.Secret, creator, admit), logger)
+	handler := newWebhookHandlerWithGitHub(logger, cfg.GitHub.Webhook.TaskSecret, cfg.GitHub, creator, admit)
+	return startWebhookServerWithHandler(ctx, cfg.GitHub.Webhook, handler, logger)
 }
 
-func startWebhookServerWithHandler(ctx context.Context, cfg config.WebhookConfig, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
+func startWebhookServerWithHandler(ctx context.Context, cfg config.GitHubWebhookConfig, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
 	if !cfg.Enabled {
 		return nil, nil, nil
 	}

@@ -19,7 +19,6 @@ Regenerate with `go generate ./internal/config/...` after changing a struct tag 
 | `observability` | Logs, audit, metrics, experimentation, and operator evidence retention. | `observability.logging`, `observability.audit`, `observability.metrics`, `observability.experience`, `observability.intervention`, `observability.ab_testing` |
 | `routing` | Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes. | `routing` |
 | `server` | Local API/server exposure and auth for the running Sybra instance. | `server` |
-| `webhook` | Inbound external task-creation webhook listener and request-signing controls. | `webhook` |
 | `cluster` | Cluster/task-trust policy for multi-node execution backends. | `cluster` |
 | `auto_update` | Deployment self-update behavior for long-running Sybra installs. | `auto_update` |
 
@@ -358,6 +357,7 @@ External systems Sybra talks to on the operator's behalf.
 | `integrations.github.reviews_stable_backoff_max_ticks` | `int` | `0` |  |  | `github.reviews_stable_backoff_max_ticks` | `false` | `restart` |  | ReviewsStableBackoffMaxTicks caps the exponential skip window for linked PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls back to the built-in default; resolved non-positive values disable the backoff entirely. |
 | `integrations.github.issues` | `int` | `0` | `seconds` |  | `github.issues_seconds`, `github.issues` | `false` | `restart` |  | Deprecated compatibility input for github.polling.issues.interval. |
 | `integrations.github.mention_trigger_phrase` | `string` | `""` |  |  | `github.mention_trigger_phrase` | `false` | `restart` |  | MentionTriggerPhrase, when set, gates a comment-mention search alongside the existing assigned/labeled issue paths: an open issue whose comments contain this phrase (e.g. "@sybra") gets a task via the same dedup/creation path. Empty (default) disables the feature — existing installs see no behavior change. |
+| `integrations.github.webhook` | `GitHubWebhookConfig` | _(see below)_ |  |  |  | `false` |  |  | Webhook configures the GitHub App webhook listener, authentication, and comment commands. |
 | `integrations.github.renovate_fast` | `int` | `0` | `seconds` |  | `github.renovate_fast_seconds`, `github.renovate_fast` | `false` | `restart` |  |  |
 | `integrations.github.renovate_slow` | `int` | `0` | `seconds` |  | `github.renovate_slow_seconds`, `github.renovate_slow` | `false` | `restart` |  |  |
 | `integrations.github.app` | `GitHubAppConfig` | _(see below)_ |  |  |  | `false` |  |  | App configures GitHub App installation-token auth. When enabled, Sybra mints a short-lived installation token and injects it into the gh subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall back to gh's own auth. |
@@ -397,6 +397,20 @@ External systems Sybra talks to on the operator's behalf.
 | `integrations.github.polling.assigned_prs.enabled` | `bool` | `true` |  |  | `github.polling.assigned_prs.enabled` | `false` | `restart` |  |  |
 | `integrations.github.polling.assigned_prs.active_interval` | `int` | `0` | `seconds` |  | `github.polling.assigned_prs.active_interval_seconds`, `github.polling.assigned_prs.active_interval` | `false` | `restart` |  |  |
 | `integrations.github.polling.assigned_prs.idle_interval` | `int` | `0` | `seconds` |  | `github.polling.assigned_prs.idle_interval_seconds`, `github.polling.assigned_prs.idle_interval` | `false` | `restart` |  |  |
+
+### GitHubWebhookConfig (`integrations.github.webhook`)
+
+GitHubWebhookConfig controls GitHub App deliveries sent to
+POST /webhook/github.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `integrations.github.webhook.enabled` | `bool` | `false` |  |  | `github.webhook.enabled`, `webhook.enabled` | `false` | `restart` |  | Enabled starts the inbound GitHub webhook listener. |
+| `integrations.github.webhook.port` | `int` | `8081` |  |  | `github.webhook.port`, `webhook.port` | `false` | `restart` |  | Port is the dedicated webhook listener port. |
+| `integrations.github.webhook.secret` | `string` | `[redacted]` |  | `SYBRA_GITHUB_WEBHOOK_SECRET` | `github.webhook.secret` | `true` | `restart` |  | Secret authenticates X-Hub-Signature-256. It is intentionally distinct from TaskSecret, which authenticates POST /webhook/task. Empty disables GitHub comment-command ingestion. |
+| `integrations.github.webhook.command_prefix` | `string` | `"/sybra"` |  |  | `github.webhook.command_prefix` | `false` | `restart` |  | CommandPrefix is the literal slash-command prefix accepted in issue and pull-request comments, for example "/sybra". The supported commands are "<prefix> ship" and "<prefix> review". |
+| `integrations.github.webhook.task_enabled` | `bool` | `false` |  |  | `github.webhook.task_enabled` | `false` | `restart` |  | TaskEnabled exposes the generic POST /webhook/task sibling route. Legacy top-level webhook.enabled configurations are migrated with this enabled. |
+| `integrations.github.webhook.task_secret` | `string` | `[redacted]` |  | `SYBRA_WEBHOOK_SECRET` | `github.webhook.task_secret`, `webhook.secret` | `true` | `restart` |  | TaskSecret authenticates the generic route's X-Sybra-Signature header. A non-empty value also enables the route. |
 
 ### GitHubAppConfig (`integrations.github.app`)
 
@@ -834,23 +848,6 @@ if left empty, never to config.yaml — see applyServerDefaults.
 |---|---|---|---|---|---|---|---|---|---|
 | `server.auth_token` | `string` | `[redacted]` |  | `SYBRA_AUTH_TOKEN` |  | `true` | `restart` |  |  |
 | `server.allowed_origins` | `[]string` |  |  | `SYBRA_ALLOWED_ORIGINS` |  | `false` | `restart` |  |  |
-
-## Webhook
-
-Inbound external task-creation webhook listener and request-signing controls.
-
-### WebhookConfig (`webhook`)
-
-WebhookConfig controls the optional inbound HTTP webhook used for external
-task creation. When Enabled is true, sybra-server starts a separate listener
-on Port and serves POST /webhook/task. Secret optionally enables HMAC-SHA256
-request signing via X-Sybra-Signature: sha256=<hex>.
-
-| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
-|---|---|---|---|---|---|---|---|---|---|
-| `webhook.enabled` | `bool` | `false` |  |  |  | `false` | `restart` |  |  |
-| `webhook.port` | `int` | `8081` |  |  |  | `false` | `restart` |  |  |
-| `webhook.secret` | `string` | `[redacted]` |  | `SYBRA_WEBHOOK_SECRET` |  | `true` | `restart` |  |  |
 
 ## Cluster
 

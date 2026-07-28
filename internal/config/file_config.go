@@ -273,6 +273,9 @@ var durationAliasSpecs = []durationAliasSpec{
 }
 
 var fieldAliasSpecs = []fieldAliasSpec{
+	{aliasPath: []string{"github", "webhook", "enabled"}, legacyPath: []string{"webhook", "enabled"}, fieldPath: []string{"GitHub", "Webhook", "Enabled"}},
+	{aliasPath: []string{"github", "webhook", "port"}, legacyPath: []string{"webhook", "port"}, fieldPath: []string{"GitHub", "Webhook", "Port"}},
+	{aliasPath: []string{"github", "webhook", "task_secret"}, legacyPath: []string{"webhook", "secret"}, fieldPath: []string{"GitHub", "Webhook", "TaskSecret"}},
 	{aliasPath: []string{"agent", "post_result_cost_usd"}, legacyPath: []string{"agent", "max_cost_usd"}, fieldPath: []string{"Agent", "MaxCostUSD"}},
 	{aliasPath: []string{"agent", "max_assistant_events"}, legacyPath: []string{"agent", "max_turns"}, fieldPath: []string{"Agent", "MaxTurns"}},
 	{aliasPath: []string{"agent", "checkpoint_on_assistant_event_ceiling"}, legacyPath: []string{"agent", "checkpoint_on_turn_ceiling"}, fieldPath: []string{"Agent", "CheckpointOnTurnCeiling"}},
@@ -455,6 +458,12 @@ func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, a
 				continue
 			}
 			if _, ok := allowedFieldAliases[key]; ok {
+				continue
+			}
+			if parent == "" && key == "webhook" {
+				if err := validateNodeAgainstType(valNode, reflect.TypeFor[WebhookConfig](), []string{"webhook"}, aliases, fieldAliases); err != nil {
+					return err
+				}
 				continue
 			}
 			if removedConfigKeys[parent][key] {

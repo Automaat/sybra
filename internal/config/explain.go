@@ -107,10 +107,17 @@ var envOverrideSpecs = []envOverrideSpec{
 		},
 	},
 	{
-		runtimePath: "webhook.secret",
+		runtimePath: "github.webhook.task_secret",
 		envVar:      "SYBRA_WEBHOOK_SECRET",
 		value: func(env Environment) (any, bool) {
 			return env.WebhookSecret, strings.TrimSpace(env.WebhookSecret) != ""
+		},
+	},
+	{
+		runtimePath: "github.webhook.secret",
+		envVar:      "SYBRA_GITHUB_WEBHOOK_SECRET",
+		value: func(env Environment) (any, bool) {
+			return env.GitHubWebhookSecret, strings.TrimSpace(env.GitHubWebhookSecret) != ""
 		},
 	},
 }

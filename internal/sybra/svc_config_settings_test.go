@@ -1,11 +1,40 @@
 package sybra
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
 )
+
+func TestGetSettingsRedactsAndPreservesGitHubWebhookSecrets(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.cfg.GitHub.Webhook.Secret = "github-secret"
+	svc.cfg.GitHub.Webhook.TaskSecret = "task-secret"
+	svc.persisted = cloneConfig(svc.cfg)
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	settings := svc.GetSettings()
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "github-secret") || strings.Contains(string(data), "task-secret") {
+		t.Fatalf("GetSettings leaked webhook secrets: %s", data)
+	}
+
+	settings.GitHub.Enabled = !settings.GitHub.Enabled
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+	if svc.persisted.GitHub.Webhook.Secret != "github-secret" {
+		t.Fatalf("GitHub webhook secret = %q, want preserved value", svc.persisted.GitHub.Webhook.Secret)
+	}
+	if svc.persisted.GitHub.Webhook.TaskSecret != "task-secret" {
+		t.Fatalf("task webhook secret = %q, want preserved value", svc.persisted.GitHub.Webhook.TaskSecret)
+	}
+}
 
 func TestUpdateSettings_ValidationRejectsBadFallbackModel(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)

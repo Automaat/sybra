@@ -27,7 +27,6 @@ var v2NamespaceDocs = []V2NamespaceDoc{
 	{Name: "observability", OwnershipRule: "Logs, audit, metrics, experimentation, and operator evidence retention.", Paths: []string{"observability.logging", "observability.audit", "observability.metrics", "observability.experience", "observability.intervention", "observability.ab_testing"}},
 	{Name: "routing", OwnershipRule: "Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes.", Paths: []string{"routing"}},
 	{Name: "server", OwnershipRule: "Local API/server exposure and auth for the running Sybra instance.", Paths: []string{"server"}},
-	{Name: "webhook", OwnershipRule: "Inbound external task-creation webhook listener and request-signing controls.", Paths: []string{"webhook"}},
 	{Name: "cluster", OwnershipRule: "Cluster/task-trust policy for multi-node execution backends.", Paths: []string{"cluster"}},
 	{Name: "auto_update", OwnershipRule: "Deployment self-update behavior for long-running Sybra installs.", Paths: []string{"auto_update"}},
 }
@@ -65,6 +64,7 @@ var topLevelNamespaceRules = []topLevelNamespaceRule{
 	{legacyKey: "admission", canonical: []string{"workflow", "admission"}, deprecated: "workflow.admission", namespace: "workflow"},
 	{legacyKey: "notification", canonical: []string{"integrations", "notification"}, deprecated: "integrations.notification", namespace: "integrations"},
 	{legacyKey: "github", canonical: []string{"integrations", "github"}, deprecated: "integrations.github", namespace: "integrations"},
+	{legacyKey: "webhook", canonical: []string{"integrations", "github", "webhook"}, deprecated: "integrations.github.webhook", namespace: "integrations"},
 	{legacyKey: "review_hold", canonical: []string{"integrations", "github", "review_hold"}, deprecated: "integrations.github.review_hold", namespace: "integrations"},
 	{legacyKey: "renovate", canonical: []string{"integrations", "renovate"}, deprecated: "integrations.renovate", namespace: "integrations"},
 	{legacyKey: "browser", canonical: []string{"integrations", "browser"}, deprecated: "integrations.browser", namespace: "integrations"},
@@ -246,6 +246,7 @@ func MigrateRawConfig(raw []byte, toVersion int) (*MigrationResult, error) {
 	}
 	applyLegacyUnboundedReviewLoop(canonical, fileCfg)
 	relocateLegacyGitHubReviewRoundsPerHour(canonical)
+	preserveLegacyWebhookTaskRoute(canonical, fileCfg)
 	canonicalBytes, err := marshalYAMLDocument(canonical.document())
 	if err != nil {
 		return nil, err
@@ -262,6 +263,36 @@ func MigrateRawConfig(raw []byte, toVersion int) (*MigrationResult, error) {
 		Moves:       moves,
 		Warnings:    fileCfg.Warnings(),
 	}, nil
+}
+
+func preserveLegacyWebhookTaskRoute(canonical *canonicalConfigBuilder, fileCfg *FileConfig) {
+	if fileCfg == nil {
+		return
+	}
+	enabledNode, ok := fileCfg.authoredNodeAt("webhook", "enabled")
+	if !ok {
+		return
+	}
+	var enabled bool
+	if err := enabledNode.Decode(&enabled); err != nil || !enabled {
+		return
+	}
+	integrationsNode, ok := yamlMappingValue(canonical.root, "integrations")
+	if !ok {
+		return
+	}
+	githubNode, ok := yamlMappingValue(integrationsNode, "github")
+	if !ok {
+		return
+	}
+	webhookNode, ok := yamlMappingValue(githubNode, "webhook")
+	if !ok || yamlMappingHasKey(webhookNode, "task_enabled") {
+		return
+	}
+	webhookNode.Content = append(webhookNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "task_enabled"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
+	)
 }
 
 func normalizeYAMLBytes(raw []byte) []byte {
@@ -358,10 +389,13 @@ func canonicalMovePathForLegacy(legacyPath string) (string, bool) {
 			return canonical, true
 		}
 	}
+	if canonical, ok := CanonicalFilePathForLegacy(legacyPath); ok {
+		return canonical, true
+	}
 	if IsSecretYAMLPath(legacyPath) {
 		return legacyPath, true
 	}
-	return CanonicalFilePathForLegacy(legacyPath)
+	return "", false
 }
 
 func renderMoveValues(legacyPath string, node *yaml.Node) (before, after string) {

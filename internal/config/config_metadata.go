@@ -42,6 +42,11 @@ func RedactedCopy(cfg *Config) Config {
 func initSecretMetadata() {
 	pathSet := map[string]struct{}{}
 	collectSecretYAMLPaths(pathSet, reflect.TypeFor[Config](), nil)
+	for _, spec := range fieldAliasSpecs {
+		if _, secret := pathSet[joinPath(spec.aliasPath)]; secret {
+			pathSet[joinPath(spec.legacyPath)] = struct{}{}
+		}
+	}
 	secretYAMLPathSet = pathSet
 	secretYAMLPaths = make([]string, 0, len(pathSet))
 	for path := range pathSet {

@@ -93,7 +93,12 @@ When unset/disabled, `gh` uses its own auth unchanged.
 2. **Permissions** — Repository: *Contents* (read/write), *Issues* (read/write),
    *Pull requests* (read/write), *Metadata* (read). Organization/Account: none.
    Match these to what your automations actually do.
-3. **Webhook** — uncheck *Active* (Sybra polls; it doesn't receive webhooks).
+3. **Webhook** — to enable comment-command task creation, keep *Active*
+   checked, set the URL to the externally reachable `/webhook/github` route,
+   set a webhook secret, and subscribe to **Issue comments**. Configure the
+   same secret in `integrations.github.webhook.secret` and enable that nested
+   webhook block. If comment commands are not used, uncheck *Active*. See
+   [GitHub comment-command webhooks](github-webhooks.md).
 4. **Create**, then note the **App ID** (shown on the App's page).
 5. **Generate a private key** — on the App's page, *Private keys → Generate a
    private key*. A `.pem` downloads. Put it where the server can read it

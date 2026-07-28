@@ -161,6 +161,10 @@ func validateGitHubConfig(cfg *ResolvedConfig, add func(format string, a ...any)
 	if cfg.GitHub.App.Enabled && strings.TrimSpace(cfg.GitHub.App.PrivateKeyPath) == "" {
 		add("github.app.enabled requires github.app.private_key_path")
 	}
+	commandPrefix := strings.TrimSpace(cfg.GitHub.Webhook.CommandPrefix)
+	if !strings.HasPrefix(commandPrefix, "/") || len(commandPrefix) < 2 || strings.ContainsAny(commandPrefix, " \t\r\n") {
+		add("github.webhook.command_prefix must start with \"/\" and contain no whitespace, got %q", cfg.GitHub.Webhook.CommandPrefix)
+	}
 	if cfg.AutoUpdate.Enabled && cfg.AutoUpdate.Mode == "auto" && countNonEmpty(cfg.AutoUpdate.RequiredChecks) == 0 {
 		add("auto_update.required_checks must be non-empty when auto_update.mode=auto")
 	}

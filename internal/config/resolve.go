@@ -11,21 +11,23 @@ import (
 // Environment holds the supported config env overrides so Resolve is
 // deterministic and testable.
 type Environment struct {
-	LogLevel       string
-	LogDir         string
-	TasksDir       string
-	AuthToken      string
-	WebhookSecret  string
-	AllowedOrigins []string
+	LogLevel            string
+	LogDir              string
+	TasksDir            string
+	AuthToken           string
+	WebhookSecret       string
+	GitHubWebhookSecret string
+	AllowedOrigins      []string
 }
 
 func environmentFromOS() Environment {
 	env := Environment{
-		LogLevel:      os.Getenv("SYBRA_LOG_LEVEL"),
-		LogDir:        os.Getenv("SYBRA_LOG_DIR"),
-		TasksDir:      os.Getenv("SYBRA_TASKS_DIR"),
-		AuthToken:     os.Getenv("SYBRA_AUTH_TOKEN"),
-		WebhookSecret: os.Getenv("SYBRA_WEBHOOK_SECRET"),
+		LogLevel:            os.Getenv("SYBRA_LOG_LEVEL"),
+		LogDir:              os.Getenv("SYBRA_LOG_DIR"),
+		TasksDir:            os.Getenv("SYBRA_TASKS_DIR"),
+		AuthToken:           os.Getenv("SYBRA_AUTH_TOKEN"),
+		WebhookSecret:       os.Getenv("SYBRA_WEBHOOK_SECRET"),
+		GitHubWebhookSecret: os.Getenv("SYBRA_GITHUB_WEBHOOK_SECRET"),
 	}
 	if raw := os.Getenv("SYBRA_ALLOWED_ORIGINS"); raw != "" {
 		parts := strings.Split(raw, ",")
@@ -135,7 +137,10 @@ func applyEnvironmentOverrides(cfg *ResolvedConfig, env Environment) {
 		cfg.Server.AuthToken = env.AuthToken
 	}
 	if env.WebhookSecret != "" {
-		cfg.Webhook.Secret = env.WebhookSecret
+		cfg.GitHub.Webhook.TaskSecret = env.WebhookSecret
+	}
+	if env.GitHubWebhookSecret != "" {
+		cfg.GitHub.Webhook.Secret = env.GitHubWebhookSecret
 	}
 	if len(env.AllowedOrigins) > 0 {
 		cfg.Server.AllowedOrigins = append([]string(nil), env.AllowedOrigins...)
@@ -173,8 +178,14 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	if cfg.Attachments.MaxSizeMB <= 0 {
 		cfg.Attachments.MaxSizeMB = DefaultAttachmentMaxSizeMB
 	}
-	if cfg.Webhook.Port <= 0 {
-		cfg.Webhook.Port = DefaultWebhookPort
+	if cfg.GitHub.Webhook.Port <= 0 {
+		cfg.GitHub.Webhook.Port = DefaultWebhookPort
+	}
+	if strings.TrimSpace(cfg.GitHub.Webhook.CommandPrefix) == "" {
+		cfg.GitHub.Webhook.CommandPrefix = DefaultGitHubWebhookCommandPrefix
+	}
+	if file != nil && file.Has("webhook", "enabled") && cfg.GitHub.Webhook.Enabled {
+		cfg.GitHub.Webhook.TaskEnabled = true
 	}
 	if cfg.Renovate.Author == "" {
 		cfg.Renovate.Author = "app/renovate"
