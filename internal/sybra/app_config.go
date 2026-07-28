@@ -47,7 +47,11 @@ type AppSettings struct {
 }
 
 func githubSettingsWithoutSecrets(github config.GitHubConfig) config.GitHubConfig {
-	github.Webhook.Secret = ""
-	github.Webhook.TaskSecret = ""
+	if github.Webhook.Secret != "" {
+		github.Webhook.Secret = config.RedactedPlaceholder
+	}
+	if github.Webhook.TaskSecret != "" {
+		github.Webhook.TaskSecret = config.RedactedPlaceholder
+	}
 	return github
 }

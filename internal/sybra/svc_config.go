@@ -522,10 +522,10 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 		next.ABTesting.MinSamplesPerVariant = settings.ProviderRouting.ABTestingMinSamplesPerVariant
 	}
 	next.GitHub = settings.GitHub
-	if next.GitHub.Webhook.Secret == "" || next.GitHub.Webhook.Secret == config.RedactedPlaceholder {
+	if next.GitHub.Webhook.Secret == config.RedactedPlaceholder {
 		next.GitHub.Webhook.Secret = existing.GitHub.Webhook.Secret
 	}
-	if next.GitHub.Webhook.TaskSecret == "" || next.GitHub.Webhook.TaskSecret == config.RedactedPlaceholder {
+	if next.GitHub.Webhook.TaskSecret == config.RedactedPlaceholder {
 		next.GitHub.Webhook.TaskSecret = existing.GitHub.Webhook.TaskSecret
 	}
 	next.Monitor = settings.Monitor

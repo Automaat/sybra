@@ -23,6 +23,12 @@ func TestGetSettingsRedactsAndPreservesGitHubWebhookSecrets(t *testing.T) {
 	if strings.Contains(string(data), "github-secret") || strings.Contains(string(data), "task-secret") {
 		t.Fatalf("GetSettings leaked webhook secrets: %s", data)
 	}
+	if settings.GitHub.Webhook.Secret != config.RedactedPlaceholder {
+		t.Fatalf("GitHub webhook secret = %q, want redaction placeholder", settings.GitHub.Webhook.Secret)
+	}
+	if settings.GitHub.Webhook.TaskSecret != config.RedactedPlaceholder {
+		t.Fatalf("task webhook secret = %q, want redaction placeholder", settings.GitHub.Webhook.TaskSecret)
+	}
 
 	settings.GitHub.Enabled = !settings.GitHub.Enabled
 	if _, err := svc.UpdateSettings(settings); err != nil {
@@ -33,6 +39,19 @@ func TestGetSettingsRedactsAndPreservesGitHubWebhookSecrets(t *testing.T) {
 	}
 	if svc.persisted.GitHub.Webhook.TaskSecret != "task-secret" {
 		t.Fatalf("task webhook secret = %q, want preserved value", svc.persisted.GitHub.Webhook.TaskSecret)
+	}
+
+	settings = svc.GetSettings()
+	settings.GitHub.Webhook.Secret = ""
+	settings.GitHub.Webhook.TaskSecret = ""
+	if _, err := svc.UpdateSettings(settings); err != nil {
+		t.Fatalf("UpdateSettings clearing secrets: %v", err)
+	}
+	if svc.persisted.GitHub.Webhook.Secret != "" {
+		t.Fatalf("GitHub webhook secret = %q, want cleared value", svc.persisted.GitHub.Webhook.Secret)
+	}
+	if svc.persisted.GitHub.Webhook.TaskSecret != "" {
+		t.Fatalf("task webhook secret = %q, want cleared value", svc.persisted.GitHub.Webhook.TaskSecret)
 	}
 }
 
