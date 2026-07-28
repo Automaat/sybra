@@ -568,23 +568,21 @@ func TestApplyVerdict_RewardHackingFixReviewWithFindingRetries(t *testing.T) {
 // workflow, so a second identical stop escalates there.
 func TestApplyVerdict_RewardHackingWorkflowRolesRetry(t *testing.T) {
 	tests := []struct {
-		name string
-		role agent.Role
+		name       string
+		role       agent.Role
+		workflowID string
+		stepID     string
 	}{
-		{"implementation", agent.RoleImplementation},
-		{"plan", agent.RolePlan},
-		{"plan-critic", agent.RolePlanCritic},
+		{"implementation", agent.RoleImplementation, "simple-task-implement", "implement"},
+		{"plan", agent.RolePlan, "simple-task-plan", "plan"},
+		{"plan-critic", agent.RolePlanCritic, "simple-task-plan", "critique_plan"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tasks, tk := newTestTasks(t)
-			currentStep := string(tc.role)
-			if tc.role == agent.RoleImplementation {
-				currentStep = "implement"
-			}
 			wf := &workflow.Execution{
-				WorkflowID:  "simple-task",
-				CurrentStep: currentStep,
+				WorkflowID:  tc.workflowID,
+				CurrentStep: tc.stepID,
 				State:       workflow.ExecWaiting,
 				Variables:   map[string]string{},
 				AgentRoutes: map[string]string{},

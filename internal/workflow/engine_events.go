@@ -1670,8 +1670,7 @@ func buildRewardHackingReaskNote(attempt int) string {
 		"reward-hacking pattern — repeating the same non-editing action (reading/navigating) instead of "+
 		"making progress — attempt %d of %d.\n\n", attempt, maxWatchdogRewardHackingRetries)
 	b.WriteString("Do not restart broad investigation. Read the existing task sidecars, NOTES.md, and the " +
-		"latest command output, then take the next concrete action for this step: edit the named file, " +
-		"tighten the plan artifact, or run the single verification command that advances the workflow. " +
+		"latest command output, then take the next concrete action allowed by this step's instructions. " +
 		"Do not repeat the same search/read sequence.\n\n")
 	b.WriteString("If you are genuinely blocked, STOP and mark the task human-required with the specific " +
 		"blocker instead of looping.")
