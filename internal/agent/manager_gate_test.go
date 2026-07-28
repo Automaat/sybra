@@ -186,6 +186,30 @@ func TestPrepareRunConfig_FailoverRejectsUnknownConcreteModel(t *testing.T) {
 	}
 }
 
+func TestPrepareRunConfig_CodexRemapsClaudeModelLiteral(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true}})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider: "codex",
+		Model:    "claude-haiku-4-5-20251001",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != "codex" {
+		t.Fatalf("provider = %q, want codex", prov.Name())
+	}
+	if cfg.Model != "claude-haiku-4-5-20251001" {
+		t.Fatalf("requested model = %q, want original literal preserved for metadata", cfg.Model)
+	}
+	if cfg.resolvedModel != "gpt-5.4-mini" {
+		t.Fatalf("resolved model = %q, want gpt-5.4-mini", cfg.resolvedModel)
+	}
+}
+
 // TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor
 // locks in that prepareRunConfig — the single chokepoint every headless and
 // interactive run passes through — wires the background-task guardrail into
