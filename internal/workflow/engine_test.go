@@ -1782,6 +1782,7 @@ func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing
 func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 	tests := []struct {
 		name       string
+		role       string
 		status     string
 		stepID     string
 		workflowID string
@@ -1795,6 +1796,7 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 	}{
 		{
 			name:       "implementation retries from same worktree",
+			role:       "implementation",
 			status:     "in-progress",
 			stepID:     "implement",
 			workflowID: "test-simple",
@@ -1805,6 +1807,7 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 		},
 		{
 			name:       "planning retries when plan artifacts exist",
+			role:       "plan",
 			status:     "planning",
 			stepID:     "plan",
 			workflowID: "test-simple",
@@ -1816,6 +1819,7 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 		},
 		{
 			name:       "implementation exhaustion escalates",
+			role:       "implementation",
 			status:     "in-progress",
 			stepID:     "implement",
 			workflowID: "test-simple",
@@ -1838,6 +1842,7 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 			}
 			tasks.Put(TaskInfo{
 				ID:           "t1",
+				Role:         tc.role,
 				Status:       tc.status,
 				StatusReason: "watchdog: reward-hacking retry: repeated search without editing",
 				AgentMode:    "headless",

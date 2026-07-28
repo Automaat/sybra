@@ -1012,10 +1012,10 @@ func TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang(t *testing.T)
 	}
 }
 
-// TestApplyVerdict_BudgetStopWithoutGenericStallEscalates covers the empty
-// reason_kind case: without an explicit generic_stall or reward_hacking
-// classification, a budget stop still escalates straight to human-required.
-func TestApplyVerdict_BudgetStopWithoutGenericStallEscalates(t *testing.T) {
+// TestApplyVerdict_BudgetStopWithoutReasonKindEscalates covers the empty
+// reason_kind case: without an explicit classification, a budget stop still
+// escalates straight to human-required.
+func TestApplyVerdict_BudgetStopWithoutReasonKindEscalates(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 
 	stopped := false
