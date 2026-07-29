@@ -326,6 +326,9 @@ func rehydrateFromLogWithArtifacts(a *Agent, path, taskID, producerRole string, 
 		if perr != nil || ev.Type == "" {
 			continue
 		}
+		if isToolFailureDiagnosticEvent(ev.Type) {
+			continue
+		}
 		ev = bindToolResultEvent(taskID, producerRole, store, ev)
 		ev.Timestamp = time.Now().UTC()
 		a.applyStreamEventState(ev)

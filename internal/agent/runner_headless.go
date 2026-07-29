@@ -917,6 +917,9 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	if event.Type == "" {
 		return false
 	}
+	if isToolFailureDiagnosticEvent(event.Type) {
+		return false
+	}
 	event = bindToolResultEvent(a.TaskID, string(a.EffectiveRole()), m.artifacts, event)
 
 	event.Timestamp = time.Now().UTC()
@@ -950,6 +953,8 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	for _, d := range event.permissionDenials {
 		a.NotePermissionDenial(d.ToolUseID, d.Reason)
 	}
+	m.recordToolResultFailures(a, event)
+	m.recordTerminalFailure(a, event)
 	if event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
 		m.emit(events.AgentOutput(a.ID), event)
 		*lastEmit = time.Now()
