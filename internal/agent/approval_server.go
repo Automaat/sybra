@@ -142,6 +142,7 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 	agentID := s.findAgentBySessionWithRetry(r.Context(), input.SessionID)
 	if agentID == "" {
 		s.logger.Warn("approval-server.no-agent", "session_id", input.SessionID)
+		s.recordApprovalFailure(nil, input, "approval-unknown-session", "Unknown session")
 		s.respondDeny(w, "Unknown session")
 		return
 	}
@@ -192,13 +193,46 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 		if resp.Approved {
 			s.respondAllow(w, input.ToolInput)
 		} else {
+			s.recordApprovalFailureByID(agentID, input, "approval-denied", "User denied this action")
 			s.respondDeny(w, "User denied this action")
 		}
 	case <-r.Context().Done():
+		s.recordApprovalFailureByID(agentID, input, "approval-canceled", "Request canceled")
 		s.respondDeny(w, "Request canceled")
 	case <-time.After(5 * time.Minute):
+		s.recordApprovalFailureByID(agentID, input, "approval-timeout", "Approval timed out")
 		s.respondDeny(w, "Approval timed out")
 	}
+}
+
+func (s *ApprovalServer) recordApprovalFailureByID(agentID string, input hookInput, source, reason string) {
+	var a *Agent
+	if s.agents != nil && agentID != "" {
+		if got, err := s.agents.GetAgent(agentID); err == nil {
+			a = got
+		}
+	}
+	s.recordApprovalFailure(a, input, source, reason)
+}
+
+func (s *ApprovalServer) recordApprovalFailure(a *Agent, input hookInput, source, reason string) {
+	agentID := ""
+	if a != nil {
+		agentID = a.ID
+	}
+	logApprovalToolFailure(s.logger, agentID, input.ToolName, input.ToolUseID, source, reason)
+	if s.agents == nil {
+		return
+	}
+	s.agents.recordToolCallFailure(a, ToolCallFailureRecord{
+		Timestamp:        time.Now().UTC(),
+		SessionID:        input.SessionID,
+		ToolUseID:        input.ToolUseID,
+		ToolName:         input.ToolName,
+		ToolInputSummary: summarizeToolInput(input.ToolInput),
+		Source:           source,
+		Reason:           reason,
+	})
 }
 
 func (s *ApprovalServer) respondAllow(w http.ResponseWriter, input map[string]any) {

@@ -60,6 +60,9 @@ func ParseLogFileWithArtifacts(path string, maxEvents int, provider, taskID, pro
 		if ev.Type == "" {
 			continue
 		}
+		if isToolFailureDiagnosticEvent(ev.Type) {
+			continue
+		}
 		ev = bindToolResultEvent(taskID, producerRole, store, ev)
 		events = append(events, ev)
 	}
