@@ -125,6 +125,17 @@ func TestRunOutcome(t *testing.T) {
 			want:    "stalled",
 		},
 		{
+			name: "user_interrupted_is_a_stall",
+			role: agent.RoleTestRunner,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.SetError(agent.ErrorKindUserInterrupted, "provider run was interrupted by the user before completion")
+				return ag
+			},
+			exitErr: errBoom,
+			want:    "stalled",
+		},
+		{
 			// A budget breach is a deliberate hard-stop, not an infra stall —
 			// it must stay countable as a real failure (classifyStall).
 			name: "cost_guardrail_stop_stays_a_failure",
@@ -568,9 +579,20 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		ag.SetError(agent.ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
 
 		stall := classifyStall(ag, errors.New("provider result error provider_error"))
-		if !stall.Stalled || stall.RateLimited || stall.MalformedTool || !stall.ToolUseAborted || stall.StopStalled || stall.CheckpointStopped {
-			t.Fatalf("classifyStall(tool_use_aborted) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v stopStalled=%v checkpointStopped=%v",
-				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.StopStalled, stall.CheckpointStopped)
+		if !stall.Stalled || stall.RateLimited || stall.MalformedTool || !stall.ToolUseAborted || stall.UserInterrupted || stall.StopStalled || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(tool_use_aborted) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v userInterrupted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.UserInterrupted, stall.StopStalled, stall.CheckpointStopped)
+		}
+	})
+
+	t.Run("user interrupted stalls for retry", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindUserInterrupted, "provider run was interrupted by the user before completion")
+
+		stall := classifyStall(ag, errors.New("provider result error provider_error"))
+		if !stall.Stalled || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || !stall.UserInterrupted || stall.StopStalled || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(user_interrupted) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v userInterrupted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.UserInterrupted, stall.StopStalled, stall.CheckpointStopped)
 		}
 	})
 }

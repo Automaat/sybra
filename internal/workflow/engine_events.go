@@ -715,6 +715,9 @@ func interruptedRecoveryStatus(workflowID string) string {
 	if workflowID == "simple-task-plan" {
 		return "planning"
 	}
+	if workflowID == "testing-task" {
+		return "testing"
+	}
 	return "in-progress"
 }
 

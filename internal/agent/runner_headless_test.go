@@ -511,6 +511,20 @@ func TestParseClaudeLine_ResultTerminalReason(t *testing.T) {
 	}
 }
 
+func TestUserInterruptedStream(t *testing.T) {
+	t.Parallel()
+
+	if !userInterruptedStream([]StreamEvent{{Type: "result", TerminalReason: "aborted_streaming"}}) {
+		t.Fatal("userInterruptedStream(aborted_streaming) = false, want true")
+	}
+	if !userInterruptedStream([]StreamEvent{{Type: "result", Content: "[Request interrupted by user]"}}) {
+		t.Fatal("userInterruptedStream(marker) = false, want true")
+	}
+	if userInterruptedStream([]StreamEvent{{Type: "result", TerminalReason: "aborted_tools"}}) {
+		t.Fatal("userInterruptedStream(aborted_tools) = true, want false")
+	}
+}
+
 func TestLastHeadlessResultMarksStructuredError(t *testing.T) {
 	a := &Agent{}
 	a.AppendOutput(StreamEvent{Type: "result", Content: "You've hit your weekly limit", ErrorType: "rate_limit", ErrorStatus: 429})

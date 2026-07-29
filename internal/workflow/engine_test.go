@@ -4129,6 +4129,9 @@ func TestInterruptedRecoveryStatus_PlanningWorkflow(t *testing.T) {
 	if got := interruptedRecoveryStatus("simple-task-plan"); got != "planning" {
 		t.Fatalf("interruptedRecoveryStatus(simple-task-plan) = %q, want planning", got)
 	}
+	if got := interruptedRecoveryStatus("testing-task"); got != "testing" {
+		t.Fatalf("interruptedRecoveryStatus(testing-task) = %q, want testing", got)
+	}
 	if got := interruptedRecoveryStatus("simple-task-implement"); got != "in-progress" {
 		t.Fatalf("interruptedRecoveryStatus(simple-task-implement) = %q, want in-progress", got)
 	}
