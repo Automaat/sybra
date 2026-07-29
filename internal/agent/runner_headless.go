@@ -627,6 +627,8 @@ func (m *Manager) resolveHeadlessAttemptExit(a *Agent, waitErr error, stderrOut 
 	attemptEvents := attemptEventsFrom(a.Output(), prevLen)
 	if toolUseAborted(attemptEvents) {
 		a.SetError(ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
+	} else if userInterruptedStream(attemptEvents) {
+		a.SetError(ErrorKindUserInterrupted, "provider run was interrupted by the user before completion")
 	}
 	switch {
 	case waitErr != nil:
@@ -657,6 +659,8 @@ func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
 	evs := attemptEventsFrom(a.Output(), prevLen)
 	if toolUseAborted(evs) {
 		a.SetError(ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
+	} else if userInterruptedStream(evs) {
+		a.SetError(ErrorKindUserInterrupted, "provider run was interrupted by the user before completion")
 	}
 	if streamErr := resultStreamError(evs); streamErr != nil {
 		a.SetExitErr(streamErr)
@@ -680,6 +684,19 @@ func toolUseAborted(streamEvents []StreamEvent) bool {
 		return e.TerminalReason == "aborted_tools" ||
 			strings.Contains(content, "request interrupted by user for tool use") ||
 			strings.Contains(content, "tool use was rejected")
+	}
+	return false
+}
+
+func userInterruptedStream(streamEvents []StreamEvent) bool {
+	for i := range slices.Backward(streamEvents) {
+		e := streamEvents[i]
+		if e.Type != "result" {
+			continue
+		}
+		content := strings.ToLower(e.Content)
+		return e.TerminalReason == "aborted_streaming" ||
+			strings.Contains(content, "request interrupted by user")
 	}
 	return false
 }

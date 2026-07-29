@@ -30,7 +30,8 @@ import (
 type State string
 
 const (
-	ErrorKindToolUseAborted = "tool_use_aborted"
+	ErrorKindToolUseAborted  = "tool_use_aborted"
+	ErrorKindUserInterrupted = "user_interrupted"
 )
 
 const (
