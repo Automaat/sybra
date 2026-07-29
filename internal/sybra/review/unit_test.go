@@ -292,6 +292,16 @@ func TestCommentsPrompt_DetectsForkRemote(t *testing.T) {
 	})
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
+	for _, want := range []string{
+		"re-fetch that thread",
+		"already posted a reply containing the harness footer",
+		"__SHA__",
+		"do not retry the same thread through another API path",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("comments prompt missing duplicate-reply guard %q:\n%s", want, prompt)
+		}
+	}
 }
 
 func TestConflictPrompt_DetectsForkRemote(t *testing.T) {
