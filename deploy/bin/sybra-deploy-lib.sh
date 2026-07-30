@@ -11,6 +11,12 @@
 #                                hash) that already failed preflight or health
 #                                checks; presence short-circuits a rebuild
 #   deploy-state/<key>.failcount  consecutive health-check failure counter
+#   deploy-state/<key>.buildfail  consecutive transient build-phase failure
+#                                 counter (dependency install / compile) — a
+#                                 build phase is only quarantined once this
+#                                 crosses its threshold, so a one-off flake
+#                                 does not permanently pin the host to the old
+#                                 release
 #
 # LOG_TAG is set by the sourcing script so journal lines are attributable.
 
@@ -97,6 +103,31 @@ record_health_failure() {
 
 clear_health_failures() {
   rm -f "$(failcount_file "$1")"
+}
+
+buildfail_file() { echo "$STATE_DIR/$1.buildfail"; }
+
+# record_build_failure bumps and prints the consecutive-failure count for a
+# transient build phase (dependency install / compile / smoke). Unlike a
+# deterministic phase, these can fail on host/network/toolchain flakes that
+# clear on their own, so the caller retries them a few times before
+# quarantining — otherwise a one-off outage would block the same sha+config
+# forever.
+record_build_failure() {
+  local key="$1"
+  mkdir -p "$STATE_DIR"
+  local f count
+  f="$(buildfail_file "$key")"
+  count=0
+  [[ -f "$f" ]] && count="$(cat "$f" 2>/dev/null || echo 0)"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  count=$((count + 1))
+  echo "$count" >"$f"
+  echo "$count"
+}
+
+clear_build_failures() {
+  rm -f "$(buildfail_file "$1")"
 }
 
 # detail_log_path is where a phase can stash full (potentially verbose, but

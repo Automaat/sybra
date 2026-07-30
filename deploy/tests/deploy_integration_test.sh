@@ -194,14 +194,48 @@ scenario_build_failure() {
 
   bump_commit "$root" "broken-frontend"
   export FAKE_NPM_FAIL=1
+  export SYBRA_BUILD_RETRY_THRESHOLD=3
   run_build >"$root/build.log" 2>&1
   assert_eq "build-failure: exits 0 (keeps last-good)" "0" "$?"
   assert_eq "build-failure: current unchanged" "$seeded" "$(current_target)"
   assert_contains "build-failure: logs the frontend-build rejection" "$(cat "$root/build.log")" "frontend-build"
+  assert_eq "build-failure: transient failure not quarantined yet" "0" "$(quarantine_count)"
+
+  # A transient build failure must NOT permanently block the same sha+config:
+  # the next attempt rebuilds rather than short-circuiting on a quarantine.
+  run_build >"$root/build2.log" 2>&1
+  assert_true "build-failure: retry rebuilds rather than skipping" \
+    bash -c '! grep -q "Skipping rebuild" "'"$root"'/build2.log"'
+  assert_eq "build-failure: still not quarantined after second transient failure" "0" "$(quarantine_count)"
+
+  # Once the flake clears, the same sha+config builds and activates.
+  unset FAKE_NPM_FAIL
+  run_build >"$root/build3.log" 2>&1
+  assert_eq "build-failure: recovers and activates once the flake clears" "0" "$?"
+  assert_ne "build-failure: current advances after recovery" "$seeded" "$(current_target)"
+}
+
+scenario_build_failure_persistent() {
+  local root="$1"
+  new_env "$root"
+  local seeded; seeded="$(seed_last_good "$root")"
+
+  bump_commit "$root" "persistently-broken-frontend"
+  export FAKE_NPM_FAIL=1
+  export SYBRA_BUILD_RETRY_THRESHOLD=2
+
+  run_build >"$root/build1.log" 2>&1
+  assert_eq "build-persistent: first failure keeps last-good, no quarantine" "0" "$(quarantine_count)"
+  assert_true "build-persistent: first failure stays retriable" \
+    bash -c '! grep -q "Skipping rebuild" "'"$root"'/build1.log"'
 
   run_build >"$root/build2.log" 2>&1
-  assert_contains "build-failure: quarantined retry skips rebuild" "$(cat "$root/build2.log")" "Skipping rebuild"
-  assert_eq "build-failure: current still unchanged after quarantined retry" "$seeded" "$(current_target)"
+  assert_eq "build-persistent: quarantined after crossing retry threshold" "1" "$(quarantine_count)"
+  assert_eq "build-persistent: current still on last-good" "$seeded" "$(current_target)"
+
+  run_build >"$root/build3.log" 2>&1
+  assert_contains "build-persistent: subsequent build skips rebuild once quarantined" "$(cat "$root/build3.log")" "Skipping rebuild"
+  assert_eq "build-persistent: current unchanged after quarantine" "$seeded" "$(current_target)"
 }
 
 scenario_lock_contention() {
@@ -302,6 +336,7 @@ main() {
 
   scenario_config_incompatibility "$TMPBASE/config-incompat"
   scenario_build_failure "$TMPBASE/build-failure"
+  scenario_build_failure_persistent "$TMPBASE/build-failure-persistent"
   scenario_lock_contention "$TMPBASE/lock-contention"
   scenario_successful_activation "$TMPBASE/success"
   scenario_health_check_failure "$TMPBASE/health-failure"

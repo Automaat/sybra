@@ -2,11 +2,14 @@
 # ExecStartPre for the sybra systemd unit. Builds the current $SYBRA_SRC_DIR
 # checkout into a fresh, versioned candidate directory, preflights it against
 # the exact live config, and only then atomically repoints the "current"
-# release pointer. A candidate that fails at any phase (build, sandbox smoke,
-# config preflight) is quarantined by source-sha + live-config fingerprint so
-# a subsequent identical deploy attempt (e.g. the next autoupdate poll) is
-# rejected up front instead of repeating a doomed mise install/npm ci/go
-# build cycle — see write_quarantine in sybra-deploy-lib.sh. Runtime health
+# release pointer. A candidate that fails is quarantined by source-sha +
+# live-config fingerprint so a subsequent identical deploy attempt (e.g. the
+# next autoupdate poll) is rejected up front. Deterministic phases (config
+# preflight) are quarantined on the first failure; transient build phases
+# (mise install, npm ci, go build, sandbox smoke) get a retry budget and are
+# only quarantined after SYBRA_BUILD_RETRY_THRESHOLD consecutive failures, so a
+# one-off registry/network/toolchain flake cannot pin the host to the old
+# release forever — see write_quarantine in sybra-deploy-lib.sh. Runtime health
 # (does the activated release actually start and answer /health) is a
 # separate, later concern handled by sybra-healthcheck.sh (ExecStartPost).
 set -uo pipefail
@@ -35,13 +38,41 @@ keep_last_good_or_fail() {
   exit 1
 }
 
-# reject_candidate quarantines the sha+config combo — so the next deploy
-# attempt short-circuits before doing any real work — then defers to
+# Retry budget for transient build phases before they are quarantined.
+BUILD_RETRY_THRESHOLD="${SYBRA_BUILD_RETRY_THRESHOLD:-3}"
+
+# is_deterministic_phase reports whether a phase's outcome is fully determined
+# by the source sha + live config, so retrying it for unchanged inputs is
+# pointless and it should be quarantined on the first failure. Every other
+# phase depends on transient host/network/toolchain state.
+is_deterministic_phase() {
+  case "$1" in
+    config-preflight) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# reject_candidate discards the candidate then decides whether to quarantine
+# the sha+config combo (so the next deploy attempt short-circuits before doing
+# any real work) or to leave it retriable. Deterministic phases quarantine
+# immediately; transient build phases only quarantine after
+# BUILD_RETRY_THRESHOLD consecutive failures, so a one-off flake does not pin
+# the host to the old release forever. Either way it defers to
 # keep_last_good_or_fail for the exit-code/fallback contract.
 reject_candidate() {
   local phase="$1" message="$2"
-  write_quarantine "$KEY" "$phase" "$message" "$SHA"
   rm -rf "$CANDIDATE_DIR"
+  if is_deterministic_phase "$phase"; then
+    write_quarantine "$KEY" "$phase" "$message" "$SHA"
+    keep_last_good_or_fail "$phase: $message"
+  fi
+  local count
+  count="$(record_build_failure "$KEY")"
+  if (( count >= BUILD_RETRY_THRESHOLD )); then
+    write_quarantine "$KEY" "$phase" "$message (failed ${count}x)" "$SHA"
+    keep_last_good_or_fail "$phase: $message"
+  fi
+  log "build phase $phase failed (attempt $count/$BUILD_RETRY_THRESHOLD); leaving retriable — next deploy will rebuild rather than quarantine"
   keep_last_good_or_fail "$phase: $message"
 }
 
@@ -81,6 +112,7 @@ activate_candidate() {
   mv -T "$CANDIDATE_DIR" "$final_dir"
   atomic_symlink "$final_dir" "$CURRENT_LINK"
   clear_quarantine "$KEY"
+  clear_build_failures "$KEY"
   log "activated release $ID -> $CURRENT_LINK"
 }
 
