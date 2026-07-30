@@ -31,10 +31,17 @@ type Report struct {
 	NeedsHuman      int                   `json:"needsHuman"`
 	CostUSD         float64               `json:"costUsd"`
 	DurationMS      int64                 `json:"durationMs"`
-	// Degraded marks a tick that failed before producing findings (e.g. the
-	// health report could not be read/parsed). Error carries the failure so
-	// LastReport() and the frontend event stream reflect that self-monitor
-	// itself is broken instead of staying pinned to the last successful tick.
+	// AnalysisFailures counts findings whose agent log could not be read or
+	// parsed by the analyzer. Each such finding drops verdict and
+	// provider-signal coverage, so a non-zero count means the tick produced
+	// only partial evidence and is marked Degraded below.
+	AnalysisFailures int `json:"analysisFailures,omitempty"`
+	// Degraded marks a tick that either failed before producing findings (e.g.
+	// the health report could not be read/parsed) or completed with incomplete
+	// evidence (one or more per-finding log analyses failed — see
+	// AnalysisFailures). Error carries the failure so LastReport() and the
+	// frontend event stream reflect that self-monitor coverage is impaired
+	// instead of reading as a clean, fully-analyzed tick.
 	Degraded bool   `json:"degraded,omitempty"`
 	Error    string `json:"error,omitempty"`
 }
@@ -49,6 +56,11 @@ type InvestigatedFinding struct {
 	LogSummary  *LogSummary    `json:"logSummary,omitempty"`
 	Verdict     Verdict        `json:"verdict"`
 	IssueNumber int            `json:"issueNumber,omitempty"`
+	// AnalysisError is set when the finding's agent log was resolved but the
+	// analyzer failed to read/parse it, leaving LogSummary nil. It flags that
+	// this finding's verdict and provider-signal coverage are missing evidence
+	// rather than legitimately absent (a board-wide finding with no log).
+	AnalysisError string `json:"analysisError,omitempty"`
 }
 
 // Verdict is the structured judgment produced by the stage-1 judge LLM for a

@@ -220,6 +220,49 @@ func TestScanAutoSuppressesChronicFalsePositive(t *testing.T) {
 	}
 }
 
+func TestScanMarksDegradedOnUnreadableLog(t *testing.T) {
+	// A finding whose log resolves but cannot be analyzed must surface a
+	// degraded/partial signal instead of a clean tick. Point LogFile at a
+	// directory: it passes resolveLogFile's os.Stat but Analyze fails to read
+	// it (EISDIR), regardless of the test user.
+	logsDir := t.TempDir()
+	badLog := filepath.Join(logsDir, "not-a-file")
+	if err := os.MkdirAll(badLog, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	rep := &health.Report{
+		Findings: []health.Finding{{
+			Category:    health.CatAgentRetryLoop,
+			Fingerprint: "agent_retry_loop:task-bad",
+			TaskID:      "task-bad",
+			AgentID:     "agent-bad",
+			LogFile:     badLog,
+		}},
+	}
+	svc := newServiceForTest(t, &stubHealth{Report: rep}, nil, logsDir)
+
+	r, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(r.Findings) != 1 {
+		t.Fatalf("Findings = %d, want 1", len(r.Findings))
+	}
+	if r.Findings[0].LogSummary != nil {
+		t.Errorf("LogSummary = %+v, want nil on analyze failure", r.Findings[0].LogSummary)
+	}
+	if r.Findings[0].AnalysisError == "" {
+		t.Error("finding AnalysisError is empty, want the analyzer error recorded")
+	}
+	if r.AnalysisFailures != 1 {
+		t.Errorf("AnalysisFailures = %d, want 1", r.AnalysisFailures)
+	}
+	if !r.Degraded || r.Error == "" {
+		t.Errorf("report = {Degraded:%v Error:%q}, want Degraded with an Error set", r.Degraded, r.Error)
+	}
+}
+
 func TestScanFiltersByProjectType(t *testing.T) {
 	rep := &health.Report{
 		Findings: []health.Finding{{

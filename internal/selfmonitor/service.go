@@ -232,7 +232,20 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 			report.Suppressed++
 			continue
 		}
+		if inv.AnalysisError != "" {
+			report.AnalysisFailures++
+		}
 		report.Findings = append(report.Findings, inv)
+	}
+
+	// A resolved log that could not be analyzed drops real evidence, so mark
+	// the tick degraded/partial. Downstream (harness-evolution, frontend)
+	// keys off Degraded to avoid treating impaired coverage as a clean tick.
+	if report.AnalysisFailures > 0 {
+		report.Degraded = true
+		report.Error = fmt.Sprintf(
+			"%d finding(s) had an unreadable or malformed agent log; verdict and provider-signal coverage incomplete",
+			report.AnalysisFailures)
 	}
 
 	// Cross-finding correlations (pure Go, no I/O).
@@ -282,7 +295,12 @@ func (s *Service) investigate(ctx context.Context, f *health.Finding) (Investiga
 	if path := s.resolveLogFile(f); path != "" {
 		summary, err := Analyze(path, s.deps.MaxLogEventsHint)
 		if err != nil {
+			// A resolved-but-unreadable log means we lose verdict and
+			// provider-signal coverage for this finding. Record it on the
+			// finding so tick can mark the whole report degraded — otherwise
+			// the dropped evidence is invisible downstream.
 			s.deps.Logger.Warn("selfmonitor.analyze", "path", path, "err", err)
+			inv.AnalysisError = err.Error()
 		} else {
 			inv.LogSummary = &summary
 		}
