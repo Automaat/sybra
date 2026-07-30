@@ -740,6 +740,12 @@ export class RateEstimate {
  * Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
  */
 export class Report {
+    /**
+     * SchemaVersion is ScorecardSchemaVersion at generation time — see its
+     * doc comment for what changes across a version bump and how a cohort
+     * straddling one should be read.
+     */
+    "schemaVersion": number;
     "generatedAt": string;
     "since": string;
     "until": string;
@@ -763,6 +769,9 @@ export class Report {
 
     /** Creates a new Report instance. */
     constructor($$source: Partial<Report> = {}) {
+        if (!("schemaVersion" in $$source)) {
+            this["schemaVersion"] = 0;
+        }
         if (!("generatedAt" in $$source)) {
             this["generatedAt"] = "0001-01-01T00:00:00.000Z";
         }
@@ -786,46 +795,46 @@ export class Report {
      * Creates a new Report instance from a string or object.
      */
     static createFrom($$source: any = {}): Report {
-        const $$createField3_0 = $$createType18;
-        const $$createField4_0 = $$createType20;
+        const $$createField4_0 = $$createType18;
         const $$createField5_0 = $$createType20;
         const $$createField6_0 = $$createType20;
-        const $$createField7_0 = $$createType7;
+        const $$createField7_0 = $$createType20;
         const $$createField8_0 = $$createType7;
-        const $$createField9_0 = $$createType22;
-        const $$createField10_0 = $$createType24;
-        const $$createField11_0 = $$createType25;
-        const $$createField12_0 = $$createType26;
+        const $$createField9_0 = $$createType7;
+        const $$createField10_0 = $$createType22;
+        const $$createField11_0 = $$createType24;
+        const $$createField12_0 = $$createType25;
+        const $$createField13_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
-            $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
+            $$parsedSource["overall"] = $$createField4_0($$parsedSource["overall"]);
         }
         if ("byProvider" in $$parsedSource) {
-            $$parsedSource["byProvider"] = $$createField4_0($$parsedSource["byProvider"]);
+            $$parsedSource["byProvider"] = $$createField5_0($$parsedSource["byProvider"]);
         }
         if ("byRole" in $$parsedSource) {
-            $$parsedSource["byRole"] = $$createField5_0($$parsedSource["byRole"]);
+            $$parsedSource["byRole"] = $$createField6_0($$parsedSource["byRole"]);
         }
         if ("bySkillExecutionMode" in $$parsedSource) {
-            $$parsedSource["bySkillExecutionMode"] = $$createField6_0($$parsedSource["bySkillExecutionMode"]);
+            $$parsedSource["bySkillExecutionMode"] = $$createField7_0($$parsedSource["bySkillExecutionMode"]);
         }
         if ("byAgentModel" in $$parsedSource) {
-            $$parsedSource["byAgentModel"] = $$createField7_0($$parsedSource["byAgentModel"]);
+            $$parsedSource["byAgentModel"] = $$createField8_0($$parsedSource["byAgentModel"]);
         }
         if ("byAgentModelContribution" in $$parsedSource) {
-            $$parsedSource["byAgentModelContribution"] = $$createField8_0($$parsedSource["byAgentModelContribution"]);
+            $$parsedSource["byAgentModelContribution"] = $$createField9_0($$parsedSource["byAgentModelContribution"]);
         }
         if ("byExperimentKind" in $$parsedSource) {
-            $$parsedSource["byExperimentKind"] = $$createField9_0($$parsedSource["byExperimentKind"]);
+            $$parsedSource["byExperimentKind"] = $$createField10_0($$parsedSource["byExperimentKind"]);
         }
         if ("weaknesses" in $$parsedSource) {
-            $$parsedSource["weaknesses"] = $$createField10_0($$parsedSource["weaknesses"]);
+            $$parsedSource["weaknesses"] = $$createField11_0($$parsedSource["weaknesses"]);
         }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField11_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField12_0($$parsedSource["notes"]);
         }
         if ("slo" in $$parsedSource) {
-            $$parsedSource["slo"] = $$createField12_0($$parsedSource["slo"]);
+            $$parsedSource["slo"] = $$createField13_0($$parsedSource["slo"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }
@@ -1001,12 +1010,22 @@ export class Scorecard {
 
     /**
      * Autonomy: did landed work reach done without a human in the loop?
+     * human-required is a request for intervention, not evidence one
+     * happened — HumanTouchedLandings only counts a landing whose resolution
+     * carries a durably-attributed operator action (an explicit approve/
+     * reject, a dispatch/edit out of human-required, or a human PR edit).
+     * A landing that asked for intervention but whose resolution carries no
+     * such provenance (typically event history predating this
+     * classification, see ScorecardSchemaVersion) is neither autonomous nor
+     * human-touched — it lands in AutonomyUnknownLandings instead of being
+     * forced into one bucket on a guess (issue #2727).
      */
     "autonomousLandings": number;
     "humanTouchedLandings": number;
+    "autonomyUnknownLandings": number;
 
     /**
-     * autonomous / landed
+     * autonomous / (autonomous + humanTouched); unknown landings excluded from both numerator and denominator
      */
     "autonomyRate": number;
 
@@ -1088,6 +1107,9 @@ export class Scorecard {
         }
         if (!("humanTouchedLandings" in $$source)) {
             this["humanTouchedLandings"] = 0;
+        }
+        if (!("autonomyUnknownLandings" in $$source)) {
+            this["autonomyUnknownLandings"] = 0;
         }
         if (!("autonomyRate" in $$source)) {
             this["autonomyRate"] = 0;
