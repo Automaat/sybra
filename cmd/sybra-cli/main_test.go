@@ -856,6 +856,59 @@ func TestConfigDoctorJSONReportsGitHubPollingStates(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONWarnsOnHarnessEvolutionWithoutSelfMonitor(t *testing.T) {
+	setupStore(t)
+
+	// The shipped defaults are exactly this combination (harness_evolution
+	// defaults enabled, self_monitor defaults disabled pending opt-in), so
+	// this must warn rather than error — an error here would fail `config
+	// doctor` on every fresh install.
+	cfg := config.DefaultConfig()
+	if !cfg.HarnessEvolve.Enabled || cfg.SelfMonitor.Enabled {
+		t.Fatalf("test assumes default HarnessEvolve.Enabled=true, SelfMonitor.Enabled=false; got %+v / %+v",
+			cfg.HarnessEvolve, cfg.SelfMonitor)
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected the warning to stay non-fatal, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" &&
+			strings.Contains(f.Message, "harness_evolution.enabled=true") &&
+			strings.Contains(f.Message, "self_monitor.enabled=false")
+	}) {
+		t.Fatalf("expected a harness_evolution/self_monitor dependency warning in doctor report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONNoWarningWhenSelfMonitorEnabled(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.SelfMonitor.Enabled = true
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected doctor to stay non-fatal, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "self_monitor.enabled=false")
+	}) {
+		t.Fatalf("did not expect the dependency warning once self_monitor is enabled: %+v", report.Findings)
+	}
+}
+
 func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	setupStore(t)
 

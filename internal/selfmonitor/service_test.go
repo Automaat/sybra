@@ -1,6 +1,7 @@
 package selfmonitor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -80,6 +81,57 @@ func TestScanNoHealthReport(t *testing.T) {
 	}
 	if r.SchemaVersion != ReportSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", r.SchemaVersion, ReportSchemaVersion)
+	}
+	if r.State != StateHealthy {
+		t.Errorf("State = %q, want %q (no health report yet is not a degraded state)", r.State, StateHealthy)
+	}
+}
+
+// TestScanMarksPartialOnOversizedLogRecord is the selfmonitor-level
+// regression test for the scanner fix: an oversized NDJSON record in an
+// agent log must not blank out the whole LogSummary for that finding, and
+// the tick must surface the degradation via State/TruncatedRecords instead
+// of silently reporting "healthy".
+func TestScanMarksPartialOnOversizedLogRecord(t *testing.T) {
+	logsDir := t.TempDir()
+	agentDir := filepath.Join(logsDir, "agents")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	huge := `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tbig","content":"` +
+		strings.Repeat("x", maxLogLineBytes+1024) + `"}]}}`
+	lines := append([]string{`{"type":"system","subtype":"init","session_id":"s1"}`, huge}, fixtureLines()...)
+	logPath := filepath.Join(agentDir, "agent-big.ndjson")
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	rep := &health.Report{
+		Findings: []health.Finding{{
+			Category:    health.CatCostOutlier,
+			Fingerprint: "cost_outlier:task-big",
+			TaskID:      "task-big",
+			AgentID:     "agent-big",
+			LogFile:     logPath,
+		}},
+	}
+	svc := newServiceForTest(t, &stubHealth{Report: rep}, nil, logsDir)
+
+	r, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if r.State != StatePartial {
+		t.Errorf("State = %q, want %q", r.State, StatePartial)
+	}
+	if r.TruncatedRecords == 0 {
+		t.Error("TruncatedRecords = 0, want > 0")
+	}
+	if len(r.Findings) != 1 || r.Findings[0].LogSummary == nil {
+		t.Fatalf("expected the finding to still be analyzed despite the oversized record: %+v", r.Findings)
+	}
+	if r.InputsTotal != 1 || r.InputsAnalyzed != 1 {
+		t.Errorf("InputsTotal/InputsAnalyzed = %d/%d, want 1/1", r.InputsTotal, r.InputsAnalyzed)
 	}
 }
 
@@ -220,105 +272,6 @@ func TestScanAutoSuppressesChronicFalsePositive(t *testing.T) {
 	}
 }
 
-func TestScanMarksDegradedOnUnreadableLog(t *testing.T) {
-	// A finding whose log resolves but cannot be analyzed must surface a
-	// degraded/partial signal instead of a clean tick. Point LogFile at a
-	// directory: it passes resolveLogFile's os.Stat but Analyze fails to read
-	// it (EISDIR), regardless of the test user.
-	logsDir := t.TempDir()
-	badLog := filepath.Join(logsDir, "not-a-file")
-	if err := os.MkdirAll(badLog, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	rep := &health.Report{
-		Findings: []health.Finding{{
-			Category:    health.CatAgentRetryLoop,
-			Fingerprint: "agent_retry_loop:task-bad",
-			TaskID:      "task-bad",
-			AgentID:     "agent-bad",
-			LogFile:     badLog,
-		}},
-	}
-	svc := newServiceForTest(t, &stubHealth{Report: rep}, nil, logsDir)
-
-	r, err := svc.Scan(context.Background())
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if len(r.Findings) != 1 {
-		t.Fatalf("Findings = %d, want 1", len(r.Findings))
-	}
-	if r.Findings[0].LogSummary != nil {
-		t.Errorf("LogSummary = %+v, want nil on analyze failure", r.Findings[0].LogSummary)
-	}
-	if r.Findings[0].AnalysisError == "" {
-		t.Error("finding AnalysisError is empty, want the analyzer error recorded")
-	}
-	if r.AnalysisFailures != 1 {
-		t.Errorf("AnalysisFailures = %d, want 1", r.AnalysisFailures)
-	}
-	if !r.Degraded || r.Error == "" {
-		t.Errorf("report = {Degraded:%v Error:%q}, want Degraded with an Error set", r.Degraded, r.Error)
-	}
-}
-
-func TestScanMarksDegradedOnTruncatedLog(t *testing.T) {
-	// A log that parses but drops an oversized record carries only partial
-	// evidence — the skipped record may hold the key failure text. The tick
-	// must keep the partial summary yet still mark the report degraded, instead
-	// of trusting the incomplete coverage as a clean tick.
-	logsDir := t.TempDir()
-	agentDir := filepath.Join(logsDir, "agents")
-	if err := os.MkdirAll(agentDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	oversized := `{"type":"user","message":{"content":[` +
-		`{"type":"tool_result","tool_use_id":"big","content":"` +
-		strings.Repeat("x", maxLogLineBytes+1) + `"}]}}`
-	lines := []string{
-		`{"type":"assistant","session_id":"s1","message":{"content":[` +
-			`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}`,
-		oversized,
-		`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.5}`,
-	}
-	logPath := filepath.Join(agentDir, "agent-trunc-2026-04-14T10-00-00.ndjson")
-	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-		t.Fatalf("write log: %v", err)
-	}
-
-	rep := &health.Report{
-		Findings: []health.Finding{{
-			Category:    health.CatAgentRetryLoop,
-			Fingerprint: "agent_retry_loop:task-trunc",
-			TaskID:      "task-trunc",
-			AgentID:     "agent-trunc",
-			LogFile:     logPath,
-		}},
-	}
-	svc := newServiceForTest(t, &stubHealth{Report: rep}, nil, logsDir)
-
-	r, err := svc.Scan(context.Background())
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if len(r.Findings) != 1 {
-		t.Fatalf("Findings = %d, want 1", len(r.Findings))
-	}
-	if r.Findings[0].LogSummary == nil {
-		t.Fatal("LogSummary = nil, want the partial summary retained")
-	}
-	if r.Findings[0].AnalysisError == "" {
-		t.Error("finding AnalysisError is empty, want the truncation flagged")
-	}
-	if r.AnalysisFailures != 1 {
-		t.Errorf("AnalysisFailures = %d, want 1", r.AnalysisFailures)
-	}
-	if !r.Degraded || r.Error == "" {
-		t.Errorf("report = {Degraded:%v Error:%q}, want Degraded with an Error set", r.Degraded, r.Error)
-	}
-}
-
 func TestScanFiltersByProjectType(t *testing.T) {
 	rep := &health.Report{
 		Findings: []health.Finding{{
@@ -370,57 +323,96 @@ func TestPersistReportWritesFile(t *testing.T) {
 	if back.HealthScore != health.ScoreGood {
 		t.Errorf("HealthScore = %q, want %q", back.HealthScore, health.ScoreGood)
 	}
+	if back.State != StateHealthy {
+		t.Errorf("State = %q, want %q", back.State, StateHealthy)
+	}
 }
 
-func TestTickAndLogSurfacesDegradedReportOnHardFailure(t *testing.T) {
+// TestTickAndLogFailedTickPreservesLastGoodReport covers the "failed refresh
+// preserves the previous valid report" acceptance criterion: a hard error
+// reading the health report (not the expected/no-op ErrNoHealthReport) must
+// not clobber the last-report.json a prior successful tick wrote, and must
+// still surface a typed degraded result via LastReport/the emitted event.
+func TestTickAndLogFailedTickPreservesLastGoodReport(t *testing.T) {
 	dir := t.TempDir()
 	reportPath := filepath.Join(dir, "last-report.json")
-	// Seed a prior good on-disk report; a degraded tick must not clobber it,
-	// so the downstream staleness guard keeps keying off the last good report.
-	good := Report{SchemaVersion: ReportSchemaVersion, HealthScore: health.ScoreGood}
-	goodData, err := json.Marshal(good)
-	if err != nil {
-		t.Fatalf("marshal seed: %v", err)
-	}
-	if err := os.WriteFile(reportPath, goodData, 0o600); err != nil {
-		t.Fatalf("write seed: %v", err)
-	}
-
-	var emitted []Report
 	svc := NewService(Deps{
 		Cfg:            config.SelfMonitorConfig{Enabled: true, IntervalHours: 6},
-		Health:         &stubHealth{Err: errors.New("health store unavailable")},
+		Health:         &stubHealth{Report: &health.Report{Score: health.ScoreGood}},
 		LastReportPath: reportPath,
-		Emit: func(_ string, payload any) {
-			if r, ok := payload.(Report); ok {
-				emitted = append(emitted, r)
-			}
-		},
 	})
 	svc.tickAndLog(context.Background())
 
-	last, _, ticked := svc.LastReport()
-	if !ticked {
-		t.Fatal("LastReport reports no tick; degraded tick must still record state")
-	}
-	if !last.Degraded || last.Error == "" {
-		t.Fatalf("LastReport = %+v, want Degraded with an Error set", last)
-	}
-	if len(emitted) != 1 || !emitted[0].Degraded {
-		t.Fatalf("emitted = %+v, want a single degraded report", emitted)
+	before, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("seed persisted file missing: %v", err)
 	}
 
-	// The on-disk report must be the untouched seed, not the degraded tick.
-	data, err := os.ReadFile(reportPath)
+	svc.deps.Health = &stubHealth{Err: errors.New("boom: disk read failed")}
+	svc.tickAndLog(context.Background())
+
+	after, err := os.ReadFile(reportPath)
 	if err != nil {
-		t.Fatalf("read persisted: %v", err)
+		t.Fatalf("persisted file missing after failed tick: %v", err)
 	}
-	var back Report
-	if err := json.Unmarshal(data, &back); err != nil {
-		t.Fatalf("unparseable persisted report: %v", err)
+	if !bytes.Equal(before, after) {
+		t.Errorf("last-report.json changed after a failed tick; want it untouched\nbefore=%s\nafter=%s", before, after)
 	}
-	if back.Degraded || back.HealthScore != health.ScoreGood {
-		t.Fatalf("on-disk report = %+v, want the untouched good seed", back)
+
+	last, _, ok := svc.LastReport()
+	if !ok {
+		t.Fatal("LastReport ok=false after a tick")
+	}
+	if last.State != StateFailed {
+		t.Errorf("State = %q, want %q", last.State, StateFailed)
+	}
+	if last.FailureReason == "" {
+		t.Error("FailureReason is empty, want the tick error message")
+	}
+}
+
+// TestPersistReportInterruptedWritePreservesLastGood covers the
+// "interrupted write" acceptance criterion at the persistReport call site:
+// if the atomic write itself can't complete (here: the report directory
+// loses its write bit mid-run, standing in for a disk-full/crash write
+// failure), the previously persisted good report must survive untouched
+// rather than being partially overwritten.
+func TestPersistReportInterruptedWritePreservesLastGood(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based permission checks")
+	}
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "last-report.json")
+	svc := NewService(Deps{
+		Cfg:            config.SelfMonitorConfig{Enabled: true, IntervalHours: 6},
+		Health:         &stubHealth{Report: &health.Report{Score: health.ScoreGood}},
+		LastReportPath: reportPath,
+	})
+	svc.tickAndLog(context.Background())
+
+	good, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("seed persisted file missing: %v", err)
+	}
+
+	// fsutil.AtomicWrite's temp file must land next to the target to rename
+	// atomically, so dropping the directory's write bit blocks the write
+	// before it can touch the existing file at all.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	svc.deps.Health = &stubHealth{Report: &health.Report{Score: health.ScoreCritical}}
+	svc.tickAndLog(context.Background())
+
+	_ = os.Chmod(dir, 0o755)
+	after, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("persisted file missing after interrupted write: %v", err)
+	}
+	if !bytes.Equal(after, good) {
+		t.Errorf("last-report.json changed after an interrupted write; want the previous good report preserved\nbefore=%s\nafter=%s", good, after)
 	}
 }
 

@@ -3204,7 +3204,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	addGitHubPollingFindings(cfg, add)
 	addProviderModelCompatibilityFindings(cfg, add)
 	addExperimentEvaluationFindings(cfg, add)
-	addHarnessEvolutionFindings(cfg, add)
+	addAutonomyPipelineFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
 	for _, warning := range routing.Warnings {
@@ -3391,18 +3391,22 @@ func evaluationReportTrustReason(cfg *config.Config) (reason string, trustworthy
 	return "", true
 }
 
-// addHarnessEvolutionFindings warns when the harness-evolution loop is armed
-// but its only evidence source — the self-monitor report — is turned off. With
-// self_monitor disabled the report never refreshes, so the loop reads a
-// missing/stale report every tick and silently produces zero proposals: the
-// pipeline sits disconnected with no operator signal. A warning, not an error,
-// since a disconnected loop is a no-op rather than a broken dispatch path.
-func addHarnessEvolutionFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
-	if cfg == nil || !cfg.HarnessEvolve.Enabled {
-		return
-	}
-	if !cfg.SelfMonitor.Enabled {
-		add("warning", "harness_evolution.enabled is true but self_monitor.enabled is false — the evolution loop has no self-monitor report to read and will produce zero proposals every tick")
+// addAutonomyPipelineFindings warns when harness_evolution.enabled=true
+// while self_monitor.enabled=false. Harness-evolution's only input is the
+// report self-monitor writes each tick (internal/harnessevolution.Run reads
+// config.SelfMonitorLastReportPath()), so with self-monitor disabled that
+// report is never produced or refreshed — harness-evolution runs will
+// always resolve to an explicit degraded (missing/stale-report) outcome
+// rather than proposing anything. This is a warning, not an error: it's
+// also the shipped default (harness-evolution defaults to enabled as a
+// read-only proposal loop; self-monitor defaults to disabled pending
+// operator opt-in), so treating it as a hard validation failure would break
+// every fresh install's `config doctor` exit code.
+func addAutonomyPipelineFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg.HarnessEvolve.Enabled && !cfg.SelfMonitor.Enabled {
+		add("warning", "harness_evolution.enabled=true but self_monitor.enabled=false: "+
+			"harness-evolution reads the self-monitor report, which self-monitor will never produce or refresh "+
+			"until self_monitor.enabled=true — runs will report a disabled/stale degraded outcome instead of proposals")
 	}
 }
 

@@ -9,14 +9,29 @@ import (
 // ReportSchemaVersion is bumped whenever the Report payload shape changes in
 // a way that downstream consumers (GUI, CLI, cron dashboards) must know
 // about.
+const ReportSchemaVersion = 1
+
+// PipelineState is a coarse, point-in-time verdict for one tick/run of the
+// autonomy feedback pipeline. harnessevolution reuses this type (rather than
+// defining its own) for its own RunResult so every consumer of either report
+// shares one vocabulary for "is this data trustworthy":
 //
-// v2 replaced the coarse State/FailureReason enum and the coverage counters
-// (InputsTotal/InputsAnalyzed/…) with the boolean Degraded flag plus
-// AnalysisFailures. A v1 report's "partial"/"failed" state lived in a `state`
-// field this shape no longer reads, so it would deserialize with
-// Degraded=false and read as a clean tick — consumers must reject a version
-// they don't recognize rather than trust it (see harnessevolution.Run).
-const ReportSchemaVersion = 2
+//   - StateHealthy: ticked/ran normally and produced usable data.
+//   - StateDisabled: the pipeline stage is turned off in config.
+//   - StateStale: the report exists but is older than a caller-defined
+//     freshness window, or was never produced at all (infinitely stale).
+//   - StatePartial: it ticked, but part of the input couldn't be analyzed
+//     (an oversized log record, an unreadable log file, ...).
+//   - StateFailed: the tick/run itself errored before completing.
+type PipelineState string
+
+const (
+	StateHealthy  PipelineState = "healthy"
+	StateDisabled PipelineState = "disabled"
+	StateStale    PipelineState = "stale"
+	StatePartial  PipelineState = "partial"
+	StateFailed   PipelineState = "failed"
+)
 
 // Report is the full payload emitted at the end of each selfmonitor tick.
 // It's also what `sybra-cli selfmonitor scan` prints and what the Wails
@@ -38,19 +53,16 @@ type Report struct {
 	NeedsHuman      int                   `json:"needsHuman"`
 	CostUSD         float64               `json:"costUsd"`
 	DurationMS      int64                 `json:"durationMs"`
-	// AnalysisFailures counts findings whose agent log could not be read or
-	// parsed by the analyzer. Each such finding drops verdict and
-	// provider-signal coverage, so a non-zero count means the tick produced
-	// only partial evidence and is marked Degraded below.
-	AnalysisFailures int `json:"analysisFailures,omitempty"`
-	// Degraded marks a tick that either failed before producing findings (e.g.
-	// the health report could not be read/parsed) or completed with incomplete
-	// evidence (one or more per-finding log analyses failed — see
-	// AnalysisFailures). Error carries the failure so LastReport() and the
-	// frontend event stream reflect that self-monitor coverage is impaired
-	// instead of reading as a clean, fully-analyzed tick.
-	Degraded bool   `json:"degraded,omitempty"`
-	Error    string `json:"error,omitempty"`
+
+	// State, FailureReason, and the coverage counters below give downstream
+	// consumers (harnessevolution, the GUI) an explicit signal instead of
+	// having to infer freshness/completeness from the shape of Findings.
+	State            PipelineState `json:"state"`
+	FailureReason    string        `json:"failureReason,omitempty"`
+	InputsTotal      int           `json:"inputsTotal"`
+	InputsAnalyzed   int           `json:"inputsAnalyzed"`
+	TruncatedRecords int           `json:"truncatedRecords,omitempty"`
+	AnalysisErrors   int           `json:"analysisErrors,omitempty"`
 }
 
 // InvestigatedFinding is a single health.Finding after the selfmonitor
@@ -63,14 +75,6 @@ type InvestigatedFinding struct {
 	LogSummary  *LogSummary    `json:"logSummary,omitempty"`
 	Verdict     Verdict        `json:"verdict"`
 	IssueNumber int            `json:"issueNumber,omitempty"`
-	// AnalysisError is set when the finding's agent log was resolved but its
-	// evidence is incomplete: either the analyzer failed to read/parse it at
-	// all (LogSummary nil) or it parsed with oversized records dropped
-	// (LogSummary set but partial — see LogSummary.TruncatedRecords). Either
-	// way it flags that this finding's verdict and provider-signal coverage are
-	// missing evidence rather than legitimately absent (a board-wide finding
-	// with no log), so tick marks the whole report Degraded.
-	AnalysisError string `json:"analysisError,omitempty"`
 }
 
 // Verdict is the structured judgment produced by the stage-1 judge LLM for a

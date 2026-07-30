@@ -1,212 +1,307 @@
 package harnessevolution
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 )
 
-// writeReport persists a self-monitor report with the given GeneratedAt and a
-// single actionable finding whose DetectedAt lands well inside any reasonable
-// lookback window, returning the report path.
-func writeReport(t *testing.T, generatedAt, detectedAt time.Time) string {
+func writeSelfMonitorReport(t *testing.T, dir string, r selfmonitor.Report) string {
 	t.Helper()
-	report := selfmonitor.Report{
-		SchemaVersion: selfmonitor.ReportSchemaVersion,
-		GeneratedAt:   generatedAt,
-		Findings: []selfmonitor.InvestigatedFinding{
-			findingWithVerdict("task-confirmed-a", selfmonitor.VerdictConfirmed, detectedAt),
-			findingWithVerdict("task-confirmed-b", selfmonitor.VerdictConfirmed, detectedAt),
-		},
-	}
-	data, err := json.Marshal(report)
+	data, err := json.Marshal(r)
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "last-report.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	path := filepath.Join(dir, "last-report.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
 	return path
 }
 
-func TestRun_StaleReportDiscardsFindings(t *testing.T) {
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
-	detectedAt := now.Add(-2 * time.Hour) // recent, inside lookback
-	generatedAt := now.Add(-48 * time.Hour)
-	path := writeReport(t, generatedAt, detectedAt)
-
-	res, err := Run(context.Background(), Options{
-		ReportPath:     path,
-		Lookback:       168 * time.Hour,
-		MinClusterSize: 1,
-		MaxReportAge:   24 * time.Hour,
-		Now:            now,
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if !res.StaleReport {
-		t.Fatalf("StaleReport = false, want true for a 48h-old report against a 24h max age")
-	}
-	if res.Events != 0 || len(res.Proposals) != 0 {
-		t.Fatalf("stale report still produced events=%d proposals=%d, want 0/0", res.Events, len(res.Proposals))
-	}
-}
-
-func TestRun_DegradedReportDiscardsFindings(t *testing.T) {
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
-	detectedAt := now.Add(-2 * time.Hour)  // recent, inside lookback
-	generatedAt := now.Add(-1 * time.Hour) // fresh, so only Degraded can gate it
-	report := selfmonitor.Report{
-		SchemaVersion: selfmonitor.ReportSchemaVersion,
-		GeneratedAt:   generatedAt,
-		Degraded:      true,
-		Findings: []selfmonitor.InvestigatedFinding{
-			findingWithVerdict("task-confirmed-a", selfmonitor.VerdictConfirmed, detectedAt),
-			findingWithVerdict("task-confirmed-b", selfmonitor.VerdictConfirmed, detectedAt),
+func actionableFinding(taskID string, at time.Time) selfmonitor.InvestigatedFinding {
+	return selfmonitor.InvestigatedFinding{
+		Finding: health.Finding{
+			Category:   health.CatAgentRetryLoop,
+			TaskID:     taskID,
+			AgentID:    "agent-" + taskID,
+			Role:       "implementation",
+			Evidence:   map[string]any{"step": "implement"},
+			DetectedAt: at,
 		},
-	}
-	data, err := json.Marshal(report)
-	if err != nil {
-		t.Fatalf("marshal report: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "last-report.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write report: %v", err)
-	}
-
-	res, err := Run(context.Background(), Options{
-		ReportPath:     path,
-		Lookback:       168 * time.Hour,
-		MinClusterSize: 1,
-		MaxReportAge:   24 * time.Hour,
-		Now:            now,
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if !res.DegradedReport {
-		t.Fatalf("DegradedReport = false, want true for a report marked Degraded")
-	}
-	if res.Events != 0 || len(res.Proposals) != 0 {
-		t.Fatalf("degraded report still produced events=%d proposals=%d, want 0/0", res.Events, len(res.Proposals))
+		Fingerprint: "fp-" + taskID,
+		Verdict:     selfmonitor.Verdict{Classification: selfmonitor.VerdictConfirmed},
 	}
 }
 
-func TestRun_SchemaMismatchDiscardsFindings(t *testing.T) {
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
-	detectedAt := now.Add(-2 * time.Hour)  // recent, inside lookback
-	generatedAt := now.Add(-1 * time.Hour) // fresh, so only the schema gate can reject it
-	// A pre-v2 report recorded partial/failed ticks in a `state` field this
-	// build no longer reads, so it deserializes with Degraded=false and would
-	// otherwise read as a clean tick. Its stale schema version must gate it.
-	report := selfmonitor.Report{
-		SchemaVersion: selfmonitor.ReportSchemaVersion - 1,
-		GeneratedAt:   generatedAt,
+func TestRun_SelfMonitorDisabledWithFreshReportStillConsumesIt(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	// Disabling self-monitor to stop background spend must not throw away a
+	// fresh report it already wrote — Run consumes it and produces proposals.
+	path := writeSelfMonitorReport(t, dir, selfmonitor.Report{
+		GeneratedAt: now,
+		State:       selfmonitor.StateHealthy,
 		Findings: []selfmonitor.InvestigatedFinding{
-			findingWithVerdict("task-confirmed-a", selfmonitor.VerdictConfirmed, detectedAt),
-			findingWithVerdict("task-confirmed-b", selfmonitor.VerdictConfirmed, detectedAt),
+			actionableFinding("t1", now),
+			actionableFinding("t2", now),
 		},
-	}
-	data, err := json.Marshal(report)
-	if err != nil {
-		t.Fatalf("marshal report: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "last-report.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write report: %v", err)
-	}
+	})
 
-	res, err := Run(context.Background(), Options{
-		ReportPath:     path,
-		Lookback:       168 * time.Hour,
-		MinClusterSize: 1,
-		MaxReportAge:   24 * time.Hour,
-		Now:            now,
+	result, err := Run(context.Background(), Options{
+		ReportPath:         path,
+		SelfMonitorEnabled: false,
+		MaxReportAge:       48 * time.Hour,
+		MinClusterSize:     2,
+		Now:                now,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !res.SchemaMismatch {
-		t.Fatalf("SchemaMismatch = false, want true for a report carrying an unrecognized schema version")
+	if result.State != selfmonitor.StateHealthy {
+		t.Errorf("State = %q, want %q (a fresh report is usable regardless of the disabled flag)", result.State, selfmonitor.StateHealthy)
 	}
-	if res.Events != 0 || len(res.Proposals) != 0 {
-		t.Fatalf("schema-mismatched report still produced events=%d proposals=%d, want 0/0", res.Events, len(res.Proposals))
+	if len(result.Clusters) != 1 {
+		t.Fatalf("Clusters = %d, want 1", len(result.Clusters))
 	}
 }
 
-func TestRun_FreshReportKeepsFindings(t *testing.T) {
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
-	detectedAt := now.Add(-2 * time.Hour)
-	generatedAt := now.Add(-1 * time.Hour) // fresh
-	path := writeReport(t, generatedAt, detectedAt)
-
-	res, err := Run(context.Background(), Options{
-		ReportPath:     path,
-		Lookback:       168 * time.Hour,
-		MinClusterSize: 1,
-		MaxReportAge:   24 * time.Hour,
-		Now:            now,
+func TestRun_SelfMonitorDisabledWithNoReportReturnsDisabledOutcome(t *testing.T) {
+	dir := t.TempDir()
+	// No report on disk and self-monitor disabled: none will ever be
+	// produced, so Run reports StateDisabled explicitly.
+	result, err := Run(context.Background(), Options{
+		ReportPath:         filepath.Join(dir, "last-report.json"),
+		SelfMonitorEnabled: false,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if res.StaleReport {
-		t.Fatalf("StaleReport = true, want false for a 1h-old report")
+	if result.State != selfmonitor.StateDisabled {
+		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateDisabled)
 	}
-	if res.Events == 0 {
-		t.Fatalf("fresh report produced 0 events, want the actionable findings to survive")
+	if result.Reason == "" {
+		t.Error("Reason is empty, want an explanation of the disabled dependency")
+	}
+	if len(result.Proposals) != 0 || len(result.Clusters) != 0 {
+		t.Errorf("expected no proposals/clusters for a disabled dependency with no report, got %+v", result)
 	}
 }
 
-func TestRun_MissingReportFlagsDisconnectedPipeline(t *testing.T) {
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
-	missingPath := filepath.Join(t.TempDir(), "does-not-exist.json")
+func TestRun_MissingReportReturnsStaleDegradedOutcome(t *testing.T) {
+	dir := t.TempDir()
 
-	res, err := Run(context.Background(), Options{
-		ReportPath:     missingPath,
-		Lookback:       168 * time.Hour,
-		MinClusterSize: 1,
-		MaxReportAge:   24 * time.Hour,
-		Now:            now,
+	result, err := Run(context.Background(), Options{
+		ReportPath:         filepath.Join(dir, "does-not-exist.json"),
+		SelfMonitorEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !res.MissingReport {
-		t.Fatalf("MissingReport = false, want true for an absent report so the zero-proposal run is attributable to a disconnected pipeline")
+	if result.State != selfmonitor.StateStale {
+		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateStale)
 	}
-	if res.Events != 0 || len(res.Proposals) != 0 {
-		t.Fatalf("missing report still produced events=%d proposals=%d, want 0/0", res.Events, len(res.Proposals))
+	if !strings.Contains(result.Reason, "no self-monitor report found") {
+		t.Errorf("Reason = %q, want it to mention the missing report", result.Reason)
 	}
 }
 
-func TestRun_MaxReportAgeDisabledKeepsStaleFindings(t *testing.T) {
-	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
-	detectedAt := now.Add(-2 * time.Hour)
-	generatedAt := now.Add(-500 * time.Hour) // very stale
-	path := writeReport(t, generatedAt, detectedAt)
+func TestRun_StaleReportReturnsDegradedOutcome(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().UTC().Add(-72 * time.Hour)
+	path := writeSelfMonitorReport(t, dir, selfmonitor.Report{
+		GeneratedAt: old,
+		State:       selfmonitor.StateHealthy,
+		Findings:    []selfmonitor.InvestigatedFinding{actionableFinding("t1", old)},
+	})
 
-	res, err := Run(context.Background(), Options{
-		ReportPath:     path,
-		Lookback:       168 * time.Hour,
-		MinClusterSize: 1,
-		MaxReportAge:   0, // guard disabled
-		Now:            now,
+	result, err := Run(context.Background(), Options{
+		ReportPath:         path,
+		SelfMonitorEnabled: true,
+		MaxReportAge:       48 * time.Hour,
+		Now:                time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if res.StaleReport {
-		t.Fatalf("StaleReport = true with the guard disabled, want false")
+	if result.State != selfmonitor.StateStale {
+		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateStale)
 	}
-	if res.Events == 0 {
-		t.Fatalf("guard disabled but events=0, want stale findings to pass through")
+	if len(result.Proposals) != 0 {
+		t.Errorf("expected no proposals from a stale report, got %+v", result.Proposals)
+	}
+}
+
+func TestRun_LongIntervalKeepsOnScheduleReportHealthy(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	// 60h old exceeds the 48h default window but is within a 72h tick interval,
+	// so a healthy on-schedule report must not be flagged stale.
+	generated := now.Add(-60 * time.Hour)
+	path := writeSelfMonitorReport(t, dir, selfmonitor.Report{
+		GeneratedAt: generated,
+		State:       selfmonitor.StateHealthy,
+		Findings: []selfmonitor.InvestigatedFinding{
+			actionableFinding("t1", generated),
+			actionableFinding("t2", generated),
+		},
+	})
+
+	result, err := Run(context.Background(), Options{
+		ReportPath:          path,
+		SelfMonitorEnabled:  true,
+		SelfMonitorInterval: 72 * time.Hour,
+		MinClusterSize:      2,
+		Now:                 now,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.State != selfmonitor.StateHealthy {
+		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateHealthy)
+	}
+	if len(result.Proposals) == 0 {
+		t.Errorf("expected proposals from an on-schedule report, got none")
+	}
+}
+
+func TestRun_HealthyReportProducesProposals(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	path := writeSelfMonitorReport(t, dir, selfmonitor.Report{
+		GeneratedAt: now,
+		State:       selfmonitor.StateHealthy,
+		Findings: []selfmonitor.InvestigatedFinding{
+			actionableFinding("t1", now),
+			actionableFinding("t2", now),
+		},
+	})
+
+	result, err := Run(context.Background(), Options{
+		ReportPath:         path,
+		SelfMonitorEnabled: true,
+		MaxReportAge:       48 * time.Hour,
+		MinClusterSize:     2,
+		Now:                now,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.State != selfmonitor.StateHealthy {
+		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateHealthy)
+	}
+	if result.Events != 2 {
+		t.Errorf("Events = %d, want 2", result.Events)
+	}
+	if len(result.Clusters) != 1 {
+		t.Fatalf("Clusters = %d, want 1", len(result.Clusters))
+	}
+}
+
+func TestRun_PartialReportSurfacesPartialState(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	path := writeSelfMonitorReport(t, dir, selfmonitor.Report{
+		GeneratedAt:      now,
+		State:            selfmonitor.StatePartial,
+		InputsTotal:      2,
+		InputsAnalyzed:   1,
+		TruncatedRecords: 1,
+		Findings: []selfmonitor.InvestigatedFinding{
+			actionableFinding("t1", now),
+			actionableFinding("t2", now),
+		},
+	})
+
+	result, err := Run(context.Background(), Options{
+		ReportPath:         path,
+		SelfMonitorEnabled: true,
+		MaxReportAge:       48 * time.Hour,
+		MinClusterSize:     2,
+		Now:                now,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.State != selfmonitor.StatePartial {
+		t.Errorf("State = %q, want %q", result.State, selfmonitor.StatePartial)
+	}
+	if result.Reason == "" {
+		t.Error("Reason is empty, want a coverage explanation")
+	}
+	// Partial coverage still yields whatever proposals the available data supports.
+	if len(result.Clusters) != 1 {
+		t.Errorf("Clusters = %d, want 1", len(result.Clusters))
+	}
+}
+
+func TestRun_PersistsDegradedResultAtomically(t *testing.T) {
+	dir := t.TempDir()
+	outDir := t.TempDir()
+
+	result, err := Run(context.Background(), Options{
+		ReportPath:         filepath.Join(dir, "does-not-exist.json"),
+		OutputDir:          outDir,
+		SelfMonitorEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(outDir, "last-run.json"))
+	if err != nil {
+		t.Fatalf("last-run.json missing: %v", err)
+	}
+	var back RunResult
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("last-run.json unparseable: %v", err)
+	}
+	if back.State != result.State {
+		t.Errorf("persisted State = %q, want %q", back.State, result.State)
+	}
+}
+
+// TestSaveRunResult_InterruptedWritePreservesLastGood mirrors the
+// selfmonitor persistReport test: if SaveRunResult's atomic write can't
+// complete, the previous last-run.json must survive untouched rather than
+// being partially overwritten.
+func TestSaveRunResult_InterruptedWritePreservesLastGood(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based permission checks")
+	}
+	outDir := t.TempDir()
+	if err := SaveRunResult(outDir, RunResult{State: selfmonitor.StateHealthy, Events: 1}); err != nil {
+		t.Fatalf("seed SaveRunResult: %v", err)
+	}
+	good, err := os.ReadFile(filepath.Join(outDir, "last-run.json"))
+	if err != nil {
+		t.Fatalf("seed file missing: %v", err)
+	}
+
+	if err := os.Chmod(outDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(outDir, 0o755) })
+
+	err = SaveRunResult(outDir, RunResult{State: selfmonitor.StateFailed, Events: 99})
+	if err == nil {
+		t.Skip("write did not fail on this platform/fs; test relies on directory permission semantics")
+	}
+
+	_ = os.Chmod(outDir, 0o755)
+	after, readErr := os.ReadFile(filepath.Join(outDir, "last-run.json"))
+	if readErr != nil {
+		t.Fatalf("last-run.json missing after interrupted write: %v", readErr)
+	}
+	if !bytes.Equal(after, good) {
+		t.Errorf("last-run.json changed after an interrupted write; want the previous good result preserved\nbefore=%s\nafter=%s", good, after)
 	}
 }

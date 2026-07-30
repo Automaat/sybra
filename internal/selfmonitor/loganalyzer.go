@@ -35,6 +35,11 @@ const LogSummarySchemaVersion = 1
 // agents without blowing up.
 const DefaultMaxEvents = 2000
 
+// maxLogLineBytes bounds a single NDJSON record. Records over this size
+// (e.g. a huge tool result echoed back verbatim) are skipped rather than
+// read into memory — see readBoundedLine.
+const maxLogLineBytes = 4 * 1024 * 1024
+
 // DefaultLastToolCalls is how many trailing tool calls Analyze records
 // verbatim in LogSummary.LastToolCalls for the LLM's final look.
 const DefaultLastToolCalls = 10
@@ -66,12 +71,11 @@ type LogSummary struct {
 	StallDetected       bool               `json:"stallDetected"`
 	StallReason         string             `json:"stallReason,omitempty"`
 	FinalError          string             `json:"finalError,omitempty"`
-	// TruncatedRecords counts NDJSON records skipped because they exceeded
-	// maxLogLineBytes. A non-zero value means this summary is built from
-	// partial evidence — the dropped record may have carried the key failure
-	// text — so callers must surface it as degraded coverage rather than
-	// treating the analysis as complete.
-	TruncatedRecords int `json:"truncatedRecords,omitempty"`
+	// SkippedOversizedRecords counts NDJSON lines over maxLogLineBytes that
+	// were skipped whole rather than parsed. A run that produced one huge
+	// tool result still yields a summary of every other event instead of
+	// aborting the whole analysis.
+	SkippedOversizedRecords int `json:"skippedOversizedRecords,omitempty"`
 }
 
 // RepeatedCall reports a tool invocation that fired ≥ RepeatedCallThreshold
@@ -110,13 +114,13 @@ func Analyze(path string, maxEvents int) (LogSummary, error) {
 	if maxEvents <= 0 {
 		maxEvents = DefaultMaxEvents
 	}
-	events, truncated, err := parseRich(path, maxEvents)
+	events, skipped, err := parseRich(path, maxEvents)
 	if err != nil {
 		return LogSummary{}, err
 	}
 	s := aggregate(events)
 	s.Path = path
-	s.TruncatedRecords = truncated
+	s.SkippedOversizedRecords = skipped
 	return s, nil
 }
 
@@ -124,108 +128,109 @@ func Analyze(path string, maxEvents int) (LogSummary, error) {
 // with tool-use / tool-result / result-cost fields populated. Lines that fail
 // Claude parsing fall back to Codex parsing; CodexEvent shares the same
 // *ClaudeMessage / *ClaudeResult payload so the result is a unified stream.
-// truncated counts records dropped for exceeding maxLogLineBytes so callers
-// can flag partial coverage rather than trusting an incomplete summary.
-func parseRich(path string, maxEvents int) (events []agent.ClaudeEvent, truncated int, err error) {
+//
+// Unlike bufio.Scanner (whose default token limit aborts the entire read
+// with ErrTooLong on the first oversized line), readBoundedLine skips just
+// the offending record and keeps reading — one huge tool result must not
+// blackhole analysis of the rest of the run.
+func parseRich(path string, maxEvents int) ([]agent.ClaudeEvent, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer func() { _ = f.Close() }()
 
-	r := bufio.NewReaderSize(f, logReadBuffer)
+	var events []agent.ClaudeEvent
+	var skipped int
+	r := bufio.NewReaderSize(f, 256*1024)
 	for {
-		line, tooLong, rerr := readLogLine(r)
-		// A single record larger than maxLogLineBytes (e.g. an oversized
-		// tool_result payload) is skipped rather than aborting the whole log,
-		// so the remaining records still contribute to the LogSummary — but the
-		// drop is counted so the caller can mark the analysis degraded.
-		if tooLong {
-			truncated++
-		} else if len(line) > 0 {
-			if ev, ok := parseLogLine(line); ok {
+		line, err := readBoundedLine(r, maxLogLineBytes)
+		if errors.Is(err, errOversizedLine) {
+			skipped++
+			continue
+		}
+		if len(line) > 0 {
+			if ev, ok := parseLine(line); ok {
 				events = append(events, ev)
 			}
 		}
-		if rerr != nil {
-			if errors.Is(rerr, io.EOF) {
-				break
+		if err != nil {
+			// A clean EOF means the file was fully read; anything else is a
+			// genuine read failure (flaky disk, interrupted mount) that must
+			// surface so callers can mark the tick degraded rather than emit a
+			// silently-truncated summary.
+			if !errors.Is(err, io.EOF) {
+				return nil, skipped, err
 			}
-			return nil, 0, rerr
+			break
 		}
 	}
 	if maxEvents > 0 && len(events) > maxEvents {
 		events = events[len(events)-maxEvents:]
 	}
-	return events, truncated, nil
+	return events, skipped, nil
 }
 
-const (
-	logReadBuffer   = 256 * 1024
-	maxLogLineBytes = 1024 * 1024
-)
-
-// parseLogLine parses one NDJSON record, trying the Claude format first and
-// falling back to Codex; ok is false when neither parser yields a typed event.
-func parseLogLine(line []byte) (agent.ClaudeEvent, bool) {
+func parseLine(line []byte) (agent.ClaudeEvent, bool) {
 	ev, perr := agent.ParseClaudeLine(line)
-	if perr != nil || ev.Type == "" {
-		ce, cerr := agent.ParseCodexLine(line)
-		if cerr != nil || ce.Type == "" {
-			return agent.ClaudeEvent{}, false
-		}
-		ev = agent.ClaudeEvent{
-			Type:      ce.Type,
-			Subtype:   ce.Subtype,
-			SessionID: ce.SessionID,
-			Message:   ce.Message,
-			Result:    ce.Result,
-		}
+	if perr == nil && ev.Type != "" {
+		return ev, true
 	}
-	return ev, true
+	ce, cerr := agent.ParseCodexLine(line)
+	if cerr != nil || ce.Type == "" {
+		return agent.ClaudeEvent{}, false
+	}
+	return agent.ClaudeEvent{
+		Type:      ce.Type,
+		Subtype:   ce.Subtype,
+		SessionID: ce.SessionID,
+		Message:   ce.Message,
+		Result:    ce.Result,
+	}, true
 }
 
-// readLogLine returns the next newline-terminated record from r, without the
-// trailing newline. A record longer than maxLogLineBytes is drained and
-// reported via tooLong=true so the caller can skip it without aborting the
-// scan. err is io.EOF once the file is exhausted.
-func readLogLine(r *bufio.Reader) (line []byte, tooLong bool, err error) {
+// errOversizedLine marks a record that exceeded maxLen in readBoundedLine.
+// Never wraps another error — it always means "skip, don't abort".
+var errOversizedLine = errors.New("selfmonitor: log record exceeds max line size")
+
+// readBoundedLine reads the next '\n'-delimited record from r. A record
+// longer than maxLen bytes is fully consumed (so the reader lands cleanly on
+// the next line) but reported via errOversizedLine instead of being
+// buffered, so callers can skip one giant record without the unbounded
+// memory growth of a plain ReadString('\n') or the hard-stop behavior of
+// bufio.Scanner's fixed token buffer.
+func readBoundedLine(r *bufio.Reader, maxLen int) ([]byte, error) {
 	var buf []byte
+	oversized := false
 	for {
-		frag, e := r.ReadSlice('\n')
-		if errors.Is(e, bufio.ErrBufferFull) {
-			buf = append(buf, frag...)
-			if len(buf) > maxLogLineBytes {
-				return nil, true, drainLogLine(r)
+		chunk, err := r.ReadSlice('\n')
+		if len(chunk) > 0 && !oversized {
+			if len(buf)+len(chunk) > maxLen {
+				oversized = true
+				buf = nil
+			} else {
+				buf = append(buf, chunk...)
 			}
+		}
+		switch {
+		case err == nil:
+			if oversized {
+				return nil, errOversizedLine
+			}
+			return bytes.TrimSuffix(buf, []byte("\n")), nil
+		case errors.Is(err, bufio.ErrBufferFull):
 			continue
-		}
-		buf = append(buf, frag...)
-		// The terminating fragment (the one carrying the newline) can itself
-		// push the record over the limit without ever tripping ErrBufferFull,
-		// so re-check here — otherwise a record just over maxLogLineBytes slips
-		// through uncounted. The newline is already consumed, so no drain.
-		if len(buf) > maxLogLineBytes {
-			return nil, true, e
-		}
-		return trimTrailingNewline(buf), false, e
-	}
-}
-
-// drainLogLine discards the remainder of the current record up to and
-// including the next newline, so an oversized record does not bleed into the
-// next one. Returns io.EOF if the file ends before a newline.
-func drainLogLine(r *bufio.Reader) error {
-	for {
-		if _, e := r.ReadSlice('\n'); !errors.Is(e, bufio.ErrBufferFull) {
-			return e
+		default:
+			// EOF (or a genuine I/O error) reached mid-line: return whatever
+			// trailing partial line was accumulated — the final line of a
+			// file with no trailing newline — alongside the original error
+			// so the caller stops after processing it.
+			if oversized {
+				return nil, errOversizedLine
+			}
+			return buf, err
 		}
 	}
-}
-
-func trimTrailingNewline(b []byte) []byte {
-	b = bytes.TrimSuffix(b, []byte("\n"))
-	return bytes.TrimSuffix(b, []byte("\r"))
 }
 
 // pendingCall tracks a tool invocation awaiting a result event so cost can

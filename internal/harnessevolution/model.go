@@ -1,6 +1,10 @@
 package harnessevolution
 
-import "time"
+import (
+	"time"
+
+	"github.com/Automaat/sybra/internal/selfmonitor"
+)
 
 type ProposalKind string
 
@@ -86,32 +90,20 @@ type Proposal struct {
 	CreatedAt             time.Time        `json:"createdAt"`
 }
 
+// RunResult is the output of one harness-evolution run. State and Reason
+// give callers (the CLI, any future scheduler) an explicit signal for "this
+// run had no trustworthy input to cluster" — reusing selfmonitor.PipelineState
+// so both halves of the autonomy feedback pipeline share one vocabulary —
+// instead of a silently empty Proposals/Clusters that looks identical to "no
+// failures happened".
 type RunResult struct {
 	GeneratedAt time.Time  `json:"generatedAt"`
 	Events      int        `json:"events"`
 	Clusters    []Cluster  `json:"clusters"`
 	Proposals   []Proposal `json:"proposals"`
-	// StaleReport is true when the source self-monitor report was older than
-	// the configured MaxReportAge and its findings were discarded, so a run
-	// with zero proposals is attributable to a stale pipeline, not clean data.
-	StaleReport bool `json:"staleReport,omitempty"`
-	// MissingReport is true when no self-monitor report exists on disk yet
-	// (fresh home, or the report was deleted). Like StaleReport it makes a
-	// zero-proposal run attributable to a disconnected pipeline rather than
-	// clean data, so the run degrades loudly instead of silently succeeding.
-	MissingReport bool `json:"missingReport,omitempty"`
-	// DegradedReport is true when the source self-monitor report was marked
-	// Degraded (it failed before producing findings, or completed with partial
-	// evidence because one or more agent logs were unreadable/truncated). Its
-	// findings are discarded so incomplete evidence can't mint proposals before
-	// the missing log coverage is repaired.
-	DegradedReport bool `json:"degradedReport,omitempty"`
-	// SchemaMismatch is true when the on-disk self-monitor report carried a
-	// SchemaVersion this build doesn't recognize (e.g. a pre-v2 report left over
-	// from an upgrade, whose degraded state lived in fields this shape no longer
-	// reads). Its findings are discarded because their trust signals can't be
-	// validated, so a stale-schema report can't be mistaken for clean data.
-	SchemaMismatch bool `json:"schemaMismatch,omitempty"`
+
+	State  selfmonitor.PipelineState `json:"state"`
+	Reason string                    `json:"reason,omitempty"`
 }
 
 func RequiresHumanApproval(kind ProposalKind) bool {

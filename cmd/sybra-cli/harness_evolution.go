@@ -43,18 +43,23 @@ func cmdHarnessEvolutionRun(cfg *config.Config, store *task.Manager, args []stri
 	}
 	maxReportAge := time.Duration(cfg.HarnessEvolve.MaxReportAgeHours * float64(time.Hour))
 	result, err := harnessevolution.Run(context.Background(), harnessevolution.Options{
-		ReportPath:     config.SelfMonitorLastReportPath(),
-		CorpusDir:      *corpusDir,
-		OutputDir:      config.HarnessEvolveDir(),
-		Lookback:       lookback,
-		MinClusterSize: *minCluster,
-		MaxReportAge:   maxReportAge,
+		ReportPath:          config.SelfMonitorLastReportPath(),
+		CorpusDir:           *corpusDir,
+		OutputDir:           config.HarnessEvolveDir(),
+		Lookback:            lookback,
+		MinClusterSize:      *minCluster,
+		MaxReportAge:        maxReportAge,
+		SelfMonitorEnabled:  cfg.SelfMonitor.Enabled,
+		SelfMonitorInterval: time.Duration(cfg.SelfMonitor.IntervalHours * float64(time.Hour)),
 	})
 	if err != nil {
 		return fatal(jsonOut, "harness evolution: %v", err)
 	}
 	var filed []task.Task
 	if *fileTasks {
+		// Degraded runs (disabled/stale/failed) never populate Proposals —
+		// see harnessevolution.finishDegraded — so this is a no-op for them,
+		// not a special case to guard against.
 		filed, err = fileHarnessProposals(store, result)
 		if err != nil {
 			return fatal(jsonOut, "file proposals: %v", err)
@@ -122,20 +127,11 @@ func hasTag(tags []string, want string) bool {
 }
 
 func printHarnessEvolutionResult(result harnessevolution.RunResult, filed []task.Task) {
-	if result.MissingReport {
-		fmt.Println("harness-evolution: no self-monitor report found; pipeline is disconnected (no proposals). Is self_monitor enabled and ticking?")
+	fmt.Printf("harness-evolution: state=%s events=%d clusters=%d proposals=%d filed=%d\n",
+		result.State, result.Events, len(result.Clusters), len(result.Proposals), len(filed))
+	if result.Reason != "" {
+		fmt.Printf("  reason: %s\n", result.Reason)
 	}
-	if result.StaleReport {
-		fmt.Println("harness-evolution: self-monitor report is stale; findings discarded (no proposals)")
-	}
-	if result.DegradedReport {
-		fmt.Println("harness-evolution: self-monitor report is degraded (incomplete evidence); findings discarded (no proposals). Repair log coverage and re-run self-monitor.")
-	}
-	if result.SchemaMismatch {
-		fmt.Println("harness-evolution: self-monitor report uses an unrecognized schema version (likely a pre-upgrade report); findings discarded (no proposals). Re-run self-monitor to regenerate it.")
-	}
-	fmt.Printf("harness-evolution: events=%d clusters=%d proposals=%d filed=%d\n",
-		result.Events, len(result.Clusters), len(result.Proposals), len(filed))
 	if len(result.Proposals) == 0 {
 		return
 	}

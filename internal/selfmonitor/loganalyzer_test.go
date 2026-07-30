@@ -144,38 +144,55 @@ func TestAnalyzeEmptyLog(t *testing.T) {
 	}
 }
 
-// TestAnalyzeSkipsOversizedRecord guards that a single record larger than
-// maxLogLineBytes (e.g. a huge tool_result payload) is skipped rather than
-// aborting the whole log — the surrounding records must still be parsed.
-func TestAnalyzeSkipsOversizedRecord(t *testing.T) {
-	oversized := `{"type":"user","message":{"content":[` +
-		`{"type":"tool_result","tool_use_id":"big","content":"` +
-		strings.Repeat("x", maxLogLineBytes+1) + `"}]}}`
-	lines := []string{
-		`{"type":"system","subtype":"init","session_id":"s1"}`,
-		oversized,
-		`{"type":"assistant","session_id":"s1","message":{"content":[` +
-			`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}`,
-		`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.5}`,
-	}
+// TestAnalyzeSkipsOversizedRecordWithoutAborting is the regression test for
+// the scanner bug: a single NDJSON record bigger than maxLogLineBytes must
+// be skipped, not blow up analysis of the rest of the file the way
+// bufio.Scanner's fixed token buffer (bufio.ErrTooLong) used to.
+func TestAnalyzeSkipsOversizedRecordWithoutAborting(t *testing.T) {
+	huge := `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tbig","content":"` +
+		strings.Repeat("x", maxLogLineBytes+1024) + `"}]}}`
+	lines := append([]string{lines0()}, huge)
+	lines = append(lines, fixtureLines()...)
+
 	path := writeFixture(t, lines)
 
 	s, err := Analyze(path, 0)
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
-	// The oversized record is dropped, but the tool_use after it and the
-	// result cost before/after must still land.
-	if s.ToolHistogram["Bash"] != 1 {
-		t.Errorf("ToolHistogram[Bash] = %d, want 1 (record after oversized still parsed)", s.ToolHistogram["Bash"])
+	if s.SkippedOversizedRecords != 1 {
+		t.Errorf("SkippedOversizedRecords = %d, want 1", s.SkippedOversizedRecords)
 	}
-	if s.TotalCostUSD != 0.5 {
-		t.Errorf("TotalCostUSD = %.4f, want 0.5 (result after oversized still parsed)", s.TotalCostUSD)
+	// The rest of the file (fixtureLines) must still be fully analyzed.
+	if s.TotalToolCalls != 5 {
+		t.Errorf("TotalToolCalls = %d, want 5 (oversized record should not have aborted the rest of the file)", s.TotalToolCalls)
 	}
-	// The drop must be surfaced so downstream can flag partial coverage rather
-	// than trusting the summary as complete.
-	if s.TruncatedRecords != 1 {
-		t.Errorf("TruncatedRecords = %d, want 1 (oversized record counted)", s.TruncatedRecords)
+	if !s.StallDetected {
+		t.Error("StallDetected = false, want true — the trailing fixture lines should still be analyzed")
+	}
+}
+
+func lines0() string {
+	return `{"type":"system","subtype":"init","session_id":"skip-test"}`
+}
+
+func TestReadBoundedLine_TrailingOversizedLineNoTrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trailing.ndjson")
+	data := []byte(`{"type":"system","subtype":"init","session_id":"s1"}` + "\n" + strings.Repeat("y", maxLogLineBytes+1))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	s, err := Analyze(path, 0)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if s.SkippedOversizedRecords != 1 {
+		t.Errorf("SkippedOversizedRecords = %d, want 1", s.SkippedOversizedRecords)
+	}
+	if s.TotalEvents != 1 {
+		t.Errorf("TotalEvents = %d, want 1 (only the leading init line)", s.TotalEvents)
 	}
 }
 

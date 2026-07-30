@@ -170,20 +170,21 @@ func (s *Service) tickAndLog(ctx context.Context) {
 	report, err := s.tick(ctx)
 	if err != nil {
 		s.deps.Logger.Error("selfmonitor.tick", "err", err)
-		// Record and emit a degraded report so LastReport() and the frontend
-		// event stream surface that self-monitor itself is broken, instead of
-		// staying pinned to the last successful tick. Deliberately not
-		// persisted: overwriting the on-disk report with an empty, freshly
-		// timestamped one would defeat the downstream staleness guard that keys
-		// off the last good report's age (see harnessevolution.Run).
-		degraded := Report{
+		// A failed tick still gets a typed, in-memory/emitted degraded
+		// report — LastReport() and the GUI event must never go silent on
+		// failure — but persistReport is deliberately not called: the
+		// on-disk last-report.json (what harnessevolution and the CLI
+		// read) must keep whatever the previous successful tick wrote.
+		now := s.deps.Now()
+		report = Report{
 			SchemaVersion: ReportSchemaVersion,
-			GeneratedAt:   s.deps.Now(),
-			Degraded:      true,
-			Error:         err.Error(),
+			GeneratedAt:   now,
+			State:         StateFailed,
+			FailureReason: err.Error(),
+			DurationMS:    now.Sub(report.GeneratedAt).Milliseconds(),
 		}
-		s.state.recordReport(degraded, s.deps.Now())
-		s.deps.Emit(events.SelfMonitorReport, degraded)
+		s.state.recordReport(report, now)
+		s.deps.Emit(events.SelfMonitorReport, report)
 		return
 	}
 	s.state.recordReport(report, s.deps.Now())
@@ -192,6 +193,7 @@ func (s *Service) tickAndLog(ctx context.Context) {
 	}
 	s.deps.Emit(events.SelfMonitorReport, report)
 	s.deps.Logger.Info("selfmonitor.tick.done",
+		"state", report.State,
 		"findings", len(report.Findings),
 		"suppressed", report.Suppressed,
 		"duration_ms", report.DurationMS,
@@ -203,6 +205,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 	report := Report{
 		SchemaVersion: ReportSchemaVersion,
 		GeneratedAt:   start,
+		State:         StateHealthy,
 	}
 
 	if s.deps.Health == nil {
@@ -225,27 +228,25 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 	report.HealthScore = hr.Score
 	report.PeriodStart = hr.PeriodStart
 	report.PeriodEnd = hr.PeriodEnd
+	report.InputsTotal = len(hr.Findings)
 
 	for i := range hr.Findings {
-		inv, skipped := s.investigate(ctx, &hr.Findings[i])
+		inv, skipped, analysisFailed := s.investigate(ctx, &hr.Findings[i])
 		if skipped {
 			report.Suppressed++
 			continue
 		}
-		if inv.AnalysisError != "" {
-			report.AnalysisFailures++
+		if analysisFailed {
+			report.AnalysisErrors++
+		}
+		if inv.LogSummary != nil {
+			report.InputsAnalyzed++
+			report.TruncatedRecords += inv.LogSummary.SkippedOversizedRecords
 		}
 		report.Findings = append(report.Findings, inv)
 	}
-
-	// A resolved log that could not be analyzed drops real evidence, so mark
-	// the tick degraded/partial. Downstream (harness-evolution, frontend)
-	// keys off Degraded to avoid treating impaired coverage as a clean tick.
-	if report.AnalysisFailures > 0 {
-		report.Degraded = true
-		report.Error = fmt.Sprintf(
-			"%d finding(s) had an unreadable or malformed agent log; verdict and provider-signal coverage incomplete",
-			report.AnalysisFailures)
+	if report.TruncatedRecords > 0 || report.AnalysisErrors > 0 {
+		report.State = StatePartial
 	}
 
 	// Cross-finding correlations (pure Go, no I/O).
@@ -277,41 +278,30 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 
 // investigate runs the per-finding distillation pipeline. Returns skipped=true
 // when the ledger auto-suppresses the fingerprint or the AllowsProject gate
-// rejects the task's project.
-func (s *Service) investigate(ctx context.Context, f *health.Finding) (InvestigatedFinding, bool) {
+// rejects the task's project, and analysisFailed=true when a resolvable log
+// file existed but Analyze could not read it (the finding is still reported,
+// just without a LogSummary — analysisFailed lets the caller mark the tick
+// as partial rather than silently dropping coverage).
+func (s *Service) investigate(ctx context.Context, f *health.Finding) (inv InvestigatedFinding, skipped, analysisFailed bool) {
 	if !s.projectAllowed(f) {
-		return InvestigatedFinding{}, true
+		return InvestigatedFinding{}, true, false
 	}
 	if s.autoSuppressed(f.Fingerprint) {
 		s.deps.Logger.Info("selfmonitor.suppress", "fp", f.Fingerprint, "category", string(f.Category))
-		return InvestigatedFinding{}, true
+		return InvestigatedFinding{}, true, false
 	}
 
-	inv := InvestigatedFinding{
+	inv = InvestigatedFinding{
 		Finding:     *f,
 		Fingerprint: f.Fingerprint,
 		Verdict:     Verdict{Classification: VerdictPending},
 	}
 	if path := s.resolveLogFile(f); path != "" {
 		summary, err := Analyze(path, s.deps.MaxLogEventsHint)
-		switch {
-		case err != nil:
-			// A resolved-but-unreadable log means we lose verdict and
-			// provider-signal coverage for this finding. Record it on the
-			// finding so tick can mark the whole report degraded — otherwise
-			// the dropped evidence is invisible downstream.
+		if err != nil {
 			s.deps.Logger.Warn("selfmonitor.analyze", "path", path, "err", err)
-			inv.AnalysisError = err.Error()
-		case summary.TruncatedRecords > 0:
-			// The log parsed but one or more oversized records were dropped, so
-			// the summary is built from partial evidence — the skipped record
-			// may have carried the key failure text. Keep the partial summary
-			// but flag the finding so tick marks the report degraded instead of
-			// trusting the incomplete coverage as complete.
-			s.deps.Logger.Warn("selfmonitor.analyze.truncated", "path", path, "dropped", summary.TruncatedRecords)
-			inv.LogSummary = &summary
-			inv.AnalysisError = fmt.Sprintf("%d oversized record(s) dropped; log evidence incomplete", summary.TruncatedRecords)
-		default:
+			analysisFailed = true
+		} else {
 			inv.LogSummary = &summary
 		}
 	}
@@ -334,7 +324,7 @@ func (s *Service) investigate(ctx context.Context, f *health.Finding) (Investiga
 	// Provider feedback: passive rate-limit signal from retry-loop logs.
 	s.reportProviderSignal(f, inv.LogSummary)
 
-	return inv, false
+	return inv, false, analysisFailed
 }
 
 // reportProviderSignal calls ReportRateLimit on the provider gate when an
@@ -500,6 +490,11 @@ func (s *Service) finalize(r Report, start time.Time) Report {
 	return r
 }
 
+// persistReport atomically writes r to LastReportPath via fsutil.AtomicWrite
+// (temp file + rename). Only called from the success path in tickAndLog, so
+// combined with the atomic write this guarantees the previous valid report
+// is what survives on disk if marshaling or the write itself fails partway
+// through — a degraded/failed tick never gets this far.
 func (s *Service) persistReport(r Report) error {
 	path := s.deps.LastReportPath
 	if path == "" {
@@ -512,5 +507,8 @@ func (s *Service) persistReport(r Report) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	return fsutil.AtomicWrite(path, data)
+	if err := fsutil.AtomicWrite(path, data); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	return nil
 }
