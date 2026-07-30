@@ -239,6 +239,59 @@ func TestService_Tick_NoReportYet_BootstrapsEnabledOverlay(t *testing.T) {
 	}
 }
 
+// TestService_PrimeThenTick_NoReport_NoBootstrapChurn guards the fresh-enabled
+// startup sequence: Prime() bootstraps generation 1 (stamping
+// InsufficientData=true), then the very next tick (Run's synchronous first
+// tick) takes the missing-report rollback path. The rollback baseline is
+// weight-identical to the bootstrap overlay, so it must NOT mint a second
+// generation or emit a spurious routing.rolled_back audit — otherwise early
+// assignments split across generations 1 and 2 with no real weight change.
+func TestService_PrimeThenTick_NoReport_NoBootstrapChurn(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	var applied []abtest.Config
+	var audited []audit.Event
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	svc := NewService(Deps{
+		Cfg:    config.RoutingConfig{Enabled: true, IntervalHours: 6},
+		Base:   testBaseConfig,
+		Report: func() (evaluation.Report, bool) { return evaluation.Report{}, false },
+		Store:  store,
+		Apply: func(cfg abtest.Config) error {
+			applied = append(applied, cfg)
+			return nil
+		},
+		AuditLog: func(e audit.Event) error { audited = append(audited, e); return nil },
+		Logger:   slog.New(slog.DiscardHandler),
+		Now:      func() time.Time { return now },
+	})
+
+	// Prime bootstraps generation 1.
+	svc.Prime()
+	// Run's synchronous first tick takes the no-report rollback path.
+	runOnceSync(svc)
+
+	overlay, ok, err := store.Load()
+	if err != nil || !ok {
+		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+	}
+	if overlay.Version != 1 {
+		t.Fatalf("overlay.Version = %d, want 1 (no churn after bootstrap)", overlay.Version)
+	}
+	// Prime applies bootstrap once; the follow-up rollback is a no-op, so no
+	// second apply and no rolled_back audit.
+	if len(applied) != 1 {
+		t.Fatalf("apply calls = %d, want 1 (bootstrap only)", len(applied))
+	}
+	for _, e := range audited {
+		if e.Type == audit.EventRoutingRolledBack {
+			t.Fatalf("emitted spurious routing.rolled_back audit: %+v", audited)
+		}
+	}
+}
+
 func TestService_Tick_NoReportYet_ShadowModeNoOp(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
