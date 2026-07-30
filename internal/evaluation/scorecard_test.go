@@ -33,11 +33,16 @@ func TestCompute(t *testing.T) {
 		// Task A: merged, clean (no human, no ci-fix, no rework).
 		ld("A", in, map[string]any{"outcome": "merged", "created_to_land_h": 10.0, "work_to_land_h": 4.0}),
 		// Task B: closed, with a repeated transition (rework) in-window, plus a
-		// human-required escalation and CI fix that happened BEFORE the landing
-		// window — these must still count (straddle), proving signals are not
-		// window-bound.
+		// human-required escalation, its explicit human resolution, and a CI
+		// fix that all happened BEFORE the landing window — these must still
+		// count (straddle), proving signals are not window-bound. The bare
+		// human-required entry alone would no longer be enough to count as
+		// human-touched (issue #2727) — EventInterventionRecorded with
+		// operator_action_class=human is the durable resolution signal.
 		ld("B", in, map[string]any{"outcome": "closed", "created_to_land_h": 20.0, "work_to_land_h": 8.0}),
 		sc("B", "in-review", "human-required", preWindow),
+		{Type: audit.EventInterventionRecorded, TaskID: "B", Timestamp: preWindow,
+			Data: map[string]any{"operator_action_class": "human"}},
 		sc("B", "in-progress", "in-review", in),
 		sc("B", "in-progress", "in-review", in), // repeat → rework
 		{Type: audit.EventPRCIFailureDetected, TaskID: "B", Timestamp: preWindow},
@@ -74,6 +79,7 @@ func TestCompute(t *testing.T) {
 		{"CycleTimeP90H", got.CycleTimeP90H, 8},
 		{"AutonomousLandings", float64(got.AutonomousLandings), 1},
 		{"HumanTouchedLandings", float64(got.HumanTouchedLandings), 1},
+		{"AutonomyUnknownLandings", float64(got.AutonomyUnknownLandings), 0},
 		{"AutonomyRate", got.AutonomyRate, 0.5},
 		{"AgentRuns", float64(got.AgentRuns), 4},
 		{"AgentFailures", float64(got.AgentFailures), 1},
@@ -90,6 +96,235 @@ func TestCompute(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
 		}
+	}
+}
+
+// TestComputeHumanTouchAndCIFirstPassProvenance is #2727's table: entering
+// human-required is a request, not evidence one happened, so the scorecard
+// must only count a durably-attributed operator action as human-touch, and
+// only a CI-failure-typed PR repair against CI-first-pass. Every case lands
+// exactly one task, so AutonomousLandings/HumanTouchedLandings/
+// AutonomyUnknownLandings sum to 1 and CIFirstPassRate is exactly 0 or 1.
+func TestComputeHumanTouchAndCIFirstPassProvenance(t *testing.T) {
+	base := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+
+	landed := func(tid string) audit.Event {
+		return audit.Event{Type: audit.EventTaskLanded, TaskID: tid, Timestamp: in, Data: map[string]any{"outcome": "merged"}}
+	}
+	statusChanged := func(tid, from, to string) audit.Event {
+		return audit.Event{Type: audit.EventTaskStatusChanged, TaskID: tid, Timestamp: in,
+			Data: map[string]any{"from": from, "to": to}}
+	}
+	intervened := func(tid, class string) audit.Event {
+		return audit.Event{Type: audit.EventInterventionRecorded, TaskID: tid, Timestamp: in,
+			Data: map[string]any{"operator_action_class": class}}
+	}
+	planDecision := func(tid, eventType string, auto bool) audit.Event {
+		return audit.Event{Type: eventType, TaskID: tid, Timestamp: in, Data: map[string]any{"auto": auto}}
+	}
+	prFix := func(tid, issue, kinds string) audit.Event {
+		data := map[string]any{"issue": issue}
+		if kinds != "" {
+			data["kinds"] = kinds
+		}
+		return audit.Event{Type: audit.EventPRFixAgentStarted, TaskID: tid, Timestamp: in, Data: data}
+	}
+
+	cases := []struct {
+		name             string
+		events           []audit.Event
+		wantAutonomous   int
+		wantHumanTouched int
+		wantUnknown      int
+		wantCIFirstPass  float64
+	}{
+		{
+			name:            "never asked for intervention is autonomous",
+			events:          []audit.Event{landed("A")},
+			wantAutonomous:  1,
+			wantCIFirstPass: 1,
+		},
+		{
+			name: "automated human-review recovery does not count as human touch",
+			events: []audit.Event{
+				landed("A"),
+				statusChanged("A", "in-review", "human-required"),
+				{Type: audit.EventHumanReviewSpawned, TaskID: "A", Timestamp: in},
+				intervened("A", "auto_recovery"),
+			},
+			wantAutonomous:  1,
+			wantCIFirstPass: 1,
+		},
+		{
+			name: "explicit operator dispatch counts as human touch, once, even duplicated",
+			events: []audit.Event{
+				landed("A"),
+				statusChanged("A", "in-review", "human-required"),
+				intervened("A", "human"),
+				intervened("A", "human"), // duplicate — must not double count
+			},
+			wantHumanTouched: 1,
+			wantCIFirstPass:  1,
+		},
+		{
+			name: "legacy human-required entry with no resolution provenance is unknown, not autonomous",
+			events: []audit.Event{
+				landed("A"),
+				statusChanged("A", "in-review", "human-required"),
+			},
+			wantUnknown:     1,
+			wantCIFirstPass: 1,
+		},
+		{
+			name: "manual plan approval counts as human touch",
+			events: []audit.Event{
+				landed("A"),
+				planDecision("A", audit.EventPlanApproved, false),
+			},
+			wantHumanTouched: 1,
+			wantCIFirstPass:  1,
+		},
+		{
+			name: "auto plan approval does not count as human touch",
+			events: []audit.Event{
+				landed("A"),
+				planDecision("A", audit.EventPlanApproved, true),
+			},
+			wantAutonomous:  1,
+			wantCIFirstPass: 1,
+		},
+		{
+			name: "manual plan rejection counts as human touch",
+			events: []audit.Event{
+				landed("A"),
+				planDecision("A", audit.EventPlanRejected, false),
+			},
+			wantHumanTouched: 1,
+			wantCIFirstPass:  1,
+		},
+		{
+			name: "review-comment repair does not lower CI first pass",
+			events: []audit.Event{
+				landed("A"),
+				prFix("A", "comments", "comments"),
+			},
+			wantAutonomous:  1,
+			wantCIFirstPass: 1,
+		},
+		{
+			name: "merge-conflict repair does not lower CI first pass",
+			events: []audit.Event{
+				landed("A"),
+				prFix("A", "conflict", "conflict"),
+			},
+			wantAutonomous:  1,
+			wantCIFirstPass: 1,
+		},
+		{
+			name: "CI-failure repair lowers CI first pass",
+			events: []audit.Event{
+				landed("A"),
+				prFix("A", "ci_failure", "ci_failure"),
+			},
+			wantAutonomous:  1,
+			wantCIFirstPass: 0,
+		},
+		{
+			name: "mixed repair causes: a CI failure anywhere in the batch still lowers CI first pass",
+			events: []audit.Event{
+				landed("A"),
+				prFix("A", "comments", "comments,ci_failure"),
+			},
+			wantAutonomous:  1,
+			wantCIFirstPass: 0,
+		},
+		{
+			name: "mixed repair causes: comments+conflict batch with no CI failure does not lower CI first pass",
+			events: []audit.Event{
+				landed("A"),
+				prFix("A", "comments", "comments,conflict"),
+			},
+			wantAutonomous:  1,
+			wantCIFirstPass: 1,
+		},
+		{
+			name: "duplicate CI-failure signals (detected + fix-started) count once",
+			events: []audit.Event{
+				landed("A"),
+				{Type: audit.EventPRCIFailureDetected, TaskID: "A", Timestamp: in},
+				prFix("A", "ci_failure", "ci_failure"),
+			},
+			wantAutonomous:  1,
+			wantCIFirstPass: 0,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Compute(nil, c.events, since, base)
+			if got.AutonomousLandings != c.wantAutonomous {
+				t.Errorf("AutonomousLandings = %d, want %d", got.AutonomousLandings, c.wantAutonomous)
+			}
+			if got.HumanTouchedLandings != c.wantHumanTouched {
+				t.Errorf("HumanTouchedLandings = %d, want %d", got.HumanTouchedLandings, c.wantHumanTouched)
+			}
+			if got.AutonomyUnknownLandings != c.wantUnknown {
+				t.Errorf("AutonomyUnknownLandings = %d, want %d", got.AutonomyUnknownLandings, c.wantUnknown)
+			}
+			if got.CIFirstPassRate != c.wantCIFirstPass {
+				t.Errorf("CIFirstPassRate = %v, want %v", got.CIFirstPassRate, c.wantCIFirstPass)
+			}
+		})
+	}
+}
+
+// TestComputeAutonomyRateExcludesUnknownFromDenominator is #2727's other
+// half: AutonomyUnknownLandings must stay out of AutonomyRate's denominator,
+// not just its numerator, or a legacy human-required task with no
+// provenance still drags autonomy down exactly as if it had been a
+// confirmed human touch.
+func TestComputeAutonomyRateExcludesUnknownFromDenominator(t *testing.T) {
+	base := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+
+	landed := func(tid string) audit.Event {
+		return audit.Event{Type: audit.EventTaskLanded, TaskID: tid, Timestamp: in, Data: map[string]any{"outcome": "merged"}}
+	}
+	statusChanged := func(tid, from, to string) audit.Event {
+		return audit.Event{Type: audit.EventTaskStatusChanged, TaskID: tid, Timestamp: in,
+			Data: map[string]any{"from": from, "to": to}}
+	}
+	intervened := func(tid, class string) audit.Event {
+		return audit.Event{Type: audit.EventInterventionRecorded, TaskID: tid, Timestamp: in,
+			Data: map[string]any{"operator_action_class": class}}
+	}
+
+	var events []audit.Event
+	// 7 autonomous landings, never asked for intervention.
+	for _, tid := range []string{"A1", "A2", "A3", "A4", "A5", "A6", "A7"} {
+		events = append(events, landed(tid))
+	}
+	// 2 human-touched landings, explicit operator action.
+	for _, tid := range []string{"H1", "H2"} {
+		events = append(events, landed(tid), statusChanged(tid, "in-review", "human-required"), intervened(tid, "human"))
+	}
+	// 1 unknown landing: asked for intervention, no resolution provenance.
+	events = append(events, landed("U1"), statusChanged("U1", "in-review", "human-required"))
+
+	got := Compute(nil, events, since, base)
+	if got.TasksLanded != 10 {
+		t.Fatalf("TasksLanded = %d, want 10", got.TasksLanded)
+	}
+	if got.AutonomousLandings != 7 || got.HumanTouchedLandings != 2 || got.AutonomyUnknownLandings != 1 {
+		t.Fatalf("Autonomous/HumanTouched/Unknown = %d/%d/%d, want 7/2/1",
+			got.AutonomousLandings, got.HumanTouchedLandings, got.AutonomyUnknownLandings)
+	}
+	want := 7.0 / 9.0 // known cohort only: 7 autonomous / (7 autonomous + 2 human-touched)
+	if diff := got.AutonomyRate - want; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("AutonomyRate = %v, want %v (7/10=%v would mean the unknown landing still counts)", got.AutonomyRate, want, 7.0/10.0)
 	}
 }
 
@@ -224,7 +459,7 @@ func TestReportNotesFlagsPreFixStallsRecordedAsFailures(t *testing.T) {
 		{Outcome: stats.OutcomeCompleted, CostUSD: 1.2, OutputTokens: 500, Timestamp: in},
 	}
 
-	notes := reportNotes(records, since, base)
+	notes := reportNotes(records, since, base, Scorecard{})
 	found := ""
 	for _, n := range notes {
 		if strings.Contains(n, "zero cost and zero tokens") {
@@ -251,7 +486,7 @@ func TestReportNotesOmitsStallCaveatWhenFailuresAreAccounted(t *testing.T) {
 		{Outcome: stats.OutcomeCompleted, CostUSD: 1.2, OutputTokens: 500, Timestamp: in},
 	}
 
-	for _, n := range reportNotes(records, since, base) {
+	for _, n := range reportNotes(records, since, base, Scorecard{}) {
 		if strings.Contains(n, "zero cost and zero tokens") {
 			t.Errorf("note %q present, but the only failure is fully accounted and the stall is recorded as a stall", n)
 		}
@@ -1475,7 +1710,7 @@ func TestReportNotesFlagsIndeterminateSkillConformance(t *testing.T) {
 		{Outcome: "completed", Timestamp: in},                                               // indeterminate: unset
 		{Outcome: "completed", SkillConformance: skillattr.ConformanceExact, Timestamp: in}, // known
 	}
-	notes := reportNotes(records, since, base)
+	notes := reportNotes(records, since, base, Scorecard{})
 	found := false
 	for _, n := range notes {
 		if strings.Contains(n, "indeterminate skill conformance") {
@@ -1498,7 +1733,7 @@ func TestReportNotesOmitsSkillParityNoteWhenAllConformanceKnown(t *testing.T) {
 		{Outcome: "completed", SkillConformance: skillattr.ConformanceExact, Timestamp: in},
 		{Outcome: "completed", SkillConformance: skillattr.ConformanceNone, Timestamp: in},
 	}
-	notes := reportNotes(records, since, base)
+	notes := reportNotes(records, since, base, Scorecard{})
 	for _, n := range notes {
 		if strings.Contains(n, "indeterminate skill conformance") {
 			t.Fatalf("notes = %v, unexpected skill-parity note when conformance is fully known", notes)

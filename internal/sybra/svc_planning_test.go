@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -676,6 +677,86 @@ func TestPlanningService_RejectPlan_StoresMergedFeedbackInVars(t *testing.T) {
 	}
 	if updated.Workflow.Variables["human_action"] != "reject" {
 		t.Errorf("human_action = %q, want reject", updated.Workflow.Variables["human_action"])
+	}
+}
+
+// TestPlanningService_ApprovePlan_LogsPlanApprovedAudit proves a genuine
+// human approval (reached only via the plan-review GUI action, never
+// SetPlanAutoApproveHook) logs plan.approved with auto=false — the durable
+// operator-action signal the evaluation scorecard's human-touch
+// classification reads (issue #2727).
+func TestPlanningService_ApprovePlan_LogsPlanApprovedAudit(t *testing.T) {
+	planSvc, taskSvc, _ := setupPlanningService(t)
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	planSvc.audit = al
+
+	created, err := taskSvc.tasks.Create("approve plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageWaitingPlanReview(t, taskSvc, created.ID)
+
+	if _, err := planSvc.ApprovePlan(created.ID); err != nil {
+		t.Fatalf("ApprovePlan: %v", err)
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventPlanApproved,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(EventPlanApproved) = %d, want 1: %+v", len(events), events)
+	}
+	if got := events[0].Data["auto"]; got != false {
+		t.Errorf("Data[auto] = %v, want false (a genuine human approval, not SetPlanAutoApproveHook)", got)
+	}
+}
+
+// TestPlanningService_RejectPlan_LogsPlanRejectedAudit is
+// TestPlanningService_ApprovePlan_LogsPlanApprovedAudit's reject-path
+// counterpart.
+func TestPlanningService_RejectPlan_LogsPlanRejectedAudit(t *testing.T) {
+	planSvc, taskSvc, _ := setupPlanningService(t)
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	planSvc.audit = al
+
+	created, err := taskSvc.tasks.Create("reject plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageWaitingPlanReview(t, taskSvc, created.ID)
+
+	if _, err := planSvc.RejectPlan(created.ID, "needs more detail"); err != nil {
+		t.Fatalf("RejectPlan: %v", err)
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventPlanRejected,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(EventPlanRejected) = %d, want 1: %+v", len(events), events)
+	}
+	if got := events[0].Data["auto"]; got != false {
+		t.Errorf("Data[auto] = %v, want false", got)
 	}
 }
 

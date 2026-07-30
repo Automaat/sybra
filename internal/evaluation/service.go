@@ -175,20 +175,22 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		MinSamples:  abTesting.MinSamplesPerVariant,
 		Experiments: abTesting.Experiments,
 	}, ComparisonAttributionAnyContribution)
+	overall := Compute(recs, evts, since, now)
 	rep := Report{
-		GeneratedAt: now,
-		Since:       since,
-		Until:       now,
-		Overall:     Compute(recs, evts, since, now),
-		ByProvider:  BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Provider }),
-		ByRole:      BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Role }),
+		SchemaVersion: ScorecardSchemaVersion,
+		GeneratedAt:   now,
+		Since:         since,
+		Until:         now,
+		Overall:       overall,
+		ByProvider:    BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Provider }),
+		ByRole:        BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Role }),
 		BySkillExecutionMode: BreakdownBy(recs, since, now, func(r stats.RunRecord) string {
 			return skillattr.NormalizeExecutionMode(r.SkillExecutionMode)
 		}),
 		ByAgentModel:             CompareByLatestAuthor(recs, evts, since, now, 20, agentModelCohortKey),
 		ByAgentModelContribution: CompareByContribution(recs, evts, since, now, 20, agentModelCohortKey),
 		ByExperimentKind:         GroupByKind(byVariant, byVariantContribution, abTesting.Experiments),
-		Notes:                    reportNotes(recs, since, now),
+		Notes:                    reportNotes(recs, since, now, overall),
 	}
 	sloTargets := s.cfg.SLO
 	if sloTargets == (config.SLOTargets{}) {

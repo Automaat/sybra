@@ -931,6 +931,89 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("len(EventInterventionRecorded) = %d, want 2: %+v", len(events), events)
 	}
+	// The evaluation scorecard (issue #2727) keys its human-touch
+	// classification off this Data field — a durable operator_action_class
+	// alongside the fingerprint, not just a bare "an intervention happened".
+	for _, e := range events {
+		if got := e.Data["operator_action_class"]; got != string(intervention.OperatorActionHuman) {
+			t.Errorf("Data[operator_action_class] = %v, want %q", got, intervention.OperatorActionHuman)
+		}
+	}
+}
+
+// TestUpdateTask_HumanRequiredUnblockRecordsInterventionAsHuman proves the
+// generic GUI/CLI field-edit endpoint (UpdateTask) is durably attributed the
+// same way as the dedicated Dispatch panel: it is only ever reached by an
+// operator (or a script run on their behalf), never an automated recovery
+// path, so an escape from human-required through it must record a "human"
+// intervention — the signal the evaluation scorecard's human-touch
+// classification reads (issue #2727).
+func TestUpdateTask_HumanRequiredUnblockRecordsInterventionAsHuman(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+
+	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := projStore.CreateMeta("https://github.com/acme/api.git", project.ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.projects = projStore
+	svc.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
+
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	svc.audit = al
+
+	store, err := intervention.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.intervention = store
+
+	tk := newHumanRequiredTask(t, a, 0)
+	if _, err := a.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.UpdateTask(tk.ID, map[string]any{
+		"status":        string(task.StatusTodo),
+		"status_reason": "operator edited status directly",
+	}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	records, err := store.Query(intervention.ProjectKey(proj), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
+	}
+	if records[0].OperatorActionClass != intervention.OperatorActionHuman {
+		t.Fatalf("OperatorActionClass = %q, want %q", records[0].OperatorActionClass, intervention.OperatorActionHuman)
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventInterventionRecorded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(EventInterventionRecorded) = %d, want 1: %+v", len(events), events)
+	}
+	if got := events[0].Data["operator_action_class"]; got != string(intervention.OperatorActionHuman) {
+		t.Errorf("Data[operator_action_class] = %v, want %q", got, intervention.OperatorActionHuman)
+	}
 }
 
 // TestDispatchFromHumanRequired_InterventionScrubsWorkProjects verifies that

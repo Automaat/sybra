@@ -1154,7 +1154,8 @@ func TestReconcileHumanRequiredBlockersRecordsIntervention(t *testing.T) {
 	}
 	r.projects = projStore
 	r.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
-	al, err := audit.NewLogger(t.TempDir())
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1187,6 +1188,25 @@ func TestReconcileHumanRequiredBlockersRecordsIntervention(t *testing.T) {
 	}
 	if records[0].ToStatus != string(task.StatusInReview) {
 		t.Fatalf("ToStatus = %q, want %q", records[0].ToStatus, task.StatusInReview)
+	}
+
+	// The evaluation scorecard (issue #2727) reads operator_action_class off
+	// the audit event itself, not the intervention store — an automated
+	// reconciliation must be durably distinguishable there too, not just on
+	// the persisted Record.
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventInterventionRecorded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(EventInterventionRecorded) = %d, want 1: %+v", len(events), events)
+	}
+	if got := events[0].Data["operator_action_class"]; got != string(intervention.OperatorActionAutoRecovery) {
+		t.Errorf("Data[operator_action_class] = %v, want %q", got, intervention.OperatorActionAutoRecovery)
 	}
 }
 

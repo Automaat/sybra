@@ -39,9 +39,14 @@ func Weaknesses(r Report, targets SLOTargets) []Weakness {
 	if o.TasksLanded >= minLandedForSignal {
 		if o.AutonomyRate < targets.MinAutonomyRate {
 			out = append(out, Weakness{
-				Severity:   "warn",
-				Metric:     "autonomy",
-				Detail:     fmt.Sprintf("%.0f%% of landings needed a human touch", (1-o.AutonomyRate)*100),
+				Severity: "warn",
+				Metric:   "autonomy",
+				// AutonomyRate is scoped to the known-provenance cohort
+				// (autonomous + humanTouched) — AutonomyUnknownLandings is
+				// excluded from both buckets rather than guessed into one
+				// (issue #2727), so 1-AutonomyRate here is purely the
+				// human-touched share of the known cohort.
+				Detail:     fmt.Sprintf("%.0f%% of landings with known provenance were human-touched", (1-o.AutonomyRate)*100),
 				Suggestion: "review what escalated to human-required; tighten triage so more tasks run headless end-to-end",
 			})
 		}
