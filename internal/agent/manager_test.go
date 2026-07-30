@@ -290,6 +290,95 @@ func TestStopAgent(t *testing.T) {
 	}
 }
 
+// TestStopAgent_IdempotentAcrossTerminalPaths guards the fix for repeated
+// control-plane work over an unchanged terminal agent (#2725): whatever path
+// an agent took to reach StateStopped — a clean completion, a failed run, an
+// explicit cancellation, a watchdog/reattach path that marks it lost without
+// going through StopAgent, or simply being stopped already — a caller that
+// stops it again (e.g. reconciliation re-selecting a not-yet-evicted
+// registry entry) must observe zero further side effects rather than
+// re-signalling and re-emitting on every call.
+func TestStopAgent_IdempotentAcrossTerminalPaths(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, m *Manager, a *Agent)
+	}{
+		{
+			name: "already stopped",
+			setup: func(t *testing.T, m *Manager, a *Agent) {
+				t.Helper()
+				if err := m.StopAgent(a.ID); err != nil {
+					t.Fatalf("StopAgent: %v", err)
+				}
+			},
+		},
+		{
+			name: "completed via StopCompletedAgent",
+			setup: func(t *testing.T, m *Manager, a *Agent) {
+				t.Helper()
+				a.AppendOutput(StreamEvent{Type: "result", Subtype: "success"})
+				if err := m.StopCompletedAgent(a.ID); err != nil {
+					t.Fatalf("StopCompletedAgent: %v", err)
+				}
+			},
+		},
+		{
+			name: "failed run left the agent stopped",
+			setup: func(t *testing.T, m *Manager, a *Agent) {
+				t.Helper()
+				a.AppendOutput(StreamEvent{Type: "result", Subtype: "error"})
+				if err := m.StopAgent(a.ID); err != nil {
+					t.Fatalf("StopAgent: %v", err)
+				}
+			},
+		},
+		{
+			name: "cancelled",
+			setup: func(t *testing.T, m *Manager, a *Agent) {
+				t.Helper()
+				// StopAgent is the cancellation mechanism (cancels a.cancel()).
+				if err := m.StopAgent(a.ID); err != nil {
+					t.Fatalf("StopAgent: %v", err)
+				}
+			},
+		},
+		{
+			name: "lost agent marked stopped out-of-band (e.g. reattach/watchdog)",
+			setup: func(t *testing.T, m *Manager, a *Agent) {
+				t.Helper()
+				a.SetState(StateStopped)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, emitted := newTestManager(t)
+
+			a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			tt.setup(t, m, a)
+			before := emitted.Len()
+
+			for i := range 3 {
+				if err := m.StopAgent(a.ID); err != nil {
+					t.Fatalf("repeat StopAgent[%d]: %v", i, err)
+				}
+			}
+
+			if got := emitted.Len(); got != before {
+				t.Errorf("emitted event count = %d after 3 repeat StopAgent calls, want unchanged %d", got, before)
+			}
+			if got := a.GetState(); got != StateStopped {
+				t.Errorf("State = %q, want %q", got, StateStopped)
+			}
+		})
+	}
+}
+
 // TestStopCompletedAgent_MarksCompletedByResult covers the watchdog's
 // completed-hang backstop: it must mark the agent completed-by-result before
 // stopping it, so the runner's exit-status handling finalizes it as a success
@@ -506,6 +595,37 @@ func TestListAgentsMultiple(t *testing.T) {
 	agents := m.ListAgents()
 	if len(agents) != 3 {
 		t.Errorf("got %d agents, want 3", len(agents))
+	}
+}
+
+// TestListLiveAgents_ExcludesStopped guards the separation between live
+// discovery and retained history (#2725): ListAgents keeps a stopped agent
+// around for deadAgentRetention so a caller polling right after a stop still
+// sees its final state, but a caller deciding what still needs stopping
+// (e.g. orchestrator singleton reconciliation) must use ListLiveAgents and
+// never see that terminal entry.
+func TestListLiveAgents_ExcludesStopped(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	live, err := startTestAgent(t, m, "task-live", "Live Task", "headless", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := startTestAgent(t, m, "task-stopped", "Stopped Task", "headless", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StopAgent(stopped.ID); err != nil {
+		t.Fatalf("StopAgent: %v", err)
+	}
+
+	if got := len(m.ListAgents()); got != 2 {
+		t.Fatalf("ListAgents() len = %d, want 2 (retains the stopped entry)", got)
+	}
+
+	liveAgents := m.ListLiveAgents()
+	if len(liveAgents) != 1 || liveAgents[0].ID != live.ID {
+		t.Errorf("ListLiveAgents() = %v, want only %q", liveAgents, live.ID)
 	}
 }
 

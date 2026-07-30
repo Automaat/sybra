@@ -42,6 +42,15 @@ const (
 	StateStopped State = "stopped"
 )
 
+// IsTerminal reports whether an agent in this state has finished its
+// lifecycle and cannot transition further. StateStopped is the only such
+// state today; callers that decide whether an agent still needs to be
+// stopped/signalled should key off this rather than re-deriving it, so a
+// second terminal state added later only needs to change this one place.
+func (s State) IsTerminal() bool {
+	return s == StateStopped
+}
+
 const DefaultReasoningEffort = "medium"
 
 type Agent struct {
