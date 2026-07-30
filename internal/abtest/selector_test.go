@@ -1047,6 +1047,14 @@ func TestValidateExperiment_CanaryRequiresKnownBaselineVariant(t *testing.T) {
 	}
 }
 
+func TestValidateExperiment_CanaryRejectsZeroWeightBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 50, MinCohort: 0})
+	cfg.Experiments[0].Variants[0].Weight = 0 // baseline retired via zero weight
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error: a zero-weight (disabled) variant must not be a canary baseline")
+	}
+}
+
 func TestValidateExperiment_CanaryPercentBoundOutOfRange(t *testing.T) {
 	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 101, MinCohort: 0})
 	if err := cfg.Validate(); err == nil {

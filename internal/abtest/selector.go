@@ -364,8 +364,17 @@ func validateCanary(exp Experiment) error {
 	if c.MinCohort < 0 {
 		return fmt.Errorf("abtest: experiment %q canary min_cohort must be >= 0", exp.ID)
 	}
-	if _, ok := findVariant(exp, c.BaselineVariantID); !ok {
+	baseline, ok := findVariant(exp, c.BaselineVariantID)
+	if !ok {
 		return fmt.Errorf("abtest: experiment %q canary baseline_variant_id %q not found among variants", exp.ID, c.BaselineVariantID)
+	}
+	// The baseline receives all gated (cold-cohort / out-of-bound) production
+	// traffic, so a non-positive weight — treated as disabled everywhere else
+	// in this package — must not be usable as a canary baseline. Otherwise an
+	// operator zeroing a variant's weight to retire it would keep routing
+	// gated traffic to it.
+	if baseline.Weight <= 0 {
+		return fmt.Errorf("abtest: experiment %q canary baseline_variant_id %q must have positive weight", exp.ID, c.BaselineVariantID)
 	}
 	return nil
 }
