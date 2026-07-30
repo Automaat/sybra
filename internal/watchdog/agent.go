@@ -242,9 +242,9 @@ type Watchdog struct {
 
 func (w *Watchdog) applyStatusEffect(taskID, source string, status task.Status, reason string) error {
 	_, err := w.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
-		Source: source,
-		Update: task.Update{
-			Status:       task.Ptr(status),
+		Source:   source,
+		ToStatus: status,
+		Extra: task.Update{
 			StatusReason: task.Ptr(reason),
 		},
 	})

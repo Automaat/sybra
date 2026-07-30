@@ -618,11 +618,10 @@ func checkpointPlannedState(cp trackerExpandCheckpoint, subs []SubIssue) (Plan, 
 func upsertExpandTracker(tasks *task.Manager, tracker existingTracker, umb github.Issue, phase ExpandPhase, cp trackerExpandCheckpoint) (existingTracker, error) {
 	if !tracker.exists {
 		body := upsertExpandCheckpointBody(umb.Body, cp)
-		created, err := tasks.CreateFull(umb.Title, body, task.AgentModeHeadless, task.Update{
+		created, err := tasks.CreateWithStatus(umb.Title, body, task.AgentModeHeadless, task.StatusInProgress, task.Update{
 			Issue:     task.Ptr(umb.URL),
 			TaskType:  task.Ptr(task.TaskTypeUmbrella),
 			ProjectID: task.Ptr(umb.Repository),
-			Status:    task.Ptr(task.StatusInProgress),
 			Tags:      task.Ptr([]string{"umbrella", ExpandPhaseTag(phase)}),
 		})
 		if err != nil {
@@ -719,11 +718,10 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		if degraded {
 			tags = append(tags, FallbackTag)
 		}
-		tracker, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+		tracker, err := tasks.CreateWithStatus(umb.Title, umb.Body, task.AgentModeHeadless, task.StatusInProgress, task.Update{
 			Issue:     task.Ptr(umb.URL),
 			TaskType:  task.Ptr(task.TaskTypeUmbrella),
 			ProjectID: task.Ptr(umb.Repository),
-			Status:    task.Ptr(task.StatusInProgress),
 			Tags:      task.Ptr(tags),
 		})
 		if err != nil {
@@ -766,12 +764,11 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 func createChildren(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef map[string]github.Issue) (int, error) {
 	created := 0
 	for _, spec := range specs {
-		if _, err := tasks.CreateFull(spec.Title, spec.Body, task.AgentModeHeadless, task.Update{
+		if _, err := tasks.CreateWithStatus(spec.Title, spec.Body, task.AgentModeHeadless, task.StatusTodo, task.Update{
 			Issue:         task.Ptr(spec.Issue),
 			UmbrellaIssue: task.Ptr(umb.URL),
 			DependsOn:     task.Ptr(canonicalizeDeps(spec.DependsOn, byRef)),
 			ProjectID:     task.Ptr(childProjectID(spec.Issue, byRef, umb.Repository)),
-			Status:        task.Ptr(task.StatusTodo),
 			Tags:          task.Ptr(childTags(spec.Issue, byRef)),
 		}); err != nil {
 			return created, fmt.Errorf("create child for %s: %w", spec.Issue, err)
@@ -879,11 +876,10 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 	}
 	if !tracker.exists {
 		count := 1
-		_, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+		_, err := tasks.CreateWithStatus(umb.Title, umb.Body, task.AgentModeHeadless, task.StatusInProgress, task.Update{
 			Issue:        task.Ptr(umb.URL),
 			TaskType:     task.Ptr(task.TaskTypeUmbrella),
 			ProjectID:    task.Ptr(umb.Repository),
-			Status:       task.Ptr(task.StatusInProgress),
 			StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
 			Tags:         task.Ptr([]string{"umbrella", ExpandFailTag(count)}),
 		})
@@ -893,20 +889,24 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 		return nil
 	}
 
-	_, err := tasks.UpdateFn(tracker.id, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.ApplyFn(tracker.id, func(cur task.Task) (task.TransitionIntent, error) {
 		count := ParseExpandFailCount(cur.Tags) + 1
 		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
 			return strings.HasPrefix(t, ExpandFailTagPrefix)
 		})
 		newTags = append(newTags, ExpandFailTag(count))
-		upd := task.Update{
-			Tags:         task.Ptr(newTags),
-			StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
-		}
+		toStatus := cur.Status
 		if count >= ExpandFailThreshold {
-			upd.Status = task.Ptr(task.StatusHumanRequired)
+			toStatus = task.StatusHumanRequired
 		}
-		return upd, nil
+		return task.TransitionIntent{
+			ToStatus: toStatus,
+			Actor:    "umbrella.expand.record-failure",
+			Extra: task.Update{
+				Tags:         task.Ptr(newTags),
+				StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
+			},
+		}, nil
 	})
 	if err != nil {
 		return fmt.Errorf("tag tracker expand-failed: %w", err)

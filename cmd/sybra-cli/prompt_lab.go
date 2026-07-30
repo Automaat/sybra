@@ -101,13 +101,12 @@ func filePromptLabProposals(store *task.Manager, projStore *project.Store, resul
 			status = task.StatusHumanRequired
 		}
 		update := task.Update{
-			Status: &status,
-			Tags:   &tags,
+			Tags: &tags,
 		}
 		if projectID := promptLabTargetProjectID(projStore); projectID != "" {
 			update.ProjectID = &projectID
 		}
-		created, err := store.CreateFull(p.Title, body, task.AgentModeHeadless, update)
+		created, err := store.CreateWithStatus(p.Title, body, task.AgentModeHeadless, status, update)
 		if err != nil {
 			return filed, err
 		}

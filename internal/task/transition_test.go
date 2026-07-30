@@ -369,9 +369,9 @@ func TestApplyStatusEffect_RoutesThroughApply(t *testing.T) {
 	}
 
 	updated, err := m.ApplyStatusEffect(created.ID, StatusEffect{
-		Source: "review.pr-monitor.closed-pr",
-		Update: Update{
-			Status:  Ptr(StatusDone),
+		Source:   "review.pr-monitor.closed-pr",
+		ToStatus: StatusDone,
+		Extra: Update{
 			Outcome: Ptr("merged"),
 		},
 	})

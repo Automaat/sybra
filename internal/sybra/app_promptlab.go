@@ -144,13 +144,12 @@ func (c *promptLabCoordinator) fileScrubbedProposals(ctx context.Context, result
 			status = task.StatusHumanRequired
 		}
 		update := task.Update{
-			Status: &status,
-			Tags:   &tags,
+			Tags: &tags,
 		}
 		if projectID := promptLabTargetProjectID(c.projects); projectID != "" {
 			update.ProjectID = &projectID
 		}
-		created, err := c.tasks.CreateFull(p.Title, body, task.AgentModeHeadless, update)
+		created, err := c.tasks.CreateWithStatus(p.Title, body, task.AgentModeHeadless, status, update)
 		if err != nil {
 			return filed, err
 		}

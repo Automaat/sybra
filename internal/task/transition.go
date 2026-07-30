@@ -139,18 +139,104 @@ func (m *Manager) Apply(intent TransitionIntent) (TransitionResult, error) {
 		return TransitionResult{}, err
 	}
 
-	if intent.ExpectedGeneration != nil && cur.Generation != *intent.ExpectedGeneration {
+	outcome, err := m.applyLocked(cur, intent)
+	mu.Unlock()
+	if err != nil {
+		return TransitionResult{}, err
+	}
+	m.fireApplyOutcome(id, outcome)
+	return outcome.result, nil
+}
+
+// ApplyFn is Apply's read-decide-write counterpart, for callers whose target
+// status/fields depend on the task's current state (e.g. a retry count or
+// tag merge derived from the task as it stands right now) — the same
+// relationship UpdateFn has to Update. fn runs under the same per-task lock
+// Apply itself takes, so the decision and the write are atomic; the write
+// then goes through the same precondition/idempotency/hook path as Apply
+// instead of a bare Manager.Update. fn's returned intent.TaskID is ignored
+// (always id); return an error from fn (e.g. a skip sentinel) to abort
+// without writing.
+func (m *Manager) ApplyFn(id string, fn func(cur Task) (TransitionIntent, error)) (TransitionResult, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return TransitionResult{}, fmt.Errorf("transition: task id is required")
+	}
+
+	mu := m.lockFor(id)
+	mu.Lock()
+
+	cur, err := m.store.Get(id)
+	if err != nil {
 		mu.Unlock()
-		return TransitionResult{}, &ConflictError{
-			TaskID:             id,
+		return TransitionResult{}, err
+	}
+	intent, err := fn(cur)
+	if err != nil {
+		mu.Unlock()
+		return TransitionResult{}, err
+	}
+	intent.TaskID = id
+
+	outcome, err := m.applyLocked(cur, intent)
+	mu.Unlock()
+	if err != nil {
+		return TransitionResult{}, err
+	}
+	m.fireApplyOutcome(id, outcome)
+	return outcome.result, nil
+}
+
+// applyOutcome carries applyLocked's result plus the hook-firing decision
+// out of the locked section, so the caller can fire the hook only after
+// releasing the per-task mutex (see the ordering note on Manager.UpdateFn).
+type applyOutcome struct {
+	result     TransitionResult
+	fireHook   bool
+	prevStatus string
+	newStatus  string
+}
+
+// fireApplyOutcome runs Apply/ApplyFn's unlocked tail: the status hook (only
+// on a real write, matching Update/UpdateFn), then metrics/emit (only when
+// the write actually happened — an idempotent replay skips both, same as
+// the original single-function Apply did by returning early).
+func (m *Manager) fireApplyOutcome(id string, outcome applyOutcome) {
+	if outcome.fireHook {
+		m.onStatusHook(id, outcome.prevStatus, outcome.newStatus)
+	}
+	if outcome.result.Applied {
+		metrics.TaskUpdated()
+		m.emitter.Emit(events.TaskUpdated, outcome.result.Task.FilePath)
+	}
+}
+
+// applyLocked is Apply/ApplyFn's shared core. cur must be the task the caller
+// already read under its per-task lock, held for the duration of this call —
+// applyLocked performs the precondition checks and the store write, but never
+// fires the status hook or emits an event itself (see applyOutcome).
+func (m *Manager) applyLocked(cur Task, intent TransitionIntent) (applyOutcome, error) {
+	if intent.ToStatus == "" {
+		return applyOutcome{}, fmt.Errorf("transition: to_status is required")
+	}
+	actor := strings.TrimSpace(intent.Actor)
+	if actor == "" {
+		return applyOutcome{}, fmt.Errorf("transition: actor is required")
+	}
+	if intent.Extra.Status != nil {
+		return applyOutcome{}, fmt.Errorf("transition: intent.Extra.Status must be nil; set ToStatus instead")
+	}
+
+	if intent.ExpectedGeneration != nil && cur.Generation != *intent.ExpectedGeneration {
+		return applyOutcome{}, &ConflictError{
+			TaskID:             cur.ID,
 			ExpectedGeneration: intent.ExpectedGeneration,
 			ActualGeneration:   cur.Generation,
 		}
 	}
 	if intent.ExpectedStatus != nil && cur.Status != *intent.ExpectedStatus {
-		mu.Unlock()
-		return TransitionResult{}, &ConflictError{
-			TaskID:         id,
+		return applyOutcome{}, &ConflictError{
+			TaskID:         cur.ID,
 			ExpectedStatus: intent.ExpectedStatus,
 			ActualStatus:   cur.Status,
 		}
@@ -158,8 +244,7 @@ func (m *Manager) Apply(intent TransitionIntent) (TransitionResult, error) {
 
 	stepID := strings.TrimSpace(intent.IdempotencyKey)
 	if stepID != "" && statusEffectApplied(cur.EffectLog, cur.Generation-1, stepID) {
-		mu.Unlock()
-		return TransitionResult{Task: cur, Applied: false}, nil
+		return applyOutcome{result: TransitionResult{Task: cur, Applied: false}}, nil
 	}
 
 	u := intent.Extra
@@ -187,10 +272,9 @@ func (m *Manager) Apply(intent TransitionIntent) (TransitionResult, error) {
 		u.EffectLog = &log
 	}
 
-	t, prev, err := m.store.UpdateWithPrev(id, u)
+	t, prev, err := m.store.UpdateWithPrev(cur.ID, u)
 	if err != nil {
-		mu.Unlock()
-		return TransitionResult{}, err
+		return applyOutcome{}, err
 	}
 
 	var (
@@ -203,14 +287,12 @@ func (m *Manager) Apply(intent TransitionIntent) (TransitionResult, error) {
 		fireHook = newStat != prevStatus
 	}
 	if fireHook {
-		m.recordFiredStatus(id, newStat)
+		m.recordFiredStatus(cur.ID, newStat)
 	}
-	mu.Unlock()
-
-	if fireHook {
-		m.onStatusHook(id, prevStatus, newStat)
-	}
-	metrics.TaskUpdated()
-	m.emitter.Emit(events.TaskUpdated, t.FilePath)
-	return TransitionResult{Task: t, Applied: true}, nil
+	return applyOutcome{
+		result:     TransitionResult{Task: t, Applied: true},
+		fireHook:   fireHook,
+		prevStatus: prevStatus,
+		newStatus:  newStat,
+	}, nil
 }

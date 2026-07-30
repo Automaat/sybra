@@ -51,10 +51,10 @@ func (r *Recovery) ReconcileLostPRNumber(ctx context.Context) {
 func (r *Recovery) reconcileLandedTask(t *task.Task, prNumber int) {
 	var clearWorkflow *workflow.Execution
 	if _, err := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
-		Source: "recovery.reconcile-lost-pr.landed",
-		Update: task.Update{
+		Source:   "recovery.reconcile-lost-pr.landed",
+		ToStatus: task.StatusDone,
+		Extra: task.Update{
 			PRNumber:     task.Ptr(prNumber),
-			Status:       task.Ptr(task.StatusDone),
 			Outcome:      task.Ptr("merged"),
 			StatusReason: task.Ptr(""),
 			Workflow:     &clearWorkflow,

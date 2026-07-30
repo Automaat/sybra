@@ -1111,9 +1111,13 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 	// same human-required park anyway. See #1856.
 	if worktreeerr.IsDiskSpaceError(err) {
 		logger.Warn("worktree.rebase-block.disk-space", "task_id", taskID)
-		if _, uerr := tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+		if _, uerr := tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusHumanRequired,
+			Actor:    "agentorch.mark_rebase_blocked.disk_space",
+			Extra: task.Update{
+				StatusReason: task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+			},
 		}); uerr != nil {
 			logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 		}
@@ -1126,9 +1130,13 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		}
 	}
 	if reason, resolved := rebaseBlockedPRAlreadyResolved(tasks, taskID); resolved {
-		if _, uerr := tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusInReview),
-			StatusReason: task.Ptr(reason),
+		if _, uerr := tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusInReview,
+			Actor:    "agentorch.mark_rebase_blocked.pr_resolved",
+			Extra: task.Update{
+				StatusReason: task.Ptr(reason),
+			},
 		}); uerr != nil {
 			logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 		}
@@ -1148,9 +1156,13 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 			return true
 		}
 	}
-	if _, uerr := tasks.Update(taskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(worktreeerr.RebaseBlockedReason),
+	if _, uerr := tasks.Apply(task.TransitionIntent{
+		TaskID:   taskID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "agentorch.mark_rebase_blocked.parked",
+		Extra: task.Update{
+			StatusReason: task.Ptr(worktreeerr.RebaseBlockedReason),
+		},
 	}); uerr != nil {
 		logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 	}

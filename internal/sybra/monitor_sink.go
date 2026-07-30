@@ -121,9 +121,13 @@ func (s *monitorRoutingSink) CloseIfOpen(ctx context.Context, a monitor.Anomaly,
 	}
 	scrubbedComment, _ := scrub.Scrub(comment, wctx.Blocklist)
 	appended := appendRedetectedNote(existing.Body, scrubbedComment, s.now())
-	if _, err := s.tasks.Update(existing.ID, task.Update{
-		Status: task.Ptr(task.StatusDone),
-		Body:   &appended,
+	if _, err := s.tasks.Apply(task.TransitionIntent{
+		TaskID:   existing.ID,
+		ToStatus: task.StatusDone,
+		Actor:    "monitor.routing.local_autoclose",
+		Extra: task.Update{
+			Body: &appended,
+		},
 	}); err != nil {
 		s.logger.Warn("monitor.routing.local.close", "task_id", existing.ID, "err", err)
 		return false, err

@@ -15,57 +15,33 @@
 # the risk rather than closing it, same as check-no-home-fallback.sh and
 # check-gh-exec-gate.sh.
 #
-# Apply/ApplyStatusEffect callers are unaffected: TransitionIntent takes
-# ToStatus as a plain field (not a task.Update{Status: ...} literal), and
-# ApplyStatusEffect's own StatusEffect{Update: task.Update{Status: ...}}
-# call sites are pre-existing durable-effect writers, allowlisted below as
-# the mechanism working as designed — not the ad-hoc bypass this check
-# exists to catch.
+# Apply/ApplyFn/ApplyStatusEffect callers are unaffected: TransitionIntent and
+# StatusEffect take ToStatus as a plain field (never a task.Update{Status:
+# ...} literal) precisely so a migrated call site never trips this scan —
+# construct the Extra/Update value inline as the intent's Extra field (or
+# pull Status out into a local before calling Apply) rather than building a
+# separate `task.Update{...}` variable ahead of the call, or the 200-char
+# scan window can still catch the unrelated `ToStatus`/`ExpectedStatus` text
+# that follows it.
 #
-# Files below are today's direct writers, tracked as incremental-migration
-# debt under #2726 (the issue asks to migrate them onto the transition API
-# incrementally, not in one sweep). New files outside this allowlist must
-# not add a new one.
+# Every previously-allowlisted direct writer (recovery, watchdog, monitor,
+# review, umbrella, the app_*/svc_* service layer, cmd/sybra-cli) has been
+# migrated onto Manager.Apply/ApplyFn/ApplyStatusEffect/CreateWithStatus (see
+# #2726) — there is no more incremental-migration debt, so the allowlist
+# below is empty and this scan is now a strict repo-wide gate: internal/task
+# is the only package allowed to construct a Status-bearing task.Update{}
+# literal.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Files allowed to hold a `task.Update{...Status: ...}` literal:
-#   - internal/task/**: the transition implementation itself (Manager.Apply,
-#     Manager.Update/UpdateFn, ApplyStatusEffect) and its own tests build
-#     these literals as the mechanism's raw material.
-#   - everything else below: pre-existing direct writers not yet migrated
-#     onto Manager.Apply, tracked under #2726.
-ALLOWLIST=(
-  "cmd/sybra-cli/harness_evolution.go"
-  "cmd/sybra-cli/main.go"
-  "cmd/sybra-cli/prompt_lab.go"
-  "internal/monitor/remediator.go"
-  "internal/monitor/service.go"
-  "internal/poll/issues.go"
-  "internal/recovery/reconcile.go"
-  "internal/recovery/stale.go"
-  "internal/selfmonitor/actor.go"
-  "internal/sybra/agentorch/agentorch.go"
-  "internal/sybra/app_human_review.go"
-  "internal/sybra/app_orchestrator.go"
-  "internal/sybra/app_promptlab.go"
-  "internal/sybra/app_umbrella_gate.go"
-  "internal/sybra/app_workflow.go"
-  "internal/sybra/clusterlead/assigner.go"
-  "internal/sybra/completion/completion.go"
-  "internal/sybra/monitor_sink.go"
-  "internal/sybra/review/fix.go"
-  "internal/sybra/review/handler.go"
-  "internal/sybra/review/inbound.go"
-  "internal/sybra/review/outbound.go"
-  "internal/sybra/svc_integrations.go"
-  "internal/sybra/svc_promptlab.go"
-  "internal/sybra/svc_tasks.go"
-  "internal/umbrella/expand.go"
-  "internal/watchdog/agent.go"
-)
+# Files allowed to hold a `task.Update{...Status: ...}` literal, beyond
+# internal/task/** (the transition implementation itself — Manager.Apply,
+# Manager.Update/UpdateFn/CreateFull, ApplyStatusEffect — and its own tests
+# build these literals as the mechanism's raw material). Empty: every
+# production call site now routes through the transition API.
+ALLOWLIST=()
 
 is_allowlisted() {
   local f="$1"

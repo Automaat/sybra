@@ -1136,9 +1136,9 @@ func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, co
 	transition := func() error {
 		preTask, preErr := r.tasks.Get(c.TaskID)
 		if _, err := r.tasks.ApplyStatusEffect(c.TaskID, task.StatusEffect{
-			Source: "review.pr-monitor.closed-pr",
-			Update: task.Update{
-				Status:  task.Ptr(landedStatus),
+			Source:   "review.pr-monitor.closed-pr",
+			ToStatus: landedStatus,
+			Extra: task.Update{
 				Outcome: task.Ptr(base),
 			},
 		}); err != nil {
@@ -1576,12 +1576,11 @@ func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []githu
 		for _, kind := range kinds {
 			r.prTracker.Clear(t.ID, github.PRIssueKind(kind))
 		}
-		status := task.StatusInReview
 		statusReason := "pr-fix cancelled: " + reason + " resolved"
 		if _, updErr := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
-			Source: "review.pr-monitor.cancel-resolved",
-			Update: task.Update{
-				Status:       &status,
+			Source:   "review.pr-monitor.cancel-resolved",
+			ToStatus: task.StatusInReview,
+			Extra: task.Update{
 				StatusReason: &statusReason,
 			},
 		}); updErr != nil {
@@ -1924,10 +1923,10 @@ func (r *Handler) adoptOrphanPRs(ctx context.Context, tasks []task.Task, prs []g
 		}
 		if match != nil {
 			updated, err := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
-				Source: "review.pr-monitor.orphan-adopt",
-				Update: task.Update{
+				Source:   "review.pr-monitor.orphan-adopt",
+				ToStatus: task.StatusInReview,
+				Extra: task.Update{
 					PRNumber:     task.Ptr(match.Number),
-					Status:       task.Ptr(task.StatusInReview),
 					StatusReason: task.Ptr(""),
 				},
 			})
@@ -2027,10 +2026,10 @@ func (r *Handler) adoptOrphanMergedPR(ctx context.Context, t *task.Task) {
 	const state = "MERGED"
 	base := classifyLandingOutcome(state)
 	updated, err := r.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
-		Source: "review.pr-monitor.orphan-merged-adopt",
-		Update: task.Update{
+		Source:   "review.pr-monitor.orphan-merged-adopt",
+		ToStatus: task.StatusDone,
+		Extra: task.Update{
 			PRNumber:     task.Ptr(prNum),
-			Status:       task.Ptr(task.StatusDone),
 			Outcome:      task.Ptr(base),
 			StatusReason: task.Ptr(""),
 		},

@@ -179,11 +179,16 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 		return err
 	}
 	reason = a.normalizeHumanRequiredReason(id, st, reason)
-	u := task.Update{Status: &st}
+	var extra task.Update
 	if reason != "" {
-		u.StatusReason = &reason
+		extra.StatusReason = &reason
 	}
-	_, err = a.tasks.Update(id, u)
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.update_status",
+		Extra:    extra,
+	})
 	return err
 }
 
@@ -193,11 +198,19 @@ func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker
 		return err
 	}
 	reason = a.normalizeHumanRequiredReason(id, st, reason)
-	u := task.Update{Status: &st, Blocker: &state}
+	var reasonPtr *string
 	if reason != "" {
-		u.StatusReason = &reason
+		reasonPtr = &reason
 	}
-	_, err = a.tasks.Update(id, u)
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.update_blocker",
+		Extra: task.Update{
+			Blocker:      &state,
+			StatusReason: reasonPtr,
+		},
+	})
 	return err
 }
 

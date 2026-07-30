@@ -23,9 +23,9 @@ func TestManagerApplyStatusEffect_RecordsEffectAndFiresHookOnce(t *testing.T) {
 	}
 
 	updated, err := m.ApplyStatusEffect(created.ID, StatusEffect{
-		Source: "review.pr-monitor.closed-pr",
-		Update: Update{
-			Status:       Ptr(StatusDone),
+		Source:   "review.pr-monitor.closed-pr",
+		ToStatus: StatusDone,
+		Extra: Update{
 			StatusReason: Ptr(""),
 			Outcome:      Ptr("merged"),
 		},
@@ -68,9 +68,9 @@ func TestManagerApplyStatusEffect_DedupesCompletedEffect(t *testing.T) {
 	}
 
 	eff := StatusEffect{
-		Source: "review.pr-monitor.closed-pr",
-		Update: Update{
-			Status:       Ptr(StatusDone),
+		Source:   "review.pr-monitor.closed-pr",
+		ToStatus: StatusDone,
+		Extra: Update{
 			StatusReason: Ptr(""),
 			Outcome:      Ptr("merged"),
 		},
@@ -106,9 +106,9 @@ func TestManagerApplyStatusEffect_ReappliesAfterGenerationChange(t *testing.T) {
 	}
 
 	eff := StatusEffect{
-		Source: "recovery.start-failure",
-		Update: Update{
-			Status:       Ptr(StatusHumanRequired),
+		Source:   "recovery.start-failure",
+		ToStatus: StatusHumanRequired,
+		Extra: Update{
 			StatusReason: Ptr("agent start failed"),
 		},
 	}
@@ -164,9 +164,9 @@ func TestManagerApplyStatusEffect_TrimsEffectLog(t *testing.T) {
 	got := created
 	for i := range maxTaskEffectLog + 5 {
 		got, err = m.ApplyStatusEffect(created.ID, StatusEffect{
-			Source: fmt.Sprintf("watchdog.run.%03d", i),
-			Update: Update{
-				Status:       Ptr(StatusTodo),
+			Source:   fmt.Sprintf("watchdog.run.%03d", i),
+			ToStatus: StatusTodo,
+			Extra: Update{
 				StatusReason: Ptr(fmt.Sprintf("reason-%03d", i)),
 			},
 		})
@@ -189,13 +189,11 @@ func TestManagerApplyStatusEffect_TrimsEffectLog(t *testing.T) {
 func TestStatusEffectStepID_NormalizesTagOrder(t *testing.T) {
 	t.Parallel()
 
-	left := statusEffectStepID("watchdog.runrate", Update{
-		Status: Ptr(StatusBlocked),
-		Tags:   Ptr([]string{"backend", "bug"}),
+	left := statusEffectStepID("watchdog.runrate", StatusBlocked, Update{
+		Tags: Ptr([]string{"backend", "bug"}),
 	})
-	right := statusEffectStepID("watchdog.runrate", Update{
-		Status: Ptr(StatusBlocked),
-		Tags:   Ptr([]string{"bug", "backend"}),
+	right := statusEffectStepID("watchdog.runrate", StatusBlocked, Update{
+		Tags: Ptr([]string{"bug", "backend"}),
 	})
 
 	if left != right {
@@ -206,7 +204,7 @@ func TestStatusEffectStepID_NormalizesTagOrder(t *testing.T) {
 func TestStatusEffectStepID_FallsBackForPunctuationOnlySource(t *testing.T) {
 	t.Parallel()
 
-	stepID := statusEffectStepID("---", Update{Status: Ptr(StatusDone)})
+	stepID := statusEffectStepID("---", StatusDone, Update{})
 	if !strings.HasPrefix(stepID, "external:effect:") {
 		t.Fatalf("step ID = %q, want external:effect: prefix", stepID)
 	}

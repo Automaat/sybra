@@ -1,6 +1,7 @@
 package task
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -210,6 +211,24 @@ func (m *Manager) CreateFull(title, body, mode string, init Update) (Task, error
 	m.recordFiredStatus(t.ID, string(t.Status))
 	m.emitter.Emit(events.TaskCreated, t.FilePath)
 	return t, nil
+}
+
+// CreateWithStatus is CreateFull for a caller that needs the new task minted
+// directly at a non-default status (e.g. an issue importer creating straight
+// into "todo", an umbrella tracker minted at "in-progress"). status is a
+// named parameter rather than a field on extra for the same reason
+// TransitionIntent takes ToStatus separately from Extra: a caller setting the
+// initial status has no prior state to protect with the transition API's
+// precondition/idempotency machinery (there is no task to Get yet), but it
+// should still never reach for Update.Status directly — extra.Status must be
+// nil, keeping that field production-write-free everywhere outside this
+// package. See #2726.
+func (m *Manager) CreateWithStatus(title, body, mode string, status Status, extra Update) (Task, error) {
+	if extra.Status != nil {
+		return Task{}, fmt.Errorf("task: create-with-status: extra.status must be nil; pass status instead")
+	}
+	extra.Status = &status
+	return m.CreateFull(title, body, mode, extra)
 }
 
 // Put writes a fully-formed task verbatim (upsert by ID) and drives the same

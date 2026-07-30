@@ -61,7 +61,11 @@ func (r *Handler) triageReview(t task.Task) {
 	if err != nil {
 		r.logger.Warn("review.triage.stats", "task_id", t.ID, "err", err)
 		// fallback: start agent when we can't determine size
-		if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
+		if _, err := r.tasks.Apply(task.TransitionIntent{
+			TaskID:   t.ID,
+			ToStatus: task.StatusInReview,
+			Actor:    "review.triage",
+		}); err != nil {
 			r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 		}
 		if err := start(t, false); err != nil {
@@ -72,7 +76,11 @@ func (r *Handler) triageReview(t task.Task) {
 
 	r.logger.Info("review.triage", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
 
-	if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
+	if _, err := r.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusInReview,
+		Actor:    "review.triage",
+	}); err != nil {
 		r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 	}
 	if err := start(t, false); err != nil {
@@ -427,10 +435,14 @@ func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 	// count in this same write (rather than leaving it for the next
 	// clearReconcileFailure call) so an already-parked task never takes a
 	// second write — and a second updated_at bump — on the very next poll.
-	if _, uerr := r.tasks.Update(t.ID, task.Update{
-		Status:            task.Ptr(task.StatusHumanRequired),
-		StatusReason:      task.Ptr(fmt.Sprintf("%s %d times: %v", reconcileEscalationReason, reconcileFailureLimit, err)),
-		ReconcileFailures: task.Ptr(0),
+	if _, uerr := r.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "review.reconcile.escalate",
+		Extra: task.Update{
+			StatusReason:      task.Ptr(fmt.Sprintf("%s %d times: %v", reconcileEscalationReason, reconcileFailureLimit, err)),
+			ReconcileFailures: task.Ptr(0),
+		},
 	}); uerr != nil {
 		r.logger.Error("review.reconcile.escalate", "task_id", t.ID, "err", uerr)
 	}
@@ -502,9 +514,13 @@ func (r *Handler) reconcileReviewPhases(tasks []task.Task, summary github.Review
 		}
 		if ownerID, ok := activeNonReviewPROwner(tasks, t.ID, t.ProjectID, t.PRNumber, branch, headRepo); ok {
 			reason := fmt.Sprintf("Duplicate: PR is already tracked by active task %s", ownerID)
-			if _, err := r.tasks.Update(t.ID, task.Update{
-				Status:       task.Ptr(task.StatusCancelled),
-				StatusReason: task.Ptr(reason),
+			if _, err := r.tasks.Apply(task.TransitionIntent{
+				TaskID:   t.ID,
+				ToStatus: task.StatusCancelled,
+				Actor:    "review.duplicate-owner.cancel",
+				Extra: task.Update{
+					StatusReason: task.Ptr(reason),
+				},
 			}); err != nil {
 				r.logger.Error("review.duplicate-owner.cancel", "task_id", t.ID, "owner_task_id", ownerID, "err", err)
 			}
@@ -726,15 +742,22 @@ func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 	if phaseChanged {
 		u.ReviewPhase = task.Ptr(res.Phase)
 	}
-	if statusChanged {
-		u.Status = task.Ptr(res.Status)
-	}
 	if res.Reason != "" && (statusChanged || phaseChanged) {
 		u.StatusReason = task.Ptr(res.Reason)
 	}
 
 	prev := t.ReviewPhase
-	if _, err := r.tasks.Update(t.ID, u); err != nil {
+	if statusChanged {
+		if _, err := r.tasks.Apply(task.TransitionIntent{
+			TaskID:   t.ID,
+			ToStatus: res.Status,
+			Actor:    "review.phase-update",
+			Extra:    u,
+		}); err != nil {
+			r.logger.Error("review.phase-update", "task_id", t.ID, "phase", res.Phase, "err", err)
+			return
+		}
+	} else if _, err := r.tasks.Update(t.ID, u); err != nil {
 		r.logger.Error("review.phase-update", "task_id", t.ID, "phase", res.Phase, "err", err)
 		return
 	}
@@ -827,9 +850,13 @@ func (r *Handler) closeFinishedReviewTasksWithFetch(tasks []task.Task, openRevie
 			continue
 		}
 		reason := fmt.Sprintf("review PR %s", strings.ToLower(c.State))
-		if _, err := r.tasks.Update(c.TaskID, task.Update{
-			Status:       task.Ptr(task.StatusDone),
-			StatusReason: &reason,
+		if _, err := r.tasks.Apply(task.TransitionIntent{
+			TaskID:   c.TaskID,
+			ToStatus: task.StatusDone,
+			Actor:    "review.closed-update",
+			Extra: task.Update{
+				StatusReason: &reason,
+			},
 		}); err != nil {
 			r.logger.Error("review.closed-update", "task_id", c.TaskID, "err", err)
 			continue

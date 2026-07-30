@@ -87,9 +87,8 @@ func fileHarnessProposals(store *task.Manager, result harnessevolution.RunResult
 			tags = append(tags, "requires-human")
 			status = task.StatusHumanRequired
 		}
-		created, err := store.CreateFull(p.Title, body, task.AgentModeHeadless, task.Update{
-			Status: &status,
-			Tags:   &tags,
+		created, err := store.CreateWithStatus(p.Title, body, task.AgentModeHeadless, status, task.Update{
+			Tags: &tags,
 		})
 		if err != nil {
 			return filed, err
