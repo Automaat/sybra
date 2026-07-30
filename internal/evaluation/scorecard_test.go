@@ -280,6 +280,54 @@ func TestComputeHumanTouchAndCIFirstPassProvenance(t *testing.T) {
 	}
 }
 
+// TestComputeAutonomyRateExcludesUnknownFromDenominator is #2727's other
+// half: AutonomyUnknownLandings must stay out of AutonomyRate's denominator,
+// not just its numerator, or a legacy human-required task with no
+// provenance still drags autonomy down exactly as if it had been a
+// confirmed human touch.
+func TestComputeAutonomyRateExcludesUnknownFromDenominator(t *testing.T) {
+	base := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+
+	landed := func(tid string) audit.Event {
+		return audit.Event{Type: audit.EventTaskLanded, TaskID: tid, Timestamp: in, Data: map[string]any{"outcome": "merged"}}
+	}
+	statusChanged := func(tid, from, to string) audit.Event {
+		return audit.Event{Type: audit.EventTaskStatusChanged, TaskID: tid, Timestamp: in,
+			Data: map[string]any{"from": from, "to": to}}
+	}
+	intervened := func(tid, class string) audit.Event {
+		return audit.Event{Type: audit.EventInterventionRecorded, TaskID: tid, Timestamp: in,
+			Data: map[string]any{"operator_action_class": class}}
+	}
+
+	var events []audit.Event
+	// 7 autonomous landings, never asked for intervention.
+	for _, tid := range []string{"A1", "A2", "A3", "A4", "A5", "A6", "A7"} {
+		events = append(events, landed(tid))
+	}
+	// 2 human-touched landings, explicit operator action.
+	for _, tid := range []string{"H1", "H2"} {
+		events = append(events, landed(tid), statusChanged(tid, "in-review", "human-required"), intervened(tid, "human"))
+	}
+	// 1 unknown landing: asked for intervention, no resolution provenance.
+	events = append(events, landed("U1"), statusChanged("U1", "in-review", "human-required"))
+
+	got := Compute(nil, events, since, base)
+	if got.TasksLanded != 10 {
+		t.Fatalf("TasksLanded = %d, want 10", got.TasksLanded)
+	}
+	if got.AutonomousLandings != 7 || got.HumanTouchedLandings != 2 || got.AutonomyUnknownLandings != 1 {
+		t.Fatalf("Autonomous/HumanTouched/Unknown = %d/%d/%d, want 7/2/1",
+			got.AutonomousLandings, got.HumanTouchedLandings, got.AutonomyUnknownLandings)
+	}
+	want := 7.0 / 9.0 // known cohort only: 7 autonomous / (7 autonomous + 2 human-touched)
+	if diff := got.AutonomyRate - want; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("AutonomyRate = %v, want %v (7/10=%v would mean the unknown landing still counts)", got.AutonomyRate, want, 7.0/10.0)
+	}
+}
+
 // #2149: a stalled run is retried, not resolved, so it must stay out of both
 // sides of every failure rate. Codex stalls on ~96% of implementation runs, so
 // leaving stalls in the denominator would rank the stall-prone provider as the

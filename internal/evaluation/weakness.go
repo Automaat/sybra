@@ -41,11 +41,12 @@ func Weaknesses(r Report, targets SLOTargets) []Weakness {
 			out = append(out, Weakness{
 				Severity: "warn",
 				Metric:   "autonomy",
-				// 1-AutonomyRate spans both confirmed human touches and
-				// AutonomyUnknownLandings (issue #2727) — a landing with no
-				// durably-attributed resolution is not proven autonomous
-				// either, so it's excluded from the numerator here too.
-				Detail:     fmt.Sprintf("%.0f%% of landings were human-touched or have unresolved provenance", (1-o.AutonomyRate)*100),
+				// AutonomyRate is scoped to the known-provenance cohort
+				// (autonomous + humanTouched) — AutonomyUnknownLandings is
+				// excluded from both buckets rather than guessed into one
+				// (issue #2727), so 1-AutonomyRate here is purely the
+				// human-touched share of the known cohort.
+				Detail:     fmt.Sprintf("%.0f%% of landings with known provenance were human-touched", (1-o.AutonomyRate)*100),
 				Suggestion: "review what escalated to human-required; tighten triage so more tasks run headless end-to-end",
 			})
 		}

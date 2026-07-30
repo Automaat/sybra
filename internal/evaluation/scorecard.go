@@ -108,7 +108,7 @@ type Scorecard struct {
 	AutonomousLandings      int     `json:"autonomousLandings"`
 	HumanTouchedLandings    int     `json:"humanTouchedLandings"`
 	AutonomyUnknownLandings int     `json:"autonomyUnknownLandings"`
-	AutonomyRate            float64 `json:"autonomyRate"` // autonomous / landed
+	AutonomyRate            float64 `json:"autonomyRate"` // autonomous / (autonomous + humanTouched); unknown landings excluded from both numerator and denominator
 
 	// Reliability (from stats run outcomes). AgentRuns counts every run;
 	// AgentStalls the retried subset (stats.OutcomeStalled); AgentResolvedRuns
@@ -490,11 +490,17 @@ func computeWithSignals(records []stats.RunRecord, events []audit.Event, sigs ma
 
 	if n := float64(sc.TasksLanded); n > 0 {
 		sc.MergeRate = float64(sc.Merged) / n
-		sc.AutonomyRate = float64(autonomous) / n
 		sc.CIFirstPassRate = float64(ciClean) / n
 		sc.CostPerLanded = cost / n
 		sc.TurnsPerLanded = float64(turns) / n
 		sc.ToolsPerLanded = float64(tools) / n
+	}
+	// AutonomyRate is scoped to the known-provenance cohort — autonomous vs.
+	// human-touched — so a landing with no durably-attributed operator
+	// action (AutonomyUnknownLandings) neither counts as autonomous nor
+	// drags the rate down by inflating the denominator (issue #2727).
+	if known := float64(autonomous + humanTouched); known > 0 {
+		sc.AutonomyRate = float64(autonomous) / known
 	}
 	if sc.AgentResolvedRuns > 0 {
 		sc.FailureRate = float64(sc.AgentFailures) / float64(sc.AgentResolvedRuns)
