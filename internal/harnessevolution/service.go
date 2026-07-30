@@ -3,12 +3,14 @@ package harnessevolution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/selfmonitor"
 )
 
 type Options struct {
@@ -32,7 +34,14 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 	}
 	report, err := LoadSelfMonitorReport(opts.ReportPath)
 	if err != nil {
-		return RunResult{}, err
+		// A fresh/default home has no self-monitor report yet. Treat a missing
+		// report as an empty one so the command degrades to a harmless
+		// zero-proposal run instead of hard-failing before the first report
+		// exists. Any other read/parse error is still fatal.
+		if !errors.Is(err, os.ErrNotExist) {
+			return RunResult{}, err
+		}
+		report = selfmonitor.Report{}
 	}
 	since := time.Time{}
 	if opts.Lookback > 0 {

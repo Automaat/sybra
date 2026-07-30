@@ -134,6 +134,15 @@ func selectFromCanaryExperiment(exp Experiment, taskID, role, stepID string, pro
 	// independent draws for the same key.
 	inCanaryBucket := hashKey("canary|"+exp.ID+"|"+key)%100 < clampPercent(exp.Canary.PercentBound)
 	if !inCohort || !inCanaryBucket {
+		// The baseline is still an online enrollment, so it must clear the same
+		// offline-eval gate as any weighted draw. A digested baseline whose
+		// verdict failed must not enroll just because the cohort is cold or the
+		// request fell outside PercentBound — fall out of the experiment and
+		// defer to plain (non-AB) provider selection, matching the
+		// provider-ineligible baseline path above.
+		if evalPassed != nil && baseline.Digest != "" && !evalPassed(baseline.ID, baseline.Digest) {
+			return Assignment{}, false, nil
+		}
 		return baselineAssignment(exp, baseline, unit, key, weightsVersion), true, nil
 	}
 	return selectFromExperiment(exp, taskID, role, stepID, providerAllowed, evalPassed, weightsVersion)
