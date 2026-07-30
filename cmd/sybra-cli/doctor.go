@@ -76,8 +76,8 @@ type doctorCleanupFindingJSON struct {
 	FirstSeenAt   time.Time          `json:"firstSeenAt"`
 	LastSeenAt    time.Time          `json:"lastSeenAt"`
 	LastChangedAt time.Time          `json:"lastChangedAt"`
-	ResolvedAt    time.Time          `json:"resolvedAt,omitempty"`
-	Rescue        cleanup.RescueInfo `json:"rescue,omitempty"`
+	ResolvedAt    time.Time          `json:"resolvedAt,omitzero"`
+	Rescue        cleanup.RescueInfo `json:"rescue,omitzero"`
 }
 
 // cmdDoctorCleanup implements `sybra-cli doctor cleanup`. Exit codes: 0 = ok

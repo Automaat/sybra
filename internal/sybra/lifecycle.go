@@ -500,6 +500,32 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 		}
 		return out
 	})
+	lm.registerCleanupMetricsObservers()
+	metrics.RegisterGHAuthState(func() map[string]int64 {
+		state := github.AuthHealthSnapshot().State
+		out := map[string]int64{
+			string(github.AuthHealthy):       0,
+			string(github.AuthRefreshing):    0,
+			string(github.AuthRateLimited):   0,
+			string(github.AuthMisconfigured): 0,
+			string(github.AuthUnavailable):   0,
+		}
+		out[string(state)] = 1
+		return out
+	})
+	metrics.RegisterGHAuthTransitions(func() int64 {
+		return github.AuthHealthSnapshot().Transitions
+	})
+	metrics.RegisterGHAuthSuppressedCalls(func() int64 {
+		return github.AuthHealthSnapshot().SuppressedCalls
+	})
+}
+
+// registerCleanupMetricsObservers wires the protected-resource cleanup
+// findings/blocked-bytes observable gauges. Split out of
+// registerMetricsObservers to keep that function under the funlen limit.
+func (lm *LifecycleManager) registerCleanupMetricsObservers() {
+	a := lm.app
 	metrics.RegisterCleanupProtectedFindings(func() map[string]int64 {
 		if a.cleanupProtected == nil {
 			return nil
@@ -539,24 +565,6 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 			out[string(findings[i].Kind)] += findings[i].BytesRetained
 		}
 		return out
-	})
-	metrics.RegisterGHAuthState(func() map[string]int64 {
-		state := github.AuthHealthSnapshot().State
-		out := map[string]int64{
-			string(github.AuthHealthy):       0,
-			string(github.AuthRefreshing):    0,
-			string(github.AuthRateLimited):   0,
-			string(github.AuthMisconfigured): 0,
-			string(github.AuthUnavailable):   0,
-		}
-		out[string(state)] = 1
-		return out
-	})
-	metrics.RegisterGHAuthTransitions(func() int64 {
-		return github.AuthHealthSnapshot().Transitions
-	})
-	metrics.RegisterGHAuthSuppressedCalls(func() int64 {
-		return github.AuthHealthSnapshot().SuppressedCalls
 	})
 }
 

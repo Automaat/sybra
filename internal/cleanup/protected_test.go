@@ -141,13 +141,11 @@ func TestProtectedStoreObserveConcurrentScansDeduplicates(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if _, _, err := store.Observe(obs); err != nil {
 				t.Errorf("Observe: %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

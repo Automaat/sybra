@@ -107,7 +107,7 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		}
 
 		if project.HasUnpushedCommits(ctx, wtPath) {
-			m.observeProtectedWorktree(wtPath, taskIDFromWorktreeDir(name), observedProtected)
+			m.observeProtectedWorktree(ctx, wtPath, taskIDFromWorktreeDir(name), observedProtected)
 			continue
 		}
 
@@ -147,7 +147,7 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 	}
 }
 
-func (m *Manager) observeProtectedWorktree(path, taskID string, observed map[string]bool) {
+func (m *Manager) observeProtectedWorktree(ctx context.Context, path, taskID string, observed map[string]bool) {
 	if m.protected == nil {
 		m.logger.Warn("worktree.orphan-cleanup.protected", "event", "legacy", "task_id", taskID, "path", path)
 		return
@@ -157,8 +157,8 @@ func (m *Manager) observeProtectedWorktree(path, taskID string, observed map[str
 		TaskID:        taskID,
 		Path:          path,
 		Reason:        cleanup.ReasonUnpushedCommits,
-		ObservedHead:  worktreeHead(path),
-		ObservedState: worktreeObservedState(path),
+		ObservedHead:  worktreeHead(ctx, path),
+		ObservedState: worktreeObservedState(ctx, path),
 		BytesRetained: worktreeDirSize(path),
 	}
 	finding, event, err := m.protected.Observe(obs)
@@ -188,8 +188,8 @@ func (m *Manager) resolveProtectedWorktrees(observed map[string]bool) {
 	}
 }
 
-func worktreeHead(path string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func worktreeHead(ctx context.Context, path string) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "HEAD").Output()
 	if err != nil {
@@ -198,8 +198,8 @@ func worktreeHead(path string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func worktreeObservedState(path string) string {
-	dirty, err := project.IsWorktreeDirty(context.Background(), path)
+func worktreeObservedState(ctx context.Context, path string) string {
+	dirty, err := project.IsWorktreeDirty(ctx, path)
 	if err != nil {
 		return "dirty=unknown"
 	}

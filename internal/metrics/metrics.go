@@ -480,6 +480,21 @@ func createObservableGauges() error {
 	); err != nil {
 		return err
 	}
+	if err := createCleanupGauges(m); err != nil {
+		return err
+	}
+	_, err = m.RegisterCallback(
+		observe,
+		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, providerRawHealthyG, pollerAuthHealthyG, agentsInFlightGauge,
+		agentsByClassGauge,
+		ghAuthStateGauge, ghAuthTransitionsGauge, ghAuthSuppressedGauge, ghOutboxPendingGauge, ghOutboxReplayedGauge, ghOutboxAgeGauge,
+		cleanupFindingsGauge, cleanupBlockedGauge,
+	)
+	return err
+}
+
+func createCleanupGauges(m metric.Meter) error {
+	var err error
 	if cleanupFindingsGauge, err = m.Int64ObservableGauge(
 		"sybra_cleanup_protected_findings",
 		metric.WithDescription("Current count of open protected-resource cleanup findings, by resource kind."),
@@ -492,14 +507,7 @@ func createObservableGauges() error {
 	); err != nil {
 		return err
 	}
-	_, err = m.RegisterCallback(
-		observe,
-		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, providerRawHealthyG, pollerAuthHealthyG, agentsInFlightGauge,
-		agentsByClassGauge,
-		ghAuthStateGauge, ghAuthTransitionsGauge, ghAuthSuppressedGauge, ghOutboxPendingGauge, ghOutboxReplayedGauge, ghOutboxAgeGauge,
-		cleanupFindingsGauge, cleanupBlockedGauge,
-	)
-	return err
+	return nil
 }
 
 func observe(_ context.Context, obs metric.Observer) error {
@@ -597,19 +605,23 @@ func observe(_ context.Context, obs metric.Observer) error {
 				metric.WithAttributes(attribute.String("sink", sink)))
 		}
 	}
-	if cleanupFindings != nil {
-		for kind, n := range cleanupFindings() {
+	observeCleanupGauges(obs, cleanupFindings, cleanupBlockedBytes)
+	return nil
+}
+
+func observeCleanupGauges(obs metric.Observer, findingsFn, blockedBytesFn func() map[string]int64) {
+	if findingsFn != nil {
+		for kind, n := range findingsFn() {
 			obs.ObserveInt64(cleanupFindingsGauge, n,
 				metric.WithAttributes(attribute.String("kind", kind)))
 		}
 	}
-	if cleanupBlockedBytes != nil {
-		for kind, n := range cleanupBlockedBytes() {
+	if blockedBytesFn != nil {
+		for kind, n := range blockedBytesFn() {
 			obs.ObserveInt64(cleanupBlockedGauge, n,
 				metric.WithAttributes(attribute.String("kind", kind)))
 		}
 	}
-	return nil
 }
 
 // RegisterTasksByStatus wires a provider callback for the tasks_by_status

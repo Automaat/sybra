@@ -562,8 +562,8 @@ func (s *Scanner) protectedLogPaths(snap snapshot) map[string]bool {
 		return nil
 	}
 	tasks := make([]task.Task, 0, len(snap.byID))
-	for _, tk := range snap.byID {
-		tasks = append(tasks, tk)
+	for id := range snap.byID {
+		tasks = append(tasks, snap.byID[id])
 	}
 	return ProtectedEvidenceLogPaths(s.cfg.Logging.Dir, tasks, findings)
 }

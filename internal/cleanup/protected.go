@@ -4,7 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -73,7 +73,7 @@ type Observation struct {
 type RescueInfo struct {
 	Ref         string    `json:"ref,omitempty"`
 	ArchivePath string    `json:"archivePath,omitempty"`
-	VerifiedAt  time.Time `json:"verifiedAt,omitempty"`
+	VerifiedAt  time.Time `json:"verifiedAt,omitzero"`
 }
 
 type Finding struct {
@@ -91,8 +91,8 @@ type Finding struct {
 	LastSeenAt    time.Time    `json:"lastSeenAt"`
 	LastChangedAt time.Time    `json:"lastChangedAt"`
 	LastLoggedAt  time.Time    `json:"lastLoggedAt"`
-	ResolvedAt    time.Time    `json:"resolvedAt,omitempty"`
-	Rescue        RescueInfo   `json:"rescue,omitempty"`
+	ResolvedAt    time.Time    `json:"resolvedAt,omitzero"`
+	Rescue        RescueInfo   `json:"rescue,omitzero"`
 }
 
 func (f Finding) EvidenceTaskID() string {
@@ -135,7 +135,10 @@ func (s *ProtectedStore) lock() func() {
 		return func() {}
 	}
 	muAny, _ := protectedStoreLocks.LoadOrStore(s.path, &sync.Mutex{})
-	mu := muAny.(*sync.Mutex)
+	mu, ok := muAny.(*sync.Mutex)
+	if !ok {
+		return func() {}
+	}
 	mu.Lock()
 	return mu.Unlock
 }
@@ -387,7 +390,7 @@ func (s *ProtectedStore) setState(id string, state FindingState, mutate func(*Fi
 }
 
 func protectedFindingID(kind ResourceKind, path, reason string) string {
-	sum := sha1.Sum([]byte(string(kind) + "\x00" + filepath.Clean(path) + "\x00" + reason))
+	sum := sha256.Sum256([]byte(string(kind) + "\x00" + filepath.Clean(path) + "\x00" + reason))
 	return hex.EncodeToString(sum[:8])
 }
 
@@ -459,6 +462,12 @@ func archiveDirectory(root, dst string) error {
 	tw := tar.NewWriter(gzw)
 	defer tw.Close()
 
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer rootFS.Close()
+
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -487,7 +496,11 @@ func archiveDirectory(root, dst string) error {
 		if d.IsDir() {
 			return nil
 		}
-		f, err := os.Open(path)
+		relToRoot, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		f, err := rootFS.Open(relToRoot)
 		if err != nil {
 			return err
 		}
