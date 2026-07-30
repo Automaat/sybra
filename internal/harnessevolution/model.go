@@ -91,6 +91,10 @@ type RunResult struct {
 	Events      int        `json:"events"`
 	Clusters    []Cluster  `json:"clusters"`
 	Proposals   []Proposal `json:"proposals"`
+	// StaleReport is true when the source self-monitor report was older than
+	// the configured MaxReportAge and its findings were discarded, so a run
+	// with zero proposals is attributable to a stale pipeline, not clean data.
+	StaleReport bool `json:"staleReport,omitempty"`
 }
 
 func RequiresHumanApproval(kind ProposalKind) bool {

@@ -636,6 +636,7 @@ prompt, workflow, permission, retry, validator, or deployment changes itself.
 | `supervision.harness_evolution.lookback` | `float64` | `168` | `hours` |  | `harness_evolution.lookback_hours`, `harness_evolution.lookback` | `false` | `restart` |  |  |
 | `supervision.harness_evolution.min_cluster_size` | `int` | `2` |  |  | `harness_evolution.min_cluster_size` | `false` | `restart` |  |  |
 | `supervision.harness_evolution.sink` | `string` | `"local-task"` |  |  | `harness_evolution.sink` | `false` | `restart` |  |  |
+| `supervision.harness_evolution.max_report_age` | `float64` | `24` | `hours` |  | `harness_evolution.max_report_age_hours`, `harness_evolution.max_report_age` | `false` | `restart` |  | MaxReportAgeHours bounds how old the persisted self-monitor report may be before its findings are ignored. A "last good" report keeps driving proposals via Lookback long after self-monitor stops ticking; this gate treats a stale report as no evidence rather than up to LookbackHours of new tasks from outdated findings. |
 
 ### PromptLabConfig (`supervision.prompt_lab`)
 

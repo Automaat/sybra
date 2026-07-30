@@ -41,12 +41,14 @@ func cmdHarnessEvolutionRun(cfg *config.Config, store *task.Manager, args []stri
 	if err != nil {
 		return fatal(jsonOut, "parse --lookback: %v", err)
 	}
+	maxReportAge := time.Duration(cfg.HarnessEvolve.MaxReportAgeHours * float64(time.Hour))
 	result, err := harnessevolution.Run(context.Background(), harnessevolution.Options{
 		ReportPath:     config.SelfMonitorLastReportPath(),
 		CorpusDir:      *corpusDir,
 		OutputDir:      config.HarnessEvolveDir(),
 		Lookback:       lookback,
 		MinClusterSize: *minCluster,
+		MaxReportAge:   maxReportAge,
 	})
 	if err != nil {
 		return fatal(jsonOut, "harness evolution: %v", err)
@@ -120,6 +122,9 @@ func hasTag(tags []string, want string) bool {
 }
 
 func printHarnessEvolutionResult(result harnessevolution.RunResult, filed []task.Task) {
+	if result.StaleReport {
+		fmt.Println("harness-evolution: self-monitor report is stale; findings discarded (no proposals)")
+	}
 	fmt.Printf("harness-evolution: events=%d clusters=%d proposals=%d filed=%d\n",
 		result.Events, len(result.Clusters), len(result.Proposals), len(filed))
 	if len(result.Proposals) == 0 {

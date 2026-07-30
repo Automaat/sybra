@@ -1421,6 +1421,11 @@ func applyHarnessEvolveDefaults(cfg *Config) {
 	if h.MinClusterSize <= 0 {
 		h.MinClusterSize = 2
 	}
+	if h.MaxReportAgeHours <= 0 {
+		// Self-monitor ticks every 6h by default; a report older than a day
+		// means the feedback pipeline has missed several ticks or stopped.
+		h.MaxReportAgeHours = 24
+	}
 	if h.Sink == "" {
 		h.Sink = "local-task"
 	}

@@ -19,7 +19,12 @@ type Options struct {
 	OutputDir      string
 	Lookback       time.Duration
 	MinClusterSize int
-	Now            time.Time
+	// MaxReportAge bounds how stale the persisted self-monitor report may be
+	// before its findings are discarded. Zero disables the guard. Without it a
+	// "last good" report keeps driving proposals via Lookback long after
+	// self-monitor stops ticking (see config.HarnessEvolveConfig).
+	MaxReportAge time.Duration
+	Now          time.Time
 }
 
 func Run(ctx context.Context, opts Options) (RunResult, error) {
@@ -43,6 +48,15 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 		}
 		report = selfmonitor.Report{}
 	}
+	staleReport := false
+	if opts.MaxReportAge > 0 && !report.GeneratedAt.IsZero() &&
+		now.Sub(report.GeneratedAt) > opts.MaxReportAge {
+		// The report predates MaxReportAge: self-monitor has stopped writing
+		// fresh evidence. Discard its findings so a stale "last good" report
+		// can't keep minting proposals until its findings age out of Lookback.
+		staleReport = true
+		report = selfmonitor.Report{}
+	}
 	since := time.Time{}
 	if opts.Lookback > 0 {
 		since = now.Add(-opts.Lookback)
@@ -62,6 +76,7 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 		Events:      len(events),
 		Clusters:    clusters,
 		Proposals:   proposals,
+		StaleReport: staleReport,
 	}
 	if opts.OutputDir != "" {
 		if err := SaveRunResult(opts.OutputDir, result); err != nil {

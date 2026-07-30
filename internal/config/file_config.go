@@ -246,6 +246,7 @@ var durationAliasSpecs = []durationAliasSpec{
 	{aliasPath: []string{"harness_evolution", "interval"}, legacyPath: []string{"harness_evolution", "interval_hours"}, fieldPath: []string{"HarnessEvolve", "IntervalHours"}, unit: unitHours, kind: kindFloat},
 	{aliasPath: []string{"routing", "interval"}, legacyPath: []string{"routing", "interval_hours"}, fieldPath: []string{"Routing", "IntervalHours"}, unit: unitHours, kind: kindFloat},
 	{aliasPath: []string{"harness_evolution", "lookback"}, legacyPath: []string{"harness_evolution", "lookback_hours"}, fieldPath: []string{"HarnessEvolve", "LookbackHours"}, unit: unitHours, kind: kindFloat},
+	{aliasPath: []string{"harness_evolution", "max_report_age"}, legacyPath: []string{"harness_evolution", "max_report_age_hours"}, fieldPath: []string{"HarnessEvolve", "MaxReportAgeHours"}, unit: unitHours, kind: kindFloat},
 	{aliasPath: []string{"auto_update", "poll"}, legacyPath: []string{"auto_update", "poll_seconds"}, fieldPath: []string{"AutoUpdate", "PollSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"auto_update", "restart_delay"}, legacyPath: []string{"auto_update", "restart_delay_seconds"}, fieldPath: []string{"AutoUpdate", "RestartDelaySeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"auto_update", "coalesce"}, legacyPath: []string{"auto_update", "coalesce_seconds"}, fieldPath: []string{"AutoUpdate", "CoalesceSeconds"}, unit: unitSeconds, kind: kindInt},
