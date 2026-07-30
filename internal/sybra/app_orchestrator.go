@@ -85,7 +85,11 @@ func (a *App) dispatchPass(ctx context.Context) {
 // slog's default logger is not the server's logger and the warning would land
 // below the shipped level.
 func (a *App) applyInstanceRole() {
-	scheduler, brain := true, true
+	// scheduler defaults true (matches OrchestratorConfig's Role default of
+	// "full") for test scaffolding that never sets a.cfg; brain defaults false,
+	// matching RunsOrchestrator's decoupled-from-Role default so an
+	// unconfigured instance never auto-starts a model process either.
+	scheduler, brain := true, false
 	if a.cfg != nil {
 		if _, err := config.NormalizeInstanceRole(a.cfg.Orchestrator.Role); err != nil && a.logger != nil {
 			a.logger.Warn("config.orchestrator.role.invalid",

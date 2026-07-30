@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -22,10 +23,10 @@ func TestAppInstanceRoleGates(t *testing.T) {
 		wantBrain     bool
 	}{
 		{
-			name:          "default full runs both",
+			name:          "default full runs the scheduler, brain stays off",
 			orch:          config.DefaultConfig().Orchestrator,
 			wantScheduler: true,
-			wantBrain:     true,
+			wantBrain:     false,
 		},
 		{
 			name:          "agent-only runs neither",
@@ -40,10 +41,16 @@ func TestAppInstanceRoleGates(t *testing.T) {
 			wantBrain:     false,
 		},
 		{
-			name:          "invalid role falls back to full",
+			name:          "agent-only with explicit brain opt-in",
+			orch:          config.OrchestratorConfig{Role: config.InstanceRoleAgentOnly, Enabled: ptr(true)},
+			wantScheduler: false,
+			wantBrain:     true,
+		},
+		{
+			name:          "invalid role falls back to full scheduler, brain stays off",
 			orch:          config.OrchestratorConfig{Role: "bogus"},
 			wantScheduler: true,
-			wantBrain:     true,
+			wantBrain:     false,
 		},
 	}
 	for _, tt := range tests {
@@ -66,8 +73,8 @@ func TestAppInstanceRoleGatesNilConfig(t *testing.T) {
 	if !a.runsScheduler() {
 		t.Error("runsScheduler() = false with nil cfg, want true")
 	}
-	if !a.runsOrchestratorBrain() {
-		t.Error("runsOrchestratorBrain() = false with nil cfg, want true")
+	if a.runsOrchestratorBrain() {
+		t.Error("runsOrchestratorBrain() = true with nil cfg, want false")
 	}
 }
 
@@ -391,5 +398,54 @@ func TestRecoveryDispatchGateRespectsInstanceRole(t *testing.T) {
 				t.Fatalf("recovery DispatchGate = %v on role %q, want %v", got, tt.role, tt.wantGate)
 			}
 		})
+	}
+}
+
+// TestFullTaskLifecycle_SchedulerDispatchesBrainStaysDisabled exercises a
+// default-config instance (Role "full", Enabled unset) across a real
+// dispatch-and-run cycle: the deterministic scheduler starts and completes an
+// agent for an active task while the orchestrator brain never auto-starts.
+// orchSvc here carries a nil agent.Manager (see setupManualQueueApp), so a
+// regression that let maybeStartOrchestrator call StartOrchestratorContext
+// would panic on a nil-pointer dispatch, not just fail an assertion.
+func TestFullTaskLifecycle_SchedulerDispatchesBrainStaysDisabled(t *testing.T) {
+	a := setupManualQueueApp(t, "", "", 1)
+	a.applyInstanceRole()
+	if !a.runsScheduler() {
+		t.Fatal("expected the default full role to run the scheduler")
+	}
+	if a.runsOrchestratorBrain() {
+		t.Fatal("expected the orchestrator brain disabled by default (Enabled unset)")
+	}
+
+	created := createTaskWithPriority(t, a.tasks, "full lifecycle probe", task.PriorityMedium)
+	// An active status so maybeStartOrchestrator's own active-task scan would
+	// trip a would-be auto-start if the brain gate regressed.
+	if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+		t.Fatal(err)
+	}
+
+	ag, err := a.agentOrch.StartAgent(created.ID, "headless", "advance the task", false, false)
+	if err != nil {
+		t.Fatalf("StartAgent: %v", err)
+	}
+
+	for range 5 {
+		a.dispatchPass(t.Context())
+		if a.orchSvc.IsOrchestratorRunning() {
+			t.Fatal("orchestrator brain auto-started despite an active task and brain disabled by default")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for ag.GetState() != agent.StateStopped && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if ag.GetState() != agent.StateStopped {
+		t.Fatalf("agent did not reach StateStopped: state=%v", ag.GetState())
+	}
+	if a.orchSvc.IsOrchestratorRunning() {
+		t.Fatal("orchestrator brain running after a scheduler-driven lifecycle completed")
 	}
 }
