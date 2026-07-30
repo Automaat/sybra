@@ -28,11 +28,15 @@ type Options struct {
 	MinClusterSize int
 	Now            time.Time
 
-	// SelfMonitorEnabled mirrors config.SelfMonitorConfig.Enabled. Harness
-	// evolution's only input is the report self-monitor writes each tick, so
-	// running it while self-monitor is disabled can never see fresh data —
-	// Run reports this as an explicit degraded outcome instead of silently
-	// reading whatever (possibly very old) file happens to be on disk.
+	// SelfMonitorEnabled mirrors config.SelfMonitorConfig.Enabled. It only
+	// refines the degraded outcome when no usable report exists: with
+	// self-monitor disabled no fresher report will ever be produced, so a
+	// missing report is reported as StateDisabled rather than "not ticked
+	// yet". A fresh report on disk is always consumed regardless of this
+	// flag — disabling self-monitor to stop background spend must not throw
+	// away telemetry it already wrote. Staleness (MaxReportAge) is what
+	// guards against reading data that has gone stale after it stopped
+	// ticking.
 	SelfMonitorEnabled bool
 	// MaxReportAge is the freshness window used to detect a stale report.
 	// 0 uses DefaultMaxReportAge.
@@ -40,10 +44,12 @@ type Options struct {
 }
 
 // Run loads the self-monitor report, clusters its actionable findings, and
-// proposes harness changes. When the report dependency is disabled,
-// missing, stale, or unreadable, Run returns a RunResult with State set to
-// the matching selfmonitor.PipelineState and skips clustering entirely
-// rather than proposing anything from data it doesn't trust.
+// proposes harness changes. When the report is missing, stale, or unreadable,
+// Run returns a RunResult with State set to the matching
+// selfmonitor.PipelineState and skips clustering entirely rather than
+// proposing anything from data it doesn't trust. A fresh report is consumed
+// even when self-monitor is currently disabled — the disabled flag only
+// refines the reason reported for a missing report.
 func Run(ctx context.Context, opts Options) (RunResult, error) {
 	select {
 	case <-ctx.Done():
@@ -55,17 +61,18 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 		now = time.Now().UTC()
 	}
 
-	if !opts.SelfMonitorEnabled {
-		return finishDegraded(opts, RunResult{
-			GeneratedAt: now,
-			State:       selfmonitor.StateDisabled,
-			Reason:      "self_monitor.enabled=false: self-monitor never produces the report harness-evolution reads",
-		})
-	}
-
 	report, err := LoadSelfMonitorReport(opts.ReportPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			// No report on disk. If self-monitor is disabled it will never
+			// produce one; otherwise it simply has not ticked yet.
+			if !opts.SelfMonitorEnabled {
+				return finishDegraded(opts, RunResult{
+					GeneratedAt: now,
+					State:       selfmonitor.StateDisabled,
+					Reason:      "self_monitor.enabled=false and no report on disk: self-monitor never produces the report harness-evolution reads",
+				})
+			}
 			return finishDegraded(opts, RunResult{
 				GeneratedAt: now,
 				State:       selfmonitor.StateStale,
@@ -84,11 +91,16 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 		maxAge = DefaultMaxReportAge
 	}
 	if age := now.Sub(report.GeneratedAt); age > maxAge {
+		reason := fmt.Sprintf("self-monitor report is %s old (max %s): self-monitor may be disabled or stuck",
+			age.Round(time.Second), maxAge)
+		if !opts.SelfMonitorEnabled {
+			reason = fmt.Sprintf("self-monitor report is %s old (max %s) and self_monitor.enabled=false: no fresher report will be produced",
+				age.Round(time.Second), maxAge)
+		}
 		return finishDegraded(opts, RunResult{
 			GeneratedAt: now,
 			State:       selfmonitor.StateStale,
-			Reason: fmt.Sprintf("self-monitor report is %s old (max %s): self-monitor may be disabled or stuck",
-				age.Round(time.Second), maxAge),
+			Reason:      reason,
 		})
 	}
 

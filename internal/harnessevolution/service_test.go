@@ -42,16 +42,42 @@ func actionableFinding(taskID string, at time.Time) selfmonitor.InvestigatedFind
 	}
 }
 
-func TestRun_SelfMonitorDisabledReturnsExplicitDegradedOutcome(t *testing.T) {
+func TestRun_SelfMonitorDisabledWithFreshReportStillConsumesIt(t *testing.T) {
 	dir := t.TempDir()
-	// Even though a report exists on disk, the dependency (self-monitor)
-	// being disabled means it can never be refreshed — Run must not read it.
-	writeSelfMonitorReport(t, dir, selfmonitor.Report{
-		GeneratedAt: time.Now().UTC(),
+	now := time.Now().UTC()
+	// Disabling self-monitor to stop background spend must not throw away a
+	// fresh report it already wrote — Run consumes it and produces proposals.
+	path := writeSelfMonitorReport(t, dir, selfmonitor.Report{
+		GeneratedAt: now,
 		State:       selfmonitor.StateHealthy,
-		Findings:    []selfmonitor.InvestigatedFinding{actionableFinding("t1", time.Now().UTC())},
+		Findings: []selfmonitor.InvestigatedFinding{
+			actionableFinding("t1", now),
+			actionableFinding("t2", now),
+		},
 	})
 
+	result, err := Run(context.Background(), Options{
+		ReportPath:         path,
+		SelfMonitorEnabled: false,
+		MaxReportAge:       48 * time.Hour,
+		MinClusterSize:     2,
+		Now:                now,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.State != selfmonitor.StateHealthy {
+		t.Errorf("State = %q, want %q (a fresh report is usable regardless of the disabled flag)", result.State, selfmonitor.StateHealthy)
+	}
+	if len(result.Clusters) != 1 {
+		t.Fatalf("Clusters = %d, want 1", len(result.Clusters))
+	}
+}
+
+func TestRun_SelfMonitorDisabledWithNoReportReturnsDisabledOutcome(t *testing.T) {
+	dir := t.TempDir()
+	// No report on disk and self-monitor disabled: none will ever be
+	// produced, so Run reports StateDisabled explicitly.
 	result, err := Run(context.Background(), Options{
 		ReportPath:         filepath.Join(dir, "last-report.json"),
 		SelfMonitorEnabled: false,
@@ -66,7 +92,7 @@ func TestRun_SelfMonitorDisabledReturnsExplicitDegradedOutcome(t *testing.T) {
 		t.Error("Reason is empty, want an explanation of the disabled dependency")
 	}
 	if len(result.Proposals) != 0 || len(result.Clusters) != 0 {
-		t.Errorf("expected no proposals/clusters for a disabled dependency, got %+v", result)
+		t.Errorf("expected no proposals/clusters for a disabled dependency with no report, got %+v", result)
 	}
 }
 
