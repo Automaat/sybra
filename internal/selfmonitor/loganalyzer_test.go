@@ -144,6 +144,58 @@ func TestAnalyzeEmptyLog(t *testing.T) {
 	}
 }
 
+// TestAnalyzeSkipsOversizedRecordWithoutAborting is the regression test for
+// the scanner bug: a single NDJSON record bigger than maxLogLineBytes must
+// be skipped, not blow up analysis of the rest of the file the way
+// bufio.Scanner's fixed token buffer (bufio.ErrTooLong) used to.
+func TestAnalyzeSkipsOversizedRecordWithoutAborting(t *testing.T) {
+	huge := `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tbig","content":"` +
+		strings.Repeat("x", maxLogLineBytes+1024) + `"}]}}`
+	lines := append([]string{lines0()}, huge)
+	lines = append(lines, fixtureLines()...)
+
+	path := writeFixture(t, lines)
+
+	s, err := Analyze(path, 0)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if s.SkippedOversizedRecords != 1 {
+		t.Errorf("SkippedOversizedRecords = %d, want 1", s.SkippedOversizedRecords)
+	}
+	// The rest of the file (fixtureLines) must still be fully analyzed.
+	if s.TotalToolCalls != 5 {
+		t.Errorf("TotalToolCalls = %d, want 5 (oversized record should not have aborted the rest of the file)", s.TotalToolCalls)
+	}
+	if !s.StallDetected {
+		t.Error("StallDetected = false, want true — the trailing fixture lines should still be analyzed")
+	}
+}
+
+func lines0() string {
+	return `{"type":"system","subtype":"init","session_id":"skip-test"}`
+}
+
+func TestReadBoundedLine_TrailingOversizedLineNoTrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trailing.ndjson")
+	data := []byte(`{"type":"system","subtype":"init","session_id":"s1"}` + "\n" + strings.Repeat("y", maxLogLineBytes+1))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	s, err := Analyze(path, 0)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if s.SkippedOversizedRecords != 1 {
+		t.Errorf("SkippedOversizedRecords = %d, want 1", s.SkippedOversizedRecords)
+	}
+	if s.TotalEvents != 1 {
+		t.Errorf("TotalEvents = %d, want 1 (only the leading init line)", s.TotalEvents)
+	}
+}
+
 func TestAggregateRepeatedCallsDirect(t *testing.T) {
 	// Construct events directly to bypass the NDJSON parser — faster and
 	// avoids coupling this test to the stream-json envelope format.

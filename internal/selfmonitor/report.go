@@ -11,6 +11,28 @@ import (
 // about.
 const ReportSchemaVersion = 1
 
+// PipelineState is a coarse, point-in-time verdict for one tick/run of the
+// autonomy feedback pipeline. harnessevolution reuses this type (rather than
+// defining its own) for its own RunResult so every consumer of either report
+// shares one vocabulary for "is this data trustworthy":
+//
+//   - StateHealthy: ticked/ran normally and produced usable data.
+//   - StateDisabled: the pipeline stage is turned off in config.
+//   - StateStale: the report exists but is older than a caller-defined
+//     freshness window, or was never produced at all (infinitely stale).
+//   - StatePartial: it ticked, but part of the input couldn't be analyzed
+//     (an oversized log record, an unreadable log file, ...).
+//   - StateFailed: the tick/run itself errored before completing.
+type PipelineState string
+
+const (
+	StateHealthy  PipelineState = "healthy"
+	StateDisabled PipelineState = "disabled"
+	StateStale    PipelineState = "stale"
+	StatePartial  PipelineState = "partial"
+	StateFailed   PipelineState = "failed"
+)
+
 // Report is the full payload emitted at the end of each selfmonitor tick.
 // It's also what `sybra-cli selfmonitor scan` prints and what the Wails
 // `selfmonitor:report` event carries to the frontend. All fields use
@@ -31,6 +53,16 @@ type Report struct {
 	NeedsHuman      int                   `json:"needsHuman"`
 	CostUSD         float64               `json:"costUsd"`
 	DurationMS      int64                 `json:"durationMs"`
+
+	// State, FailureReason, and the coverage counters below give downstream
+	// consumers (harnessevolution, the GUI) an explicit signal instead of
+	// having to infer freshness/completeness from the shape of Findings.
+	State            PipelineState `json:"state"`
+	FailureReason    string        `json:"failureReason,omitempty"`
+	InputsTotal      int           `json:"inputsTotal"`
+	InputsAnalyzed   int           `json:"inputsAnalyzed"`
+	TruncatedRecords int           `json:"truncatedRecords,omitempty"`
+	AnalysisErrors   int           `json:"analysisErrors,omitempty"`
 }
 
 // InvestigatedFinding is a single health.Finding after the selfmonitor
