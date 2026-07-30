@@ -692,3 +692,41 @@ func TestSPAHandlerFallsBackToIndexForUnknownRoute(t *testing.T) {
 		}
 	}
 }
+
+// TestRunCheckConfig exercises the -check-config deploy preflight (see
+// deploy/bin/sybra-build.sh): it must accept a valid live config and reject
+// one with an unknown key, in both cases without starting a server or
+// mutating config.yaml on disk (LoadNoPersist, not Load).
+func TestRunCheckConfig(t *testing.T) {
+	t.Run("valid config", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+
+		if code := runCheckConfig(); code != 0 {
+			t.Fatalf("runCheckConfig() = %d, want 0", code)
+		}
+		if _, err := os.Stat(filepath.Join(home, "config.yaml")); !os.IsNotExist(err) {
+			t.Fatalf("runCheckConfig must not persist config.yaml, stat err = %v", err)
+		}
+	})
+
+	t.Run("unknown key rejected", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		configPath := filepath.Join(home, "config.yaml")
+		if err := os.WriteFile(configPath, []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if code := runCheckConfig(); code != 1 {
+			t.Fatalf("runCheckConfig() = %d, want 1 for an unknown config key", code)
+		}
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "this_key_does_not_exist: true\n" {
+			t.Fatalf("runCheckConfig must not rewrite an invalid config.yaml, got %q", data)
+		}
+	})
+}

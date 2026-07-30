@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -52,6 +53,12 @@ import (
 )
 
 func main() {
+	checkConfig := flag.Bool("check-config", false, "load and validate the live config (SYBRA_HOME/config.yaml), then exit without starting the server: 0 if valid, 1 otherwise")
+	flag.Parse()
+	if *checkConfig {
+		os.Exit(runCheckConfig())
+	}
+
 	code, err := run()
 	if err != nil {
 		println("fatal:", err.Error())
@@ -62,6 +69,29 @@ func main() {
 	if code != 0 {
 		os.Exit(code)
 	}
+}
+
+// runCheckConfig is the deploy-time preflight entry point (see deploy/bin/
+// sybra-build.sh): it exercises the exact same config resolution/validation
+// path run() does — including the unknown-key rejection in
+// validateKnownConfigKeys and ValidateCluster — against the live
+// SYBRA_HOME/config.yaml, but never binds a port, starts background
+// pollers, or touches other process-level side effects. LoadNoPersist (not
+// Load) is deliberate: a preflight run must never mutate the live
+// config.yaml (migration rewrite, generated auth token, tightened perms) —
+// only the eventual real startup should do that.
+func runCheckConfig() int {
+	cfg, err := config.LoadNoPersist()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config: invalid:", err)
+		return 1
+	}
+	if err := cfg.ValidateCluster(); err != nil {
+		fmt.Fprintln(os.Stderr, "config: invalid:", err)
+		return 1
+	}
+	fmt.Println("config: ok")
+	return 0
 }
 
 func run() (int, error) {

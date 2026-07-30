@@ -1,0 +1,7 @@
+{
+  "name": "fakesybra-frontend",
+  "private": true,
+  "scripts": {
+    "build:web": "true"
+  }
+}
