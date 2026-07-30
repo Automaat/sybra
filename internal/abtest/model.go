@@ -73,6 +73,34 @@ type Experiment struct {
 	Subject        *Subject  `yaml:"subject,omitempty" json:"subject,omitempty"`
 	Roles          []string  `yaml:"roles" json:"roles"`
 	Variants       []Variant `yaml:"variants" json:"variants"`
+	// Canary bounds and gates how much of this experiment's traffic may
+	// deviate from its declared baseline variant. nil (the default) means
+	// uncapped: every eligible variant competes for its declared Weight
+	// share exactly as today. See CanaryPolicy and SelectEligibleForContextWithCohort.
+	Canary *CanaryPolicy `yaml:"canary,omitempty" json:"canary,omitempty"`
+}
+
+// CanaryPolicy bounds and gates non-baseline traffic for an experiment,
+// keeping production routing on a stable baseline until a canary has both
+// enough observed data and a fresh (trustworthy) signal behind it.
+type CanaryPolicy struct {
+	// BaselineVariantID names the Variant every gated-out assignment
+	// resolves to. Must match a configured Variant.ID.
+	BaselineVariantID string `yaml:"baseline_variant_id" json:"baselineVariantId"`
+	// PercentBound is the maximum share (0-100) of traffic eligible to
+	// resolve to any variant at all (including the baseline itself, since
+	// the baseline may also win the normal weighted draw); the rest is
+	// forced to baseline. Bucketing uses the same deterministic hash as
+	// variant selection, so a task/role's canary membership is stable and
+	// reproducible across repeated selections.
+	PercentBound int `yaml:"percent_bound" json:"percentBound"`
+	// MinCohort is the minimum resolved-run count a CohortObserved call
+	// must report for this experiment before any traffic is allowed outside
+	// the forced-baseline slice, regardless of PercentBound. A cohort
+	// predicate that reports fresh=false (e.g. the backing evaluation
+	// report is stale/untrustworthy) is treated the same as an
+	// insufficient cohort.
+	MinCohort int `yaml:"min_cohort" json:"minCohort"`
 }
 
 // Subject identifies the workflow target for prompt and skill experiments.

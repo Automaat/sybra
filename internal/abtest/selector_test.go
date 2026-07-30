@@ -902,3 +902,178 @@ func TestEligibleVariantsSkipsOnlyDigestedFailures(t *testing.T) {
 		t.Fatalf("eligible = %+v", eligible)
 	}
 }
+
+func canaryConfig(canary CanaryPolicy) Config {
+	enabled := true
+	return Config{
+		Enabled: &enabled,
+		Experiments: []Experiment{{
+			ID:             "canary-exp",
+			Enabled:        &enabled,
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Canary:         &canary,
+			Variants: []Variant{
+				{ID: "baseline", Provider: "claude", Model: "sonnet", Weight: 1},
+				{ID: "candidate", Provider: "codex", Model: "gpt", Weight: 1},
+			},
+		}},
+	}
+}
+
+func TestSelectCanary_InsufficientCohortForcesBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 100, MinCohort: 20})
+	cohortObserved := func(string) (int, bool) { return 5, true } // fresh but below MinCohort
+
+	for _, taskID := range []string{"task-1", "task-2", "task-3"} {
+		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
+		if err != nil || !ok {
+			t.Fatalf("Select: ok=%v err=%v", ok, err)
+		}
+		if a.VariantID != "baseline" || a.Provider != "claude" {
+			t.Fatalf("VariantID/Provider = %q/%q, want baseline/claude (insufficient cohort must force baseline)", a.VariantID, a.Provider)
+		}
+		if a.RoutingReason != "canary_baseline" {
+			t.Fatalf("RoutingReason = %q, want canary_baseline", a.RoutingReason)
+		}
+	}
+}
+
+func TestSelectCanary_StaleCohortForcesBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 100, MinCohort: 0})
+	cohortObserved := func(string) (int, bool) { return 1000, false } // plenty of data, but stale
+
+	a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, nil, nil, cohortObserved)
+	if err != nil || !ok {
+		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.VariantID != "baseline" {
+		t.Fatalf("VariantID = %q, want baseline (stale cohort must force baseline even with data)", a.VariantID)
+	}
+}
+
+func TestSelectCanary_NilCohortObservedFailsClosedToBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 100, MinCohort: 0})
+
+	a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, nil, nil, nil)
+	if err != nil || !ok {
+		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.VariantID != "baseline" {
+		t.Fatalf("VariantID = %q, want baseline (nil cohortObserved must fail closed)", a.VariantID)
+	}
+
+	// SelectEligibleForContext (no cohort awareness at all) must behave
+	// identically — a canary experiment is never silently treated as a
+	// plain, uncapped A/B experiment by the existing entry point.
+	a2, ok2, err2 := SelectEligibleForContext(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, nil, nil)
+	if err2 != nil || !ok2 || a2.VariantID != "baseline" {
+		t.Fatalf("SelectEligibleForContext: a=%+v ok=%v err=%v, want baseline/true/nil", a2, ok2, err2)
+	}
+}
+
+func TestSelectCanary_PercentBoundIsBoundedAndReproducible(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 20, MinCohort: 0})
+	cohortObserved := func(string) (int, bool) { return 100, true }
+
+	nonBaseline := 0
+	const n = 2000
+	firstPass := make(map[string]string, n)
+	for i := range n {
+		taskID := fmt.Sprintf("task-%d", i)
+		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
+		if err != nil || !ok {
+			t.Fatalf("Select: ok=%v err=%v", ok, err)
+		}
+		firstPass[taskID] = a.VariantID
+		if a.VariantID == "candidate" {
+			nonBaseline++
+		}
+	}
+	// PercentBound=20 caps the eligible-for-non-baseline slice at 20% of
+	// keys; within that slice the normal 50/50 weighted draw between
+	// baseline/candidate applies, so candidate's share should land well
+	// under 20% and well above 0%.
+	if nonBaseline == 0 || nonBaseline > n/4 {
+		t.Fatalf("candidate assignments = %d/%d, want roughly bounded near PercentBound/2 (%%), got outside (0, %d]", nonBaseline, n, n/4)
+	}
+
+	// Reproducible: same keys, repeated, must select identically.
+	for i := range n {
+		taskID := fmt.Sprintf("task-%d", i)
+		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
+		if err != nil || !ok {
+			t.Fatalf("Select: ok=%v err=%v", ok, err)
+		}
+		if a.VariantID != firstPass[taskID] {
+			t.Fatalf("task %s selected %q then %q, want reproducible/stable assignment", taskID, firstPass[taskID], a.VariantID)
+		}
+	}
+}
+
+func TestSelectCanary_ZeroPercentBoundAlwaysBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 0, MinCohort: 0})
+	cohortObserved := func(string) (int, bool) { return 1000, true }
+
+	for i := range 200 {
+		taskID := fmt.Sprintf("task-%d", i)
+		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
+		if err != nil || !ok {
+			t.Fatalf("Select: ok=%v err=%v", ok, err)
+		}
+		if a.VariantID != "baseline" {
+			t.Fatalf("task %s selected %q, want baseline (percent_bound=0 must forbid all canary traffic)", taskID, a.VariantID)
+		}
+	}
+}
+
+func TestSelectCanary_BaselineProviderIneligibleDefersToPlainSelection(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 100, MinCohort: 0})
+	providerAllowed := func(p string) bool { return p != "claude" } // baseline's provider is unavailable
+
+	a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, providerAllowed, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Fatalf("Select ok=true a=%+v, want ok=false (defer to plain provider selection/failover)", a)
+	}
+}
+
+func TestValidateExperiment_CanaryRequiresKnownBaselineVariant(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "does-not-exist", PercentBound: 50, MinCohort: 0})
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error for unknown canary baseline_variant_id")
+	}
+}
+
+func TestValidateExperiment_CanaryRejectsZeroWeightBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 50, MinCohort: 0})
+	cfg.Experiments[0].Variants[0].Weight = 0 // baseline retired via zero weight
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error: a zero-weight (disabled) variant must not be a canary baseline")
+	}
+}
+
+func TestValidateExperiment_CanaryPercentBoundOutOfRange(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 101, MinCohort: 0})
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error for percent_bound > 100")
+	}
+}
+
+func TestValidateExperiment_CanaryNegativeMinCohort(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 50, MinCohort: -1})
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error for negative min_cohort")
+	}
+}
+
+func TestCloneConfig_DeepCopiesCanary(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 50, MinCohort: 10})
+	cp := CloneConfig(cfg)
+	cp.Experiments[0].Canary.PercentBound = 99
+	if cfg.Experiments[0].Canary.PercentBound != 50 {
+		t.Fatalf("original Canary mutated via clone: %d, want unchanged 50", cfg.Experiments[0].Canary.PercentBound)
+	}
+}

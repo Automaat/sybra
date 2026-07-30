@@ -1421,6 +1421,11 @@ func applyHarnessEvolveDefaults(cfg *Config) {
 	if h.MinClusterSize <= 0 {
 		h.MinClusterSize = 2
 	}
+	if h.MaxReportAgeHours <= 0 {
+		// Self-monitor ticks every 6h by default; a report older than a day
+		// means the feedback pipeline has missed several ticks or stopped.
+		h.MaxReportAgeHours = 24
+	}
 	if h.Sink == "" {
 		h.Sink = "local-task"
 	}
@@ -1472,6 +1477,14 @@ func applyRoutingDefaults(cfg *Config) {
 	}
 	if r.MinSamplesToShift <= 0 {
 		r.MinSamplesToShift = 20
+	}
+	if r.EvaluationMaxAgeHours == nil {
+		// 72h comfortably exceeds evaluation's own default 24h tick cadence
+		// (applyEvaluationDefaults) while still catching a genuinely stalled
+		// evaluation service. Only fill when unset — an explicit `0` is a
+		// meaningful "disable the freshness check" and must survive.
+		def := 72.0
+		r.EvaluationMaxAgeHours = &def
 	}
 	def := DefaultRoutingCoefficients()
 	c := &r.Coefficients

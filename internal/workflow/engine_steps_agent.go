@@ -372,7 +372,7 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 			return allow
 		}
 	}
-	a, ok, err := abtest.SelectEligibleForContext(cfg, ctx, providerAllowed, evalPassed)
+	a, ok, err := abtest.SelectEligibleForContextWithCohort(cfg, ctx, providerAllowed, evalPassed, e.cohortObserved)
 	if err != nil || !ok {
 		if err == nil && !ok {
 			e.reportProviderShutout(cfg, ctx, eligibility, evalPassed)
@@ -440,7 +440,11 @@ func (e *Engine) providerEligibilitySnapshot(cfg abtest.Config) map[string]provi
 // fleet-wide per routing context + demotion tuple so a sustained outage does
 // not emit one ERROR per task.
 func (e *Engine) reportProviderDemotion(cfg abtest.Config, ctx abtest.SelectionContext, actual abtest.Assignment, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
-	wanted, ok, err := abtest.SelectEligibleForContext(cfg, ctx, nil, evalPassed)
+	// Cohort-aware (e.cohortObserved), same as the actual selection: a
+	// canary-gated experiment's unfiltered "wanted" pick must apply the same
+	// cohort gate the real dispatch used, or a legitimately-enrolled canary
+	// candidate would be misreported as a demotion from its own baseline.
+	wanted, ok, err := abtest.SelectEligibleForContextWithCohort(cfg, ctx, nil, evalPassed, e.cohortObserved)
 	if err != nil || !ok || wanted.Provider == actual.Provider {
 		return
 	}
@@ -469,7 +473,7 @@ func (e *Engine) reportProviderDemotion(cfg abtest.Config, ctx abtest.SelectionC
 // no experiment matching the role. Throttled per routing context + experiment +
 // provider + reason so a sustained outage does not emit one ERROR per task.
 func (e *Engine) reportProviderShutout(cfg abtest.Config, ctx abtest.SelectionContext, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
-	wanted, ok, err := abtest.SelectEligibleForContext(cfg, ctx, nil, evalPassed)
+	wanted, ok, err := abtest.SelectEligibleForContextWithCohort(cfg, ctx, nil, evalPassed, e.cohortObserved)
 	if err != nil || !ok {
 		return
 	}

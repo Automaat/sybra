@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/issueref"
 	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
@@ -3201,6 +3203,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	}
 	addGitHubPollingFindings(cfg, add)
 	addProviderModelCompatibilityFindings(cfg, add)
+	addExperimentEvaluationFindings(cfg, add)
 	addAutonomyPipelineFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
@@ -3314,6 +3317,78 @@ func addProviderModelCompatibilityFindings(cfg *config.Config, add func(severity
 	check("monitor.model", cfg.Agent.Provider, cfg.Monitor.Model)
 	check("watchdog.model", cfg.Agent.Provider, cfg.Watchdog.Model)
 	check("human_review.model", cfg.Agent.Provider, cfg.HumanReviewModel())
+}
+
+// addExperimentEvaluationFindings warns when experiment traffic (ab_testing
+// split, or routing's adaptive weight promotion/expansion of it) is enabled
+// without a trustworthy evaluation signal backing it. Both findings are
+// warnings, not errors: ab_testing alone still functions (a plain, unmeasured
+// split) and routing degrades safely to a no-op/baseline-only overlay (see
+// routing.Service.tick and evaluation.Trustworthy) rather than breaking
+// dispatch — so this is a configuration smell to flag, not a hard failure to
+// block on.
+//
+// evaluation.Enabled=false is one way to have no signal; evaluation.Enabled=
+// true with a missing, unparsable, stale, or schema-mismatched persisted
+// report (internal/evaluation.Trustworthy — the same check routing.Service
+// gates a live tick on) is another. Both are surfaced here so `config doctor`
+// mirrors what a routing tick would actually do with the on-disk report.
+func addExperimentEvaluationFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil {
+		return
+	}
+	abEnabled := cfg.ABTesting.EnabledValue()
+	routingEnabled := cfg.Routing.Enabled
+	if !abEnabled && !routingEnabled {
+		return
+	}
+	if !cfg.Evaluation.Enabled {
+		if abEnabled {
+			add("warning", "ab_testing.enabled is true but evaluation.enabled is false — experiment traffic is being split with no evaluation signal to know whether any variant is winning")
+		}
+		if routingEnabled {
+			add("warning", "routing.enabled is true but evaluation.enabled is false — adaptive weight promotion has no trustworthy evaluation signal and will stay in shadow/baseline-only mode")
+		}
+		return
+	}
+
+	reason, trustworthy := evaluationReportTrustReason(cfg)
+	if trustworthy {
+		return
+	}
+	if abEnabled {
+		add("warning", "ab_testing.enabled is true and evaluation.enabled is true, but %s — experiment traffic is being split with no valid evaluation signal to know whether any variant is winning", reason)
+	}
+	if routingEnabled {
+		add("warning", "routing.enabled is true and evaluation.enabled is true, but %s — adaptive weight promotion has no trustworthy evaluation signal and will stay in shadow/baseline-only mode", reason)
+	}
+}
+
+// evaluationReportTrustReason loads the persisted evaluation report (the
+// same file internal/sybra/lifecycle.go wires the live evaluation.Service to
+// read/write via config.EvaluationReportPath) and runs it through
+// evaluation.Trustworthy with routing's configured freshness bound — the
+// same gate routing.Service.tick applies before promoting/expanding
+// experiment traffic. Returns a log-safe reason and false when the report is
+// missing, unreadable, or untrustworthy; ("", true) when it's fine.
+func evaluationReportTrustReason(cfg *config.Config) (reason string, trustworthy bool) {
+	path := config.EvaluationReportPath()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Sprintf("no evaluation report has been generated yet (%s does not exist)", path), false
+	}
+	if err != nil {
+		return fmt.Sprintf("the persisted evaluation report at %s could not be read: %v", path, err), false
+	}
+	var rep evaluation.Report
+	if err := json.Unmarshal(data, &rep); err != nil {
+		return fmt.Sprintf("the persisted evaluation report at %s could not be parsed: %v", path, err), false
+	}
+	tw := evaluation.Trustworthy(rep, time.Now(), cfg.Routing.EvaluationMaxAge())
+	if !tw.Trustworthy {
+		return fmt.Sprintf("the persisted evaluation report at %s is not trustworthy: %s", path, tw.Reason), false
+	}
+	return "", true
 }
 
 // addAutonomyPipelineFindings warns when harness_evolution.enabled=true

@@ -636,6 +636,7 @@ prompt, workflow, permission, retry, validator, or deployment changes itself.
 | `supervision.harness_evolution.lookback` | `float64` | `168` | `hours` |  | `harness_evolution.lookback_hours`, `harness_evolution.lookback` | `false` | `restart` |  |  |
 | `supervision.harness_evolution.min_cluster_size` | `int` | `2` |  |  | `harness_evolution.min_cluster_size` | `false` | `restart` |  |  |
 | `supervision.harness_evolution.sink` | `string` | `"local-task"` |  |  | `harness_evolution.sink` | `false` | `restart` |  |  |
+| `supervision.harness_evolution.max_report_age` | `float64` | `24` | `hours` |  | `harness_evolution.max_report_age_hours`, `harness_evolution.max_report_age` | `false` | `restart` |  | MaxReportAgeHours bounds how old the persisted self-monitor report may be before its findings are ignored. A "last good" report keeps driving proposals via Lookback long after self-monitor stops ticking; this gate treats a stale report as no evidence rather than up to LookbackHours of new tasks from outdated findings. |
 
 ### PromptLabConfig (`supervision.prompt_lab`)
 
@@ -817,6 +818,7 @@ only CostWeight) leaves every other term at its shipped default.
 | `routing.max_step` | `int` | `5` |  |  |  | `false` | `restart` |  | MaxStep bounds how far a single tick may move one variant's weight, up or down, so a noisy score swing cannot re-route most traffic in one generation. |
 | `routing.min_samples_to_shift` | `int` | `20` |  |  |  | `false` | `restart` |  | MinSamplesToShift is the resolved-run threshold below which a variant is treated as insufficiently sampled and held at FloorWeight instead of being ranked — distinct from ab_testing.min_samples_per_variant, which gates the evaluation scorecard's InsufficientData display flag. |
 | `routing.coefficients` | `RoutingCoefficients` | _(see below)_ |  |  |  | `false` |  |  |  |
+| `routing.evaluation_max_age_hours` | `*float64` | `72` |  |  |  | `false` | `restart` |  | EvaluationMaxAgeHours bounds how old the evaluation report backing a tick may be before it is treated as untrustworthy (see evaluation.Trustworthy) and the tick rolls the overlay back to base weights instead of promoting/expanding experiment traffic from it.  Tri-state pointer so an explicit `0` survives applyRoutingDefaults: unset (nil) fills the 72h default, an explicit `<= 0` disables the freshness check entirely. Read through EvaluationMaxAge, never the raw field. |
 
 ### RoutingCoefficients (`routing.coefficients`)
 

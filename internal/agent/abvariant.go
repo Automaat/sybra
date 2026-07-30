@@ -27,7 +27,12 @@ var providerCLIAvailable = func(provider string) bool {
 //
 // DisableProviderFailover is deliberately left unset: a selected provider that
 // caps mid-flight fails over rather than parking (availability over clean
-// attribution).
+// attribution) — that failover decision stays entirely independent of this
+// selection, made later by gateProvider at dispatch time.
+//
+// An experiment carrying a Canary policy is gated by m.cohortObserved (see
+// SetCohortObserved) — nil by default, which fails every such experiment
+// closed to its declared baseline variant.
 func (m *Manager) ApplyABVariant(cfg RunConfig, ab abtest.Config, taskID, role string) RunConfig {
 	allowed := func(provider string) bool {
 		return providerCLIAvailable(provider) &&
@@ -36,12 +41,14 @@ func (m *Manager) ApplyABVariant(cfg RunConfig, ab abtest.Config, taskID, role s
 	}
 	m.mu.RLock()
 	evalPassed := m.evalPassed
+	cohortObserved := m.cohortObserved
 	m.mu.RUnlock()
-	a, ok, err := abtest.SelectEligibleForContext(
+	a, ok, err := abtest.SelectEligibleForContextWithCohort(
 		ab,
 		abtest.SelectionContext{TaskID: taskID, Role: role},
 		allowed,
 		evalPassed,
+		cohortObserved,
 	)
 	if err != nil || !ok {
 		return cfg
