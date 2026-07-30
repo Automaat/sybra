@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
@@ -65,17 +66,18 @@ type PRRef struct {
 // the periodic restart-stale sweep. Construct once during App.Startup,
 // reuse from the orchestrator loop.
 type Recovery struct {
-	Tasks          *task.Manager
-	Agents         *agent.Manager
-	Worktrees      *worktree.Manager
-	Sandboxes      *sandbox.Manager
-	WorkflowEngine WorkflowRestarter // optional; nil-safe
-	Orchestrator   Orchestrator
-	Projects       ProjectGetter
-	PRs            PRResolver
-	Logger         *slog.Logger
-	Throttle       *logging.ErrorThrottle
-	WG             *sync.WaitGroup
+	Tasks             *task.Manager
+	Agents            *agent.Manager
+	Worktrees         *worktree.Manager
+	Sandboxes         *sandbox.Manager
+	WorkflowEngine    WorkflowRestarter // optional; nil-safe
+	Orchestrator      Orchestrator
+	Projects          ProjectGetter
+	PRs               PRResolver
+	Logger            *slog.Logger
+	Throttle          *logging.ErrorThrottle
+	WG                *sync.WaitGroup
+	ProtectedFindings *cleanup.ProtectedStore
 
 	LogDir       string
 	LogRetention time.Duration // 0 disables age-based pruning
@@ -146,11 +148,20 @@ func (r *Recovery) pruneAgentLogs() {
 	if r.Agents != nil {
 		active = r.Agents.ActiveLogPaths()
 	}
+	var protectedLogs map[string]bool
+	if r.ProtectedFindings != nil && r.Tasks != nil {
+		if findings, err := r.ProtectedFindings.List(); err == nil {
+			if tasks, listErr := r.Tasks.List(); listErr == nil {
+				protectedLogs = cleanup.ProtectedEvidenceLogPaths(r.LogDir, tasks, findings)
+			}
+		}
+	}
 	rep := logging.EnforceAgentLogRetention(r.LogDir, logging.RetentionOptions{
-		MaxAge:         r.LogRetention,
-		GzipAfter:      r.LogGzipAfter,
-		MaxTotalBytes:  r.LogMaxTotalBytes,
-		ActiveLogPaths: active,
+		MaxAge:            r.LogRetention,
+		GzipAfter:         r.LogGzipAfter,
+		MaxTotalBytes:     r.LogMaxTotalBytes,
+		ActiveLogPaths:    active,
+		ProtectedLogPaths: protectedLogs,
 	}, time.Now())
 	logging.LogPruneReport(r.Logger, rep)
 }

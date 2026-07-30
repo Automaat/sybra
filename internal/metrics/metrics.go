@@ -89,6 +89,8 @@ var (
 	ghIssueOutboxPendingFn func() map[string]int64
 	ghIssueOutboxReplayFn  func() map[string]int64
 	ghIssueOutboxAgeFn     func() map[string]int64
+	cleanupFindingsFn      func() map[string]int64
+	cleanupBlockedBytesFn  func() map[string]int64
 	tasksByStatusGauge     metric.Int64ObservableGauge
 	agentsActiveGauge      metric.Int64ObservableGauge
 	renovatePRsGauge       metric.Int64ObservableGauge
@@ -103,6 +105,8 @@ var (
 	ghOutboxPendingGauge   metric.Int64ObservableGauge
 	ghOutboxReplayedGauge  metric.Int64ObservableGauge
 	ghOutboxAgeGauge       metric.Int64ObservableGauge
+	cleanupFindingsGauge   metric.Int64ObservableGauge
+	cleanupBlockedGauge    metric.Int64ObservableGauge
 )
 
 // Enabled reports whether the metrics pipeline was initialized and is active.
@@ -476,11 +480,24 @@ func createObservableGauges() error {
 	); err != nil {
 		return err
 	}
+	if cleanupFindingsGauge, err = m.Int64ObservableGauge(
+		"sybra_cleanup_protected_findings",
+		metric.WithDescription("Current count of open protected-resource cleanup findings, by resource kind."),
+	); err != nil {
+		return err
+	}
+	if cleanupBlockedGauge, err = m.Int64ObservableGauge(
+		"sybra_cleanup_protected_bytes",
+		metric.WithDescription("Current bytes blocked from cleanup by open protected-resource findings, by resource kind."),
+	); err != nil {
+		return err
+	}
 	_, err = m.RegisterCallback(
 		observe,
 		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, providerRawHealthyG, pollerAuthHealthyG, agentsInFlightGauge,
 		agentsByClassGauge,
 		ghAuthStateGauge, ghAuthTransitionsGauge, ghAuthSuppressedGauge, ghOutboxPendingGauge, ghOutboxReplayedGauge, ghOutboxAgeGauge,
+		cleanupFindingsGauge, cleanupBlockedGauge,
 	)
 	return err
 }
@@ -501,6 +518,8 @@ func observe(_ context.Context, obs metric.Observer) error {
 	ghOutboxPending := ghIssueOutboxPendingFn
 	ghOutboxReplayed := ghIssueOutboxReplayFn
 	ghOutboxAge := ghIssueOutboxAgeFn
+	cleanupFindings := cleanupFindingsFn
+	cleanupBlockedBytes := cleanupBlockedBytesFn
 	obsMu.RUnlock()
 
 	if byStatus != nil {
@@ -576,6 +595,18 @@ func observe(_ context.Context, obs metric.Observer) error {
 		for sink, n := range ghOutboxAge() {
 			obs.ObserveInt64(ghOutboxAgeGauge, n,
 				metric.WithAttributes(attribute.String("sink", sink)))
+		}
+	}
+	if cleanupFindings != nil {
+		for kind, n := range cleanupFindings() {
+			obs.ObserveInt64(cleanupFindingsGauge, n,
+				metric.WithAttributes(attribute.String("kind", kind)))
+		}
+	}
+	if cleanupBlockedBytes != nil {
+		for kind, n := range cleanupBlockedBytes() {
+			obs.ObserveInt64(cleanupBlockedGauge, n,
+				metric.WithAttributes(attribute.String("kind", kind)))
 		}
 	}
 	return nil
@@ -694,6 +725,18 @@ func RegisterGHIssueOutboxReplayed(fn func() map[string]int64) {
 func RegisterGHIssueOutboxOldestAgeSeconds(fn func() map[string]int64) {
 	obsMu.Lock()
 	ghIssueOutboxAgeFn = fn
+	obsMu.Unlock()
+}
+
+func RegisterCleanupProtectedFindings(fn func() map[string]int64) {
+	obsMu.Lock()
+	cleanupFindingsFn = fn
+	obsMu.Unlock()
+}
+
+func RegisterCleanupProtectedBytes(fn func() map[string]int64) {
+	obsMu.Lock()
+	cleanupBlockedBytesFn = fn
 	obsMu.Unlock()
 }
 

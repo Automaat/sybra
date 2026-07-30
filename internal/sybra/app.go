@@ -28,6 +28,7 @@ import (
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
@@ -93,6 +94,7 @@ type App struct {
 	evidenceStore     *evidence.Store
 	experience        *experience.Store
 	intervention      *intervention.Store
+	cleanupProtected  *cleanup.ProtectedStore
 	learning          *learning.Store
 	agentQueue        *agentqueue.Queue
 	stats             *stats.Store
@@ -441,6 +443,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.initStatusHook() //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
 	a.initLocalStores()
+	a.cleanupProtected = cleanup.DefaultProtectedStore()
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.initLimits() //nolint:contextcheck // backfill derives from a.ctx directly, see Startup's contextcheck note
@@ -457,14 +460,15 @@ func (a *App) Startup(ctx context.Context) error {
 	configureProjectGitDefaults()
 	// Initialize domain services (dependency order: worktrees → agentOrch → reviewer, workflow)
 	a.worktrees = worktree.New(worktree.Config{
-		WorktreesDir:     a.worktreesDir,
-		Projects:         a.projects,
-		Tasks:            a.tasks,
-		Logger:           a.logger,
-		LogsDir:          a.logDir,
-		PRBranchResolver: github.FetchPRBranch,
-		AgentChecker:     a.agents.HasRunningAgentForTask,
-		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
+		WorktreesDir:      a.worktreesDir,
+		Projects:          a.projects,
+		Tasks:             a.tasks,
+		Logger:            a.logger,
+		LogsDir:           a.logDir,
+		PRBranchResolver:  github.FetchPRBranch,
+		AgentChecker:      a.agents.HasRunningAgentForTask,
+		LiveAgentChecker:  a.agents.HasLiveRegisteredAgentForTask,
+		ProtectedFindings: a.cleanupProtected,
 	})
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.agentOrch.SetContext(appCtx)

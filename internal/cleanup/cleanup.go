@@ -139,8 +139,9 @@ type TaskLister interface {
 
 // Scanner scans and applies cleanup over one Sybra home directory.
 type Scanner struct {
-	cfg   *config.Config
-	tasks TaskLister
+	cfg       *config.Config
+	tasks     TaskLister
+	protected *ProtectedStore
 	// now is the injectable clock; defaults to time.Now.
 	now func() time.Time
 	// externalRunner is the injectable external-bucket probe; defaults to
@@ -151,7 +152,7 @@ type Scanner struct {
 // NewScanner builds a Scanner over cfg's resolved directories and tasks
 // (typically the CLI's live task.Manager, or a fake in tests).
 func NewScanner(cfg *config.Config, tasks TaskLister) *Scanner {
-	return &Scanner{cfg: cfg, tasks: tasks, now: time.Now}
+	return &Scanner{cfg: cfg, tasks: tasks, protected: DefaultProtectedStore(), now: time.Now}
 }
 
 type snapshot struct {
@@ -405,7 +406,7 @@ func (s *Scanner) Scan(opts Options) (Result, error) {
 	for _, name := range resolveBucketNames(opts) {
 		switch name {
 		case BucketLogs:
-			buckets = append(buckets, s.scanLogs(opts))
+			buckets = append(buckets, s.scanLogs(snap, opts))
 		case BucketAudit:
 			buckets = append(buckets, s.scanAudit(opts))
 		case BucketSandboxes:
@@ -483,17 +484,18 @@ func (s *Scanner) ageEligible(bucketName, path string, opts Options) (ok bool, r
 	return true, "past retention"
 }
 
-func (s *Scanner) scanLogs(opts Options) Bucket {
+func (s *Scanner) scanLogs(snap snapshot, opts Options) Bucket {
 	b := Bucket{Name: BucketLogs, Risk: RiskSafe, Description: "per-agent NDJSON logs and per-task worktree setup logs past retention"}
-	s.scanLogDir(filepath.Join(s.cfg.Logging.Dir, "agents"), opts, &b)
-	s.scanLogDir(filepath.Join(s.cfg.Logging.Dir, "worktrees"), opts, &b)
+	protected := s.protectedLogPaths(snap)
+	s.scanLogDir(filepath.Join(s.cfg.Logging.Dir, "agents"), opts, protected, &b)
+	s.scanLogDir(filepath.Join(s.cfg.Logging.Dir, "worktrees"), opts, protected, &b)
 	return b
 }
 
 // scanLogDir appends every plain, non-symlink, age-eligible file directly
 // under dir to b. Shared by the agents/ and worktrees/ subdirectories of the
 // logs bucket, which are sized and retained identically.
-func (s *Scanner) scanLogDir(dir string, opts Options, b *Bucket) {
+func (s *Scanner) scanLogDir(dir string, opts Options, protected map[string]bool, b *Bucket) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -504,6 +506,9 @@ func (s *Scanner) scanLogDir(dir string, opts Options, b *Bucket) {
 		}
 		p := filepath.Join(dir, e.Name())
 		if isSymlink(p) {
+			continue
+		}
+		if protected[p] {
 			continue
 		}
 		if ok, _ := s.ageEligible(BucketLogs, p, opts); !ok {
@@ -546,6 +551,21 @@ func (s *Scanner) scanAudit(opts Options) Bucket {
 		b.Items++
 	}
 	return b
+}
+
+func (s *Scanner) protectedLogPaths(snap snapshot) map[string]bool {
+	if s == nil || s.protected == nil {
+		return nil
+	}
+	findings, err := s.protected.List()
+	if err != nil || len(findings) == 0 {
+		return nil
+	}
+	tasks := make([]task.Task, 0, len(snap.byID))
+	for _, tk := range snap.byID {
+		tasks = append(tasks, tk)
+	}
+	return ProtectedEvidenceLogPaths(s.cfg.Logging.Dir, tasks, findings)
 }
 
 func (s *Scanner) sandboxRetention() (time.Duration, bool) {
@@ -780,6 +800,11 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 
 	switch bucketName {
 	case BucketLogs, BucketAudit:
+		if bucketName == BucketLogs {
+			if protected := s.protectedLogPaths(snap); protected[path] {
+				return false, "log retained as cleanup evidence"
+			}
+		}
 		return s.ageEligible(bucketName, path, opts)
 	case BucketSandboxes, BucketGoBuildCache:
 		retention, disabled := s.sandboxRetention()

@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
+	"time"
 
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -83,6 +87,7 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 	for i := range tasks {
 		active[tasks[i].DirName()] = &tasks[i]
 	}
+	observedProtected := make(map[string]bool)
 
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -102,7 +107,7 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		}
 
 		if project.HasUnpushedCommits(ctx, wtPath) {
-			m.logger.Warn("worktree.orphan-cleanup.unpushed-commits", "path", wtPath)
+			m.observeProtectedWorktree(wtPath, taskIDFromWorktreeDir(name), observedProtected)
 			continue
 		}
 
@@ -125,6 +130,7 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		}
 		m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
 	}
+	m.resolveProtectedWorktrees(observedProtected)
 
 	// Prune dangling admin entries across all projects.
 	if m.projects == nil {
@@ -139,6 +145,88 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 			m.logger.Warn("worktree.prune", "project", projects[i].ID, "err", err)
 		}
 	}
+}
+
+func (m *Manager) observeProtectedWorktree(path, taskID string, observed map[string]bool) {
+	if m.protected == nil {
+		m.logger.Warn("worktree.orphan-cleanup.protected", "event", "legacy", "task_id", taskID, "path", path)
+		return
+	}
+	obs := cleanup.Observation{
+		Kind:          cleanup.ResourceWorktree,
+		TaskID:        taskID,
+		Path:          path,
+		Reason:        cleanup.ReasonUnpushedCommits,
+		ObservedHead:  worktreeHead(path),
+		ObservedState: worktreeObservedState(path),
+		BytesRetained: worktreeDirSize(path),
+	}
+	finding, event, err := m.protected.Observe(obs)
+	if err != nil {
+		m.logger.Warn("worktree.orphan-cleanup.protected.observe", "path", path, "err", err)
+		return
+	}
+	observed[finding.ID] = true
+	if !event.ShouldLog() {
+		return
+	}
+	m.logger.Warn("worktree.orphan-cleanup.protected",
+		"event", event,
+		"task_id", taskID,
+		"path", path,
+		"head", finding.ObservedHead,
+		"state", finding.ObservedState,
+		"bytes_retained", finding.BytesRetained)
+}
+
+func (m *Manager) resolveProtectedWorktrees(observed map[string]bool) {
+	if m.protected == nil {
+		return
+	}
+	if err := m.protected.ResolveMissing(cleanup.ResourceWorktree, observed); err != nil {
+		m.logger.Warn("worktree.orphan-cleanup.protected.resolve", "err", err)
+	}
+}
+
+func worktreeHead(path string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func worktreeObservedState(path string) string {
+	dirty, err := project.IsWorktreeDirty(context.Background(), path)
+	if err != nil {
+		return "dirty=unknown"
+	}
+	return fmt.Sprintf("dirty=%t", dirty)
+}
+
+func worktreeDirSize(path string) int64 {
+	size, err := dirSize(path)
+	if err != nil {
+		return 0
+	}
+	return size
+}
+
+func dirSize(path string) (int64, error) {
+	var total int64
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
 
 // HasUnpushedCommits reports whether taskID's own worktree holds commits not
