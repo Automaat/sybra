@@ -1,6 +1,10 @@
 package harnessevolution
 
-import "time"
+import (
+	"time"
+
+	"github.com/Automaat/sybra/internal/selfmonitor"
+)
 
 type ProposalKind string
 
@@ -86,11 +90,20 @@ type Proposal struct {
 	CreatedAt             time.Time        `json:"createdAt"`
 }
 
+// RunResult is the output of one harness-evolution run. State and Reason
+// give callers (the CLI, any future scheduler) an explicit signal for "this
+// run had no trustworthy input to cluster" — reusing selfmonitor.PipelineState
+// so both halves of the autonomy feedback pipeline share one vocabulary —
+// instead of a silently empty Proposals/Clusters that looks identical to "no
+// failures happened".
 type RunResult struct {
 	GeneratedAt time.Time  `json:"generatedAt"`
 	Events      int        `json:"events"`
 	Clusters    []Cluster  `json:"clusters"`
 	Proposals   []Proposal `json:"proposals"`
+
+	State  selfmonitor.PipelineState `json:"state"`
+	Reason string                    `json:"reason,omitempty"`
 }
 
 func RequiresHumanApproval(kind ProposalKind) bool {

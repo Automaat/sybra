@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/procstat"
 	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/sandbox"
@@ -289,6 +289,11 @@ func buildStats(events []audit.Event) Stats {
 	return s
 }
 
+// persist atomically writes r to disk. Using a temp-file+rename (via
+// fsutil.AtomicWrite) instead of a plain os.WriteFile means a crash or
+// disk-full mid-write can never leave behind a truncated report — readers
+// (selfmonitor, `sybra-cli` inspection commands) always see either the
+// previous good report or the new one, never a half-written file.
 func (c *Checker) persist(r *Report) {
 	path := filepath.Join(c.homeDir, "health-report.json")
 	data, err := json.MarshalIndent(r, "", "  ")
@@ -296,7 +301,7 @@ func (c *Checker) persist(r *Report) {
 		c.logger.Warn("health.persist.marshal", "err", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := fsutil.AtomicWrite(path, data); err != nil {
 		c.logger.Warn("health.persist.write", "err", err)
 	}
 }

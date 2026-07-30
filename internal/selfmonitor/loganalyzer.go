@@ -10,10 +10,13 @@ package selfmonitor
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"maps"
 	"os"
 	"regexp"
@@ -31,6 +34,11 @@ const LogSummarySchemaVersion = 1
 // keeps in memory. 2000 covers all but the most pathological long-running
 // agents without blowing up.
 const DefaultMaxEvents = 2000
+
+// maxLogLineBytes bounds a single NDJSON record. Records over this size
+// (e.g. a huge tool result echoed back verbatim) are skipped rather than
+// read into memory — see readBoundedLine.
+const maxLogLineBytes = 4 * 1024 * 1024
 
 // DefaultLastToolCalls is how many trailing tool calls Analyze records
 // verbatim in LogSummary.LastToolCalls for the LLM's final look.
@@ -63,6 +71,11 @@ type LogSummary struct {
 	StallDetected       bool               `json:"stallDetected"`
 	StallReason         string             `json:"stallReason,omitempty"`
 	FinalError          string             `json:"finalError,omitempty"`
+	// SkippedOversizedRecords counts NDJSON lines over maxLogLineBytes that
+	// were skipped whole rather than parsed. A run that produced one huge
+	// tool result still yields a summary of every other event instead of
+	// aborting the whole analysis.
+	SkippedOversizedRecords int `json:"skippedOversizedRecords,omitempty"`
 }
 
 // RepeatedCall reports a tool invocation that fired ≥ RepeatedCallThreshold
@@ -101,12 +114,13 @@ func Analyze(path string, maxEvents int) (LogSummary, error) {
 	if maxEvents <= 0 {
 		maxEvents = DefaultMaxEvents
 	}
-	events, err := parseRich(path, maxEvents)
+	events, skipped, err := parseRich(path, maxEvents)
 	if err != nil {
 		return LogSummary{}, err
 	}
 	s := aggregate(events)
 	s.Path = path
+	s.SkippedOversizedRecords = skipped
 	return s, nil
 }
 
@@ -114,44 +128,109 @@ func Analyze(path string, maxEvents int) (LogSummary, error) {
 // with tool-use / tool-result / result-cost fields populated. Lines that fail
 // Claude parsing fall back to Codex parsing; CodexEvent shares the same
 // *ClaudeMessage / *ClaudeResult payload so the result is a unified stream.
-func parseRich(path string, maxEvents int) ([]agent.ClaudeEvent, error) {
+//
+// Unlike bufio.Scanner (whose default token limit aborts the entire read
+// with ErrTooLong on the first oversized line), readBoundedLine skips just
+// the offending record and keeps reading — one huge tool result must not
+// blackhole analysis of the rest of the run.
+func parseRich(path string, maxEvents int) ([]agent.ClaudeEvent, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer func() { _ = f.Close() }()
 
 	var events []agent.ClaudeEvent
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 256*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
+	var skipped int
+	r := bufio.NewReaderSize(f, 256*1024)
+	for {
+		line, err := readBoundedLine(r, maxLogLineBytes)
+		if errors.Is(err, errOversizedLine) {
+			skipped++
 			continue
 		}
-		ev, perr := agent.ParseClaudeLine(line)
-		if perr != nil || ev.Type == "" {
-			ce, cerr := agent.ParseCodexLine(line)
-			if cerr != nil || ce.Type == "" {
-				continue
-			}
-			ev = agent.ClaudeEvent{
-				Type:      ce.Type,
-				Subtype:   ce.Subtype,
-				SessionID: ce.SessionID,
-				Message:   ce.Message,
-				Result:    ce.Result,
+		if len(line) > 0 {
+			if ev, ok := parseLine(line); ok {
+				events = append(events, ev)
 			}
 		}
-		events = append(events, ev)
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
+		if err != nil {
+			// A clean EOF means the file was fully read; anything else is a
+			// genuine read failure (flaky disk, interrupted mount) that must
+			// surface so callers can mark the tick degraded rather than emit a
+			// silently-truncated summary.
+			if !errors.Is(err, io.EOF) {
+				return nil, skipped, err
+			}
+			break
+		}
 	}
 	if maxEvents > 0 && len(events) > maxEvents {
 		events = events[len(events)-maxEvents:]
 	}
-	return events, nil
+	return events, skipped, nil
+}
+
+func parseLine(line []byte) (agent.ClaudeEvent, bool) {
+	ev, perr := agent.ParseClaudeLine(line)
+	if perr == nil && ev.Type != "" {
+		return ev, true
+	}
+	ce, cerr := agent.ParseCodexLine(line)
+	if cerr != nil || ce.Type == "" {
+		return agent.ClaudeEvent{}, false
+	}
+	return agent.ClaudeEvent{
+		Type:      ce.Type,
+		Subtype:   ce.Subtype,
+		SessionID: ce.SessionID,
+		Message:   ce.Message,
+		Result:    ce.Result,
+	}, true
+}
+
+// errOversizedLine marks a record that exceeded maxLen in readBoundedLine.
+// Never wraps another error — it always means "skip, don't abort".
+var errOversizedLine = errors.New("selfmonitor: log record exceeds max line size")
+
+// readBoundedLine reads the next '\n'-delimited record from r. A record
+// longer than maxLen bytes is fully consumed (so the reader lands cleanly on
+// the next line) but reported via errOversizedLine instead of being
+// buffered, so callers can skip one giant record without the unbounded
+// memory growth of a plain ReadString('\n') or the hard-stop behavior of
+// bufio.Scanner's fixed token buffer.
+func readBoundedLine(r *bufio.Reader, maxLen int) ([]byte, error) {
+	var buf []byte
+	oversized := false
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(chunk) > 0 && !oversized {
+			if len(buf)+len(chunk) > maxLen {
+				oversized = true
+				buf = nil
+			} else {
+				buf = append(buf, chunk...)
+			}
+		}
+		switch {
+		case err == nil:
+			if oversized {
+				return nil, errOversizedLine
+			}
+			return bytes.TrimSuffix(buf, []byte("\n")), nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			// EOF (or a genuine I/O error) reached mid-line: return whatever
+			// trailing partial line was accumulated — the final line of a
+			// file with no trailing newline — alongside the original error
+			// so the caller stops after processing it.
+			if oversized {
+				return nil, errOversizedLine
+			}
+			return buf, err
+		}
+	}
 }
 
 // pendingCall tracks a tool invocation awaiting a result event so cost can

@@ -42,17 +42,22 @@ func cmdHarnessEvolutionRun(cfg *config.Config, store *task.Manager, args []stri
 		return fatal(jsonOut, "parse --lookback: %v", err)
 	}
 	result, err := harnessevolution.Run(context.Background(), harnessevolution.Options{
-		ReportPath:     config.SelfMonitorLastReportPath(),
-		CorpusDir:      *corpusDir,
-		OutputDir:      config.HarnessEvolveDir(),
-		Lookback:       lookback,
-		MinClusterSize: *minCluster,
+		ReportPath:          config.SelfMonitorLastReportPath(),
+		CorpusDir:           *corpusDir,
+		OutputDir:           config.HarnessEvolveDir(),
+		Lookback:            lookback,
+		MinClusterSize:      *minCluster,
+		SelfMonitorEnabled:  cfg.SelfMonitor.Enabled,
+		SelfMonitorInterval: time.Duration(cfg.SelfMonitor.IntervalHours * float64(time.Hour)),
 	})
 	if err != nil {
 		return fatal(jsonOut, "harness evolution: %v", err)
 	}
 	var filed []task.Task
 	if *fileTasks {
+		// Degraded runs (disabled/stale/failed) never populate Proposals —
+		// see harnessevolution.finishDegraded — so this is a no-op for them,
+		// not a special case to guard against.
 		filed, err = fileHarnessProposals(store, result)
 		if err != nil {
 			return fatal(jsonOut, "file proposals: %v", err)
@@ -120,8 +125,11 @@ func hasTag(tags []string, want string) bool {
 }
 
 func printHarnessEvolutionResult(result harnessevolution.RunResult, filed []task.Task) {
-	fmt.Printf("harness-evolution: events=%d clusters=%d proposals=%d filed=%d\n",
-		result.Events, len(result.Clusters), len(result.Proposals), len(filed))
+	fmt.Printf("harness-evolution: state=%s events=%d clusters=%d proposals=%d filed=%d\n",
+		result.State, result.Events, len(result.Clusters), len(result.Proposals), len(filed))
+	if result.Reason != "" {
+		fmt.Printf("  reason: %s\n", result.Reason)
+	}
 	if len(result.Proposals) == 0 {
 		return
 	}
