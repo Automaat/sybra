@@ -128,6 +128,9 @@ func printHarnessEvolutionResult(result harnessevolution.RunResult, filed []task
 	if result.StaleReport {
 		fmt.Println("harness-evolution: self-monitor report is stale; findings discarded (no proposals)")
 	}
+	if result.DegradedReport {
+		fmt.Println("harness-evolution: self-monitor report is degraded (incomplete evidence); findings discarded (no proposals). Repair log coverage and re-run self-monitor.")
+	}
 	fmt.Printf("harness-evolution: events=%d clusters=%d proposals=%d filed=%d\n",
 		result.Events, len(result.Clusters), len(result.Proposals), len(filed))
 	if len(result.Proposals) == 0 {

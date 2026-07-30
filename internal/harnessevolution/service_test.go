@@ -58,6 +58,45 @@ func TestRun_StaleReportDiscardsFindings(t *testing.T) {
 	}
 }
 
+func TestRun_DegradedReportDiscardsFindings(t *testing.T) {
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	detectedAt := now.Add(-2 * time.Hour)  // recent, inside lookback
+	generatedAt := now.Add(-1 * time.Hour) // fresh, so only Degraded can gate it
+	report := selfmonitor.Report{
+		GeneratedAt: generatedAt,
+		Degraded:    true,
+		Findings: []selfmonitor.InvestigatedFinding{
+			findingWithVerdict("task-confirmed-a", selfmonitor.VerdictConfirmed, detectedAt),
+			findingWithVerdict("task-confirmed-b", selfmonitor.VerdictConfirmed, detectedAt),
+		},
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "last-report.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	res, err := Run(context.Background(), Options{
+		ReportPath:     path,
+		Lookback:       168 * time.Hour,
+		MinClusterSize: 1,
+		MaxReportAge:   24 * time.Hour,
+		Now:            now,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.DegradedReport {
+		t.Fatalf("DegradedReport = false, want true for a report marked Degraded")
+	}
+	if res.Events != 0 || len(res.Proposals) != 0 {
+		t.Fatalf("degraded report still produced events=%d proposals=%d, want 0/0", res.Events, len(res.Proposals))
+	}
+}
+
 func TestRun_FreshReportKeepsFindings(t *testing.T) {
 	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
 	detectedAt := now.Add(-2 * time.Hour)

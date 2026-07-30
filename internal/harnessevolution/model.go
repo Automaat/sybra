@@ -100,6 +100,12 @@ type RunResult struct {
 	// zero-proposal run attributable to a disconnected pipeline rather than
 	// clean data, so the run degrades loudly instead of silently succeeding.
 	MissingReport bool `json:"missingReport,omitempty"`
+	// DegradedReport is true when the source self-monitor report was marked
+	// Degraded (it failed before producing findings, or completed with partial
+	// evidence because one or more agent logs were unreadable/truncated). Its
+	// findings are discarded so incomplete evidence can't mint proposals before
+	// the missing log coverage is repaired.
+	DegradedReport bool `json:"degradedReport,omitempty"`
 }
 
 func RequiresHumanApproval(kind ProposalKind) bool {

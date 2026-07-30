@@ -62,6 +62,15 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 		staleReport = true
 		report = selfmonitor.Report{}
 	}
+	degradedReport := false
+	if report.Degraded {
+		// A degraded tick produced only partial evidence (a finding's agent log
+		// was unreadable or truncated, or the tick failed before finishing).
+		// Discard its findings so incomplete coverage can't mint proposals before
+		// the missing log coverage is repaired.
+		degradedReport = true
+		report = selfmonitor.Report{}
+	}
 	since := time.Time{}
 	if opts.Lookback > 0 {
 		since = now.Add(-opts.Lookback)
@@ -77,12 +86,13 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 		proposals[i].Evaluation = EvaluateProposal(proposals[i], clusters[i], corpus)
 	}
 	result := RunResult{
-		GeneratedAt:   now,
-		Events:        len(events),
-		Clusters:      clusters,
-		Proposals:     proposals,
-		StaleReport:   staleReport,
-		MissingReport: missingReport,
+		GeneratedAt:    now,
+		Events:         len(events),
+		Clusters:       clusters,
+		Proposals:      proposals,
+		StaleReport:    staleReport,
+		MissingReport:  missingReport,
+		DegradedReport: degradedReport,
 	}
 	if opts.OutputDir != "" {
 		if err := SaveRunResult(opts.OutputDir, result); err != nil {
