@@ -328,6 +328,55 @@ scenario_health_check_failure() {
   assert_eq "health-failure: current still on last-good after quarantine" "$good" "$(current_target)"
 }
 
+# scenario_rollback_preserves_quarantine reproduces the bug where a healthy
+# restart on a rolled-back last-good release cleared the quarantine of the bad
+# candidate it rolled back from — because the healthcheck keyed off the source
+# HEAD (still the bad sha) instead of the release actually running behind
+# "current". A cleared quarantine re-arms a rebuild/reactivation of the
+# known-bad sha on the next restart.
+scenario_rollback_preserves_quarantine() {
+  local root="$1"
+  new_env "$root"
+
+  local good; good="$(seed_last_good "$root")"
+  assert_eq "rollback-quarantine: seed promoted to last-good" "$good" "$(last_good_target)"
+
+  # Build a candidate that fails its startup health check and quarantines
+  # immediately (threshold 1), then rolls "current" back to the good release.
+  bump_commit "$root" "unhealthy-candidate"
+  export SYBRA_HEALTH_QUARANTINE_THRESHOLD=1
+  export SYBRA_HEALTH_TIMEOUT_SEC=3
+  export SYBRA_HEALTH_INTERVAL_SEC=1
+  export FAKE_HEALTH_MODE=fail
+
+  run_build >"$root/build-bad.log" 2>&1
+  local bad; bad="$(current_target)"
+  local port; port="$(next_port)"
+  export SYBRA_HEALTH_URL="http://127.0.0.1:$port/health"
+  local srv; srv="$(start_fake_server "$bad/sybra-server" "$port")"
+  run_healthcheck >"$root/health-bad.log" 2>&1
+  stop_fake_server "$srv"
+
+  assert_eq "rollback-quarantine: bad candidate quarantined" "1" "$(quarantine_count)"
+  assert_eq "rollback-quarantine: current rolled back to last-good" "$good" "$(current_target)"
+
+  # The next restart boots the rolled-back good release (current -> good) and
+  # its health check passes. That must promote the good release WITHOUT
+  # clearing the bad candidate's quarantine: the bad sha is still HEAD and
+  # unchanged, so re-arming it would rebuild/reactivate a known-bad release.
+  export FAKE_HEALTH_MODE=ok
+  port="$(next_port)"
+  export SYBRA_HEALTH_URL="http://127.0.0.1:$port/health"
+  srv="$(start_fake_server "$good/sybra-server" "$port")"
+  run_healthcheck >"$root/health-good.log" 2>&1
+  local rc=$?
+  stop_fake_server "$srv"
+
+  assert_eq "rollback-quarantine: healthy rollback release promotes" "0" "$rc"
+  assert_eq "rollback-quarantine: good release stays last-good" "$good" "$(last_good_target)"
+  assert_eq "rollback-quarantine: bad candidate stays quarantined" "1" "$(quarantine_count)"
+}
+
 main() {
   command -v go >/dev/null 2>&1 || { echo "go toolchain required to build the fixture module" >&2; exit 1; }
 
@@ -340,6 +389,7 @@ main() {
   scenario_lock_contention "$TMPBASE/lock-contention"
   scenario_successful_activation "$TMPBASE/success"
   scenario_health_check_failure "$TMPBASE/health-failure"
+  scenario_rollback_preserves_quarantine "$TMPBASE/rollback-quarantine"
 
   echo
   echo "== $PASS passed, $FAIL failed =="

@@ -41,6 +41,25 @@ candidate_sha() {
   git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown
 }
 
+# running_sha prints the source sha of the release actually behind CURRENT_LINK
+# (the one ExecStart booted and a health check is probing), recovered from the
+# release directory name build.sh mints ("<sha>-<epoch>"). This is deliberately
+# NOT candidate_sha: after a rollback CURRENT_LINK points at the last-good
+# release while the source checkout's HEAD still points at the rolled-back-from
+# candidate, so keying health/quarantine off HEAD would credit a healthy
+# rolled-back release to — or charge a failure against — the wrong candidate.
+# Falls back to candidate_sha only when CURRENT_LINK can't be resolved.
+running_sha() {
+  local target base
+  target="$(resolved_target "$CURRENT_LINK")"
+  if [[ -n "$target" ]]; then
+    base="$(basename "$target")"
+    printf '%s' "${base%-*}"
+    return 0
+  fi
+  candidate_sha
+}
+
 # config_fingerprint prints a short hash of the live config file's bytes, or
 # "absent" if it doesn't exist yet. Never prints config contents — only a
 # fingerprint — so callers can log it freely without leaking secrets.

@@ -64,7 +64,12 @@ rollback() {
 }
 
 main() {
-  SHA="$(candidate_sha)"
+  # Identify by the release actually running behind "current" — NOT the source
+  # HEAD. After a rollback those diverge, and keying off HEAD would clear the
+  # bad candidate's quarantine the moment the healthy rolled-back release
+  # answers /health, re-arming a rebuild of the known-bad sha on the next
+  # restart. See running_sha in sybra-deploy-lib.sh.
+  SHA="$(running_sha)"
   KEY="$(candidate_key "$SHA")"
   ID="${SHA}-post-$$"
 
