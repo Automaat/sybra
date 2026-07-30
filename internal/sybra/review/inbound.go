@@ -577,7 +577,7 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	}
 	r.clearReconcileFailure(t)
 
-	viewerApproved := myState.Approved || inApproved
+	viewerApproved := myState.Approved || (!myState.Submitted && inApproved)
 	selfApproved := myState.ViewerIsBot && viewerApproved
 	if selfApproved {
 		r.dismissSelfApproval(t, myState)
