@@ -140,6 +140,39 @@ func TestRun_StaleReportReturnsDegradedOutcome(t *testing.T) {
 	}
 }
 
+func TestRun_LongIntervalKeepsOnScheduleReportHealthy(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	// 60h old exceeds the 48h default window but is within a 72h tick interval,
+	// so a healthy on-schedule report must not be flagged stale.
+	generated := now.Add(-60 * time.Hour)
+	path := writeSelfMonitorReport(t, dir, selfmonitor.Report{
+		GeneratedAt: generated,
+		State:       selfmonitor.StateHealthy,
+		Findings: []selfmonitor.InvestigatedFinding{
+			actionableFinding("t1", generated),
+			actionableFinding("t2", generated),
+		},
+	})
+
+	result, err := Run(context.Background(), Options{
+		ReportPath:          path,
+		SelfMonitorEnabled:  true,
+		SelfMonitorInterval: 72 * time.Hour,
+		MinClusterSize:      2,
+		Now:                 now,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.State != selfmonitor.StateHealthy {
+		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateHealthy)
+	}
+	if len(result.Proposals) == 0 {
+		t.Errorf("expected proposals from an on-schedule report, got none")
+	}
+}
+
 func TestRun_HealthyReportProducesProposals(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC()

@@ -41,6 +41,14 @@ type Options struct {
 	// MaxReportAge is the freshness window used to detect a stale report.
 	// 0 uses DefaultMaxReportAge.
 	MaxReportAge time.Duration
+	// SelfMonitorInterval mirrors config.SelfMonitorConfig.IntervalHours. The
+	// report is only rewritten once per tick, so a healthy on-schedule report
+	// is legitimately up to one interval old. When ticks are spaced further
+	// apart than the freshness window, the window is widened to tolerate one
+	// missed tick — otherwise a large interval_hours (e.g. 72h) would flag
+	// every on-schedule report as stale and silence the pipeline. 0 leaves the
+	// window untouched.
+	SelfMonitorInterval time.Duration
 }
 
 // Run loads the self-monitor report, clusters its actionable findings, and
@@ -89,6 +97,12 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 	maxAge := opts.MaxReportAge
 	if maxAge <= 0 {
 		maxAge = DefaultMaxReportAge
+	}
+	// A report only refreshes once per self-monitor tick, so allow it to age up
+	// to one missed tick before treating it as stale. This keeps a large
+	// interval_hours from flagging every healthy on-schedule report as stale.
+	if scaled := 2 * opts.SelfMonitorInterval; scaled > maxAge {
+		maxAge = scaled
 	}
 	if age := now.Sub(report.GeneratedAt); age > maxAge {
 		reason := fmt.Sprintf("self-monitor report is %s old (max %s): self-monitor may be disabled or stuck",

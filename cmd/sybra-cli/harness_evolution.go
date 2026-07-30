@@ -42,12 +42,13 @@ func cmdHarnessEvolutionRun(cfg *config.Config, store *task.Manager, args []stri
 		return fatal(jsonOut, "parse --lookback: %v", err)
 	}
 	result, err := harnessevolution.Run(context.Background(), harnessevolution.Options{
-		ReportPath:         config.SelfMonitorLastReportPath(),
-		CorpusDir:          *corpusDir,
-		OutputDir:          config.HarnessEvolveDir(),
-		Lookback:           lookback,
-		MinClusterSize:     *minCluster,
-		SelfMonitorEnabled: cfg.SelfMonitor.Enabled,
+		ReportPath:          config.SelfMonitorLastReportPath(),
+		CorpusDir:           *corpusDir,
+		OutputDir:           config.HarnessEvolveDir(),
+		Lookback:            lookback,
+		MinClusterSize:      *minCluster,
+		SelfMonitorEnabled:  cfg.SelfMonitor.Enabled,
+		SelfMonitorInterval: time.Duration(cfg.SelfMonitor.IntervalHours * float64(time.Hour)),
 	})
 	if err != nil {
 		return fatal(jsonOut, "harness evolution: %v", err)
