@@ -691,9 +691,13 @@ func (h *Handler) holdFixReviewForHuman(ag *agent.Agent) {
 		return
 	}
 	const reason = "review-hold: replies drafted as a pending review — verify & submit on GitHub"
-	t, err := h.tasks.Update(ag.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+	result, err := h.tasks.Apply(task.TransitionIntent{
+		TaskID:   ag.TaskID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "completion.hold_fix_review_for_human",
+		Extra: task.Update{
+			StatusReason: task.Ptr(reason),
+		},
 	})
 	if err != nil {
 		h.logger.Error("fix-review.hold.human-required", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
@@ -701,7 +705,7 @@ func (h *Handler) holdFixReviewForHuman(ag *agent.Agent) {
 	}
 	h.logger.Info("fix-review.hold",
 		"task_id", ag.TaskID, "agent_id", ag.ID,
-		"mode", h.cfg.ReviewHoldMode(), "branch", t.Branch)
+		"mode", h.cfg.ReviewHoldMode(), "branch", result.Task.Branch)
 }
 
 func (h *Handler) pushFixReviewBranch(ag *agent.Agent) {
@@ -765,9 +769,13 @@ func (h *Handler) recoverDivergedFixReviewPush(ag *agent.Agent, branch string, p
 	}
 	h.logger.Warn("fix-review.push-diverged", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch, "err", pushErr)
 	reason := "fix-review: branch diverged from remote and needs manual rebase/merge before the fix can be pushed"
-	if _, err := h.tasks.Update(ag.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+	if _, err := h.tasks.Apply(task.TransitionIntent{
+		TaskID:   ag.TaskID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "completion.recover_diverged_fix_review_push",
+		Extra: task.Update{
+			StatusReason: task.Ptr(reason),
+		},
 	}); err != nil {
 		h.logger.Error("fix-review.push-diverged.human-required", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}

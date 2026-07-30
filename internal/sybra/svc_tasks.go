@@ -420,9 +420,9 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 		cur      task.Task
 		tagAdded bool
 	)
-	updated, err := s.tasks.UpdateFn(taskID, func(t task.Task) (task.Update, error) {
+	result, err := s.tasks.ApplyFn(taskID, func(t task.Task) (task.TransitionIntent, error) {
 		if !t.TamperFlagged {
-			return task.Update{}, conflictError(
+			return task.TransitionIntent{}, conflictError(
 				"task is not tamper-flagged: bless requires status=human-required with a " +
 					"status_reason starting with " + strconv.Quote(workflow.TamperFlaggedReasonPrefix),
 			)
@@ -434,14 +434,18 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 			merged = append(merged, workflow.TamperBlessedTag)
 			tagAdded = true
 		}
-		return task.Update{
-			Tags:   task.Ptr(merged),
-			Status: task.Ptr(task.StatusReadyReview),
+		return task.TransitionIntent{
+			ToStatus: task.StatusReadyReview,
+			Actor:    "svc.tasks.bless_tampering",
+			Extra: task.Update{
+				Tags: task.Ptr(merged),
+			},
 		}, nil
 	})
 	if err != nil {
-		return updated, err
+		return result.Task, err
 	}
+	updated := result.Task
 
 	report, reportErr := s.GetTamperReport(taskID)
 	reportAvailable := reportErr == nil && report.ReportAvailable
@@ -1277,8 +1281,12 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 
 	isMyPR := strings.EqualFold(pr.Author, viewer)
 	if isMyPR {
-		u.Status = task.Ptr(task.StatusInReview)
-		if _, err := s.tasks.Update(taskID, u); err != nil {
+		if _, err := s.tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusInReview,
+			Actor:    "svc.tasks.enrich_pr.my_pr",
+			Extra:    u,
+		}); err != nil {
 			s.logger.Error("enrich-pr.update", "task_id", taskID, "err", err)
 			return
 		}
@@ -1361,7 +1369,20 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		}
 	}
 	u.Tags = &labels
-	updated, err := s.tasks.Update(taskID, u)
+	var updated task.Task
+	if u.Status != nil {
+		toStatus := *u.Status
+		u.Status = nil
+		result, applyErr := s.tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: toStatus,
+			Actor:    "svc.tasks.enrich_issue",
+			Extra:    u,
+		})
+		updated, err = result.Task, applyErr
+	} else {
+		updated, err = s.tasks.Update(taskID, u)
+	}
 	if err != nil {
 		s.logger.Error("enrich-issue.update", "task_id", taskID, "err", err)
 		return

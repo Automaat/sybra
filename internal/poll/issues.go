@@ -433,7 +433,20 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 		if issue.Body != "" {
 			u.Body = task.Ptr(issue.Body)
 		}
-		if _, err := f.tasks.Update(taskID, u); err != nil {
+		var err error
+		if u.Status != nil {
+			toStatus := *u.Status
+			u.Status = nil
+			_, err = f.tasks.Apply(task.TransitionIntent{
+				TaskID:   taskID,
+				ToStatus: toStatus,
+				Actor:    "poll.issues.enrich",
+				Extra:    u,
+			})
+		} else {
+			_, err = f.tasks.Update(taskID, u)
+		}
+		if err != nil {
 			f.logger.Error("issue-sync.enrich", "task_id", taskID, "err", err)
 		} else {
 			f.logger.Info("issue-sync.enriched", "task_id", taskID, "issue", issue.URL, "title", issue.Title)
@@ -443,14 +456,18 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 
 	u := task.Update{
 		Issue:     task.Ptr(issue.URL),
-		Status:    task.Ptr(task.StatusTodo),
 		ProjectID: task.Ptr(issue.Repository),
 	}
+	status := task.StatusTodo
 	// The task doesn't exist yet, so its real ID is unknown here — claim the
 	// branch under the issue's own URL instead. That's still a stable,
 	// unique-enough token to block a second issue in this same batch from
 	// claiming the same branch (see claimedBranches above).
 	f.enrichLinkedViewerPR(issue, &u, claimedBranches, issue.URL)
+	if u.Status != nil {
+		status = *u.Status
+		u.Status = nil
+	}
 	if len(issue.Labels) > 0 {
 		labels := issue.Labels
 		u.Tags = &labels
@@ -459,7 +476,7 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 	// creation — a crash between create and a second update would otherwise
 	// leave the task without its dedupe key, and the next poll would
 	// re-import the same GitHub issue as a duplicate.
-	t, err := f.tasks.CreateFull(issue.Title, issue.Body, "headless", u)
+	t, err := f.tasks.CreateWithStatus(issue.Title, issue.Body, "headless", status, u)
 	if err != nil {
 		f.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
 		return

@@ -36,27 +36,31 @@ func newStubUpdater() *stubTaskUpdater {
 	}
 }
 
-func (s *stubTaskUpdater) UpdateFn(id string, fn func(cur task.Task) (task.Update, error)) (task.Task, error) {
+func (s *stubTaskUpdater) Apply(intent task.TransitionIntent) (task.TransitionResult, error) {
 	if s.err != nil {
-		return task.Task{}, s.err
+		return task.TransitionResult{}, s.err
 	}
-	cur, ok := s.tasks[id]
+	cur, ok := s.tasks[intent.TaskID]
 	if !ok {
-		cur = task.Task{ID: id, Status: task.StatusHumanRequired}
+		cur = task.Task{ID: intent.TaskID, Status: task.StatusHumanRequired}
 	}
-	u, err := fn(cur)
-	if err != nil {
-		return cur, err
+	if intent.ExpectedStatus != nil && cur.Status != *intent.ExpectedStatus {
+		return task.TransitionResult{}, &task.ConflictError{
+			TaskID:         intent.TaskID,
+			ExpectedStatus: intent.ExpectedStatus,
+			ActualStatus:   cur.Status,
+		}
 	}
-	s.updated[id] = u
+	u := intent.Extra
+	toStatus := intent.ToStatus
+	u.Status = &toStatus
+	s.updated[intent.TaskID] = u
 	if u.AgentMode != nil {
 		cur.AgentMode = *u.AgentMode
 	}
-	if u.Status != nil {
-		cur.Status = *u.Status
-	}
-	s.tasks[id] = cur
-	return cur, nil
+	cur.Status = toStatus
+	s.tasks[intent.TaskID] = cur
+	return task.TransitionResult{Task: cur, Applied: true}, nil
 }
 
 func confirmedTriageMismatch(taskID string) InvestigatedFinding {

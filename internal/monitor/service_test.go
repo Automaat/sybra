@@ -93,7 +93,9 @@ func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 }
 
 func (f *fakeTasks) ApplyStatusEffect(id string, eff task.StatusEffect) (task.Task, error) {
-	return f.Update(id, eff.Update)
+	u := eff.Extra
+	u.Status = &eff.ToStatus
+	return f.Update(id, u)
 }
 
 func (f *fakeTasks) UpdateRun(taskID, agentID string, patch task.RunPatch) error {

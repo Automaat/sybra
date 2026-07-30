@@ -1020,19 +1020,48 @@ func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
 	case errors.Is(err, provider.ErrProviderUnhealthy):
 		// Gate block leaves no running agent. Flip the task back to todo so
 		// watchdog / restart-stale loops don't chase a ghost in-progress row.
-		if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
-			o.logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
-		}
+		o.revertToTodoAfterGateBlock(taskID, "task.revert-on-gate")
 		o.LogAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
 		o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
 	case errors.Is(err, agent.ErrProviderModelIncompatible):
-		if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
-			o.logger.Error("task.revert-on-model", "task_id", taskID, "err", rerr)
-		}
+		o.revertToTodoAfterGateBlock(taskID, "task.revert-on-model")
 		o.LogAudit(audit.EventProviderModelIncompatible, taskID, "", map[string]any{"err": err.Error()})
 		o.logger.Warn("agent.start.model_incompatible", "task_id", taskID, "err", err)
 	default:
 		return
+	}
+}
+
+// revertToTodoAfterGateBlock flips taskID back to todo after a start attempt
+// was blocked before any agent process ran, so watchdog / restart-stale
+// loops don't chase a ghost in-progress row. It submits the revert as a
+// transition intent CAS'd on the task still being in-progress: if a
+// concurrent writer (retry, human action, another gate) already moved the
+// task somewhere else, that decision wins and this revert is a no-op rather
+// than clobbering it. logSuffix distinguishes the two call sites in error logs.
+func (o *Orchestrator) revertToTodoAfterGateBlock(taskID, logSuffix string) {
+	cur, err := o.tasks.Get(taskID)
+	if err != nil {
+		o.logger.Error(logSuffix, "task_id", taskID, "err", err)
+		return
+	}
+	if cur.Status != task.StatusInProgress {
+		return
+	}
+	expected := cur.Status
+	if _, err := o.tasks.Apply(task.TransitionIntent{
+		TaskID:         taskID,
+		ToStatus:       task.StatusTodo,
+		Actor:          "agentorch.provider_gate",
+		ExpectedStatus: &expected,
+	}); err != nil {
+		var conflict *task.ConflictError
+		if errors.As(err, &conflict) {
+			// Someone else already moved the task off in-progress between
+			// our read and this write — their decision wins.
+			return
+		}
+		o.logger.Error(logSuffix, "task_id", taskID, "err", err)
 	}
 }
 
@@ -1082,9 +1111,13 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 	// same human-required park anyway. See #1856.
 	if worktreeerr.IsDiskSpaceError(err) {
 		logger.Warn("worktree.rebase-block.disk-space", "task_id", taskID)
-		if _, uerr := tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+		if _, uerr := tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusHumanRequired,
+			Actor:    "agentorch.mark_rebase_blocked.disk_space",
+			Extra: task.Update{
+				StatusReason: task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+			},
 		}); uerr != nil {
 			logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 		}
@@ -1097,9 +1130,13 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		}
 	}
 	if reason, resolved := rebaseBlockedPRAlreadyResolved(tasks, taskID); resolved {
-		if _, uerr := tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusInReview),
-			StatusReason: task.Ptr(reason),
+		if _, uerr := tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusInReview,
+			Actor:    "agentorch.mark_rebase_blocked.pr_resolved",
+			Extra: task.Update{
+				StatusReason: task.Ptr(reason),
+			},
 		}); uerr != nil {
 			logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 		}
@@ -1119,9 +1156,13 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 			return true
 		}
 	}
-	if _, uerr := tasks.Update(taskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(worktreeerr.RebaseBlockedReason),
+	if _, uerr := tasks.Apply(task.TransitionIntent{
+		TaskID:   taskID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "agentorch.mark_rebase_blocked.parked",
+		Extra: task.Update{
+			StatusReason: task.Ptr(worktreeerr.RebaseBlockedReason),
+		},
 	}); uerr != nil {
 		logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 	}

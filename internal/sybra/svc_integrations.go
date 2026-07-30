@@ -96,9 +96,13 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 			// start on it now — flip to human-required instead of leaving it
 			// silently stranded in its initial status (issue #1454).
 			reason := fmt.Sprintf("renovate-fix: worktree prepare failed: %v", wtErr)
-			if _, uerr := s.tasks.Update(t.ID, task.Update{
-				Status:       task.Ptr(task.StatusHumanRequired),
-				StatusReason: &reason,
+			if _, uerr := s.tasks.Apply(task.TransitionIntent{
+				TaskID:   t.ID,
+				ToStatus: task.StatusHumanRequired,
+				Actor:    "svc.integrations.renovate_fix.worktree_escalate",
+				Extra: task.Update{
+					StatusReason: &reason,
+				},
 			}); uerr != nil {
 				s.logger.Error("renovate-fix.worktree.escalate", "task_id", t.ID, "err", uerr)
 			}

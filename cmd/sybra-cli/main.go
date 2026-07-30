@@ -759,9 +759,6 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	if handoffSource != "" {
 		init.HandoffSourceProvider = &handoffSource
 	}
-	if rawStatusMode {
-		init.Status = &status
-	}
 	// Handoff always adopts the current worktree and routes through the internal
 	// Sybra task pipeline. It must never create the inbound PR-review lane's
 	// `review` task shape, because that represents external PRs awaiting human
@@ -777,7 +774,15 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 		init.PRNumber = task.Ptr(*pr)
 	}
 
-	t, err := s.CreateFull(*title, *body, *mode, init)
+	var (
+		t   task.Task
+		err error
+	)
+	if rawStatusMode {
+		t, err = s.CreateWithStatus(*title, *body, *mode, status, init)
+	} else {
+		t, err = s.CreateFull(*title, *body, *mode, init)
+	}
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1580,20 +1585,25 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 		if !*force && (t.Outcome == "merged" || t.Outcome == "merged_with_edits") {
 			return fatal(jsonOut, "task %s landed (outcome=%s); pass --force to reopen anyway", id, t.Outcome)
 		}
-		u := task.Update{
-			Status:       task.Ptr(task.StatusTodo),
+		extra := task.Update{
 			Workflow:     task.Ptr[*workflow.Execution](nil),
 			WorktreeDir:  task.Ptr(""),
 			StatusReason: task.Ptr(""),
 			Outcome:      task.Ptr(""),
 		}
 		if *projectID != "" {
-			u.ProjectID = task.Ptr(*projectID)
+			extra.ProjectID = task.Ptr(*projectID)
 		}
-		updated, err := s.Update(id, u)
+		result, err := s.Apply(task.TransitionIntent{
+			TaskID:   id,
+			ToStatus: task.StatusTodo,
+			Actor:    "cli.reopen",
+			Extra:    extra,
+		})
 		if err != nil {
 			return fatal(jsonOut, "%v", err)
 		}
+		updated := result.Task
 		if t.Status == task.StatusHumanRequired && updated.Status != task.StatusHumanRequired {
 			appendManualDecisionProgress(updated.ID, string(t.Status), string(updated.Status), updated.StatusReason)
 		}

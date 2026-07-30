@@ -224,8 +224,14 @@ func (a *Assigner) blockForConfidentiality(t task.Task, home config.HomeNode) er
 	if t.Status == task.StatusBlocked && t.StatusReason == reason {
 		return nil
 	}
-	blocked := task.StatusBlocked
-	if _, err := a.tasks.Update(t.ID, task.Update{Status: &blocked, StatusReason: &reason}); err != nil {
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "clusterlead.block_for_confidentiality",
+		Extra: task.Update{
+			StatusReason: &reason,
+		},
+	}); err != nil {
 		return fmt.Errorf("clusterlead: block work task %s: %w", t.ID, err)
 	}
 	if a.auditBlock != nil {

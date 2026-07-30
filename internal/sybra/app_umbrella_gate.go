@@ -446,14 +446,18 @@ func unknownConditionKindReason(cond task.DepCondition) string {
 // design, not an oversight.
 func (a *App) escalateUnmetCondition(t *task.Task, cond task.DepCondition, states map[string]*umbrellaState) {
 	reason := dependencyConditionReasonPrefix + " " + cond.Ref + ": " + cond.Value
-	if _, err := a.tasks.Update(t.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		Blocker: task.Ptr(blocker.State{
-			Kind:       blocker.KindDependencyConditionUnmet,
-			Code:       cond.Ref,
-			NextAction: cond.Value,
-		}),
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "umbrella.gate.condition.escalate",
+		Extra: task.Update{
+			StatusReason: task.Ptr(reason),
+			Blocker: task.Ptr(blocker.State{
+				Kind:       blocker.KindDependencyConditionUnmet,
+				Code:       cond.Ref,
+				NextAction: cond.Value,
+			}),
+		},
 	}); err != nil {
 		a.logger.Error("umbrella.gate.condition.escalate_failed", "task_id", t.ID, "err", err)
 		return
@@ -501,10 +505,14 @@ func (a *App) holdScopeVerdictBlocked(ready []string, byID map[string]*task.Task
 		}
 		reason := dependencyScopeVerdictReasonPrefix + " " + t.Blocker.Code +
 			" — clear the blocker once the required scope is confirmed to exist"
-		if _, err := a.tasks.Update(id, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(reason),
-			Blocker:      task.Ptr(t.Blocker),
+		if _, err := a.tasks.Apply(task.TransitionIntent{
+			TaskID:   id,
+			ToStatus: task.StatusHumanRequired,
+			Actor:    "umbrella.gate.scope_verdict.hold",
+			Extra: task.Update{
+				StatusReason: task.Ptr(reason),
+				Blocker:      task.Ptr(t.Blocker),
+			},
 		}); err != nil {
 			a.logger.Error("umbrella.gate.scope_verdict.hold_failed", "task_id", id, "err", err)
 			kept = append(kept, id) // don't silently strand it on our own write error
@@ -672,15 +680,20 @@ func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string
 		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
 			return s == umbrellaGatedTag
 		})
-		updated, err := a.tasks.Update(id, task.Update{
-			Status:       task.Ptr(task.StatusTodo),
-			Tags:         &newTags,
-			StatusReason: task.Ptr("umbrella dependencies satisfied"),
+		result, err := a.tasks.Apply(task.TransitionIntent{
+			TaskID:   id,
+			ToStatus: task.StatusTodo,
+			Actor:    "umbrella.gate.release",
+			Extra: task.Update{
+				Tags:         &newTags,
+				StatusReason: task.Ptr("umbrella dependencies satisfied"),
+			},
 		})
 		if err != nil {
 			a.logger.Error("umbrella.release.failed", "task_id", id, "err", err)
 			continue
 		}
+		updated := result.Task
 		pushed, err := a.pushReleaseToHomeNode(ctx, updated)
 		if err != nil {
 			a.logger.Error("umbrella.release.push_failed", "task_id", id, "err", err)
@@ -688,10 +701,14 @@ func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string
 			// here either — restore the pre-release state so ReadyToRelease
 			// picks this child up again next tick instead of leaving the
 			// leader's board silently diverged from the follower forever.
-			if _, rerr := a.tasks.Update(id, task.Update{
-				Status:       task.Ptr(prevStatus),
-				Tags:         &prevTags,
-				StatusReason: task.Ptr(prevReason),
+			if _, rerr := a.tasks.Apply(task.TransitionIntent{
+				TaskID:   id,
+				ToStatus: prevStatus,
+				Actor:    "umbrella.gate.release.rollback",
+				Extra: task.Update{
+					Tags:         &prevTags,
+					StatusReason: task.Ptr(prevReason),
+				},
 			}); rerr != nil {
 				a.logger.Error("umbrella.release.rollback_failed", "task_id", id, "err", rerr)
 			}
@@ -821,9 +838,13 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		if doClose && a.closeUmbrellaIssue(st.tracker.Issue) {
 			continue
 		}
-		if _, err := a.tasks.Update(st.tracker.ID, task.Update{
-			Status:       task.Ptr(desired),
-			StatusReason: task.Ptr(reason),
+		if _, err := a.tasks.Apply(task.TransitionIntent{
+			TaskID:   st.tracker.ID,
+			ToStatus: desired,
+			Actor:    "umbrella.gate.tracker_rollup",
+			Extra: task.Update{
+				StatusReason: task.Ptr(reason),
+			},
 		}); err != nil {
 			a.logger.Error("umbrella.tracker.update.failed", "task_id", st.tracker.ID, "err", err)
 			continue

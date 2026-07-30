@@ -10,97 +10,55 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
-	"github.com/Automaat/sybra/internal/events"
-	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
 const maxTaskEffectLog = 200
 
 // StatusEffect is one observer-owned task mutation recorded durably in
-// Task.EffectLog before it is considered applied.
+// Task.EffectLog before it is considered applied. ToStatus is a named field
+// rather than Extra.Status for the same reason TransitionIntent splits
+// ToStatus from Extra: it keeps Update.Status out of every production call
+// site's composite literal outside this package, so there is exactly one
+// place (Apply) that ever assigns it. See #2726.
 type StatusEffect struct {
-	Source string
-	Update Update
+	Source   string
+	ToStatus Status
+	Extra    Update
 }
 
 // ApplyStatusEffect applies a poller/watchdog/recovery-owned status mutation
 // exactly once per consumed task generation and logical effect signature.
-// Replays of the same Source+Update after completion become a no-op until
-// another task mutation advances the generation.
+// Replays of the same Source+ToStatus+Extra after completion become a no-op
+// until another task mutation advances the generation.
+//
+// It is a thin wrapper around Apply: the source+status+extra hash becomes the
+// transition's IdempotencyKey, so external observer effects and any other
+// caller of Apply share one durable effect log and one dedup rule instead of
+// two independently-maintained mechanisms.
 func (m *Manager) ApplyStatusEffect(id string, eff StatusEffect) (Task, error) {
 	source := strings.TrimSpace(eff.Source)
 	if source == "" {
 		return Task{}, fmt.Errorf("apply status effect: source is required")
 	}
-	if eff.Update.Status == nil {
-		return Task{}, fmt.Errorf("apply status effect: update.status is required")
+	if eff.ToStatus == "" {
+		return Task{}, fmt.Errorf("apply status effect: to_status is required")
+	}
+	if eff.Extra.Status != nil {
+		return Task{}, fmt.Errorf("apply status effect: extra.status must be nil; set to_status instead")
 	}
 
-	mu := m.lockFor(id)
-	mu.Lock()
-
-	cur, err := m.store.Get(id)
+	result, err := m.Apply(TransitionIntent{
+		TaskID:         id,
+		ToStatus:       eff.ToStatus,
+		Actor:          "effect:" + source,
+		Extra:          eff.Extra,
+		IdempotencyKey: statusEffectStepID(source, eff.ToStatus, eff.Extra),
+	})
 	if err != nil {
-		mu.Unlock()
 		return Task{}, err
 	}
-
-	stepID := statusEffectStepID(source, eff.Update)
-	if statusEffectApplied(cur.EffectLog, cur.Generation-1, stepID) {
-		mu.Unlock()
-		return cur, nil
-	}
-
-	now := time.Now().UTC()
-	log := slices.Clone(cur.EffectLog)
-	idempotencyID, ok := statusEffectIDForStep(log, cur.Generation, stepID)
-	if !ok {
-		idempotencyID = workflow.EffectID{
-			Generation: cur.Generation,
-			StepSeq:    nextStatusEffectSeq(cur),
-			StepID:     stepID,
-			Pos:        0,
-		}
-	}
-	record := workflow.EffectRecord{
-		ID:       idempotencyID,
-		IntentAt: now,
-	}
-	record.CompletedAt = &now
-	log = append(log, record)
-	if len(log) > maxTaskEffectLog {
-		log = log[len(log)-maxTaskEffectLog:]
-	}
-
-	u := eff.Update
-	u.EffectLog = &log
-	t, prev, err := m.store.UpdateWithPrev(id, u)
-	if err != nil {
-		mu.Unlock()
-		return Task{}, err
-	}
-
-	var (
-		fireHook            bool
-		prevStatus, newStat string
-	)
-	if m.onStatusHook != nil {
-		prevStatus = string(prev)
-		newStat = string(t.Status)
-		fireHook = newStat != prevStatus
-	}
-	if fireHook {
-		m.recordFiredStatus(id, newStat)
-	}
-	mu.Unlock()
-
-	if fireHook {
-		m.onStatusHook(id, prevStatus, newStat)
-	}
-	metrics.TaskUpdated()
-	m.emitter.Emit(events.TaskUpdated, t.FilePath)
-	return t, nil
+	return result.Task, nil
 }
 
 func statusEffectApplied(log []workflow.EffectRecord, generation int64, stepID string) bool {
@@ -138,9 +96,9 @@ func nextStatusEffectSeq(t Task) int {
 	return maxSeq + 1
 }
 
-func statusEffectStepID(source string, u Update) string {
+func statusEffectStepID(source string, toStatus Status, u Update) string {
 	var b strings.Builder
-	writeStatusEffectField(&b, "status", statusValue(u.Status))
+	writeStatusEffectField(&b, "status", statusValue(&toStatus))
 	writeStatusEffectField(&b, "status_reason", stringValue(u.StatusReason))
 	writeStatusEffectField(&b, "pr_number", intValue(u.PRNumber))
 	writeStatusEffectField(&b, "outcome", stringValue(u.Outcome))

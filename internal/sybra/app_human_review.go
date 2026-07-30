@@ -460,15 +460,20 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 			return
 		}
 		newBody := appendSection(current.Body, "Auto-review: unblocked", note)
-		updated, err := h.tasks.Update(current.ID, task.Update{
-			Body:         &newBody,
-			Status:       task.Ptr(status),
-			StatusReason: task.Ptr(statusReason),
+		result, err := h.tasks.Apply(task.TransitionIntent{
+			TaskID:   current.ID,
+			ToStatus: status,
+			Actor:    "human-review.unblocked",
+			Extra: task.Update{
+				Body:         &newBody,
+				StatusReason: task.Ptr(statusReason),
+			},
 		})
 		if err != nil {
 			h.logger.Error("human-review.unblocked.update", "task_id", current.ID, "agent_id", agentID, "status", status, "err", err)
 			return
 		}
+		updated := result.Task
 		if updated.Status != status {
 			// The store applies updates under a per-task lock, so this can
 			// only mean a status guard elsewhere in the write path silently
@@ -541,7 +546,6 @@ func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note 
 	newBody := appendSection(current.Body, "Auto-review: unblocked", note)
 	update := task.Update{
 		Body:         &newBody,
-		Status:       task.Ptr(task.StatusDone),
 		StatusReason: task.Ptr(""),
 	}
 	if mergedPR && current.PRNumber != prNumber {
@@ -550,11 +554,17 @@ func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note 
 	if mergedPR {
 		update.Outcome = task.Ptr("merged")
 	}
-	updated, err := h.tasks.Update(current.ID, update)
+	result, err := h.tasks.Apply(task.TransitionIntent{
+		TaskID:   current.ID,
+		ToStatus: task.StatusDone,
+		Actor:    "human-review.unblocked.done_recovery",
+		Extra:    update,
+	})
 	if err != nil {
 		h.logger.Error("human-review.unblocked.update", "task_id", current.ID, "agent_id", agentID, "status", task.StatusDone, "err", err)
 		return
 	}
+	updated := result.Task
 	if updated.Status != task.StatusDone {
 		h.logger.Error("human-review.unblocked.status-mismatch",
 			"task_id", current.ID, "agent_id", agentID, "want_status", task.StatusDone, "got_status", updated.Status)
@@ -1049,12 +1059,15 @@ func (h *humanReviewHandler) blockSybraBugOnly(taskID, agentID string, v verdict
 		return
 	}
 	newBody := appendSection(t.Body, "Auto-review verdict: blocked by Sybra bug (issue filing disabled)", sybraBugNoteBody(v, ""))
-	upd := task.Update{
-		Body:         &newBody,
-		Status:       task.Ptr(task.StatusBlocked),
-		StatusReason: task.Ptr("auto-review: " + strings.TrimSpace(v.Summary)),
-	}
-	if _, err := h.tasks.Update(taskID, upd); err != nil {
+	if _, err := h.tasks.Apply(task.TransitionIntent{
+		TaskID:   taskID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "human-review.block-only",
+		Extra: task.Update{
+			Body:         &newBody,
+			StatusReason: task.Ptr("auto-review: " + strings.TrimSpace(v.Summary)),
+		},
+	}); err != nil {
 		h.logger.Error("human-review.block-only.update", "task_id", taskID, "err", err)
 		return
 	}
@@ -1242,12 +1255,15 @@ func (h *humanReviewHandler) blockOriginOnLocalBug(taskID, agentID, header, summ
 	if strings.Contains(strings.ToLower(extra), "issue filing failed") {
 		statusReason = fmt.Sprintf("auto-review: %s (local task %s; issue filing failed)", summary, localTaskID)
 	}
-	upd := task.Update{
-		Body:         &newBody,
-		Status:       task.Ptr(task.StatusBlocked),
-		StatusReason: task.Ptr(statusReason),
-	}
-	if _, err := h.tasks.Update(taskID, upd); err != nil {
+	if _, err := h.tasks.Apply(task.TransitionIntent{
+		TaskID:   taskID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "human-review.local.origin-update",
+		Extra: task.Update{
+			Body:         &newBody,
+			StatusReason: task.Ptr(statusReason),
+		},
+	}); err != nil {
 		h.logger.Error("human-review.local.origin-update", "task_id", taskID, "err", err)
 		return false
 	}
@@ -1303,12 +1319,15 @@ func (h *humanReviewHandler) linkExistingLocalBug(taskID, agentID string, existi
 	summary := strings.TrimSpace(v.Summary)
 	noteBody := fmt.Sprintf("**Linked local sybra task (already filed):** %s\n\n%s", existing.ID, summary)
 	newBody := appendSection(origin.Body, "Auto-review verdict: blocked by Sybra bug (already filed)", noteBody)
-	upd := task.Update{
-		Body:         &newBody,
-		Status:       task.Ptr(task.StatusBlocked),
-		StatusReason: task.Ptr(fmt.Sprintf("auto-review: %s (local task %s, already filed)", summary, existing.ID)),
-	}
-	if _, err := h.tasks.Update(taskID, upd); err != nil {
+	if _, err := h.tasks.Apply(task.TransitionIntent{
+		TaskID:   taskID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "human-review.local.dedup-origin-update",
+		Extra: task.Update{
+			Body:         &newBody,
+			StatusReason: task.Ptr(fmt.Sprintf("auto-review: %s (local task %s, already filed)", summary, existing.ID)),
+		},
+	}); err != nil {
 		h.logger.Error("human-review.local.dedup-origin-update", "task_id", taskID, "err", err)
 		return
 	}

@@ -76,30 +76,33 @@ func (s *PromptLabService) approveProposal(id, progressNote string) (task.Task, 
 	if s.workflowEngine == nil {
 		return task.Task{}, errors.New("prompt-lab approval unavailable: no workflow engine to start the authoring workflow")
 	}
-	t, err := s.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	result, err := s.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if err := requirePendingProposal(cur); err != nil {
-			return task.Update{}, err
+			return task.TransitionIntent{}, err
 		}
-		status := task.StatusInProgress
 		reason := ""
 		tags := removeTag(cur.Tags, "requires-human")
 		update := task.Update{
-			Status:       &status,
 			StatusReason: &reason,
 			Tags:         &tags,
 		}
 		if cur.ProjectID == "" {
 			projectID := promptLabTargetProjectID(s.projects)
 			if projectID == "" {
-				return task.Update{}, errors.New(promptLabNoProjectErr)
+				return task.TransitionIntent{}, errors.New(promptLabNoProjectErr)
 			}
 			update.ProjectID = &projectID
 		}
-		return update, nil
+		return task.TransitionIntent{
+			ToStatus: task.StatusInProgress,
+			Actor:    "svc.promptlab.approve",
+			Extra:    update,
+		}, nil
 	})
 	if err != nil {
 		return task.Task{}, err
 	}
+	t := result.Task
 
 	matched, dispatchErr := s.workflowEngine.DispatchEvent(
 		id,
@@ -113,17 +116,20 @@ func (s *PromptLabService) approveProposal(id, progressNote string) (task.Task, 
 			failure = dispatchErr.Error()
 		}
 		revertReason := "Prompt Lab approval failed to start authoring workflow: " + failure
-		status := task.StatusHumanRequired
 		tags := mergeTag(t.Tags, "requires-human")
-		reverted, revertErr := s.tasks.Update(id, task.Update{
-			Status:       &status,
-			StatusReason: &revertReason,
-			Tags:         tags,
+		revertResult, revertErr := s.tasks.Apply(task.TransitionIntent{
+			TaskID:   id,
+			ToStatus: task.StatusHumanRequired,
+			Actor:    "svc.promptlab.approve.revert",
+			Extra: task.Update{
+				StatusReason: &revertReason,
+				Tags:         tags,
+			},
 		})
 		if revertErr != nil {
 			return task.Task{}, fmt.Errorf("%s; additionally failed to restore human-required: %w", revertReason, revertErr)
 		}
-		return reverted, errors.New(revertReason)
+		return revertResult.Task, errors.New(revertReason)
 	}
 
 	s.appendProgress(id, artifact.ProgressKindDecision, progressNote)
@@ -167,16 +173,18 @@ func (s *PromptLabService) RejectProposal(id, feedback string) (task.Task, error
 		reason = rejectedNoFeedbackReason
 	}
 
-	t, err := s.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	result, err := s.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if err := requirePendingProposal(cur); err != nil {
-			return task.Update{}, err
+			return task.TransitionIntent{}, err
 		}
-		status := task.StatusCancelled
 		tags := removeTag(cur.Tags, "requires-human")
-		return task.Update{
-			Status:       &status,
-			StatusReason: &reason,
-			Tags:         &tags,
+		return task.TransitionIntent{
+			ToStatus: task.StatusCancelled,
+			Actor:    "svc.promptlab.reject",
+			Extra: task.Update{
+				StatusReason: &reason,
+				Tags:         &tags,
+			},
 		}, nil
 	})
 	if err != nil {
@@ -184,7 +192,7 @@ func (s *PromptLabService) RejectProposal(id, feedback string) (task.Task, error
 	}
 
 	s.appendProgress(id, artifact.ProgressKindBlocker, reason)
-	return t, nil
+	return result.Task, nil
 }
 
 // requirePendingProposal guards ApproveProposal/RejectProposal against

@@ -275,9 +275,13 @@ func (a *App) parkReviewRateLimited(t task.Task, limit int) {
 		"task_id", t.ID, "repo", t.ProjectID, "pr", t.PRNumber,
 		"rounds", spent, "limit", limit)
 	reason := fmt.Sprintf("%s: %d rounds within an hour on PR #%d", review.RateLimitParkReason, limit, t.PRNumber)
-	if _, err := a.tasks.Update(t.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "orchestrator.review_rate_limit.park",
+		Extra: task.Update{
+			StatusReason: task.Ptr(reason),
+		},
 	}); err != nil {
 		a.logger.Error("workflow.dispatch.inbound-review.rate-limit-park", "task_id", t.ID, "err", err)
 	}
@@ -436,9 +440,13 @@ func (a *App) dispatchPlanningWorkflow(taskID string) {
 		reason := "planning blocked: existing plan critique verdict is " +
 			workflow.PlanCritiqueVerdict(t.PlanCritique) +
 			"; use plan review reject to re-plan, or clear the stale planning artifacts before restarting"
-		if _, err := a.tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(reason),
+		if _, err := a.tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusHumanRequired,
+			Actor:    "orchestrator.planning.blocked",
+			Extra: task.Update{
+				StatusReason: task.Ptr(reason),
+			},
 		}); err != nil {
 			a.logger.Error("workflow.dispatch.planning.blocked", "task_id", taskID, "err", err)
 		}
