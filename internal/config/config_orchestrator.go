@@ -11,22 +11,33 @@ const (
 )
 
 // OrchestratorConfig gates and paces the self-starting automations. Role
-// "full" runs the orchestrator brain session and the auto-dispatch scheduler,
-// preserving single-node behavior. Role "agent-only" fails closed on both: it
-// serves the HTTP API and runs explicitly-started agents but never orchestrates
-// on its own — the posture for a secondary/test deployment (a Kubernetes
-// agent-only server, a scratch instance) that must not race a full instance.
+// "full" (default) runs the deterministic auto-dispatch scheduler — the
+// authoritative source of core autonomy: it has sole task, workflow, queue,
+// and recovery state, and advances active tasks without any LLM session in
+// the loop. Role "agent-only" fails closed on scheduling: the instance serves
+// the HTTP API and runs explicitly-started agents but never dispatches on its
+// own — the posture for a secondary/test deployment (a Kubernetes agent-only
+// server, a scratch instance) that must not race a full instance.
+//
+// The orchestrator brain session — a conversational LLM given a bounded
+// advisory/steering role on top of the scheduler — is intentionally decoupled
+// from Role and defaults off regardless of it (see Enabled). The scheduler
+// already owns every state transition the brain would otherwise duplicate;
+// auto-starting it is opt-in, not a Role-derived default.
 type OrchestratorConfig struct {
 	// Role declares which self-starting automations this instance owns:
 	// "full" (default) or "agent-only". An invalid value falls back to "full"
 	// with a warning, so a typo never silently parks an instance that was meant
-	// to orchestrate.
+	// to orchestrate. Only gates the scheduler (see RunsScheduler) — it has no
+	// effect on the orchestrator brain (see Enabled).
 	Role string `yaml:"role,omitempty" json:"role"`
-	// Enabled overrides Role for the orchestrator brain session — the
-	// conversational context auto-started while tasks are active. nil (default)
-	// derives from Role. Explicit true re-enables the brain on an agent-only
-	// instance; explicit false parks it on a full one. Never gates an
-	// operator's manual StartOrchestrator call.
+	// Enabled is the sole gate for auto-starting the orchestrator brain
+	// session — the conversational LLM context that would otherwise be
+	// auto-started while tasks are active. nil (default) and explicit false
+	// both mean disabled: an omitted key never silently restores automatic
+	// startup, on any Role. Set explicit true to opt an instance into an
+	// automatically-started brain. Never gates an operator's manual
+	// StartOrchestrator call, which stays available regardless of this value.
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled"`
 	// SchedulerEnabled overrides Role for the auto-dispatch scheduler — the
 	// pass that reconciles board tasks, drains the admission queue, releases
@@ -131,12 +142,16 @@ func (c OrchestratorConfig) InstanceRole() string {
 }
 
 // RunsOrchestrator reports whether this instance may auto-start the
-// orchestrator brain session. An explicit orchestrator.enabled wins over Role.
+// orchestrator brain session. Decoupled from Role by design: the default is
+// always false, on every role, so a legacy config, a v2 config that only sets
+// Role, or any config that simply omits the key never silently resumes
+// automatic brain startup. Only an explicit orchestrator.enabled: true opts
+// in.
 func (c OrchestratorConfig) RunsOrchestrator() bool {
 	if c.Enabled != nil {
 		return *c.Enabled
 	}
-	return c.InstanceRole() == InstanceRoleFull
+	return false
 }
 
 // RunsScheduler reports whether this instance may auto-dispatch work. An

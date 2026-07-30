@@ -251,16 +251,24 @@ real-app/cluster load independently of Agent.MaxConcurrent.
 ### OrchestratorConfig (`workflow.orchestrator`)
 
 OrchestratorConfig gates and paces the self-starting automations. Role
-"full" runs the orchestrator brain session and the auto-dispatch scheduler,
-preserving single-node behavior. Role "agent-only" fails closed on both: it
-serves the HTTP API and runs explicitly-started agents but never orchestrates
-on its own — the posture for a secondary/test deployment (a Kubernetes
-agent-only server, a scratch instance) that must not race a full instance.
+"full" (default) runs the deterministic auto-dispatch scheduler — the
+authoritative source of core autonomy: it has sole task, workflow, queue,
+and recovery state, and advances active tasks without any LLM session in
+the loop. Role "agent-only" fails closed on scheduling: the instance serves
+the HTTP API and runs explicitly-started agents but never dispatches on its
+own — the posture for a secondary/test deployment (a Kubernetes agent-only
+server, a scratch instance) that must not race a full instance.
+
+The orchestrator brain session — a conversational LLM given a bounded
+advisory/steering role on top of the scheduler — is intentionally decoupled
+from Role and defaults off regardless of it (see Enabled). The scheduler
+already owns every state transition the brain would otherwise duplicate;
+auto-starting it is opt-in, not a Role-derived default.
 
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
-| `workflow.orchestrator.role` | `string` | `"full"` |  |  | `orchestrator.role` | `false` | `restart` |  | Role declares which self-starting automations this instance owns: "full" (default) or "agent-only". An invalid value falls back to "full" with a warning, so a typo never silently parks an instance that was meant to orchestrate. |
-| `workflow.orchestrator.enabled` | `*bool` | _(nil)_ |  |  | `orchestrator.enabled` | `false` | `restart` |  | Enabled overrides Role for the orchestrator brain session — the conversational context auto-started while tasks are active. nil (default) derives from Role. Explicit true re-enables the brain on an agent-only instance; explicit false parks it on a full one. Never gates an operator's manual StartOrchestrator call. |
+| `workflow.orchestrator.role` | `string` | `"full"` |  |  | `orchestrator.role` | `false` | `restart` |  | Role declares which self-starting automations this instance owns: "full" (default) or "agent-only". An invalid value falls back to "full" with a warning, so a typo never silently parks an instance that was meant to orchestrate. Only gates the scheduler (see RunsScheduler) — it has no effect on the orchestrator brain (see Enabled). |
+| `workflow.orchestrator.enabled` | `*bool` | _(nil)_ |  |  | `orchestrator.enabled` | `false` | `restart` |  | Enabled is the sole gate for auto-starting the orchestrator brain session — the conversational LLM context that would otherwise be auto-started while tasks are active. nil (default) and explicit false both mean disabled: an omitted key never silently restores automatic startup, on any Role. Set explicit true to opt an instance into an automatically-started brain. Never gates an operator's manual StartOrchestrator call, which stays available regardless of this value. |
 | `workflow.orchestrator.scheduler_enabled` | `*bool` | _(nil)_ |  |  | `orchestrator.scheduler_enabled` | `false` | `restart` |  | SchedulerEnabled overrides Role for the auto-dispatch scheduler — the pass that reconciles board tasks, drains the admission queue, releases unblocked children, and restarts stale in-progress agents. nil (default) derives from Role. Maintenance cleanup (orphan worktrees/sandboxes, metrics) always runs, so a parked instance still collects its garbage. |
 | `workflow.orchestrator.dispatch_interval` | `int` | `10` | `seconds` |  | `orchestrator.dispatch_interval_seconds`, `orchestrator.dispatch_interval` | `false` | `restart` |  | DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive dispatch pass (start the orchestrator, release unblocked children). Kept short — and also fired on demand on every status change — so a freshly-ready task is not left idle for a full tick. Default 10. |
 | `workflow.orchestrator.maintenance_interval` | `int` | `60` | `seconds` |  | `orchestrator.maintenance_interval_seconds`, `orchestrator.maintenance_interval` | `false` | `restart` |  | MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup pass (resume stalled workflows, restart stale agents, prune orphan worktrees) which hits git and may spawn agents, so it must not run hot. Default 60. |
