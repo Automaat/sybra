@@ -106,6 +106,12 @@ type RunResult struct {
 	// findings are discarded so incomplete evidence can't mint proposals before
 	// the missing log coverage is repaired.
 	DegradedReport bool `json:"degradedReport,omitempty"`
+	// SchemaMismatch is true when the on-disk self-monitor report carried a
+	// SchemaVersion this build doesn't recognize (e.g. a pre-v2 report left over
+	// from an upgrade, whose degraded state lived in fields this shape no longer
+	// reads). Its findings are discarded because their trust signals can't be
+	// validated, so a stale-schema report can't be mistaken for clean data.
+	SchemaMismatch bool `json:"schemaMismatch,omitempty"`
 }
 
 func RequiresHumanApproval(kind ProposalKind) bool {

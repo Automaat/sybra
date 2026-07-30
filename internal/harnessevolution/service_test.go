@@ -17,7 +17,8 @@ import (
 func writeReport(t *testing.T, generatedAt, detectedAt time.Time) string {
 	t.Helper()
 	report := selfmonitor.Report{
-		GeneratedAt: generatedAt,
+		SchemaVersion: selfmonitor.ReportSchemaVersion,
+		GeneratedAt:   generatedAt,
 		Findings: []selfmonitor.InvestigatedFinding{
 			findingWithVerdict("task-confirmed-a", selfmonitor.VerdictConfirmed, detectedAt),
 			findingWithVerdict("task-confirmed-b", selfmonitor.VerdictConfirmed, detectedAt),
@@ -63,8 +64,9 @@ func TestRun_DegradedReportDiscardsFindings(t *testing.T) {
 	detectedAt := now.Add(-2 * time.Hour)  // recent, inside lookback
 	generatedAt := now.Add(-1 * time.Hour) // fresh, so only Degraded can gate it
 	report := selfmonitor.Report{
-		GeneratedAt: generatedAt,
-		Degraded:    true,
+		SchemaVersion: selfmonitor.ReportSchemaVersion,
+		GeneratedAt:   generatedAt,
+		Degraded:      true,
 		Findings: []selfmonitor.InvestigatedFinding{
 			findingWithVerdict("task-confirmed-a", selfmonitor.VerdictConfirmed, detectedAt),
 			findingWithVerdict("task-confirmed-b", selfmonitor.VerdictConfirmed, detectedAt),
@@ -94,6 +96,48 @@ func TestRun_DegradedReportDiscardsFindings(t *testing.T) {
 	}
 	if res.Events != 0 || len(res.Proposals) != 0 {
 		t.Fatalf("degraded report still produced events=%d proposals=%d, want 0/0", res.Events, len(res.Proposals))
+	}
+}
+
+func TestRun_SchemaMismatchDiscardsFindings(t *testing.T) {
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	detectedAt := now.Add(-2 * time.Hour)  // recent, inside lookback
+	generatedAt := now.Add(-1 * time.Hour) // fresh, so only the schema gate can reject it
+	// A pre-v2 report recorded partial/failed ticks in a `state` field this
+	// build no longer reads, so it deserializes with Degraded=false and would
+	// otherwise read as a clean tick. Its stale schema version must gate it.
+	report := selfmonitor.Report{
+		SchemaVersion: selfmonitor.ReportSchemaVersion - 1,
+		GeneratedAt:   generatedAt,
+		Findings: []selfmonitor.InvestigatedFinding{
+			findingWithVerdict("task-confirmed-a", selfmonitor.VerdictConfirmed, detectedAt),
+			findingWithVerdict("task-confirmed-b", selfmonitor.VerdictConfirmed, detectedAt),
+		},
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "last-report.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	res, err := Run(context.Background(), Options{
+		ReportPath:     path,
+		Lookback:       168 * time.Hour,
+		MinClusterSize: 1,
+		MaxReportAge:   24 * time.Hour,
+		Now:            now,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.SchemaMismatch {
+		t.Fatalf("SchemaMismatch = false, want true for a report carrying an unrecognized schema version")
+	}
+	if res.Events != 0 || len(res.Proposals) != 0 {
+		t.Fatalf("schema-mismatched report still produced events=%d proposals=%d, want 0/0", res.Events, len(res.Proposals))
 	}
 }
 

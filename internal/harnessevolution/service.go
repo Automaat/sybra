@@ -53,6 +53,17 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 		report = selfmonitor.Report{}
 		missingReport = true
 	}
+	schemaMismatch := false
+	if !missingReport && report.SchemaVersion != selfmonitor.ReportSchemaVersion {
+		// The on-disk report was written by a build with a different Report
+		// schema. Its trust signals may be absent or mean something else — a
+		// pre-v2 report recorded partial/failed ticks in a `state` field this
+		// build no longer reads, so a degraded tick deserializes with
+		// Degraded=false and reads as clean. Discard its findings rather than
+		// clustering evidence we can't validate.
+		schemaMismatch = true
+		report = selfmonitor.Report{}
+	}
 	staleReport := false
 	if opts.MaxReportAge > 0 && !report.GeneratedAt.IsZero() &&
 		now.Sub(report.GeneratedAt) > opts.MaxReportAge {
@@ -93,6 +104,7 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 		StaleReport:    staleReport,
 		MissingReport:  missingReport,
 		DegradedReport: degradedReport,
+		SchemaMismatch: schemaMismatch,
 	}
 	if opts.OutputDir != "" {
 		if err := SaveRunResult(opts.OutputDir, result); err != nil {

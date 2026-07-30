@@ -9,7 +9,14 @@ import (
 // ReportSchemaVersion is bumped whenever the Report payload shape changes in
 // a way that downstream consumers (GUI, CLI, cron dashboards) must know
 // about.
-const ReportSchemaVersion = 1
+//
+// v2 replaced the coarse State/FailureReason enum and the coverage counters
+// (InputsTotal/InputsAnalyzed/…) with the boolean Degraded flag plus
+// AnalysisFailures. A v1 report's "partial"/"failed" state lived in a `state`
+// field this shape no longer reads, so it would deserialize with
+// Degraded=false and read as a clean tick — consumers must reject a version
+// they don't recognize rather than trust it (see harnessevolution.Run).
+const ReportSchemaVersion = 2
 
 // Report is the full payload emitted at the end of each selfmonitor tick.
 // It's also what `sybra-cli selfmonitor scan` prints and what the Wails

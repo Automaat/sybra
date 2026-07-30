@@ -131,6 +131,9 @@ func printHarnessEvolutionResult(result harnessevolution.RunResult, filed []task
 	if result.DegradedReport {
 		fmt.Println("harness-evolution: self-monitor report is degraded (incomplete evidence); findings discarded (no proposals). Repair log coverage and re-run self-monitor.")
 	}
+	if result.SchemaMismatch {
+		fmt.Println("harness-evolution: self-monitor report uses an unrecognized schema version (likely a pre-upgrade report); findings discarded (no proposals). Re-run self-monitor to regenerate it.")
+	}
 	fmt.Printf("harness-evolution: events=%d clusters=%d proposals=%d filed=%d\n",
 		result.Events, len(result.Clusters), len(result.Proposals), len(filed))
 	if len(result.Proposals) == 0 {
