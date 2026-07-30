@@ -604,17 +604,23 @@ func TestListAgentsMultiple(t *testing.T) {
 // sees its final state, but a caller deciding what still needs stopping
 // (e.g. orchestrator singleton reconciliation) must use ListLiveAgents and
 // never see that terminal entry.
+//
+// Agents are registered directly (like TestHasRunningAgentForTask /
+// TestStopInteractiveAgent) rather than via startTestAgent: startTestAgent
+// spawns a real headless run whose provider process can exit and flip the
+// "live" agent's state before this test gets to assert on it, which would
+// make the assertion race the runner goroutine instead of exercising
+// ListLiveAgents deterministically.
 func TestListLiveAgents_ExcludesStopped(t *testing.T) {
 	m, _ := newTestManager(t)
 
-	live, err := startTestAgent(t, m, "task-live", "Live Task", "headless", "test", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stopped, err := startTestAgent(t, m, "task-stopped", "Stopped Task", "headless", "test", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	live := &Agent{ID: "live", TaskID: "task-live", Mode: "headless", State: StateRunning, cancel: func() {}}
+	stopped := &Agent{ID: "stopped", TaskID: "task-stopped", Mode: "headless", State: StateRunning, cancel: func() {}}
+	m.mu.Lock()
+	m.agents[live.ID] = live
+	m.agents[stopped.ID] = stopped
+	m.mu.Unlock()
+
 	if err := m.StopAgent(stopped.ID); err != nil {
 		t.Fatalf("StopAgent: %v", err)
 	}
