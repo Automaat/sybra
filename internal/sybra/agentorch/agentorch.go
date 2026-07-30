@@ -1020,19 +1020,48 @@ func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
 	case errors.Is(err, provider.ErrProviderUnhealthy):
 		// Gate block leaves no running agent. Flip the task back to todo so
 		// watchdog / restart-stale loops don't chase a ghost in-progress row.
-		if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
-			o.logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
-		}
+		o.revertToTodoAfterGateBlock(taskID, "task.revert-on-gate")
 		o.LogAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
 		o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
 	case errors.Is(err, agent.ErrProviderModelIncompatible):
-		if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
-			o.logger.Error("task.revert-on-model", "task_id", taskID, "err", rerr)
-		}
+		o.revertToTodoAfterGateBlock(taskID, "task.revert-on-model")
 		o.LogAudit(audit.EventProviderModelIncompatible, taskID, "", map[string]any{"err": err.Error()})
 		o.logger.Warn("agent.start.model_incompatible", "task_id", taskID, "err", err)
 	default:
 		return
+	}
+}
+
+// revertToTodoAfterGateBlock flips taskID back to todo after a start attempt
+// was blocked before any agent process ran, so watchdog / restart-stale
+// loops don't chase a ghost in-progress row. It submits the revert as a
+// transition intent CAS'd on the task still being in-progress: if a
+// concurrent writer (retry, human action, another gate) already moved the
+// task somewhere else, that decision wins and this revert is a no-op rather
+// than clobbering it. logSuffix distinguishes the two call sites in error logs.
+func (o *Orchestrator) revertToTodoAfterGateBlock(taskID, logSuffix string) {
+	cur, err := o.tasks.Get(taskID)
+	if err != nil {
+		o.logger.Error(logSuffix, "task_id", taskID, "err", err)
+		return
+	}
+	if cur.Status != task.StatusInProgress {
+		return
+	}
+	expected := cur.Status
+	if _, err := o.tasks.Apply(task.TransitionIntent{
+		TaskID:         taskID,
+		ToStatus:       task.StatusTodo,
+		Actor:          "agentorch.provider_gate",
+		ExpectedStatus: &expected,
+	}); err != nil {
+		var conflict *task.ConflictError
+		if errors.As(err, &conflict) {
+			// Someone else already moved the task off in-progress between
+			// our read and this write — their decision wins.
+			return
+		}
+		o.logger.Error(logSuffix, "task_id", taskID, "err", err)
 	}
 }
 

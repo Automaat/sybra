@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
-	"github.com/Automaat/sybra/internal/events"
-	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -28,6 +26,11 @@ type StatusEffect struct {
 // exactly once per consumed task generation and logical effect signature.
 // Replays of the same Source+Update after completion become a no-op until
 // another task mutation advances the generation.
+//
+// It is a thin wrapper around Apply: the source+update hash becomes the
+// transition's IdempotencyKey, so external observer effects and any other
+// caller of Apply share one durable effect log and one dedup rule instead of
+// two independently-maintained mechanisms.
 func (m *Manager) ApplyStatusEffect(id string, eff StatusEffect) (Task, error) {
 	source := strings.TrimSpace(eff.Source)
 	if source == "" {
@@ -37,70 +40,21 @@ func (m *Manager) ApplyStatusEffect(id string, eff StatusEffect) (Task, error) {
 		return Task{}, fmt.Errorf("apply status effect: update.status is required")
 	}
 
-	mu := m.lockFor(id)
-	mu.Lock()
+	toStatus := *eff.Update.Status
+	extra := eff.Update
+	extra.Status = nil
 
-	cur, err := m.store.Get(id)
+	result, err := m.Apply(TransitionIntent{
+		TaskID:         id,
+		ToStatus:       toStatus,
+		Actor:          "effect:" + source,
+		Extra:          extra,
+		IdempotencyKey: statusEffectStepID(source, eff.Update),
+	})
 	if err != nil {
-		mu.Unlock()
 		return Task{}, err
 	}
-
-	stepID := statusEffectStepID(source, eff.Update)
-	if statusEffectApplied(cur.EffectLog, cur.Generation-1, stepID) {
-		mu.Unlock()
-		return cur, nil
-	}
-
-	now := time.Now().UTC()
-	log := slices.Clone(cur.EffectLog)
-	idempotencyID, ok := statusEffectIDForStep(log, cur.Generation, stepID)
-	if !ok {
-		idempotencyID = workflow.EffectID{
-			Generation: cur.Generation,
-			StepSeq:    nextStatusEffectSeq(cur),
-			StepID:     stepID,
-			Pos:        0,
-		}
-	}
-	record := workflow.EffectRecord{
-		ID:       idempotencyID,
-		IntentAt: now,
-	}
-	record.CompletedAt = &now
-	log = append(log, record)
-	if len(log) > maxTaskEffectLog {
-		log = log[len(log)-maxTaskEffectLog:]
-	}
-
-	u := eff.Update
-	u.EffectLog = &log
-	t, prev, err := m.store.UpdateWithPrev(id, u)
-	if err != nil {
-		mu.Unlock()
-		return Task{}, err
-	}
-
-	var (
-		fireHook            bool
-		prevStatus, newStat string
-	)
-	if m.onStatusHook != nil {
-		prevStatus = string(prev)
-		newStat = string(t.Status)
-		fireHook = newStat != prevStatus
-	}
-	if fireHook {
-		m.recordFiredStatus(id, newStat)
-	}
-	mu.Unlock()
-
-	if fireHook {
-		m.onStatusHook(id, prevStatus, newStat)
-	}
-	metrics.TaskUpdated()
-	m.emitter.Emit(events.TaskUpdated, t.FilePath)
-	return t, nil
+	return result.Task, nil
 }
 
 func statusEffectApplied(log []workflow.EffectRecord, generation int64, stepID string) bool {
