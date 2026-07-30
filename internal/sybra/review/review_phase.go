@@ -41,6 +41,7 @@ type reviewSignals struct {
 	CostGuardrailStopped      bool   // a review agent was cost-stopped before producing a draft/submission
 	HasDraft                  bool   // viewer has a PENDING (unsubmitted) review
 	SelfApproved              bool   // our own bot identity's latest submitted review is an approval — always an anomaly, never a legitimate green light
+	Approved                  bool   // viewer's latest submitted review is an approval
 	Submitted                 bool   // viewer has a submitted (non-draft) review
 	ReRequested               bool   // PR is back in viewer's review-requested list
 	HeadSHA                   string // current PR head commit ("" if unknown)
@@ -133,6 +134,22 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 			Phase:  ReviewPhaseDrafted,
 			Status: task.StatusHumanRequired,
 			Reason: "Draft review ready — verify & submit on GitHub",
+		}
+	}
+
+	if s.Approved {
+		advanced := reviewAdvancedPastReviewed(s)
+		if s.ReRequested || advanced {
+			return reviewPhaseResult{
+				Phase:  ReviewPhaseNeedsApproval,
+				Status: task.StatusInReview,
+				Reason: "Author updated PR — do a final review & approve",
+			}
+		}
+		return reviewPhaseResult{
+			Phase:  ReviewPhaseApproved,
+			Status: task.StatusInReview,
+			Reason: "Approved — waiting for merge",
 		}
 	}
 

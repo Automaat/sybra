@@ -306,7 +306,7 @@ func TestFetchMyReviewState_AttributesAppBotReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchMyReviewState: %v", err)
 	}
-	want := MyReviewState{Submitted: true, Approved: false, ReviewedSHA: "e57e4b5"}
+	want := MyReviewState{Submitted: true, Approved: false, ViewerIsBot: true, ReviewedSHA: "e57e4b5"}
 	if got != want {
 		t.Errorf("got %+v, want %+v — the bot must recognise its own review", got, want)
 	}

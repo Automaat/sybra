@@ -716,6 +716,7 @@ type MyReviewState struct {
 	Pending     bool   // an unsubmitted draft review exists
 	Submitted   bool   // a submitted (non-draft) review exists
 	Approved    bool   // the latest submitted review is an approval
+	ViewerIsBot bool   // the authenticated viewer is a GitHub App/bot identity
 	ReviewedSHA string // commit_id of the latest submitted review ("" if none)
 	ReviewID    int64  // id of the review carrying the latest verdict (0 if none) — needed to dismiss it
 }
@@ -756,7 +757,7 @@ func fetchMyReviewStateWith(e execer, repo string, number int) (MyReviewState, e
 		return MyReviewState{}, fmt.Errorf("resolve viewer login for %s#%d: %w", repo, number, err)
 	}
 
-	var st MyReviewState
+	st := MyReviewState{ViewerIsBot: isBotLogin(me)}
 	var latestReview, latestVerdict string // submitted_at watermarks
 	for i := range reviews {
 		r := reviews[i]
@@ -792,6 +793,10 @@ func fetchMyReviewStateWith(e execer, repo string, number int) (MyReviewState, e
 		myReviewStateCache.Set(key, st, 30*time.Second)
 	}
 	return st, nil
+}
+
+func isBotLogin(login string) bool {
+	return strings.HasSuffix(login, "[bot]")
 }
 
 // ApprovePR approves a pull request.
