@@ -3201,6 +3201,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	}
 	addGitHubPollingFindings(cfg, add)
 	addProviderModelCompatibilityFindings(cfg, add)
+	addExperimentEvaluationFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
 	for _, warning := range routing.Warnings {
@@ -3313,6 +3314,27 @@ func addProviderModelCompatibilityFindings(cfg *config.Config, add func(severity
 	check("monitor.model", cfg.Agent.Provider, cfg.Monitor.Model)
 	check("watchdog.model", cfg.Agent.Provider, cfg.Watchdog.Model)
 	check("human_review.model", cfg.Agent.Provider, cfg.HumanReviewModel())
+}
+
+// addExperimentEvaluationFindings warns when experiment traffic (ab_testing
+// split, or routing's adaptive weight promotion/expansion of it) is enabled
+// without evaluation.enabled — traffic is being split, or a promotion
+// mechanism is armed, with no trustworthy signal to know whether any variant
+// is actually winning. Both findings are warnings, not errors: ab_testing
+// alone still functions (a plain, unmeasured split) and routing degrades
+// safely to a no-op/baseline-only overlay (see routing.Service.tick and
+// evaluation.Trustworthy) rather than breaking dispatch — so this is a
+// configuration smell to flag, not a hard failure to block on.
+func addExperimentEvaluationFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil || cfg.Evaluation.Enabled {
+		return
+	}
+	if cfg.ABTesting.EnabledValue() {
+		add("warning", "ab_testing.enabled is true but evaluation.enabled is false — experiment traffic is being split with no evaluation signal to know whether any variant is winning")
+	}
+	if cfg.Routing.Enabled {
+		add("warning", "routing.enabled is true but evaluation.enabled is false — adaptive weight promotion has no trustworthy evaluation signal and will stay in shadow/baseline-only mode")
+	}
 }
 
 func addConfigPermFindings(add func(severity, format string, a ...any)) {

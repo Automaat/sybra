@@ -180,6 +180,13 @@ const (
 	// carries only experiment/variant IDs and numeric score inputs — never
 	// prompts, provider CLI arguments, or task content.
 	EventRoutingReweighted = "routing.reweighted"
+	// EventRoutingRolledBack records a tick that discarded any adaptive
+	// weight shift and reset the overlay to base (declared) weights because
+	// the evaluation report backing it was untrustworthy (schema-version
+	// mismatch or stale — see evaluation.Trustworthy). Data carries the new
+	// overlay version, whether it was applied live, and a categorical reason
+	// string — never prompts or task content.
+	EventRoutingRolledBack = "routing.rolled_back"
 
 	// EventLearningDigest records a successful Learning Digest generation
 	// (internal/learning) with provider/model/duration/cost in Data.

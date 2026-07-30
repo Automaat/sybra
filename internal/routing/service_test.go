@@ -778,6 +778,199 @@ func TestService_ApplyPersistedOverlay_DisabledIsNoOp(t *testing.T) {
 	}
 }
 
+// TestService_Tick_StaleEvaluation_RollsBackToBaseline covers the "keep one
+// stable production baseline" fail-safe: a report older than
+// EvaluationMaxAgeHours must not be allowed to keep the overlay on its
+// previously-promoted (non-base) weights — it must roll back to base.
+func TestService_Tick_StaleEvaluation_RollsBackToBaseline(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	// Seed a prior generation that already shifted weight away from base
+	// (v1=1, v2=1) toward v1.
+	if err := store.Save(Overlay{
+		Version: 3,
+		Experiments: []OverlayExperiment{{
+			ExperimentID: "exp",
+			Variants: []OverlayVariant{
+				{VariantID: "v1", Weight: 15},
+				{VariantID: "v2", Weight: 1},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var applied []abtest.Config
+	var audited []audit.Event
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	staleRep := testReport(0.9, 0.1)
+	staleRep.SchemaVersion = evaluation.ScorecardSchemaVersion
+	staleRep.GeneratedAt = now.Add(-30 * 24 * time.Hour) // far older than maxAge
+
+	svc := NewService(Deps{
+		Cfg: config.RoutingConfig{
+			Enabled:               true,
+			IntervalHours:         6,
+			WeightBudget:          20,
+			FloorWeight:           1,
+			MaxStep:               100,
+			MinSamplesToShift:     0,
+			EvaluationMaxAgeHours: 24,
+			Coefficients:          config.DefaultRoutingCoefficients(),
+		},
+		Base:   testBaseConfig,
+		Report: func() (evaluation.Report, bool) { return staleRep, true },
+		Store:  store,
+		Apply: func(cfg abtest.Config) error {
+			applied = append(applied, cfg)
+			return nil
+		},
+		AuditLog: func(e audit.Event) error { audited = append(audited, e); return nil },
+		Logger:   slog.New(slog.DiscardHandler),
+		Now:      func() time.Time { return now },
+	})
+
+	runOnceSync(svc)
+
+	overlay, ok, err := store.Load()
+	if err != nil || !ok {
+		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+	}
+	if overlay.Version != 4 {
+		t.Fatalf("overlay.Version = %d, want 4 (bumped on rollback)", overlay.Version)
+	}
+	w1, _ := overlay.WeightAt("exp", "v1")
+	w2, _ := overlay.WeightAt("exp", "v2")
+	if w1 != 1 || w2 != 1 {
+		t.Fatalf("overlay weights v1=%d v2=%d, want 1/1 (base declared weights)", w1, w2)
+	}
+	if len(applied) != 1 {
+		t.Fatalf("apply calls = %d, want 1 (rollback applied live)", len(applied))
+	}
+	if w := weightOf(applied[0], "exp", "v1"); w != 1 {
+		t.Fatalf("applied v1 weight = %d, want 1", w)
+	}
+	if len(audited) != 1 || audited[0].Type != audit.EventRoutingRolledBack {
+		t.Fatalf("audited = %+v, want one routing.rolled_back event", audited)
+	}
+}
+
+// TestService_Tick_StaleEvaluation_AlreadyAtBaseline_NoOp covers the churn
+// guard: once the overlay already matches base's declared weights, a
+// sustained stale-evaluation outage must not save a new overlay generation
+// or re-apply/re-audit every subsequent tick.
+func TestService_Tick_StaleEvaluation_AlreadyAtBaseline_NoOp(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	staleRep := testReport(0.9, 0.1)
+	staleRep.SchemaVersion = evaluation.ScorecardSchemaVersion
+	staleRep.GeneratedAt = now.Add(-30 * 24 * time.Hour)
+
+	var applied []abtest.Config
+	var audited []audit.Event
+	svc := NewService(Deps{
+		Cfg: config.RoutingConfig{
+			Enabled:               true,
+			IntervalHours:         6,
+			EvaluationMaxAgeHours: 24,
+		},
+		Base:   testBaseConfig,
+		Report: func() (evaluation.Report, bool) { return staleRep, true },
+		Store:  store,
+		Apply: func(cfg abtest.Config) error {
+			applied = append(applied, cfg)
+			return nil
+		},
+		AuditLog: func(e audit.Event) error { audited = append(audited, e); return nil },
+		Logger:   slog.New(slog.DiscardHandler),
+		Now:      func() time.Time { return now },
+	})
+
+	// First tick: no overlay existed yet, so rolling back to (equal to)
+	// base is itself a real, one-time persisted action.
+	runOnceSync(svc)
+	if len(applied) != 1 || len(audited) != 1 {
+		t.Fatalf("after first tick: applied=%d audited=%d, want 1/1 (initial rollback to base)", len(applied), len(audited))
+	}
+
+	// Subsequent ticks: already at baseline — must not churn.
+	runOnceSync(svc)
+	runOnceSync(svc)
+
+	if len(applied) != 1 {
+		t.Fatalf("apply calls = %d, want 1 (no churn once already at baseline)", len(applied))
+	}
+	if len(audited) != 1 {
+		t.Fatalf("audit calls = %d, want 1 (no churn once already at baseline)", len(audited))
+	}
+}
+
+// TestService_Tick_MismatchedSchemaVersion_RollsBackToBaseline covers the
+// "no aggregate cohort mixes incompatible metric schema versions" acceptance
+// criterion: a report stamped with a schema version this build does not
+// understand must not drive a weight decision, even when fresh.
+func TestService_Tick_MismatchedSchemaVersion_RollsBackToBaseline(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Save(Overlay{
+		Version: 1,
+		Experiments: []OverlayExperiment{{
+			ExperimentID: "exp",
+			Variants: []OverlayVariant{
+				{VariantID: "v1", Weight: 15},
+				{VariantID: "v2", Weight: 1},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	mismatchedRep := testReport(0.9, 0.1)
+	mismatchedRep.SchemaVersion = evaluation.ScorecardSchemaVersion - 1
+	mismatchedRep.GeneratedAt = now // fresh, but wrong schema
+
+	var audited []audit.Event
+	svc := NewService(Deps{
+		Cfg: config.RoutingConfig{
+			Enabled:       true,
+			IntervalHours: 6,
+			WeightBudget:  20,
+			FloorWeight:   1,
+			MaxStep:       100,
+		},
+		Base:     testBaseConfig,
+		Report:   func() (evaluation.Report, bool) { return mismatchedRep, true },
+		Store:    store,
+		Apply:    func(abtest.Config) error { return nil },
+		AuditLog: func(e audit.Event) error { audited = append(audited, e); return nil },
+		Logger:   slog.New(slog.DiscardHandler),
+		Now:      func() time.Time { return now },
+	})
+
+	runOnceSync(svc)
+
+	overlay, ok, err := store.Load()
+	if err != nil || !ok {
+		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+	}
+	w1, _ := overlay.WeightAt("exp", "v1")
+	w2, _ := overlay.WeightAt("exp", "v2")
+	if w1 != 1 || w2 != 1 {
+		t.Fatalf("overlay weights v1=%d v2=%d, want 1/1 (rolled back to base on schema mismatch)", w1, w2)
+	}
+	if len(audited) != 1 || audited[0].Type != audit.EventRoutingRolledBack {
+		t.Fatalf("audited = %+v, want one routing.rolled_back event", audited)
+	}
+}
+
 func weightOf(cfg abtest.Config, expID, variantID string) int {
 	for i := range cfg.Experiments {
 		if cfg.Experiments[i].ID != expID {

@@ -1223,6 +1223,80 @@ func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONWarnsOnABTestingWithoutEvaluation(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	enabled := true
+	cfg.ABTesting.Enabled = &enabled
+	cfg.Evaluation.Enabled = false
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	want := "ab_testing.enabled is true but evaluation.enabled is false — experiment traffic is being split with no evaluation signal to know whether any variant is winning"
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" && f.Message == want
+	}) {
+		t.Fatalf("expected warning %q in %+v", want, report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONWarnsOnRoutingWithoutEvaluation(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Routing.Enabled = true
+	cfg.Evaluation.Enabled = false
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	want := "routing.enabled is true but evaluation.enabled is false — adaptive weight promotion has no trustworthy evaluation signal and will stay in shadow/baseline-only mode"
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" && f.Message == want
+	}) {
+		t.Fatalf("expected warning %q in %+v", want, report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONNoExperimentEvaluationWarningWhenEvaluationEnabled(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	enabled := true
+	cfg.ABTesting.Enabled = &enabled
+	cfg.Routing.Enabled = true
+	cfg.Evaluation.Enabled = true
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "evaluation.enabled is false")
+	}) {
+		t.Fatalf("did not expect an evaluation-disabled warning with evaluation.enabled=true: %+v", report.Findings)
+	}
+}
+
 func TestConfigDumpRedactsTaggedSecrets(t *testing.T) {
 	setupStore(t)
 

@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/autoupdate"
@@ -827,10 +828,64 @@ func (lm *LifecycleManager) startRoutingService(ctx context.Context, emit func(s
 	}
 	svc := routing.NewService(deps)
 	a.routingSvc = svc
+	lm.wireCohortObserved()
 	// Prime before Startup returns so persisted overlays are live immediately
 	// and a fresh enabled home bootstraps version 1 before the first dispatch.
 	svc.Prime()
 	a.wg.Go(func() { svc.Run(ctx) })
+}
+
+// wireCohortObserved connects the canary-cohort gate
+// (internal/abtest.CohortObserved) both dispatch chokepoints consult —
+// agent.Manager.ApplyABVariant (orchestrator/human-review/staff-review) and
+// workflow.Engine.selectABVariant (the primary task-role dispatch path) —
+// to the live evaluation report, so an experiment.Canary policy configured
+// in ab_testing.yaml is actually gated on real resolved-run counts and
+// evaluation.Trustworthy freshness instead of staying permanently
+// fail-closed to baseline. The closure itself is safe to register early
+// (before either target exists, or before startEvaluationService runs): it
+// reads a.evaluationSvc lazily at call time, not at wiring time.
+func (lm *LifecycleManager) wireCohortObserved() {
+	a := lm.app
+	if a.agents == nil && a.workflowEngine == nil {
+		return
+	}
+	fn := abtest.CohortObserved(func(experimentID string) (observed int, fresh bool) {
+		if a.evaluationSvc == nil {
+			return 0, false
+		}
+		rep, ok := a.evaluationSvc.LastReport()
+		if !ok {
+			return 0, false
+		}
+		maxAge := time.Duration(a.cfg.Routing.EvaluationMaxAgeHours * float64(time.Hour))
+		if tw := evaluation.Trustworthy(rep, time.Now().UTC(), maxAge); !tw.Trustworthy {
+			return 0, false
+		}
+		for i := range rep.ByExperimentKind {
+			kind := &rep.ByExperimentKind[i]
+			for j := range kind.Groups {
+				group := &kind.Groups[j]
+				if group.ExperimentID != experimentID {
+					continue
+				}
+				for k := range group.Rows {
+					observed += group.Rows[k].ResolvedRuns
+				}
+				return observed, true
+			}
+		}
+		// The experiment is unrepresented in the report yet (no runs, or
+		// filtered out) — genuinely a zero cohort under a fresh, trustworthy
+		// report, not a signal failure.
+		return 0, true
+	})
+	if a.agents != nil {
+		a.agents.SetCohortObserved(fn)
+	}
+	if a.workflowEngine != nil {
+		a.workflowEngine.SetCohortObserved(fn)
+	}
 }
 
 // pollRegistrar is the subset of *poll.Hub used by registerPollHandlers,

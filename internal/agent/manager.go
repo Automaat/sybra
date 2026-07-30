@@ -86,6 +86,7 @@ type Manager struct {
 	limitPolicy        limits.Policy
 	limitSink          func(limits.Snapshot)
 	evalPassed         abtest.EvalPassed
+	cohortObserved     abtest.CohortObserved
 
 	// liveByProvider tracks in-flight agent counts per provider, incremented
 	// and decremented in lockstep with liveCount (registerRunningAgent,
@@ -700,6 +701,18 @@ func (m *Manager) SetHealthGate(g provider.HealthGate) {
 func (m *Manager) SetEvalPassed(fn abtest.EvalPassed) {
 	m.mu.Lock()
 	m.evalPassed = fn
+	m.mu.Unlock()
+}
+
+// SetCohortObserved wires the canary-cohort readiness predicate ApplyABVariant
+// consults for experiments with a Canary policy — sourced from the
+// evaluation/routing services' own resolved-run counts and freshness verdict
+// (see evaluation.Trustworthy), so abtest and agent never need to know about
+// evaluation directly. A nil predicate (the default) leaves every canary
+// experiment fail-closed to its baseline variant.
+func (m *Manager) SetCohortObserved(fn abtest.CohortObserved) {
+	m.mu.Lock()
+	m.cohortObserved = fn
 	m.mu.Unlock()
 }
 

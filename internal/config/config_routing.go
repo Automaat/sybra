@@ -37,6 +37,12 @@ type RoutingConfig struct {
 	// gates the evaluation scorecard's InsufficientData display flag.
 	MinSamplesToShift int                 `yaml:"min_samples_to_shift" json:"minSamplesToShift"`
 	Coefficients      RoutingCoefficients `yaml:"coefficients" json:"coefficients"`
+	// EvaluationMaxAgeHours bounds how old the evaluation report backing a
+	// tick may be before it is treated as untrustworthy (see
+	// evaluation.Trustworthy) and the tick rolls the overlay back to base
+	// weights instead of promoting/expanding experiment traffic from it. <=0
+	// disables the freshness check.
+	EvaluationMaxAgeHours float64 `yaml:"evaluation_max_age_hours" json:"evaluationMaxAgeHours"`
 }
 
 // RoutingCoefficients weights each score input's contribution to a variant's

@@ -53,7 +53,33 @@ func SelectEligibleWithEval(cfg Config, taskID, role, stepID string, providerAll
 }
 
 // SelectEligibleForContext is SelectEligible with workflow subject context.
+// Equivalent to SelectEligibleForContextWithCohort with a nil cohortObserved
+// — no experiment in cfg is treated as canary-gated even if it declares a
+// Canary policy (see that function's fail-closed-to-baseline doc comment).
 func SelectEligibleForContext(cfg Config, ctx SelectionContext, providerAllowed func(string) bool, evalPassed EvalPassed) (Assignment, bool, error) {
+	return SelectEligibleForContextWithCohort(cfg, ctx, providerAllowed, evalPassed, nil)
+}
+
+// CohortObserved reports the resolved-run count and freshness backing an
+// experiment's canary gate — typically sourced from the evaluation
+// scorecard's per-experiment sample size and evaluation.Trustworthy. abtest
+// has no notion of time-based staleness on its own; fresh=false is treated
+// exactly like an insufficient cohort. Never called for an experiment
+// without a Canary policy.
+type CohortObserved func(experimentID string) (observed int, fresh bool)
+
+// SelectEligibleForContextWithCohort is SelectEligibleForContext with an
+// additional canary-cohort predicate. An experiment with a non-nil Canary
+// policy forces every assignment to its BaselineVariantID unless
+// cohortObserved reports a fresh cohort of at least MinCohort resolved runs
+// — and even then, bounds non-baseline-eligible traffic to PercentBound via
+// the same deterministic per-(task,role,stage) hash the normal weighted
+// draw uses, so canary membership is stable and reproducible. A canary
+// experiment given a nil cohortObserved fails closed to its baseline (no
+// observability, no canary traffic) — the same fail-closed posture this
+// package already applies to positive-weight-only variants and provider
+// eligibility.
+func SelectEligibleForContextWithCohort(cfg Config, ctx SelectionContext, providerAllowed func(string) bool, evalPassed EvalPassed, cohortObserved CohortObserved) (Assignment, bool, error) {
 	if !cfg.EnabledValue() {
 		return Assignment{}, false, nil
 	}
@@ -62,9 +88,90 @@ func SelectEligibleForContext(cfg Config, ctx SelectionContext, providerAllowed 
 		if !exp.EnabledValue() || !roleMatches(exp.Roles, ctx.Role) || !subjectMatches(exp.Subject, ctx) {
 			continue
 		}
+		if exp.Canary != nil {
+			return selectFromCanaryExperiment(exp, ctx.TaskID, ctx.Role, ctx.StepID, providerAllowed, evalPassed, cfg.WeightsVersion, cohortObserved)
+		}
 		return selectFromExperiment(exp, ctx.TaskID, ctx.Role, ctx.StepID, providerAllowed, evalPassed, cfg.WeightsVersion)
 	}
 	return Assignment{}, false, nil
+}
+
+// selectFromCanaryExperiment applies exp.Canary's cohort/percent gate before
+// falling back to the normal weighted draw. Returns ok=false (no error) when
+// the baseline variant itself is not providerAllowed, deferring to plain
+// (non-AB) provider selection and failover exactly like selectFromExperiment
+// does when every variant is ineligible — a canary must never hard-error
+// dispatch just because its baseline provider is temporarily unavailable;
+// that is gateProvider's job, independently, at dispatch time.
+func selectFromCanaryExperiment(exp Experiment, taskID, role, stepID string, providerAllowed func(string) bool, evalPassed EvalPassed, weightsVersion *int, cohortObserved CohortObserved) (Assignment, bool, error) {
+	if err := validateExperiment(exp, providerAllowed); err != nil {
+		return Assignment{}, false, err
+	}
+	baseline, ok := findVariant(exp, exp.Canary.BaselineVariantID)
+	if !ok {
+		return Assignment{}, false, fmt.Errorf("abtest: experiment %q canary baseline_variant_id %q not found", exp.ID, exp.Canary.BaselineVariantID)
+	}
+	if providerAllowed != nil && !providerAllowed(baseline.Provider) {
+		return Assignment{}, false, nil
+	}
+
+	unit := exp.AssignmentUnit
+	if unit == "" {
+		unit = "stage"
+	}
+	key := taskID
+	if unit == "stage" {
+		key = strings.Join([]string{taskID, role, stepID}, "|")
+	}
+
+	observed, fresh := 0, false
+	if cohortObserved != nil {
+		observed, fresh = cohortObserved(exp.ID)
+	}
+	inCohort := fresh && observed >= exp.Canary.MinCohort
+	// Separate hash namespace ("canary|") from the variant-pick hash below
+	// so canary-bucket membership and (once admitted) variant choice are
+	// independent draws for the same key.
+	inCanaryBucket := hashKey("canary|"+exp.ID+"|"+key)%100 < clampPercent(exp.Canary.PercentBound)
+	if !inCohort || !inCanaryBucket {
+		return baselineAssignment(exp, baseline, unit, key, weightsVersion), true, nil
+	}
+	return selectFromExperiment(exp, taskID, role, stepID, providerAllowed, evalPassed, weightsVersion)
+}
+
+// clampPercent bounds p to [0,100] and returns it as a uint64, matching
+// hashKey's modulo result type — validateCanary already rejects an
+// out-of-range PercentBound before selection, this is a defensive clamp.
+func clampPercent(p int) uint64 {
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	// #nosec G115 -- bounded to [0,100] above; uint64 cannot overflow.
+	return uint64(p)
+}
+
+func baselineAssignment(exp Experiment, v Variant, unit, key string, weightsVersion *int) Assignment {
+	decisionVersion := 0
+	if weightsVersion != nil {
+		decisionVersion = *weightsVersion
+	}
+	return Assignment{
+		ExperimentID:    exp.ID,
+		Kind:            exp.KindValue(),
+		VariantID:       v.ID,
+		RoutingReason:   "canary_baseline",
+		Provider:        v.Provider,
+		Model:           v.Model,
+		ReasoningEffort: v.ReasoningEffort,
+		AssignmentUnit:  unit,
+		AssignmentKey:   key,
+		PromptTransform: clonePromptTransform(v.PromptTransform),
+		SkillAliases:    cloneSkillAliases(v.SkillAliases),
+		DecisionVersion: decisionVersion,
+	}
 }
 
 func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerAllowed func(string) bool, evalPassed EvalPassed, weightsVersion *int) (Assignment, bool, error) {
@@ -228,7 +335,39 @@ func validateExperiment(exp Experiment, providerAllowed func(string) bool) error
 	if err := validatePromptSkillHomogeneity(exp, providerAllowed); err != nil {
 		return err
 	}
+	if err := validateCanary(exp); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateCanary(exp Experiment) error {
+	c := exp.Canary
+	if c == nil {
+		return nil
+	}
+	if strings.TrimSpace(c.BaselineVariantID) == "" {
+		return fmt.Errorf("abtest: experiment %q canary requires baseline_variant_id", exp.ID)
+	}
+	if c.PercentBound < 0 || c.PercentBound > 100 {
+		return fmt.Errorf("abtest: experiment %q canary percent_bound %d out of range [0,100]", exp.ID, c.PercentBound)
+	}
+	if c.MinCohort < 0 {
+		return fmt.Errorf("abtest: experiment %q canary min_cohort must be >= 0", exp.ID)
+	}
+	if _, ok := findVariant(exp, c.BaselineVariantID); !ok {
+		return fmt.Errorf("abtest: experiment %q canary baseline_variant_id %q not found among variants", exp.ID, c.BaselineVariantID)
+	}
+	return nil
+}
+
+func findVariant(exp Experiment, id string) (Variant, bool) {
+	for i := range exp.Variants {
+		if exp.Variants[i].ID == id {
+			return exp.Variants[i], true
+		}
+	}
+	return Variant{}, false
 }
 
 func validateExperimentSubject(exp Experiment) error {

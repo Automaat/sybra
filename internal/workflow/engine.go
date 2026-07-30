@@ -447,7 +447,8 @@ type Engine struct {
 	// from mu so a config swap never contends with dispatch bookkeeping.
 	abMu             sync.RWMutex
 	abTesting        abtest.Config
-	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	evalGate         *prompteval.Gate      // nil = offline eval verdicts do not gate A/B enrollment
+	cohortObserved   abtest.CohortObserved // nil = every Canary-gated experiment fails closed to its baseline variant
 	conflictRecovery func(taskID string) bool
 	// dispatchComparator, when set, orders TaskInfo pairs for ResumeStalled's
 	// per-tick dispatch scan, replacing the built-in
@@ -784,6 +785,13 @@ func (e *Engine) abTestingConfig() abtest.Config {
 // online A/B enrollment for digested variants. Leaving it unset (nil)
 // preserves prior behavior: no offline-eval gating.
 func (e *Engine) SetEvalGate(gate *prompteval.Gate) { e.evalGate = gate }
+
+// SetCohortObserved wires the canary-cohort readiness predicate selectABVariant
+// consults for experiments with an abtest.CanaryPolicy — sourced from the
+// evaluation/routing services' own resolved-run counts and freshness verdict.
+// Leaving it unset (nil) fails every canary-gated experiment closed to its
+// baseline variant.
+func (e *Engine) SetCohortObserved(fn abtest.CohortObserved) { e.cohortObserved = fn }
 
 // SetConflictRecovery wires the autonomous branch-conflict recovery callback
 // (review.Handler.RecoverStaleBranchConflict) used by push_branch/create_pr
