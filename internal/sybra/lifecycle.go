@@ -801,6 +801,10 @@ func (lm *LifecycleManager) startPromptLabService(ctx context.Context, _ func(st
 // workflow dispatch on a fresh enabled home.
 func (lm *LifecycleManager) startRoutingService(ctx context.Context, emit func(string, any)) {
 	a := lm.app
+	// Canary-cohort gating is independent of the routing overlay store, so wire
+	// it first: a store init failure must not leave every Canary experiment
+	// permanently pinned to baseline (nil cohort observer => fail-closed).
+	lm.wireCohortObserved()
 	store, err := routing.NewStore(config.RoutingDir())
 	if err != nil {
 		a.logger.Warn("routing.store.init_failed", "err", err)
@@ -828,7 +832,6 @@ func (lm *LifecycleManager) startRoutingService(ctx context.Context, emit func(s
 	}
 	svc := routing.NewService(deps)
 	a.routingSvc = svc
-	lm.wireCohortObserved()
 	// Prime before Startup returns so persisted overlays are live immediately
 	// and a fresh enabled home bootstraps version 1 before the first dispatch.
 	svc.Prime()
