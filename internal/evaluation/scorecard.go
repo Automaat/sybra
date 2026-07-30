@@ -11,6 +11,7 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -95,9 +96,19 @@ type Scorecard struct {
 	CycleTimeP90H   float64 `json:"cycleTimeP90H"` //
 
 	// Autonomy: did landed work reach done without a human in the loop?
-	AutonomousLandings   int     `json:"autonomousLandings"`
-	HumanTouchedLandings int     `json:"humanTouchedLandings"`
-	AutonomyRate         float64 `json:"autonomyRate"` // autonomous / landed
+	// human-required is a request for intervention, not evidence one
+	// happened — HumanTouchedLandings only counts a landing whose resolution
+	// carries a durably-attributed operator action (an explicit approve/
+	// reject, a dispatch/edit out of human-required, or a human PR edit).
+	// A landing that asked for intervention but whose resolution carries no
+	// such provenance (typically event history predating this
+	// classification, see ScorecardSchemaVersion) is neither autonomous nor
+	// human-touched — it lands in AutonomyUnknownLandings instead of being
+	// forced into one bucket on a guess (issue #2727).
+	AutonomousLandings      int     `json:"autonomousLandings"`
+	HumanTouchedLandings    int     `json:"humanTouchedLandings"`
+	AutonomyUnknownLandings int     `json:"autonomyUnknownLandings"`
+	AutonomyRate            float64 `json:"autonomyRate"` // autonomous / landed
 
 	// Reliability (from stats run outcomes). AgentRuns counts every run;
 	// AgentStalls the retried subset (stats.OutcomeStalled); AgentResolvedRuns
@@ -261,8 +272,27 @@ type ExperimentSampleStatus struct {
 	Status               string                `json:"status"`
 }
 
+// ScorecardSchemaVersion is the computation-semantics version of Report —
+// bumped when a metric's *meaning* changes in a way that makes an old and a
+// new report non-comparable at face value, not on every field addition.
+//
+// Version 2 (issue #2727) redefines human-touch from "entered
+// human-required" to "an explicit, durably-attributed operator action", and
+// CI-first-pass from "any PR-repair agent ran" to "a CI-failure-typed repair
+// ran". A report computed from event history that predates this
+// instrumentation cannot be reclassified after the fact: those landings
+// surface as Scorecard.AutonomyUnknownLandings (see its doc comment) rather
+// than being silently counted under the old, broader v1 definition. A
+// dashboard or trend view spanning the v1→v2 boundary should treat
+// AutonomyRate/CIFirstPassRate deltas across it as not directly comparable.
+const ScorecardSchemaVersion = 2
+
 // Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
 type Report struct {
+	// SchemaVersion is ScorecardSchemaVersion at generation time — see its
+	// doc comment for what changes across a version bump and how a cohort
+	// straddling one should be read.
+	SchemaVersion            int                       `json:"schemaVersion"`
 	GeneratedAt              time.Time                 `json:"generatedAt"`
 	Since                    time.Time                 `json:"since"`
 	Until                    time.Time                 `json:"until"`
@@ -342,9 +372,11 @@ func unaccountedFailureNote(records []stats.RunRecord, since, until time.Time) s
 		unaccounted, failures)
 }
 
-// reportNotes pairs the static deferred-metric notes with any note that depends
-// on what is actually in the window.
-func reportNotes(records []stats.RunRecord, since, until time.Time) []string {
+// reportNotes pairs the static deferred-metric notes with any note that
+// depends on what is actually in the window. sc is the already-computed
+// Scorecard for the same window, reused rather than recomputed so a caller
+// (Service.Scan) that already ran Compute doesn't pay for it twice.
+func reportNotes(records []stats.RunRecord, since, until time.Time, sc Scorecard) []string {
 	notes := slices.Clone(deferredNotes)
 	if n := unaccountedFailureNote(records, since, until); n != "" {
 		notes = append(notes, n)
@@ -352,7 +384,22 @@ func reportNotes(records []stats.RunRecord, since, until time.Time) []string {
 	if n := skillParityNote(records, since, until); n != "" {
 		notes = append(notes, n)
 	}
+	if n := autonomyUnknownNote(sc); n != "" {
+		notes = append(notes, n)
+	}
 	return notes
+}
+
+// autonomyUnknownNote mirrors unaccountedFailureNote/skillParityNote:
+// diagnostic only, never adjusts a metric, just states why AutonomyRate's
+// two buckets don't sum to TasksLanded when they don't.
+func autonomyUnknownNote(sc Scorecard) string {
+	if sc.AutonomyUnknownLandings == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%d of %d landed tasks asked for intervention (entered human-required) but their resolution carries no durably-attributed operator action — likely event history predating issue #2727's provenance instrumentation; AutonomyRate/HumanTouchedLandings exclude them from both buckets rather than guessing",
+		sc.AutonomyUnknownLandings, sc.TasksLanded)
 }
 
 // skillParityNote counts in-window runs whose skill conformance is
@@ -393,7 +440,20 @@ var deferredNotes = []string{
 // taskSignals accumulates per-task lifecycle facts used for autonomy,
 // CI-first-pass, and rework detection.
 type taskSignals struct {
+	// humanTouched is set only by a durably-attributed, explicit operator
+	// action — never by entering human-required or by an automated recovery
+	// path, neither of which is evidence a human acted (issue #2727).
 	humanTouched bool
+	// sawHumanRequired records that the task asked for intervention at least
+	// once (a task.status_changed to "human-required"). On its own this is
+	// a request, not an outcome — see classifyLanded for how it combines
+	// with humanTouched and autoResolved.
+	sawHumanRequired bool
+	// autoResolved records a durably-confirmed automated-recovery exit from
+	// human-required (intervention.Capture with operator_action_class
+	// "auto_recovery") — positive evidence no human acted, distinct from
+	// "no provenance recorded at all" (see classifyLanded's unknown bucket).
+	autoResolved bool
 	ciFixNeeded  bool
 	transitions  map[string]int
 }
@@ -424,8 +484,8 @@ func computeWithSignals(records []stats.RunRecord, events []audit.Event, sigs ma
 	sc.AgentRuns, sc.AgentFailures, sc.AgentStalls, sc.AgentResolvedRuns = runs, fails, stalls, resolved
 	sc.Reverted = countReverts(events, win, lg.tasks)
 	sc.TotalCostUSD = cost
-	autonomous, humanTouched, ciClean := classifyLanded(lg.tasks, lg.edited, sigs)
-	sc.AutonomousLandings, sc.HumanTouchedLandings = autonomous, humanTouched
+	autonomous, humanTouched, unknown, ciClean := classifyLanded(lg.tasks, lg.edited, sigs)
+	sc.AutonomousLandings, sc.HumanTouchedLandings, sc.AutonomyUnknownLandings = autonomous, humanTouched, unknown
 	sc.ReworkTasks = countRework(sigs, lg.tasks)
 
 	if n := float64(sc.TasksLanded); n > 0 {
@@ -512,16 +572,71 @@ func scanTaskSignals(events []audit.Event) map[string]*taskSignals {
 		case audit.EventTaskStatusChanged:
 			s := sig(e.TaskID)
 			if strVal(e.Data, "to") == "human-required" {
-				s.humanTouched = true
+				// A request for intervention, not evidence one happened —
+				// see EventInterventionRecorded/EventPlanApproved below for
+				// the actual resolution provenance (issue #2727).
+				s.sawHumanRequired = true
 			}
 			s.transitions[strVal(e.Data, "from")+"->"+strVal(e.Data, "to")]++
-		case audit.EventHumanReviewSpawned:
-			sig(e.TaskID).humanTouched = true
-		case audit.EventPRCIFailureDetected, audit.EventPRFixAgentStarted, audit.EventRenovateCIFix:
+		case audit.EventInterventionRecorded:
+			// Fires on every real exit from human-required — a human
+			// clicking Dispatch, a manual field/status edit, or an
+			// automated-recovery re-entry — all through the same
+			// guard+scrub+persist+audit pipeline (intervention.Capture), so
+			// this is the single durable signal for who resolved it.
+			// operator_action_class mirrors intervention.OperatorActionClass
+			// ("human"/"auto_recovery"); duplicated as a literal here rather
+			// than importing internal/intervention for two constants.
+			s := sig(e.TaskID)
+			switch strVal(e.Data, "operator_action_class") {
+			case "human":
+				s.humanTouched = true
+			case "auto_recovery":
+				s.autoResolved = true
+			}
+		case audit.EventPlanApproved, audit.EventPlanRejected:
+			// SetPlanAutoApproveHook stamps auto=true; a genuine human
+			// approve/reject (PlanningService.approve/reject) does not.
+			if !boolVal(e.Data, "auto") {
+				sig(e.TaskID).humanTouched = true
+			}
+		case audit.EventPRCIFailureDetected, audit.EventRenovateCIFix:
+			// Both event types are themselves scoped to a CI failure by
+			// construction (their type, not a payload field, encodes the
+			// cause), unlike EventPRFixAgentStarted below.
 			sig(e.TaskID).ciFixNeeded = true
+		case audit.EventPRFixAgentStarted:
+			// Fires for every pr-fix dispatch regardless of cause — a
+			// merge-conflict or review-comment repair must not lower
+			// CI-first-pass, only a CI-failure-typed one (issue #2727).
+			if prFixIsCIRepair(e.Data) {
+				sig(e.TaskID).ciFixNeeded = true
+			}
 		}
 	}
 	return sigs
+}
+
+// prFixIsCIRepair reports whether a pr_monitor.fix_agent_started event's
+// typed cause set includes a CI failure. "kinds" (fix.go's
+// dispatchPRIssueWithOptions) carries the full comma-joined set of issue
+// kinds a batched fix coalesced — a comment reply pushed alongside an
+// unrelated CI retry, say — so a fix must count as CI repair if CI failure
+// is anywhere in that set; "issue" (the primary kind) is the fallback for
+// older events that only ever recorded one kind. The literal "ci_failure"
+// duplicates github.PRIssueCIFailure — matched as a string, like this file's
+// other audit Data literals (see scanLandings' "outcome" cases), rather than
+// importing internal/github for one constant.
+func prFixIsCIRepair(data map[string]any) bool {
+	if kinds := strVal(data, "kinds"); kinds != "" {
+		for k := range strings.SplitSeq(kinds, ",") {
+			if strings.TrimSpace(k) == "ci_failure" {
+				return true
+			}
+		}
+		return false
+	}
+	return strVal(data, "issue") == "ci_failure"
 }
 
 // scanReliability derives runs and failures from stats run records, not audit
@@ -570,24 +685,34 @@ func scanEfficiency(records []stats.RunRecord, win func(time.Time) bool) (cost f
 	return cost, turns, tools
 }
 
-// classifyLanded splits landed tasks into autonomous vs human-touched and counts
-// those that landed without a CI fix. A task with no recorded signals counts as
-// autonomous and CI-clean.
-func classifyLanded(landed, edited map[string]bool, sigs map[string]*taskSignals) (autonomous, humanTouched, ciClean int) {
+// classifyLanded splits landed tasks into autonomous, human-touched, and
+// provenance-unknown, and counts those that landed without a CI fix. A task
+// with no recorded signals at all counts as autonomous and CI-clean.
+//
+// The three-way autonomy split (see taskSignals' field docs) is: a human
+// edit or a durably-confirmed operator action is always human-touched, even
+// over a confirmed auto-recovery signal on the same task (an operator can
+// still act after an automated retry); a task that never asked for
+// intervention is autonomous; a task that asked for intervention and was
+// durably confirmed resolved without one is also autonomous; a task that
+// asked for intervention with no resolution provenance at all is unknown
+// rather than forced into either bucket (issue #2727).
+func classifyLanded(landed, edited map[string]bool, sigs map[string]*taskSignals) (autonomous, humanTouched, unknown, ciClean int) {
 	for id := range landed {
 		s := sigs[id]
-		// A task is human-touched if it went human-required / spawned a human
-		// review (sigs) OR a human edited its PR before merge (merged_with_edits).
-		if (s == nil || !s.humanTouched) && !edited[id] {
-			autonomous++
-		} else {
+		switch {
+		case edited[id] || (s != nil && s.humanTouched):
 			humanTouched++
+		case s == nil || !s.sawHumanRequired || s.autoResolved:
+			autonomous++
+		default:
+			unknown++
 		}
 		if s == nil || !s.ciFixNeeded {
 			ciClean++
 		}
 	}
-	return autonomous, humanTouched, ciClean
+	return autonomous, humanTouched, unknown, ciClean
 }
 
 // countRework counts how many landed tasks bounced (a status transition seen
@@ -1520,6 +1645,14 @@ func strVal(m map[string]any, k string) string {
 	}
 	s, _ := m[k].(string)
 	return s
+}
+
+func boolVal(m map[string]any, k string) bool {
+	if m == nil {
+		return false
+	}
+	b, _ := m[k].(bool)
+	return b
 }
 
 // floatVal reads a numeric field, tolerating the float64 that JSON round-trips

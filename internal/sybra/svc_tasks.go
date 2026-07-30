@@ -1160,6 +1160,14 @@ func (s *TaskService) appendManualHumanRequiredDecision(before, after task.Task,
 		return
 	}
 	s.appendDecisionProgress(after.ID, artifact.ManualDecisionMessage(string(before.Status), string(after.Status), reason))
+	// UpdateTask is the generic GUI/CLI field-edit endpoint, reached only by an
+	// operator (or a script run on their behalf) — never by an automated
+	// recovery path, which exits human-required through
+	// dispatchFromHumanRequiredLockedAllowingAgent or the review package's own
+	// Capture calls instead. Route this exit through the same
+	// guard+scrub+persist+audit pipeline so a plain status/field edit is as
+	// durably attributed as a click on the Dispatch button (issue #2727).
+	s.recordInterventionOnUnblock(before, string(after.Status), reason, "")
 }
 
 func (s *TaskService) appendDecisionProgress(taskID, message string) {

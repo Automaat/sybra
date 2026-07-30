@@ -64,7 +64,11 @@ func Capture(store *Store, cfg *config.Config, projects *project.Store, al *audi
 		}
 		return
 	}
-	data := map[string]any{"fingerprint": rec.Fingerprint}
+	// operator_action_class is the durable provenance signal downstream
+	// consumers (e.g. the evaluation scorecard, issue #2727) key on to tell a
+	// genuine operator unblock apart from an automated-recovery re-entry —
+	// the fingerprint/project fields alone don't carry who resolved it.
+	data := map[string]any{"fingerprint": rec.Fingerprint, "operator_action_class": string(class)}
 	if proj.Type == project.ProjectTypeWork {
 		data["project_key"] = projectKey
 	} else {
