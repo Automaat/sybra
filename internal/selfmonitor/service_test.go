@@ -263,6 +263,62 @@ func TestScanMarksDegradedOnUnreadableLog(t *testing.T) {
 	}
 }
 
+func TestScanMarksDegradedOnTruncatedLog(t *testing.T) {
+	// A log that parses but drops an oversized record carries only partial
+	// evidence — the skipped record may hold the key failure text. The tick
+	// must keep the partial summary yet still mark the report degraded, instead
+	// of trusting the incomplete coverage as a clean tick.
+	logsDir := t.TempDir()
+	agentDir := filepath.Join(logsDir, "agents")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	oversized := `{"type":"user","message":{"content":[` +
+		`{"type":"tool_result","tool_use_id":"big","content":"` +
+		strings.Repeat("x", maxLogLineBytes+1) + `"}]}}`
+	lines := []string{
+		`{"type":"assistant","session_id":"s1","message":{"content":[` +
+			`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}`,
+		oversized,
+		`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.5}`,
+	}
+	logPath := filepath.Join(agentDir, "agent-trunc-2026-04-14T10-00-00.ndjson")
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	rep := &health.Report{
+		Findings: []health.Finding{{
+			Category:    health.CatAgentRetryLoop,
+			Fingerprint: "agent_retry_loop:task-trunc",
+			TaskID:      "task-trunc",
+			AgentID:     "agent-trunc",
+			LogFile:     logPath,
+		}},
+	}
+	svc := newServiceForTest(t, &stubHealth{Report: rep}, nil, logsDir)
+
+	r, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(r.Findings) != 1 {
+		t.Fatalf("Findings = %d, want 1", len(r.Findings))
+	}
+	if r.Findings[0].LogSummary == nil {
+		t.Fatal("LogSummary = nil, want the partial summary retained")
+	}
+	if r.Findings[0].AnalysisError == "" {
+		t.Error("finding AnalysisError is empty, want the truncation flagged")
+	}
+	if r.AnalysisFailures != 1 {
+		t.Errorf("AnalysisFailures = %d, want 1", r.AnalysisFailures)
+	}
+	if !r.Degraded || r.Error == "" {
+		t.Errorf("report = {Degraded:%v Error:%q}, want Degraded with an Error set", r.Degraded, r.Error)
+	}
+}
+
 func TestScanFiltersByProjectType(t *testing.T) {
 	rep := &health.Report{
 		Findings: []health.Finding{{

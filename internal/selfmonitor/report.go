@@ -56,10 +56,13 @@ type InvestigatedFinding struct {
 	LogSummary  *LogSummary    `json:"logSummary,omitempty"`
 	Verdict     Verdict        `json:"verdict"`
 	IssueNumber int            `json:"issueNumber,omitempty"`
-	// AnalysisError is set when the finding's agent log was resolved but the
-	// analyzer failed to read/parse it, leaving LogSummary nil. It flags that
-	// this finding's verdict and provider-signal coverage are missing evidence
-	// rather than legitimately absent (a board-wide finding with no log).
+	// AnalysisError is set when the finding's agent log was resolved but its
+	// evidence is incomplete: either the analyzer failed to read/parse it at
+	// all (LogSummary nil) or it parsed with oversized records dropped
+	// (LogSummary set but partial — see LogSummary.TruncatedRecords). Either
+	// way it flags that this finding's verdict and provider-signal coverage are
+	// missing evidence rather than legitimately absent (a board-wide finding
+	// with no log), so tick marks the whole report Degraded.
 	AnalysisError string `json:"analysisError,omitempty"`
 }
 

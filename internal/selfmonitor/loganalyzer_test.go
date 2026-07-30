@@ -172,6 +172,11 @@ func TestAnalyzeSkipsOversizedRecord(t *testing.T) {
 	if s.TotalCostUSD != 0.5 {
 		t.Errorf("TotalCostUSD = %.4f, want 0.5 (result after oversized still parsed)", s.TotalCostUSD)
 	}
+	// The drop must be surfaced so downstream can flag partial coverage rather
+	// than trusting the summary as complete.
+	if s.TruncatedRecords != 1 {
+		t.Errorf("TruncatedRecords = %d, want 1 (oversized record counted)", s.TruncatedRecords)
+	}
 }
 
 func TestAggregateRepeatedCallsDirect(t *testing.T) {

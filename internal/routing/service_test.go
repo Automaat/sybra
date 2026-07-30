@@ -858,6 +858,76 @@ func TestService_Tick_StaleEvaluation_RollsBackToBaseline(t *testing.T) {
 	}
 }
 
+// TestService_Tick_NoReport_LearnedOverlay_RollsBackToBaseline guards the
+// missing-report path: when a learned overlay was loaded from disk (and
+// re-pushed by ApplyPersistedOverlay) but Report() returns ok=false —
+// evaluation disabled, or a restart before the first report — the tick must
+// fall back to base's declared weights instead of continuing to serve stale
+// learned weights.
+func TestService_Tick_NoReport_LearnedOverlay_RollsBackToBaseline(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	// Seed a prior generation that shifted weight away from base (v1=1, v2=1).
+	if err := store.Save(Overlay{
+		Version: 3,
+		Experiments: []OverlayExperiment{{
+			ExperimentID: "exp",
+			Variants: []OverlayVariant{
+				{VariantID: "v1", Weight: 15},
+				{VariantID: "v2", Weight: 1},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var applied []abtest.Config
+	var audited []audit.Event
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	svc := NewService(Deps{
+		Cfg:    config.RoutingConfig{Enabled: true, IntervalHours: 6},
+		Base:   testBaseConfig,
+		Report: func() (evaluation.Report, bool) { return evaluation.Report{}, false },
+		Store:  store,
+		Apply: func(cfg abtest.Config) error {
+			applied = append(applied, cfg)
+			return nil
+		},
+		AuditLog: func(e audit.Event) error { audited = append(audited, e); return nil },
+		Logger:   slog.New(slog.DiscardHandler),
+		Now:      func() time.Time { return now },
+	})
+
+	runOnceSync(svc)
+
+	overlay, ok, err := store.Load()
+	if err != nil || !ok {
+		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+	}
+	if overlay.Version != 4 {
+		t.Fatalf("overlay.Version = %d, want 4 (bumped on rollback)", overlay.Version)
+	}
+	w1, _ := overlay.WeightAt("exp", "v1")
+	w2, _ := overlay.WeightAt("exp", "v2")
+	if w1 != 1 || w2 != 1 {
+		t.Fatalf("overlay weights v1=%d v2=%d, want 1/1 (base declared weights)", w1, w2)
+	}
+	if len(applied) != 1 {
+		t.Fatalf("apply calls = %d, want 1 (rollback applied live)", len(applied))
+	}
+	if len(audited) != 1 || audited[0].Type != audit.EventRoutingRolledBack {
+		t.Fatalf("audited = %+v, want one routing.rolled_back event", audited)
+	}
+
+	// Sustained no-report: already at baseline — must not churn a new version.
+	runOnceSync(svc)
+	if len(applied) != 1 || len(audited) != 1 {
+		t.Fatalf("after second tick: applied=%d audited=%d, want 1/1 (no churn at baseline)", len(applied), len(audited))
+	}
+}
+
 // TestService_Tick_StaleEvaluation_AlreadyAtBaseline_NoOp covers the churn
 // guard: once the overlay already matches base's declared weights, a
 // sustained stale-evaluation outage must not save a new overlay generation

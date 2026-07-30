@@ -294,14 +294,24 @@ func (s *Service) investigate(ctx context.Context, f *health.Finding) (Investiga
 	}
 	if path := s.resolveLogFile(f); path != "" {
 		summary, err := Analyze(path, s.deps.MaxLogEventsHint)
-		if err != nil {
+		switch {
+		case err != nil:
 			// A resolved-but-unreadable log means we lose verdict and
 			// provider-signal coverage for this finding. Record it on the
 			// finding so tick can mark the whole report degraded — otherwise
 			// the dropped evidence is invisible downstream.
 			s.deps.Logger.Warn("selfmonitor.analyze", "path", path, "err", err)
 			inv.AnalysisError = err.Error()
-		} else {
+		case summary.TruncatedRecords > 0:
+			// The log parsed but one or more oversized records were dropped, so
+			// the summary is built from partial evidence — the skipped record
+			// may have carried the key failure text. Keep the partial summary
+			// but flag the finding so tick marks the report degraded instead of
+			// trusting the incomplete coverage as complete.
+			s.deps.Logger.Warn("selfmonitor.analyze.truncated", "path", path, "dropped", summary.TruncatedRecords)
+			inv.LogSummary = &summary
+			inv.AnalysisError = fmt.Sprintf("%d oversized record(s) dropped; log evidence incomplete", summary.TruncatedRecords)
+		default:
 			inv.LogSummary = &summary
 		}
 	}

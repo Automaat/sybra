@@ -66,6 +66,12 @@ type LogSummary struct {
 	StallDetected       bool               `json:"stallDetected"`
 	StallReason         string             `json:"stallReason,omitempty"`
 	FinalError          string             `json:"finalError,omitempty"`
+	// TruncatedRecords counts NDJSON records skipped because they exceeded
+	// maxLogLineBytes. A non-zero value means this summary is built from
+	// partial evidence — the dropped record may have carried the key failure
+	// text — so callers must surface it as degraded coverage rather than
+	// treating the analysis as complete.
+	TruncatedRecords int `json:"truncatedRecords,omitempty"`
 }
 
 // RepeatedCall reports a tool invocation that fired ≥ RepeatedCallThreshold
@@ -104,12 +110,13 @@ func Analyze(path string, maxEvents int) (LogSummary, error) {
 	if maxEvents <= 0 {
 		maxEvents = DefaultMaxEvents
 	}
-	events, err := parseRich(path, maxEvents)
+	events, truncated, err := parseRich(path, maxEvents)
 	if err != nil {
 		return LogSummary{}, err
 	}
 	s := aggregate(events)
 	s.Path = path
+	s.TruncatedRecords = truncated
 	return s, nil
 }
 
@@ -117,21 +124,25 @@ func Analyze(path string, maxEvents int) (LogSummary, error) {
 // with tool-use / tool-result / result-cost fields populated. Lines that fail
 // Claude parsing fall back to Codex parsing; CodexEvent shares the same
 // *ClaudeMessage / *ClaudeResult payload so the result is a unified stream.
-func parseRich(path string, maxEvents int) ([]agent.ClaudeEvent, error) {
+// truncated counts records dropped for exceeding maxLogLineBytes so callers
+// can flag partial coverage rather than trusting an incomplete summary.
+func parseRich(path string, maxEvents int) (events []agent.ClaudeEvent, truncated int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer func() { _ = f.Close() }()
 
-	var events []agent.ClaudeEvent
 	r := bufio.NewReaderSize(f, logReadBuffer)
 	for {
 		line, tooLong, rerr := readLogLine(r)
 		// A single record larger than maxLogLineBytes (e.g. an oversized
 		// tool_result payload) is skipped rather than aborting the whole log,
-		// so the remaining records still contribute to the LogSummary.
-		if !tooLong && len(line) > 0 {
+		// so the remaining records still contribute to the LogSummary — but the
+		// drop is counted so the caller can mark the analysis degraded.
+		if tooLong {
+			truncated++
+		} else if len(line) > 0 {
 			if ev, ok := parseLogLine(line); ok {
 				events = append(events, ev)
 			}
@@ -140,13 +151,13 @@ func parseRich(path string, maxEvents int) ([]agent.ClaudeEvent, error) {
 			if errors.Is(rerr, io.EOF) {
 				break
 			}
-			return nil, rerr
+			return nil, 0, rerr
 		}
 	}
 	if maxEvents > 0 && len(events) > maxEvents {
 		events = events[len(events)-maxEvents:]
 	}
-	return events, nil
+	return events, truncated, nil
 }
 
 const (
@@ -190,6 +201,13 @@ func readLogLine(r *bufio.Reader) (line []byte, tooLong bool, err error) {
 			continue
 		}
 		buf = append(buf, frag...)
+		// The terminating fragment (the one carrying the newline) can itself
+		// push the record over the limit without ever tripping ErrBufferFull,
+		// so re-check here — otherwise a record just over maxLogLineBytes slips
+		// through uncounted. The newline is already consumed, so no drain.
+		if len(buf) > maxLogLineBytes {
+			return nil, true, e
+		}
 		return trimTrailingNewline(buf), false, e
 	}
 }

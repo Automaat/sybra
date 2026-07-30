@@ -205,9 +205,18 @@ func (s *Service) tick() {
 		}
 	}
 	if !ok {
-		if s.cfg.Enabled && prevOverlay.Version == 0 && len(prevOverlay.Experiments) == 0 {
+		switch {
+		case s.cfg.Enabled && prevOverlay.Version == 0 && len(prevOverlay.Experiments) == 0:
 			s.persistAndApply(bootstrapOverlay(1, s.now(), base), base)
-		} else {
+		case len(prevOverlay.Experiments) > 0:
+			// A learned overlay is already live (loaded from disk and re-pushed
+			// by ApplyPersistedOverlay), but no evaluation report exists —
+			// evaluation is disabled, or this is a restart before the service
+			// publishes its first report. Missing evidence must fall back to the
+			// stable production baseline, not keep serving stale learned weights.
+			// rollbackToBaseline no-ops when the overlay is already at baseline.
+			s.rollbackToBaseline(prevOverlay, base, "no evaluation report")
+		default:
 			s.logger.Debug("routing.tick.no_report")
 		}
 		return
