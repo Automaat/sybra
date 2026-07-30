@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"maps"
 	"os"
 	"regexp"
@@ -154,7 +155,14 @@ func parseRich(path string, maxEvents int) ([]agent.ClaudeEvent, int, error) {
 			}
 		}
 		if err != nil {
-			break // io.EOF or a genuine read error; either way, we're done.
+			// A clean EOF means the file was fully read; anything else is a
+			// genuine read failure (flaky disk, interrupted mount) that must
+			// surface so callers can mark the tick degraded rather than emit a
+			// silently-truncated summary.
+			if !errors.Is(err, io.EOF) {
+				return nil, skipped, err
+			}
+			break
 		}
 	}
 	if maxEvents > 0 && len(events) > maxEvents {
