@@ -122,6 +122,9 @@ func hasTag(tags []string, want string) bool {
 }
 
 func printHarnessEvolutionResult(result harnessevolution.RunResult, filed []task.Task) {
+	if result.MissingReport {
+		fmt.Println("harness-evolution: no self-monitor report found; pipeline is disconnected (no proposals). Is self_monitor enabled and ticking?")
+	}
 	if result.StaleReport {
 		fmt.Println("harness-evolution: self-monitor report is stale; findings discarded (no proposals)")
 	}

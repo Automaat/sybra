@@ -31,6 +31,12 @@ type Report struct {
 	NeedsHuman      int                   `json:"needsHuman"`
 	CostUSD         float64               `json:"costUsd"`
 	DurationMS      int64                 `json:"durationMs"`
+	// Degraded marks a tick that failed before producing findings (e.g. the
+	// health report could not be read/parsed). Error carries the failure so
+	// LastReport() and the frontend event stream reflect that self-monitor
+	// itself is broken instead of staying pinned to the last successful tick.
+	Degraded bool   `json:"degraded,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 // InvestigatedFinding is a single health.Finding after the selfmonitor

@@ -37,16 +37,21 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	missingReport := false
 	report, err := LoadSelfMonitorReport(opts.ReportPath)
 	if err != nil {
 		// A fresh/default home has no self-monitor report yet. Treat a missing
 		// report as an empty one so the command degrades to a harmless
 		// zero-proposal run instead of hard-failing before the first report
-		// exists. Any other read/parse error is still fatal.
+		// exists. Any other read/parse error is still fatal. Flag it so the
+		// zero-proposal run reads as "pipeline disconnected", not "clean data" —
+		// otherwise a fresh GeneratedAt.IsZero() report also dodges the
+		// stale-report guard and the automation files nothing with no signal.
 		if !errors.Is(err, os.ErrNotExist) {
 			return RunResult{}, err
 		}
 		report = selfmonitor.Report{}
+		missingReport = true
 	}
 	staleReport := false
 	if opts.MaxReportAge > 0 && !report.GeneratedAt.IsZero() &&
@@ -72,11 +77,12 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 		proposals[i].Evaluation = EvaluateProposal(proposals[i], clusters[i], corpus)
 	}
 	result := RunResult{
-		GeneratedAt: now,
-		Events:      len(events),
-		Clusters:    clusters,
-		Proposals:   proposals,
-		StaleReport: staleReport,
+		GeneratedAt:   now,
+		Events:        len(events),
+		Clusters:      clusters,
+		Proposals:     proposals,
+		StaleReport:   staleReport,
+		MissingReport: missingReport,
 	}
 	if opts.OutputDir != "" {
 		if err := SaveRunResult(opts.OutputDir, result); err != nil {

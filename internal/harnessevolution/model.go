@@ -95,6 +95,11 @@ type RunResult struct {
 	// the configured MaxReportAge and its findings were discarded, so a run
 	// with zero proposals is attributable to a stale pipeline, not clean data.
 	StaleReport bool `json:"staleReport,omitempty"`
+	// MissingReport is true when no self-monitor report exists on disk yet
+	// (fresh home, or the report was deleted). Like StaleReport it makes a
+	// zero-proposal run attributable to a disconnected pipeline rather than
+	// clean data, so the run degrades loudly instead of silently succeeding.
+	MissingReport bool `json:"missingReport,omitempty"`
 }
 
 func RequiresHumanApproval(kind ProposalKind) bool {

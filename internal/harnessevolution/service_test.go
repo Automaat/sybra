@@ -82,6 +82,28 @@ func TestRun_FreshReportKeepsFindings(t *testing.T) {
 	}
 }
 
+func TestRun_MissingReportFlagsDisconnectedPipeline(t *testing.T) {
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	missingPath := filepath.Join(t.TempDir(), "does-not-exist.json")
+
+	res, err := Run(context.Background(), Options{
+		ReportPath:     missingPath,
+		Lookback:       168 * time.Hour,
+		MinClusterSize: 1,
+		MaxReportAge:   24 * time.Hour,
+		Now:            now,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.MissingReport {
+		t.Fatalf("MissingReport = false, want true for an absent report so the zero-proposal run is attributable to a disconnected pipeline")
+	}
+	if res.Events != 0 || len(res.Proposals) != 0 {
+		t.Fatalf("missing report still produced events=%d proposals=%d, want 0/0", res.Events, len(res.Proposals))
+	}
+}
+
 func TestRun_MaxReportAgeDisabledKeepsStaleFindings(t *testing.T) {
 	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
 	detectedAt := now.Add(-2 * time.Hour)

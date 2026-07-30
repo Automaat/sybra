@@ -3202,6 +3202,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	addGitHubPollingFindings(cfg, add)
 	addProviderModelCompatibilityFindings(cfg, add)
 	addExperimentEvaluationFindings(cfg, add)
+	addHarnessEvolutionFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
 	for _, warning := range routing.Warnings {
@@ -3334,6 +3335,21 @@ func addExperimentEvaluationFindings(cfg *config.Config, add func(severity, form
 	}
 	if cfg.Routing.Enabled {
 		add("warning", "routing.enabled is true but evaluation.enabled is false — adaptive weight promotion has no trustworthy evaluation signal and will stay in shadow/baseline-only mode")
+	}
+}
+
+// addHarnessEvolutionFindings warns when the harness-evolution loop is armed
+// but its only evidence source — the self-monitor report — is turned off. With
+// self_monitor disabled the report never refreshes, so the loop reads a
+// missing/stale report every tick and silently produces zero proposals: the
+// pipeline sits disconnected with no operator signal. A warning, not an error,
+// since a disconnected loop is a no-op rather than a broken dispatch path.
+func addHarnessEvolutionFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil || !cfg.HarnessEvolve.Enabled {
+		return
+	}
+	if !cfg.SelfMonitor.Enabled {
+		add("warning", "harness_evolution.enabled is true but self_monitor.enabled is false — the evolution loop has no self-monitor report to read and will produce zero proposals every tick")
 	}
 }
 

@@ -273,6 +273,58 @@ func TestPersistReportWritesFile(t *testing.T) {
 	}
 }
 
+func TestTickAndLogSurfacesDegradedReportOnHardFailure(t *testing.T) {
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "last-report.json")
+	// Seed a prior good on-disk report; a degraded tick must not clobber it,
+	// so the downstream staleness guard keeps keying off the last good report.
+	good := Report{SchemaVersion: ReportSchemaVersion, HealthScore: health.ScoreGood}
+	goodData, err := json.Marshal(good)
+	if err != nil {
+		t.Fatalf("marshal seed: %v", err)
+	}
+	if err := os.WriteFile(reportPath, goodData, 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+
+	var emitted []Report
+	svc := NewService(Deps{
+		Cfg:            config.SelfMonitorConfig{Enabled: true, IntervalHours: 6},
+		Health:         &stubHealth{Err: errors.New("health store unavailable")},
+		LastReportPath: reportPath,
+		Emit: func(_ string, payload any) {
+			if r, ok := payload.(Report); ok {
+				emitted = append(emitted, r)
+			}
+		},
+	})
+	svc.tickAndLog(context.Background())
+
+	last, _, ticked := svc.LastReport()
+	if !ticked {
+		t.Fatal("LastReport reports no tick; degraded tick must still record state")
+	}
+	if !last.Degraded || last.Error == "" {
+		t.Fatalf("LastReport = %+v, want Degraded with an Error set", last)
+	}
+	if len(emitted) != 1 || !emitted[0].Degraded {
+		t.Fatalf("emitted = %+v, want a single degraded report", emitted)
+	}
+
+	// The on-disk report must be the untouched seed, not the degraded tick.
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read persisted: %v", err)
+	}
+	var back Report
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unparseable persisted report: %v", err)
+	}
+	if back.Degraded || back.HealthScore != health.ScoreGood {
+		t.Fatalf("on-disk report = %+v, want the untouched good seed", back)
+	}
+}
+
 func TestDiskHealthReaderMissingFile(t *testing.T) {
 	r := DiskHealthReader{Path: filepath.Join(t.TempDir(), "nope.json")}
 	rep, err := r.LatestReport()

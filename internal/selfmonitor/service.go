@@ -170,6 +170,20 @@ func (s *Service) tickAndLog(ctx context.Context) {
 	report, err := s.tick(ctx)
 	if err != nil {
 		s.deps.Logger.Error("selfmonitor.tick", "err", err)
+		// Record and emit a degraded report so LastReport() and the frontend
+		// event stream surface that self-monitor itself is broken, instead of
+		// staying pinned to the last successful tick. Deliberately not
+		// persisted: overwriting the on-disk report with an empty, freshly
+		// timestamped one would defeat the downstream staleness guard that keys
+		// off the last good report's age (see harnessevolution.Run).
+		degraded := Report{
+			SchemaVersion: ReportSchemaVersion,
+			GeneratedAt:   s.deps.Now(),
+			Degraded:      true,
+			Error:         err.Error(),
+		}
+		s.state.recordReport(degraded, s.deps.Now())
+		s.deps.Emit(events.SelfMonitorReport, degraded)
 		return
 	}
 	s.state.recordReport(report, s.deps.Now())
