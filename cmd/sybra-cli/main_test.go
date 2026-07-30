@@ -11,9 +11,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
@@ -1273,7 +1275,11 @@ func TestConfigDoctorJSONWarnsOnRoutingWithoutEvaluation(t *testing.T) {
 }
 
 func TestConfigDoctorJSONNoExperimentEvaluationWarningWhenEvaluationEnabled(t *testing.T) {
-	setupStore(t)
+	home := setupStore(t)
+	writeEvaluationReport(t, home, evaluation.Report{
+		SchemaVersion: evaluation.ScorecardSchemaVersion,
+		GeneratedAt:   time.Now(),
+	})
 
 	cfg := config.DefaultConfig()
 	enabled := true
@@ -1291,9 +1297,79 @@ func TestConfigDoctorJSONNoExperimentEvaluationWarningWhenEvaluationEnabled(t *t
 	var report configDoctorReport
 	mustUnmarshal(t, out, &report)
 	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
-		return strings.Contains(f.Message, "evaluation.enabled is false")
+		return strings.Contains(f.Message, "evaluation signal")
 	}) {
-		t.Fatalf("did not expect an evaluation-disabled warning with evaluation.enabled=true: %+v", report.Findings)
+		t.Fatalf("did not expect an evaluation-signal warning with a fresh, schema-matched report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONWarnsOnStaleEvaluationReport(t *testing.T) {
+	home := setupStore(t)
+	writeEvaluationReport(t, home, evaluation.Report{
+		SchemaVersion: evaluation.ScorecardSchemaVersion,
+		GeneratedAt:   time.Now().Add(-30 * 24 * time.Hour),
+	})
+
+	cfg := config.DefaultConfig()
+	enabled := true
+	cfg.ABTesting.Enabled = &enabled
+	cfg.Routing.Enabled = true
+	cfg.Evaluation.Enabled = true
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, wantSubstr := range []string{
+		"ab_testing.enabled is true and evaluation.enabled is true, but the persisted evaluation report",
+		"routing.enabled is true and evaluation.enabled is true, but the persisted evaluation report",
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "warning" && strings.Contains(f.Message, wantSubstr) && strings.Contains(f.Message, "is not trustworthy")
+		}) {
+			t.Fatalf("expected stale-report warning containing %q in %+v", wantSubstr, report.Findings)
+		}
+	}
+}
+
+func TestConfigDoctorJSONWarnsOnMissingEvaluationReport(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	enabled := true
+	cfg.ABTesting.Enabled = &enabled
+	cfg.Routing.Enabled = true
+	cfg.Evaluation.Enabled = true
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" && strings.Contains(f.Message, "no evaluation report has been generated yet")
+	}) {
+		t.Fatalf("expected missing-report warning in %+v", report.Findings)
+	}
+}
+
+func writeEvaluationReport(t *testing.T, home string, rep evaluation.Report) {
+	t.Helper()
+	data, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatalf("marshal evaluation report: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "evaluation-report.json"), data, 0o600); err != nil {
+		t.Fatalf("write evaluation report: %v", err)
 	}
 }
 
