@@ -20,7 +20,7 @@ func TestReconcileReviewTask_DismissesSelfApprovalAndEscalates(t *testing.T) {
 	var dismissedNumber int
 	var dismissedReviewID int64
 	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
-		return github.MyReviewState{Submitted: true, Approved: true, ReviewID: 555, ReviewedSHA: "e57e4b5"}, nil
+		return github.MyReviewState{Submitted: true, Approved: true, ViewerIsBot: true, ReviewID: 555, ReviewedSHA: "e57e4b5"}, nil
 	}
 	r.dismissReviewFn = func(repo string, number int, reviewID int64, message string) error {
 		dismissedRepo, dismissedNumber, dismissedReviewID = repo, number, reviewID
@@ -61,7 +61,7 @@ func TestReconcileReviewTask_DismissFailureStillEscalates(t *testing.T) {
 	tk := newReviewTaskInPhase(t, tasks, "reviewing")
 
 	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
-		return github.MyReviewState{Submitted: true, Approved: true, ReviewID: 555, ReviewedSHA: "e57e4b5"}, nil
+		return github.MyReviewState{Submitted: true, Approved: true, ViewerIsBot: true, ReviewID: 555, ReviewedSHA: "e57e4b5"}, nil
 	}
 	r.dismissReviewFn = func(string, int, int64, string) error {
 		return errors.New("gh api: HTTP 403")
@@ -100,7 +100,7 @@ func TestReconcileReviewTask_RunningAgentStillDismissesSelfApproval(t *testing.T
 
 	var dismissedReviewID int64
 	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
-		return github.MyReviewState{Submitted: true, Approved: true, ReviewID: 777}, nil
+		return github.MyReviewState{Submitted: true, Approved: true, ViewerIsBot: true, ReviewID: 777}, nil
 	}
 	r.dismissReviewFn = func(_ string, _ int, reviewID int64, _ string) error {
 		dismissedReviewID = reviewID
@@ -132,7 +132,7 @@ func TestReconcileReviewTask_ConflictStillDismissesSelfApproval(t *testing.T) {
 
 	var dismissedReviewID int64
 	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
-		return github.MyReviewState{Submitted: true, Approved: true, ReviewID: 888}, nil
+		return github.MyReviewState{Submitted: true, Approved: true, ViewerIsBot: true, ReviewID: 888}, nil
 	}
 	r.dismissReviewFn = func(_ string, _ int, reviewID int64, _ string) error {
 		dismissedReviewID = reviewID
@@ -155,17 +155,54 @@ func TestReconcileReviewTask_ConflictStillDismissesSelfApproval(t *testing.T) {
 	}
 }
 
-// The reviewed-by:@me search leg (inApproved) is the only signal in some
-// polls — e.g. right after the REST fetch already observed a later verdict.
-// Without a REST-fetched review ID there is nothing to dismiss yet, but the
-// task must still never read as "approved".
+// When Sybra is authenticated with a human PAT, a browser approval and an
+// agent-submitted approval have the same GitHub login. Outcome-only detection
+// cannot distinguish them, so the self-approval backstop must not dismiss
+// personal-account approvals as if they were bot approvals.
+func TestReconcileReviewTask_HumanViewerApprovalIsNotDismissed(t *testing.T) {
+	r, tasks := newReconcileFailureHandler(t)
+	tk := newReviewTaskInPhase(t, tasks, "needs-approval")
+
+	dismissCalled := false
+	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
+		return github.MyReviewState{Submitted: true, Approved: true, ReviewID: 999, ReviewedSHA: "e57e4b5"}, nil
+	}
+	r.dismissReviewFn = func(string, int, int64, string) error {
+		dismissCalled = true
+		return nil
+	}
+
+	key := reviewPRKey(tk.ProjectID, tk.PRNumber)
+	approved := map[string]github.PullRequest{
+		key: {Number: tk.PRNumber, Repository: tk.ProjectID, Mergeable: "MERGEABLE", HeadSHA: "e57e4b5"},
+	}
+
+	got := mustGet(t, tasks, tk.ID)
+	r.reconcileReviewTask(&got, map[string]github.PullRequest{}, approved)
+
+	if dismissCalled {
+		t.Fatal("human viewer approval was dismissed as a bot self-approval")
+	}
+	final := mustGet(t, tasks, tk.ID)
+	if final.ReviewPhase != ReviewPhaseApproved {
+		t.Errorf("review_phase = %q, want %q", final.ReviewPhase, ReviewPhaseApproved)
+	}
+	if final.Status != task.StatusInReview {
+		t.Errorf("status = %q, want %q", final.Status, task.StatusInReview)
+	}
+}
+
+// The reviewed-by:@me search leg (inApproved) is the only signal in some polls.
+// If REST has not observed a submitted viewer review, treat it as a fallback
+// self-approval signal. Without a REST-fetched review ID there is nothing to
+// dismiss yet, but the task must still never read as "approved".
 func TestReconcileReviewTask_SelfApprovalFromSearchLegWithoutReviewID(t *testing.T) {
 	r, tasks := newReconcileFailureHandler(t)
 	tk := newReviewTaskInPhase(t, tasks, "reviewing")
 
 	dismissCalled := false
 	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
-		return github.MyReviewState{Submitted: true, ReviewedSHA: "e57e4b5"}, nil
+		return github.MyReviewState{ViewerIsBot: true, ReviewedSHA: "e57e4b5"}, nil
 	}
 	r.dismissReviewFn = func(string, int, int64, string) error {
 		dismissCalled = true
@@ -187,5 +224,38 @@ func TestReconcileReviewTask_SelfApprovalFromSearchLegWithoutReviewID(t *testing
 	if final.ReviewPhase != ReviewPhaseSelfApprovalBlocked {
 		t.Errorf("review_phase = %q, want %q even without a dismissable review ID",
 			final.ReviewPhase, ReviewPhaseSelfApprovalBlocked)
+	}
+}
+
+// If REST sees a submitted viewer verdict, it is more precise than the
+// reviewed-by:@me search leg. A later CHANGES_REQUESTED/COMMENTED verdict must
+// not be overwritten by stale search-leg approval.
+func TestReconcileReviewTask_SearchLegApprovalDoesNotOverrideSubmittedRESTVerdict(t *testing.T) {
+	r, tasks := newReconcileFailureHandler(t)
+	tk := newReviewTaskInPhase(t, tasks, "needs-approval")
+
+	dismissCalled := false
+	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
+		return github.MyReviewState{Submitted: true, Approved: false, ViewerIsBot: true, ReviewedSHA: "e57e4b5"}, nil
+	}
+	r.dismissReviewFn = func(string, int, int64, string) error {
+		dismissCalled = true
+		return nil
+	}
+
+	key := reviewPRKey(tk.ProjectID, tk.PRNumber)
+	approved := map[string]github.PullRequest{
+		key: {Number: tk.PRNumber, Repository: tk.ProjectID, Mergeable: "MERGEABLE", HeadSHA: "e57e4b5"},
+	}
+
+	got := mustGet(t, tasks, tk.ID)
+	r.reconcileReviewTask(&got, map[string]github.PullRequest{}, approved)
+
+	if dismissCalled {
+		t.Fatal("stale search-leg approval was dismissed as a live bot self-approval")
+	}
+	final := mustGet(t, tasks, tk.ID)
+	if final.ReviewPhase != ReviewPhaseAwaitingAuthor {
+		t.Errorf("review_phase = %q, want %q", final.ReviewPhase, ReviewPhaseAwaitingAuthor)
 	}
 }

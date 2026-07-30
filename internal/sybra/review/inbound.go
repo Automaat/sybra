@@ -577,7 +577,8 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	}
 	r.clearReconcileFailure(t)
 
-	selfApproved := myState.Approved || inApproved
+	viewerApproved := myState.Approved || (!myState.Submitted && inApproved)
+	selfApproved := myState.ViewerIsBot && viewerApproved
 	if selfApproved {
 		r.dismissSelfApproval(t, myState)
 	}
@@ -625,6 +626,7 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		CostGuardrailStopped:      latestReviewRunStoppedByCostGuardrail(t),
 		HasDraft:                  myState.Pending,
 		SelfApproved:              selfApproved,
+		Approved:                  viewerApproved,
 		Submitted:                 submitted,
 		ReRequested:               inReq,
 		HeadSHA:                   headSHA,
@@ -678,7 +680,7 @@ func (r *Handler) reverseLiveSelfApproval(t *task.Task, inApproved bool) {
 // "approved" phase regardless. A dismissal failure is logged, never fatal:
 // escalating the task to human-required does not depend on it succeeding.
 func (r *Handler) dismissSelfApproval(t *task.Task, myState github.MyReviewState) {
-	if !myState.Approved || myState.ReviewID == 0 {
+	if !myState.ViewerIsBot || !myState.Approved || myState.ReviewID == 0 {
 		return
 	}
 	dismissFn := github.DismissReview

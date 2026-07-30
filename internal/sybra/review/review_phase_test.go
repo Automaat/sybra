@@ -48,6 +48,16 @@ func TestComputeReviewPhase(t *testing.T) {
 			want: reviewPhaseResult{Phase: ReviewPhaseDrafted, Status: task.StatusHumanRequired, Reason: "Draft review ready — verify & submit on GitHub"},
 		},
 		{
+			name: "human approval at current head → approved",
+			sig:  reviewSignals{Approved: true, Submitted: true, HeadSHA: "sha1", ReviewedSHA: "sha1"},
+			want: reviewPhaseResult{Phase: ReviewPhaseApproved, Status: task.StatusInReview, Reason: "Approved — waiting for merge"},
+		},
+		{
+			name: "human approval pushed past reviewed commit → needs approval",
+			sig:  reviewSignals{Approved: true, Submitted: true, HeadSHA: "sha2", ReviewedSHA: "sha1"},
+			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusInReview, Reason: "Author updated PR — do a final review & approve"},
+		},
+		{
 			name: "submitted at current head, not re-requested → awaiting author",
 			sig:  reviewSignals{Submitted: true, HeadSHA: "sha1", ReviewedSHA: "sha1"},
 			want: reviewPhaseResult{Phase: ReviewPhaseAwaitingAuthor, Status: task.StatusInReview, Reason: "Awaiting author response"},
