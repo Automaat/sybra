@@ -52,33 +52,40 @@ validate it (below) before trusting the deploy.**
 
 | File | Installed to | Purpose |
 |------|--------------|---------|
-| `systemd/sybra.service` | `/etc/systemd/system/sybra.service` | The unit (KillMode=process, exit-42 restart, ExecStartPre build). |
-| `systemd/sybra.env.example` | `/etc/sybra/sybra.env` | Runtime env (listen port, local CLI server target, static dir, `PATH` with mise shims + npm globals). |
-| `bin/sybra-build.sh` | `/opt/sybra/bin/sybra-build.sh` | `ExecStartPre`: build web + server + CLI from `/opt/sybra/src`, atomic swap, keep last-good on failure. |
-| `bin/sybra-run.sh` | `/opt/sybra/bin/sybra-run.sh` | `ExecStart`: activate mise toolchain, `exec` the built binary. |
+| `systemd/sybra.service` | `/etc/systemd/system/sybra.service` | The unit (KillMode=process, exit-42 restart, ExecStartPre build, ExecStartPost health check, start-rate limit). |
+| `systemd/sybra.env.example` | `/etc/sybra/sybra.env` | Runtime env (listen port, local CLI server target, deploy paths, `PATH` with mise shims + npm globals). |
+| `bin/sybra-deploy-lib.sh` | `/opt/sybra/bin/sybra-deploy-lib.sh` | Shared helpers (logging, host lock, quarantine key/marker, atomic symlink swap) sourced by the two scripts below. |
+| `bin/sybra-build.sh` | `/opt/sybra/bin/sybra-build.sh` | `ExecStartPre`: build web + server + CLI from `/opt/sybra/src` into a versioned candidate, preflight it against the live config, atomically activate it, or quarantine + keep last-good. |
+| `bin/sybra-healthcheck.sh` | `/opt/sybra/bin/sybra-healthcheck.sh` | `ExecStartPost`: poll the just-started release's `/health`; promote to last-good on success, or roll back + record a failure (quarantining after repeated failures) on timeout. |
+| `bin/sybra-run.sh` | `/opt/sybra/bin/sybra-run.sh` | `ExecStart`: activate mise toolchain, `exec` whichever release `current` points at. |
 
 Layout on the box:
 
 ```
 /opt/sybra/
-  src/         git checkout of Automaat/sybra on main   (autoupdate RepoDir)
-  review-src/  second, independent checkout for human-review's fallback dir
-  bin/         sybra-build.sh, sybra-run.sh
-  build/       sybra-server (running binary) + sybra-cli + web/ (static bundle)
+  src/           git checkout of Automaat/sybra on main   (autoupdate RepoDir)
+  review-src/    second, independent checkout for human-review's fallback dir
+  bin/           sybra-deploy-lib.sh, sybra-build.sh, sybra-healthcheck.sh, sybra-run.sh
+  releases/<id>/ versioned candidate builds: sybra-server, sybra-cli, web/
+  current        symlink -> releases/<id>, the release ExecStart runs
+  last-good      symlink -> releases/<id>, restored automatically on a failed health check
+  quarantine/    <sha+config-fingerprint>.reason markers for rejected candidates
+  deploy-state/  per-candidate health-failure counters + phase detail logs (host-local, never shipped)
+  deploy.lock    flock'd across build + health-check so they never overlap
 /etc/sybra/sybra.env
 /data/sybra/home  →  HOME=/home/sybra/.sybra  (config, tasks, worktrees, agent registry)
 ```
 
 `sybra-build.sh` builds `sybra-cli` from the same checkout as `sybra-server`
-and swaps both binaries into place as a pair — if either swap fails, the
-other is rolled back too, so a successful rebuild always keeps them in sync
-and a failed one falls back to the previous matched pair rather than a
-half-applied mix (#2619: `sybra-cli` could hard-fail on a config-schema key
-the running server already understood, because only `sybra-server` was
-rebuilt). It also symlinks the built CLI to `$HOME/.local/bin/sybra-cli`
-(`/home/sybra/.local/bin/sybra-cli`), which is already on `PATH` per
-`sybra.env.example`, so `sybra-cli` resolves as a bare command for the
-`sybra` user without a separate manual install step.
+into the same candidate directory, activated in one atomic symlink swap — so
+a candidate is always either the fully-matched pair or not activated at all,
+never a half-applied mix (#2619: `sybra-cli` could hard-fail on a
+config-schema key the running server already understood, because only
+`sybra-server` was rebuilt). The CLI symlink at `$HOME/.local/bin/sybra-cli`
+(`/home/sybra/.local/bin/sybra-cli`, already on `PATH` per
+`sybra.env.example`) points at `$SYBRA_CURRENT_LINK/sybra-cli` rather than a
+specific release, so it tracks whichever release is active — including after
+a healthcheck-driven rollback — without being re-linked on every build.
 
 `review-src/` exists so `human_review.sybra_repo_dir` never resolves to the
 same directory `auto_update.repo_dir` builds and ff-merges from (#1925) —
@@ -98,15 +105,96 @@ apply.
 
 ## Build-safety contract
 
-`sybra-build.sh` builds to `*.new` and swaps in the new artifacts **only** on a
-clean build; on failure it keeps the last-good build and exits 0 so the service
-starts on the previous binary. Consequence to accept:
+`sybra-build.sh` builds into a fresh `releases/<sha>-<timestamp>` directory and
+only ever repoints the `current` symlink — atomically, via `ln -sfn` + `mv -T`
+so it's never briefly missing or half-written — after every phase has passed:
+`mise install`, frontend build, `go build` for both binaries, the linked-worktree
+sandbox smoke test (when `bwrap` is present), and finally a **config
+preflight**: it runs the freshly-built `sybra-server -check-config` against
+the exact live `config.yaml` (same env, same `SYBRA_HOME`, no side effects —
+see `cmd/sybra-server`'s `-check-config` flag) before that binary is ever
+allowed to become `current`. Any phase failing keeps `current` untouched and
+exits 0 so the service starts on the previous release; only a build failure
+with **no** prior good release at all fails the unit (nothing safe to fall
+back to — an expected failure mode on first-ever provisioning only).
+
+Runtime health is a separate, later check: `sybra-healthcheck.sh` runs as
+`ExecStartPost` once the newly-activated release has actually started, and
+polls its `/health` endpoint. Success promotes that release to `last-good`.
+Failure rolls `current` back to `last-good` immediately and records a
+failure against that candidate; a candidate that keeps failing health checks
+(`SYBRA_HEALTH_QUARANTINE_THRESHOLD` consecutive times, default 3) is
+quarantined the same way a build/preflight failure is. `sybra-healthcheck.sh`
+exiting non-zero
+fails that systemd start, which is what drives the actual restart via
+`Restart=on-failure` + `RestartSec=3` — neither script ever calls `systemctl`
+itself.
+
+**Quarantine** ties a rejection (any phase — build, sandbox smoke, config
+preflight, or repeated health-check failure) to a key derived from the
+source SHA *and* a fingerprint of the live config file. A quarantined
+candidate's next deploy attempt (the next autoupdate poll, or a manual
+`systemctl restart`) is rejected up front — before `mise install` even runs —
+so a candidate that is deterministically bad never repeats a full
+dependency-install/build cycle, and a crash-looping service never rebuilds
+and reactivates the same broken bits on every restart. The block clears the
+moment either the source SHA or the live config changes (a new quarantine key).
+Full phase diagnostics (build/test/preflight output, which may be verbose but
+never intentionally secret-bearing) are written to a host-local file under
+`deploy-state/` and only referenced by path in the journal — quarantine
+markers and journal lines themselves stay short, static, and safe to paste
+into an issue.
+
+**Host lock:** both scripts wrap their work in a `flock` on `deploy.lock`
+(`SYBRA_DEPLOY_LOCK`, `SYBRA_DEPLOY_LOCK_WAIT_SEC` default 300s), so a
+manually-invoked `sybra-build.sh`/`sybra-healthcheck.sh` can never race an
+in-flight systemd-driven one. Losing the race logs "lock contention" and
+backs off (exit 0) rather than corrupting `current`/`last-good`.
+
+**Start-rate limit:** `StartLimitIntervalSec=600` / `StartLimitBurst=6` in the
+unit are a backstop behind the quarantine logic above — if something keeps
+failing to start despite quarantine (e.g. `last-good` itself stops passing
+health checks), systemd stops auto-restarting after 6 attempts in 10 minutes
+and leaves the unit `failed` instead of retrying forever. See "Recovery
+runbook" below for what to do when that fires.
+
+Consequence to accept:
 
 > autoupdate `ff-merge`s **before** requesting the restart, so a broken `main`
-> advances `/opt/sybra/src` to a SHA that won't build. The service keeps running
-> the previous binary (no downtime), but source and running-binary diverge until
-> the **next green `main`** lands and rebuilds. Self-healing, but the mismatch is
-> real — see caveats.
+> advances `/opt/sybra/src` to a SHA that won't build or won't pass health
+> checks. The service keeps running the previous release (no downtime), but
+> source and running-release diverge until the **next green, healthy** `main`
+> lands. Self-healing, but the mismatch is real — see caveats.
+
+## Recovery runbook
+
+- **Inspect why a candidate was rejected:** `ls /opt/sybra/quarantine` lists
+  quarantined `<key>.reason` markers (timestamp, candidate sha, phase,
+  short reason). Full output for a given release id lives at
+  `/opt/sybra/deploy-state/<id>.<phase>.log` — check there before pasting
+  anything from a quarantine marker into an issue, since the marker is
+  intentionally the redacted summary. `journalctl -u sybra` also carries the
+  same phase/candidate/rollback lines.
+- **Force a retry of a quarantined candidate** once you believe source or
+  config actually changed: `rm /opt/sybra/quarantine/<key>.reason` (or just
+  land the fix — a genuinely different source SHA or config fingerprint
+  clears it automatically) then `systemctl restart sybra`.
+- **Manual rollback to last-good right now**, without waiting on a restart:
+  `ln -sfn "$(readlink -f /opt/sybra/last-good)" /tmp/current.tmp && mv -T /tmp/current.tmp /opt/sybra/current && systemctl restart sybra`.
+- **Intentional rollback to an older release:** every activated release is
+  still on disk under `/opt/sybra/releases/` (the 3 most recent plus whatever
+  `current`/`last-good` point at — `sybra-build.sh` prunes the rest after each
+  successful activation). Repoint `current` at the desired `releases/<id>`
+  the same way, then restart.
+- **Unit stuck `failed` after hitting the start-rate limit:** `systemctl
+  reset-failed sybra` clears systemd's counter — but first fix whatever's
+  actually broken (check quarantine + `deploy-state/` as above), or you'll
+  just burn through the limit again.
+- **Stale lock after a killed script:** `deploy.lock` only holds a lock for
+  the lifetime of the process that opened it (`flock` on an fd) — a killed
+  script releases it immediately, nothing to clean up manually. If
+  `sybra-build.sh`/`sybra-healthcheck.sh` reports contention against a
+  process that's actually gone, that's a bug, not an operator fix.
 
 ## One-time LXC provisioning
 
@@ -124,7 +212,10 @@ echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://
   > /etc/apt/sources.list.d/github-cli.list
 apt-get update && apt-get install -y gh
 
-install -d -o sybra -g sybra /opt/sybra /opt/sybra/bin /opt/sybra/build /opt/sybra/review-src /etc/sybra
+install -d -o sybra -g sybra /opt/sybra /opt/sybra/bin /opt/sybra/review-src /etc/sybra
+# releases/, current, last-good, quarantine/, deploy-state/, deploy.lock are
+# created on demand by sybra-build.sh/sybra-healthcheck.sh — nothing to
+# pre-create for them.
 ```
 
 As the `sybra` user:
@@ -151,8 +242,10 @@ mise reshim
 Install the unit + scripts + env:
 
 ```bash
-install -m 0755 /opt/sybra/src/deploy/bin/sybra-build.sh /opt/sybra/bin/
-install -m 0755 /opt/sybra/src/deploy/bin/sybra-run.sh   /opt/sybra/bin/
+install -m 0755 /opt/sybra/src/deploy/bin/sybra-deploy-lib.sh  /opt/sybra/bin/
+install -m 0755 /opt/sybra/src/deploy/bin/sybra-build.sh       /opt/sybra/bin/
+install -m 0755 /opt/sybra/src/deploy/bin/sybra-healthcheck.sh /opt/sybra/bin/
+install -m 0755 /opt/sybra/src/deploy/bin/sybra-run.sh         /opt/sybra/bin/
 install -m 0644 /opt/sybra/src/deploy/systemd/sybra.service /etc/systemd/system/
 cp /opt/sybra/src/deploy/systemd/sybra.env.example /etc/sybra/sybra.env   # then edit
 systemctl daemon-reload
@@ -302,7 +395,9 @@ leader, `sybra-cli cluster nodes` lists the roster with its resolved
   least `coalesce_seconds` has passed since the last restart — so a burst of
   merges within that window still produces exactly one ff-merge + restart, for
   the newest approved SHA at the time the window elapses → exit 42 → systemd
-  reruns `ExecStartPre` (rebuild) → new binary starts → agents reattach.
+  reruns `ExecStartPre` (build + preflight + atomic activate) → `ExecStart`
+  (run the activated release) → `ExecStartPost` (health check → promote to
+  last-good, or roll back + record a failure) → agents reattach.
 - **Manual:** `systemctl restart sybra` (rebuilds current `/opt/sybra/src` HEAD).
 - **Pin/rollback:** `git -C /opt/sybra/src checkout <good-sha>` then
   `systemctl restart sybra`. (While pinned to a non-HEAD SHA, autoupdate's
@@ -340,6 +435,24 @@ leader, `sybra-cli cluster nodes` lists the roster with its resolved
    `autoupdate.check status=coalesced ... coalesced_count=1` for the second one
    instead of a second restart; only one `autoupdate.restart.requested` fires,
    for the newer SHA, once the window elapses.
+7. **Config preflight:** add an unknown/incompatible key to
+   `~/.sybra/config.yaml`, restart — the journal must show a `config-preflight`
+   rejection and a quarantine marker under `/opt/sybra/quarantine`, and
+   `current` must not move. Revert the key and restart again — the same source
+   SHA now activates.
+8. **Health-check rollback:** temporarily break something the server needs at
+   startup that CI can't catch (e.g. point `SYBRA_SERVER_TARGET`'s port at one
+   already bound by another process), restart — `sybra-healthcheck.sh` must
+   time out, roll `current` back to `last-good`, and the service must come
+   back up on the previous release without operator intervention.
+9. **Deploy lock:** run `sybra-build.sh` by hand while a real deploy (or a
+   second manual invocation) holds `/opt/sybra/deploy.lock`; the second one
+   must log "lock contention" and exit 0 without touching `current`.
+10. **Fixture coverage:** `bash deploy/tests/deploy_integration_test.sh` runs
+    all five of the above (config incompatibility, build failure,
+    health-check failure + quarantine, lock contention, successful
+    activation) hermetically against a trimmed fixture module — run it after
+    touching any `deploy/bin/*.sh` script, before validating on the real box.
 
 ## Caveats / decisions to make
 
@@ -361,3 +474,22 @@ leader, `sybra-cli cluster nodes` lists the roster with its resolved
   `Restart=on-failure` + `WantedBy=multi-user.target` (survives host reboot).
 - **codex sandbox:** `SYBRA_DISABLE_CODEX_SANDBOX=1` is still required (LXC
   kernels disable unprivileged userns; the LXC is the sandbox).
+- **Health-check timeout is a startup budget, not a liveness probe.**
+  `SYBRA_HEALTH_TIMEOUT_SEC` (default 60s) only bounds how long
+  `sybra-healthcheck.sh` waits for `/health` to answer once at startup; it
+  never re-checks a release that was already promoted. A regression that only
+  shows up after minutes/hours of runtime is not caught by this mechanism —
+  that's what alerting on the running service is for.
+- **Quarantine threshold trades blast radius for tolerance of transient
+  flakiness.** Config-preflight and build/sandbox failures quarantine
+  immediately (deterministic against an unchanged sha+config, so a retry
+  can't succeed differently). Health-check failures get
+  `SYBRA_HEALTH_QUARANTINE_THRESHOLD` (default 3) attempts first, since a slow
+  dependency or transient startup hiccup is plausible at that layer — each
+  attempt still costs a full restart cycle, bounded by `RestartSec=3` and the
+  unit's `StartLimitBurst=6`/`StartLimitIntervalSec=600` backstop.
+- **`releases/` retention is best-effort.** `sybra-build.sh` prunes to the 3
+  most recently built releases plus whatever `current`/`last-good` point at,
+  after every successful activation; a run that never reaches activation
+  (quarantined) leaves nothing extra behind (its `.building` candidate
+  directory is removed on rejection).

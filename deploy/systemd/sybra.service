@@ -4,6 +4,16 @@ Documentation=https://github.com/Automaat/sybra
 After=network-online.target
 Wants=network-online.target
 
+# Start-rate limit: after StartLimitBurst start attempts within
+# StartLimitIntervalSec, systemd stops auto-restarting and leaves the unit
+# failed instead of retrying forever. This is a backstop behind the
+# application-level quarantine in sybra-build.sh/sybra-healthcheck.sh (which
+# should already have stopped rebuilding/reactivating a known-bad candidate
+# well before this fires) — see deploy/README.md's recovery runbook for what
+# to do when it does.
+StartLimitIntervalSec=600
+StartLimitBurst=6
+
 [Service]
 Type=exec
 User=sybra
@@ -11,8 +21,15 @@ Group=sybra
 WorkingDirectory=/opt/sybra/src
 EnvironmentFile=/etc/sybra/sybra.env
 
+# Build+preflight into a versioned candidate and atomically activate it (or
+# quarantine + keep the last-good release). See deploy/bin/sybra-build.sh.
 ExecStartPre=/opt/sybra/bin/sybra-build.sh
-TimeoutStartSec=900
+# Poll the just-started release's /health; roll back to last-good and record
+# a failure (quarantining after repeated failures) if it never comes up. See
+# deploy/bin/sybra-healthcheck.sh. A failure here fails this start, which is
+# what drives the Restart=on-failure retry below.
+ExecStartPost=/opt/sybra/bin/sybra-healthcheck.sh
+TimeoutStartSec=960
 
 ExecStart=/opt/sybra/bin/sybra-run.sh
 
