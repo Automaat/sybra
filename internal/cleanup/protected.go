@@ -455,20 +455,20 @@ func archiveDirectory(root, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
 	gzw := gzip.NewWriter(file)
-	defer gzw.Close()
 	tw := tar.NewWriter(gzw)
-	defer tw.Close()
 
 	rootFS, err := os.OpenRoot(root)
 	if err != nil {
+		_ = tw.Close()
+		_ = gzw.Close()
+		_ = file.Close()
 		return err
 	}
 	defer rootFS.Close()
 
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -508,6 +508,21 @@ func archiveDirectory(root, dst string) error {
 		_, err = io.Copy(tw, f)
 		return err
 	})
+
+	var closeErr error
+	if err := tw.Close(); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
+	if err := gzw.Close(); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
+	if err := file.Close(); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
+	if walkErr != nil {
+		return errors.Join(walkErr, closeErr)
+	}
+	return closeErr
 }
 
 func ProtectedEvidenceLogPaths(logDir string, tasks []task.Task, findings []Finding) map[string]bool {
@@ -521,7 +536,7 @@ func ProtectedEvidenceLogPaths(logDir string, tasks []task.Task, findings []Find
 	}
 	for i := range findings {
 		f := findings[i]
-		if f.State != FindingOpen {
+		if f.State != FindingOpen && f.State != FindingReattached {
 			continue
 		}
 		taskID := strings.TrimSpace(f.EvidenceTaskID())

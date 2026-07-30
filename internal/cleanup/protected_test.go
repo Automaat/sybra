@@ -3,9 +3,12 @@ package cleanup
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/task"
 )
 
 func newProtectedStore(t *testing.T) *ProtectedStore {
@@ -124,6 +127,68 @@ func TestProtectedStoreRescueFailureLeavesFindingOpen(t *testing.T) {
 	}
 	if reloaded.State != FindingOpen {
 		t.Fatalf("State after failed rescue = %q, want %q", reloaded.State, FindingOpen)
+	}
+}
+
+func TestProtectedEvidenceLogPathsIncludesReattachedFinding(t *testing.T) {
+	t.Parallel()
+	store := newProtectedStore(t)
+	got, _, err := store.Observe(Observation{
+		Kind:          ResourceWorktree,
+		TaskID:        "task-old",
+		Path:          "/tmp/worktree-1",
+		Reason:        ReasonUnpushedCommits,
+		ObservedHead:  "abc123",
+		ObservedState: "dirty=false",
+		BytesRetained: 64,
+	})
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	reattached, err := store.Reattach(got.ID, "task-new")
+	if err != nil {
+		t.Fatalf("Reattach: %v", err)
+	}
+
+	logDir := t.TempDir()
+	paths := ProtectedEvidenceLogPaths(logDir, []task.Task{
+		{
+			ID: "task-old",
+			AgentRuns: []task.AgentRun{
+				{LogFile: "old.ndjson"},
+			},
+		},
+		{
+			ID: "task-new",
+			AgentRuns: []task.AgentRun{
+				{LogFile: "new.ndjson"},
+			},
+		},
+	}, []Finding{reattached})
+
+	if !paths[filepath.Join(logDir, "worktrees", "task-new-setup.log")] {
+		t.Fatal("reattached setup log was not protected")
+	}
+	if !paths[filepath.Join(logDir, "agents", "new.ndjson")] {
+		t.Fatal("reattached agent log was not protected")
+	}
+	if paths[filepath.Join(logDir, "agents", "old.ndjson")] {
+		t.Fatal("original task agent log protected after reattach")
+	}
+}
+
+func TestArchiveDirectoryReturnsFlushError(t *testing.T) {
+	t.Parallel()
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("/dev/full unavailable")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "payload.txt"), []byte(strings.Repeat("x", 1024)), 0o644); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	if err := archiveDirectory(root, "/dev/full"); err == nil {
+		t.Fatal("archiveDirectory() error = nil, want flush error")
 	}
 }
 
