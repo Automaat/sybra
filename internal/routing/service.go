@@ -197,7 +197,7 @@ func (s *Service) tick() {
 	}
 	rep, ok := s.report()
 	if ok {
-		maxAge := time.Duration(s.cfg.EvaluationMaxAgeHours * float64(time.Hour))
+		maxAge := s.cfg.EvaluationMaxAge()
 		if tw := evaluation.Trustworthy(rep, s.now(), maxAge); !tw.Trustworthy {
 			s.logger.Warn("routing.tick.evaluation_untrustworthy", "reason", tw.Reason)
 			s.rollbackToBaseline(prevOverlay, base, tw.Reason)

@@ -1473,11 +1473,13 @@ func applyRoutingDefaults(cfg *Config) {
 	if r.MinSamplesToShift <= 0 {
 		r.MinSamplesToShift = 20
 	}
-	if r.EvaluationMaxAgeHours <= 0 {
+	if r.EvaluationMaxAgeHours == nil {
 		// 72h comfortably exceeds evaluation's own default 24h tick cadence
 		// (applyEvaluationDefaults) while still catching a genuinely stalled
-		// evaluation service.
-		r.EvaluationMaxAgeHours = 72
+		// evaluation service. Only fill when unset — an explicit `0` is a
+		// meaningful "disable the freshness check" and must survive.
+		def := 72.0
+		r.EvaluationMaxAgeHours = &def
 	}
 	def := DefaultRoutingCoefficients()
 	c := &r.Coefficients

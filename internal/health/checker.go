@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/procstat"
 	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/sandbox"
@@ -296,7 +296,7 @@ func (c *Checker) persist(r *Report) {
 		c.logger.Warn("health.persist.marshal", "err", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := fsutil.AtomicWrite(path, data); err != nil {
 		c.logger.Warn("health.persist.write", "err", err)
 	}
 }

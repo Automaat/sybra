@@ -858,7 +858,7 @@ func (lm *LifecycleManager) wireCohortObserved() {
 		if !ok {
 			return 0, false
 		}
-		maxAge := time.Duration(a.cfg.Routing.EvaluationMaxAgeHours * float64(time.Hour))
+		maxAge := a.cfg.Routing.EvaluationMaxAge()
 		if tw := evaluation.Trustworthy(rep, time.Now().UTC(), maxAge); !tw.Trustworthy {
 			return 0, false
 		}

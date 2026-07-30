@@ -10,10 +10,13 @@ package selfmonitor
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"maps"
 	"os"
 	"regexp"
@@ -122,36 +125,89 @@ func parseRich(path string, maxEvents int) ([]agent.ClaudeEvent, error) {
 	defer func() { _ = f.Close() }()
 
 	var events []agent.ClaudeEvent
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 256*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		ev, perr := agent.ParseClaudeLine(line)
-		if perr != nil || ev.Type == "" {
-			ce, cerr := agent.ParseCodexLine(line)
-			if cerr != nil || ce.Type == "" {
-				continue
-			}
-			ev = agent.ClaudeEvent{
-				Type:      ce.Type,
-				Subtype:   ce.Subtype,
-				SessionID: ce.SessionID,
-				Message:   ce.Message,
-				Result:    ce.Result,
+	r := bufio.NewReaderSize(f, logReadBuffer)
+	for {
+		line, tooLong, rerr := readLogLine(r)
+		// A single record larger than maxLogLineBytes (e.g. an oversized
+		// tool_result payload) is skipped rather than aborting the whole log,
+		// so the remaining records still contribute to the LogSummary.
+		if !tooLong && len(line) > 0 {
+			if ev, ok := parseLogLine(line); ok {
+				events = append(events, ev)
 			}
 		}
-		events = append(events, ev)
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				break
+			}
+			return nil, rerr
+		}
 	}
 	if maxEvents > 0 && len(events) > maxEvents {
 		events = events[len(events)-maxEvents:]
 	}
 	return events, nil
+}
+
+const (
+	logReadBuffer   = 256 * 1024
+	maxLogLineBytes = 1024 * 1024
+)
+
+// parseLogLine parses one NDJSON record, trying the Claude format first and
+// falling back to Codex; ok is false when neither parser yields a typed event.
+func parseLogLine(line []byte) (agent.ClaudeEvent, bool) {
+	ev, perr := agent.ParseClaudeLine(line)
+	if perr != nil || ev.Type == "" {
+		ce, cerr := agent.ParseCodexLine(line)
+		if cerr != nil || ce.Type == "" {
+			return agent.ClaudeEvent{}, false
+		}
+		ev = agent.ClaudeEvent{
+			Type:      ce.Type,
+			Subtype:   ce.Subtype,
+			SessionID: ce.SessionID,
+			Message:   ce.Message,
+			Result:    ce.Result,
+		}
+	}
+	return ev, true
+}
+
+// readLogLine returns the next newline-terminated record from r, without the
+// trailing newline. A record longer than maxLogLineBytes is drained and
+// reported via tooLong=true so the caller can skip it without aborting the
+// scan. err is io.EOF once the file is exhausted.
+func readLogLine(r *bufio.Reader) (line []byte, tooLong bool, err error) {
+	var buf []byte
+	for {
+		frag, e := r.ReadSlice('\n')
+		if errors.Is(e, bufio.ErrBufferFull) {
+			buf = append(buf, frag...)
+			if len(buf) > maxLogLineBytes {
+				return nil, true, drainLogLine(r)
+			}
+			continue
+		}
+		buf = append(buf, frag...)
+		return trimTrailingNewline(buf), false, e
+	}
+}
+
+// drainLogLine discards the remainder of the current record up to and
+// including the next newline, so an oversized record does not bleed into the
+// next one. Returns io.EOF if the file ends before a newline.
+func drainLogLine(r *bufio.Reader) error {
+	for {
+		if _, e := r.ReadSlice('\n'); !errors.Is(e, bufio.ErrBufferFull) {
+			return e
+		}
+	}
+}
+
+func trimTrailingNewline(b []byte) []byte {
+	b = bytes.TrimSuffix(b, []byte("\n"))
+	return bytes.TrimSuffix(b, []byte("\r"))
 }
 
 // pendingCall tracks a tool invocation awaiting a result event so cost can

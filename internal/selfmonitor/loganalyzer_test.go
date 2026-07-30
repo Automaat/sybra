@@ -144,6 +144,36 @@ func TestAnalyzeEmptyLog(t *testing.T) {
 	}
 }
 
+// TestAnalyzeSkipsOversizedRecord guards that a single record larger than
+// maxLogLineBytes (e.g. a huge tool_result payload) is skipped rather than
+// aborting the whole log — the surrounding records must still be parsed.
+func TestAnalyzeSkipsOversizedRecord(t *testing.T) {
+	oversized := `{"type":"user","message":{"content":[` +
+		`{"type":"tool_result","tool_use_id":"big","content":"` +
+		strings.Repeat("x", maxLogLineBytes+1) + `"}]}}`
+	lines := []string{
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		oversized,
+		`{"type":"assistant","session_id":"s1","message":{"content":[` +
+			`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}`,
+		`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.5}`,
+	}
+	path := writeFixture(t, lines)
+
+	s, err := Analyze(path, 0)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	// The oversized record is dropped, but the tool_use after it and the
+	// result cost before/after must still land.
+	if s.ToolHistogram["Bash"] != 1 {
+		t.Errorf("ToolHistogram[Bash] = %d, want 1 (record after oversized still parsed)", s.ToolHistogram["Bash"])
+	}
+	if s.TotalCostUSD != 0.5 {
+		t.Errorf("TotalCostUSD = %.4f, want 0.5 (result after oversized still parsed)", s.TotalCostUSD)
+	}
+}
+
 func TestAggregateRepeatedCallsDirect(t *testing.T) {
 	// Construct events directly to bypass the NDJSON parser — faster and
 	// avoids coupling this test to the stream-json envelope format.

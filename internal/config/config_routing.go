@@ -1,5 +1,7 @@
 package config
 
+import "time"
+
 // RoutingConfig controls the adaptive provider-routing service, which turns
 // the periodic evaluation scorecard into bounded, versioned weight nudges for
 // internal/abtest's per-experiment variants. It never writes to config.yaml —
@@ -40,9 +42,27 @@ type RoutingConfig struct {
 	// EvaluationMaxAgeHours bounds how old the evaluation report backing a
 	// tick may be before it is treated as untrustworthy (see
 	// evaluation.Trustworthy) and the tick rolls the overlay back to base
-	// weights instead of promoting/expanding experiment traffic from it. <=0
-	// disables the freshness check.
-	EvaluationMaxAgeHours float64 `yaml:"evaluation_max_age_hours" json:"evaluationMaxAgeHours"`
+	// weights instead of promoting/expanding experiment traffic from it.
+	//
+	// Tri-state pointer so an explicit `0` survives applyRoutingDefaults: unset
+	// (nil) fills the 72h default, an explicit `<= 0` disables the freshness
+	// check entirely. Read through EvaluationMaxAge, never the raw field.
+	EvaluationMaxAgeHours *float64 `yaml:"evaluation_max_age_hours" json:"evaluationMaxAgeHours"`
+}
+
+// EvaluationMaxAge resolves the freshness bound for the evaluation report
+// backing a routing tick. A nil (unset) value yields the 72h default; an
+// explicit non-positive value yields 0, which evaluation.Trustworthy treats as
+// "freshness check disabled".
+func (r RoutingConfig) EvaluationMaxAge() time.Duration {
+	hours := 72.0
+	if r.EvaluationMaxAgeHours != nil {
+		hours = *r.EvaluationMaxAgeHours
+	}
+	if hours <= 0 {
+		return 0
+	}
+	return time.Duration(hours * float64(time.Hour))
 }
 
 // RoutingCoefficients weights each score input's contribution to a variant's

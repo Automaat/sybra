@@ -808,6 +808,7 @@ func TestService_Tick_StaleEvaluation_RollsBackToBaseline(t *testing.T) {
 	staleRep := testReport(0.9, 0.1)
 	staleRep.SchemaVersion = evaluation.ScorecardSchemaVersion
 	staleRep.GeneratedAt = now.Add(-30 * 24 * time.Hour) // far older than maxAge
+	maxAgeHours := 24.0
 
 	svc := NewService(Deps{
 		Cfg: config.RoutingConfig{
@@ -817,7 +818,7 @@ func TestService_Tick_StaleEvaluation_RollsBackToBaseline(t *testing.T) {
 			FloorWeight:           1,
 			MaxStep:               100,
 			MinSamplesToShift:     0,
-			EvaluationMaxAgeHours: 24,
+			EvaluationMaxAgeHours: &maxAgeHours,
 			Coefficients:          config.DefaultRoutingCoefficients(),
 		},
 		Base:   testBaseConfig,
@@ -873,11 +874,12 @@ func TestService_Tick_StaleEvaluation_AlreadyAtBaseline_NoOp(t *testing.T) {
 
 	var applied []abtest.Config
 	var audited []audit.Event
+	maxAgeHours := 24.0
 	svc := NewService(Deps{
 		Cfg: config.RoutingConfig{
 			Enabled:               true,
 			IntervalHours:         6,
-			EvaluationMaxAgeHours: 24,
+			EvaluationMaxAgeHours: &maxAgeHours,
 		},
 		Base:   testBaseConfig,
 		Report: func() (evaluation.Report, bool) { return staleRep, true },

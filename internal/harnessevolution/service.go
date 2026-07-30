@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 type Options struct {
@@ -69,5 +71,5 @@ func SaveRunResult(dir string, result RunResult) error {
 		return err
 	}
 	path := filepath.Join(dir, "last-run.json")
-	return os.WriteFile(path, data, 0o600)
+	return fsutil.AtomicWrite(path, data)
 }

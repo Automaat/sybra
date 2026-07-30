@@ -817,7 +817,7 @@ only CostWeight) leaves every other term at its shipped default.
 | `routing.max_step` | `int` | `5` |  |  |  | `false` | `restart` |  | MaxStep bounds how far a single tick may move one variant's weight, up or down, so a noisy score swing cannot re-route most traffic in one generation. |
 | `routing.min_samples_to_shift` | `int` | `20` |  |  |  | `false` | `restart` |  | MinSamplesToShift is the resolved-run threshold below which a variant is treated as insufficiently sampled and held at FloorWeight instead of being ranked — distinct from ab_testing.min_samples_per_variant, which gates the evaluation scorecard's InsufficientData display flag. |
 | `routing.coefficients` | `RoutingCoefficients` | _(see below)_ |  |  |  | `false` |  |  |  |
-| `routing.evaluation_max_age_hours` | `float64` | `72` |  |  |  | `false` | `restart` |  | EvaluationMaxAgeHours bounds how old the evaluation report backing a tick may be before it is treated as untrustworthy (see evaluation.Trustworthy) and the tick rolls the overlay back to base weights instead of promoting/expanding experiment traffic from it. <=0 disables the freshness check. |
+| `routing.evaluation_max_age_hours` | `*float64` | `72` |  |  |  | `false` | `restart` |  | EvaluationMaxAgeHours bounds how old the evaluation report backing a tick may be before it is treated as untrustworthy (see evaluation.Trustworthy) and the tick rolls the overlay back to base weights instead of promoting/expanding experiment traffic from it.  Tri-state pointer so an explicit `0` survives applyRoutingDefaults: unset (nil) fills the 72h default, an explicit `<= 0` disables the freshness check entirely. Read through EvaluationMaxAge, never the raw field. |
 
 ### RoutingCoefficients (`routing.coefficients`)
 
