@@ -156,7 +156,7 @@ func (m *Manager) ReleaseStaleStoppedAgentsForTask(ctx context.Context, taskID s
 // cleanup) should use KillAgentsForTask instead.
 func (m *Manager) StopAgents(agents []*Agent) {
 	for _, a := range agents {
-		if a == nil {
+		if a == nil || a.GetState().IsTerminal() {
 			continue
 		}
 		m.logger.Info("agent.stop-for-task", "agent_id", a.ID, "task_id", a.TaskID)
@@ -227,6 +227,13 @@ func (m *Manager) StopAgent(agentID string) error {
 	if !ok {
 		return fmt.Errorf("agent %s not found", agentID)
 	}
+	if a.GetState().IsTerminal() {
+		// Already stopped: no signal, log, or state-change event to repeat.
+		// A caller that stops the same agent twice (e.g. reconciliation
+		// re-selecting a not-yet-evicted terminal registry entry) must not
+		// turn history into recurring control-plane work.
+		return nil
+	}
 
 	m.logger.Info("agent.stop", "id", agentID)
 
@@ -285,6 +292,28 @@ func (m *Manager) ListAgents() []*Agent {
 	defer m.mu.RUnlock()
 	agents := make([]*Agent, 0, len(m.agents))
 	for _, a := range m.agents {
+		agents = append(agents, a)
+	}
+	return agents
+}
+
+// ListLiveAgents returns only agents that are still live (isLive: running,
+// or paused between conversational turns). A stopped agent's registry entry
+// is retained after termination (see deadAgentRetention) purely so a caller
+// polling right after a stop still observes its final state — that retained
+// entry is history, not something still running. Callers that pick a live
+// singleton or otherwise decide what needs stopping (e.g. orchestrator
+// reconciliation) must use this instead of ListAgents, or they will keep
+// re-selecting an already-terminal entry for as long as it sits in the
+// retention window.
+func (m *Manager) ListLiveAgents() []*Agent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	agents := make([]*Agent, 0, len(m.agents))
+	for _, a := range m.agents {
+		if !isLive(a.GetState()) {
+			continue
+		}
 		agents = append(agents, a)
 	}
 	return agents

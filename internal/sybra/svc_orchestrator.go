@@ -76,6 +76,13 @@ func orchestratorReplaceable(a *agent.Agent) bool {
 	}
 }
 
+// selectOrchestratorSingleton picks the one orchestrator agent to keep and
+// reports every other orchestrator (or currentID) entry that should be
+// stopped. Callers must pass a live-only agent list (agent.Manager's
+// ListLiveAgents, not ListAgents) — an already-terminal entry retained for
+// historical reporting has nothing left to stop, and re-including it here
+// would re-select and re-stop the same dead agent on every reconciliation
+// tick for as long as it sits in the manager's retention window.
 func selectOrchestratorSingleton(currentID string, agents []*agent.Agent) (keepID string, stopIDs []string) {
 	var keep *agent.Agent
 	stopSeen := map[string]struct{}{}
@@ -159,7 +166,7 @@ func (s *OrchestratorService) reconcileOrchestratorsLocked() string {
 		s.agentID = ""
 		return ""
 	}
-	keepID, stopIDs := selectOrchestratorSingleton(s.agentID, s.agents.ListAgents())
+	keepID, stopIDs := selectOrchestratorSingleton(s.agentID, s.agents.ListLiveAgents())
 	s.agentID = keepID
 	for _, id := range stopIDs {
 		if id == keepID {
