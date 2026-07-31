@@ -1002,7 +1002,10 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 		// This runs after node routing, so a remote task is still assigned to its
 		// owner before that owner starts implementation.
 		if t.Status == task.StatusTodo && hasApprovedPlanContract(t) {
-			if _, err := a.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+			if _, err := a.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
+				Source:   "workflow.legacy-approved-plan",
+				ToStatus: task.StatusInProgress,
+			}); err != nil {
 				a.logger.Error("workflow.approved-plan.promote", "task_id", taskID, "err", err)
 			}
 			return

@@ -198,8 +198,8 @@ func TestPlanningService_ApprovePlan_RecoversCompletedPlanReviewWorkflow(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != task.StatusTodo {
-		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusTodo)
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
 	}
 	if updated.Workflow == nil || updated.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow = %+v, want completed", updated.Workflow)
@@ -289,8 +289,8 @@ func TestPlanningService_ApprovePlan_RecoversMarkdownOnlyMigrationPlan(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != task.StatusTodo {
-		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusTodo)
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
 	}
 }
 
@@ -342,12 +342,12 @@ func TestPlanningService_ApprovePlan_RecoversManualVerificationContract(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != task.StatusTodo {
-		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusTodo)
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
 	}
 }
 
-func TestPlanningService_ApprovePlan_StaleReviewPersistsTodoUnderStatusHook(t *testing.T) {
+func TestPlanningService_ApprovePlan_StaleReviewPersistsImplementationReadyStateUnderStatusHook(t *testing.T) {
 	planSvc, taskSvc, a := setupPlanningService(t)
 	a.workflowEngine = taskSvc.workflowEngine
 	a.initStatusHook()
@@ -390,8 +390,8 @@ func TestPlanningService_ApprovePlan_StaleReviewPersistsTodoUnderStatusHook(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != task.StatusTodo {
-		t.Fatalf("ApprovePlan status = %q, want %q", updated.Status, task.StatusTodo)
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("ApprovePlan status = %q, want %q", updated.Status, task.StatusInProgress)
 	}
 
 	time.Sleep(150 * time.Millisecond)
@@ -400,14 +400,14 @@ func TestPlanningService_ApprovePlan_StaleReviewPersistsTodoUnderStatusHook(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Status != task.StatusTodo {
-		t.Fatalf("status after hook = %q, want %q", after.Status, task.StatusTodo)
+	if after.Status != task.StatusInProgress {
+		t.Fatalf("status after hook = %q, want %q", after.Status, task.StatusInProgress)
 	}
 	if after.StatusReason != "" {
 		t.Fatalf("status_reason = %q, want empty", after.StatusReason)
 	}
 	if after.Workflow == nil || after.Workflow.WorkflowID != "simple-task-plan" || after.Workflow.State != workflow.ExecCompleted {
-		t.Fatalf("workflow after hook = %+v, want completed simple-task-plan", after.Workflow)
+		t.Fatalf("workflow after hook = %+v, want completed simple-task-plan pending scheduler dispatch", after.Workflow)
 	}
 }
 
