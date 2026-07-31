@@ -74,12 +74,8 @@ func skipTaskCreatedWorkflow(t task.Task) bool {
 	return false
 }
 
-// hasApprovedPlanContract reports whether t already carries a structurally
-// valid plan contract — the signal that a StatusTodo task reached todo via
-// simple-task-plan's set_todo_and_end hand-off (a completed plan + optional
-// critique cycle) rather than as a brand-new, never-triaged task. A brand new
-// task never has a non-empty PlanContract, so this is a safe, low-cost check
-// with no false positives against the ordinary new-task path.
+// hasApprovedPlanContract identifies legacy todo tasks that completed plan
+// review before approval began handing work directly to implementation.
 func hasApprovedPlanContract(t task.Task) bool {
 	if strings.TrimSpace(t.PlanContract) == "" {
 		return false

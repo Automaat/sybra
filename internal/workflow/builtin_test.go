@@ -9,6 +9,27 @@ import (
 	"testing"
 )
 
+func TestBuiltinSimpleTaskPlan_ApprovalStartsImplementation(t *testing.T) {
+	t.Parallel()
+
+	plan := mustBuiltinDefinition(t, "simple-task-plan")
+	review := plan.StepByID("review_plan")
+	if review == nil {
+		t.Fatal("review_plan step not found in simple-task-plan")
+	}
+	got, err := ResolveTransition(review.Next, map[string]string{"vars.human_action": "approve"})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "set_in_progress_after_plan_and_end" {
+		t.Fatalf("approval next = %q, want set_in_progress_after_plan_and_end", got)
+	}
+	step := plan.StepByID(got)
+	if step == nil || step.Type != StepSetStatus || step.Config.Status != "in-progress" {
+		t.Fatalf("approval handoff = %+v, want set_status in-progress", step)
+	}
+}
+
 // TestBuiltinSimpleTask_MaybeCritiqueReplanSkip locks the behavior that
 // critique_plan runs only on the first plan pass. On replan (after a human
 // reject), `vars.step.review_plan.output` exists, so maybe_critique must

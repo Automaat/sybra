@@ -202,13 +202,9 @@ steps:
 	}
 }
 
-func TestDispatchTaskCreatedWorkflowSkipsApprovedTodoPlan(t *testing.T) {
-	// Reproduces #997b365c's stall→reset loop: a todo task that already
-	// carries a valid, approved plan contract must not be swept back into
-	// task.created/triage (which would overwrite it to "planning" and mint a
-	// brand-new plan agent, discarding the approved contract). A todo task
-	// with no plan contract — the ordinary brand-new path — must still
-	// dispatch normally.
+func TestDispatchTaskCreatedWorkflowPromotesApprovedTodoPlan(t *testing.T) {
+	// Legacy approved plans were left in todo. They must enter implementation
+	// without replaying task.created/triage and discarding their contract.
 	const createdWF = `id: probe-created
 name: Probe Created
 trigger:
@@ -225,10 +221,10 @@ steps:
 	cases := []struct {
 		name            string
 		hasPlanContract bool
-		wantDispatch    bool
+		wantStatus      task.Status
 	}{
-		{name: "todo with approved plan contract stays parked", hasPlanContract: true, wantDispatch: false},
-		{name: "brand new todo with no plan contract still dispatches", hasPlanContract: false, wantDispatch: true},
+		{name: "todo with approved plan contract enters implementation", hasPlanContract: true, wantStatus: task.StatusInProgress},
+		{name: "brand new todo with no plan contract still dispatches", hasPlanContract: false, wantStatus: task.StatusPlanning},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -270,14 +266,8 @@ steps:
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := tk.Workflow != nil; got != tc.wantDispatch {
-				t.Fatalf("workflow attached = %v, want %v", got, tc.wantDispatch)
-			}
-			if tc.wantDispatch && tk.Status != task.StatusPlanning {
-				t.Errorf("status = %q, want planning (probe workflow ran)", tk.Status)
-			}
-			if !tc.wantDispatch && tk.Status != task.StatusTodo {
-				t.Errorf("status = %q, want todo (dispatch skipped, task left parked)", tk.Status)
+			if tk.Status != tc.wantStatus {
+				t.Errorf("status = %q, want %q", tk.Status, tc.wantStatus)
 			}
 		})
 	}
