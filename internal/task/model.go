@@ -478,6 +478,11 @@ type Task struct {
 	// NOT tighten posture beyond the system default (ResolveSandboxMode only
 	// treats Sandbox=false as meaningful).
 	Sandbox *bool `json:"sandbox,omitempty"`
+	// SandboxOffReason explains why Sandbox is false. Disabling the sandbox
+	// hands a task's agents unrestricted write access to the host, so the
+	// audit trail needs to say why rather than only that it happened.
+	// Meaningful only alongside Sandbox=false; ignored otherwise.
+	SandboxOffReason string `json:"sandboxOffReason,omitempty"`
 	// ReasoningEffort sets the reasoning level for this task's agents
 	// (low/medium/high/xhigh). Empty = model default. Applied across providers:
 	// codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.

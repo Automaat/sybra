@@ -46,6 +46,10 @@ agent:
   post_result_cost_usd: 5
   max_assistant_events: 50
   require_permissions: false
+  # sybra-server refuses to start without an explicit posture, so an omitted
+  # key can never be mistaken for a contained one. "off" suits this harness:
+  # the fake provider CLIs write only inside $TMP.
+  sandbox_mode: "off"
 orchestrator:
   dispatch_interval_seconds: 3600
   maintenance_interval_seconds: 3600
