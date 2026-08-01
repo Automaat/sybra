@@ -4877,7 +4877,7 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 	// so only "success" (implement) remains in the queue. The default
 	// classifier verdict (env.classifier) already routes to status=todo,
 	// matching the old "triage" fake-claude scenario.
-	env := setupE2EMultiProvider(t, "claude", []string{"success"})
+	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 	loadBuiltinWorkflow(t, env, "simple-task-implement")
 
@@ -4899,14 +4899,34 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	waitFor(t, 30*time.Second, "verify_commits parks one no-commit retry", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil &&
+			tk.Workflow.WorkflowID == "simple-task-implement" &&
+			tk.Workflow.CurrentStep == "implement" &&
+			tk.Workflow.State == workflow.ExecWaiting &&
+			tk.Workflow.Variables["step.verify_commits.no_commit_retry"] == "1"
+	})
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk.Workflow.SetVar("workflow.retry_after", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	wf := tk.Workflow
+	if _, err := env.tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	env.engine.ResumeStalled()
+
 	waitFor(t, 30*time.Second, "implement workflow completes after verify_commits", func() bool {
+		env.engine.ResumeStalled()
 		tk, gErr := env.tasks.Get(created.ID)
 		return gErr == nil && tk.Workflow != nil &&
 			tk.Workflow.WorkflowID == "simple-task-implement" &&
 			tk.Workflow.State == workflow.ExecCompleted
 	})
 
-	tk, _ := env.tasks.Get(created.ID)
+	tk, _ = env.tasks.Get(created.ID)
 	if tk.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", tk.Status)
 	}
