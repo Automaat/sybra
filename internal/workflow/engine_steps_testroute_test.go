@@ -2270,8 +2270,10 @@ func TestAdvanceStep_TestProtocolViolationAfterRetryStopsWithProtocolReason(t *t
 		WorkflowID:  "testing-task",
 		CurrentStep: testVerdictSourceStep,
 		State:       ExecWaiting,
-		Variables:   map[string]string{},
-		StartedAt:   time.Now().UTC(),
+		Variables: map[string]string{
+			testingAutoRetryKey(testOutcomeProtocolViolation): strconv.Itoa(testingAutoRetryCap),
+		},
+		StartedAt: time.Now().UTC(),
 		StepHistory: []StepRecord{{
 			StepID: testVerdictSourceStep,
 			Status: "failed",
