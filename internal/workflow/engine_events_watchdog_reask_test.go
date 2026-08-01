@@ -10,6 +10,13 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 )
 
+type watchdogRecoveryAssertion func(*testing.T, *memTasks, *Execution)
+
+func runWatchdogRecoveryAssertion(t *testing.T, assert watchdogRecoveryAssertion, tasks *memTasks, wf *Execution) {
+	t.Helper()
+	assert(t, tasks, wf)
+}
+
 func TestHandleWatchdogHangRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
@@ -56,7 +63,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 		kind      watchdogRecoveryKind
 		task      TaskInfo
 		step      Step
-		assertion func(*testing.T, *memTasks, *Execution)
+		assertion watchdogRecoveryAssertion
 	}{
 		{
 			name: "hang",
@@ -64,6 +71,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 			task: TaskInfo{ID: "t1", Status: "in-progress", StatusReason: "watchdog hang: no stream activity"},
 			step: Step{ID: "implement", Type: StepRunAgent},
 			assertion: func(t *testing.T, tasks *memTasks, wf *Execution) {
+				t.Helper()
 				if got := wf.Variables[watchdogHangRetryKey("implement")]; got != "1" {
 					t.Fatalf("hang retry var = %q, want 1", got)
 				}
@@ -82,6 +90,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 			task: TaskInfo{ID: "t1", Status: "in-progress", StatusReason: "watchdog: reward-hacking retry: still looping"},
 			step: Step{ID: "fix_review", Type: StepRunAgent, Config: StepConfig{Role: "fix-review"}},
 			assertion: func(t *testing.T, tasks *memTasks, wf *Execution) {
+				t.Helper()
 				if got := wf.Variables[watchdogRewardHackingRetryKey("fix_review")]; got != "1" {
 					t.Fatalf("reward-hacking retry var = %q, want 1", got)
 				}
@@ -96,6 +105,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 			task: TaskInfo{ID: "t1", Status: "in-progress", StatusReason: "watchdog: rate limit: quota exhausted"},
 			step: Step{ID: "implement", Type: StepRunAgent},
 			assertion: func(t *testing.T, tasks *memTasks, wf *Execution) {
+				t.Helper()
 				if got := wf.Variables[watchdogRateLimitRetryKey("implement")]; got != "1" {
 					t.Fatalf("rate-limit retry var = %q, want 1", got)
 				}
@@ -107,6 +117,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 			task: TaskInfo{ID: "t1", Status: "human-required", StatusReason: "watchdog: loop stop: looping on toolchain setup"},
 			step: Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation"}},
 			assertion: func(t *testing.T, tasks *memTasks, wf *Execution) {
+				t.Helper()
 				if got := wf.Variables[watchdogStopRetryKey("implement")]; got != "1" {
 					t.Fatalf("watchdog-stop retry var = %q, want 1", got)
 				}
@@ -131,6 +142,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 			},
 			step: Step{ID: "implement", Type: StepRunAgent},
 			assertion: func(t *testing.T, tasks *memTasks, wf *Execution) {
+				t.Helper()
 				if got := wf.Variables[worktreeRepairRetryKey("implement")]; got != "1" {
 					t.Fatalf("worktree-repair retry var = %q, want 1", got)
 				}
@@ -166,7 +178,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 			if handled := engine.handleWatchdogRecoveryRetry(tc.kind, &tc.task, &tc.step); handled {
 				t.Fatalf("first %s retry should arm, not exhaust", tc.kind)
 			}
-			tc.assertion(t, tasks, wf)
+			runWatchdogRecoveryAssertion(t, tc.assertion, tasks, wf)
 		})
 	}
 }

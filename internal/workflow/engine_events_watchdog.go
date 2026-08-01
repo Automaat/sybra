@@ -301,190 +301,210 @@ func (e *Engine) handleWatchdogRecoveryRetry(kind watchdogRecoveryKind, t *TaskI
 func (e *Engine) watchdogRecoverySpec(kind watchdogRecoveryKind, t *TaskInfo, step *Step) (watchdogRecoverySpec, bool) {
 	switch kind {
 	case watchdogRecoveryHang:
-		return watchdogRecoverySpec{
-			preflight: func(e *Engine, t *TaskInfo, step *Step) bool {
-				return e.handleWatchdogHangReadyPR(t, step)
-			},
-			policy: boundedRetryPolicy{
-				name:       "watchdog-hang",
-				applies:    watchdogHangApplies,
-				busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
-				counterKey: watchdogHangRetryKey,
-				max:        maxWatchdogHangRetries,
-				onArm: func(e *Engine, t *TaskInfo, step *Step, attempt int) {
-					armWatchdogCleanRetry(t, step)
-					t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogReaskNoteForStep(e.withManualTestConfig(*t), step, attempt))
-				},
-				onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-					return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
-				},
-				onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
-					targetStatus, reason, terminalState := watchdogHangExhaustionResolution(*t, step, attempts, e.openPROnUnrunnableGate)
-					now := time.Now().UTC()
-					t.Workflow.State = terminalState
-					t.Workflow.CompletedAt = &now
-					t.Workflow.CurrentStep = ""
-					if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-						e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
-					}
-					if err := e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason); err != nil {
-						e.logger.Error("workflow.watchdog-hang.escalate", "task_id", t.ID, "step", step.ID, "err", err)
-						return
-					}
-					if targetStatus == "ready-pr" {
-						e.logger.Warn("workflow.watchdog-hang.exhausted.open-pr", "task_id", t.ID, "step", step.ID, "attempts", attempts)
-						e.fireComplete(&CompletionInfo{TaskID: t.ID, WorkflowID: t.Workflow.WorkflowID, Variables: t.Workflow.Variables})
-						return
-					}
-					e.logger.Warn("workflow.watchdog-hang.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
-				},
-			},
-		}, true
+		return e.watchdogHangRecoverySpec(), true
 	case watchdogRecoveryRewardHacking:
-		profile, ok := rewardHackingRetryProfile(t, step)
-		if !ok {
-			return watchdogRecoverySpec{}, false
-		}
-		return watchdogRecoverySpec{
-			policy: boundedRetryPolicy{
-				name: "watchdog-reward-hacking",
-				applies: func(_ *Engine, t *TaskInfo, step *Step) bool {
-					return t != nil && t.Workflow != nil && step != nil && step.Type == StepRunAgent && isWatchdogRewardHackingReason(t.StatusReason)
-				},
-				busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
-				counterKey: watchdogRewardHackingRetryKey,
-				max:        profile.max,
-				onArm: func(_ *Engine, t *TaskInfo, step *Step, attempt int) {
-					armWatchdogCleanRetry(t, step)
-					t.Workflow.SetVar(watchdogReaskNoteVar, profile.note(attempt))
-				},
-				onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-					return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
-				},
-				onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
-					reason := profile.exhaustedReason(attempts)
-					t.Workflow.State = ExecFailed
-					if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-						e.logger.Error("workflow.watchdog-reward-hacking.persist", "task_id", t.ID, "step", step.ID, "err", err)
-					}
-					if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
-						e.logger.Error("workflow.watchdog-reward-hacking.escalate", "task_id", t.ID, "step", step.ID, "err", err)
-						return
-					}
-					e.logger.Warn("workflow.watchdog-reward-hacking.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
-				},
-			},
-		}, true
+		return e.watchdogRewardHackingRecoverySpec(t, step)
 	case watchdogRecoveryRateLimit:
-		return watchdogRecoverySpec{
-			policy: boundedRetryPolicy{
-				name: "watchdog-rate-limit",
-				applies: func(_ *Engine, t *TaskInfo, step *Step) bool {
-					return t != nil && t.Workflow != nil && step != nil && step.Type == StepRunAgent && isWatchdogRateLimitReason(t.StatusReason)
-				},
-				counterKey: watchdogRateLimitRetryKey,
-				max:        maxWatchdogRateLimitRetries,
-				onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
-					retryKey := watchdogRateLimitRetryKey(step.ID)
-					freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
-					if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) && parseWorkflowInt(t.Workflow.Variables[freshKey]) == 0 {
-						t.Workflow.StartedAt = time.Now().UTC()
-						t.Workflow.SetVar(freshKey, "1")
-						t.Workflow.SetVar(retryKey, "0")
-						if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-							e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
-							return
-						}
-						e.logger.Warn("workflow.watchdog-rate-limit.fresh-session-recovery", "task_id", t.ID, "step", step.ID, "resume_attempts", attempts+1)
-						return
-					}
-					targetStatus, reason, terminalState := watchdogRateLimitExhaustionResolution(*t, step, attempts)
-					t.Workflow.State = terminalState
-					if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) {
-						t.Workflow.StartedAt = time.Now().UTC()
-					}
-					if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-						e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
-					}
-					var escalateErr error
-					if targetStatus == "blocked" {
-						escalateErr = e.tasks.UpdateTaskBlocker(t.ID, targetStatus, reason, blocker.State{Kind: blocker.KindWatchdogRateLimitExhausted, Actor: blocker.ActorWorkflow, Exhausted: true})
-					} else {
-						escalateErr = e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason)
-					}
-					if escalateErr != nil {
-						e.logger.Error("workflow.watchdog-rate-limit.escalate", "task_id", t.ID, "step", step.ID, "err", escalateErr)
-						return
-					}
-					e.logger.Warn("workflow.watchdog-rate-limit.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts, "status", targetStatus)
-				},
-			},
-		}, true
+		return e.watchdogRateLimitRecoverySpec(), true
 	case watchdogRecoveryStop:
-		return watchdogRecoverySpec{
-			policy: boundedRetryPolicy{
-				name:       "watchdog-stop",
-				applies:    func(e *Engine, t *TaskInfo, step *Step) bool { return e.canRetryWatchdogStop(t, step) },
-				busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
-				counterKey: watchdogStopRetryKey,
-				max:        maxWatchdogStopRetries,
-				onArm: func(_ *Engine, t *TaskInfo, step *Step, attempt int) {
-					armWatchdogCleanRetry(t, step)
-					t.Workflow.SetVar(watchdogReaskNoteVar, buildWatchdogStopReaskNote(t.StatusReason, attempt))
-				},
-				onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-					if err := e.tasks.UpdateTaskStatus(t.ID, "in-progress", ""); err != nil {
-						return err
-					}
-					t.Status = "in-progress"
-					t.StatusReason = ""
-					return nil
-				},
-				onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
-					reason := fmt.Sprintf("watchdog stop: retry budget exhausted after %d clean re-dispatches", attempts)
-					t.Workflow.State = ExecFailed
-					if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-						e.logger.Error("workflow.watchdog-stop.persist", "task_id", t.ID, "step", step.ID, "err", err)
-					}
-					if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
-						e.logger.Error("workflow.watchdog-stop.escalate", "task_id", t.ID, "step", step.ID, "err", err)
-						return
-					}
-					e.logger.Warn("workflow.watchdog-stop.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
-				},
-			},
-		}, true
+		return e.watchdogStopRecoverySpec(), true
 	case watchdogRecoveryWorktreeRepair:
-		return watchdogRecoverySpec{
-			policy: boundedRetryPolicy{
-				name:       "worktree-repair",
-				applies:    func(e *Engine, t *TaskInfo, step *Step) bool { return e.canRetryWorktreeRepair(t, step) },
-				busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
-				counterKey: worktreeRepairRetryKey,
-				max:        maxWorktreeRepairRetries,
-				onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-					if err := e.tasks.UpdateTaskBlocker(t.ID, "in-progress", "", blocker.State{}); err != nil {
-						return err
-					}
-					t.Status = "in-progress"
-					t.StatusReason = ""
-					t.Blocker = blocker.State{}
-					return nil
-				},
-				onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
-					exhausted := t.Blocker
-					exhausted.Exhausted = true
-					reason := fmt.Sprintf("worktree repair: retry budget exhausted after %d attempts — manual repair required", attempts)
-					if err := e.tasks.UpdateTaskBlocker(t.ID, "blocked", reason, exhausted); err != nil {
-						e.logger.Error("workflow.worktree-repair.escalate", "task_id", t.ID, "step", step.ID, "err", err)
-						return
-					}
-					e.logger.Warn("workflow.worktree-repair.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
-				},
-			},
-		}, true
+		return e.worktreeRepairRecoverySpec(), true
 	default:
 		return watchdogRecoverySpec{}, false
+	}
+}
+
+func (e *Engine) watchdogHangRecoverySpec() watchdogRecoverySpec {
+	return watchdogRecoverySpec{
+		preflight: func(e *Engine, t *TaskInfo, step *Step) bool {
+			return e.handleWatchdogHangReadyPR(t, step)
+		},
+		policy: boundedRetryPolicy{
+			name:       "watchdog-hang",
+			applies:    watchdogHangApplies,
+			busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
+			counterKey: watchdogHangRetryKey,
+			max:        maxWatchdogHangRetries,
+			onArm: func(e *Engine, t *TaskInfo, step *Step, attempt int) {
+				armWatchdogCleanRetry(t, step)
+				t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogReaskNoteForStep(e.withManualTestConfig(*t), step, attempt))
+			},
+			onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
+				return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
+			},
+			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
+				targetStatus, reason, terminalState := watchdogHangExhaustionResolution(*t, step, attempts, e.openPROnUnrunnableGate)
+				now := time.Now().UTC()
+				t.Workflow.State = terminalState
+				t.Workflow.CompletedAt = &now
+				t.Workflow.CurrentStep = ""
+				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+					e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
+				}
+				if err := e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason); err != nil {
+					e.logger.Error("workflow.watchdog-hang.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+					return
+				}
+				if targetStatus == "ready-pr" {
+					e.logger.Warn("workflow.watchdog-hang.exhausted.open-pr", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+					e.fireComplete(&CompletionInfo{TaskID: t.ID, WorkflowID: t.Workflow.WorkflowID, Variables: t.Workflow.Variables})
+					return
+				}
+				e.logger.Warn("workflow.watchdog-hang.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+			},
+		},
+	}
+}
+
+func (e *Engine) watchdogRewardHackingRecoverySpec(t *TaskInfo, step *Step) (watchdogRecoverySpec, bool) {
+	profile, ok := rewardHackingRetryProfile(t, step)
+	if !ok {
+		return watchdogRecoverySpec{}, false
+	}
+	return watchdogRecoverySpec{
+		policy: boundedRetryPolicy{
+			name: "watchdog-reward-hacking",
+			applies: func(_ *Engine, t *TaskInfo, step *Step) bool {
+				return t != nil && t.Workflow != nil && step != nil && step.Type == StepRunAgent && isWatchdogRewardHackingReason(t.StatusReason)
+			},
+			busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
+			counterKey: watchdogRewardHackingRetryKey,
+			max:        profile.max,
+			onArm: func(_ *Engine, t *TaskInfo, step *Step, attempt int) {
+				armWatchdogCleanRetry(t, step)
+				t.Workflow.SetVar(watchdogReaskNoteVar, profile.note(attempt))
+			},
+			onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
+				return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
+			},
+			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
+				reason := profile.exhaustedReason(attempts)
+				t.Workflow.State = ExecFailed
+				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+					e.logger.Error("workflow.watchdog-reward-hacking.persist", "task_id", t.ID, "step", step.ID, "err", err)
+				}
+				if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+					e.logger.Error("workflow.watchdog-reward-hacking.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+					return
+				}
+				e.logger.Warn("workflow.watchdog-reward-hacking.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+			},
+		},
+	}, true
+}
+
+func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
+	return watchdogRecoverySpec{
+		policy: boundedRetryPolicy{
+			name: "watchdog-rate-limit",
+			applies: func(_ *Engine, t *TaskInfo, step *Step) bool {
+				return t != nil && t.Workflow != nil && step != nil && step.Type == StepRunAgent && isWatchdogRateLimitReason(t.StatusReason)
+			},
+			counterKey: watchdogRateLimitRetryKey,
+			max:        maxWatchdogRateLimitRetries,
+			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
+				retryKey := watchdogRateLimitRetryKey(step.ID)
+				freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
+				if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) && parseWorkflowInt(t.Workflow.Variables[freshKey]) == 0 {
+					t.Workflow.StartedAt = time.Now().UTC()
+					t.Workflow.SetVar(freshKey, "1")
+					t.Workflow.SetVar(retryKey, "0")
+					if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+						e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
+						return
+					}
+					e.logger.Warn("workflow.watchdog-rate-limit.fresh-session-recovery", "task_id", t.ID, "step", step.ID, "resume_attempts", attempts+1)
+					return
+				}
+				targetStatus, reason, terminalState := watchdogRateLimitExhaustionResolution(*t, step, attempts)
+				t.Workflow.State = terminalState
+				if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) {
+					t.Workflow.StartedAt = time.Now().UTC()
+				}
+				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+					e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
+				}
+				var escalateErr error
+				if targetStatus == "blocked" {
+					escalateErr = e.tasks.UpdateTaskBlocker(t.ID, targetStatus, reason, blocker.State{Kind: blocker.KindWatchdogRateLimitExhausted, Actor: blocker.ActorWorkflow, Exhausted: true})
+				} else {
+					escalateErr = e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason)
+				}
+				if escalateErr != nil {
+					e.logger.Error("workflow.watchdog-rate-limit.escalate", "task_id", t.ID, "step", step.ID, "err", escalateErr)
+					return
+				}
+				e.logger.Warn("workflow.watchdog-rate-limit.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts, "status", targetStatus)
+			},
+		},
+	}
+}
+
+func (e *Engine) watchdogStopRecoverySpec() watchdogRecoverySpec {
+	return watchdogRecoverySpec{
+		policy: boundedRetryPolicy{
+			name:       "watchdog-stop",
+			applies:    func(e *Engine, t *TaskInfo, step *Step) bool { return e.canRetryWatchdogStop(t, step) },
+			busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
+			counterKey: watchdogStopRetryKey,
+			max:        maxWatchdogStopRetries,
+			onArm: func(_ *Engine, t *TaskInfo, step *Step, attempt int) {
+				armWatchdogCleanRetry(t, step)
+				t.Workflow.SetVar(watchdogReaskNoteVar, buildWatchdogStopReaskNote(t.StatusReason, attempt))
+			},
+			onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
+				if err := e.tasks.UpdateTaskStatus(t.ID, "in-progress", ""); err != nil {
+					return err
+				}
+				t.Status = "in-progress"
+				t.StatusReason = ""
+				return nil
+			},
+			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
+				reason := fmt.Sprintf("watchdog stop: retry budget exhausted after %d clean re-dispatches", attempts)
+				t.Workflow.State = ExecFailed
+				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+					e.logger.Error("workflow.watchdog-stop.persist", "task_id", t.ID, "step", step.ID, "err", err)
+				}
+				if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+					e.logger.Error("workflow.watchdog-stop.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+					return
+				}
+				e.logger.Warn("workflow.watchdog-stop.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+			},
+		},
+	}
+}
+
+func (e *Engine) worktreeRepairRecoverySpec() watchdogRecoverySpec {
+	return watchdogRecoverySpec{
+		policy: boundedRetryPolicy{
+			name:       "worktree-repair",
+			applies:    func(e *Engine, t *TaskInfo, step *Step) bool { return e.canRetryWorktreeRepair(t, step) },
+			busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
+			counterKey: worktreeRepairRetryKey,
+			max:        maxWorktreeRepairRetries,
+			onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
+				if err := e.tasks.UpdateTaskBlocker(t.ID, "in-progress", "", blocker.State{}); err != nil {
+					return err
+				}
+				t.Status = "in-progress"
+				t.StatusReason = ""
+				t.Blocker = blocker.State{}
+				return nil
+			},
+			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
+				exhausted := t.Blocker
+				exhausted.Exhausted = true
+				reason := fmt.Sprintf("worktree repair: retry budget exhausted after %d attempts — manual repair required", attempts)
+				if err := e.tasks.UpdateTaskBlocker(t.ID, "blocked", reason, exhausted); err != nil {
+					e.logger.Error("workflow.worktree-repair.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+					return
+				}
+				e.logger.Warn("workflow.worktree-repair.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+			},
+		},
 	}
 }
 
