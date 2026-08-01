@@ -866,10 +866,12 @@ const handoffManualTag = "handoff-manual"
 
 // handoffStageDef is one entry in the handoff-stage registry: a canonical
 // name, its input aliases, and the tags that route a task into the matching
-// Sybra lane (simple-task-handoff-<name>.yaml) on creation. Adding a stage
-// is a data edit here — handoffStageConfigFor, its error message, and the
-// --stage usage text all derive from this slice, so nothing else needs to
-// change to keep a new stage reachable.
+// Sybra lane on creation. The builtin workflow IDs are expanded from the
+// single handoff template at internal/workflow/builtin/simple-task-handoff.yaml.
+// Adding a stage is a data edit here plus a matching template variant there —
+// handoffStageConfigFor, its error message, and the --stage usage text all
+// derive from this slice, so nothing else needs to change to keep a new stage
+// reachable.
 type handoffStageDef struct {
 	name           string
 	aliases        []string
