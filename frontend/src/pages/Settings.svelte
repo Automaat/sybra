@@ -90,11 +90,16 @@
   const clientVersion = String(import.meta.env.VITE_APP_VERSION || 'dev')
 
   type ModelOption = { value: string; label: string }
+  // Only used when GetCodexModels() fails, which is also the state an
+  // older/broken codex CLI lands in — so keep one pre-5.6 slug selectable.
+  // Without it a CLI below 0.145.0 has no UI path to the models it accepts,
+  // and the ProbeCodex "pin an older model" warning points nowhere.
   const codexFallbackModels: ModelOption[] = [
     { value: '', label: 'Default (gpt-5.6-terra)' },
     { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
     { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
     { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
+    { value: 'gpt-5.5', label: 'GPT-5.5 (legacy)' },
   ]
   let codexDynamicModels = $state<ModelOption[]>([])
   const copilotFallbackModels: ModelOption[] = [
