@@ -752,7 +752,7 @@ func TestE2E_HeadlessAgent_ArgsVerification(t *testing.T) {
 				"--json",
 				"--skip-git-repo-check",
 				"--dangerously-bypass-approvals-and-sandbox",
-				"--model\ngpt-5.4",
+				"--model\ngpt-5.6-terra",
 			} {
 				if !strings.Contains(args, want) {
 					t.Errorf("expected %q in args:\n%s", want, args)
@@ -1279,8 +1279,8 @@ steps:
 	if tk.AgentRuns[0].Provider != "claude" || tk.AgentRuns[1].Provider != "codex" {
 		t.Fatalf("AgentRun providers = [%s %s], want [claude codex]", tk.AgentRuns[0].Provider, tk.AgentRuns[1].Provider)
 	}
-	if tk.AgentRuns[1].Model != "gpt-5.4-mini" {
-		t.Fatalf("fallback model = %q, want gpt-5.4-mini", tk.AgentRuns[1].Model)
+	if tk.AgentRuns[1].Model != "gpt-5.6-luna" {
+		t.Fatalf("fallback model = %q, want gpt-5.6-luna", tk.AgentRuns[1].Model)
 	}
 	if !strings.Contains(tk.Body, "Auto-review: unblocked") {
 		t.Fatalf("body missing unblocked note:\n%s", tk.Body)
@@ -1399,7 +1399,7 @@ func TestE2E_ProviderMatrix_ModelAliasMapping(t *testing.T) {
 
 		want := "--model\nhaiku"
 		if p.provider == "codex" {
-			want = "--model\ngpt-5.4-mini"
+			want = "--model\ngpt-5.6-luna"
 		}
 		if !strings.Contains(args, want) {
 			t.Fatalf("expected %q in args:\n%s", want, args)

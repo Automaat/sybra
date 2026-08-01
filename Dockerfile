@@ -185,8 +185,12 @@ EXPOSE 8080
 # (cluster.tls) serves https on the same port, so an http-only probe would mark
 # it permanently unhealthy. -k is safe here: the probe is localhost-only and the
 # leader, not the container, is what pins the certificate.
+#
+# Exec form with an explicit `sh -c` rather than shell form (DL3025): the probe
+# needs ${SYBRA_PORT} expansion and `||`, which is exactly what Docker wrapped
+# the shell form in anyway, so the semantics are unchanged.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["sh", "-c", "curl -sf \"http://localhost:${SYBRA_PORT}/health\" || curl -skf \"https://localhost:${SYBRA_PORT}/health\" || exit 1"]
+    CMD ["/bin/sh", "-c", "curl -sf \"http://localhost:${SYBRA_PORT}/health\" || curl -skf \"https://localhost:${SYBRA_PORT}/health\" || exit 1"]
 
 # Mounts expected (host dirs must be chowned to uid:gid 1000:1000):
 #   ~/.sybra  → /home/sybra/.sybra  (task store, config, projects)

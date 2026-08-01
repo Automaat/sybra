@@ -2361,7 +2361,7 @@ func TestOnComplete_StructuredVerdictFailure_RetriesAlternateProvider(t *testing
 				ID:        "hr-structured-2",
 				TaskID:    cfg.TaskID,
 				Provider:  "codex",
-				Model:     "gpt-5.4-mini",
+				Model:     "gpt-5.6-luna",
 				StartedAt: time.Now().UTC(),
 			}, nil
 		},
@@ -2390,8 +2390,8 @@ func TestOnComplete_StructuredVerdictFailure_RetriesAlternateProvider(t *testing
 	if !got.AgentRuns[0].VerdictRendered {
 		t.Fatalf("first run not rendered: %+v", got.AgentRuns[0])
 	}
-	if got.AgentRuns[1].Provider != "codex" || got.AgentRuns[1].Model != "gpt-5.4-mini" {
-		t.Fatalf("fallback run = %+v, want codex/gpt-5.4-mini", got.AgentRuns[1])
+	if got.AgentRuns[1].Provider != "codex" || got.AgentRuns[1].Model != "gpt-5.6-luna" {
+		t.Fatalf("fallback run = %+v, want codex/gpt-5.6-luna", got.AgentRuns[1])
 	}
 	if _, busy := h.inflight[tk.ID]; !busy {
 		t.Fatal("fallback retry should keep the replacement run inflight")
@@ -2435,7 +2435,7 @@ func TestOnComplete_StructuredVerdictFailure_SecondFailureRendersDurableNote(t *
 		Role:      string(agent.RoleHumanReview),
 		Mode:      "headless",
 		Provider:  "codex",
-		Model:     "gpt-5.4-mini",
+		Model:     "gpt-5.6-luna",
 		State:     "running",
 		StartedAt: start,
 	}); err != nil {
@@ -2447,7 +2447,7 @@ func TestOnComplete_StructuredVerdictFailure_SecondFailureRendersDurableNote(t *
 		TaskID:   tk.ID,
 		Name:     agent.RoleHumanReview.AgentName(tk.Title),
 		Provider: "codex",
-		Model:    "gpt-5.4-mini",
+		Model:    "gpt-5.6-luna",
 	}
 	ag.SetHasOutputSchema(true)
 	h.inflight[tk.ID] = currentAgentID
