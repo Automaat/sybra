@@ -870,7 +870,11 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 }
 
 func autoFixFailureFingerprint(failedCmd, output string) string {
-	h := sha256.Sum256([]byte(strings.TrimSpace(failedCmd) + "\n" + highestSignalVerifyFailureExcerpt(failedCmd, output)))
+	excerpt := highestSignalVerifyFailureExcerpt(failedCmd, output)
+	if excerpt == "" {
+		excerpt = tailString(strings.TrimSpace(output), 1200)
+	}
+	h := sha256.Sum256([]byte(strings.TrimSpace(failedCmd) + "\n" + excerpt))
 	return hex.EncodeToString(h[:])
 }
 
