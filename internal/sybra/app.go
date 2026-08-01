@@ -149,12 +149,13 @@ type App struct {
 	// rather than silently refusing to dispatch.
 	schedulerDisabled atomic.Bool
 	brainDisabled     atomic.Bool
-	// startupRecoveryPending is true from the start of startLifecycle until
+	// startupRecoveryPending is set true just before initStatusHook (the
+	// earliest dispatch observer to be wired) and stays true until
 	// RunStartupCleanup (reattach survivor agents, replay persisted effects,
-	// restart stale runs) finishes. The file watcher and the status-change
-	// hook go live before that reattach completes, so dispatchTaskCreatedWorkflow,
-	// dispatchPlanningWorkflow and dispatchStatusWorkflow — the three sinks
-	// that auto-start work — refuse to dispatch while this is set: until
+	// restart stale runs) finishes. The status-change hook and, later, the file
+	// watcher go live before that reattach completes, so dispatchTaskCreatedWorkflow,
+	// dispatchPlanningWorkflow, dispatchStatusWorkflow and dispatchInboundReviewWorkflow
+	// — the sinks that auto-start work — refuse to dispatch while this is set: until
 	// reattach runs, HasRunningAgentForTask reads an empty registry and an
 	// early dispatch could start a duplicate agent on a live worktree
 	// (#2752). Zero value (unset) reports "not pending", so an App built
@@ -325,9 +326,6 @@ func (a *App) acquireHomeLock() error {
 }
 
 func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func(string, any)) {
-	// Set before the file watcher and status hook can observe anything —
-	// see startupRecoveryPending's doc comment.
-	a.startupRecoveryPending.Store(true)
 	a.applyInstanceRole()
 	a.initLoopScheduler(schedulerCtx, emit)
 	a.initFileWatcher(watcherCtx, emit)
@@ -464,6 +462,15 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
+	// Arm the dispatch gate before the status hook is wired — initStatusHook's
+	// handler reaches dispatchStatusWorkflow/dispatchTaskCreatedWorkflow, and
+	// the file watcher (initFileWatcher, later in startLifecycle) also observes
+	// status changes. atomic.Bool's zero value is false ("not pending"), so the
+	// gate would fail open for any init step in this window that flips a task's
+	// status. Set it here, before either observer exists. Cleared only after
+	// RunStartupCleanup's reattach populates the live agent registry (see
+	// startLifecycle and startupRecoveryPending's doc comment).
+	a.startupRecoveryPending.Store(true)
 	a.initStatusHook() //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
 	a.initLocalStores()
 	a.notifier = notification.New(emit)

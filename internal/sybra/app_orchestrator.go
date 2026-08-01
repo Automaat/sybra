@@ -312,7 +312,16 @@ func (a *App) fetchPRFunc() func(ctx context.Context, repo string, number int) (
 	return github.FetchPRMetaContext
 }
 
+// dispatchInboundReviewWorkflow is the fourth workflow-dispatch sink (alongside
+// dispatchTaskCreatedWorkflow, dispatchPlanningWorkflow and dispatchStatusWorkflow).
+// It gates on runsScheduler/startupRecoveryDone itself rather than trusting its
+// callers: HasRunningAgentForTask (used below) is unreliable before reattach
+// repopulates the live agent registry, so dispatching during the recovery window
+// reopens the duplicate-agent race the gate closes for the other three sinks.
 func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
+		return
+	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}

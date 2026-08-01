@@ -134,6 +134,16 @@ func TestAppStartup_ClearsStartupRecoveryPending(t *testing.T) {
 		app.Shutdown(context.Background())
 	})
 
+	// The flag must be armed the moment Startup returns: Store(false) only
+	// happens inside the recovery goroutine after RunStartupCleanup returns,
+	// which does real filesystem work and cannot complete before the two
+	// trivial statements between startLifecycle and Startup's return. Without
+	// this assertion, deleting Store(true) would leave the zero-value false and
+	// the eventual-clear poll below would pass identically — catching nothing.
+	if app.startupRecoveryDone() {
+		t.Fatal("startupRecoveryPending was not armed when Startup returned — dispatch gate fails open during recovery")
+	}
+
 	deadline := time.After(5 * time.Second)
 	for {
 		if app.startupRecoveryDone() {
