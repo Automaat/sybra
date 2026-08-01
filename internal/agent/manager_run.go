@@ -820,10 +820,14 @@ func stripEnvKeys(env []string, keys ...string) []string {
 }
 
 // resolveReasoningEffort returns the effort level a run dispatches with.
-// Precedence: an effort the caller already pinned (an experiment assignment or
-// the task's own reasoning_effort, both resolved upstream) > the operator's
+// Precedence: an effort the caller already pinned > the operator's
 // agent.role_effort override for this role > the role's built-in baseline >
 // the global default.
+//
+// The pinned tier covers both an A/B experiment assignment and the task's own
+// reasoning_effort, resolved upstream because only the dispatch site knows
+// which of the two applies — a dispatch site holding a task.Task must pass
+// t.ReasoningEffort through, or the baseline silently outranks the pin.
 //
 // This lives in the Manager rather than at each dispatch site on purpose:
 // before #2784 only two of the nine RunConfig construction sites resolved the

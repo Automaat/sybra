@@ -670,9 +670,57 @@ func TestConfigValidatePromptSkillAllowsEmptyReasoningEffortAsDefault(t *testing
 		ID:      "prompt-default-effort",
 		Kind:    "prompt",
 		Subject: &Subject{StepID: "implement"},
+		Roles:   []string{"implementation"},
 		Variants: []Variant{
 			{ID: "explicit-medium", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
 			{ID: "omitted-effort", Provider: "claude", Model: "sonnet", ReasoningEffort: "", Weight: 1},
+		},
+	}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+// TestConfigValidatePromptSkillRejectsRolelessMixedEffort covers the ambiguous
+// case: an experiment declaring no role matches every role (see roleMatches),
+// so an omitted reasoning_effort dispatches at whatever baseline the step it
+// lands on carries. Mixing it with an explicit level would silently confound
+// the prompt comparison with an effort change, so it must be rejected until the
+// operator declares the role.
+func TestConfigValidatePromptSkillRejectsRolelessMixedEffort(t *testing.T) {
+	for _, effort := range []string{"medium", "high"} {
+		t.Run(effort, func(t *testing.T) {
+			cfg := Config{Experiments: []Experiment{{
+				ID:      "prompt-roleless-effort",
+				Kind:    "prompt",
+				Subject: &Subject{StepID: "implement"},
+				Variants: []Variant{
+					{ID: "omitted-effort", Provider: "claude", Model: "sonnet", Weight: 1},
+					{ID: "explicit-effort", Provider: "claude", Model: "sonnet", ReasoningEffort: effort, Weight: 1},
+				},
+			}}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate should reject a roleless mix of omitted and explicit reasoning_effort")
+			}
+			if !strings.Contains(err.Error(), "reasoning_effort") {
+				t.Fatalf("error %q does not mention reasoning_effort", err)
+			}
+		})
+	}
+}
+
+// TestConfigValidatePromptSkillAllowsRolelessOmittedEffort proves the
+// ambiguity only bites a mix: leaving the level off every arm stays valid, so
+// the common roleless prompt experiment is unaffected.
+func TestConfigValidatePromptSkillAllowsRolelessOmittedEffort(t *testing.T) {
+	cfg := Config{Experiments: []Experiment{{
+		ID:      "prompt-roleless-omitted",
+		Kind:    "prompt",
+		Subject: &Subject{StepID: "implement"},
+		Variants: []Variant{
+			{ID: "a", Provider: "claude", Model: "sonnet", Weight: 1},
+			{ID: "b", Provider: "claude", Model: "sonnet", Weight: 1},
 		},
 	}}}
 	if err := cfg.Validate(); err != nil {
@@ -1130,5 +1178,61 @@ func TestCloneConfig_DeepCopiesCanary(t *testing.T) {
 	cp.Experiments[0].Canary.PercentBound = 99
 	if cfg.Experiments[0].Canary.PercentBound != 50 {
 		t.Fatalf("original Canary mutated via clone: %d, want unchanged 50", cfg.Experiments[0].Canary.PercentBound)
+	}
+}
+
+// TestWithoutInvalidExperimentsKeepsDispatchAlive covers the migration path for
+// a config a code change retroactively invalidated: selection validates each
+// experiment as it matches and propagates the error to the dispatcher, so an
+// invalid experiment must be dropped (and reported) at load rather than left to
+// wedge every role it targets.
+func TestWithoutInvalidExperimentsKeepsDispatchAlive(t *testing.T) {
+	good := Experiment{
+		ID:       "good",
+		Roles:    []string{"review"},
+		Variants: []Variant{{ID: "a", Provider: "claude", Model: "opus", Weight: 1}},
+	}
+	// Roleless prompt experiment mixing an omitted and an explicit effort:
+	// valid before the per-role baselines were retuned, ambiguous after.
+	bad := Experiment{
+		ID:      "bad",
+		Kind:    "prompt",
+		Subject: &Subject{StepID: "implement"},
+		Variants: []Variant{
+			{ID: "a", Provider: "claude", Model: "sonnet", Weight: 1},
+			{ID: "b", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
+		},
+	}
+	cfg := Config{Experiments: []Experiment{good, bad}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("precondition: the bad experiment should fail validation")
+	}
+
+	var dropped []string
+	got := cfg.WithoutInvalidExperiments(func(id string, err error) {
+		if err == nil {
+			t.Errorf("report called with nil error for %q", id)
+		}
+		dropped = append(dropped, id)
+	})
+
+	if len(dropped) != 1 || dropped[0] != "bad" {
+		t.Fatalf("dropped = %v, want [bad]", dropped)
+	}
+	if len(got.Experiments) != 1 || got.Experiments[0].ID != "good" {
+		t.Fatalf("kept experiments = %+v, want just the good one", got.Experiments)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("survivors must validate: %v", err)
+	}
+	if len(cfg.Experiments) != 2 {
+		t.Fatalf("receiver mutated: len = %d, want 2", len(cfg.Experiments))
+	}
+
+	// A selection that previously errored out now routes normally.
+	enabled := true
+	got.Enabled = &enabled
+	if _, _, err := Select(got, "task-1", "review", "review"); err != nil {
+		t.Fatalf("Select after drop: %v", err)
 	}
 }

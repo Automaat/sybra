@@ -13,8 +13,8 @@ const Global = "medium"
 
 // ForRole returns the built-in baseline for role, or "" when the role carries
 // no opinion and should inherit Global. Role names are the string values of
-// agent.Role; TestForRole_CoversEveryKnownRole in internal/agent guards the
-// two lists against drift.
+// agent.Role; TestRole_DefaultReasoningEffort_CoversEveryKnownRole in
+// internal/agent iterates agent.AllRoles to guard the two against drift.
 //
 // The ladder spends reasoning depth where a mistake is most expensive to
 // unwind: planning picks the approach every later stage inherits, and review

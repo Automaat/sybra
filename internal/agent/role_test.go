@@ -1,6 +1,10 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Automaat/sybra/internal/roleeffort"
+)
 
 func TestRole_AgentName(t *testing.T) {
 	t.Parallel()
@@ -70,9 +74,10 @@ func TestRole_DefaultReasoningEffort(t *testing.T) {
 }
 
 // TestRole_DefaultReasoningEffort_CoversEveryKnownRole guards internal/roleeffort's
-// plain-string switch against drift: it keys off role names copied from the
-// Role constants, so a typo there would silently drop a role to the "medium"
-// fallback instead of failing to compile.
+// plain-string switch against drift. It iterates AllRoles rather than a
+// hand-maintained list, so a newly added Role fails here until someone decides
+// its effort baseline, and a typo'd name in roleeffort's switch shows up as the
+// wrong level instead of silently falling back to the global default.
 func TestRole_DefaultReasoningEffort_CoversEveryKnownRole(t *testing.T) {
 	t.Parallel()
 	covered := map[Role]string{
@@ -82,15 +87,8 @@ func TestRole_DefaultReasoningEffort_CoversEveryKnownRole(t *testing.T) {
 		RolePRFix: "high", RoleTestFix: "high",
 		RoleImplementation: "", RoleTestRunner: "", RoleLoop: "", RoleOrchestrator: "",
 	}
-	all := []Role{
-		RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor,
-		RoleOrchestrator, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner,
-		RoleImplementation, RoleHumanReview, RoleTestFix,
-	}
+	all := AllRoles()
 	for _, r := range all {
-		if !r.IsKnown() {
-			t.Errorf("role %q in the coverage list is not IsKnown", r)
-		}
 		want, ok := covered[r]
 		if !ok {
 			t.Errorf("role %q has no expected reasoning effort; add it to the table", r)
@@ -101,7 +99,18 @@ func TestRole_DefaultReasoningEffort_CoversEveryKnownRole(t *testing.T) {
 		}
 	}
 	if len(all) != len(covered) {
-		t.Errorf("coverage list has %d roles, expectations have %d", len(all), len(covered))
+		t.Errorf("AllRoles has %d roles, expectations have %d", len(all), len(covered))
+	}
+}
+
+// TestDefaultReasoningEffort_MatchesRoleEffortGlobal pins the global fallback
+// to the copy internal/abtest resolves omitted variant efforts against. The two
+// packages cannot import each other, so nothing but this would catch a drift.
+func TestDefaultReasoningEffort_MatchesRoleEffortGlobal(t *testing.T) {
+	t.Parallel()
+	if DefaultReasoningEffort != roleeffort.Global {
+		t.Fatalf("DefaultReasoningEffort = %q, roleeffort.Global = %q; they must not drift",
+			DefaultReasoningEffort, roleeffort.Global)
 	}
 }
 

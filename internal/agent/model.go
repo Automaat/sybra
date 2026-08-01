@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/roleeffort"
 	"github.com/Automaat/sybra/internal/stats"
 )
 
@@ -51,7 +52,13 @@ func (s State) IsTerminal() bool {
 	return s == StateStopped
 }
 
-const DefaultReasoningEffort = "medium"
+// DefaultReasoningEffort is the level a run dispatches with when neither the
+// caller, the operator's agent.role_effort override, nor the role's own
+// baseline pins one. Defined as roleeffort.Global rather than a literal so it
+// cannot drift from the copy internal/abtest resolves omitted variant efforts
+// against (that package cannot import this one — the dependency cycles through
+// internal/config).
+const DefaultReasoningEffort = roleeffort.Global
 
 type Agent struct {
 	ID                       string  `json:"id"`

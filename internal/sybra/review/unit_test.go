@@ -394,6 +394,35 @@ func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
 	}
 }
 
+// TestStaffCodeReviewRunConfigCarriesTaskReasoningEffort proves the operator's
+// per-task pin reaches the run. Without it the Manager would resolve the review
+// role's own baseline instead, silently overriding the pin — this dispatch path
+// does not go through the workflow engine, which is where the other sites
+// resolve effort.
+func TestStaffCodeReviewRunConfigCarriesTaskReasoningEffort(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		pinned string
+		want   string
+	}{
+		{name: "pinned effort is carried", pinned: "xhigh", want: "xhigh"},
+		{name: "unpinned stays empty for the Manager to resolve", pinned: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := StaffCodeReviewRunConfig(
+				task.Task{ID: "review-task", Title: "Needs review", ReasoningEffort: tt.pinned},
+				"Run /staff-code-review", t.TempDir(), "default",
+			)
+			if cfg.ReasoningEffort != tt.want {
+				t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, tt.want)
+			}
+		})
+	}
+}
+
 func TestStaffCodeReviewPromptAuthorizesPendingReview(t *testing.T) {
 	t.Parallel()
 

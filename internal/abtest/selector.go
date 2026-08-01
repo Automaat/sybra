@@ -436,19 +436,30 @@ func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string)
 // variants leave the field empty runs at "high", so declaring "high"
 // explicitly on one arm must stay homogeneous with omitting it on another.
 //
-// Returns "" when the experiment spans roles whose baselines disagree — an
-// omitted effort is then ambiguous and only matches another omitted one.
+// Returns "" when the level is ambiguous — the experiment spans roles whose
+// baselines disagree, or it declares no role at all (roleMatches then matches
+// every role, so the omitted arm's level depends on where it lands). An
+// omitted effort then only matches another omitted one, which forces an
+// operator who wants to mix omitted and explicit efforts to declare the role.
 func experimentDefaultEffort(exp Experiment) string {
 	roles := exp.Roles
 	if len(roles) == 0 && exp.Subject != nil {
 		roles = []string{exp.Subject.Role}
 	}
 	if len(roles) == 0 {
-		return roleeffort.Global
+		return ""
 	}
-	resolved := roleeffort.Resolve(strings.TrimSpace(roles[0]))
-	for _, r := range roles[1:] {
-		if roleeffort.Resolve(strings.TrimSpace(r)) != resolved {
+	resolved := ""
+	for i, r := range roles {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			return ""
+		}
+		if i == 0 {
+			resolved = roleeffort.Resolve(r)
+			continue
+		}
+		if roleeffort.Resolve(r) != resolved {
 			return ""
 		}
 	}

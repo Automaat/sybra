@@ -32,15 +32,20 @@ const (
 	RoleTestFix Role = "test-fix"
 )
 
-func (r Role) IsKnown() bool {
-	switch r {
-	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor, RoleOrchestrator,
-		RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation,
-		RoleHumanReview, RoleTestFix:
-		return true
-	default:
-		return false
+// AllRoles lists every known Role. It is the single source of truth for the
+// role set: IsKnown is derived from it, so adding a Role constant here is what
+// makes it dispatchable — and what makes the reasoning-effort coverage test
+// notice it.
+func AllRoles() []Role {
+	return []Role{
+		RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor,
+		RoleOrchestrator, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner,
+		RoleImplementation, RoleHumanReview, RoleTestFix,
 	}
+}
+
+func (r Role) IsKnown() bool {
+	return slices.Contains(AllRoles(), r)
 }
 
 // AgentName returns the prefixed name used when launching an agent
