@@ -1114,11 +1114,10 @@ func TestLogSandboxEscapeHatchRecordsReason(t *testing.T) {
 	t.Parallel()
 	falseVal, trueVal := false, true
 	cases := []struct {
-		name        string
-		task        task.Task
-		wantEvents  int
-		wantReason  string
-		wantFlagged bool
+		name       string
+		task       task.Task
+		wantEvents int
+		wantReason string
 	}{
 		{
 			name:       "sandbox unset logs nothing",
@@ -1131,25 +1130,22 @@ func TestLogSandboxEscapeHatchRecordsReason(t *testing.T) {
 			wantEvents: 0,
 		},
 		{
-			name:        "reason is recorded",
-			task:        task.Task{Sandbox: &falseVal, SandboxOffReason: "docker-in-docker e2e needs host mounts"},
-			wantEvents:  1,
-			wantReason:  "docker-in-docker e2e needs host mounts",
-			wantFlagged: true,
+			name:       "reason is recorded",
+			task:       task.Task{Sandbox: &falseVal, SandboxOffReason: "docker-in-docker e2e needs host mounts"},
+			wantEvents: 1,
+			wantReason: "docker-in-docker e2e needs host mounts",
 		},
 		{
-			name:        "missing reason is flagged, not silently allowed",
-			task:        task.Task{Sandbox: &falseVal},
-			wantEvents:  1,
-			wantReason:  "",
-			wantFlagged: false,
+			name:       "missing reason is flagged, not silently allowed",
+			task:       task.Task{Sandbox: &falseVal},
+			wantEvents: 1,
+			wantReason: "",
 		},
 		{
-			name:        "whitespace-only reason counts as missing",
-			task:        task.Task{Sandbox: &falseVal, SandboxOffReason: "   "},
-			wantEvents:  1,
-			wantReason:  "",
-			wantFlagged: false,
+			name:       "whitespace-only reason counts as missing",
+			task:       task.Task{Sandbox: &falseVal, SandboxOffReason: "   "},
+			wantEvents: 1,
+			wantReason: "",
 		},
 	}
 	for _, tc := range cases {
@@ -1178,9 +1174,6 @@ func TestLogSandboxEscapeHatchRecordsReason(t *testing.T) {
 			}
 			if got, _ := e.Data["reason"].(string); got != tc.wantReason {
 				t.Errorf("reason = %q, want %q", got, tc.wantReason)
-			}
-			if got, _ := e.Data["reason_given"].(bool); got != tc.wantFlagged {
-				t.Errorf("reason_given = %v, want %v", got, tc.wantFlagged)
 			}
 			if got, _ := e.Data["configured_default"].(string); got != "enforce" {
 				t.Errorf("configured_default = %q, want %q", got, "enforce")

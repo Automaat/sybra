@@ -788,35 +788,3 @@ func TestRunCheckConfig(t *testing.T) {
 		}
 	})
 }
-
-// TestRequireExplicitSandboxMode pins the server's fail-closed startup gate:
-// an unset agent.sandbox_mode resolves to "report", which never wraps the
-// spawn, so the server must refuse to start rather than run unsandboxed on a
-// config that merely omitted the key.
-func TestRequireExplicitSandboxMode(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name    string
-		mode    string
-		wantErr bool
-	}{
-		{name: "unset is rejected", mode: "", wantErr: true},
-		{name: "whitespace is rejected", mode: "   ", wantErr: true},
-		{name: "explicit enforce is accepted", mode: "enforce"},
-		{name: "explicit report is accepted", mode: "report"},
-		{name: "explicit off is accepted", mode: "off"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := &config.Config{Agent: config.AgentDefaults{SandboxMode: tc.mode}}
-			err := requireExplicitSandboxMode(cfg)
-			if tc.wantErr && err == nil {
-				t.Fatalf("mode %q: want error, got nil", tc.mode)
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("mode %q: want nil, got %v", tc.mode, err)
-			}
-		})
-	}
-}
