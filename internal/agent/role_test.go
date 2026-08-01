@@ -46,13 +46,15 @@ func TestRole_DefaultReasoningEffort(t *testing.T) {
 		{RoleMonitor, "low"},
 		{RolePlanCritic, "low"},
 		{RoleHumanReview, "low"},
-		{RoleImplementation, "high"},
+		{RolePlan, "high"},
+		{RoleReview, "high"},
 		{RoleFixReview, "high"},
 		{RolePRFix, "high"},
 		{RoleTestFix, "high"},
-		{RolePlan, ""},
-		{RoleReview, ""},
+		{RoleImplementation, ""},
 		{RoleTestRunner, ""},
+		{RoleLoop, ""},
+		{RoleOrchestrator, ""},
 		{Role(""), ""},
 	}
 
@@ -64,6 +66,42 @@ func TestRole_DefaultReasoningEffort(t *testing.T) {
 				t.Errorf("DefaultReasoningEffort() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRole_DefaultReasoningEffort_CoversEveryKnownRole guards internal/roleeffort's
+// plain-string switch against drift: it keys off role names copied from the
+// Role constants, so a typo there would silently drop a role to the "medium"
+// fallback instead of failing to compile.
+func TestRole_DefaultReasoningEffort_CoversEveryKnownRole(t *testing.T) {
+	t.Parallel()
+	covered := map[Role]string{
+		RoleTriage: "low", RoleEval: "low", RoleMonitor: "low",
+		RolePlanCritic: "low", RoleHumanReview: "low",
+		RolePlan: "high", RoleReview: "high", RoleFixReview: "high",
+		RolePRFix: "high", RoleTestFix: "high",
+		RoleImplementation: "", RoleTestRunner: "", RoleLoop: "", RoleOrchestrator: "",
+	}
+	all := []Role{
+		RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor,
+		RoleOrchestrator, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner,
+		RoleImplementation, RoleHumanReview, RoleTestFix,
+	}
+	for _, r := range all {
+		if !r.IsKnown() {
+			t.Errorf("role %q in the coverage list is not IsKnown", r)
+		}
+		want, ok := covered[r]
+		if !ok {
+			t.Errorf("role %q has no expected reasoning effort; add it to the table", r)
+			continue
+		}
+		if got := r.DefaultReasoningEffort(); got != want {
+			t.Errorf("DefaultReasoningEffort(%q) = %q, want %q", r, got, want)
+		}
+	}
+	if len(all) != len(covered) {
+		t.Errorf("coverage list has %d roles, expectations have %d", len(all), len(covered))
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/roleeffort"
 )
 
 // Role identifies the purpose of an agent run.
@@ -242,19 +244,14 @@ func errUnknownRolePrefix(name string) error {
 }
 
 // DefaultReasoningEffort returns the built-in per-role reasoning-effort
-// baseline used when neither an experiment assignment nor the task itself
-// pins a level (see RunConfig.ReasoningEffort). System/verifier roles that
-// mostly classify or check pre-existing work default to "low"; the
-// code-authoring roles that most benefit from deeper reasoning default to
-// "high". Everything else falls back to DefaultReasoningEffort ("medium")
-// via the empty return.
+// baseline used when neither an experiment assignment, the operator's
+// agent.role_effort map, nor the task itself pins a level (see
+// RunConfig.ReasoningEffort). Roles with no opinion return "" and fall back to
+// DefaultReasoningEffort ("medium").
+//
+// The table lives in internal/roleeffort so internal/abtest can share it
+// without importing this package (that direction cycles through
+// internal/config).
 func (r Role) DefaultReasoningEffort() string {
-	switch r {
-	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview, RoleMonitor:
-		return "low"
-	case RoleImplementation, RoleFixReview, RolePRFix, RoleTestFix:
-		return "high"
-	default:
-		return ""
-	}
+	return roleeffort.ForRole(string(r))
 }

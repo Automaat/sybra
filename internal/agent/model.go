@@ -1806,12 +1806,15 @@ type RunConfig struct {
 	// model when the primary is overloaded. Empty means inherit the manager's
 	// default; the flag is omitted only when the manager default is also empty.
 	FallbackModel string
-	// ReasoningEffort sets the agent's reasoning effort for this run
-	// (low/medium/high/xhigh). Empty is resolved to DefaultReasoningEffort by
-	// Manager.Run for every provider before command construction. Lower-level
-	// command builders still omit the provider flag when handed an empty value
-	// directly. Codex uses `-c model_reasoning_effort=`; claude and copilot use
-	// `--effort`.
+	// ReasoningEffort pins the agent's reasoning effort for this run
+	// (low/medium/high/xhigh), overriding every baseline. Empty is the normal
+	// case: Manager.Run resolves it for every provider before command
+	// construction, preferring the operator's agent.role_effort override, then
+	// the role's built-in baseline (Role.DefaultReasoningEffort), then
+	// DefaultReasoningEffort. Set it only for an effort an experiment
+	// assignment or the task itself pinned. Lower-level command builders still
+	// omit the provider flag when handed an empty value directly. Codex uses
+	// `-c model_reasoning_effort=`; claude and copilot use `--effort`.
 	ReasoningEffort string
 	// RequestedSkill names a workflow-owned skill invocation the dispatcher
 	// expects to run. Empty leaves ad-hoc prompt skill mentions untouched; set

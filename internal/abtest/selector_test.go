@@ -680,6 +680,61 @@ func TestConfigValidatePromptSkillAllowsEmptyReasoningEffortAsDefault(t *testing
 	}
 }
 
+// TestConfigValidatePromptSkillResolvesEmptyEffortAgainstRoleBaseline covers
+// roles whose built-in baseline is not the global default: on a review
+// experiment an omitted reasoning_effort dispatches at "high", so pinning
+// "high" explicitly on one arm is homogeneous with omitting it on another,
+// while pinning the global "medium" is a genuine mismatch.
+func TestConfigValidatePromptSkillResolvesEmptyEffortAgainstRoleBaseline(t *testing.T) {
+	tests := []struct {
+		name       string
+		roles      []string
+		effort     string
+		wantReject bool
+	}{
+		{name: "review omitted vs explicit baseline", roles: []string{"review"}, effort: "high"},
+		{name: "review omitted vs global default", roles: []string{"review"}, effort: "medium", wantReject: true},
+		{name: "implementation omitted vs global default", roles: []string{"implementation"}, effort: "medium"},
+		{name: "implementation omitted vs explicit high", roles: []string{"implementation"}, effort: "high", wantReject: true},
+		{
+			// plan resolves "high", test-runner resolves "medium": an
+			// omitted effort is ambiguous, so it only matches another
+			// omitted one.
+			name:       "roles with disagreeing baselines stay ambiguous",
+			roles:      []string{"plan", "test-runner"},
+			effort:     "high",
+			wantReject: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{Experiments: []Experiment{{
+				ID:      "prompt-role-effort",
+				Kind:    "prompt",
+				Subject: &Subject{StepID: "implement"},
+				Roles:   tt.roles,
+				Variants: []Variant{
+					{ID: "omitted-effort", Provider: "claude", Model: "sonnet", Weight: 1},
+					{ID: "explicit-effort", Provider: "claude", Model: "sonnet", ReasoningEffort: tt.effort, Weight: 1},
+				},
+			}}}
+			err := cfg.Validate()
+			if tt.wantReject {
+				if err == nil {
+					t.Fatal("Validate should reject a reasoning_effort mismatch")
+				}
+				if !strings.Contains(err.Error(), "reasoning_effort") {
+					t.Fatalf("error %q does not mention reasoning_effort", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
+	}
+}
+
 func TestConfigValidateCompoundAllowsProviderModelReasoningDrift(t *testing.T) {
 	cfg := Config{Experiments: []Experiment{{
 		ID:   "compound",
