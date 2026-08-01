@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/roleeffort"
 	"github.com/Automaat/sybra/internal/stats"
 )
 
@@ -51,7 +52,13 @@ func (s State) IsTerminal() bool {
 	return s == StateStopped
 }
 
-const DefaultReasoningEffort = "medium"
+// DefaultReasoningEffort is the level a run dispatches with when neither the
+// caller, the operator's agent.role_effort override, nor the role's own
+// baseline pins one. Defined as roleeffort.Global rather than a literal so it
+// cannot drift from the copy internal/abtest resolves omitted variant efforts
+// against (that package cannot import this one — the dependency cycles through
+// internal/config).
+const DefaultReasoningEffort = roleeffort.Global
 
 type Agent struct {
 	ID                       string  `json:"id"`
@@ -1807,12 +1814,15 @@ type RunConfig struct {
 	// model when the primary is overloaded. Empty means inherit the manager's
 	// default; the flag is omitted only when the manager default is also empty.
 	FallbackModel string
-	// ReasoningEffort sets the agent's reasoning effort for this run
-	// (low/medium/high/xhigh). Empty is resolved to DefaultReasoningEffort by
-	// Manager.Run for every provider before command construction. Lower-level
-	// command builders still omit the provider flag when handed an empty value
-	// directly. Codex uses `-c model_reasoning_effort=`; claude and copilot use
-	// `--effort`.
+	// ReasoningEffort pins the agent's reasoning effort for this run
+	// (low/medium/high/xhigh), overriding every baseline. Empty is the normal
+	// case: Manager.Run resolves it for every provider before command
+	// construction, preferring the operator's agent.role_effort override, then
+	// the role's built-in baseline (Role.DefaultReasoningEffort), then
+	// DefaultReasoningEffort. Set it only for an effort an experiment
+	// assignment or the task itself pinned. Lower-level command builders still
+	// omit the provider flag when handed an empty value directly. Codex uses
+	// `-c model_reasoning_effort=`; claude and copilot use `--effort`.
 	ReasoningEffort string
 	// RequestedSkill names a workflow-owned skill invocation the dispatcher
 	// expects to run. Empty leaves ad-hoc prompt skill mentions untouched; set

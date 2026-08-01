@@ -510,6 +510,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
 		K8sJobs:                k8sJobRunnerConfigFromConfig(cfg.Agent.K8sJobs),
+		RoleEffort:             cfg.Agent.RoleEffort,
 		ClassReservations:      agent.ParseClassReservations(cfg.Agent.ClassReservations),
 	}
 }

@@ -38,24 +38,24 @@ func TestResolveRoleEffort(t *testing.T) {
 		want string
 	}{
 		{"nil cfg falls back to role default", agent.RoleTriage, nil, "low"},
-		{"no override falls back to role default", agent.RoleImplementation, &config.Config{}, "high"},
-		{"role with no built-in default returns empty", agent.RolePlan, &config.Config{}, ""},
+		{"no override falls back to role default", agent.RoleReview, &config.Config{}, "high"},
+		{"role with no built-in default returns empty", agent.RoleImplementation, &config.Config{}, ""},
 		{
 			"config override wins",
-			agent.RoleImplementation,
-			&config.Config{Agent: config.AgentDefaults{RoleEffort: map[string]string{"implementation": "medium"}}},
+			agent.RoleReview,
+			&config.Config{Agent: config.AgentDefaults{RoleEffort: map[string]string{"review": "medium"}}},
 			"medium",
 		},
 		{
 			"invalid override ignored, falls back to role default",
-			agent.RoleImplementation,
-			&config.Config{Agent: config.AgentDefaults{RoleEffort: map[string]string{"implementation": "extreme"}}},
+			agent.RoleReview,
+			&config.Config{Agent: config.AgentDefaults{RoleEffort: map[string]string{"review": "extreme"}}},
 			"high",
 		},
 		{
 			"override for unrelated role does not affect this role",
 			agent.RoleTriage,
-			&config.Config{Agent: config.AgentDefaults{RoleEffort: map[string]string{"implementation": "medium"}}},
+			&config.Config{Agent: config.AgentDefaults{RoleEffort: map[string]string{"review": "medium"}}},
 			"low",
 		},
 	}

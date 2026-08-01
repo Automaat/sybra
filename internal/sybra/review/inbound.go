@@ -134,13 +134,17 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	) + reviewHoldFixSuffix(r.cfg)
 
 	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID:                 t.ID,
-		Name:                   agent.RoleFixReview.AgentName(t.Title),
-		Role:                   agent.RoleFixReview,
-		Mode:                   "headless",
-		Prompt:                 prompt,
-		Dir:                    dir,
-		Model:                  "opus",
+		TaskID: t.ID,
+		Name:   agent.RoleFixReview.AgentName(t.Title),
+		Role:   agent.RoleFixReview,
+		Mode:   "headless",
+		Prompt: prompt,
+		Dir:    dir,
+		Model:  "opus",
+		// An effort the operator pinned on the task outranks the role
+		// baseline the Manager would otherwise resolve; empty stays empty so
+		// the Manager applies agent.role_effort and then the baseline.
+		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
 		// MaxTurns intentionally not inherited: fix-review agents need
 		// enough turns to fetch the PR, apply fixes, and commit.
@@ -247,13 +251,17 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 // fetch the PR, run the skill, and write findings.
 func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.RunConfig {
 	return agent.RunConfig{
-		TaskID:                 t.ID,
-		Name:                   agent.RoleReview.AgentName(t.Title),
-		Role:                   agent.RoleReview,
-		Mode:                   "headless",
-		Prompt:                 prompt,
-		Dir:                    dir,
-		Model:                  "opus",
+		TaskID: t.ID,
+		Name:   agent.RoleReview.AgentName(t.Title),
+		Role:   agent.RoleReview,
+		Mode:   "headless",
+		Prompt: prompt,
+		Dir:    dir,
+		Model:  "opus",
+		// An effort the operator pinned on the task outranks the role
+		// baseline the Manager would otherwise resolve; empty stays empty so
+		// the Manager applies agent.role_effort and then the baseline.
+		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
 	}
 }
