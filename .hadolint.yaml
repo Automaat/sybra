@@ -15,8 +15,5 @@
 ignored:
   - DL3008
   - DL3066
-  # HEALTHCHECK's CMD tries a plain-http probe then falls back to a -k https
-  # probe (cluster.tls followers serve https on the same port) — that
-  # ||-fallback has no JSON-array equivalent, so shell form is required here.
   - DL3025
 failure-threshold: warning
