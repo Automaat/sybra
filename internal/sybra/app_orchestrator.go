@@ -122,6 +122,13 @@ func (a *App) runsOrchestratorBrain() bool {
 	return !a.brainDisabled.Load()
 }
 
+// startupRecoveryDone reports whether it is safe for a dispatch-triggering
+// path (status hook, watcher) to start a workflow — see
+// startupRecoveryPending's doc comment for why this window matters.
+func (a *App) startupRecoveryDone() bool {
+	return !a.startupRecoveryPending.Load()
+}
+
 const clusterHealthProbeInterval = 30 * time.Second
 
 func (a *App) clusterHealthLoop(ctx context.Context) {
@@ -411,7 +418,7 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 }
 
 func (a *App) dispatchPlanningWorkflow(taskID string) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {

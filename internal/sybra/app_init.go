@@ -898,7 +898,7 @@ func (a *App) initCluster() {
 //     without this branch it sits inert with no PR. Mirrors the
 //     testing/ready-review cases.
 func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil {
@@ -955,14 +955,15 @@ func expectedHumanKind(t task.Task) string {
 // owns a non-terminal workflow, so duplicate watcher/status events are harmless.
 // dispatchTaskCreatedWorkflow, dispatchPlanningWorkflow and dispatchStatusWorkflow
 // are the three sinks through which a task auto-starts work, so each gates on
-// runsScheduler itself rather than trusting its callers. Gating call sites was
-// tried and leaked twice: the watcher reaches these both via the status hook and
-// via maybeStartWorkflowForExternalTask, and because the task store writes
+// runsScheduler (and startupRecoveryDone, see its doc comment) itself rather
+// than trusting its callers. Gating call sites was tried and leaked twice: the
+// watcher reaches these both via the status hook and via
+// maybeStartWorkflowForExternalTask, and because the task store writes
 // atomically (temp file + rename) fsnotify reports every external write — even a
 // tags-only update — as CREATE, so the create path is far hotter than its name
 // suggests.
 func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {

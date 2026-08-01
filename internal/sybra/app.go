@@ -149,9 +149,25 @@ type App struct {
 	// rather than silently refusing to dispatch.
 	schedulerDisabled atomic.Bool
 	brainDisabled     atomic.Bool
-	recovery          *recovery.Recovery
-	snapshotter       *tasksnapshot.Snapshotter
-	agentCompletion   *completion.Handler
+	// startupRecoveryPending is true from the start of startLifecycle until
+	// RunStartupCleanup (reattach survivor agents, replay persisted effects,
+	// restart stale runs) finishes. The file watcher and the status-change
+	// hook go live before that reattach completes, so dispatchTaskCreatedWorkflow,
+	// dispatchPlanningWorkflow and dispatchStatusWorkflow — the three sinks
+	// that auto-start work — refuse to dispatch while this is set: until
+	// reattach runs, HasRunningAgentForTask reads an empty registry and an
+	// early dispatch could start a duplicate agent on a live worktree
+	// (#2752). Zero value (unset) reports "not pending", so an App built
+	// without going through Startup (tests, direct construction) dispatches
+	// exactly as it did before this gate existed. Cleared once
+	// RunStartupCleanup returns, followed by a nudgeDispatch so any task that
+	// changed status during the window gets picked up immediately by the
+	// board-wide reconcileRunnableBoardTasks sweep instead of waiting for
+	// the next dispatch tick.
+	startupRecoveryPending atomic.Bool
+	recovery               *recovery.Recovery
+	snapshotter            *tasksnapshot.Snapshotter
+	agentCompletion        *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
@@ -309,6 +325,9 @@ func (a *App) acquireHomeLock() error {
 }
 
 func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func(string, any)) {
+	// Set before the file watcher and status hook can observe anything —
+	// see startupRecoveryPending's doc comment.
+	a.startupRecoveryPending.Store(true)
 	a.applyInstanceRole()
 	a.initLoopScheduler(schedulerCtx, emit)
 	a.initFileWatcher(watcherCtx, emit)
@@ -352,6 +371,12 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 
 	a.wg.Go(func() {
 		a.recovery.RunStartupCleanup(schedulerCtx)
+		// Arm dispatch now that reattach/replay/restart-stale have run, then
+		// nudge so any task that changed status during the window (buffered,
+		// not dispatched — see startupRecoveryPending) is picked up by the
+		// board-wide reconcile sweep right away instead of the next tick.
+		a.startupRecoveryPending.Store(false)
+		a.nudgeDispatch()
 		lm.StartManagers(schedulerCtx, emit)
 		lm.StartPollers(schedulerCtx, emit, issuesFetcher)
 	})
