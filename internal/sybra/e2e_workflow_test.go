@@ -3078,7 +3078,21 @@ func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
 
 	before, _ := env.tasks.Get(created.ID)
 	historyBefore := len(before.Workflow.StepHistory)
-	updatedBefore := before.UpdatedAt
+	stepBefore := before.Workflow.CurrentStep
+	stateBefore := before.Workflow.State
+
+	// An unrelated write, standing in for the lease renewals and effect-log
+	// appends the engine performs on its own schedule. It bumps UpdatedAt
+	// without touching the state machine, which is exactly the interleaving
+	// that used to fail this test: the rejection was correct, but a timestamp
+	// comparison cannot tell "the bogus action mutated the task" apart from
+	// "something else wrote while we were looking". Doing it deliberately
+	// makes the distinction part of what the test pins.
+	if _, err := env.tasks.Update(created.ID, task.Update{
+		StatusReason: task.Ptr("concurrent write during invalid-action handling"),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	err = env.engine.HandleHumanAction(created.ID, "bogus", nil)
 	if err == nil {
@@ -3098,8 +3112,9 @@ func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
 	if got := len(after.Workflow.StepHistory); got != historyBefore {
 		t.Errorf("step_history len = %d, want %d", got, historyBefore)
 	}
-	if !after.UpdatedAt.Equal(updatedBefore) {
-		t.Errorf("UpdatedAt changed from %v to %v", updatedBefore, after.UpdatedAt)
+	if after.Workflow.CurrentStep != stepBefore || after.Workflow.State != stateBefore {
+		t.Errorf("workflow moved from %s/%s to %s/%s",
+			stepBefore, stateBefore, after.Workflow.CurrentStep, after.Workflow.State)
 	}
 	if _, set := after.Workflow.Variables["human_action"]; set {
 		t.Errorf("human_action unexpectedly set: %q", after.Workflow.Variables["human_action"])
