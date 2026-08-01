@@ -20,19 +20,19 @@ const (
 var models = map[Tier]map[string]string{
 	SuperCheap: {
 		"claude":   "haiku",
-		"codex":    "gpt-5.4-mini",
+		"codex":    "gpt-5.6-luna",
 		"copilot":  "gpt-5-mini",
 		"opencode": "openrouter/qwen/qwen3-32b",
 	},
 	Cheap: {
 		"claude":   "sonnet",
-		"codex":    "gpt-5.4",
+		"codex":    "gpt-5.6-terra",
 		"copilot":  "claude-sonnet-4.6",
 		"opencode": "openrouter/deepseek/deepseek-v4-flash",
 	},
 	Expensive: {
 		"claude":   "opus",
-		"codex":    "gpt-5.5",
+		"codex":    "gpt-5.6-sol",
 		"copilot":  "gemini-3.1-pro-preview",
 		"opencode": "openrouter/z-ai/glm-5.2",
 	},
@@ -77,6 +77,11 @@ func InferTier(model string) (Tier, bool) {
 		return SuperCheap, true
 	case "opus":
 		return Expensive, true
+	case "gpt-5.6":
+		// Codex's bare generation alias resolves to Sol. Matched exactly here
+		// rather than by Contains below, where it would also swallow the
+		// -terra and -luna slugs and misclassify them as Expensive.
+		return Expensive, true
 	}
 	for tier, row := range models {
 		for _, candidate := range row {
@@ -85,17 +90,22 @@ func InferTier(model string) (Tier, bool) {
 			}
 		}
 	}
+	// The retired gpt-5.4/5.5 slugs stay matched so historical run records and
+	// hand-pinned task YAML still classify into a tier.
 	switch {
 	case strings.Contains(trimmed, "haiku"),
+		strings.Contains(trimmed, "gpt-5.6-luna"),
 		strings.Contains(trimmed, "gpt-5.4-mini"),
 		strings.Contains(trimmed, "qwen3-32b"):
 		return SuperCheap, true
 	case strings.Contains(trimmed, "opus"),
+		strings.Contains(trimmed, "gpt-5.6-sol"),
 		strings.Contains(trimmed, "gpt-5.5"),
 		strings.Contains(trimmed, "gemini-3.1-pro"),
 		strings.Contains(trimmed, "glm-5.2"):
 		return Expensive, true
 	case strings.Contains(trimmed, "sonnet"),
+		strings.Contains(trimmed, "gpt-5.6-terra"),
 		strings.Contains(trimmed, "gpt-5.4"),
 		strings.Contains(trimmed, "deepseek-v4-flash"):
 		return Cheap, true

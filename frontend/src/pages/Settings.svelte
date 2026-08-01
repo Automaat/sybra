@@ -91,10 +91,10 @@
 
   type ModelOption = { value: string; label: string }
   const codexFallbackModels: ModelOption[] = [
-    { value: '', label: 'Default (gpt-5.5)' },
-    { value: 'gpt-5.4', label: 'GPT-5.4' },
-    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { value: '', label: 'Default (gpt-5.6-terra)' },
+    { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+    { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+    { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
   ]
   let codexDynamicModels = $state<ModelOption[]>([])
   const copilotFallbackModels: ModelOption[] = [
