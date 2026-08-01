@@ -1238,6 +1238,7 @@ func (a *App) initWorkflowEngine() {
 		a.workflowEngine.SetEvidenceRecorder(&evidenceRecorderAdapter{store: a.evidenceStore})
 	}
 	a.workflowEngine.SetContext(a.ctx)
+	a.workflowEngine.SetDrainContext(a.schedulerCtx)
 	// Recover worktree-prep rebase conflicts via the conflict pr-fix instead of
 	// escalating to a human. Wired here (not at construction) because the
 	// orchestrator is built before the reviewer. Routed through

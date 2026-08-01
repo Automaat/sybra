@@ -25,6 +25,12 @@ var providerOrder = providerid.All()
 
 const streamScannerBuffer = 4 * 1024 * 1024
 
+// providerWaitDelay bounds how long Wait blocks after ctx cancellation before
+// force-closing the provider's output pipes. Kept well under App.Shutdown's
+// grace so a one-shot provider call can never be the goroutine that outlives
+// shutdown.
+const providerWaitDelay = 5 * time.Second
+
 // errSchemaDelivery wraps failures creating/writing the codex output-schema
 // temp file. RunJSON treats it as a failover-eligible provider failure rather
 // than a hard error, so a codex-local filesystem issue falls back to the next
@@ -192,6 +198,12 @@ func runProvider(ctx context.Context, p, prompt, model string, disableTools bool
 
 	name, args, stdin := invocation(p, effectivePrompt, model, disableTools, schemaPath)
 	cmd := exec.CommandContext(ctx, name, args...)
+	// Without WaitDelay, cancelling ctx kills the provider CLI but Wait still
+	// blocks until every write end of the output pipe closes — a grandchild
+	// that outlives its parent holds it open indefinitely, so the exec
+	// survives shutdown and keeps writing into SYBRA_HOME. Same failure the
+	// agent runners already guard against.
+	cmd.WaitDelay = providerWaitDelay
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
