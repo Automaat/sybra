@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
@@ -106,7 +105,7 @@ type protectedFile struct {
 	Findings []Finding `json:"findings"`
 }
 
-var protectedStoreLocks sync.Map
+var protectedStoreLocker = fsutil.NewKeyedLocker()
 
 type ProtectedStore struct {
 	path           string
@@ -130,17 +129,26 @@ func NewProtectedStore(path string) *ProtectedStore {
 	}
 }
 
-func (s *ProtectedStore) lock() func() {
+func (s *ProtectedStore) lock() (func(), error) {
 	if s == nil {
-		return func() {}
+		return func() {}, nil
 	}
-	muAny, _ := protectedStoreLocks.LoadOrStore(s.path, &sync.Mutex{})
-	mu, ok := muAny.(*sync.Mutex)
-	if !ok {
-		return func() {}
+	path := strings.TrimSpace(s.path)
+	if path == "" {
+		return func() {}, nil
 	}
-	mu.Lock()
-	return mu.Unlock
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	unlock, err := protectedStoreLocker.Lock(path, path)
+	if err != nil {
+		return nil, err
+	}
+	return unlock, nil
 }
 
 func (s *ProtectedStore) read() (protectedFile, error) {
@@ -179,7 +187,10 @@ func (s *ProtectedStore) write(rec protectedFile) error {
 }
 
 func (s *ProtectedStore) List() ([]Finding, error) {
-	unlock := s.lock()
+	unlock, err := s.lock()
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 
 	rec, err := s.read()
@@ -192,7 +203,10 @@ func (s *ProtectedStore) List() ([]Finding, error) {
 }
 
 func (s *ProtectedStore) Get(id string) (Finding, bool, error) {
-	unlock := s.lock()
+	unlock, err := s.lock()
+	if err != nil {
+		return Finding{}, false, err
+	}
 	defer unlock()
 
 	rec, err := s.read()
@@ -208,7 +222,10 @@ func (s *ProtectedStore) Get(id string) (Finding, bool, error) {
 }
 
 func (s *ProtectedStore) Observe(obs Observation) (Finding, ObserveEvent, error) {
-	unlock := s.lock()
+	unlock, err := s.lock()
+	if err != nil {
+		return Finding{}, ObserveUnchanged, err
+	}
 	defer unlock()
 
 	now := s.now().UTC()
@@ -293,7 +310,10 @@ func (s *ProtectedStore) Observe(obs Observation) (Finding, ObserveEvent, error)
 }
 
 func (s *ProtectedStore) ResolveMissing(kind ResourceKind, observed map[string]bool) error {
-	unlock := s.lock()
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	rec, err := s.read()
@@ -335,7 +355,10 @@ func (s *ProtectedStore) Reattach(id, taskID string) (Finding, error) {
 }
 
 func (s *ProtectedStore) Rescue(id string) (Finding, error) {
-	unlock := s.lock()
+	unlock, err := s.lock()
+	if err != nil {
+		return Finding{}, err
+	}
 	defer unlock()
 
 	rec, err := s.read()
@@ -364,7 +387,10 @@ func (s *ProtectedStore) Rescue(id string) (Finding, error) {
 }
 
 func (s *ProtectedStore) setState(id string, state FindingState, mutate func(*Finding)) (Finding, error) {
-	unlock := s.lock()
+	unlock, err := s.lock()
+	if err != nil {
+		return Finding{}, err
+	}
 	defer unlock()
 
 	rec, err := s.read()

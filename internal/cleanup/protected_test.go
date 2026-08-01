@@ -1,13 +1,17 @@
 package cleanup
 
 import (
+	"bytes"
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -92,6 +96,133 @@ func TestProtectedStoreObserveStateChangeReopensDiscardedFinding(t *testing.T) {
 	}
 	if got.ObservedHead != "def456" || got.ObservedState != "dirty=true" {
 		t.Fatalf("updated finding = %+v", got)
+	}
+}
+
+func TestProtectedStoreIndependentStoresPreserveResolvedState(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "protected-findings.json")
+	firstStore := NewProtectedStore(path)
+	secondStore := NewProtectedStore(path)
+	now := func() time.Time {
+		return time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	}
+	firstStore.now = now
+	secondStore.now = now
+	obs := Observation{
+		Kind:          ResourceWorktree,
+		TaskID:        "task-1",
+		Path:          "/tmp/worktree-1",
+		Reason:        ReasonUnpushedCommits,
+		ObservedHead:  "abc123",
+		ObservedState: "dirty=false",
+		BytesRetained: 128,
+	}
+
+	first, _, err := firstStore.Observe(obs)
+	if err != nil {
+		t.Fatalf("Observe(first): %v", err)
+	}
+	if _, err := secondStore.Discard(first.ID); err != nil {
+		t.Fatalf("Discard(second store): %v", err)
+	}
+	got, event, err := firstStore.Observe(obs)
+	if err != nil {
+		t.Fatalf("Observe(after discard): %v", err)
+	}
+	if event != ObserveUnchanged {
+		t.Fatalf("event = %q, want %q", event, ObserveUnchanged)
+	}
+	if got.State != FindingDiscarded {
+		t.Fatalf("State = %q, want %q", got.State, FindingDiscarded)
+	}
+}
+
+func TestProtectedStoreSeparateProcessWaitsForStoreLock(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "protected-findings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	unlock, err := fsutil.LockFile(path)
+	if err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestProtectedStoreHelperProcess", "--", path)
+	cmd.Env = append(os.Environ(), "SYBRA_PROTECTED_STORE_HELPER=observe")
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		_ = unlock()
+		t.Fatalf("start helper: %v", err)
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-waitCh:
+		_ = unlock()
+		t.Fatalf("helper exited while parent held lock: err=%v output=%s", err, output.String())
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+		_ = unlock()
+		t.Fatalf("helper wrote store while lock was held: %s", data)
+	}
+
+	if err := unlock(); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			t.Fatalf("helper after unlock: %v output=%s", err, output.String())
+		}
+	case <-ctx.Done():
+		t.Fatalf("helper did not finish after unlock: %v output=%s", ctx.Err(), output.String())
+	}
+
+	store := NewProtectedStore(path)
+	findings, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("len(findings) = %d, want 1", len(findings))
+	}
+}
+
+func TestProtectedStoreHelperProcess(t *testing.T) {
+	if os.Getenv("SYBRA_PROTECTED_STORE_HELPER") != "observe" {
+		return
+	}
+	if len(os.Args) == 0 {
+		t.Fatal("missing argv")
+	}
+	path := os.Args[len(os.Args)-1]
+	store := NewProtectedStore(path)
+	store.now = func() time.Time {
+		return time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	}
+	if _, _, err := store.Observe(Observation{
+		Kind:          ResourceWorktree,
+		TaskID:        "task-helper",
+		Path:          "/tmp/worktree-helper",
+		Reason:        ReasonUnpushedCommits,
+		ObservedHead:  "abc123",
+		ObservedState: "dirty=false",
+		BytesRetained: 128,
+	}); err != nil {
+		t.Fatalf("Observe: %v", err)
 	}
 }
 
