@@ -3,6 +3,7 @@ package poll
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -136,7 +137,7 @@ func TestTriageHandlerPollSkipsEnrichPendingTasks(t *testing.T) {
 	if got.Status != task.StatusNew {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusNew)
 	}
-	if !task.HasFlag(got.Tags, enrichment.PendingTag) {
+	if !slices.Contains(got.Tags, enrichment.PendingTag) {
 		t.Fatalf("tags = %v, want %q retained", got.Tags, enrichment.PendingTag)
 	}
 }

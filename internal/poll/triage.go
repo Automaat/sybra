@@ -3,6 +3,7 @@ package poll
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
@@ -100,7 +101,7 @@ func (h *TriageHandler) Poll(ctx context.Context) time.Duration {
 		if t.Status != task.StatusNew {
 			continue
 		}
-		if task.HasFlag(t.Tags, enrichment.PendingTag) {
+		if slices.Contains(t.Tags, enrichment.PendingTag) {
 			continue
 		}
 		if !t.UpdatedAt.IsZero() && time.Since(t.UpdatedAt) < 5*time.Second {
