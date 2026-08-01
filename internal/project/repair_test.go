@@ -188,3 +188,97 @@ func TestIsBadRefError(t *testing.T) {
 type testError string
 
 func (e testError) Error() string { return string(e) }
+
+func TestIsObjectCorruptionError(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"fatal: unable to read a29bdeb434d874c9b1d8969c40c42161b03fafdc", true},
+		{"remote: fatal: loose object b3c5a95f929a50feb06c275ac567cdb1b441d1e2 (stored in ./objects/b3/c5a95f...) is corrupt", true},
+		{"error: broken link from tree abc123", true},
+		{"missing blob abc123", true},
+		{"fatal: bad object refs/heads/foo", false},
+		{"connection refused", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		var err error
+		if tc.msg != "" {
+			err = testError(tc.msg)
+		}
+		if got := isObjectCorruptionError(err); got != tc.want {
+			t.Errorf("isObjectCorruptionError(%q) = %v, want %v", tc.msg, got, tc.want)
+		}
+	}
+}
+
+// cloneBareNoHardlinks clones src into a fresh bare repo with independent
+// object files (no --local hardlink sharing), so a test can corrupt an
+// object in the bare clone without also corrupting src's copy — mirroring a
+// real GitHub-backed bare clone, where origin's objects live on a different
+// host entirely.
+func cloneBareNoHardlinks(t *testing.T, src, dest string) {
+	t.Helper()
+	if out, err := exec.Command("git", "clone", "-q", "--bare", "--no-hardlinks", src, dest).CombinedOutput(); err != nil {
+		t.Fatalf("git clone --bare --no-hardlinks: %v: %s", err, out)
+	}
+	if err := runBare(context.Background(), dest, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+		t.Fatalf("config remote.origin.fetch: %v", err)
+	}
+}
+
+// corruptBlob overwrites path's on-disk loose object bytes with garbage,
+// simulating a shared bare clone object a concurrent task's repack/prune
+// left unreadable.
+func corruptBlob(t *testing.T, barePath, blobSHA string) {
+	t.Helper()
+	objPath := filepath.Join(barePath, "objects", blobSHA[:2], blobSHA[2:])
+	if err := os.Chmod(objPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(objPath, []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRepairWorktreeObjectStore_RefetchesCorruptedObject(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	cloneBareNoHardlinks(t, src, bare)
+
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := CreateWorktree(context.Background(), bare, wt, "feature", branch); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	blobSHA := strings.TrimSpace(runGit(t, wt, "rev-parse", "HEAD:README.md"))
+	corruptBlob(t, bare, blobSHA)
+
+	if _, err := exec.Command("git", "-C", bare, "cat-file", "-p", blobSHA).CombinedOutput(); err == nil {
+		t.Fatal("expected corrupted blob to be unreadable before repair")
+	}
+
+	if err := repairWorktreeObjectStore(context.Background(), wt); err != nil {
+		t.Fatalf("repairWorktreeObjectStore: %v", err)
+	}
+
+	out, err := exec.Command("git", "-C", bare, "cat-file", "-p", blobSHA).CombinedOutput()
+	if err != nil {
+		t.Fatalf("blob should be readable after repair, got: %v: %s", err, out)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return string(out)
+}

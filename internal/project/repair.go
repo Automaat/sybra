@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -47,6 +49,100 @@ func IsBadRefError(err error) bool {
 
 func CommonDir(ctx context.Context, worktreePath string) (string, error) {
 	return gitCommonDir(ctx, worktreePath)
+}
+
+// objectCorruptionMarkers catch a worktree index/cache-tree referencing a
+// blob/tree/commit object that has gone missing from the shared bare
+// clone's object store — distinct from badRefMarkers, which catch a *ref*
+// that fails to resolve. Here the ref resolves fine; an object it
+// (transitively) points at is simply gone, which git surfaces from
+// status/add/commit rather than from a ref lookup. "unable to read" and the
+// fsck-style "broken link"/"missing blob" wording were added after a live
+// checkpoint failure showed `fatal: unable to read <sha>` wasn't covered by
+// badRefMarkers's more specific "unable to read sha1 file".
+var objectCorruptionMarkers = []string{
+	"unable to read",
+	"broken link",
+	"missing blob",
+	"missing tree",
+	"missing commit",
+	"invalid sha1 path",
+	"object corrupt or missing",
+	"is corrupt",
+}
+
+func isObjectCorruptionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range objectCorruptionMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// repairWorktreeObjectStore re-syncs wtPath's shared bare clone object store
+// with origin and refreshes the worktree's index, recovering from a
+// checkpoint commit that failed with isObjectCorruptionError. A plain
+// `fetch` only ever adds objects reachable from newly-advanced refs, which
+// does nothing when the missing object is still reachable from a ref the
+// bare clone already has — so this uses `--refetch` to force git to
+// re-download every object regardless of what it already believes it has.
+// `git reset --mixed HEAD` then drops any stale index/cache-tree entries
+// (including ones pointing at now-repaired objects) without touching
+// working-tree files, so uncommitted edits survive the repair.
+func repairWorktreeObjectStore(ctx context.Context, wtPath string) error {
+	barePath, err := gitCommonDir(ctx, wtPath)
+	if err != nil {
+		return fmt.Errorf("resolve git common dir: %w", err)
+	}
+
+	fetchErr := withBareRepoLock(barePath, func() error {
+		removeCorruptLooseObjects(ctx, barePath)
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "fetch", "origin", "--refetch", "+refs/heads/*:refs/remotes/origin/*")
+		})
+	})
+	if fetchErr != nil {
+		return fmt.Errorf("refetch bare clone objects: %w", fetchErr)
+	}
+
+	reset := exec.CommandContext(ctx, "git", "reset", "--mixed", "HEAD")
+	reset.Dir = wtPath
+	reset.Env = cleanGitEnv()
+	if out, err := reset.CombinedOutput(); err != nil {
+		return fmt.Errorf("git reset --mixed HEAD: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// corruptLooseObjectRe matches `git fsck --full`'s report for a loose object
+// whose on-disk bytes fail to inflate, e.g.:
+//
+//	error: 45b983be...: object corrupt or missing: ./objects/45/b983be...
+var corruptLooseObjectRe = regexp.MustCompile(`object corrupt or missing: (\S+)`)
+
+// removeCorruptLooseObjects runs `git fsck --full` against barePath and
+// deletes every loose object file it reports as corrupt. This must run
+// before a `--refetch`: unpacking a fetched pack skips writing any object
+// whose filename already exists on disk, without validating that the
+// existing copy is actually readable — so a corrupt-but-present loose
+// object silently survives a refetch unless it's removed first. Best-effort:
+// fsck/removal failures are swallowed here since the caller's refetch+reset
+// still recovers the (more common) genuinely-missing-object case on its own.
+// Must be called with barePath's bare-repo lock already held.
+func removeCorruptLooseObjects(ctx context.Context, barePath string) {
+	cmd := exec.CommandContext(ctx, "git", "fsck", "--full")
+	cmd.Dir = barePath
+	cmd.Env = cleanGitEnv()
+	out, _ := cmd.CombinedOutput()
+	for _, m := range corruptLooseObjectRe.FindAllStringSubmatch(string(out), -1) {
+		rel := strings.TrimPrefix(m[1], "./")
+		_ = os.Remove(filepath.Join(barePath, filepath.FromSlash(rel)))
+	}
 }
 
 func RepairBareClone(ctx context.Context, barePath, taskBranch string) (RepairReport, error) {

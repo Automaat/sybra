@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -968,6 +969,102 @@ func TestCheckpointCommit(t *testing.T) {
 			t.Fatal("CheckpointCommit reported committed=true on git failure")
 		}
 	})
+
+	t.Run("survives a corrupted rename-source blob", func(t *testing.T) {
+		t.Parallel()
+		repo := initRepoWithCommit(t)
+
+		// git commit's default post-commit summary runs a similarity-index
+		// diffstat over a rename, which reads the renamed file's *old* blob
+		// content. Corrupting that blob (simulating a concurrent task's
+		// repack/prune of the shared object store this worktree is linked
+		// against) used to make CheckpointCommit report failure even though
+		// the commit itself landed.
+		blobSHA := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD:README.md"))
+		corruptBlob(t, filepath.Join(repo, ".git"), blobSHA)
+
+		if err := os.Rename(filepath.Join(repo, "README.md"), filepath.Join(repo, "RENAMED.md")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, "RENAMED.md"), []byte("# test\nmore content\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		committed, err := CheckpointCommit(context.Background(), repo, "chore(checkpoint): save progress")
+		if err != nil {
+			t.Fatalf("CheckpointCommit: %v", err)
+		}
+		if !committed {
+			t.Fatal("CheckpointCommit reported committed=false despite a dirty tree")
+		}
+
+		out, err := exec.Command("git", "-C", repo, "log", "--format=%s", "-1").Output()
+		if err != nil {
+			t.Fatalf("git log: %v", err)
+		}
+		if got := strings.TrimSpace(string(out)); got != "chore(checkpoint): save progress" {
+			t.Fatalf("last subject = %q", got)
+		}
+	})
+}
+
+func TestCleanGitEnv_StripsAmbientGitVars(t *testing.T) {
+	t.Setenv("GIT_OBJECT_DIRECTORY", "/nonexistent/leaked/objects")
+	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", "/nonexistent/leaked/alt-objects")
+	t.Setenv("GIT_DIR", "/nonexistent/leaked/git-dir")
+	t.Setenv("NOT_A_GIT_VAR", "keep-me")
+
+	env := cleanGitEnv()
+	for _, e := range env {
+		if strings.HasPrefix(e, "GIT_") {
+			t.Fatalf("cleanGitEnv() leaked ambient var: %q", e)
+		}
+	}
+	if !slices.Contains(env, "NOT_A_GIT_VAR=keep-me") {
+		t.Fatal("cleanGitEnv() should preserve non-GIT_ environment variables")
+	}
+}
+
+// TestCheckpointCommit_IgnoresLeakedGitObjectDirectory proves the env leak
+// this package guards against is real: without cleanGitEnv, an ambient
+// GIT_OBJECT_DIRECTORY pointing at some other, unrelated repo's objects
+// silently redirects CheckpointCommit's git subprocesses to write there
+// instead of into repo's own .git/objects.
+func TestCheckpointCommit_IgnoresLeakedGitObjectDirectory(t *testing.T) {
+	repo := initRepoWithCommit(t)
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	decoyObjects := filepath.Join(t.TempDir(), "decoy-objects")
+	if err := os.MkdirAll(decoyObjects, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_OBJECT_DIRECTORY", decoyObjects)
+
+	committed, err := CheckpointCommit(context.Background(), repo, "chore(checkpoint): save progress")
+	if err != nil {
+		t.Fatalf("CheckpointCommit: %v", err)
+	}
+	if !committed {
+		t.Fatal("CheckpointCommit reported committed=false on a dirty tree")
+	}
+
+	entries, readErr := os.ReadDir(decoyObjects)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("checkpoint commit wrote objects into the leaked GIT_OBJECT_DIRECTORY: %v", entries)
+	}
+
+	out, err := exec.Command("git", "-C", repo, "log", "--format=%s", "-1").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "chore(checkpoint): save progress" {
+		t.Fatalf("last subject = %q, want the commit in repo's own object store", got)
+	}
 }
 
 func TestResetWorktreeForRetry_DiscardsPartialWorkAndKeepsIgnoredNotes(t *testing.T) {

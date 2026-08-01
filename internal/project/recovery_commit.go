@@ -11,6 +11,7 @@ func gitIdentityConfigured(ctx context.Context, wtPath string) bool {
 	for _, key := range []string{"user.name", "user.email"} {
 		cmd := exec.CommandContext(ctx, "git", "config", "--get", key)
 		cmd.Dir = wtPath
+		cmd.Env = cleanGitEnv()
 		out, err := cmd.Output()
 		if err != nil || strings.TrimSpace(string(out)) == "" {
 			return false
@@ -24,7 +25,14 @@ func recoveryCommitArgs(message string, hasIdentity, sign bool) []string {
 	if !hasIdentity {
 		args = append(args, "-c", "user.name=Sybra", "-c", "user.email=sybra@localhost")
 	}
-	args = append(args, "commit", "--no-verify", "--signoff")
+	// --quiet suppresses git commit's post-commit summary, which by default
+	// runs a similarity-index diffstat over the change. Nothing here reads
+	// that output, but computing it means reading blob content that isn't
+	// otherwise needed to create the commit — on a rename over a blob a
+	// concurrent task has since corrupted/pruned from the shared object
+	// store, that optional read fails and git exits non-zero even though the
+	// commit object and ref update already landed successfully.
+	args = append(args, "commit", "--quiet", "--no-verify", "--signoff")
 	if sign {
 		args = append(args, "-S")
 	} else {
@@ -49,5 +57,6 @@ func runRecoveryCommit(ctx context.Context, wtPath, message string) error {
 func gitCommitOutput(ctx context.Context, wtPath string, args []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = wtPath
+	cmd.Env = cleanGitEnv()
 	return cmd.CombinedOutput()
 }

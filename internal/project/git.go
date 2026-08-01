@@ -617,9 +617,31 @@ func looksLikeGitDir(dir string) bool {
 // Returns committed=false when the tree is already clean. Unlike
 // AutoCommitUncommitted this is strict: any git failure is returned so callers
 // never assume durable state exists when the checkpoint commit did not land.
+//
+// A worktree's index/cache-tree can end up pointing at blob/tree objects that
+// no longer exist in the shared bare clone's object store it's linked
+// against (e.g. a concurrent task's repack/prune on the same clone). git
+// surfaces that as a status/add/commit failure rather than a ref-resolution
+// error, so it isn't caught by IsBadRefError. CheckpointCommit first checks
+// whether the commit landed anyway (see headSHAOrEmpty below — some of
+// these failures happen in a post-commit step, after HEAD already moved);
+// if it didn't, it re-syncs the bare clone's objects and refreshes the
+// worktree index, then retries exactly once.
 func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bool, err error) {
+	committed, err = checkpointCommitOnce(ctx, wtPath, message)
+	if err != nil && isObjectCorruptionError(err) {
+		if repairErr := repairWorktreeObjectStore(ctx, wtPath); repairErr != nil {
+			return false, fmt.Errorf("%w (object-store repair also failed: %s)", err, repairErr)
+		}
+		committed, err = checkpointCommitOnce(ctx, wtPath, message)
+	}
+	return committed, err
+}
+
+func checkpointCommitOnce(ctx context.Context, wtPath, message string) (bool, error) {
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = wtPath
+	statusCmd.Env = cleanGitEnv()
 	statusOut, err := statusCmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("git status --porcelain: %w: %s", err, strings.TrimSpace(string(statusOut)))
@@ -630,14 +652,59 @@ func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bo
 
 	add := exec.CommandContext(ctx, "git", "add", "-A")
 	add.Dir = wtPath
+	add.Env = cleanGitEnv()
 	if out, err := add.CombinedOutput(); err != nil {
 		return false, fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
+	headBefore := headSHAOrEmpty(ctx, wtPath)
 	if err := runRecoveryCommit(ctx, wtPath, message); err != nil {
+		// git commit can report a non-zero exit for a step that runs *after*
+		// the commit object and ref update already landed — e.g. its
+		// post-commit summary reads a renamed file's old blob to compute a
+		// similarity index, and that read fails if the blob is one a
+		// concurrent task corrupted/pruned from the shared object store.
+		// HEAD having actually moved means the checkpoint durably landed
+		// despite the reported error, so callers must not be told it didn't.
+		if headAfter := headSHAOrEmpty(ctx, wtPath); headAfter != "" && headAfter != headBefore {
+			return true, nil
+		}
 		return false, fmt.Errorf("checkpoint: %w", err)
 	}
 	return true, nil
+}
+
+// headSHAOrEmpty returns wtPath's current HEAD commit SHA, or "" if it
+// cannot be resolved (e.g. no commits yet, or a genuinely broken HEAD).
+func headSHAOrEmpty(ctx context.Context, wtPath string) string {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
+	cmd.Dir = wtPath
+	cmd.Env = cleanGitEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// cleanGitEnv returns the current process environment with every ambient
+// GIT_* variable stripped (GIT_DIR, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY,
+// GIT_ALTERNATE_OBJECT_DIRECTORIES, ...). Checkpoint/repair git subprocesses
+// run against a specific worktree via cmd.Dir and must resolve their
+// git-dir/index/object-store from that path alone — a stray GIT_* variable
+// leaking in from the calling process's own environment (e.g. a sandboxed
+// agent run's object-store overlay) would otherwise silently redirect these
+// commands at the wrong index or object store.
+func cleanGitEnv() []string {
+	base := os.Environ()
+	env := make([]string, 0, len(base))
+	for _, e := range base {
+		if strings.HasPrefix(e, "GIT_") {
+			continue
+		}
+		env = append(env, e)
+	}
+	return env
 }
 
 // SanitizeWorktree cleans up worktree state that would confuse agents:
