@@ -122,7 +122,12 @@ func TestQueueDrainPassDrainsManualStartsForEveryRole(t *testing.T) {
 
 func waitForFreeSlot(t *testing.T, a *App) {
 	t.Helper()
-	for range 200 {
+	// 5s flat used to be the whole budget here, unscaled — this helper predates
+	// the deadline scaling and never picked it up, so on a contended runner a
+	// slot that frees in 6s read as a hung pool (#2811).
+	budget := 5 * time.Second * time.Duration(e2eTimeoutScale())
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
 		if a.agents.AvailableQueueDrainSlots(1) > 0 {
 			return
 		}
