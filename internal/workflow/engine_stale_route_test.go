@@ -173,11 +173,14 @@ func TestTryMarkResumeDispatching_StaleRoute(t *testing.T) {
 	}
 }
 
-// TestResumeStalled_RecoversFromStaleAgentRoute is the end-to-end shape of the
+// TestResumeStalled_StaleRouteRecoversWedgedTask is the end-to-end shape of the
 // wedge: a task whose only blocker is a route left behind by a finished agent
 // used to log "agent-pending-completion" on every tick forever. It must now
 // re-dispatch instead.
-func TestResumeStalled_RecoversFromStaleAgentRoute(t *testing.T) {
+//
+// Every test in this file is named so `go test -run StaleRoute` selects all of
+// them. A mutation run that misses one silently reports a guard as untested.
+func TestResumeStalled_StaleRouteRecoversWedgedTask(t *testing.T) {
 	engine, _, agents := staleRouteEngine(t, discardLogger(), map[string]string{"agent-ghost": "implement"})
 
 	engine.ResumeStalled()
@@ -187,13 +190,17 @@ func TestResumeStalled_RecoversFromStaleAgentRoute(t *testing.T) {
 	}
 }
 
-// TestResumeStalled_MidAdvanceCompletionBlocksDuplicateDispatch is the
+// TestResumeStalled_StaleRoutePrunerSparesMidAdvanceCompletion is the
 // regression guard the route check was written for. It drives the exact
 // interleaving recovery's lost-callback bridge produces: HandleAgentComplete
 // runs for an agent the manager no longer reports as running, and a
 // ResumeStalled tick lands while that completion is between route resolution
 // and AdvanceStep. No second agent may be started.
-func TestResumeStalled_MidAdvanceCompletionBlocksDuplicateDispatch(t *testing.T) {
+//
+// Unlike the table above — which arms the marker by hand and so only proves the
+// pruner honours it — this drives the real HandleAgentComplete entry point, so
+// it is the only test that fails if enterCompletion is dropped from it.
+func TestResumeStalled_StaleRoutePrunerSparesMidAdvanceCompletion(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -228,6 +235,17 @@ func TestResumeStalled_MidAdvanceCompletionBlocksDuplicateDispatch(t *testing.T)
 	if agents.HasRunningAgent("t1") {
 		t.Fatal("mock reports a running agent; the mid-advance window is not being exercised")
 	}
+	if !engine.completionInFlight("t1") {
+		t.Fatal("HandleAgentComplete did not mark a completion in flight — nothing but the persisted route is holding the resume off")
+	}
+
+	// tryMarkResumeDispatching is asserted directly as well as through
+	// ResumeStalled: the reason pins *why* the resume was refused, so a future
+	// regression cannot pass by refusing for some unrelated reason.
+	if reason, ok := engine.tryMarkResumeDispatching("t1", implementStep(t, engine)); ok || reason != "agent-pending-completion" {
+		t.Fatalf("tryMarkResumeDispatching = (%q, %v), want (agent-pending-completion, false)", reason, ok)
+	}
+
 	engine.ResumeStalled()
 	if got := roleStartCount(agents, "implementation"); got != 0 {
 		t.Fatalf("implementation dispatches = %d, want 0 — a mid-advance completion must not be duplicated", got)
