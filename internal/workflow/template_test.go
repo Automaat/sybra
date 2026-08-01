@@ -187,10 +187,7 @@ func TestGetVar(t *testing.T) {
 func TestAcceptanceLedger(t *testing.T) {
 	t.Parallel()
 
-	body := strings.Join([]string{
-		"## Problem",
-		"Keep the workflow converged.",
-		"",
+	ledger := strings.Join([]string{
 		acceptanceLedgerHeading,
 		"",
 		"### Ledger entry fp-1",
@@ -212,7 +209,7 @@ func TestAcceptanceLedger(t *testing.T) {
 		"## Notes",
 		"Done.",
 	}, "\n")
-	got := acceptanceLedger(body)
+	got := acceptanceLedger(ledger)
 	if !strings.Contains(got, acceptanceLedgerHeading) {
 		t.Fatalf("acceptanceLedger = %q, want section heading", got)
 	}
@@ -227,14 +224,7 @@ func TestAcceptanceLedger(t *testing.T) {
 func TestAcceptanceLedgerPromptRendering(t *testing.T) {
 	t.Parallel()
 
-	body := strings.Join([]string{
-		"## Problem",
-		"Retain all distinct product-bug fixes together.",
-		"",
-		testFailuresHeading,
-		"",
-		"current failure snapshot",
-		"",
+	ledger := strings.Join([]string{
 		acceptanceLedgerHeading,
 		"",
 		"### Ledger entry fp-1",
@@ -250,7 +240,11 @@ func TestAcceptanceLedgerPromptRendering(t *testing.T) {
 		"second repro",
 	}, "\n")
 	ctx := TemplateContext{
-		Task: TaskInfo{ID: "task-ledger", Body: body},
+		Task: TaskInfo{
+			ID:                  "task-ledger",
+			CurrentTestFailures: testFailuresHeading + "\n\ncurrent failure snapshot",
+			AcceptanceLedger:    ledger,
+		},
 	}
 
 	implementStep := mustBuiltinDefinition(t, "simple-task-implement").StepByID("implement")

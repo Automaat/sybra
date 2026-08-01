@@ -209,7 +209,7 @@ func TestPersistenceTypesHaveYAMLTags(t *testing.T) {
 
 func taskSidecarField(name string) bool {
 	switch name {
-	case "Body", "Plan", "PlanContract", "PlanCritique", "PlanResearch", "PlanDecisions", "PlanBrief", "CodeReview", "PlanDrafts", "FilePath", "TamperFlagged":
+	case "Body", "Plan", "PlanContract", "PlanCritique", "PlanResearch", "PlanDecisions", "PlanBrief", "CodeReview", "CurrentTestFailures", "AcceptanceLedger", "SpecDecision", "PlanDrafts", "FilePath", "TamperFlagged":
 		return true
 	default:
 		return false

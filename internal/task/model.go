@@ -519,10 +519,13 @@ type Task struct {
 	// Planning sidecars. Plan is the human-readable compact plan; PlanContract
 	// is the machine-validated JSON contract consumed by implementation agents.
 	// The remaining sidecars hold review/evidence material.
-	PlanResearch  string `json:"planResearch,omitempty"`
-	PlanDecisions string `json:"planDecisions,omitempty"`
-	PlanBrief     string `json:"planBrief,omitempty"`
-	CodeReview    string `json:"codeReview,omitempty"`
+	PlanResearch        string `json:"planResearch,omitempty"`
+	PlanDecisions       string `json:"planDecisions,omitempty"`
+	PlanBrief           string `json:"planBrief,omitempty"`
+	CodeReview          string `json:"codeReview,omitempty"`
+	CurrentTestFailures string `json:"currentTestFailures,omitempty"`
+	AcceptanceLedger    string `json:"acceptanceLedger,omitempty"`
+	SpecDecision        string `json:"specDecision,omitempty"`
 	// PlanDrafts holds per-provider raw plan outputs during dual- (or N-)
 	// provider planning. Keys are typically the parallel child step ID
 	// (e.g. "plan_claude", "plan_codex"). Populated from PlanDraftStore on

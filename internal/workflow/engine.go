@@ -61,6 +61,9 @@ type TaskInfo struct {
 	PlanDecisions         string
 	PlanBrief             string
 	CodeReview            string
+	CurrentTestFailures   string
+	AcceptanceLedger      string
+	SpecDecision          string
 	Attachments           []AttachmentInfo
 	// PlanDrafts holds raw per-provider plans during dual-/N-provider planning.
 	// Keys are parallel child step IDs (e.g. "plan_claude", "plan_codex").
@@ -148,6 +151,9 @@ type TaskProvider interface {
 	//   "plan_decisions" — human decision brief
 	//   "plan_brief"    — final human-facing review brief
 	//   "code_review"   — staff-code-review report
+	//   "current_test_failures" — latest manual-test failure report
+	//   "acceptance_ledger" — bounded ledger of distinct failure repros
+	//   "spec_decision" — latest acceptance-conflict escalation summary
 	//   "plan_draft.<name>" — raw per-provider plan during dual-/N-provider
 	//       planning; <name> is typically the parallel child step ID. The
 	//       engine derives <name> from the step ID when the YAML kind is

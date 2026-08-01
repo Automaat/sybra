@@ -861,6 +861,9 @@ func (m *memTasks) CompleteWorkflowEffect(id string, claim EffectClaim) (EffectC
 func (m *memTasks) WriteSidecar(id, kind, content string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.appendErr != nil {
+		return m.appendErr
+	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
@@ -887,6 +890,12 @@ func (m *memTasks) WriteSidecar(id, kind, content string) error {
 		t.PlanDecisions = content
 	case "plan_brief":
 		t.PlanBrief = content
+	case "current_test_failures":
+		t.CurrentTestFailures = content
+	case "acceptance_ledger":
+		t.AcceptanceLedger = content
+	case "spec_decision":
+		t.SpecDecision = content
 	default:
 		return fmt.Errorf("unknown sidecar kind %q", kind)
 	}

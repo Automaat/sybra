@@ -33,9 +33,9 @@ trigger:
       value: review
 steps:
   # No triage, no planning agent — a single deterministic status flip. The
-  # implementation agent receives the handed-off plan via {{.Task.Plan}} in
-  # simple-task-implement. The agent runs in the adopted worktree when the
-  # task carries an explicit worktree_dir.
+  # implementation agent reads the handed-off plan from `sybra-cli get
+  # --compact` once simple-task-implement starts. The agent runs in the
+  # adopted worktree when the task carries an explicit worktree_dir.
   - id: set_in_progress
     name: Hand Off to Implement
     type: set_status

@@ -5,6 +5,13 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+	"unicode/utf8"
+)
+
+const (
+	promptInlineMaxBytes  = 8 * 1024
+	promptInlineHeadBytes = promptInlineMaxBytes / 3
+	promptInlineElision   = "\n\n…(middle elided to fit prompt)…\n\n"
 )
 
 // TemplateContext provides data available in prompt templates and shell commands.
@@ -46,16 +53,23 @@ var templateFuncs = template.FuncMap{
 // or misreading its own `sybra-cli get` output. At most one such section is
 // ever live in a body (see stripTestFailuresSections), so the first match is
 // unambiguously current.
-func currentTestFailures(body string) string {
-	return strings.TrimSpace(testFailSectionOf(body))
-}
-
-func acceptanceLedger(body string) string {
-	start, end, ok := topLevelSectionRange(body, acceptanceLedgerHeading)
-	if !ok {
+func currentTestFailures(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" || testFailSectionOf(content) == "" {
 		return ""
 	}
-	return strings.TrimSpace(body[start:end])
+	return clampPromptInline(content)
+}
+
+func acceptanceLedger(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	if start, end, ok := topLevelSectionRange(content, acceptanceLedgerHeading); ok {
+		content = strings.TrimSpace(content[start:end])
+	}
+	return clampPromptInline(content)
 }
 
 func topLevelSectionRange(body, heading string) (start, end int, ok bool) {
@@ -116,4 +130,30 @@ func recoveredOrPrev(wf *Execution, prev *StepRecord) string {
 		return ""
 	}
 	return prev.Output
+}
+
+func clampPromptInline(body string) string {
+	if len(body) <= promptInlineMaxBytes {
+		return body
+	}
+	head := trimPromptRuneBoundaryEnd(body[:promptInlineHeadBytes])
+	tail := trimPromptRuneBoundaryStart(body[len(body)-(promptInlineMaxBytes-promptInlineHeadBytes):])
+	return head + promptInlineElision + tail
+}
+
+func trimPromptRuneBoundaryStart(s string) string {
+	for len(s) > 0 && !utf8.RuneStart(s[0]) {
+		s = s[1:]
+	}
+	return s
+}
+
+func trimPromptRuneBoundaryEnd(s string) string {
+	for len(s) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(s); r != utf8.RuneError || size > 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
