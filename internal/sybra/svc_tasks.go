@@ -22,6 +22,7 @@ import (
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
@@ -902,6 +903,9 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 	t, err := s.tasks.UpdateMap(id, updates)
 	if err != nil {
+		if errors.Is(err, fsutil.ErrLockTimeout) {
+			return t, unavailableError(err.Error())
+		}
 		return t, err
 	}
 	s.appendManualHumanRequiredDecision(cur, t, decisionReason)
@@ -1260,6 +1264,9 @@ func (s *TaskService) DeleteTask(id string) error {
 	}
 	if err := s.tasks.Delete(id); err != nil {
 		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
+		if errors.Is(err, fsutil.ErrLockTimeout) {
+			return unavailableError(err.Error())
+		}
 		return err
 	}
 	return nil

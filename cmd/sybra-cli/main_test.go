@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,10 +19,32 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
 )
+
+const (
+	cliLockHelperEnv     = "SYBRA_CLI_LOCK_HELPER"
+	cliLockHelperPathEnv = "SYBRA_CLI_LOCK_PATH"
+)
+
+func TestCLILockHelperProcess(t *testing.T) {
+	if os.Getenv(cliLockHelperEnv) == "" {
+		return
+	}
+	path := os.Getenv(cliLockHelperPathEnv)
+	unlock, err := fsutil.LockFileContext(context.Background(), path)
+	if err != nil {
+		t.Fatalf("helper LockFileContext: %v", err)
+	}
+	fmt.Println("ready")
+	_, _ = io.ReadAll(os.Stdin)
+	if err := unlock(); err != nil {
+		t.Fatalf("helper unlock: %v", err)
+	}
+}
 
 func mustUnmarshal(t *testing.T, data string, v any) {
 	t.Helper()
@@ -96,6 +121,69 @@ func runGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %v\n%s", args, err, string(out))
 	}
 	return string(out)
+}
+
+func setCLILockTimingForTest(timeout, backoff time.Duration) func() {
+	prevTimeout, prevBackoff := fsutil.LockAcquireTimeout, fsutil.LockAcquireRetryBackoff
+	fsutil.LockAcquireTimeout, fsutil.LockAcquireRetryBackoff = timeout, backoff
+	return func() {
+		fsutil.LockAcquireTimeout, fsutil.LockAcquireRetryBackoff = prevTimeout, prevBackoff
+	}
+}
+
+func startCLILockHolder(t *testing.T, path string) (*exec.Cmd, func()) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCLILockHelperProcess$")
+	cmd.Env = append(os.Environ(),
+		cliLockHelperEnv+"=1",
+		cliLockHelperPathEnv+"="+path,
+	)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("StderrPipe: %v", err)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("StdinPipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	ready := make(chan error, 1)
+	go func() {
+		line, readErr := bufio.NewReader(stdout).ReadString('\n')
+		if readErr != nil {
+			ready <- readErr
+			return
+		}
+		if strings.TrimSpace(line) != "ready" {
+			ready <- fmt.Errorf("unexpected helper readiness line %q", line)
+			return
+		}
+		ready <- nil
+	}()
+	select {
+	case err := <-ready:
+		if err != nil {
+			data, _ := io.ReadAll(stderr)
+			t.Fatalf("helper readiness: %v\nstderr:\n%s", err, string(data))
+		}
+	case <-time.After(2 * time.Second):
+		data, _ := io.ReadAll(stderr)
+		t.Fatalf("helper readiness timed out\nstderr:\n%s", string(data))
+	}
+	return cmd, func() {
+		_ = stdin.Close()
+		waitErr := cmd.Wait()
+		if waitErr != nil {
+			data, _ := io.ReadAll(stderr)
+			t.Fatalf("helper wait: %v\nstderr:\n%s", waitErr, string(data))
+		}
+	}
 }
 
 func TestListEmpty(t *testing.T) {
@@ -253,6 +341,44 @@ func TestUpdateStatus(t *testing.T) {
 	mustUnmarshal(t, out, &updated)
 	if updated.Status != "in-progress" {
 		t.Errorf("status = %q", updated.Status)
+	}
+}
+
+func TestUpdateLockTimeoutIsRetryable(t *testing.T) {
+	home := setupStore(t)
+	restore := setCLILockTimingForTest(150*time.Millisecond, 10*time.Millisecond)
+	defer restore()
+
+	code, out := runCLI(t, "--json", "create", "--title", "locked task")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	cmd, release := startCLILockHolder(t, filepath.Join(home, "tasks", created.ID+".md"))
+	defer release()
+
+	code, _, stderr := runCLIWithStderr(t, "--json", "update", created.ID, "--status", "in-progress")
+	if code != 75 {
+		t.Fatalf("update exit = %d, want 75", code)
+	}
+	var errEnv struct {
+		Error     string `json:"error"`
+		Retryable bool   `json:"retryable"`
+	}
+	mustUnmarshal(t, stderr, &errEnv)
+	if !errEnv.Retryable {
+		t.Fatalf("retryable = false, want true (stderr=%q)", stderr)
+	}
+	if !strings.Contains(errEnv.Error, "retryable:") {
+		t.Fatalf("error = %q, want retryable prefix", errEnv.Error)
+	}
+	if !strings.Contains(errEnv.Error, created.ID+".md.lock") {
+		t.Fatalf("error = %q, want lock path", errEnv.Error)
+	}
+	if !strings.Contains(errEnv.Error, fmt.Sprintf("pid %d", cmd.Process.Pid)) {
+		t.Fatalf("error = %q, want holder pid %d", errEnv.Error, cmd.Process.Pid)
 	}
 }
 

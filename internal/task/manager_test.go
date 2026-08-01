@@ -1,7 +1,13 @@
 package task
 
 import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -9,7 +15,29 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/fsutil"
 )
+
+const (
+	taskLockHelperEnv     = "SYBRA_TASK_LOCK_HELPER"
+	taskLockHelperPathEnv = "SYBRA_TASK_LOCK_PATH"
+)
+
+func TestTaskLockHelperProcess(t *testing.T) {
+	if os.Getenv(taskLockHelperEnv) == "" {
+		return
+	}
+	path := os.Getenv(taskLockHelperPathEnv)
+	unlock, err := fsutil.LockFileContext(context.Background(), path)
+	if err != nil {
+		t.Fatalf("helper LockFileContext: %v", err)
+	}
+	fmt.Println("ready")
+	_, _ = io.ReadAll(os.Stdin)
+	if err := unlock(); err != nil {
+		t.Fatalf("helper unlock: %v", err)
+	}
+}
 
 type recordingEmitter struct {
 	mu     sync.Mutex
@@ -80,6 +108,39 @@ func TestManagerUpdateEmitsEvent(t *testing.T) {
 	names := emitter.names()
 	if len(names) != 2 || names[1] != events.TaskUpdated {
 		t.Fatalf("events = %v, want [%s %s]", names, events.TaskCreated, events.TaskUpdated)
+	}
+}
+
+func TestManagerUpdate_TimesOutOnContendedFileLock(t *testing.T) {
+	m, _ := newTestManager(t)
+	restore := setTaskLockTimingForTest(150*time.Millisecond, 10*time.Millisecond)
+	defer restore()
+
+	created, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cmd, release := startTaskLockHolder(t, created.FilePath)
+	defer release()
+
+	start := time.Now()
+	_, err = m.Update(created.ID, Update{Title: Ptr("blocked")})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Update succeeded, want timeout error")
+	}
+	var timeoutErr *fsutil.LockTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("err = %T %v, want *fsutil.LockTimeoutError", err, err)
+	}
+	if timeoutErr.Path != created.FilePath+".lock" {
+		t.Fatalf("timeout path = %q, want %q", timeoutErr.Path, created.FilePath+".lock")
+	}
+	if timeoutErr.HolderPID != cmd.Process.Pid {
+		t.Fatalf("holder pid = %d, want %d", timeoutErr.HolderPID, cmd.Process.Pid)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("Update elapsed = %v, want bounded wait well under 500ms", elapsed)
 	}
 }
 
@@ -483,6 +544,69 @@ func TestNoopEmitter(t *testing.T) {
 	}
 	// should not panic
 	m.emitter.Emit("x", "y")
+}
+
+func setTaskLockTimingForTest(timeout, backoff time.Duration) func() {
+	prevTimeout, prevBackoff := fsutil.LockAcquireTimeout, fsutil.LockAcquireRetryBackoff
+	fsutil.LockAcquireTimeout, fsutil.LockAcquireRetryBackoff = timeout, backoff
+	return func() {
+		fsutil.LockAcquireTimeout, fsutil.LockAcquireRetryBackoff = prevTimeout, prevBackoff
+	}
+}
+
+func startTaskLockHolder(t *testing.T, path string) (*exec.Cmd, func()) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestTaskLockHelperProcess$")
+	cmd.Env = append(os.Environ(),
+		taskLockHelperEnv+"=1",
+		taskLockHelperPathEnv+"="+path,
+	)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("StderrPipe: %v", err)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("StdinPipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	ready := make(chan error, 1)
+	go func() {
+		line, readErr := bufio.NewReader(stdout).ReadString('\n')
+		if readErr != nil {
+			ready <- readErr
+			return
+		}
+		if strings.TrimSpace(line) != "ready" {
+			ready <- fmt.Errorf("unexpected helper readiness line %q", line)
+			return
+		}
+		ready <- nil
+	}()
+	select {
+	case err := <-ready:
+		if err != nil {
+			data, _ := io.ReadAll(stderr)
+			t.Fatalf("helper readiness: %v\nstderr:\n%s", err, string(data))
+		}
+	case <-time.After(2 * time.Second):
+		data, _ := io.ReadAll(stderr)
+		t.Fatalf("helper readiness timed out\nstderr:\n%s", string(data))
+	}
+	return cmd, func() {
+		_ = stdin.Close()
+		waitErr := cmd.Wait()
+		if waitErr != nil {
+			data, _ := io.ReadAll(stderr)
+			t.Fatalf("helper wait: %v\nstderr:\n%s", waitErr, string(data))
+		}
+	}
 }
 
 // reentrantEmitter reproduces app.go's Startup emit closure, which calls

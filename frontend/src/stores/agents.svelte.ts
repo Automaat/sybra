@@ -117,16 +117,16 @@ class AgentStore extends EntityStore<Agent> {
   })
 
   constructor() {
-    let self: AgentStore
+    let loadAgents = async (): Promise<Agent[]> => []
     super(
-      async () => self.loadAgents(),
+      async () => loadAgents(),
       (a, b) => {
         const ta = a.startedAt ? new Date(a.startedAt).getTime() : 0
         const tb = b.startedAt ? new Date(b.startedAt).getTime() : 0
         return tb - ta
       },
     )
-    self = this
+    loadAgents = () => this.loadAgents()
   }
 
   get agents() {

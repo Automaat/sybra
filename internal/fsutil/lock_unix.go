@@ -3,6 +3,7 @@
 package fsutil
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,14 +11,24 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
+)
+
+var (
+	// LockAcquireTimeout bounds how long LockFile waits for a contended lock
+	// before returning ErrLockTimeout. Tests shorten this to keep contention
+	// probes cheap.
+	LockAcquireTimeout = 2 * time.Second
+	// LockAcquireRetryBackoff is the poll interval between LOCK_NB attempts.
+	LockAcquireRetryBackoff = 25 * time.Millisecond
 )
 
 // LockFile acquires an advisory, cross-process exclusive lock for path by
-// flocking a sibling "<path>.lock" file, blocking until it is held. Sybra
-// runs the GUI server, sybra-cli, and the recovery sweep as separate OS
-// processes that all read-modify-write the same store files; an in-process
-// sync.Mutex only serializes goroutines within one of those processes; flock
-// is what serializes across all of them.
+// flocking a sibling "<path>.lock" file, retrying a non-blocking lock until a
+// bounded deadline expires. Sybra runs the GUI server, sybra-cli, and the
+// recovery sweep as separate OS processes that all read-modify-write the same
+// store files; an in-process sync.Mutex only serializes goroutines within one
+// of those processes; flock is what serializes across all of them.
 //
 // The returned unlock releases the flock and closes the file descriptor.
 // Callers must call it exactly once, typically via defer, and must hold it
@@ -25,21 +36,31 @@ import (
 // write) or a concurrent writer can still interleave between another
 // process's read and write.
 func LockFile(path string) (func() error, error) {
-	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	ctx, cancel := context.WithTimeout(context.Background(), LockAcquireTimeout)
+	unlock, err := LockFileContext(ctx, path)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return func() error {
+		defer cancel()
+		return unlock()
+	}, nil
+}
+
+// LockFileContext is LockFile with a caller-supplied cancellation/deadline.
+func LockFileContext(ctx context.Context, path string) (func() error, error) {
+	lockPath := path + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	unlock, err := acquireLock(ctx, f, lockPath, true)
+	if err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("flock: %w", err)
+		return nil, err
 	}
-	return func() error {
-		unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		if closeErr := f.Close(); unlockErr == nil {
-			unlockErr = closeErr
-		}
-		return unlockErr
-	}, nil
+	return unlock, nil
 }
 
 // ErrLocked is returned by TryLockPath when another process already holds
@@ -68,34 +89,94 @@ func TryLockPath(path string) (func() error, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		holder := readLockHolderPID(f)
+	unlock, err := acquireLock(context.Background(), f, path, false)
+	if err != nil {
 		_ = f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			if holder > 0 {
-				return nil, fmt.Errorf("%w: held by pid %d", ErrLocked, holder)
-			}
-			return nil, ErrLocked
-		}
-		return nil, fmt.Errorf("flock: %w", err)
+		return nil, err
 	}
+	return unlock, nil
+}
+
+func acquireLock(ctx context.Context, f *os.File, path string, retry bool) (func() error, error) {
+	for {
+		if retry {
+			if err := ctx.Err(); err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					return nil, &LockTimeoutError{Path: path, Cause: err}
+				}
+				return nil, fmt.Errorf("lock %s: %w", path, err)
+			}
+		}
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			if err := writeLockHolderPID(f); err != nil {
+				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				return nil, err
+			}
+			return func() error {
+				unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				if closeErr := f.Close(); unlockErr == nil {
+					unlockErr = closeErr
+				}
+				return unlockErr
+			}, nil
+		}
+		holder := readLockHolderPID(f)
+		if !wouldBlock(err) {
+			return nil, fmt.Errorf("flock: %w", err)
+		}
+		if !retry {
+			return nil, lockedError(holder)
+		}
+		if waitErr := waitForLockRetry(ctx, path, holder); waitErr != nil {
+			return nil, waitErr
+		}
+	}
+}
+
+func waitForLockRetry(ctx context.Context, path string, holderPID int) error {
+	wait := LockAcquireRetryBackoff
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return &LockTimeoutError{Path: path, HolderPID: holderPID, Cause: context.DeadlineExceeded}
+		}
+		if remaining < wait {
+			wait = remaining
+		}
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return &LockTimeoutError{Path: path, HolderPID: holderPID, Cause: ctx.Err()}
+		}
+		return fmt.Errorf("lock %s: %w", path, ctx.Err())
+	case <-timer.C:
+		return nil
+	}
+}
+
+func writeLockHolderPID(f *os.File) error {
 	if err := f.Truncate(0); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-		return nil, fmt.Errorf("truncate lock file: %w", err)
+		return fmt.Errorf("truncate lock file: %w", err)
 	}
 	if _, err := f.WriteAt([]byte(strconv.Itoa(os.Getpid())), 0); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-		return nil, fmt.Errorf("write lock file: %w", err)
+		return fmt.Errorf("write lock file: %w", err)
 	}
-	return func() error {
-		unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		if closeErr := f.Close(); unlockErr == nil {
-			unlockErr = closeErr
-		}
-		return unlockErr
-	}, nil
+	return nil
+}
+
+func lockedError(holderPID int) error {
+	if holderPID > 0 {
+		return fmt.Errorf("%w: held by pid %d", ErrLocked, holderPID)
+	}
+	return ErrLocked
+}
+
+func wouldBlock(err error) bool {
+	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
 }
 
 // readLockHolderPID best-effort reads the pid a prior TryLockPath winner

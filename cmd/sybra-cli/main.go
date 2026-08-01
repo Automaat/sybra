@@ -27,6 +27,8 @@ import (
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/issueref"
 	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
@@ -1746,12 +1748,43 @@ func printJSON(v any) int {
 
 func fatal(jsonOut bool, format string, args ...any) int {
 	msg := fmt.Sprintf(format, args...)
+	retryable := hasRetryableCLIError(args)
+	if retryable {
+		msg = "retryable: " + msg
+	}
 	if jsonOut {
+		if retryable {
+			fmt.Fprintf(os.Stderr, `{"error":"%s","retryable":true}`+"\n", msg)
+			return 75
+		}
 		fmt.Fprintf(os.Stderr, `{"error":"%s"}`+"\n", msg)
-	} else {
-		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "error: %s\n", msg)
+	if retryable {
+		return 75
 	}
 	return 1
+}
+
+func hasRetryableCLIError(args []any) bool {
+	for _, arg := range args {
+		err, ok := arg.(error)
+		if ok && isRetryableCLIError(err) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRetryableCLIError(err error) bool {
+	if errors.Is(err, fsutil.ErrLockTimeout) {
+		return true
+	}
+	var apiErr *apiError
+	return errors.As(err, &apiErr) &&
+		apiErr.Code == string(httpapi.ErrCodeUnavailable) &&
+		strings.Contains(apiErr.Message, fsutil.ErrLockTimeout.Error())
 }
 
 func filterProject(tasks []task.Task, projectID string) []task.Task {
