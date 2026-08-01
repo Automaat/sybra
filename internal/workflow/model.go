@@ -1,10 +1,14 @@
 package workflow
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Definition is a declarative workflow stored as YAML.
@@ -17,6 +21,20 @@ type Definition struct {
 	Builtin     bool      `yaml:"builtin,omitempty" json:"builtin"`
 	CreatedAt   time.Time `yaml:"created_at,omitempty" json:"createdAt"`
 	UpdatedAt   time.Time `yaml:"updated_at,omitempty" json:"updatedAt"`
+}
+
+// SemanticHash returns a deterministic content hash for the workflow
+// definition, ignoring storage-managed timestamps.
+func (d Definition) SemanticHash() (string, error) {
+	normalized := d
+	normalized.CreatedAt = time.Time{}
+	normalized.UpdatedAt = time.Time{}
+	data, err := yaml.Marshal(normalized)
+	if err != nil {
+		return "", fmt.Errorf("marshal workflow definition for hash: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // StepByID returns the step with the given ID, or nil. Recurses into

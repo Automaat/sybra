@@ -390,7 +390,7 @@ func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (advanceCo
 		return advanceContext{}, true, nil
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		return advanceContext{}, false, err
 	}

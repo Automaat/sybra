@@ -31,11 +31,15 @@ const (
 
 // Execution tracks a task's progress through a workflow instance.
 type Execution struct {
-	WorkflowID  string            `yaml:"workflow_id" json:"workflowId"`
-	CurrentStep string            `yaml:"current_step" json:"currentStep"`
-	State       ExecState         `yaml:"state" json:"state"`
-	StepHistory []StepRecord      `yaml:"step_history,omitempty" json:"stepHistory"`
-	Variables   map[string]string `yaml:"variables,omitempty" json:"variables"`
+	WorkflowID string `yaml:"workflow_id" json:"workflowId"`
+	// DefinitionHash pins this execution to the semantic hash of the workflow
+	// definition it started under. Empty means a legacy execution created
+	// before pinning existed and should continue using the live definition.
+	DefinitionHash string            `yaml:"definition_hash,omitempty" json:"definitionHash,omitempty"`
+	CurrentStep    string            `yaml:"current_step" json:"currentStep"`
+	State          ExecState         `yaml:"state" json:"state"`
+	StepHistory    []StepRecord      `yaml:"step_history,omitempty" json:"stepHistory"`
+	Variables      map[string]string `yaml:"variables,omitempty" json:"variables"`
 	// AgentRoutes durably records which async workflow step each still-live
 	// agent was spawned for. This replaces the process-local engine map so
 	// duplicate or late completions keep routing to the step they actually

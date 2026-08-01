@@ -55,13 +55,61 @@ const (
 	// freed space, or the branch may have moved) so ResumeStalled gets a
 	// bounded number of automatic re-attempts before the task is marked
 	// Exhausted and left for an operator, mirroring the watchdog-stop budget.
-	worktreeRepairRetryVarPrefix   = "worktree_repair.retry."
-	maxWorktreeRepairRetries       = 2
-	circuitBreakerFailureVarPrefix = "circuit_breaker.failures."
-	circuitBreakerFirstVarPrefix   = "circuit_breaker.first_failure."
-	maxCircuitBreakerFailures      = 3
-	circuitBreakerWindow           = 15 * time.Minute
+	worktreeRepairRetryVarPrefix          = "worktree_repair.retry."
+	maxWorktreeRepairRetries              = 2
+	circuitBreakerFailureVarPrefix        = "circuit_breaker.failures."
+	circuitBreakerFirstVarPrefix          = "circuit_breaker.first_failure."
+	maxCircuitBreakerFailures             = 3
+	circuitBreakerWindow                  = 15 * time.Minute
+	workflowDefinitionSnapshotMissingCode = "workflow_definition_snapshot_missing"
 )
+
+var errWorkflowDefinitionSnapshotUnavailable = errors.New("workflow definition snapshot unavailable")
+
+func (e *Engine) resolveExecutionDefinition(taskID string, t TaskInfo) (Definition, error) {
+	if t.Workflow == nil || t.Workflow.WorkflowID == "" {
+		return Definition{}, fmt.Errorf("task %s has no active workflow", taskID)
+	}
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return Definition{}, err
+	}
+	if t.Workflow.DefinitionHash == "" {
+		return def, nil
+	}
+	liveHash, err := def.SemanticHash()
+	if err != nil {
+		return Definition{}, err
+	}
+	if liveHash == t.Workflow.DefinitionHash {
+		return def, nil
+	}
+	snapshot, err := e.store.GetSnapshot(t.Workflow.WorkflowID, t.Workflow.DefinitionHash)
+	if err == nil {
+		return snapshot, nil
+	}
+	reason := "Workflow definition snapshot for " + t.Workflow.WorkflowID + " (" + t.Workflow.DefinitionHash +
+		") is missing or unreadable. Restore the snapshot or restart the task on the latest workflow definition."
+	if blockerErr := e.tasks.UpdateTaskBlocker(taskID, "human-required", reason, blocker.State{
+		Kind:       blocker.KindOperatorDecision,
+		Actor:      blocker.ActorWorkflow,
+		Code:       workflowDefinitionSnapshotMissingCode,
+		NextAction: "Restore the workflow snapshot or restart the task on the latest definition.",
+	}); blockerErr != nil {
+		return Definition{}, fmt.Errorf("set workflow definition blocker: %w", blockerErr)
+	}
+	failed := t.Workflow.Clone()
+	failed.State = ExecFailed
+	if setErr := e.tasks.SetWorkflow(taskID, failed); setErr != nil {
+		return Definition{}, fmt.Errorf("fail workflow after snapshot loss: %w", setErr)
+	}
+	e.logger.Warn("workflow.definition-snapshot.unavailable",
+		"task_id", taskID,
+		"workflow_id", t.Workflow.WorkflowID,
+		"definition_hash", t.Workflow.DefinitionHash,
+		"err", err)
+	return Definition{}, fmt.Errorf("%w: %s", errWorkflowDefinitionSnapshotUnavailable, reason)
+}
 
 // HandleHumanAction processes approve/reject/input from the UI.
 func (e *Engine) HandleHumanAction(taskID, action string, data map[string]string) error {
@@ -134,7 +182,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		return err
 	}
 	if t.Workflow != nil && t.Workflow.State == ExecWaiting && t.Workflow.CurrentStep != "" {
-		def, err := e.store.Get(t.Workflow.WorkflowID)
+		def, err := e.resolveExecutionDefinition(taskID, t)
 		if err != nil {
 			return err
 		}
@@ -148,7 +196,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 	if t.Workflow == nil || t.Workflow.State != ExecWaiting {
 		return fmt.Errorf("task %s is not waiting for human action", taskID)
 	}
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		return err
 	}
@@ -169,7 +217,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 			if t.Workflow == nil {
 				return fmt.Errorf("task %s is not waiting for human action", taskID)
 			}
-			def, err = e.store.Get(t.Workflow.WorkflowID)
+			def, err = e.resolveExecutionDefinition(taskID, t)
 			if err != nil {
 				return err
 			}
@@ -269,7 +317,7 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 		return
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		return
 	}
@@ -600,7 +648,7 @@ func (c *completionDefinitionCache) get() (*Definition, bool) {
 	if c.task.Workflow == nil || c.task.Workflow.WorkflowID == "" {
 		return nil, false
 	}
-	def, err := c.engine.store.Get(c.task.Workflow.WorkflowID)
+	def, err := c.engine.resolveExecutionDefinition(c.task.ID, c.task)
 	if err != nil {
 		return nil, false
 	}
@@ -682,7 +730,7 @@ func (e *Engine) RescheduleInterruptedAgent(taskID, agentID string) {
 		}
 		return
 	}
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		e.clearAgentStep(taskID, agentID)
 		return
@@ -740,7 +788,7 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 		return
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		e.clearAgentStep(taskID, agentID)
 		return
@@ -828,7 +876,7 @@ func (e *Engine) RescheduleCheckpointedAgent(taskID, agentID string) {
 		return
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		e.clearAgentStep(taskID, agentID)
 		return
@@ -1255,7 +1303,7 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 		// fall through to resume logic
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(t.ID, *t)
 	if err != nil {
 		return
 	}

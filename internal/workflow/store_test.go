@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -268,5 +269,72 @@ steps:
 	// But Save must reject the same definition — strict write-path check.
 	if err := s.Save(*found); err == nil {
 		t.Error("Save should reject workflow with unknown field")
+	}
+}
+
+func TestStore_SaveSnapshotAndGetSnapshot(t *testing.T) {
+	t.Parallel()
+
+	s := mustNewStore(t)
+	def := newTestDef("snap-wf")
+
+	hash, err := s.SaveSnapshot(def)
+	if err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	got, err := s.GetSnapshot(def.ID, hash)
+	if err != nil {
+		t.Fatalf("GetSnapshot: %v", err)
+	}
+	if got.ID != def.ID {
+		t.Fatalf("snapshot ID = %q, want %q", got.ID, def.ID)
+	}
+}
+
+func TestStore_SaveSnapshot_IsImmutable(t *testing.T) {
+	t.Parallel()
+
+	s := mustNewStore(t)
+	def := newTestDef("snap-immutable")
+	hash, err := s.SaveSnapshot(def)
+	if err != nil {
+		t.Fatalf("SaveSnapshot first: %v", err)
+	}
+
+	path, err := s.snapshotPath(def.ID, hash)
+	if err != nil {
+		t.Fatalf("snapshotPath: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile before: %v", err)
+	}
+	if _, err := s.SaveSnapshot(def); err != nil {
+		t.Fatalf("SaveSnapshot second: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile after: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("snapshot bytes changed on second save")
+	}
+}
+
+func TestStore_GetSnapshot_RejectsInvalidHash(t *testing.T) {
+	t.Parallel()
+
+	s := mustNewStore(t)
+	if _, err := s.GetSnapshot("wf", "not-a-hash"); err == nil {
+		t.Fatal("expected invalid hash error")
+	}
+}
+
+func TestStore_SnapshotPath_TraversalRejected(t *testing.T) {
+	t.Parallel()
+
+	s := mustNewStore(t)
+	if _, err := s.snapshotPath("../wf", strings.Repeat("a", 64)); err == nil {
+		t.Fatal("expected invalid workflow ID error")
 	}
 }

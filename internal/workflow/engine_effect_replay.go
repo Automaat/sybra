@@ -77,7 +77,7 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) bool {
 		return false
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(t.ID, *t)
 	if err != nil {
 		return false
 	}
@@ -118,7 +118,7 @@ func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) b
 	}
 
 	var err error
-	*def, err = e.store.Get(fresh.Workflow.WorkflowID)
+	*def, err = e.resolveExecutionDefinition(fresh.ID, fresh)
 	if err != nil {
 		e.clearResumeDispatching(t.ID)
 		return true

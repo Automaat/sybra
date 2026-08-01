@@ -6422,6 +6422,116 @@ func TestE2E_RestartSimulation_PersistedWaitingResumesOnce(t *testing.T) {
 	}
 }
 
+const testRestartDriftWorkflowYAMLV1 = `id: test-restart-drift
+name: Restart Drift
+trigger:
+  on: task.created
+steps:
+  - id: gate
+    name: Gate
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: set_done
+  - id: set_done
+    name: Set Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testRestartDriftWorkflowYAMLV2 = `id: test-restart-drift
+name: Restart Drift
+trigger:
+  on: task.created
+steps:
+  - id: gate
+    name: Gate Changed
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: set_blocked
+  - id: set_blocked
+    name: Set Blocked
+    type: set_status
+    config:
+      status: blocked
+    next:
+      - goto: ""
+`
+
+func TestE2E_RestartSimulation_PinnedDefinitionUsesOriginalWhileNewTaskUsesLatest(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-restart-drift", testRestartDriftWorkflowYAMLV1)
+
+	original, err := env.tasks.Create("restart drift original", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(original.ID, "test-restart-drift"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "original task waits at gate", func() bool {
+		tk, gErr := env.tasks.Get(original.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	writeWorkflowFixture(t, env, "test-restart-drift", testRestartDriftWorkflowYAMLV2)
+	restored := rebuildEngineFromEnv(t, env)
+	if err := restored.HandleHumanAction(original.ID, "approve", nil); err != nil {
+		t.Fatalf("HandleHumanAction original: %v", err)
+	}
+	waitFor(t, 10*time.Second, "original task follows pinned v1", func() bool {
+		tk, gErr := env.tasks.Get(original.ID)
+		return gErr == nil && tk.Status == "done"
+	})
+	originalTask, _ := env.tasks.Get(original.ID)
+	if originalTask.Status != "done" {
+		t.Fatalf("original status = %q, want done from v1", originalTask.Status)
+	}
+
+	latest, err := env.tasks.Create("restart drift latest", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.StartWorkflowWithVars(latest.ID, "test-restart-drift", map[string]string{
+		workflow.WorkflowVarDir: env.agentDir,
+	}); err != nil {
+		t.Fatalf("StartWorkflowWithVars latest: %v", err)
+	}
+	waitFor(t, 10*time.Second, "latest task waits at gate", func() bool {
+		tk, gErr := env.tasks.Get(latest.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+	if err := restored.HandleHumanAction(latest.ID, "approve", nil); err != nil {
+		t.Fatalf("HandleHumanAction latest: %v", err)
+	}
+	waitFor(t, 10*time.Second, "latest task follows updated v2", func() bool {
+		tk, gErr := env.tasks.Get(latest.ID)
+		return gErr == nil && tk.Status == "blocked"
+	})
+	latestTask, _ := env.tasks.Get(latest.ID)
+	if latestTask.Status != "blocked" {
+		t.Fatalf("latest status = %q, want blocked from v2", latestTask.Status)
+	}
+}
+
 func TestE2E_ProviderUnhealthy_NoFailoverReturnsError(t *testing.T) {
 	env := setupE2EProvider(t, "claude", "success")
 	g := newScriptedGate()

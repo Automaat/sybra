@@ -126,12 +126,18 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 	maps.Copy(variables, vars)
 
 	wfExec := &Execution{
-		WorkflowID:  workflowID,
-		CurrentStep: start.ID,
-		State:       ExecRunning,
-		Variables:   variables,
-		StartedAt:   time.Now().UTC(),
+		WorkflowID:     workflowID,
+		DefinitionHash: "",
+		CurrentStep:    start.ID,
+		State:          ExecRunning,
+		Variables:      variables,
+		StartedAt:      time.Now().UTC(),
 	}
+	defHash, err := e.store.SaveSnapshot(def)
+	if err != nil {
+		return nil, fmt.Errorf("save workflow snapshot %s: %w", workflowID, err)
+	}
+	wfExec.DefinitionHash = defHash
 
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 		return nil, fmt.Errorf("set workflow on task: %w", err)
