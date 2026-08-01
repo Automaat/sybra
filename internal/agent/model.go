@@ -846,6 +846,7 @@ func (a *Agent) BankEstimatedCost() float64 {
 		CostUSD:         a.CostUSD,
 		InputTokens:     a.InputTokens,
 		OutputTokens:    a.OutputTokens,
+		CacheCreate:     a.CacheCreationInputTokens,
 		CacheRead:       a.CacheReadInputTokens,
 		ReasoningTokens: a.ReasoningTokens,
 		PremiumRequests: a.PremiumRequests,

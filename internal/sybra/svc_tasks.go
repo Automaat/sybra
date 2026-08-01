@@ -574,14 +574,18 @@ func estimateUsageFromEvents(model, provider string, events []agent.StreamEvent,
 	if !resultSeen {
 		return agentRunUsageEstimate{}, false
 	}
-	if cost == 0 {
-		switch provider {
-		case "copilot":
-			cost = stats.EstimateCopilotCost(premiumRequests)
-		case "codex", "claude":
-			cost = stats.EstimateCostDetailed(model, input, output, cacheCreate, cacheRead, reasoning, startedAt)
-		}
-	}
+	cost = stats.EstimateAgentCost(stats.AgentUsage{
+		Provider:        provider,
+		Model:           model,
+		CostUSD:         cost,
+		InputTokens:     input,
+		OutputTokens:    output,
+		CacheCreate:     cacheCreate,
+		CacheRead:       cacheRead,
+		ReasoningTokens: reasoning,
+		PremiumRequests: premiumRequests,
+		StartedAt:       startedAt,
+	})
 	if cost == 0 && premiumRequests == 0 {
 		return agentRunUsageEstimate{}, false
 	}
