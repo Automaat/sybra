@@ -32,20 +32,24 @@ const (
 	RoleTestFix Role = "test-fix"
 )
 
-// AllRoles lists every known Role. It is the single source of truth for the
-// role set: IsKnown is derived from it, so adding a Role constant here is what
-// makes it dispatchable — and what makes the reasoning-effort coverage test
-// notice it.
+// allRoles is the single source of truth for the role set. Package-level so
+// IsKnown — called on every dispatch through ResolveRunRole — stays
+// allocation-free; AllRoles hands out a copy so no caller can mutate it.
+var allRoles = []Role{
+	RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor,
+	RoleOrchestrator, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner,
+	RoleImplementation, RoleHumanReview, RoleTestFix,
+}
+
+// AllRoles lists every known Role. IsKnown is derived from the same list, so
+// adding a Role constant to it is what makes the role dispatchable — and what
+// makes the reasoning-effort coverage test notice it.
 func AllRoles() []Role {
-	return []Role{
-		RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor,
-		RoleOrchestrator, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner,
-		RoleImplementation, RoleHumanReview, RoleTestFix,
-	}
+	return slices.Clone(allRoles)
 }
 
 func (r Role) IsKnown() bool {
-	return slices.Contains(AllRoles(), r)
+	return slices.Contains(allRoles, r)
 }
 
 // AgentName returns the prefixed name used when launching an agent

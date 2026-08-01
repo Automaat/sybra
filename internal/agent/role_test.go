@@ -369,3 +369,23 @@ func TestRole_WorkloadClass(t *testing.T) {
 		}
 	}
 }
+
+// TestAllRolesReturnsACopy proves callers cannot mutate the canonical role set
+// through the accessor — IsKnown reads the same backing list.
+func TestAllRolesReturnsACopy(t *testing.T) {
+	t.Parallel()
+	got := AllRoles()
+	got[0] = Role("clobbered")
+	if !RoleTriage.IsKnown() {
+		t.Fatal("mutating the AllRoles result corrupted the canonical role set")
+	}
+	if AllRoles()[0] != RoleTriage {
+		t.Fatalf("AllRoles()[0] = %q, want %q", AllRoles()[0], RoleTriage)
+	}
+}
+
+func BenchmarkRoleIsKnown(b *testing.B) {
+	for b.Loop() {
+		_ = RoleImplementation.IsKnown()
+	}
+}
