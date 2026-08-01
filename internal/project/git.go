@@ -613,32 +613,50 @@ func looksLikeGitDir(dir string) bool {
 	return true
 }
 
+var checkpointRunRecoveryCommit = runRecoveryCommit
+
 // CheckpointCommit stages and commits the current worktree state with message.
 // Returns committed=false when the tree is already clean. Unlike
 // AutoCommitUncommitted this is strict: any git failure is returned so callers
 // never assume durable state exists when the checkpoint commit did not land.
 //
-// A worktree's index/cache-tree can end up pointing at blob/tree objects that
-// no longer exist in the shared bare clone's object store it's linked
-// against (e.g. a concurrent task's repack/prune on the same clone). git
-// surfaces that as a status/add/commit failure rather than a ref-resolution
-// error, so it isn't caught by IsBadRefError. CheckpointCommit first checks
-// whether the commit landed anyway (see headSHAOrEmpty below — some of
-// these failures happen in a post-commit step, after HEAD already moved);
-// if it didn't, it re-syncs the bare clone's objects and refreshes the
-// worktree index, then retries exactly once.
+// Linked worktrees share one bare clone object store, which two independent
+// failure modes can poison for a concurrent task:
+//   - a stale worktree admin ref, or a ref pointing at a missing object,
+//     surfaced from ref resolution and caught by IsBadRefError — repaired by
+//     repairCheckpointWorktree (quarantine + refetch via RepairBareClone).
+//   - a worktree's index/cache-tree pointing at a blob/tree object that has
+//     gone missing from the object store even though the ref itself resolves
+//     fine (e.g. a concurrent task's repack/prune), surfaced as a
+//     status/add/commit failure rather than a ref-resolution error, so it
+//     isn't caught by IsBadRefError — repaired by repairWorktreeObjectStore
+//     (refetch + index refresh).
+//
+// CheckpointCommit first checks whether the commit landed anyway (see
+// headSHAOrEmpty below — some of these failures happen in a post-commit
+// step, after HEAD already moved); if it didn't, it repairs via whichever
+// path matches the error and retries exactly once.
 func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bool, err error) {
 	committed, err = checkpointCommitOnce(ctx, wtPath, message)
-	if err != nil && isObjectCorruptionError(err) {
+	if err == nil {
+		return committed, nil
+	}
+	switch {
+	case IsBadRefError(err):
+		if repairErr := repairCheckpointWorktree(ctx, wtPath); repairErr != nil {
+			return false, err
+		}
+	case isObjectCorruptionError(err):
 		if repairErr := repairWorktreeObjectStore(ctx, wtPath); repairErr != nil {
 			return false, fmt.Errorf("%w (object-store repair also failed: %w)", err, repairErr)
 		}
-		committed, err = checkpointCommitOnce(ctx, wtPath, message)
+	default:
+		return false, err
 	}
-	return committed, err
+	return checkpointCommitOnce(ctx, wtPath, message)
 }
 
-func checkpointCommitOnce(ctx context.Context, wtPath, message string) (bool, error) {
+func checkpointCommitOnce(ctx context.Context, wtPath, message string) (committed bool, err error) {
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = wtPath
 	statusCmd.Env = cleanGitEnv()
@@ -658,7 +676,7 @@ func checkpointCommitOnce(ctx context.Context, wtPath, message string) (bool, er
 	}
 
 	headBefore := headSHAOrEmpty(ctx, wtPath)
-	if err := runRecoveryCommit(ctx, wtPath, message); err != nil {
+	if err := checkpointRunRecoveryCommit(ctx, wtPath, message); err != nil {
 		// git commit can report a non-zero exit for a step that runs *after*
 		// the commit object and ref update already landed — e.g. its
 		// post-commit summary reads a renamed file's old blob to compute a
@@ -705,6 +723,16 @@ func cleanGitEnv() []string {
 		env = append(env, e)
 	}
 	return env
+}
+
+func repairCheckpointWorktree(ctx context.Context, wtPath string) error {
+	commonDir, err := gitCommonDir(ctx, wtPath)
+	if err != nil {
+		return err
+	}
+	branchOut, _ := exec.CommandContext(ctx, "git", "-C", wtPath, "branch", "--show-current").Output()
+	_, err = RepairBareClone(ctx, commonDir, strings.TrimSpace(string(branchOut)))
+	return err
 }
 
 // SanitizeWorktree cleans up worktree state that would confuse agents:

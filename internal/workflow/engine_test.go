@@ -6879,6 +6879,94 @@ steps:
 	}
 }
 
+func TestHandleAgentComplete_UnverifiedSkillAfterRetryContinuesWithImportedSidecar(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: codex
+      prompt: "Run /adversarial-review now."
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        kind: code_review
+        required: true
+    next:
+      - goto: require_review
+  - id: require_review
+    name: Require Review
+    type: require_sidecar
+    config:
+      sidecar: code_review
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".sybra-review-t1.md"), []byte("Review Verdict: CLEAN\n\nNo findings.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir:                 dir,
+				skillReceiptRecoveryKey("run"): "1",
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-2",
+			Role:               "review",
+			Provider:           "codex",
+			RequestedSkill:     "adversarial-review",
+			SkillExecutionMode: "injected",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "agent-2",
+		Result:  "review complete without receipt",
+		Success: true,
+	})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "done" {
+		t.Fatalf("Status = %q, want done", ti.Status)
+	}
+	if !strings.Contains(ti.CodeReview, "Review Verdict: CLEAN") {
+		t.Fatalf("CodeReview = %q, want imported review sidecar", ti.CodeReview)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("skill receipt retry var = %q, want cleared after sidecar continuation", got)
+	}
+	if len(agents.calls) != 0 {
+		t.Fatalf("StartAgent calls = %d, want no third attempt", len(agents.calls))
+	}
+}
+
 // TestHandleAgentComplete_UnverifiedSkillExhaustionAllowsFreshWorkflowStart
 // covers the human-review recovery handoff: once skill-receipt exhaustion
 // marks a task human-required, a subsequent recovery attempt must be able to
