@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync/atomic"
 
 	"github.com/Automaat/sybra/internal/providerid"
 )
@@ -34,6 +35,47 @@ func (e *ValidationError) Error() string {
 		return ""
 	}
 	return strings.Join(e.Messages, "; ")
+}
+
+// requireExplicitSandboxMode makes an unset agent.sandbox_mode a load-time
+// error rather than a silent fall-through to "report". Off by default so the
+// desktop app and CLI keep working on a config that omits the key; sybra-server
+// turns it on at startup via RequireExplicitSandboxMode.
+//
+// It lives here, in the validator every load and every hot reload funnels
+// through, rather than at the server's startup call site: a boot-time-only
+// check is defeated by the config watcher re-applying an edited file, which
+// is exactly the silent drift the requirement exists to stop.
+var requireExplicitSandboxMode atomic.Bool
+
+// RequireExplicitSandboxMode makes ValidateUnattendedPosture reject a config
+// whose agent.sandbox_mode is unset. Intended for unattended processes, where
+// an omitted key is indistinguishable from a deliberately unsandboxed one.
+func RequireExplicitSandboxMode(require bool) {
+	requireExplicitSandboxMode.Store(require)
+}
+
+// ValidateUnattendedPosture rejects operator config that leaves the OS-level
+// sandbox posture unstated, once RequireExplicitSandboxMode is on. It is
+// deliberately separate from ValidateResolvedConfig: the latter also resolves
+// the built-in empty config (DefaultConfig), which legitimately has no
+// sandbox_mode, so folding this in there would panic every default-config
+// caller in an unattended process.
+//
+// Call it from every path that loads or replaces operator config — startup,
+// preflight, and hot reload — since a boot-only check is defeated by the
+// config watcher re-applying an edited file.
+func ValidateUnattendedPosture(cfg *ResolvedConfig) error {
+	if cfg == nil || !requireExplicitSandboxMode.Load() {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Agent.SandboxMode) != "" {
+		return nil
+	}
+	return &ValidationError{Messages: []string{
+		"agent.sandbox_mode is unset; set it explicitly to one of off, report, enforce " +
+			"(enforce is the contained posture — off and report leave agent writes unrestricted)",
+	}}
 }
 
 func ValidateResolvedConfig(cfg *ResolvedConfig) error {

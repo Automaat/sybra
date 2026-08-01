@@ -922,6 +922,9 @@ func load(opts loadOptions) (*ResolvedConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := ValidateUnattendedPosture(resolved.Config); err != nil {
+		return nil, err
+	}
 	ensureServerAuthToken(resolved.Config, opts.persistLoadReconciles)
 	return resolved.Config, nil
 }

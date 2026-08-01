@@ -57,6 +57,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		HeadlessPermissionMode: "auto",
 		ForkSubagent:           true,
 		Sandbox:                &sandbox,
+		SandboxOffReason:       "host mounts required for docker-in-docker e2e",
 		ReasoningEffort:        "xhigh",
 		TestingCycleStartedAt:  &testingCycleStartedAt,
 		Attachments: []Attachment{{
@@ -308,6 +309,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.ForkSubagent = true
 	case "Sandbox":
 		task.Sandbox = &falseValue
+	case "SandboxOffReason":
+		task.SandboxOffReason = "host mounts required for docker-in-docker e2e"
 	case "ReasoningEffort":
 		task.ReasoningEffort = "xhigh"
 	case "TestingCycleStartedAt":

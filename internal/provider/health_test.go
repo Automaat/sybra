@@ -3,6 +3,9 @@ package provider
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -112,6 +115,35 @@ func TestCodexVersionRegexExtracts(t *testing.T) {
 		if got := codexVersionRe.FindString(in); got != want {
 			t.Errorf("FindString(%q): got %q want %q", in, got, want)
 		}
+	}
+}
+
+func TestProbeCodexOldCLIMarksProviderUnhealthy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex")
+	body := "#!/bin/sh\n" +
+		"case \"$1:$2\" in\n" +
+		"  login:status) printf 'Logged in using ChatGPT\\n' ;;\n" +
+		"  --version:) printf 'codex-cli 0.142.1\\n' ;;\n" +
+		"  *) exit 2 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	st, err := ProbeCodex(context.Background())
+	if err != nil {
+		t.Fatalf("ProbeCodex: %v", err)
+	}
+	if st.Healthy {
+		t.Fatal("Healthy = true, want false for an old Codex CLI")
+	}
+	if st.Reason != "cli_too_old" {
+		t.Fatalf("Reason = %q, want cli_too_old", st.Reason)
+	}
+	if !strings.Contains(st.Detail, "0.142.1") || !strings.Contains(st.Detail, minCodexVersion) {
+		t.Fatalf("Detail = %q, want old and minimum versions", st.Detail)
 	}
 }
 
