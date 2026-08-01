@@ -157,13 +157,13 @@ steps:
              Name at least one alternative you rejected, and why.
           4. Write these FIVE files:
 
-             A. .sybra-plan-research-{{.Task.ID}}.md
+             A. {{sidecardir .Vars}}/.sybra-plan-research-{{.Task.ID}}.md
                 Raw research/evidence. Put file/symbol notes, your answers to
                 the step-3 scrutiny questions, rejected alternatives,
                 assumptions, and detailed rationale here. This can be long.
                 It is for audit/debug, not implementation.
 
-             B. .sybra-plan-decisions-{{.Task.ID}}.md
+             B. {{sidecardir .Vars}}/.sybra-plan-decisions-{{.Task.ID}}.md
                 Human decision brief. Keep it short. Use this exact shape for
                 each decision that needs or may benefit from human choice:
 
@@ -183,7 +183,7 @@ steps:
                 No open decisions. The recommended execution contract is fully
                 specified.
 
-             C. .sybra-plan-{{.Task.ID}}.md
+             C. {{sidecardir .Vars}}/.sybra-plan-{{.Task.ID}}.md
                 The human-readable compact execution plan. Target 60-120 lines, hard
                 max 180 lines unless the task truly cannot fit. Use only:
 
@@ -219,12 +219,12 @@ steps:
                 risk matrices in this file — those belong in the research
                 artifact.
 
-             D. .sybra-plan-brief-{{.Task.ID}}.md
+             D. {{sidecardir .Vars}}/.sybra-plan-brief-{{.Task.ID}}.md
                 Human approval brief. Keep it under ~40 lines. Summarize final
                 shape, important decisions, unresolved choices (if any), and why
                 the execution contract is safe to approve.
 
-             E. .sybra-plan-contract-{{.Task.ID}}.json
+             E. {{sidecardir .Vars}}/.sybra-plan-contract-{{.Task.ID}}.json
                 Executable plan contract consumed by implementation agents and
                 validated mechanically. Write valid JSON with exactly this shape:
 
@@ -268,7 +268,7 @@ steps:
                 that section into acceptance_criteria verbatim (wrapped lines
                 joined). Do not silently drop, narrow, defer, or mark any
                 source criterion out of scope; if a source criterion needs a
-                human scope decision, record that in .sybra-plan-decisions and
+                human scope decision, record that in {{sidecardir .Vars}}/.sybra-plan-decisions and
                 keep it in the contract.
 
                 Always set schema_version to "2" and objective is required.
@@ -301,15 +301,15 @@ steps:
         - Write
       import_sidecars:
         - kind: plan_research
-          from: '{{getvar .Vars "_dir"}}/.sybra-plan-research-{{.Task.ID}}.md'
+          from: '{{sidecardir .Vars}}/.sybra-plan-research-{{.Task.ID}}.md'
         - kind: plan_decisions
-          from: '{{getvar .Vars "_dir"}}/.sybra-plan-decisions-{{.Task.ID}}.md'
+          from: '{{sidecardir .Vars}}/.sybra-plan-decisions-{{.Task.ID}}.md'
         - kind: plan
-          from: '{{getvar .Vars "_dir"}}/.sybra-plan-{{.Task.ID}}.md'
+          from: '{{sidecardir .Vars}}/.sybra-plan-{{.Task.ID}}.md'
         - kind: plan_brief
-          from: '{{getvar .Vars "_dir"}}/.sybra-plan-brief-{{.Task.ID}}.md'
+          from: '{{sidecardir .Vars}}/.sybra-plan-brief-{{.Task.ID}}.md'
         - kind: plan_contract
-          from: '{{getvar .Vars "_dir"}}/.sybra-plan-contract-{{.Task.ID}}.json'
+          from: '{{sidecardir .Vars}}/.sybra-plan-contract-{{.Task.ID}}.json'
           required: true
     next:
       - goto: require_plan
@@ -452,22 +452,22 @@ steps:
         Steps:
           1. Run: sybra-cli --json get {{.Task.ID}}
           2. Read .planContract, .plan, .planResearch, .planDecisions, and .planBrief.
-          3. Write .sybra-plan-contract-review-{{.Task.ID}}.md with the
+          3. Write {{sidecardir .Vars}}/.sybra-plan-contract-review-{{.Task.ID}}.md with the
              executable JSON contract FIRST, followed by the human-readable
              .plan as secondary context. The contract is the artifact
              implementation consumes, so critique it directly for missing files,
              weak verification, acceptance gaps, risk, permission posture, and
              rollback/recovery coverage.
-          4. Invoke: /plan-critic .sybra-plan-contract-review-{{.Task.ID}}.md
+          4. Invoke: /plan-critic {{sidecardir .Vars}}/.sybra-plan-contract-review-{{.Task.ID}}.md
           5. As soon as each persona/result is available, append a concise
-             grounded finding summary to .sybra-critique-{{.Task.ID}}.md.
+             grounded finding summary to {{sidecardir .Vars}}/.sybra-critique-{{.Task.ID}}.md.
              Do not wait for the final synthesis before writing the first
              useful content.
           6. Capture the final markdown Plan Review report you produce and
-             overwrite .sybra-critique-{{.Task.ID}}.md with it.
+             overwrite {{sidecardir .Vars}}/.sybra-critique-{{.Task.ID}}.md with it.
 
         Do NOT modify the plan. Do NOT change the task status. Sybra
-        will ingest .sybra-critique-{{.Task.ID}}.md as the task's
+        will ingest {{sidecardir .Vars}}/.sybra-critique-{{.Task.ID}}.md as the task's
         plan_critique sidecar after you exit — you do not need to call
         sybra-cli yourself.
       allowed_tools:
@@ -480,7 +480,7 @@ steps:
         - Agent
       import_sidecar:
         kind: plan_critique
-        from: '{{getvar .Vars "_dir"}}/.sybra-critique-{{.Task.ID}}.md'
+        from: '{{sidecardir .Vars}}/.sybra-critique-{{.Task.ID}}.md'
     next:
       - goto: require_plan_critique
 
@@ -582,7 +582,7 @@ steps:
     next:
       - goto: clear_plan_artifacts
 
-  # A replan reuses the same worktree, and .sybra-plan-* is git-excluded rather
+  # A replan reuses the same worktree, and {{sidecardir .Vars}}/.sybra-plan-* is git-excluded rather
   # than deleted, so without this cycle 2 re-imports cycle 1's bytes as though
   # the current planner had just written them. The require_sidecar guards can't
   # catch that — they assert non-empty, and stale content is non-empty. Worst

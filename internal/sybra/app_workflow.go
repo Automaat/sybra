@@ -985,6 +985,10 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
 		SeedWorkingMemory: r.AuthorsCode(),
+		// Verifier roles judge a worktree they must not alter. Enforced at the
+		// OS level rather than through the tool allowlist, which cannot express
+		// it — Bash reaches the same files (#2791).
+		ReadOnlyDir: r.JudgesWithoutWriting(),
 		// fork_subagent is a task-level opt-in, but must never reach a
 		// verifier role (review/test-runner/eval) — a forked subagent's own
 		// token spend would multiply on every independent check, and a
