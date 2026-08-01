@@ -1,7 +1,9 @@
 package sybra
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -146,8 +149,16 @@ func TestPlanningService_ApprovePlan_ErrorWhenNotWaiting(t *testing.T) {
 	}
 
 	// No workflow running → approve should fail.
-	if _, err := planSvc.ApprovePlan(created.ID); err == nil {
+	_, err = planSvc.ApprovePlan(created.ID)
+	if err == nil {
 		t.Fatal("expected error when approving task without active workflow")
+	}
+	var ce httpapi.ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want a 4xx httpapi.ClientError so a cluster follower's rejection relays as a readable error instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusConflict)
 	}
 }
 
@@ -419,8 +430,16 @@ func TestPlanningService_RejectPlan_ErrorWhenNotWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := planSvc.RejectPlan(created.ID, "bad plan"); err == nil {
+	_, err = planSvc.RejectPlan(created.ID, "bad plan")
+	if err == nil {
 		t.Fatal("expected error when rejecting task without active workflow")
+	}
+	var ce httpapi.ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want a 4xx httpapi.ClientError so a cluster follower's rejection relays as a readable error instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusConflict)
 	}
 }
 
