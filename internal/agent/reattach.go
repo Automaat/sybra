@@ -393,7 +393,32 @@ func reattachAlive(r Record) bool {
 	return true
 }
 
+// reattachMaxAge and reattachStuckAfter are the two halves of the
+// liveness+progress reap policy: neither raw age nor a parked task status
+// reaps a survivor on their own anymore — both defer to reattachProgressing,
+// which is what actually decides whether the process is doing something.
 const reattachMaxAge = 6 * time.Hour
+
+// reattachStuckAfter bounds how long a live process's log file may go
+// without a new line before the survivor is treated as stuck rather than
+// progressing. Set well above normal tool-call latency (a slow build or test
+// run legitimately produces no NDJSON lines for a while) so a healthy agent
+// mid-tool-call is never misclassified as dead.
+const reattachStuckAfter = 10 * time.Minute
+
+// reattachProgressing reports whether r's process has shown recent output
+// activity, the only proxy available for "is this survivor actually doing
+// something" (there is no *exec.Cmd to inspect, only the registry record and
+// its log file). A record with no log to stat (missing path, deleted file)
+// has no positive evidence of life beyond the OS-level PID check
+// reattachAlive already performed, so it is treated as not progressing.
+func reattachProgressing(r Record, now time.Time) bool {
+	mt, ok := logActivityTime(r.LogPath)
+	if !ok {
+		return false
+	}
+	return now.Sub(mt) <= reattachStuckAfter
+}
 
 func (m *Manager) reattachStaleReason(r Record, now time.Time) string {
 	if strings.TrimSpace(r.TaskID) == "" {
@@ -408,13 +433,24 @@ func (m *Manager) reattachStaleReason(r Record, now time.Time) string {
 	if existsFn := m.taskExistsFn(); existsFn != nil && !existsFn(r.TaskID) {
 		return "task_gone"
 	}
-	if !r.StartedAt.IsZero() && now.Sub(r.StartedAt) > reattachMaxAge {
-		return "deadline"
-	}
+
+	progressing := reattachProgressing(r, now)
+
 	if statusFn := m.taskStatusFn(); statusFn != nil {
 		if status, ok := statusFn(r.TaskID); ok && staleForLiveAgent(status) {
-			return "task_status_" + status
+			if !progressing {
+				return "task_status_" + status
+			}
+			// Healthy, progressing survivor whose task was parked while the
+			// app was down (a monitor or human action) — adopt it instead of
+			// killing uncommitted work. Downstream completion handling
+			// already gates workflow advancement on the task's live status,
+			// so adopting here cannot force it out of its parked state.
 		}
+	}
+
+	if !progressing && !r.StartedAt.IsZero() && now.Sub(r.StartedAt) > reattachMaxAge {
+		return "deadline"
 	}
 	return ""
 }

@@ -113,9 +113,9 @@ func TestReattachAccountingInvariant(t *testing.T) {
 // RoleOrchestrator carve-out in reattachStaleReason: the orchestrator brain
 // is a deliberately taskless, long-lived headless agent (svc_orchestrator.go
 // dispatches it with Mode: "headless" and no TaskID) and must survive a
-// restart like any live process, while a stale ordinary headless task agent
-// (empty TaskID would otherwise read as "no_task", or here a StartedAt past
-// reattachMaxAge reads as "deadline") is still reaped.
+// restart like any live process — including past reattachMaxAge — while an
+// ordinary headless task agent that is both past reattachMaxAge AND stuck
+// (no log progress) is still reaped.
 func TestReattachReapsStaleHeadlessTaskAgentButKeepsOrchestrator(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	prevGrace := stopSIGINTGrace
@@ -156,8 +156,11 @@ func TestReattachReapsStaleHeadlessTaskAgentButKeepsOrchestrator(t *testing.T) {
 	orchCmd := spawnSleeper(t)
 	records := []Record{
 		{
+			// No log progress (writeStaleLog backdates the mtime), so this
+			// is genuinely stuck, not merely old — see the liveness+progress
+			// policy in reattachStaleReason.
 			ID: "task-agent", TaskID: "task-x", Mode: "headless", Provider: "claude",
-			PID: staleCmd.Process.Pid, LogPath: logFor("task-agent"),
+			PID: staleCmd.Process.Pid, LogPath: writeStaleLog(t, logDir, "task-agent"),
 			StartedAt:     time.Now().Add(-24 * time.Hour).UTC(),
 			ProcStartedAt: processStartString(context.Background(), staleCmd.Process.Pid),
 		},
@@ -222,11 +225,17 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 		return cmd
 	}
 
+	// Every case below represents a "dead" (not progressing) survivor: its
+	// log file, when present, is backdated well past reattachStuckAfter, so
+	// these cases exercise (parked × dead) / (gone × dead), not the
+	// liveness+progress carve-out covered by TestReattachAdoptsHealthySurvivor
+	// and TestReattachAdoptsParkedOrOldProgressingSurvivor.
 	tests := []struct {
 		name        string
 		record      func(pid int) Record
 		status      map[string]string
 		taskDeleted bool
+		withLog     bool
 	}{
 		{
 			name: "empty task id",
@@ -235,38 +244,43 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 			},
 		},
 		{
-			name: "past wall-clock deadline",
+			name: "past wall-clock deadline, no progress",
 			record: func(pid int) Record {
 				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().Add(-24 * time.Hour).UTC()}
 			},
+			withLog: true,
 		},
 		{
-			name: "inconsistent task status",
+			name: "parked (todo) task, dead survivor",
 			record: func(pid int) Record {
 				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
 			},
-			status: map[string]string{"task-x": "todo"},
+			status:  map[string]string{"task-x": "todo"},
+			withLog: true,
 		},
 		{
-			name: "human-required task still has live agent",
+			name: "parked (human-required) task, dead survivor",
 			record: func(pid int) Record {
 				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
 			},
-			status: map[string]string{"task-x": "human-required"},
+			status:  map[string]string{"task-x": "human-required"},
+			withLog: true,
 		},
 		{
-			name: "blocked task still has live agent",
+			name: "parked (blocked) task, dead survivor",
 			record: func(pid int) Record {
 				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
 			},
-			status: map[string]string{"task-x": "blocked"},
+			status:  map[string]string{"task-x": "blocked"},
+			withLog: true,
 		},
 		{
-			name: "done task still has live agent",
+			name: "parked (done) task, dead survivor",
 			record: func(pid int) Record {
 				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
 			},
-			status: map[string]string{"task-x": "done"},
+			status:  map[string]string{"task-x": "done"},
+			withLog: true,
 		},
 		{
 			name: "task deleted while down",
@@ -294,6 +308,9 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 			cmd := spawnSleeper(t)
 			rec := tc.record(cmd.Process.Pid)
 			rec.ProcStartedAt = processStartString(context.Background(), cmd.Process.Pid)
+			if tc.withLog {
+				rec.LogPath = writeStaleLog(t, logDir, "s1")
+			}
 			if err := m.reg.Save(rec); err != nil {
 				t.Fatal(err)
 			}
@@ -358,4 +375,139 @@ func TestReattachAdoptsHealthySurvivor(t *testing.T) {
 		t.Fatalf("liveCount = %d, want 1", m.RunningCount())
 	}
 	assertAccountingInvariant(t, m)
+}
+
+// writeStaleLog writes an empty NDJSON log for id under dir/agents and
+// backdates its mtime past reattachStuckAfter, so reattachProgressing reads
+// it as a stuck (not progressing) survivor.
+func writeStaleLog(t *testing.T, dir, id string) string {
+	t.Helper()
+	agentsLogDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(agentsLogDir, id+".ndjson")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-2 * reattachStuckAfter)
+	if err := os.Chtimes(p, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// writeFreshLog writes an empty NDJSON log for id under dir/agents with a
+// current mtime, so reattachProgressing reads it as progressing.
+func writeFreshLog(t *testing.T, dir, id string) string {
+	t.Helper()
+	agentsLogDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(agentsLogDir, id+".ndjson")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestReattachAdoptsParkedOrOldProgressingSurvivor is the core regression
+// coverage for the reattach fix: a healthy (progressing) survivor must be
+// adopted, not killed, whether its task was parked while the app was down or
+// it has simply been running longer than reattachMaxAge. Pairs with the
+// (parked × dead) cases in TestReattachReapsStaleSurvivors and the
+// (old × not progressing) "past wall-clock deadline" case there.
+func TestReattachAdoptsParkedOrOldProgressingSurvivor(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+
+	prevPoll := reattachPIDPoll.Load()
+	reattachPIDPoll.Store((20 * time.Millisecond).Nanoseconds())
+	t.Cleanup(func() { reattachPIDPoll.Store(prevPoll) })
+
+	spawnSleeper := func(t *testing.T) *exec.Cmd {
+		t.Helper()
+		cmd := exec.Command("sleep", "30")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start helper process: %v", err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+		go func() { _ = cmd.Wait() }()
+		return cmd
+	}
+
+	tests := []struct {
+		name      string
+		startedAt time.Time
+		status    string
+	}{
+		{
+			name:      "parked (todo) task, healthy survivor",
+			startedAt: time.Now().UTC(),
+			status:    "todo",
+		},
+		{
+			name:      "parked (human-required) task, healthy survivor",
+			startedAt: time.Now().UTC(),
+			status:    "human-required",
+		},
+		{
+			name:      "past wall-clock deadline, still progressing",
+			startedAt: time.Now().Add(-24 * time.Hour).UTC(),
+			status:    "in-progress",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logDir := t.TempDir()
+			regDir := t.TempDir()
+			status := tc.status
+			m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+				SurviveRestartDir: regDir,
+				OnComplete:        func(*Agent) {},
+				TaskStatus:        func(string) (string, bool) { return status, true },
+			})
+
+			cmd := spawnSleeper(t)
+			logPath := writeFreshLog(t, logDir, "s1")
+			rec := Record{
+				ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude",
+				PID: cmd.Process.Pid, LogPath: logPath, StartedAt: tc.startedAt,
+				ProcStartedAt: processStartString(context.Background(), cmd.Process.Pid),
+			}
+			if err := m.reg.Save(rec); err != nil {
+				t.Fatal(err)
+			}
+
+			reattached := m.ReattachAll()
+			if len(reattached) != 1 {
+				t.Fatalf("ReattachAll adopted %d survivors, want 1 (healthy survivor must not be reaped)", len(reattached))
+			}
+			if m.RunningCount() != 1 {
+				t.Fatalf("liveCount = %d, want 1", m.RunningCount())
+			}
+			recs, err := m.reg.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(recs) != 1 {
+				t.Fatalf("expected adopted survivor's record to remain, got %d", len(recs))
+			}
+			assertAccountingInvariant(t, m)
+
+			// Drain before the subtest ends so the tailer/watchPID goroutines
+			// spawned by ReattachAll exit deterministically instead of racing
+			// t.Cleanup's process kill against the package's goroutine-leak check.
+			_ = cmd.Process.Kill()
+			deadline := time.After(5 * time.Second)
+			for m.RunningCount() > 0 {
+				select {
+				case <-deadline:
+					t.Fatalf("adopted survivor did not drain; liveCount=%d", m.RunningCount())
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+		})
+	}
 }
