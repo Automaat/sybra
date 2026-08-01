@@ -410,6 +410,7 @@ type Engine struct {
 	now              func() time.Time
 	logger           *slog.Logger
 	ctx              context.Context
+	drainCtx         context.Context
 	mu               sync.Mutex
 	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
 	routeMutexes     map[string]*sync.Mutex     // taskID → serialize run_agent route publication vs completion reads
@@ -543,6 +544,25 @@ func newEffectOwnerID() string {
 // context.WithTimeout(parent, shellTimeout) so they are cancelled when
 // the parent context is cancelled (e.g. on app shutdown).
 func (e *Engine) SetContext(ctx context.Context) { e.ctx = ctx }
+
+// SetDrainContext binds the context that is cancelled when the app begins
+// draining, ahead of the hard stop that cancels SetContext's context.
+//
+// Retry backoffs wait on this rather than e.ctx. A backoff is idle waiting,
+// not accepted work: parking it on e.ctx made it outlive the whole drain,
+// because the drain waits for goroutines to finish before the hard stop that
+// cancels e.ctx ever fires — so the wait blocked on the cancellation it was
+// itself delaying. Running steps keep e.ctx and still drain normally.
+func (e *Engine) SetDrainContext(ctx context.Context) { e.drainCtx = ctx }
+
+// drainContext returns the drain-tier context, falling back to e.ctx when no
+// drain context is bound (tests, embedders that never begin a drain).
+func (e *Engine) drainContext() context.Context {
+	if e.drainCtx != nil {
+		return e.drainCtx
+	}
+	return e.ctx
+}
 
 // SetDispatchGate installs a predicate that reports whether a task should run
 // its workflow on this node. ResumeStalled skips any task the gate rejects — in

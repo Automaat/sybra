@@ -310,6 +310,7 @@ func (a *App) logAutomationsSummary() {
 		"triage", a.cfg.Triage.Enabled,
 		"human_review", a.humanReview != nil,
 		"project_types", projectTypes,
+		"sandbox_mode", a.cfg.DefaultSandboxMode(),
 		"loop_agents_enabled", loopAgentsEnabled,
 		"prompteval_runner", promptevalRunner.Name(),
 		"promptfoo_present", (&prompteval.PromptfooRunner{}).Available(),
@@ -427,6 +428,7 @@ func (a *App) initLimits() {
 func (a *App) initSandboxes() {
 	mgr := sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
 	mgr.SetRetentionWindow(sandboxRetentionWindow(a.cfg))
+	mgr.SetProtectedFindings(a.cleanupProtected)
 	a.sandboxes = mgr
 }
 
@@ -510,6 +512,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
 		K8sJobs:                k8sJobRunnerConfigFromConfig(cfg.Agent.K8sJobs),
+		RoleEffort:             cfg.Agent.RoleEffort,
 		ClassReservations:      agent.ParseClassReservations(cfg.Agent.ClassReservations),
 	}
 }
@@ -1239,6 +1242,7 @@ func (a *App) initWorkflowEngine() {
 		a.workflowEngine.SetEvidenceRecorder(&evidenceRecorderAdapter{store: a.evidenceStore})
 	}
 	a.workflowEngine.SetContext(a.ctx)
+	a.workflowEngine.SetDrainContext(a.schedulerCtx)
 	// Recover worktree-prep rebase conflicts via the conflict pr-fix instead of
 	// escalating to a human. Wired here (not at construction) because the
 	// orchestrator is built before the reviewer. Routed through
@@ -1534,6 +1538,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 		Logger:             a.logger,
 		Throttle:           a.restartStaleErr,
 		WG:                 &a.wg,
+		ProtectedFindings:  a.cleanupProtected,
 		LogDir:             a.logDir,
 		LogRetention:       retention,
 		LogGzipAfter:       gzipAfter,

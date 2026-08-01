@@ -3,8 +3,18 @@
 # impractical: debian stable rolls security patches on its own cadence and
 # pinning would break builds the moment a CVE bump lands. The base image
 # already locks the package universe via its tag.
+#
+# DL3066 (USER sybra): the `sybra` user is created with an explicit numeric
+# UID (SYBRA_UID, default 1000) precisely so bind-mounted host dirs resolve
+# consistently — the named USER is a readability alias over an already-pinned
+# uid, not the unresolvable-name case this rule guards against.
+#
+# DL3025 (HEALTHCHECK CMD): the healthcheck intentionally falls back from an
+# http probe to an https probe via shell `||`, which JSON exec form cannot
+# express.
 ignored:
   - DL3008
+  - DL3066
   # HEALTHCHECK's CMD tries a plain-http probe then falls back to a -k https
   # probe (cluster.tls followers serve https on the same port) — that
   # ||-fallback has no JSON-array equivalent, so shell form is required here.

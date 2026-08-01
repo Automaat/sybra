@@ -7,13 +7,9 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/roleeffort"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 )
-
-// defaultReasoningEffort mirrors agent.DefaultReasoningEffort. It cannot be
-// imported directly: internal/agent transitively depends on internal/config,
-// which depends on internal/abtest, so importing agent here would cycle.
-const defaultReasoningEffort = "medium"
 
 // Select deterministically chooses a variant for the task/stage. It returns
 // ok=false when A/B is disabled or no enabled experiment matches the role.
@@ -417,7 +413,8 @@ func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string)
 		return nil
 	}
 	base := eligible[0]
-	baseEffort := normalizeReasoningEffort(base.ReasoningEffort)
+	omitted := experimentDefaultEffort(exp)
+	baseEffort := normalizeReasoningEffort(base.ReasoningEffort, omitted)
 	for i := 1; i < len(eligible); i++ {
 		v := eligible[i]
 		if v.Provider != base.Provider {
@@ -426,19 +423,57 @@ func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string)
 		if v.Model != base.Model {
 			return fmt.Errorf("abtest: experiment %q model mismatch on variant %q", exp.ID, v.ID)
 		}
-		if normalizeReasoningEffort(v.ReasoningEffort) != baseEffort {
+		if normalizeReasoningEffort(v.ReasoningEffort, omitted) != baseEffort {
 			return fmt.Errorf("abtest: experiment %q reasoning_effort mismatch on variant %q", exp.ID, v.ID)
 		}
 	}
 	return nil
 }
 
-// normalizeReasoningEffort treats an omitted effort as the agent runtime's
-// default, so a variant that explicitly sets "medium" is homogeneous with one
-// that leaves the field empty.
-func normalizeReasoningEffort(effort string) string {
+// experimentDefaultEffort returns the level an omitted variant
+// reasoning_effort actually dispatches with for this experiment. That is the
+// per-role baseline, not the global default: a "review" experiment whose
+// variants leave the field empty runs at "high", so declaring "high"
+// explicitly on one arm must stay homogeneous with omitting it on another.
+//
+// Returns "" when the level is ambiguous — the experiment spans roles whose
+// baselines disagree, or it declares no role at all (roleMatches then matches
+// every role, so the omitted arm's level depends on where it lands). An
+// omitted effort then only matches another omitted one, which forces an
+// operator who wants to mix omitted and explicit efforts to declare the role.
+func experimentDefaultEffort(exp Experiment) string {
+	roles := exp.Roles
+	if len(roles) == 0 && exp.Subject != nil {
+		roles = []string{exp.Subject.Role}
+	}
+	if len(roles) == 0 {
+		return ""
+	}
+	resolved := ""
+	for i, r := range roles {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			return ""
+		}
+		if i == 0 {
+			resolved = roleeffort.Resolve(r)
+			continue
+		}
+		if roleeffort.Resolve(r) != resolved {
+			return ""
+		}
+	}
+	return resolved
+}
+
+// normalizeReasoningEffort resolves a variant's declared effort against what an
+// omitted one dispatches with, so a variant that explicitly pins the role's
+// baseline is homogeneous with one that leaves the field empty. An empty
+// roleDefault marks the omitted case as ambiguous (see experimentDefaultEffort)
+// and is deliberately left unresolved so it only matches another omitted value.
+func normalizeReasoningEffort(effort, roleDefault string) string {
 	if effort == "" {
-		return defaultReasoningEffort
+		return roleDefault
 	}
 	return effort
 }

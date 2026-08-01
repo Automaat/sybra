@@ -46,9 +46,9 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			provider: "codex",
 			scenario: "success",
 			// Codex emits no cost — agent_completion estimates it via
-			// stats.EstimateCostDetailed("gpt-5.4", 100 in, 20 out, 0, 0, 0, time.Now())
-			// = 100*1.25/1M + 20*10/1M = 0.000325.
-			wantCost:     0.000325,
+			// stats.EstimateCostDetailed("gpt-5.6-terra", 100 in, 20 out, 0, 0, 0, time.Now())
+			// = 100*2.50/1M + 20*15/1M = 0.00055.
+			wantCost:     0.00055,
 			wantIn:       100,
 			wantOut:      20,
 			wantOutcome:  "completed",

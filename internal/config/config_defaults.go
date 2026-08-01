@@ -922,6 +922,9 @@ func load(opts loadOptions) (*ResolvedConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := ValidateUnattendedPosture(resolved.Config); err != nil {
+		return nil, err
+	}
 	ensureServerAuthToken(resolved.Config, opts.persistLoadReconciles)
 	return resolved.Config, nil
 }
@@ -1289,6 +1292,9 @@ func applyABTestingDefaults(cfg *Config) {
 		return
 	}
 	reconcileBuiltinExperiments(cfg, def)
+	cfg.ABTesting = cfg.ABTesting.WithoutInvalidExperiments(func(id string, err error) {
+		slog.Warn("config: dropping invalid ab_testing experiment", "experiment", id, "err", err)
+	})
 }
 
 // reconcileBuiltinExperiments refreshes a persisted config's built-in A/B
