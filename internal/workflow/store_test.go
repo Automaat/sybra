@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -316,7 +317,7 @@ func TestStore_SaveSnapshot_IsImmutable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile after: %v", err)
 	}
-	if string(before) != string(after) {
+	if !bytes.Equal(before, after) {
 		t.Fatal("snapshot bytes changed on second save")
 	}
 }

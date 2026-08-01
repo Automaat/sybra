@@ -25,8 +25,8 @@ type Definition struct {
 
 // SemanticHash returns a deterministic content hash for the workflow
 // definition, ignoring storage-managed timestamps.
-func (d Definition) SemanticHash() (string, error) {
-	normalized := d
+func (d *Definition) SemanticHash() (string, error) {
+	normalized := *d
 	normalized.CreatedAt = time.Time{}
 	normalized.UpdatedAt = time.Time{}
 	data, err := yaml.Marshal(normalized)
