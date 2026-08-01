@@ -9393,6 +9393,69 @@ func TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired(t *testing.T) {
 	}
 }
 
+func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnce(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	_, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if wfExec.CurrentStep != "implement" || wfExec.State != ExecWaiting {
+		t.Fatalf("workflow = %+v, want rearmed implement/ExecWaiting", wfExec)
+	}
+	if got := wfExec.Variables["step.verify_commits.no_commit_retry"]; got != "1" {
+		t.Fatalf("no_commit_retry = %q, want 1", got)
+	}
+	if got := wfExec.Variables[verifyReaskNoteVar]; !strings.Contains(got, "without producing commits") {
+		t.Fatalf("verify reask note = %q, want no-commit guidance", got)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress retry", ti.Status)
+	}
+}
+
+func TestExecVerifyCommits_NoCommitAuthorRunEscalatesAfterRetry(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{"step.verify_commits.no_commit_retry": "1"}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.Output, "no commits") {
+		t.Fatalf("Output = %q, want no commits", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required after one retry", ti.Status)
+	}
+}
+
 // TestExecVerifyCommits_BranchAncestorOfBaseFlipsHumanRequired covers the
 // regression from issue #670: HEAD is an ancestor of origin/main (branch tip
 // equals an older commit on main, with newer commits on top — typical of
