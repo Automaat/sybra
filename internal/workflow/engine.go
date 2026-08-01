@@ -161,6 +161,15 @@ type TaskProvider interface {
 // Engine operates with a nil WorktreeGetter — verify_commits becomes a no-op.
 type WorktreeGetter interface {
 	GetWorktreePath(taskID string) (string, bool)
+
+	// MarkPrepFresh records wtPath's current HEAD as already fully prepped
+	// (fetched/healed/sanitized/rebased/pushed), so the next worktree prep
+	// for this task can skip redoing that pipeline if HEAD hasn't moved.
+	// Called by execVerifyCommits once it has independently confirmed HEAD
+	// matches the branch's remote-tracking ref — never assume push state,
+	// just record it. Best-effort: implementations should log and swallow
+	// failures rather than fail the calling step.
+	MarkPrepFresh(taskID, wtPath string)
 }
 
 // AttemptNoteAppender persists re-implementation context into a task's local

@@ -203,26 +203,7 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 			return "", err
 		}
 		if usable {
-			if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
-				m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
-			}
-			if err := m.reconcileAndRebase(ctx, wtPath, wtBranch, baseRef, onPhase); err != nil {
-				return "", err
-			}
-			m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
-			// Sync remote after rebase. PushSync picks the minimum mode —
-			// no-op when local matches remote, regular push for
-			// fast-forward. On divergence it returns ErrDivergedNeedsResolve
-			// instead of force-pushing; callers here only log it (see
-			// logPushSync) because this is best-effort cleanup after the
-			// main reconcile/rebase path and the remote may have advanced
-			// again since that earlier fetch.
-			callPhase(onPhase, "Syncing upstream…")
-			m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
-			if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
-				return "", err
-			}
-			return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+			return m.reuseExistingTaskWorktree(ctx, t, wtPath, wtBranch, baseRef, proj, onPhase)
 		}
 		// Worktree was wiped — fall through to create paths below.
 	}
@@ -268,6 +249,42 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	m.ensureBranch(t, wtBranch)
 	m.seedWorktree(ctx, t, wtPath, wtBranch)
 	return wtPath, nil
+}
+
+// reuseExistingTaskWorktree runs PrepareForTask's reused-worktree fast path:
+// a healthy worktree already on wtBranch just needs its remote fast-forwarded
+// and its setup commands (re-)run. A HEAD match against the last known-good
+// prep pass means this exact commit was already fetched/healed/sanitized/
+// rebased/pushed and had setup run — most commonly because a
+// branch-conflict-fix recovery run just finished repairing and pushing this
+// same worktree (MarkPrepFresh) moments before this call resumed the
+// interrupted dispatch — so the whole pipeline below is skipped in favor of
+// reuse rather than redone from scratch (issue #2765).
+func (m *Manager) reuseExistingTaskWorktree(ctx context.Context, t task.Task, wtPath, wtBranch, baseRef string, proj project.Project, onPhase func(string)) (string, error) {
+	if prepCacheFresh(ctx, wtPath) {
+		m.logger.Info("worktree.prep-cache-hit", "task_id", t.ID, "path", wtPath)
+		return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+	}
+	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
+		m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
+	}
+	if err := m.reconcileAndRebase(ctx, wtPath, wtBranch, baseRef, onPhase); err != nil {
+		return "", err
+	}
+	m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
+	// Sync remote after rebase. PushSync picks the minimum mode — no-op when
+	// local matches remote, regular push for fast-forward. On divergence it
+	// returns ErrDivergedNeedsResolve instead of force-pushing; callers here
+	// only log it (see logPushSync) because this is best-effort cleanup
+	// after the main reconcile/rebase path and the remote may have advanced
+	// again since that earlier fetch.
+	callPhase(onPhase, "Syncing upstream…")
+	m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
+	if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
+		return "", err
+	}
+	m.writePrepCacheSHA(ctx, t.ID, wtPath)
+	return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
 }
 
 func (m *Manager) resolveTaskBranch(ctx context.Context, t task.Task, clonePath, wtPath, wtBranch string) string {

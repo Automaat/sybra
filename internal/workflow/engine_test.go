@@ -8665,6 +8665,8 @@ type fakeWorktreeGetter struct {
 	path  string
 	ok    bool
 	paths map[string]string
+
+	markPrepFreshCalls []string // taskIDs passed to MarkPrepFresh, in order
 }
 
 func (f *fakeWorktreeGetter) GetWorktreePath(taskID string) (string, bool) {
@@ -8673,6 +8675,10 @@ func (f *fakeWorktreeGetter) GetWorktreePath(taskID string) (string, bool) {
 		return path, ok
 	}
 	return f.path, f.ok
+}
+
+func (f *fakeWorktreeGetter) MarkPrepFresh(taskID, _ string) {
+	f.markPrepFreshCalls = append(f.markPrepFreshCalls, taskID)
 }
 
 func newVerifyCommitsStep() *Step {
@@ -9084,6 +9090,106 @@ func TestExecVerifyCommits_WithCommitsVerified(t *testing.T) {
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "in-progress" {
 		t.Errorf("task status = %q, want in-progress", ti.Status)
+	}
+}
+
+// makeGitRepoWithTaskBranch builds a bare "origin" plus a working tree with
+// its own base branch (main) and a distinct task branch checked out and
+// pushed — the two-remote-branch shape verify_commits actually operates on
+// in production (unlike makeGitRepo's single "main" used for both task and
+// base branch). Returns the working tree path and the task branch name.
+func makeGitRepoWithTaskBranch(t *testing.T, pushTaskBranch bool) (wtDir, branch string) {
+	t.Helper()
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+
+	wtDir = t.TempDir()
+	runGitAt(t, wtDir, "init", "-b", "main")
+	runGitAt(t, wtDir, "config", "user.email", "test@test.com")
+	runGitAt(t, wtDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtDir, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtDir, "add", "README.md")
+	runGitAt(t, wtDir, "commit", "-m", "init")
+	runGitAt(t, wtDir, "remote", "add", "origin", remote)
+	runGitAt(t, wtDir, "push", "-u", "origin", "main")
+
+	branch = "feat/task-branch"
+	runGitAt(t, wtDir, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(wtDir, "change.txt"), []byte("change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtDir, "add", "change.txt")
+	runGitAt(t, wtDir, "commit", "-m", "feat: task work")
+
+	if pushTaskBranch {
+		runGitAt(t, wtDir, "push", "-u", "origin", "HEAD:"+branch)
+	} else {
+		// Still teach the working tree about a (now stale) remote-tracking
+		// ref for the branch, mirroring a worktree that fetched before the
+		// agent's local commit — without this, refs/remotes/origin/<branch>
+		// wouldn't exist at all, which is a different (already-covered)
+		// no-tracking-ref case.
+		runGitAt(t, wtDir, "fetch", "origin", "+refs/heads/main:refs/remotes/origin/"+branch)
+	}
+	return wtDir, branch
+}
+
+// TestExecVerifyCommits_MarksPrepFreshWhenPushed pins the handoff a
+// dispatch-time conflict recovery relies on (issue #2765): once verify_commits
+// confirms HEAD matches the branch's remote-tracking ref (i.e. genuinely
+// pushed, not just committed locally), it must call
+// WorktreeGetter.MarkPrepFresh so the resumed original dispatch can skip
+// re-running its own worktree prep.
+func TestExecVerifyCommits_MarksPrepFreshWhenPushed(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir, branch := makeGitRepoWithTaskBranch(t, true /* pushTaskBranch */)
+	getter := &fakeWorktreeGetter{path: wtDir, ok: true}
+	engine.SetWorktreeGetter(getter)
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Errorf("Output = %q, want 'commits verified'", out.Output)
+	}
+	if len(getter.markPrepFreshCalls) != 1 || getter.markPrepFreshCalls[0] != "t1" {
+		t.Errorf("markPrepFreshCalls = %v, want [\"t1\"]", getter.markPrepFreshCalls)
+	}
+}
+
+// TestExecVerifyCommits_DoesNotMarkPrepFreshWhenUnpushed ensures a
+// committed-but-not-yet-pushed HEAD is never cached as fresh — the
+// remote-tracking ref is the only signal trusted, never the local commit
+// alone (an unpushed cache hit would leave the branch permanently unpushed
+// on a later PrepareForTask that trusted it).
+func TestExecVerifyCommits_DoesNotMarkPrepFreshWhenUnpushed(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir, branch := makeGitRepoWithTaskBranch(t, false /* pushTaskBranch */)
+	getter := &fakeWorktreeGetter{path: wtDir, ok: true}
+	engine.SetWorktreeGetter(getter)
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Errorf("Output = %q, want 'commits verified'", out.Output)
+	}
+	if len(getter.markPrepFreshCalls) != 0 {
+		t.Errorf("markPrepFreshCalls = %v, want none (HEAD not yet pushed)", getter.markPrepFreshCalls)
 	}
 }
 

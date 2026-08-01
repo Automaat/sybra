@@ -389,6 +389,8 @@ func (g staticWorktreeGetter) GetWorktreePath(string) (string, bool) {
 	return g.path, g.ok
 }
 
+func (staticWorktreeGetter) MarkPrepFresh(string, string) {}
+
 func commitRecoveryTestFile(t *testing.T, repo, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {

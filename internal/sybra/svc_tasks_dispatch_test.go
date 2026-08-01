@@ -127,6 +127,7 @@ func newHumanRequiredTask(t *testing.T, a *App, prNumber int) task.Task {
 type fixedWorktreeGetter struct{ path string }
 
 func (f fixedWorktreeGetter) GetWorktreePath(string) (string, bool) { return f.path, true }
+func (fixedWorktreeGetter) MarkPrepFresh(string, string)            {}
 
 type fixedPRCreator struct {
 	number  int

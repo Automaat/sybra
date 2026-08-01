@@ -1539,6 +1539,119 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 	}
 }
 
+// TestPrepareForTask_PrepCacheSkipsPipelineOnMatchingHead pins the fix for
+// issue #2765: a dispatch-time conflict recovery (branch-conflict-fix) hands
+// the worktree back to the resumed dispatch by marking its HEAD fresh
+// (MarkPrepFresh) once it has confirmed the fix agent's commits are pushed.
+// The resumed dispatch's PrepareForTask call must trust that marker and skip
+// its own fetch/heal/sanitize/reconcile+rebase/push/setup pipeline entirely —
+// proven here by diverging upstream in a way that would otherwise fail the
+// reused-worktree path closed with ErrRebaseFailed (same setup as
+// TestPrepareForTask_RebaseConflictFailsClosed), yet the second call still
+// succeeds because the cache hit never reaches the rebase.
+func TestPrepareForTask_PrepCacheSkipsPipelineOnMatchingHead(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("prep-cache task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	mustRunInDir(t, wtPath, "git", "push", "origin", "--delete", branch)
+	mustRunInDir(t, wtPath, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
+
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
+
+	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, h.src, "git", "add", "README.md")
+	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
+
+	// Simulate the branch-conflict-fix handoff: mark this exact HEAD fresh,
+	// as if a recovery run had already reconciled and pushed it.
+	h.m.MarkPrepFresh(tk.ID, wtPath)
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask with fresh prep-cache marker: %v (want cache hit to skip the pipeline that would otherwise fail closed)", err)
+	}
+	if gotPath != wtPath {
+		t.Fatalf("PrepareForTask path = %q, want reused worktree %q", gotPath, wtPath)
+	}
+}
+
+// TestPrepareForTask_PrepCacheStaleOnHeadChange ensures a stale marker (HEAD
+// moved since it was written) never suppresses a real prep pass — otherwise
+// a genuinely diverged worktree would silently skip rebasing forever.
+func TestPrepareForTask_PrepCacheStaleOnHeadChange(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("stale-cache task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	mustRunInDir(t, wtPath, "git", "push", "origin", "--delete", branch)
+	mustRunInDir(t, wtPath, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
+
+	// Mark fresh at the pre-edit HEAD, then commit again — the marker is now
+	// stale and must not be trusted.
+	h.m.MarkPrepFresh(tk.ID, wtPath)
+
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
+
+	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, h.src, "git", "add", "README.md")
+	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if !errors.Is(err, ErrRebaseFailed) {
+		t.Fatalf("PrepareForTask error = %v, want ErrRebaseFailed (stale marker must not suppress a real conflict)", err)
+	}
+	if gotPath != "" {
+		t.Fatalf("PrepareForTask path = %q, want empty path on rebase failure", gotPath)
+	}
+}
+
 // TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged reproduces the
 // branch-conflict-fix recovery loop from task bdcc90a4: recoverBranchConflictNoPR
 // resolves a rebase-block by merging base into the task's own branch (never a

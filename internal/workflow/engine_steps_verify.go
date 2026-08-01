@@ -310,9 +310,38 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 		finalSource = finalCommitSourceAgent
 	}
 	e.recordFinalCommitState(taskID, wfExec, wtPath, finalSource)
+	e.markPrepFreshIfPushed(taskID, wtPath, t)
 	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck,
 		0, "git log <base>..HEAD --oneline", string(output))
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
+}
+
+// markPrepFreshIfPushed hands wtPath off to WorktreeGetter.MarkPrepFresh once
+// verify_commits has confirmed real commits landed — but only when HEAD also
+// matches the branch's local remote-tracking ref, i.e. this exact commit is
+// already known pushed. This is the handoff a dispatch-time conflict
+// recovery (branch-conflict-fix) needs: its own worktree prep plus the
+// pr-fix agent's push already left the tree fully reconciled, so the
+// resumed original dispatch's next PrepareForTask can skip redoing that
+// pipeline (issue #2765). Deliberately does not fetch or trust the caller —
+// a stale or missing tracking ref just skips the mark, never a false
+// positive that could leave real unpushed work uncached-but-assumed-pushed.
+func (e *Engine) markPrepFreshIfPushed(taskID, wtPath string, t TaskInfo) {
+	if e.worktrees == nil {
+		return
+	}
+	branch := strings.TrimSpace(t.Branch)
+	if !validVerifyCommitsBranch(branch) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	head := revParseCommit(ctx, wtPath, "HEAD")
+	tracked := revParseCommit(ctx, wtPath, "refs/remotes/origin/"+branch)
+	if head == "" || tracked == "" || head != tracked {
+		return
+	}
+	e.worktrees.MarkPrepFresh(taskID, wtPath)
 }
 
 func (e *Engine) parkVerifyCommitsForSiblingAgent(taskID string, wfExec *Execution) error {

@@ -848,6 +848,13 @@ func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 	return path, ok
 }
 
+func (a *worktreeGetterAdapter) MarkPrepFresh(taskID, wtPath string) {
+	if a.mgr == nil {
+		return
+	}
+	a.mgr.MarkPrepFresh(taskID, wtPath)
+}
+
 func (*attemptNoteAppenderAdapter) AppendReimplementNote(ctx context.Context, _, wtPath, marker, note string) error {
 	return worktree.AppendNote(ctx, wtPath, marker, note)
 }
