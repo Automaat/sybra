@@ -948,6 +948,7 @@ func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
 		CostUSD:         cost,
 		InputTokens:     ag.GetInputTokens(),
 		OutputTokens:    ag.GetOutputTokens(),
+		CacheCreate:     ag.GetCacheCreationInputTokens(),
 		CacheRead:       ag.GetCacheReadInputTokens(),
 		ReasoningTokens: ag.GetReasoningTokens(),
 		PremiumRequests: premiumRequests,
