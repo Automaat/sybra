@@ -12,7 +12,7 @@ import (
 func TestDrainContextFallsBackToEngineContext(t *testing.T) {
 	t.Parallel()
 
-	engineCtx, cancel := context.WithCancel(context.Background())
+	engineCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	e := &Engine{ctx: engineCtx}
 
@@ -20,7 +20,7 @@ func TestDrainContextFallsBackToEngineContext(t *testing.T) {
 		t.Fatalf("drainContext() = %v, want the engine context when no drain context is bound", got)
 	}
 
-	drainCtx, drainCancel := context.WithCancel(context.Background())
+	drainCtx, drainCancel := context.WithCancel(t.Context())
 	defer drainCancel()
 	e.SetDrainContext(drainCtx)
 	if got := e.drainContext(); got != drainCtx {
@@ -45,10 +45,10 @@ func TestExecClassifyTask_BackoffAbandonsOnDrain(t *testing.T) {
 	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetTaskClassifier(&ctxCancelClassifier{})
 
-	engineCtx, cancelEngine := context.WithCancel(context.Background())
+	engineCtx, cancelEngine := context.WithCancel(t.Context())
 	defer cancelEngine()
 	engine.SetContext(engineCtx)
-	drainCtx, beginDrain := context.WithCancel(context.Background())
+	drainCtx, beginDrain := context.WithCancel(t.Context())
 	engine.SetDrainContext(drainCtx)
 
 	done := make(chan struct{})
@@ -79,9 +79,9 @@ func TestClassifyRetryBackoffWakesOnDrain(t *testing.T) {
 	t.Parallel()
 
 	// Engine context stays live, mirroring the drain phase.
-	engineCtx, cancelEngine := context.WithCancel(context.Background())
+	engineCtx, cancelEngine := context.WithCancel(t.Context())
 	defer cancelEngine()
-	drainCtx, beginDrain := context.WithCancel(context.Background())
+	drainCtx, beginDrain := context.WithCancel(t.Context())
 	e := &Engine{ctx: engineCtx, drainCtx: drainCtx}
 
 	done := make(chan struct{})
