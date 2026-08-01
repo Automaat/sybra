@@ -3078,7 +3078,21 @@ func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
 
 	before, _ := env.tasks.Get(created.ID)
 	historyBefore := len(before.Workflow.StepHistory)
-	updatedBefore := before.UpdatedAt
+	stepBefore := before.Workflow.CurrentStep
+	stateBefore := before.Workflow.State
+
+	// An unrelated write, standing in for the lease renewals and effect-log
+	// appends the engine performs on its own schedule. It bumps UpdatedAt
+	// without touching the state machine, which is exactly the interleaving
+	// that used to fail this test: the rejection was correct, but a timestamp
+	// comparison cannot tell "the bogus action mutated the task" apart from
+	// "something else wrote while we were looking". Doing it deliberately
+	// makes the distinction part of what the test pins.
+	if _, err := env.tasks.Update(created.ID, task.Update{
+		StatusReason: task.Ptr("concurrent write during invalid-action handling"),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	err = env.engine.HandleHumanAction(created.ID, "bogus", nil)
 	if err == nil {
@@ -3098,8 +3112,9 @@ func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
 	if got := len(after.Workflow.StepHistory); got != historyBefore {
 		t.Errorf("step_history len = %d, want %d", got, historyBefore)
 	}
-	if !after.UpdatedAt.Equal(updatedBefore) {
-		t.Errorf("UpdatedAt changed from %v to %v", updatedBefore, after.UpdatedAt)
+	if after.Workflow.CurrentStep != stepBefore || after.Workflow.State != stateBefore {
+		t.Errorf("workflow moved from %s/%s to %s/%s",
+			stepBefore, stateBefore, after.Workflow.CurrentStep, after.Workflow.State)
 	}
 	if _, set := after.Workflow.Variables["human_action"]; set {
 		t.Errorf("human_action unexpectedly set: %q", after.Workflow.Variables["human_action"])
@@ -4877,7 +4892,7 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 	// so only "success" (implement) remains in the queue. The default
 	// classifier verdict (env.classifier) already routes to status=todo,
 	// matching the old "triage" fake-claude scenario.
-	env := setupE2EMultiProvider(t, "claude", []string{"success"})
+	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 	loadBuiltinWorkflow(t, env, "simple-task-implement")
 
@@ -4899,14 +4914,34 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	waitFor(t, 30*time.Second, "verify_commits parks one no-commit retry", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil &&
+			tk.Workflow.WorkflowID == "simple-task-implement" &&
+			tk.Workflow.CurrentStep == "implement" &&
+			tk.Workflow.State == workflow.ExecWaiting &&
+			tk.Workflow.Variables["step.verify_commits.no_commit_retry"] == "1"
+	})
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk.Workflow.SetVar("workflow.retry_after", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	wf := tk.Workflow
+	if _, err := env.tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	env.engine.ResumeStalled()
+
 	waitFor(t, 30*time.Second, "implement workflow completes after verify_commits", func() bool {
+		env.engine.ResumeStalled()
 		tk, gErr := env.tasks.Get(created.ID)
 		return gErr == nil && tk.Workflow != nil &&
 			tk.Workflow.WorkflowID == "simple-task-implement" &&
 			tk.Workflow.State == workflow.ExecCompleted
 	})
 
-	tk, _ := env.tasks.Get(created.ID)
+	tk, _ = env.tasks.Get(created.ID)
 	if tk.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", tk.Status)
 	}

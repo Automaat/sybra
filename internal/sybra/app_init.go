@@ -310,6 +310,7 @@ func (a *App) logAutomationsSummary() {
 		"triage", a.cfg.Triage.Enabled,
 		"human_review", a.humanReview != nil,
 		"project_types", projectTypes,
+		"sandbox_mode", a.cfg.DefaultSandboxMode(),
 		"loop_agents_enabled", loopAgentsEnabled,
 		"prompteval_runner", promptevalRunner.Name(),
 		"promptfoo_present", (&prompteval.PromptfooRunner{}).Available(),

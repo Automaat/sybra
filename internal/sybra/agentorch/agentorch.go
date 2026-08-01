@@ -493,9 +493,13 @@ func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
 	if t.Sandbox == nil || *t.Sandbox {
 		return
 	}
-	o.logger.Warn("agent.sandbox.escape_hatch", "task_id", taskID)
+	// An empty reason is itself the signal: `"reason":""` in the audit line
+	// marks an unexplained bypass as plainly as a separate flag would.
+	reason := strings.TrimSpace(t.SandboxOffReason)
+	o.logger.Warn("agent.sandbox.escape_hatch", "task_id", taskID, "reason", reason)
 	o.LogAudit(audit.EventAgentSandboxDisabled, taskID, "", map[string]any{
 		"configured_default": o.cfg.DefaultSandboxMode(),
+		"reason":             reason,
 	})
 }
 
