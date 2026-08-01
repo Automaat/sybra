@@ -125,7 +125,7 @@ func waitForFreeSlot(t *testing.T, a *App) {
 	// 5s flat used to be the whole budget here, unscaled — this helper predates
 	// the deadline scaling and never picked it up, so on a contended runner a
 	// slot that frees in 6s read as a hung pool (#2811).
-	budget := 5 * time.Second * time.Duration(e2eTimeoutScale())
+	budget := time.Duration(int64(5*time.Second) * e2eTimeoutScale())
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
 		if a.agents.AvailableQueueDrainSlots(1) > 0 {

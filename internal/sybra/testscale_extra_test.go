@@ -8,8 +8,10 @@ import (
 
 // TestOversubscriptionFactorIgnoresIdleHost documents the property that made
 // #2811 possible: the factor is derived from a one-minute load average, so a
-// host that is about to become saturated still reports "idle" and yields no
-// scaling. Waits therefore cannot treat the first measurement as final.
+// host oversubscribed through process spawning and I/O — rather than CPU —
+// still reports "idle" and yields no scaling at all. That is why wall-clock
+// deadlines cannot be sized from this signal, and why waits budget in
+// intended time instead.
 func TestOversubscriptionFactorIgnoresIdleHost(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
