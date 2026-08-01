@@ -715,10 +715,7 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 			status := task.StatusHumanRequired
 			if trigger == "stall" || ((trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "generic_stall") {
 				status = task.StatusInProgress
-				reason = "watchdog hang"
-				if verdict.Reason != "" {
-					reason = "watchdog hang: " + verdict.Reason
-				}
+				reason = watchdogreason.Hang(verdict.Reason)
 			} else {
 				switch {
 				case verdict.ReasonKind == "reward_hacking":
@@ -805,7 +802,7 @@ func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Age
 	if trigger == "budget" {
 		judgeReason = watchdogreason.BudgetStop(verdict.Reason)
 	}
-	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.verify.pending", task.StatusInProgress, "watchdog hang: verifying before deciding — "+judgeReason); err != nil {
+	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.verify.pending", task.StatusInProgress, watchdogreason.Hang("verifying before deciding — "+judgeReason)); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	confirmedStopped := true
@@ -841,7 +838,7 @@ func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeRea
 		return task.StatusHumanRequired, judgeReason
 	}
 	if passed {
-		return task.StatusInProgress, "watchdog hang: verify suite passed on re-check — loop stop was a false positive"
+		return task.StatusInProgress, watchdogreason.Hang("verify suite passed on re-check — loop stop was a false positive")
 	}
 	return task.StatusHumanRequired, "watchdog: verify suite still fails after loop stop: " + trimTail(failedCmd, output, 500)
 }
@@ -944,10 +941,7 @@ func hasUnaddressedReviewFinding(codeReview string) bool {
 // to its active workflow status with a distinct status-reason prefix the
 // workflow engine recognizes on the next ResumeStalled tick.
 func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.InspectorVerdict, status task.Status) {
-	reason := rewardHackingRetryStatusReason
-	if verdict.Reason != "" {
-		reason = rewardHackingRetryStatusReason + ": " + verdict.Reason
-	}
+	reason := watchdogreason.RewardHackingRetry(verdict.Reason)
 	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.reward-hacking-retry", status, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
@@ -956,12 +950,6 @@ func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.Insp
 	}
 	w.logger.Info("agent.watchdog.reward_hacking.retry", "id", ag.ID, "task_id", ag.TaskID, "reason", verdict.Reason)
 }
-
-// rewardHackingRetryStatusReason must stay in sync with
-// internal/workflow/engine_events.go's watchdogRewardHackingStatusPrefix —
-// that constant is what handleWatchdogRewardHackingRetry pattern-matches on
-// to recognize and bound this specific retry path.
-const rewardHackingRetryStatusReason = "watchdog: reward-hacking retry"
 
 // zeroOutputReason is the provider-health detail recorded for a zero-output
 // startup hang (see inspectHeadless). Kept distinct from the generic
