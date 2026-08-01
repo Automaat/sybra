@@ -96,8 +96,9 @@ func expandHandoffBuiltinTemplate(data []byte) ([]Definition, error) {
 	}
 
 	defs := make([]Definition, 0, len(tmpl.Variants))
-	for _, variant := range tmpl.Variants {
-		if err := validateHandoffBuiltinVariant(variant); err != nil {
+	for i := range tmpl.Variants {
+		variant := &tmpl.Variants[i]
+		if err := validateHandoffBuiltinVariant(*variant); err != nil {
 			return nil, err
 		}
 		trigger := tmpl.Trigger
