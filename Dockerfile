@@ -185,10 +185,11 @@ EXPOSE 8080
 # (cluster.tls) serves https on the same port, so an http-only probe would mark
 # it permanently unhealthy. -k is safe here: the probe is localhost-only and the
 # leader, not the container, is what pins the certificate.
+# Explicit `sh -c` (JSON exec form) rather than shell form: the probe needs
+# shell semantics for ${SYBRA_PORT} and the `||` chain, and hadolint's DL3025
+# rejects the implicit shell form.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -sf "http://localhost:${SYBRA_PORT}/health" \
-     || curl -skf "https://localhost:${SYBRA_PORT}/health" \
-     || exit 1
+    CMD ["/bin/sh", "-c", "curl -sf \"http://localhost:${SYBRA_PORT}/health\" || curl -skf \"https://localhost:${SYBRA_PORT}/health\" || exit 1"]
 
 # Mounts expected (host dirs must be chowned to uid:gid 1000:1000):
 #   ~/.sybra  → /home/sybra/.sybra  (task store, config, projects)
