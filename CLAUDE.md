@@ -275,10 +275,20 @@ into an unexported `RunConfig.sandbox` spec:
   explicit `enforce` posture, never the default rollout posture. This is
   why `report` is safe to ship as the default.
 - `enforce`: wraps the spawn and fails the run closed if the host sandbox
-  mechanism or profile/setup is unavailable. The server runs this posture now
-  (`agent.sandbox_mode: enforce` via Linux `bwrap`), so the real operator
-  board under `~/.sybra` and deploy checkout `/opt/sybra/src` stay read-only
-  to agents.
+  mechanism or profile/setup is unavailable. It is **never** reached by
+  leaving the key unset — the built-in default is `report`, so every
+  deployment that wants containment must set `agent.sandbox_mode: enforce`
+  explicitly (the server does, via Linux `bwrap`; the laptop via
+  `sandbox-exec`). Under it the real operator board under `~/.sybra` and the
+  deploy checkout `/opt/sybra/src` stay read-only to agents.
+
+Treat the live posture as something to check, not to assume: `report` and
+`enforce` are indistinguishable except for whether the spawn is wrapped, so a
+config that silently resolves to `report` looks identical to a contained one.
+Grep the journal — `agent.sandbox.enforce` means wrapped spawns,
+`agent.sandbox.report` means unwrapped. This drifted unnoticed once: the
+server logged 2098 `report` lines and zero `enforce` while this section
+claimed it ran `enforce`.
 
 The escape hatch's use is operator-visible: `agentorch.logSandboxEscapeHatch`
 logs a warning and records `audit.EventAgentSandboxDisabled`.
