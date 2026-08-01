@@ -1422,6 +1422,103 @@ func TestStoreListSkipsMalformed(t *testing.T) {
 	}
 }
 
+func TestStoreListQuarantinesMalformed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.List(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The corrupt file must be moved out of the tasks dir so it stops
+	// vanishing from every subsequent List call/sweep.
+	if _, err := os.Stat(filepath.Join(dir, "bad.md")); !os.IsNotExist(err) {
+		t.Fatalf("bad.md still present in tasks dir: %v", err)
+	}
+	quarantineDir := filepath.Join(filepath.Dir(dir), "quarantine")
+	if _, err := os.Stat(filepath.Join(quarantineDir, "bad.md")); err != nil {
+		t.Fatalf("bad.md not found in quarantine dir: %v", err)
+	}
+
+	entries, err := store.QuarantinedTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d quarantine entries, want 1: %+v", len(entries), entries)
+	}
+	if entries[0].File != "bad.md" {
+		t.Errorf("File = %q, want %q", entries[0].File, "bad.md")
+	}
+	if entries[0].Reason == "" {
+		t.Error("Reason is empty, want parse error text")
+	}
+	if entries[0].QuarantinedAt.IsZero() {
+		t.Error("QuarantinedAt is zero")
+	}
+
+	// A second List call must not re-discover or re-quarantine the file —
+	// it's already gone from the tasks dir.
+	if _, err := store.List(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = store.QuarantinedTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("got %d quarantine entries after second List, want 1 (no duplicate)", len(entries))
+	}
+}
+
+func TestStoreQuarantinedTasksEmptyWhenNoQuarantineDir(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.QuarantinedTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("got %d entries, want 0", len(entries))
+	}
+}
+
+func TestStoreGetPropagatesSidecarReadError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("Task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the plan sidecar with a directory so os.ReadFile fails with a
+	// real I/O error (EISDIR) instead of the not-exist case Read already
+	// turns into a nil error.
+	planPath := filepath.Join(dir, created.ID+".plan.md")
+	if err := os.Mkdir(planPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Get(created.ID); err == nil {
+		t.Fatal("expected error from Get when a sidecar read fails, got nil")
+	}
+}
+
 func TestStoreGetInvalidatePathRefreshesExternalEdit(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())

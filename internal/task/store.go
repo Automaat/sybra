@@ -1,6 +1,7 @@
 package task
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,6 +25,7 @@ import (
 type Store struct {
 	dir           string
 	trashDir      string
+	quarantineDir string
 	comments      *CommentStore
 	plans         *PlanStore
 	planContracts *PlanningSidecarStore
@@ -49,6 +51,7 @@ func NewStore(dir string) (*Store, error) {
 	return &Store{
 		dir:           dir,
 		trashDir:      filepath.Join(filepath.Dir(dir), "trash"),
+		quarantineDir: filepath.Join(filepath.Dir(dir), "quarantine"),
 		comments:      NewCommentStore(dir),
 		plans:         NewPlanStore(dir),
 		planContracts: NewPlanningSidecarStore(dir, ".plan-contract.json", "plan contract"),
@@ -219,6 +222,9 @@ func (s *Store) List() ([]Task, error) {
 		if err != nil {
 			slog.Default().Warn("task.parse.skip", "file", filepath.Base(p), "err", err)
 			parseErr = true
+			if qErr := s.quarantineTaskFile(p, err); qErr != nil {
+				slog.Default().Warn("task.quarantine.failed", "file", filepath.Base(p), "err", qErr)
+			}
 			continue
 		}
 		t.Plan = sidecars.plans[t.ID]
@@ -244,6 +250,78 @@ func (s *Store) List() ([]Task, error) {
 		}
 	}
 	return tasks, nil
+}
+
+// QuarantineEntry records a task file that failed to parse and was moved
+// out of the tasks dir so it stops silently vanishing — a corrupt/truncated
+// file left in place would otherwise disappear from every List-based sweep
+// (recovery, monitor, umbrella, mirror) on every call, forever. Reported by
+// Store.QuarantinedTasks for the health checker to surface as a finding.
+type QuarantineEntry struct {
+	File          string    `json:"file"`
+	Reason        string    `json:"reason"`
+	QuarantinedAt time.Time `json:"quarantinedAt"`
+}
+
+// quarantineTaskFile moves a task file that failed to parse into the
+// store's quarantine dir and records why, so List's per-call slog warning
+// is backed by a persistent, queryable record instead of only a log line
+// that scrolls away. Idempotent-safe against a concurrent List call already
+// having moved the same file (os.Rename's ENOENT is swallowed).
+func (s *Store) quarantineTaskFile(path string, parseErr error) error {
+	if err := os.MkdirAll(s.quarantineDir, 0o755); err != nil {
+		return fmt.Errorf("create quarantine dir: %w", err)
+	}
+	base := filepath.Base(path)
+	dest := filepath.Join(s.quarantineDir, base)
+	if err := os.Rename(path, dest); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("move %s to quarantine: %w", base, err)
+	}
+	entry := QuarantineEntry{
+		File:          base,
+		Reason:        parseErr.Error(),
+		QuarantinedAt: time.Now().UTC(),
+	}
+	data, err := json.MarshalIndent(entry, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal quarantine entry: %w", err)
+	}
+	if err := fsutil.AtomicWrite(dest+".meta.json", data); err != nil {
+		return fmt.Errorf("write quarantine entry: %w", err)
+	}
+	return nil
+}
+
+// QuarantinedTasks returns every task file currently sitting in quarantine
+// (see quarantineTaskFile), for the health checker to surface as findings
+// and for operators to inspect/recover manually.
+func (s *Store) QuarantinedTasks() ([]QuarantineEntry, error) {
+	entries, err := os.ReadDir(s.quarantineDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read quarantine dir: %w", err)
+	}
+	out := make([]QuarantineEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta.json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.quarantineDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var rec QuarantineEntry
+		if json.Unmarshal(data, &rec) != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
 }
 
 // sidecarIndex holds sidecar contents loaded in a single ReadDir pass,
@@ -374,15 +452,45 @@ func (s *Store) Get(id string) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	t.Plan, _ = s.plans.Read(t.ID)
-	t.PlanContract, _ = s.planContracts.Read(t.ID)
-	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
-	t.PlanResearch, _ = s.planResearch.Read(t.ID)
-	t.PlanDecisions, _ = s.planDecisions.Read(t.ID)
-	t.PlanBrief, _ = s.planBrief.Read(t.ID)
-	t.CodeReview, _ = s.codeReviews.Read(t.ID)
-	t.PlanDrafts, _ = s.planDrafts.List(t.ID)
+	if err := s.loadSidecars(&t); err != nil {
+		return Task{}, err
+	}
 	return t, nil
+}
+
+// loadSidecars populates t's planning/review sidecar fields from disk. Each
+// sidecar store's Read/List already turns "sidecar absent" into a nil error
+// with a zero value, so any error still returned here is a genuine read
+// failure (e.g. a transient EIO) — propagate it instead of discarding it,
+// since silently treating it as "no plan/review exists" would erase real
+// content from the engine's view of the task.
+func (s *Store) loadSidecars(t *Task) error {
+	var err error
+	if t.Plan, err = s.plans.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanContract, err = s.planContracts.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanCritique, err = s.planCritiques.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanResearch, err = s.planResearch.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanDecisions, err = s.planDecisions.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanBrief, err = s.planBrief.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.CodeReview, err = s.codeReviews.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanDrafts, err = s.planDrafts.List(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	return nil
 }
 
 // read parses just the task file for id, skipping the sidecar fan-out that
@@ -457,7 +565,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 
 	filename := fmt.Sprintf("%s.md", t.ID)
 	t.FilePath = filepath.Join(s.dir, filename)
-	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
+	if err := fsutil.AtomicWriteSync(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	s.storeTaskCache(t)
@@ -505,7 +613,7 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	}
 	filename := fmt.Sprintf("%s.md", t.ID)
 	t.FilePath = filepath.Join(s.dir, filename)
-	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
+	if err := fsutil.AtomicWriteSync(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	s.storeTaskCache(t)
@@ -635,7 +743,7 @@ func (s *Store) Put(t Task) (Task, error) {
 		return Task{}, err
 	}
 	t.FilePath = filepath.Join(s.dir, t.ID+".md")
-	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
+	if err := fsutil.AtomicWriteSync(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	s.storeTaskCache(t)
@@ -944,7 +1052,7 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	if err != nil {
 		return Task{}, "", err
 	}
-	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
+	if err := fsutil.AtomicWriteSync(t.FilePath, data); err != nil {
 		return Task{}, "", fmt.Errorf("write task file: %w", err)
 	}
 	if u.writesSidecar() {

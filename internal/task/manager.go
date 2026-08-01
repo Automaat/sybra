@@ -188,6 +188,10 @@ func (m *Manager) List() ([]Task, error) { return m.store.List() }
 // Get returns a single task by ID (lock-free).
 func (m *Manager) Get(id string) (Task, error) { return m.store.Get(id) }
 
+// QuarantinedTasks returns every task file currently quarantined because it
+// failed to parse (see Store.QuarantinedTasks).
+func (m *Manager) QuarantinedTasks() ([]QuarantineEntry, error) { return m.store.QuarantinedTasks() }
+
 // Create persists a new task and emits task:created.
 func (m *Manager) Create(title, body, mode string) (Task, error) {
 	t, err := m.store.Create(title, body, mode)

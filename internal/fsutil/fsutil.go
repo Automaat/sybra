@@ -24,7 +24,30 @@ var ErrLockUnsupported = errors.New("fsutil: cross-process file locking is not s
 // the temp file to match path's current mode before renaming. Newly created
 // files keep CreateTemp's restrictive default, which avoids overriding the
 // caller's umask with a broader mode.
+//
+// AtomicWrite alone is atomic but not durable: the rename can land on disk
+// before the data it points at does, so a crash/power-loss right after a
+// "successful" write can resurface the previous file, a zero-length file, or
+// (depending on the filesystem's own atomicity story) a torn one. Use
+// AtomicWriteSync instead where that gap is unacceptable.
 func AtomicWrite(path string, data []byte) error {
+	return atomicWrite(path, data, false)
+}
+
+// AtomicWriteSync behaves like AtomicWrite but additionally fsyncs the temp
+// file before the rename and the containing directory after it, so the
+// write is durable — not just atomic — by the time it returns. This costs a
+// real fsync round-trip (single-digit milliseconds on typical disks; see
+// BenchmarkAtomicWrite/BenchmarkAtomicWriteSync), so reserve it for state
+// that must survive a crash intact, such as the task store's own task files.
+// Most AtomicWrite callers (caches, derived reports, sidecars that can be
+// regenerated or simply appear missing) intentionally keep the cheaper
+// rename-only variant.
+func AtomicWriteSync(path string, data []byte) error {
+	return atomicWrite(path, data, true)
+}
+
+func atomicWrite(path string, data []byte, sync bool) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
@@ -35,6 +58,13 @@ func AtomicWrite(path string, data []byte) error {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return err
+	}
+	if sync {
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
@@ -52,7 +82,22 @@ func AtomicWrite(path string, data []byte) error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	if sync {
+		return syncDir(dir)
+	}
 	return nil
+}
+
+// syncDir fsyncs dir so a rename that just completed inside it is durable
+// across a crash, not merely atomic — the rename itself can be reordered
+// after the directory entry update by the filesystem otherwise.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // RemoveAllForce removes path and everything under it, tolerating read-only

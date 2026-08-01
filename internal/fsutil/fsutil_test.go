@@ -143,6 +143,65 @@ func TestAtomicWrite_RenameFailCleansUpTemp(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteSync(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	data := []byte("hello sync")
+
+	if err := AtomicWriteSync(path, data); err != nil {
+		t.Fatalf("AtomicWriteSync: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Errorf("got %q, want %q", got, data)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("dir has %d entries after AtomicWriteSync, want 1 (no leftover temp)", len(entries))
+	}
+}
+
+func TestAtomicWriteSync_BadDir(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "nonexistent", "file.txt")
+	if err := AtomicWriteSync(path, []byte("data")); err == nil {
+		t.Fatal("expected error for non-existent parent dir")
+	}
+}
+
+func BenchmarkAtomicWrite(b *testing.B) {
+	dir := b.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	data := []byte("benchmark payload for a typical task markdown file, roughly a couple hundred bytes of frontmatter and body text")
+	b.ResetTimer()
+	for range b.N {
+		if err := AtomicWrite(path, data); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAtomicWriteSync(b *testing.B) {
+	dir := b.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	data := []byte("benchmark payload for a typical task markdown file, roughly a couple hundred bytes of frontmatter and body text")
+	b.ResetTimer()
+	for range b.N {
+		if err := AtomicWriteSync(path, data); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestRemoveAllForce(t *testing.T) {
 	t.Parallel()
 	if os.Geteuid() == 0 {

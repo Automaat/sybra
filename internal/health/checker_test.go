@@ -153,6 +153,50 @@ func TestCheckerIncludesSandboxCleanupFinding(t *testing.T) {
 	}
 }
 
+func TestCheckerIncludesQuarantinedTaskFinding(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// List's own quarantine pass runs before the checker's, mirroring how a
+	// running server would have already listed tasks by the time a health
+	// tick fires.
+	if _, err := store.List(); err != nil {
+		t.Fatal(err)
+	}
+
+	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c.check(t.Context())
+
+	report := c.LatestReport()
+	if report == nil {
+		t.Fatal("LatestReport returned nil")
+	}
+	var found *Finding
+	for i := range report.Findings {
+		if report.Findings[i].Category == CatTaskQuarantine {
+			found = &report.Findings[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected %q finding, got %v", CatTaskQuarantine, findingCategories(report.Findings))
+	}
+	if found.TaskID != "bad.md" {
+		t.Errorf("TaskID = %q, want bad.md", found.TaskID)
+	}
+	if report.Score != ScoreCritical {
+		t.Errorf("Score = %q, want critical", report.Score)
+	}
+}
+
 func TestCheckerSkipsGHAuthCheckWhenUnwired(t *testing.T) {
 	t.Parallel()
 
