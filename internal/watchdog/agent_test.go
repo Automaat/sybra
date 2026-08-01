@@ -243,7 +243,7 @@ func TestApplyVerdict_EscalateLeavesTaskRunning(t *testing.T) {
 		Stuck:          true,
 		Reason:         "ambiguous environment churn",
 		Recommendation: "escalate",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -274,7 +274,7 @@ func TestApplyVerdict_StopSetsReasonAndStopsAgent(t *testing.T) {
 		Stuck:          true,
 		Reason:         "looping on toolchain setup",
 		Recommendation: "stop",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -319,7 +319,7 @@ func TestApplyVerdict_StopWithBufferedResultRoutesThroughCompletion(t *testing.T
 		Stuck:          false,
 		Reason:         "Agent completed verification successfully with PASS verdict; idle post-completion",
 		Recommendation: "stop",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -361,7 +361,7 @@ func TestApplyVerdict_StopWithErrorResultStillEscalates(t *testing.T) {
 		Stuck:          true,
 		Reason:         "stuck after an error",
 		Recommendation: "stop",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -389,7 +389,7 @@ func TestApplyVerdict_StallStopMarksRetryableHang(t *testing.T) {
 		Stuck:          true,
 		Reason:         "no stream activity",
 		Recommendation: "stop",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -426,7 +426,7 @@ func TestApplyVerdict_LoopStopWithGenericStallMarksRetryableHang(t *testing.T) {
 		Reason:         "repeating identical investigation commands",
 		Recommendation: "stop",
 		ReasonKind:     "generic_stall",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -462,7 +462,7 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 		Reason:         "repeating the same failing fix with fabricated progress",
 		Recommendation: "stop",
 		ReasonKind:     "reward_hacking",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -493,7 +493,7 @@ func TestApplyVerdict_LoopStopWithRewardHackingEmptyReasonPersistsKind(t *testin
 		Stuck:          true,
 		Recommendation: "stop",
 		ReasonKind:     "reward_hacking",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -540,7 +540,7 @@ func TestApplyVerdict_RewardHackingFixReviewWithFindingRetries(t *testing.T) {
 				Reason:         "re-reading unrelated files without editing",
 				Recommendation: "stop",
 				ReasonKind:     "reward_hacking",
-			})
+			}, task.StatusInProgress)
 
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
@@ -582,7 +582,7 @@ func TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates(t *testing.T
 		Reason:         "repeating the same failing fix with fabricated progress",
 		Recommendation: "stop",
 		ReasonKind:     "reward_hacking",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -616,7 +616,7 @@ func TestApplyVerdict_RewardHackingImplementationRetries(t *testing.T) {
 				Reason:         "repeated repo searches without editing",
 				Recommendation: "stop",
 				ReasonKind:     "reward_hacking",
-			})
+			}, task.StatusInProgress)
 
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
@@ -657,7 +657,7 @@ func TestApplyVerdict_RewardHackingPlanningWithArtifactsRetries(t *testing.T) {
 				Reason:         "kept re-reading files instead of refining the plan",
 				Recommendation: "stop",
 				ReasonKind:     "reward_hacking",
-			})
+			}, task.StatusInProgress)
 
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
@@ -695,7 +695,7 @@ func TestApplyVerdict_RewardHackingPlanningWithoutArtifactsEscalates(t *testing.
 		Reason:         "kept searching without producing a plan artifact",
 		Recommendation: "stop",
 		ReasonKind:     "reward_hacking",
-	})
+	}, task.StatusPlanning)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -783,7 +783,7 @@ func TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst(t *testing.T) {
 				Reason:         "agent stuck, unclear why",
 				Recommendation: "stop",
 				ReasonKind:     "",
-			})
+			}, task.StatusInProgress)
 
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
@@ -845,7 +845,7 @@ func TestApplyVerdict_EmptyReasonKindWaitsForKillBeforeVerify(t *testing.T) {
 		Reason:         "agent stuck, unclear why",
 		Recommendation: "stop",
 		ReasonKind:     "",
-	})
+	}, task.StatusInProgress)
 
 	if stopAgentCalled {
 		t.Error("stopAgent must not be called when killAgentsForTask is wired")
@@ -882,7 +882,7 @@ func TestApplyVerdict_EmptyReasonKindSkipsVerifyWhenKillTimesOut(t *testing.T) {
 		Reason:         "agent stuck, unclear why",
 		Recommendation: "stop",
 		ReasonKind:     "",
-	})
+	}, task.StatusInProgress)
 
 	if verifyCalled {
 		t.Fatal("verifyNow must not be called when killAgentsForTask times out")
@@ -965,7 +965,7 @@ func TestApplyVerdict_GenericStallAndRewardHackingSkipVerify(t *testing.T) {
 				Reason:         "some reason",
 				Recommendation: "stop",
 				ReasonKind:     reasonKind,
-			})
+			}, task.StatusInProgress)
 
 			if called {
 				t.Fatalf("verifyNow must not be called for ReasonKind %q", reasonKind)
@@ -995,7 +995,7 @@ func TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang(t *testing.T)
 		Reason:         "polling for backgrounded verify command to complete",
 		Recommendation: "stop",
 		ReasonKind:     "generic_stall",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -1030,7 +1030,7 @@ func TestApplyVerdict_BudgetStopWithoutReasonKindEscalates(t *testing.T) {
 		Reason:         "burned through budget with no forward progress",
 		Recommendation: "stop",
 		ReasonKind:     "",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -1066,7 +1066,7 @@ func TestApplyVerdict_BudgetRewardHackingImplementationRetries(t *testing.T) {
 		Reason:         "burned through budget re-reading the same files",
 		Recommendation: "stop",
 		ReasonKind:     "reward_hacking",
-	})
+	}, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -1112,7 +1112,7 @@ func TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating(t *testing.T) 
 				Reason:         "org-level rate limit exhausted",
 				Recommendation: "stop",
 				ReasonKind:     "rate_limit",
-			})
+			}, task.StatusInProgress)
 
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
@@ -1162,7 +1162,7 @@ func TestApplyVerdict_RateLimitStopWithoutTaskStillSignalsAndStops(t *testing.T)
 		Reason:         "org-level rate limit exhausted",
 		Recommendation: "stop",
 		ReasonKind:     "rate_limit",
-	})
+	}, task.StatusInProgress)
 
 	if !stopped {
 		t.Fatal("stopAgent not called on taskless rate-limit stop verdict")
@@ -1198,7 +1198,7 @@ func TestHandleZeroOutputStall_SignalsProviderAndReschedulesInsteadOfEscalating(
 	}
 
 	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Provider: "claude"}
-	w.handleZeroOutputStall(ag, 20*time.Minute, 20*time.Minute)
+	w.handleZeroOutputStall(ag, 20*time.Minute, 20*time.Minute, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -1232,7 +1232,7 @@ func TestHandleZeroOutputStall_NoTaskStillSignalsAndStops(t *testing.T) {
 		recordProviderSignal: func(*agent.Agent, provider.Signal, string, time.Duration) {},
 	}
 
-	w.handleZeroOutputStall(&agent.Agent{ID: "a1", Provider: "claude"}, time.Hour, time.Hour)
+	w.handleZeroOutputStall(&agent.Agent{ID: "a1", Provider: "claude"}, time.Hour, time.Hour, task.StatusInProgress)
 
 	if !stopped {
 		t.Fatal("stopAgent not called on taskless zero-output stall")
@@ -1646,7 +1646,7 @@ func TestApplyVerdict_NudgeLiveTransportDeliversInPlace(t *testing.T) {
 		Recommendation: "nudge",
 		Reason:         "drifting",
 		Nudge:          "fix the root cause first",
-	})
+	}, task.StatusInProgress)
 
 	if nudged != "⚠️ Supervisor: fix the root cause first" {
 		t.Fatalf("nudge message = %q", nudged)
@@ -1682,7 +1682,7 @@ func TestApplyVerdict_NudgeHeadlessPersistsSteerAndStops(t *testing.T) {
 		Recommendation: "nudge",
 		Reason:         "drifting",
 		Nudge:          "stop retrying the failing command",
-	})
+	}, task.StatusInProgress)
 
 	if !stopped {
 		t.Fatal("headless nudge must stop the agent so recovery re-dispatches")
@@ -1715,7 +1715,7 @@ func TestApplyVerdict_NudgeWithoutExplicitSteerUsesLoopEvidence(t *testing.T) {
 
 	w.applyVerdict(t.Context(), ag, "loop", agent.InspectorVerdict{
 		Recommendation: "nudge",
-	})
+	}, task.StatusInProgress)
 
 	if !stopped {
 		t.Fatal("headless nudge must stop the agent so recovery re-dispatches")
@@ -1813,7 +1813,7 @@ func TestHardStop_MarksRetryableHangAndStops(t *testing.T) {
 				stopAgent: func(id string) error { stopped = id; return nil },
 			}
 
-			w.hardStop(&agent.Agent{ID: "a1", TaskID: tk.ID}, tc.reason, 40*time.Minute, time.Hour)
+			w.hardStop(&agent.Agent{ID: "a1", TaskID: tk.ID}, tc.reason, 40*time.Minute, time.Hour, task.StatusInProgress)
 
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
@@ -1839,7 +1839,7 @@ func TestHardStop_NoTaskStillFreesSlot(t *testing.T) {
 		stopAgent: func(id string) error { stopped = id; return nil },
 	}
 
-	w.hardStop(&agent.Agent{ID: "a1"}, "wall_clock", 0, 10*time.Hour)
+	w.hardStop(&agent.Agent{ID: "a1"}, "wall_clock", 0, 10*time.Hour, task.StatusInProgress)
 
 	if stopped != "a1" {
 		t.Fatalf("stopAgent called with %q, want a1", stopped)
