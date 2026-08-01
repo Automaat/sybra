@@ -416,6 +416,22 @@ func isMissingArtifactError(err error) bool {
 // BlessTampering records a human bless for a tamper-flagged task and sends it
 // back to the review workflow.
 func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
+	// A follower owns task execution. Ask it to bless first, before changing
+	// the leader mirror, so the board cannot claim the task resumed when the
+	// worker rejected or never received the transition.
+	if s.assigner != nil {
+		current, err := s.tasks.Get(taskID)
+		if err != nil {
+			return task.Task{}, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), fieldPushTimeout)
+		defer cancel()
+		if _, forwarded, err := s.assigner.BlessTampering(ctx, current); err != nil {
+			return task.Task{}, err
+		} else if forwarded {
+			s.logger.Info("cluster.task.tamper_bless.forwarded", "task_id", taskID, "node", current.AssignedNode)
+		}
+	}
 	var (
 		cur      task.Task
 		tagAdded bool

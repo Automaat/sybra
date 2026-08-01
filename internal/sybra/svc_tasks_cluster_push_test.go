@@ -5,12 +5,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // followerPushStub is a minimal follower TaskService double for asserting
@@ -20,6 +22,7 @@ type followerPushStub struct {
 	mu       sync.Mutex
 	live     task.Task
 	assigned []task.Task
+	blessed  int
 }
 
 func (f *followerPushStub) server(t *testing.T) *httptest.Server {
@@ -44,6 +47,17 @@ func (f *followerPushStub) server(t *testing.T) *httptest.Server {
 				f.mu.Unlock()
 			}
 			w.WriteHeader(http.StatusOK)
+		case "/api/TaskService/BlessTampering":
+			f.mu.Lock()
+			f.blessed++
+			f.live.Status = task.StatusReadyReview
+			f.live.TamperFlagged = false
+			if !slices.Contains(f.live.Tags, workflow.TamperBlessedTag) {
+				f.live.Tags = append(f.live.Tags, workflow.TamperBlessedTag)
+			}
+			updated := f.live
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(updated)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -51,6 +65,12 @@ func (f *followerPushStub) server(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func (f *followerPushStub) blessCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.blessed
 }
 
 func (f *followerPushStub) lastAssigned() (task.Task, bool) {
@@ -128,6 +148,49 @@ func TestUpdateTaskPushesTagEditToFollowerAtWriteTime(t *testing.T) {
 	}
 	if len(got.AgentRuns) != 1 || got.AgentRuns[0].AgentID != "still-running" {
 		t.Errorf("push dropped the follower's live AgentRuns, got %+v — rolled back follower progress", got.AgentRuns)
+	}
+}
+
+func TestBlessTamperingForwardsTransitionToAssignedFollower(t *testing.T) {
+	reason := workflow.TamperFlaggedReasonPrefix + " added-skip in internal/foo_test.go"
+	stub := &followerPushStub{live: task.Task{
+		ID:           "task-bless",
+		Status:       task.StatusHumanRequired,
+		StatusReason: reason,
+		ProjectID:    "owner/pet",
+		AssignedNode: "pet-box",
+		Tags:         []string{"backend"},
+	}}
+	srv := stub.server(t)
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role:      config.ClusterRoleLeader,
+		Followers: []config.Follower{{Name: "pet-box", Endpoints: []string{srv.URL}, Homes: []string{"owner/pet"}}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, discardLogger())
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	leaderTasks := newTaskManagerForMonitorCluster(t)
+	if _, _, err := leaderTasks.Put(stub.live); err != nil {
+		t.Fatalf("seed leader task: %v", err)
+	}
+	svc := &TaskService{
+		tasks:    leaderTasks,
+		cfg:      cfg,
+		assigner: clusterlead.NewAssigner(cfg, leaderTasks, roster, func(string) bool { return false }, nil, discardLogger()),
+		logger:   discardLogger(),
+	}
+
+	got, err := svc.BlessTampering("task-bless")
+	if err != nil {
+		t.Fatalf("BlessTampering: %v", err)
+	}
+	if stub.blessCount() != 1 {
+		t.Fatalf("follower bless calls = %d, want 1", stub.blessCount())
+	}
+	if got.Status != task.StatusReadyReview || !slices.Contains(got.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("leader result = status %q tags %v, want ready-review with %q", got.Status, got.Tags, workflow.TamperBlessedTag)
 	}
 }
 

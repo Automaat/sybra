@@ -317,6 +317,16 @@ func (c *Client) AssignTask(ctx context.Context, t task.Task) error {
 	return err
 }
 
+// BlessTampering records the human tamper decision on the follower that owns
+// execution, returning its resulting task state for callers that need it.
+func (c *Client) BlessTampering(ctx context.Context, taskID string) (task.Task, error) {
+	raw, err := c.Call(ctx, "TaskService", "BlessTampering", taskID)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return decode[task.Task](raw)
+}
+
 // ImportAttachment replicates one attachment blob onto a follower before the
 // task metadata that references it is assigned there.
 func (c *Client) ImportAttachment(ctx context.Context, taskID string, meta task.Attachment, data []byte) (task.Attachment, error) {

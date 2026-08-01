@@ -156,6 +156,25 @@ func (a *Assigner) PushFieldUpdate(ctx context.Context, t task.Task) (pushed boo
 	return true, nil
 }
 
+// BlessTampering forwards a human tamper blessing to the follower that owns
+// execution. The follower must perform the transition itself so its workflow
+// can resume from the same authoritative state the leader displays.
+func (a *Assigner) BlessTampering(ctx context.Context, t task.Task) (task.Task, bool, error) {
+	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
+	if home.Local || t.AssignedNode != home.Name {
+		return task.Task{}, false, nil
+	}
+	client, ok := a.roster.Client(home.Name)
+	if !ok || client == nil {
+		return task.Task{}, false, fmt.Errorf("clusterlead: no follower client for node %q", home.Name)
+	}
+	updated, err := client.BlessTampering(ctx, t.ID)
+	if err != nil {
+		return task.Task{}, false, fmt.Errorf("clusterlead: bless tampering for %s on %s: %w", t.ID, home.Name, err)
+	}
+	return updated, true, nil
+}
+
 func (a *Assigner) route(ctx context.Context, t task.Task, force bool) (routed bool, err error) {
 	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
 	if home.Local {

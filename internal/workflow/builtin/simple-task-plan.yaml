@@ -83,16 +83,6 @@ steps:
     next:
       - goto: ""
 
-  # Human approval is the authorization to spend the implementation run.
-  # Hand it directly to the implementation workflow via the status cascade.
-  - id: set_in_progress_after_plan_and_end
-    name: Hand Off to Implement
-    type: set_status
-    config:
-      status: in-progress
-    next:
-      - goto: ""
-
   # Single plan step: one opus agent does the research and scrutiny, but writes
   # separate artifacts. The canonical plan sidecar is now a compact execution
   # contract only; research, decisions, and human-review brief stay separate so
@@ -539,7 +529,7 @@ steps:
           field: vars.human_action
           operator: equals
           value: approve
-        goto: set_in_progress_after_plan_and_end
+        goto: set_in_progress_and_end
       - when:
           field: vars.human_action
           operator: equals
