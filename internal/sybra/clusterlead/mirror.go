@@ -334,12 +334,12 @@ func (m *Mirror) adoptFollowerTask(ctx context.Context, node string, follower ta
 	followerUpdated := adopted.UpdatedAt
 	adopted.MirrorUpdatedAt = &followerUpdated
 	adopted.UpdatedAt = time.Now().UTC()
-	if err := m.writeSidecars(adopted); err != nil {
-		m.logger.Warn("cluster.mirror.adopt.sidecar_failed", "node", node, "task", adopted.ID, "err", err)
-		return false
-	}
 	if _, _, err := m.tasks.Put(adopted); err != nil {
 		m.logger.Warn("cluster.mirror.adopt.failed", "node", node, "task", adopted.ID, "err", err)
+		return false
+	}
+	if err := m.writeSidecars(adopted); err != nil {
+		m.logger.Warn("cluster.mirror.adopt.sidecar_failed", "node", node, "task", adopted.ID, "err", err)
 		return false
 	}
 	m.logger.Info("cluster.mirror.adopted", "node", node, "task", adopted.ID, "status", string(adopted.Status))
