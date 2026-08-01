@@ -613,11 +613,30 @@ func looksLikeGitDir(dir string) bool {
 	return true
 }
 
+var checkpointRunRecoveryCommit = runRecoveryCommit
+
 // CheckpointCommit stages and commits the current worktree state with message.
 // Returns committed=false when the tree is already clean. Unlike
 // AutoCommitUncommitted this is strict: any git failure is returned so callers
 // never assume durable state exists when the checkpoint commit did not land.
+//
+// Linked worktrees share one bare clone object store. When a stale worktree
+// admin ref or missing object poisons that shared store, `git add`/`commit` can
+// fail with "invalid object" even though the task's edits are otherwise
+// recoverable. Repair the shared clone and retry once before surfacing the
+// failure to the workflow.
 func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bool, err error) {
+	committed, err = checkpointCommitOnce(ctx, wtPath, message)
+	if err == nil || !IsBadRefError(err) {
+		return committed, err
+	}
+	if repairErr := repairCheckpointWorktree(ctx, wtPath); repairErr != nil {
+		return false, err
+	}
+	return checkpointCommitOnce(ctx, wtPath, message)
+}
+
+func checkpointCommitOnce(ctx context.Context, wtPath, message string) (committed bool, err error) {
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = wtPath
 	statusOut, err := statusCmd.CombinedOutput()
@@ -634,10 +653,20 @@ func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bo
 		return false, fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	if err := runRecoveryCommit(ctx, wtPath, message); err != nil {
+	if err := checkpointRunRecoveryCommit(ctx, wtPath, message); err != nil {
 		return false, fmt.Errorf("checkpoint: %w", err)
 	}
 	return true, nil
+}
+
+func repairCheckpointWorktree(ctx context.Context, wtPath string) error {
+	commonDir, err := gitCommonDir(ctx, wtPath)
+	if err != nil {
+		return err
+	}
+	branchOut, _ := exec.CommandContext(ctx, "git", "-C", wtPath, "branch", "--show-current").Output()
+	_, err = RepairBareClone(ctx, commonDir, strings.TrimSpace(string(branchOut)))
+	return err
 }
 
 // SanitizeWorktree cleans up worktree state that would confuse agents:
