@@ -9530,6 +9530,36 @@ func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnce(t *testing.T) {
 	}
 }
 
+func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnceWithSubagentDiagnosis(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation", SubagentCallCount: 2}},
+	}
+
+	_, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	got := wfExec.Variables[verifyReaskNoteVar]
+	if !strings.Contains(got, "background subagent") {
+		t.Fatalf("verify reask note = %q, want background-subagent diagnosis", got)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "background subagent handoff") {
+		t.Fatalf("status reason = %q, want background subagent diagnosis", reason)
+	}
+}
+
 func TestExecVerifyCommits_NoCommitAuthorRunEscalatesAfterRetry(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

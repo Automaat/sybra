@@ -111,6 +111,11 @@ type AgentRunInfo struct {
 	TestFailureFingerprint string
 	HeadSHA                string
 	FinalCommitSource      string
+	// SubagentCallCount is the number of distinct forked-subagent calls the
+	// run made (task.AgentRun.SubagentCallCount). Used to tell a genuine
+	// no-op run apart from one that delegated to a background subagent and
+	// ended before that delegation produced any commits.
+	SubagentCallCount int
 }
 
 // TaskProvider reads and updates tasks.
