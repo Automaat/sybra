@@ -822,6 +822,7 @@ export class Update {
     "MaxTurns": number | null;
     "ForkSubagent": boolean | null;
     "Sandbox": boolean | null;
+    "SandboxOffReason": string | null;
     "ReasoningEffort": string | null;
     "Outcome": string | null;
     "MergeCommit": string | null;
@@ -954,6 +955,9 @@ export class Update {
         if (!("Sandbox" in $$source)) {
             this["Sandbox"] = null;
         }
+        if (!("SandboxOffReason" in $$source)) {
+            this["SandboxOffReason"] = null;
+        }
         if (!("ReasoningEffort" in $$source)) {
             this["ReasoningEffort"] = null;
         }
@@ -985,8 +989,8 @@ export class Update {
         const $$createField8_0 = $$createType15;
         const $$createField12_0 = $$createType14;
         const $$createField30_0 = $$createType16;
-        const $$createField45_0 = $$createType17;
-        const $$createField46_0 = $$createType18;
+        const $$createField46_0 = $$createType17;
+        const $$createField47_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Blocker" in $$parsedSource) {
             $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
@@ -1004,10 +1008,10 @@ export class Update {
             $$parsedSource["Workflow"] = $$createField30_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField45_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField46_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField46_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField47_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
