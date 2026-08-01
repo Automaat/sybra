@@ -1003,8 +1003,9 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 		// owner before that owner starts implementation.
 		if t.Status == task.StatusTodo && hasApprovedPlanContract(t) {
 			if _, err := a.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
-				Source:   "workflow.legacy-approved-plan",
-				ToStatus: task.StatusInProgress,
+				Source:         "workflow.legacy-approved-plan",
+				ToStatus:       task.StatusInProgress,
+				ExpectedStatus: t.Status,
 			}); err != nil {
 				a.logger.Error("workflow.approved-plan.promote", "task_id", taskID, "err", err)
 			}

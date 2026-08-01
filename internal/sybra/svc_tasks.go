@@ -456,6 +456,7 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 			Extra: task.Update{
 				Tags: task.Ptr(merged),
 			},
+			OperatorOverride: true,
 		}, nil
 	})
 	if err != nil {

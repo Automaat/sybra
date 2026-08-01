@@ -1597,10 +1597,11 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 			extra.ProjectID = task.Ptr(*projectID)
 		}
 		result, err := s.Apply(task.TransitionIntent{
-			TaskID:   id,
-			ToStatus: task.StatusTodo,
-			Actor:    "cli.reopen",
-			Extra:    extra,
+			TaskID:           id,
+			ToStatus:         task.StatusTodo,
+			Actor:            "cli.reopen",
+			Extra:            extra,
+			OperatorOverride: true,
 		})
 		if err != nil {
 			return fatal(jsonOut, "%v", err)
