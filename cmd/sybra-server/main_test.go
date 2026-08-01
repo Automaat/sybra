@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -29,6 +30,87 @@ import (
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
+}
+
+// syncBuffer is a concurrency-safe log sink: slog handlers are written to from
+// whatever background goroutines the App starts, not just the test goroutine.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// stubProviderCLIs shadows the provider binaries with stubs that fail
+// immediately, for the length of the test.
+//
+// With workflows enabled, creating a task drives the engine's classify step
+// into llmexec, which shells out to whichever provider CLI is on PATH. On a
+// developer machine that is the real, metered `claude` — so `go test ./...`
+// would spend credits and block App.Shutdown for its whole grace waiting on
+// the child. On CI, where no provider is installed, the exec fails instantly
+// and the same test passes. Stubbing makes both behave like CI.
+//
+// Only the provider names are shadowed; git and everything else still resolve
+// from the rest of PATH.
+func stubProviderCLIs(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"claude", "codex", "copilot"} {
+		stub := "#!/bin/sh\necho 'provider CLI stubbed in tests' >&2\nexit 1\n"
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(stub), 0o755); err != nil {
+			t.Fatalf("write %s stub: %v", name, err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// startupLikeApp boots a real App against a throwaway SYBRA_HOME and tears it
+// down on cleanup.
+//
+// The home is deliberately not t.TempDir(). App.Shutdown waits a bounded grace
+// (appShutdownWaitGrace) for background goroutines and then proceeds
+// regardless, so on a loaded machine a straggler can still write into
+// home/tasks after Shutdown returns. Under t.TempDir that surfaces as
+// "TempDir RemoveAll cleanup: directory not empty" — a failure that names the
+// filesystem rather than the goroutine, and lands on whichever test was
+// running. Removal here is best-effort instead, and the condition that actually
+// matters is asserted directly: if Shutdown's wait ever times out, the test
+// fails with the goroutine dump Shutdown already logs.
+func startupLikeApp(t *testing.T, opts ...sybra.Option) *sybra.App {
+	t.Helper()
+	home, err := os.MkdirTemp("", "sybra-server-test-*")
+	if err != nil {
+		t.Fatalf("create test home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+	stubProviderCLIs(t)
+
+	var logs syncBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	app := sybra.NewApp(logger, &slog.LevelVar{}, startupLikeServerTestConfig(home), opts...)
+	if err := app.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	t.Cleanup(func() {
+		app.Shutdown(context.Background())
+		if strings.Contains(logs.String(), "app.shutdown.wait_timeout") {
+			t.Errorf("App.Shutdown timed out waiting for background goroutines; a straggler outlived shutdown and can still write into SYBRA_HOME:\n%s", logs.String())
+		}
+	})
+	return app
 }
 
 func okHandler() http.Handler {
@@ -304,28 +386,16 @@ func TestShutdownHardDeadlineCoversSequentialGracefulBudgets(t *testing.T) {
 }
 
 func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("SYBRA_HOME", home)
-	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
-
-	cfg := startupLikeServerTestConfig(home)
-	logger := slog.New(slog.DiscardHandler)
 	var emitted eventRecorder
-	app := sybra.NewApp(logger, &slog.LevelVar{}, cfg, sybra.WithEmit(func(event string, data any) {
+	app := startupLikeApp(t, sybra.WithEmit(func(event string, data any) {
 		emitted.append(event, data)
 	}))
-	if err := app.Startup(context.Background()); err != nil {
-		t.Fatalf("Startup: %v", err)
-	}
-	t.Cleanup(func() {
-		app.Shutdown(context.Background())
-	})
 
 	creator, err := resolveWebhookTaskCreator(app)
 	if err != nil {
 		t.Fatalf("resolveWebhookTaskCreator: %v", err)
 	}
-	handler := newWebhookHandler(logger, "", creator, nil)
+	handler := newWebhookHandler(testLogger(), "", creator, nil)
 	body := []byte(`{"title":"from webhook","body":"hook body","tags":["webhook","ext"],"project_id":"Automaat/sybra"}`)
 	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
 	rr := httptest.NewRecorder()
@@ -377,25 +447,13 @@ func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
 }
 
 func TestWebhookHandlerRejectsTaskCreationDuringDrain(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("SYBRA_HOME", home)
-	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
-
-	cfg := startupLikeServerTestConfig(home)
-	logger := slog.New(slog.DiscardHandler)
-	app := sybra.NewApp(logger, &slog.LevelVar{}, cfg)
-	if err := app.Startup(context.Background()); err != nil {
-		t.Fatalf("Startup: %v", err)
-	}
-	t.Cleanup(func() {
-		app.Shutdown(context.Background())
-	})
+	app := startupLikeApp(t)
 
 	creator, err := resolveWebhookTaskCreator(app)
 	if err != nil {
 		t.Fatalf("resolveWebhookTaskCreator: %v", err)
 	}
-	handler := newWebhookHandler(logger, "", creator, func() error {
+	handler := newWebhookHandler(testLogger(), "", creator, func() error {
 		return app.HTTPAdmission("TaskService", "CreateTask", httpapi.MethodMeta{})
 	})
 	app.BeginDrain()

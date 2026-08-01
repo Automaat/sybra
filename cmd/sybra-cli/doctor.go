@@ -62,11 +62,32 @@ type doctorCleanupReport struct {
 	Results []doctorCleanupBucketResultJSON `json:"results,omitempty"`
 }
 
+type doctorCleanupFindingJSON struct {
+	ID            string             `json:"id"`
+	Kind          string             `json:"kind"`
+	State         string             `json:"state"`
+	TaskID        string             `json:"taskId,omitempty"`
+	LinkedTaskID  string             `json:"linkedTaskId,omitempty"`
+	Path          string             `json:"path"`
+	Reason        string             `json:"reason"`
+	ObservedHead  string             `json:"observedHead,omitempty"`
+	ObservedState string             `json:"observedState,omitempty"`
+	BytesRetained int64              `json:"bytesRetained"`
+	FirstSeenAt   time.Time          `json:"firstSeenAt"`
+	LastSeenAt    time.Time          `json:"lastSeenAt"`
+	LastChangedAt time.Time          `json:"lastChangedAt"`
+	ResolvedAt    time.Time          `json:"resolvedAt,omitzero"`
+	Rescue        cleanup.RescueInfo `json:"rescue,omitzero"`
+}
+
 // cmdDoctorCleanup implements `sybra-cli doctor cleanup`. Exit codes: 0 = ok
 // (dry run printed, or apply finished with no delete errors); 1 = apply
 // finished but at least one path failed to delete; 2 = bad usage (unknown
 // flag value, invalid --older-than, unknown --only bucket).
 func cmdDoctorCleanup(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+	if len(args) > 0 && args[0] == "findings" {
+		return cmdDoctorCleanupFindings(store, args[1:], jsonOut)
+	}
 	fs := flag.NewFlagSet("doctor cleanup", flag.ContinueOnError)
 	apply := fs.Bool("apply", false, "delete eligible resources instead of only reporting them (default: dry-run)")
 	only := fs.String("only", "", "comma-separated bucket names to limit to ("+strings.Join(cleanup.AllBucketNames(), ", ")+")")
@@ -155,6 +176,120 @@ func cmdDoctorCleanup(cfg *config.Config, store *task.Manager, args []string, js
 
 	renderDoctorCleanupHuman(report)
 	return exitCode
+}
+
+func cmdDoctorCleanupFindings(store *task.Manager, args []string, jsonOut bool) int {
+	protected := cleanup.DefaultProtectedStore()
+	sub := "list"
+	if len(args) > 0 {
+		sub = args[0]
+		args = args[1:]
+	}
+	switch sub {
+	case "list":
+		findings, err := protected.List()
+		if err != nil {
+			return fatal(jsonOut, "list findings: %v", err)
+		}
+		return renderDoctorCleanupFindings(findings, jsonOut)
+	case "inspect":
+		if len(args) != 1 {
+			return fatalUsage(jsonOut, "usage: doctor cleanup findings inspect <id>")
+		}
+		finding, ok, err := protected.Get(args[0])
+		if err != nil {
+			return fatal(jsonOut, "inspect finding: %v", err)
+		}
+		if !ok {
+			return fatal(jsonOut, "cleanup finding %q not found", args[0])
+		}
+		return renderDoctorCleanupFindings([]cleanup.Finding{finding}, jsonOut)
+	case "discard":
+		if len(args) != 1 {
+			return fatalUsage(jsonOut, "usage: doctor cleanup findings discard <id>")
+		}
+		finding, err := protected.Discard(args[0])
+		if err != nil {
+			return fatal(jsonOut, "discard finding: %v", err)
+		}
+		return renderDoctorCleanupFindings([]cleanup.Finding{finding}, jsonOut)
+	case "rescue":
+		if len(args) != 1 {
+			return fatalUsage(jsonOut, "usage: doctor cleanup findings rescue <id>")
+		}
+		finding, err := protected.Rescue(args[0])
+		if err != nil {
+			return fatal(jsonOut, "rescue finding: %v", err)
+		}
+		return renderDoctorCleanupFindings([]cleanup.Finding{finding}, jsonOut)
+	case "reattach":
+		fs := flag.NewFlagSet("doctor cleanup findings reattach", flag.ContinueOnError)
+		taskID := fs.String("task", "", "task id to attach the protected resource finding to")
+		if err := fs.Parse(args); err != nil {
+			return fatalUsage(jsonOut, "%v", err)
+		}
+		rest := fs.Args()
+		if len(rest) != 1 {
+			return fatalUsage(jsonOut, "usage: doctor cleanup findings reattach --task <task-id> <id>")
+		}
+		if strings.TrimSpace(*taskID) == "" {
+			return fatalUsage(jsonOut, "--task is required")
+		}
+		if _, err := store.Get(*taskID); err != nil {
+			return fatal(jsonOut, "reattach target task %q: %v", *taskID, err)
+		}
+		finding, err := protected.Reattach(rest[0], *taskID)
+		if err != nil {
+			return fatal(jsonOut, "reattach finding: %v", err)
+		}
+		return renderDoctorCleanupFindings([]cleanup.Finding{finding}, jsonOut)
+	default:
+		return fatalUsage(jsonOut, "unknown doctor cleanup findings command %q", sub)
+	}
+}
+
+func renderDoctorCleanupFindings(findings []cleanup.Finding, jsonOut bool) int {
+	if jsonOut {
+		out := make([]doctorCleanupFindingJSON, 0, len(findings))
+		for i := range findings {
+			out = append(out, doctorCleanupFindingJSON{
+				ID:            findings[i].ID,
+				Kind:          string(findings[i].Kind),
+				State:         string(findings[i].State),
+				TaskID:        findings[i].TaskID,
+				LinkedTaskID:  findings[i].LinkedTaskID,
+				Path:          findings[i].Path,
+				Reason:        findings[i].Reason,
+				ObservedHead:  findings[i].ObservedHead,
+				ObservedState: findings[i].ObservedState,
+				BytesRetained: findings[i].BytesRetained,
+				FirstSeenAt:   findings[i].FirstSeenAt,
+				LastSeenAt:    findings[i].LastSeenAt,
+				LastChangedAt: findings[i].LastChangedAt,
+				ResolvedAt:    findings[i].ResolvedAt,
+				Rescue:        findings[i].Rescue,
+			})
+		}
+		return printJSON(out)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "ID\tKIND\tSTATE\tTASK\tSIZE\tPATH")
+	for i := range findings {
+		taskID := findings[i].TaskID
+		if findings[i].LinkedTaskID != "" {
+			taskID = findings[i].LinkedTaskID
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			findings[i].ID,
+			findings[i].Kind,
+			findings[i].State,
+			taskID,
+			humanBytes(findings[i].BytesRetained),
+			findings[i].Path,
+		)
+	}
+	_ = w.Flush()
+	return 0
 }
 
 func renderDoctorCleanupHuman(report doctorCleanupReport) {

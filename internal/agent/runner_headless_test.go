@@ -3230,6 +3230,37 @@ func TestProcessHeadlessLine_CostGuardrailFiresOnCodexRun(t *testing.T) {
 	}
 }
 
+// Claude's result event can omit total_cost_usd (crashed/killed runs are
+// exactly the overspend-prone case), and EstimateAgentCost used to hard-code
+// $0 for any provider other than codex/copilot. Drive the real parser and
+// assert the guardrail now stops the stream on a claude run that blows the
+// ceiling instead of reading it as free.
+func TestProcessHeadlessLine_CostGuardrailFiresOnClaudeRun(t *testing.T) {
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	m.SetGuardrails(Guardrails{MaxCostUSD: 0.10})
+
+	a := &Agent{
+		ID: "claude-cost", TaskID: "t", Mode: "headless",
+		Provider: "claude", Model: "claude-sonnet-5",
+		StartedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC),
+		done:      make(chan struct{}),
+	}
+	lastEmit := time.Now().Add(-time.Minute)
+	line := []byte(`{"type":"result","session_id":"sess-1","usage":{"input_tokens":1000000,"output_tokens":0}}`)
+
+	stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, providerByName("claude"))
+
+	if !stop {
+		t.Fatal("stream not stopped: a claude run past the cost ceiling must trip the guardrail, not read as free")
+	}
+	if got := a.GetCostUSD(); got < 1.9 || got > 2.1 {
+		t.Fatalf("banked cost = %.4f, want ~2.00 derived from the run's tokens", got)
+	}
+	if got := a.GetEscalationReason(); got != EscalationReasonCost {
+		t.Fatalf("escalation reason = %q, want %q", got, EscalationReasonCost)
+	}
+}
+
 // The estimate must not fire for a provider that reports real cost, and must
 // never overwrite a reported figure with a derived one.
 func TestBankEstimatedCost_LeavesProviderReportedCostAlone(t *testing.T) {

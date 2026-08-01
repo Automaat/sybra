@@ -3,6 +3,8 @@ package stats
 import (
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/modeltier"
 )
 
 func TestEstimateCost(t *testing.T) {
@@ -18,6 +20,10 @@ func TestEstimateCost(t *testing.T) {
 		{"gpt-4o-mini", 1_000_000, 1_000_000, 0.15 + 0.60},
 		{"gpt-5", 1_000_000, 1_000_000, 1.25 + 10.00},
 		{"gpt-5-mini", 1_000_000, 1_000_000, 0.25 + 2.00},
+		{"gpt-5.6-sol", 1_000_000, 1_000_000, 5.00 + 30.00},
+		{"gpt-5.6-terra", 1_000_000, 1_000_000, 2.50 + 15.00},
+		{"gpt-5.6-luna", 1_000_000, 1_000_000, 1.00 + 6.00},
+		{"gpt-5.6", 1_000_000, 1_000_000, 5.00 + 30.00},
 		{"gpt-5.5", 1_000_000, 1_000_000, 1.25 + 10.00},
 		{"gpt-5.4", 1_000_000, 1_000_000, 1.25 + 10.00},
 		{"gpt-5.4-mini", 1_000_000, 1_000_000, 0.25 + 2.00},
@@ -209,8 +215,26 @@ func TestEstimateAgentCost(t *testing.T) {
 			delta: 0.0001,
 		},
 		{
-			name:  "claude reports its own cost so it is never estimated",
-			usage: AgentUsage{Provider: "claude", Model: "sonnet-5", InputTokens: 999999, StartedAt: at},
+			name: "provider-reported cost wins for claude too",
+			usage: AgentUsage{
+				Provider: "claude", Model: "claude-sonnet-5", CostUSD: 0.42,
+				InputTokens: 999999, StartedAt: at,
+			},
+			want:  0.42,
+			delta: 0.0001,
+		},
+		{
+			name: "claude run with cost-less result event is estimated from tokens",
+			usage: AgentUsage{
+				Provider: "claude", Model: "claude-sonnet-5",
+				InputTokens: 999999, StartedAt: at,
+			},
+			want:  1.999998,
+			delta: 0.0001,
+		},
+		{
+			name:  "unknown claude model yields no estimate rather than a wrong one",
+			usage: AgentUsage{Provider: "claude", Model: "not-a-real-model", InputTokens: 1_000_000, StartedAt: at},
 			want:  0,
 			delta: 0.0001,
 		},
@@ -228,6 +252,30 @@ func TestEstimateAgentCost(t *testing.T) {
 			got := EstimateAgentCost(tc.usage)
 			if diff := got - tc.want; diff > tc.delta || diff < -tc.delta {
 				t.Errorf("EstimateAgentCost = %.4f, want %.4f (±%.4f)", got, tc.want, tc.delta)
+			}
+		})
+	}
+}
+
+// TestPricingTableCoversModeltier guards the invariant that keeps the spend
+// ceilings alive for codex: it reports no USD, so EstimateAgentCost prices its
+// runs from tokens via lookupPrice, which returns 0 for a model missing from
+// pricingTable. A tier pointed at an unpriced codex model therefore reads as
+// free and silently disarms max_cost_usd / max_task_cost_usd.
+//
+// Only codex is checked. Copilot is unmetered in tokens too but routes to
+// EstimateCopilotCost (premium requests), and opencode is an openrouter
+// passthrough billed by the gateway — neither reaches lookupPrice, so neither
+// needs a pricingTable entry for its tier models.
+func TestPricingTableCoversModeltier(t *testing.T) {
+	for _, tier := range []modeltier.Tier{modeltier.SuperCheap, modeltier.Cheap, modeltier.Expensive} {
+		model := modeltier.Model(tier, "codex")
+		t.Run(string(tier), func(t *testing.T) {
+			if model == "" {
+				t.Fatalf("modeltier %s has no codex model", tier)
+			}
+			if _, ok := lookupPrice(model, time.Time{}); !ok {
+				t.Errorf("modeltier %s codex = %q has no pricingTable entry", tier, model)
 			}
 		})
 	}

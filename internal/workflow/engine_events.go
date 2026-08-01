@@ -115,7 +115,7 @@ func (e *Engine) withHumanActionLock(taskID string, fn func() error) error {
 	e.mu.Lock()
 	if _, busy := e.humanAction[taskID]; busy {
 		e.mu.Unlock()
-		return fmt.Errorf("task %s human action already in progress", taskID)
+		return conflictError(fmt.Sprintf("task %s human action already in progress", taskID))
 	}
 	e.humanAction[taskID] = struct{}{}
 	e.mu.Unlock()
@@ -146,7 +146,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		}
 	}
 	if t.Workflow == nil || t.Workflow.State != ExecWaiting {
-		return fmt.Errorf("task %s is not waiting for human action", taskID)
+		return conflictError(fmt.Sprintf("task %s is not waiting for human action", taskID))
 	}
 	def, err := e.store.Get(t.Workflow.WorkflowID)
 	if err != nil {
@@ -167,7 +167,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 				return err
 			}
 			if t.Workflow == nil {
-				return fmt.Errorf("task %s is not waiting for human action", taskID)
+				return conflictError(fmt.Sprintf("task %s is not waiting for human action", taskID))
 			}
 			def, err = e.store.Get(t.Workflow.WorkflowID)
 			if err != nil {
@@ -180,7 +180,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		}
 	}
 	if currentStep.Type != StepWaitHuman {
-		return fmt.Errorf("task %s is not at a wait_human step", taskID)
+		return conflictError(fmt.Sprintf("task %s is not at a wait_human step", taskID))
 	}
 	if err := validateHumanAction(currentStep, action); err != nil {
 		return err
@@ -239,7 +239,7 @@ func (e *Engine) recoverMissedWaitForStatusHumanGate(taskID string, t TaskInfo, 
 
 func validateHumanAction(step *Step, action string) error {
 	if len(step.Config.HumanActions) > 0 && !slices.Contains(step.Config.HumanActions, action) {
-		return fmt.Errorf("invalid human action %q for step %q", action, step.ID)
+		return validationError(fmt.Sprintf("invalid human action %q for step %q", action, step.ID))
 	}
 	return nil
 }

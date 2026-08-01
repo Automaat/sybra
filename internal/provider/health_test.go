@@ -3,6 +3,9 @@ package provider
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -78,15 +81,17 @@ func TestCodexVersionAtLeast(t *testing.T) {
 		have string
 		want bool
 	}{
-		{"equal", "0.142.2", true},
-		{"newer_patch", "0.142.3", true},
-		{"newer_minor", "0.143.0", true},
+		{"equal", "0.145.0", true},
+		{"newer_patch", "0.145.1", true},
+		{"newer_minor", "0.146.0", true},
 		{"newer_major", "1.0.0", true},
-		{"older_patch", "0.142.1", false},
-		{"older_minor", "0.141.9", false},
-		{"shorter_equal_prefix", "0.142", false},
-		{"longer_equal_prefix", "0.142.2.1", true},
-		{"suffix_tolerated", "0.142.2-beta", true},
+		{"older_patch", "0.144.9", false},
+		{"older_minor", "0.142.2", false},
+		// A missing trailing component reads as zero, so "0.145" == "0.145.0".
+		{"shorter_equal_prefix", "0.145", true},
+		{"shorter_older_prefix", "0.144", false},
+		{"longer_equal_prefix", "0.145.0.1", true},
+		{"suffix_tolerated", "0.145.0-beta", true},
 		{"unparseable_fails_open", "", true},
 		{"garbage_fails_open", "vNext", true},
 	}
@@ -110,6 +115,35 @@ func TestCodexVersionRegexExtracts(t *testing.T) {
 		if got := codexVersionRe.FindString(in); got != want {
 			t.Errorf("FindString(%q): got %q want %q", in, got, want)
 		}
+	}
+}
+
+func TestProbeCodexOldCLIMarksProviderUnhealthy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex")
+	body := "#!/bin/sh\n" +
+		"case \"$1:$2\" in\n" +
+		"  login:status) printf 'Logged in using ChatGPT\\n' ;;\n" +
+		"  --version:) printf 'codex-cli 0.142.1\\n' ;;\n" +
+		"  *) exit 2 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	st, err := ProbeCodex(context.Background())
+	if err != nil {
+		t.Fatalf("ProbeCodex: %v", err)
+	}
+	if st.Healthy {
+		t.Fatal("Healthy = true, want false for an old Codex CLI")
+	}
+	if st.Reason != "cli_too_old" {
+		t.Fatalf("Reason = %q, want cli_too_old", st.Reason)
+	}
+	if !strings.Contains(st.Detail, "0.142.1") || !strings.Contains(st.Detail, minCodexVersion) {
+		t.Fatalf("Detail = %q, want old and minimum versions", st.Detail)
 	}
 }
 

@@ -827,9 +827,12 @@ func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
 		MinSamplesPerVariant: 20,
 		Experiments: []abtest.Experiment{{
 			ID: "exp",
+			// Model is required by variant validation; config.Load drops
+			// experiments that would fail selection-time validation, so an
+			// underspecified fixture would not survive the reload.
 			Variants: []abtest.Variant{
-				{ID: "v1", Provider: "claude", Weight: 1},
-				{ID: "v2", Provider: "codex", Weight: 1},
+				{ID: "v1", Provider: "claude", Model: "opus", Weight: 1},
+				{ID: "v2", Provider: "codex", Model: "gpt-5.5", Weight: 1},
 			},
 		}},
 	}

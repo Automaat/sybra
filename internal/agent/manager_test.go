@@ -1157,17 +1157,17 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "codex default model mapping",
 			cfg:     RunConfig{Provider: "codex"},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-terra",
 		},
 		{
 			name:    "codex maps haiku to mini",
 			cfg:     RunConfig{Provider: "codex", Model: "haiku"},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-luna",
 		},
 		{
 			name:    "codex with RequirePermissions uses workspace-write sandbox",
 			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox workspace-write --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox workspace-write --model gpt-5.6-terra",
 		},
 		{
 			name:    "fable alias",
@@ -1202,7 +1202,7 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "codex with reasoning effort high",
 			cfg:     RunConfig{Provider: "codex", ReasoningEffort: "high"},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.4 -c model_reasoning_effort=high",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-terra -c model_reasoning_effort=high",
 		},
 	}
 
@@ -1241,19 +1241,19 @@ func TestNormalizeModel(t *testing.T) {
 		{prov: "claude", model: "fable[1m] ", want: "fable"},      // trailing whitespace stripped first
 		{prov: "claude", model: "foo[1m]bar", want: "foo[1m]bar"}, // only trailing stripped
 		// Codex path — no [1m] stripping
-		{prov: "codex", model: "", want: "gpt-5.4"},
-		{prov: "codex", model: "sonnet", want: "gpt-5.4"},
+		{prov: "codex", model: "", want: "gpt-5.6-terra"},
+		{prov: "codex", model: "sonnet", want: "gpt-5.6-terra"},
 		{prov: "codex", model: "fable", want: "fable"},
-		{prov: "codex", model: "opus", want: "gpt-5.5"},
-		{prov: "codex", model: "haiku", want: "gpt-5.4-mini"},
+		{prov: "codex", model: "opus", want: "gpt-5.6-sol"},
+		{prov: "codex", model: "haiku", want: "gpt-5.6-luna"},
 		{prov: "codex", model: "gpt-5.4[1m]", want: "gpt-5.4[1m]"}, // unchanged on codex path
 		// Foreign vendor literals: codex is not a multi-vendor gateway, so a
 		// Claude model ID reaching it directly (e.g. a role default set
 		// before failover ever triggers, see #2639) must still resolve to a
 		// codex-native model instead of being rejected by the CLI.
-		{prov: "codex", model: "claude-haiku-4-5-20251001", want: "gpt-5.4-mini"},
-		{prov: "codex", model: "claude-sonnet-4-6", want: "gpt-5.4"},
-		{prov: "codex", model: "claude-opus-4-20250514", want: "gpt-5.5"},
+		{prov: "codex", model: "claude-haiku-4-5-20251001", want: "gpt-5.6-luna"},
+		{prov: "codex", model: "claude-sonnet-4-6", want: "gpt-5.6-terra"},
+		{prov: "codex", model: "claude-opus-4-20250514", want: "gpt-5.6-sol"},
 	}
 
 	for _, tt := range tests {
@@ -1278,12 +1278,12 @@ func TestCodexSandboxDisabledViaEnv(t *testing.T) {
 		{
 			name:    "codex default with sandbox disabled",
 			cfg:     RunConfig{Provider: "codex"},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.6-terra",
 		},
 		{
 			name:    "codex RequirePermissions honored as danger-full-access when sandbox disabled",
 			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.6-terra",
 		},
 	}
 

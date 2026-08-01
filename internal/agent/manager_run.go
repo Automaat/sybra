@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
+	"github.com/Automaat/sybra/internal/task"
 	"github.com/google/uuid"
 )
 
@@ -188,7 +189,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	cfg.provider = prov
 	m.warnUnenforceableAllowedTools(cfg, prov)
-	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
+	cfg.ReasoningEffort = m.resolveReasoningEffort(cfg.Role, cfg.ReasoningEffort)
 	if cfg.Mode == "headless" {
 		m.mu.RLock()
 		steerable := m.headlessSteerable
@@ -818,9 +819,36 @@ func stripEnvKeys(env []string, keys ...string) []string {
 	return out
 }
 
-func defaultReasoningEffort(effort string) string {
+// resolveReasoningEffort returns the effort level a run dispatches with.
+// Precedence: an effort the caller already pinned > the operator's
+// agent.role_effort override for this role > the role's built-in baseline >
+// the global default.
+//
+// The pinned tier covers both an A/B experiment assignment and the task's own
+// reasoning_effort, resolved upstream because only the dispatch site knows
+// which of the two applies — a dispatch site holding a task.Task must pass
+// t.ReasoningEffort through, or the baseline silently outranks the pin.
+//
+// This lives in the Manager rather than at each dispatch site on purpose:
+// before #2784 only two of the nine RunConfig construction sites resolved the
+// role baseline, so monitor and human-review ran at "medium" despite
+// defaulting to "low", and implementation re-dispatches on the
+// limit/failover paths silently dropped their baseline. Resolving here means a
+// new dispatch site cannot reintroduce that leak.
+func (m *Manager) resolveReasoningEffort(role Role, effort string) string {
 	if effort != "" {
 		return effort
+	}
+	m.mu.RLock()
+	override, ok := m.roleEffort[string(role)]
+	m.mu.RUnlock()
+	if ok {
+		if valid, err := task.ValidateReasoningEffort(override); err == nil && valid != "" {
+			return valid
+		}
+	}
+	if roleDefault := role.DefaultReasoningEffort(); roleDefault != "" {
+		return roleDefault
 	}
 	return DefaultReasoningEffort
 }

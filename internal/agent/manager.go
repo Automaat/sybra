@@ -79,6 +79,10 @@ type Manager struct {
 	// stdin/stream-json shape that accepts mid-run steer messages. See
 	// RunConfig.HeadlessSteerable.
 	headlessSteerable bool
+	// roleEffort mirrors config agent.role_effort: an operator override of the
+	// built-in per-role reasoning-effort baseline, keyed by role name. Read by
+	// resolveReasoningEffort under mu.
+	roleEffort map[string]string
 
 	defaultSandboxMode string
 	gate               provider.HealthGate
@@ -261,6 +265,11 @@ type ManagerRuntimeConfig struct {
 	// Jobs. This is a PoC execution backend and is default-off.
 	K8sJobsEnabled bool
 	K8sJobs        K8sJobRunnerConfig
+	// RoleEffort mirrors config agent.role_effort: an operator override of the
+	// built-in per-role reasoning-effort baseline (Role.DefaultReasoningEffort),
+	// keyed by role name. Invalid levels and unknown roles are ignored at
+	// resolution time, falling back to the built-in baseline.
+	RoleEffort map[string]string
 	// ClassReservations mirrors config agent.class_reservations: a per-class
 	// reserved minimum concurrent slot count. Keyed by WorkloadClass; unknown
 	// keys and an over-budget sum are rejected at config validation, not here.
@@ -305,6 +314,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
 		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
+		roleEffort:             maps.Clone(cfg.Runtime.RoleEffort),
 		defaultSandboxMode:     cfg.Runtime.SandboxMode,
 		sandboxHome:            cfg.SandboxHome,
 		controlHome:            cfg.ControlHome,
@@ -554,6 +564,7 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.maxInFlightPerProvider = cfg.MaxInFlightPerProvider
 	m.dispatchJitterMs = cfg.DispatchJitterMs
 	m.headlessSteerable = cfg.HeadlessSteerable
+	m.roleEffort = maps.Clone(cfg.RoleEffort)
 	m.defaultSandboxMode = cfg.SandboxMode
 	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
 	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs

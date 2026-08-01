@@ -32,6 +32,9 @@ var (
 	gpt5Price            = modelPrice{in: 1.25, out: 10.00, cacheRead: 0.125}
 	gpt5MiniPrice        = modelPrice{in: 0.25, out: 2.00, cacheRead: 0.025}
 	gpt5NanoPrice        = modelPrice{in: 0.05, out: 0.40, cacheRead: 0.005}
+	gpt56SolPrice        = modelPrice{in: 5.00, out: 30.00, cacheRead: 0.50}
+	gpt56TerraPrice      = modelPrice{in: 2.50, out: 15.00, cacheRead: 0.25}
+	gpt56LunaPrice       = modelPrice{in: 1.00, out: 6.00, cacheRead: 0.10}
 	haiku45Price         = modelPrice{in: 1.00, out: 5.00, cacheRead: 0.10, cacheWrite5m: 1.25, cacheWrite1h: 2.00}
 	sonnet46Price        = modelPrice{in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite5m: 3.75, cacheWrite1h: 6.00}
 	sonnet5IntroPrice    = modelPrice{in: 2.00, out: 10.00, cacheRead: 0.20, cacheWrite5m: 2.50, cacheWrite1h: 4.00}
@@ -52,17 +55,29 @@ func sonnet5Tiers() []pricedTier {
 }
 
 var pricingTable = map[string][]pricedTier{
-	// OpenAI / Codex CLI defaults.
+	// OpenAI / Codex CLI. Cached input is billed at 10% of standard input.
+	//
+	// The gpt-5.6 trio backs all three modeltier classes (luna/terra/sol =
+	// super_cheap/cheap/expensive). Rates are the standard short-context
+	// tier; a request whose input exceeds 272K tokens reprices at 2× input /
+	// 1.5× output, which modelPrice has no way to express — such runs are
+	// under-costed, so treat the estimate as a floor for the spend ceilings.
+	"gpt-5.6":       tiers(gpt56SolPrice), // bare generation alias routes to Sol
+	"gpt-5.6-sol":   tiers(gpt56SolPrice),
+	"gpt-5.6-terra": tiers(gpt56TerraPrice),
+	"gpt-5.6-luna":  tiers(gpt56LunaPrice),
+
+	// Retired or superseded, kept so historical run records still price.
 	// gpt-5 / gpt-5-mini are the underlying models behind `gpt-5.4` (codex
-	// alias) and `gpt-5.4-mini`. Cached input is billed at 10% of standard.
+	// alias) and `gpt-5.4-mini`.
 	"gpt-5":         tiers(gpt5Price),
 	"gpt-5-codex":   tiers(gpt5Price),
 	"gpt-5-mini":    tiers(gpt5MiniPrice),
 	"gpt-5-nano":    tiers(gpt5NanoPrice),
-	"gpt-5.5":       tiers(gpt5Price), // codex default (0.142.2+)
-	"gpt-5.4":       tiers(gpt5Price), // codex alias
-	"gpt-5.4-mini":  tiers(gpt5MiniPrice),
-	"gpt-5.3-codex": tiers(gpt5Price), // selectable codex option; gpt-5-codex pricing
+	"gpt-5.5":       tiers(gpt5Price),
+	"gpt-5.4":       tiers(gpt5Price),     // retired in codex 2026-08-31
+	"gpt-5.4-mini":  tiers(gpt5MiniPrice), // retired in codex 2026-08-31
+	"gpt-5.3-codex": tiers(gpt5Price),     // gpt-5-codex pricing
 
 	// Legacy OpenAI (kept for back-compat with old run records).
 	"o4-mini":      tiers(modelPrice{in: 1.10, out: 4.40, cacheRead: 0.275}),
@@ -146,7 +161,7 @@ func EstimateAgentCost(u AgentUsage) float64 {
 	switch u.Provider {
 	case "copilot":
 		return EstimateCopilotCost(u.PremiumRequests)
-	case "codex":
+	case "codex", "claude":
 		return EstimateCostDetailed(u.Model, u.InputTokens, u.OutputTokens,
 			u.CacheCreate, u.CacheRead, u.ReasoningTokens, u.StartedAt)
 	default:

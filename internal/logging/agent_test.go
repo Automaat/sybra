@@ -319,3 +319,34 @@ func TestEnforceAgentLogRetention_ProtectsActiveLogPaths(t *testing.T) {
 		t.Errorf("active stderr sidecar was removed: %v", err)
 	}
 }
+
+func TestEnforceAgentLogRetention_ProtectsExplicitEvidencePaths(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	agents := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	chunk := strings.Repeat("x", 100)
+	protected := writeAgentLog(t, agents, "agt-protected.ndjson", chunk, 30*24*time.Hour, now)
+	unprotected := writeAgentLog(t, agents, "agt-other.ndjson", chunk, 2*time.Hour, now)
+
+	r := EnforceAgentLogRetention(dir, RetentionOptions{
+		MaxTotalBytes:     100,
+		ProtectedLogPaths: map[string]bool{protected: true},
+	}, now)
+
+	if r.Protected != 1 {
+		t.Fatalf("Protected = %d, want 1", r.Protected)
+	}
+	if r.DeletedForSize != 1 {
+		t.Fatalf("DeletedForSize = %d, want 1", r.DeletedForSize)
+	}
+	if _, err := os.Stat(protected); err != nil {
+		t.Fatalf("protected evidence log removed: %v", err)
+	}
+	if _, err := os.Stat(unprotected); !os.IsNotExist(err) {
+		t.Fatalf("unprotected log still exists, stat err = %v", err)
+	}
+}
