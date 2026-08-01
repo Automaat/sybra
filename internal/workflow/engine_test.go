@@ -5422,6 +5422,13 @@ func TestHandleHumanAction_NotWaiting(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-waiting task")
 	}
+	var ce *ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *ClientError so httpapi surfaces it as a 4xx instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusConflict)
+	}
 }
 
 func TestHandleHumanAction_InvalidActionAlreadyWaitingDoesNotMutate(t *testing.T) {
@@ -5445,6 +5452,13 @@ func TestHandleHumanAction_InvalidActionAlreadyWaitingDoesNotMutate(t *testing.T
 	err := engine.HandleHumanAction("t1", "bogus", nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid human action") {
 		t.Fatalf("HandleHumanAction error = %v, want invalid human action", err)
+	}
+	var ce *ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *ClientError so httpapi surfaces it as a 4xx instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusBadRequest)
 	}
 
 	got, err := tasks.GetTask("t1")
