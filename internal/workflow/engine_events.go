@@ -335,6 +335,10 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 // found" error loop that followed workflow completion in older versions —
 // but that legitimacy still needs to be visible when diagnosing a stall.
 func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
+	// Held past the final clearAgentStep so pruneStaleAgentRoutes cannot mistake
+	// this task's still-needed routes for orphans while the advance is underway.
+	defer e.enterCompletion(taskID)()
+
 	routeMu := e.taskRouteMutex(taskID)
 	routeMu.Lock()
 	e.mu.Lock()
@@ -1101,6 +1105,15 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 		mu.Unlock()
 	}
 
+	// Routes below stand in for "an agent is still working on this step", but
+	// nothing except an agent-completion path ever clears one. Retire the ones
+	// whose agent is gone first, or this task is skipped forever (#2824). Not
+	// while advancing: the route table is mid-rewrite and the skip is decided
+	// anyway.
+	if !advancing {
+		e.pruneStaleAgentRoutes(taskID, step)
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1108,7 +1121,7 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	hasOutstandingAgent := false
 	if fresh, err := e.tasks.GetTask(taskID); err == nil && fresh.Workflow != nil {
 		for _, stepID := range fresh.Workflow.AgentRoutes {
-			if stepID == step.ID || parallelHasChild(step, stepID) || bestOfNStepMatches(step, stepID) {
+			if routeMatchesStep(step, stepID) {
 				hasOutstandingAgent = true
 				break
 			}

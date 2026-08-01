@@ -418,6 +418,7 @@ type Engine struct {
 	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
 	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
 	pendingRoutes    map[string]string          // taskID+"\x00"+agentID → stepID while StartAgent succeeded but route persistence has not
+	completing       map[string]int             // taskID → in-flight HandleAgentComplete calls (agent finished, completion not yet routed)
 	cascadeDepth     map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
 	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
@@ -527,6 +528,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		starting:               make(map[string]struct{}),
 		humanAction:            make(map[string]struct{}),
 		pendingRoutes:          make(map[string]string),
+		completing:             make(map[string]int),
 		cascadeDepth:           make(map[string]int),
 		pendingRecovery:        make(map[string]pendingRecovery),
 		resumeError:            logging.NewErrorThrottle(),
