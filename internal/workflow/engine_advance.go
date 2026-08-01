@@ -712,7 +712,7 @@ func (e *Engine) handleStepClaimResult(taskID string, step *Step, wfExec, claime
 	if claimErr == nil {
 		return mergeClaimedEffectLog(wfExec, claimedExec), false, nil
 	}
-	if errors.Is(claimErr, ErrEffectAlreadyComplete) && !isAsyncWorkflowStep(step.Type) {
+	if errors.Is(claimErr, ErrEffectAlreadyComplete) && !stepIsAsync(step.Type) {
 		return mergeClaimedEffectLog(wfExec, claimedExec), true, nil
 	}
 	if effectClaimFence(claimErr) {
@@ -723,50 +723,23 @@ func (e *Engine) handleStepClaimResult(taskID string, step *Step, wfExec, claime
 }
 
 func (e *Engine) executeAsyncWorkflowStep(taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext, effectID EffectID) (bool, *CompletionInfo, error) {
-	switch step.Type {
-	case StepRunAgent:
-		if comp, handled, bErr := e.preflightRunAgentBudget(taskID, def, step, wfExec); handled {
-			return true, comp, wrapDispatchErr(step.ID, bErr)
-		}
-		if err := e.execRunAgent(taskID, step, wfExec, ctx, effectID); err != nil {
-			return true, nil, wrapDispatchErr(step.ID, err)
-		}
-		if !e.agents.HasRunningAgent(taskID) {
-			return true, nil, errWorkflowYield
-		}
-		_, err := e.completeStepEffect(taskID, step.ID, effectID, wfExec)
+	spec, err := requireStepSpec(step.Type)
+	if err != nil {
 		return true, nil, err
-	case StepParallel:
-		comp, err := e.execParallel(taskID, def, step, wfExec, ctx)
-		if err != nil {
-			return true, comp, err
-		}
-		if comp == nil && !e.agents.HasRunningAgent(taskID) {
-			return true, comp, nil
-		}
-		_, err = e.completeStepEffect(taskID, step.ID, effectID, wfExec)
-		return true, comp, err
-	case StepBestOfN:
-		comp, err := e.execBestOfN(taskID, def, step, wfExec, ctx)
-		if err == nil || (errors.Is(err, errBestOfNParked) && e.agents.HasRunningAgent(taskID)) {
-			if _, cErr := e.completeStepEffect(taskID, step.ID, effectID, wfExec); cErr != nil {
-				return true, nil, cErr
-			}
-		}
-		if errors.Is(err, errBestOfNParked) {
-			return true, nil, errBestOfNParked
-		}
-		return true, comp, err
-	case StepWaitHuman:
-		if err := e.execWaitHuman(taskID, step, wfExec); err != nil {
-			return true, nil, wrapDispatchErr(step.ID, err)
-		}
-		_, err := e.completeStepEffect(taskID, step.ID, effectID, wfExec)
-		return true, nil, err
-	case StepClearPlanArtifacts, StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepFlagPlanCritique, StepDetectTampering, StepVerifyChecks, StepFocusedChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR, StepClassifyTask, StepAdmissionPreflight, StepRequireEvidence:
+	}
+	switch spec.async {
+	case stepAsyncNone:
 		return false, nil, nil
+	case stepAsyncRunAgent:
+		return execAsyncRunAgentStep(e, taskID, def, step, wfExec, ctx, effectID)
+	case stepAsyncParallel:
+		return execAsyncParallelStep(e, taskID, def, step, wfExec, ctx, effectID)
+	case stepAsyncBestOfN:
+		return execAsyncBestOfNStep(e, taskID, def, step, wfExec, ctx, effectID)
+	case stepAsyncWaitHuman:
+		return execAsyncWaitHumanStep(e, taskID, def, step, wfExec, ctx, effectID)
 	default:
-		return true, nil, fmt.Errorf("unknown step type %q", step.Type)
+		return true, nil, fmt.Errorf("step type %q has unknown async handler %d", step.Type, spec.async)
 	}
 }
 
@@ -791,68 +764,121 @@ func normalizeExecuteStepsErr(err error) error {
 
 // execSyncStep dispatches to a synchronous step handler and returns its output.
 func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, t TaskInfo) (StepOutput, error) {
-	switch step.Type {
-	case StepSetStatus:
-		return e.execSetStatus(taskID, step)
-	case StepClearPlanArtifacts:
-		return e.execClearPlanArtifacts(taskID, step, t)
-	case StepCondition:
-		return e.execCondition(step, wfExec, t)
-	case StepShell:
-		return e.execShell(step, ctx)
-	case StepEnsurePRClosesIssue:
-		return e.execEnsurePRClosesIssue(taskID, step, t)
-	case StepStampPRAttribution:
-		return e.execStampPRAttribution(taskID, step, t)
-	case StepRerequestReview:
-		return e.execRerequestReview(taskID, step, t)
-	case StepVerifyCommits:
-		return e.execVerifyCommits(taskID, step, wfExec, t)
-	case StepLinkPRAndReview:
-		return e.execLinkPRAndReview(taskID, step, wfExec, t)
-	case StepEvaluate:
-		return e.execEvaluate(taskID, step, wfExec, t)
-	case StepRequireSidecar:
-		return e.execRequireSidecar(taskID, step, t)
-	case StepValidatePlan:
-		return e.execValidatePlan(taskID, step, t)
-	case StepValidatePlanContract:
-		return e.execValidatePlanContract(taskID, step, t)
-	case StepTriageReview:
-		return e.execTriageReview(taskID, step, t)
-	case StepFlagPlanCritique:
-		return e.execFlagPlanCritique(taskID, step, t)
-	case StepDetectTampering:
-		return e.execDetectTampering(taskID, step, t)
-	case StepVerifyChecks:
-		return e.execVerifyChecks(taskID, step, wfExec, t)
-	case StepFocusedChecks:
-		return e.execFocusedChecks(taskID, step, wfExec, t)
-	case StepRoutePRFixResult:
-		return e.execRoutePRFixResult(taskID, step, wfExec, t)
-	case StepRouteTestResult:
-		return e.execRouteTestResult(taskID, step, wfExec, t)
-	case StepSyncBranch:
-		return e.execSyncBranch(taskID, step)
-	case StepCodegenGate:
-		return e.execCodegenGate(taskID, step)
-	case StepResumeWorkflow:
-		return e.execResumeWorkflow(taskID, step, wfExec)
-	case StepPromoteBestOfN:
-		return e.execPromoteBestOfN(taskID, step)
-	case StepPushBranch:
-		return e.execPushBranch(taskID, step, wfExec, t)
-	case StepCreatePR:
-		return e.execCreatePR(taskID, step, wfExec, t)
-	case StepClassifyTask:
-		return e.execClassifyTask(taskID, step, wfExec)
-	case StepAdmissionPreflight:
-		return e.execAdmissionPreflight(taskID, step, wfExec, t)
-	case StepRequireEvidence:
-		return e.execRequireEvidence(taskID, step, t)
-	default:
-		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
+	spec, err := requireStepSpec(step.Type)
+	if err != nil {
+		return StepOutput{}, err
 	}
+	switch spec.sync {
+	case stepSyncSetStatus:
+		return e.execSetStatus(taskID, step)
+	case stepSyncCondition:
+		return e.execCondition(step, wfExec, t)
+	case stepSyncShell:
+		return e.execShell(step, ctx)
+	case stepSyncEnsurePRClosesIssue:
+		return e.execEnsurePRClosesIssue(taskID, step, t)
+	case stepSyncStampPRAttribution:
+		return e.execStampPRAttribution(taskID, step, t)
+	case stepSyncRerequestReview:
+		return e.execRerequestReview(taskID, step, t)
+	case stepSyncVerifyCommits:
+		return e.execVerifyCommits(taskID, step, wfExec, t)
+	case stepSyncLinkPRAndReview:
+		return e.execLinkPRAndReview(taskID, step, wfExec, t)
+	case stepSyncEvaluate:
+		return e.execEvaluate(taskID, step, wfExec, t)
+	case stepSyncRequireSidecar:
+		return e.execRequireSidecar(taskID, step, t)
+	case stepSyncClearPlanArtifacts:
+		return e.execClearPlanArtifacts(taskID, step, t)
+	case stepSyncValidatePlan:
+		return e.execValidatePlan(taskID, step, t)
+	case stepSyncValidatePlanContract:
+		return e.execValidatePlanContract(taskID, step, t)
+	case stepSyncTriageReview:
+		return e.execTriageReview(taskID, step, t)
+	case stepSyncFlagPlanCritique:
+		return e.execFlagPlanCritique(taskID, step, t)
+	case stepSyncDetectTampering:
+		return e.execDetectTampering(taskID, step, t)
+	case stepSyncVerifyChecks:
+		return e.execVerifyChecks(taskID, step, wfExec, t)
+	case stepSyncFocusedChecks:
+		return e.execFocusedChecks(taskID, step, wfExec, t)
+	case stepSyncRoutePRFixResult:
+		return e.execRoutePRFixResult(taskID, step, wfExec, t)
+	case stepSyncRouteTestResult:
+		return e.execRouteTestResult(taskID, step, wfExec, t)
+	case stepSyncSyncBranch:
+		return e.execSyncBranch(taskID, step)
+	case stepSyncCodegenGate:
+		return e.execCodegenGate(taskID, step)
+	case stepSyncResumeWorkflow:
+		return e.execResumeWorkflow(taskID, step, wfExec)
+	case stepSyncPromoteBestOfN:
+		return e.execPromoteBestOfN(taskID, step)
+	case stepSyncPushBranch:
+		return e.execPushBranch(taskID, step, wfExec, t)
+	case stepSyncCreatePR:
+		return e.execCreatePR(taskID, step, wfExec, t)
+	case stepSyncClassifyTask:
+		return e.execClassifyTask(taskID, step, wfExec)
+	case stepSyncAdmissionPreflight:
+		return e.execAdmissionPreflight(taskID, step, wfExec, t)
+	case stepSyncRequireEvidence:
+		return e.execRequireEvidence(taskID, step, t)
+	case stepSyncNone:
+		return StepOutput{}, fmt.Errorf("step type %q does not have a synchronous handler", step.Type)
+	default:
+		return StepOutput{}, fmt.Errorf("step type %q has unknown sync handler %d", step.Type, spec.sync)
+	}
+}
+
+func execAsyncRunAgentStep(e *Engine, taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext, effectID EffectID) (bool, *CompletionInfo, error) {
+	if comp, handled, bErr := e.preflightRunAgentBudget(taskID, def, step, wfExec); handled {
+		return true, comp, wrapDispatchErr(step.ID, bErr)
+	}
+	if err := e.execRunAgent(taskID, step, wfExec, ctx, effectID); err != nil {
+		return true, nil, wrapDispatchErr(step.ID, err)
+	}
+	if !e.agents.HasRunningAgent(taskID) {
+		return true, nil, errWorkflowYield
+	}
+	_, err := e.completeStepEffect(taskID, step.ID, effectID, wfExec)
+	return true, nil, err
+}
+
+func execAsyncParallelStep(e *Engine, taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext, effectID EffectID) (bool, *CompletionInfo, error) {
+	comp, err := e.execParallel(taskID, def, step, wfExec, ctx)
+	if err != nil {
+		return true, comp, err
+	}
+	if comp == nil && !e.agents.HasRunningAgent(taskID) {
+		return true, comp, nil
+	}
+	_, err = e.completeStepEffect(taskID, step.ID, effectID, wfExec)
+	return true, comp, err
+}
+
+func execAsyncBestOfNStep(e *Engine, taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext, effectID EffectID) (bool, *CompletionInfo, error) {
+	comp, err := e.execBestOfN(taskID, def, step, wfExec, ctx)
+	if err == nil || (errors.Is(err, errBestOfNParked) && e.agents.HasRunningAgent(taskID)) {
+		if _, cErr := e.completeStepEffect(taskID, step.ID, effectID, wfExec); cErr != nil {
+			return true, nil, cErr
+		}
+	}
+	if errors.Is(err, errBestOfNParked) {
+		return true, nil, errBestOfNParked
+	}
+	return true, comp, err
+}
+
+func execAsyncWaitHumanStep(e *Engine, taskID string, _ *Definition, step *Step, wfExec *Execution, _ TemplateContext, effectID EffectID) (bool, *CompletionInfo, error) {
+	if err := e.execWaitHuman(taskID, step, wfExec); err != nil {
+		return true, nil, wrapDispatchErr(step.ID, err)
+	}
+	_, err := e.completeStepEffect(taskID, step.ID, effectID, wfExec)
+	return true, nil, err
 }
 
 // resolveNext evaluates transitions and returns the next step, or nil if the

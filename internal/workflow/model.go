@@ -212,6 +212,145 @@ const (
 	StepRequireEvidence StepType = "require_evidence"
 )
 
+type stepReducerKind uint8
+
+const (
+	stepReducerDispatch stepReducerKind = iota
+	stepReducerWaitHuman
+	stepReducerSetStatus
+	stepReducerCondition
+)
+
+type stepAsyncHandler uint8
+
+const (
+	stepAsyncNone stepAsyncHandler = iota
+	stepAsyncRunAgent
+	stepAsyncParallel
+	stepAsyncBestOfN
+	stepAsyncWaitHuman
+)
+
+type stepSyncHandler uint8
+
+const (
+	stepSyncNone stepSyncHandler = iota
+	stepSyncSetStatus
+	stepSyncCondition
+	stepSyncShell
+	stepSyncEnsurePRClosesIssue
+	stepSyncStampPRAttribution
+	stepSyncRerequestReview
+	stepSyncVerifyCommits
+	stepSyncLinkPRAndReview
+	stepSyncEvaluate
+	stepSyncRequireSidecar
+	stepSyncClearPlanArtifacts
+	stepSyncValidatePlan
+	stepSyncValidatePlanContract
+	stepSyncTriageReview
+	stepSyncFlagPlanCritique
+	stepSyncDetectTampering
+	stepSyncVerifyChecks
+	stepSyncFocusedChecks
+	stepSyncRoutePRFixResult
+	stepSyncRouteTestResult
+	stepSyncSyncBranch
+	stepSyncCodegenGate
+	stepSyncResumeWorkflow
+	stepSyncPromoteBestOfN
+	stepSyncPushBranch
+	stepSyncCreatePR
+	stepSyncClassifyTask
+	stepSyncAdmissionPreflight
+	stepSyncRequireEvidence
+)
+
+type stepBoundaryKind uint8
+
+const (
+	stepBoundaryNone stepBoundaryKind = iota
+	stepBoundaryParallel
+	stepBoundaryBestOfN
+)
+
+type stepSpec struct {
+	async     stepAsyncHandler
+	sync      stepSyncHandler
+	reducer   stepReducerKind
+	boundary  stepBoundaryKind
+	resumable bool
+}
+
+var stepRegistry = map[StepType]stepSpec{
+	StepRunAgent:             {async: stepAsyncRunAgent, reducer: stepReducerDispatch, resumable: true},
+	StepWaitHuman:            {async: stepAsyncWaitHuman, reducer: stepReducerWaitHuman},
+	StepSetStatus:            {sync: stepSyncSetStatus, reducer: stepReducerSetStatus},
+	StepCondition:            {sync: stepSyncCondition, reducer: stepReducerCondition},
+	StepShell:                {sync: stepSyncShell, reducer: stepReducerDispatch},
+	StepEnsurePRClosesIssue:  {sync: stepSyncEnsurePRClosesIssue, reducer: stepReducerDispatch},
+	StepStampPRAttribution:   {sync: stepSyncStampPRAttribution, reducer: stepReducerDispatch},
+	StepRerequestReview:      {sync: stepSyncRerequestReview, reducer: stepReducerDispatch},
+	StepVerifyCommits:        {sync: stepSyncVerifyCommits, reducer: stepReducerDispatch},
+	StepLinkPRAndReview:      {sync: stepSyncLinkPRAndReview, reducer: stepReducerDispatch},
+	StepEvaluate:             {sync: stepSyncEvaluate, reducer: stepReducerDispatch},
+	StepRequireSidecar:       {sync: stepSyncRequireSidecar, reducer: stepReducerDispatch},
+	StepClearPlanArtifacts:   {sync: stepSyncClearPlanArtifacts, reducer: stepReducerDispatch},
+	StepValidatePlan:         {sync: stepSyncValidatePlan, reducer: stepReducerDispatch},
+	StepValidatePlanContract: {sync: stepSyncValidatePlanContract, reducer: stepReducerDispatch},
+	StepTriageReview:         {sync: stepSyncTriageReview, reducer: stepReducerDispatch},
+	StepFlagPlanCritique:     {sync: stepSyncFlagPlanCritique, reducer: stepReducerDispatch},
+	StepDetectTampering:      {sync: stepSyncDetectTampering, reducer: stepReducerDispatch},
+	StepVerifyChecks:         {sync: stepSyncVerifyChecks, reducer: stepReducerDispatch, resumable: true},
+	StepFocusedChecks:        {sync: stepSyncFocusedChecks, reducer: stepReducerDispatch},
+	StepRoutePRFixResult:     {sync: stepSyncRoutePRFixResult, reducer: stepReducerDispatch},
+	StepRouteTestResult:      {sync: stepSyncRouteTestResult, reducer: stepReducerDispatch},
+	StepParallel:             {async: stepAsyncParallel, reducer: stepReducerDispatch, boundary: stepBoundaryParallel, resumable: true},
+	StepSyncBranch:           {sync: stepSyncSyncBranch, reducer: stepReducerDispatch},
+	StepCodegenGate:          {sync: stepSyncCodegenGate, reducer: stepReducerDispatch},
+	StepResumeWorkflow:       {sync: stepSyncResumeWorkflow, reducer: stepReducerDispatch},
+	StepBestOfN:              {async: stepAsyncBestOfN, reducer: stepReducerDispatch, boundary: stepBoundaryBestOfN, resumable: true},
+	StepPromoteBestOfN:       {sync: stepSyncPromoteBestOfN, reducer: stepReducerDispatch, resumable: true},
+	StepPushBranch:           {sync: stepSyncPushBranch, reducer: stepReducerDispatch, resumable: true},
+	StepCreatePR:             {sync: stepSyncCreatePR, reducer: stepReducerDispatch, resumable: true},
+	StepClassifyTask:         {sync: stepSyncClassifyTask, reducer: stepReducerDispatch, resumable: true},
+	StepAdmissionPreflight:   {sync: stepSyncAdmissionPreflight, reducer: stepReducerDispatch, resumable: true},
+	StepRequireEvidence:      {sync: stepSyncRequireEvidence, reducer: stepReducerDispatch},
+}
+
+func lookupStepSpec(stepType StepType) (stepSpec, bool) {
+	spec, ok := stepRegistry[stepType]
+	return spec, ok
+}
+
+func requireStepSpec(stepType StepType) (stepSpec, error) {
+	spec, ok := lookupStepSpec(stepType)
+	if !ok {
+		return stepSpec{}, fmt.Errorf("unknown step type %q", stepType)
+	}
+	return spec, nil
+}
+
+func stepIsAsync(stepType StepType) bool {
+	spec, ok := lookupStepSpec(stepType)
+	return ok && spec.async != stepAsyncNone
+}
+
+func stepIsResumable(stepType StepType) bool {
+	spec, ok := lookupStepSpec(stepType)
+	return ok && spec.resumable
+}
+
+func stepReducerBehavior(stepType StepType) (stepReducerKind, bool) {
+	spec, ok := lookupStepSpec(stepType)
+	return spec.reducer, ok
+}
+
+func stepBoundary(stepType StepType) (stepBoundaryKind, bool) {
+	spec, ok := lookupStepSpec(stepType)
+	return spec.boundary, ok
+}
+
 // Best-of-N attempt count bounds enforced by Definition.Validate. A floor of
 // 2 makes "best-of-N" meaningful (a single attempt has nothing to judge); the
 // cap bounds worst-case fan-out cost/dispatch time per task.

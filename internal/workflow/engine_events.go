@@ -1079,12 +1079,7 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 }
 
 func isResumableStepType(t StepType) bool {
-	switch t {
-	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN, StepAdmissionPreflight:
-		return true
-	default:
-		return false
-	}
+	return stepIsResumable(t)
 }
 
 func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason string, ok bool) {
