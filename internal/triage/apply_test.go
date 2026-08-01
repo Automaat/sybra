@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/enrichment"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
@@ -186,6 +187,33 @@ func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	}
 	if !slices.Contains(updated.Tags, umbrella.GatedTag) {
 		t.Errorf("umbrella-gated tag dropped by triage; got %v", updated.Tags)
+	}
+}
+
+func TestApplyPreservesEnrichPendingTag(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("https://github.com/Automaat/sybra/issues/2774", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.Tags = []string{enrichment.PendingTag}
+
+	// The classifier vocabulary does not include enrich-pending. Triage must
+	// not drop it, because the reconcile loop uses it to finish URL enrichment
+	// and detect umbrella issues before any flat implementation can dispatch.
+	v := Verdict{
+		Title: "chore(engine): finish state kernel",
+		Tags:  []string{"backend", "medium", "chore"},
+		Size:  "medium",
+		Type:  "chore",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !slices.Contains(updated.Tags, enrichment.PendingTag) {
+		t.Errorf("enrich-pending tag dropped by triage; got %v", updated.Tags)
 	}
 }
 

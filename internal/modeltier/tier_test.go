@@ -34,7 +34,16 @@ func TestInferTier(t *testing.T) {
 		{model: "sonnet", want: Cheap, ok: true},
 		{model: "haiku", want: SuperCheap, ok: true},
 		{model: "opus", want: Expensive, ok: true},
+		{model: "gpt-5.6-sol", want: Expensive, ok: true},
+		{model: "gpt-5.6-terra", want: Cheap, ok: true},
+		{model: "gpt-5.6-luna", want: SuperCheap, ok: true},
+		// The bare generation alias resolves to Sol, and must not be matched
+		// by a Contains rule that would also swallow -terra and -luna.
+		{model: "gpt-5.6", want: Expensive, ok: true},
+		// Retired codex slugs stay classifiable for historical run records.
 		{model: "gpt-5.5", want: Expensive, ok: true},
+		{model: "gpt-5.4", want: Cheap, ok: true},
+		{model: "gpt-5.4-mini", want: SuperCheap, ok: true},
 		{model: "claude-sonnet-4.6", want: Cheap, ok: true},
 		{model: "claude-haiku-4.5", want: SuperCheap, ok: true},
 		{model: "custom-model", ok: false},
