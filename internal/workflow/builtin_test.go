@@ -21,8 +21,8 @@ func TestBuiltinSimpleTaskPlan_ApprovalStartsImplementation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
 	}
-	if got != "set_in_progress_after_plan_and_end" {
-		t.Fatalf("approval next = %q, want set_in_progress_after_plan_and_end", got)
+	if got != "set_in_progress_and_end" {
+		t.Fatalf("approval next = %q, want set_in_progress_and_end", got)
 	}
 	step := plan.StepByID(got)
 	if step == nil || step.Type != StepSetStatus || step.Config.Status != "in-progress" {
