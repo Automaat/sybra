@@ -202,7 +202,7 @@ func TestPrepareRunConfig_FailoverRemapsKnownConcreteModel(t *testing.T) {
 
 	cfg, prov, err := m.prepareRunConfig(RunConfig{
 		Provider: "codex",
-		Model:    "gpt-5.5",
+		Model:    "gpt-5.6-sol",
 		Mode:     "headless",
 		Dir:      t.TempDir(),
 	})
@@ -258,8 +258,8 @@ func TestPrepareRunConfig_CodexRemapsClaudeModelLiteral(t *testing.T) {
 	if cfg.Model != "claude-haiku-4-5-20251001" {
 		t.Fatalf("requested model = %q, want original literal preserved for metadata", cfg.Model)
 	}
-	if cfg.resolvedModel != "gpt-5.4-mini" {
-		t.Fatalf("resolved model = %q, want gpt-5.4-mini", cfg.resolvedModel)
+	if cfg.resolvedModel != "gpt-5.6-luna" {
+		t.Fatalf("resolved model = %q, want gpt-5.6-luna", cfg.resolvedModel)
 	}
 }
 

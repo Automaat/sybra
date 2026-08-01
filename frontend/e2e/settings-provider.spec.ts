@@ -84,7 +84,7 @@ test.describe('Settings provider matrix', { tag: '@integration' }, () => {
 
       await page.locator('#agent-provider').selectOption('codex')
       await expect(page.locator('#agent-model')).toHaveValue('')
-      await expect(page.locator('#agent-model option').first()).toHaveText('Default (gpt-5.5)')
+      await expect(page.locator('#agent-model option').first()).toHaveText('Default (gpt-5.6-terra)')
     } finally {
       await restoreAgentSettings(page, original)
     }
