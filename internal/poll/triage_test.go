@@ -3,10 +3,12 @@ package poll
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/enrichment"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/triage"
@@ -86,5 +88,56 @@ func TestTriageHandlerClassifiesNewTasks(t *testing.T) {
 		if after[i].Status == task.StatusNew {
 			t.Errorf("task %s still new", after[i].ID)
 		}
+	}
+}
+
+func TestTriageHandlerPollSkipsEnrichPendingTasks(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mgr := task.NewManager(store, nil)
+
+	status := task.StatusNew
+	tags := []string{enrichment.PendingTag}
+	created, err := store.CreateFull("https://github.com/Automaat/sybra/issues/2774", "", task.AgentModeHeadless, task.Update{
+		Status: &status,
+		Tags:   &tags,
+	})
+	if err != nil {
+		t.Fatalf("CreateFull: %v", err)
+	}
+	created.UpdatedAt = time.Now().Add(-time.Minute)
+	if _, err := store.Put(created); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	projDir := t.TempDir()
+	ps, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("project.NewStore: %v", err)
+	}
+
+	fc := &fakeClassifier{}
+	h := NewTriageHandler(mgr, ps, nil,
+		slog.New(slog.DiscardHandler),
+		&config.TriageConfig{Enabled: true, PollSeconds: 5, Model: "sonnet"})
+	h.factory = func(string, *slog.Logger) triage.Classifier { return fc }
+
+	h.Poll(context.Background())
+
+	if fc.calls != 0 {
+		t.Fatalf("classifier calls = %d, want 0 for enrich-pending task", fc.calls)
+	}
+	got, err := mgr.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != task.StatusNew {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusNew)
+	}
+	if !slices.Contains(got.Tags, enrichment.PendingTag) {
+		t.Fatalf("tags = %v, want %q retained", got.Tags, enrichment.PendingTag)
 	}
 }
