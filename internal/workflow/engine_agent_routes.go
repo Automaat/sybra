@@ -159,11 +159,16 @@ func routeMatchesStep(step *Step, routedStepID string) bool {
 // agent for the task means the route may still be legitimately owned, so this
 // declines to prune. That errs toward the old (skip) behaviour, never toward
 // duplicate dispatch.
+//
+// IsDispatching is consulted separately from HasRunningAgent rather than
+// assumed to be covered by it: the AgentLauncher contract does not promise
+// that a held dispatch claim reads as "running", and tryMarkResumeDispatching
+// already treats the two as independent signals.
 func (e *Engine) pruneStaleAgentRoutes(taskID string, step *Step) {
 	if taskID == "" || step == nil {
 		return
 	}
-	if e.completionInFlight(taskID) || e.agents.HasRunningAgent(taskID) {
+	if e.completionInFlight(taskID) || e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) {
 		return
 	}
 	t, err := e.tasks.GetTask(taskID)

@@ -76,6 +76,7 @@ func TestTryMarkResumeDispatching_StaleRoute(t *testing.T) {
 		name           string
 		routes         map[string]string
 		agentRunning   bool
+		dispatchClaim  bool
 		completing     bool
 		wantAcquired   bool
 		wantReason     string
@@ -93,6 +94,18 @@ func TestTryMarkResumeDispatching_StaleRoute(t *testing.T) {
 			name:           "route backed by a live agent still blocks the resume",
 			routes:         map[string]string{"agent-1": "implement"},
 			agentRunning:   true,
+			wantReason:     "agent-pending-completion",
+			wantRoutesLeft: 1,
+		},
+		{
+			// A held claim means StartAgent is mid-flight for this task and the
+			// route may be about to become live. The reason stays
+			// agent-pending-completion because the surviving route wins the
+			// switch ahead of claimed-elsewhere; what this pins is that the
+			// route survives at all.
+			name:           "route inside another dispatcher's claim window is left alone",
+			routes:         map[string]string{"agent-1": "implement"},
+			dispatchClaim:  true,
 			wantReason:     "agent-pending-completion",
 			wantRoutesLeft: 1,
 		},
@@ -131,6 +144,11 @@ func TestTryMarkResumeDispatching_StaleRoute(t *testing.T) {
 			if tc.agentRunning {
 				agents.mu.Lock()
 				agents.running["t1"] = "agent-1"
+				agents.mu.Unlock()
+			}
+			if tc.dispatchClaim {
+				agents.mu.Lock()
+				agents.dispatchClaimed = map[string]bool{"t1": true}
 				agents.mu.Unlock()
 			}
 			if tc.completing {
