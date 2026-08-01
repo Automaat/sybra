@@ -167,18 +167,3 @@ type AttemptWorktreeManager interface {
 // the engine. Callers set this before StartWorkflowWithVars when they have
 // already prepared the worktree (e.g. PR-fix flow that needs PrepareForFix).
 const WorkflowVarDir = "_dir"
-
-// WorkflowVarSidecarDir is the reserved variable naming a per-task directory
-// that stays writable even when the worktree does not. Verifier roles
-// (review, plan, plan-critic, eval) run against a read-only worktree so they
-// cannot alter the code they are judging, but they still have to write their
-// own output somewhere — that output goes here rather than into the tree.
-//
-// Empty when no resolver is wired, in which case steps fall back to
-// WorkflowVarDir and behave exactly as they did before.
-const WorkflowVarSidecarDir = "_sidecar_dir"
-
-// SidecarDirResolver returns the writable per-task directory for workflow
-// scratch output. Wired from the sandbox manager, whose per-task home is
-// already an allowed write root under the OS sandbox.
-type SidecarDirResolver func(taskID string) (string, error)

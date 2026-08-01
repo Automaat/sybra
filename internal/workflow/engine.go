@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -384,7 +383,6 @@ type Engine struct {
 	prExistence      PRExistenceChecker
 	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
-	sidecarDir       SidecarDirResolver
 	attemptNotes     AttemptNoteAppender
 	branchSyncer     BranchSyncer
 	checks           CheckConfigGetter
@@ -683,25 +681,6 @@ func (e *Engine) SetPRContentGenerator(g PRContentGenerator) { e.prContentGen = 
 // live git checkout (verify_commits, re-implementation note seeding). Leaving
 // it unset makes those worktree-dependent paths no-op.
 func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
-
-// SetSidecarDirResolver late-binds the writable scratch directory used by
-// verifier roles whose worktree is read-only.
-func (e *Engine) SetSidecarDirResolver(r SidecarDirResolver) { e.sidecarDir = r }
-
-// resolveSidecarDir returns the writable scratch dir for taskID, or "" when no
-// resolver is wired or it fails. Callers fall back to the worktree, which is
-// the pre-#2791 behaviour, so a missing resolver degrades rather than breaks.
-func (e *Engine) resolveSidecarDir(taskID string) string {
-	if e == nil || e.sidecarDir == nil {
-		return ""
-	}
-	dir, err := e.sidecarDir(taskID)
-	if err != nil {
-		e.logger.Warn("workflow.sidecar-dir.resolve", "task_id", taskID, "err", err)
-		return ""
-	}
-	return strings.TrimSpace(dir)
-}
 
 // SetAttemptNoteAppender wires the local NOTES.md writer used when testing
 // routes a task back to implementation. Leaving it unset disables note seeding.

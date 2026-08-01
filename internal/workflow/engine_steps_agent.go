@@ -157,9 +157,6 @@ func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Ste
 		vars = map[string]string{}
 	}
 	vars[WorkflowVarDir] = wtPath
-	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
-		vars[WorkflowVarSidecarDir] = sidecar
-	}
 	recoveredPath, rErr := RenderTemplate(cfg.From, TemplateContext{
 		Task:     info,
 		Step:     *step,
@@ -174,9 +171,6 @@ func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Ste
 		return "", nil, false
 	}
 	info.Workflow.SetVar(WorkflowVarDir, wtPath)
-	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
-		info.Workflow.SetVar(WorkflowVarSidecarDir, sidecar)
-	}
 	if setErr := e.tasks.SetWorkflow(taskID, info.Workflow); setErr != nil {
 		e.logger.Warn("workflow.import-sidecar.recover.persist", "task_id", taskID, "step", stepID, "err", setErr)
 	}
@@ -317,9 +311,6 @@ func resolveRunAgentMode(mode string, ctx TemplateContext) string {
 func (e *Engine) persistStartedAgent(taskID string, step *Step, wfExec *Execution, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir string) error {
 	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
 		wfExec.SetVar(WorkflowVarDir, startedDir)
-		if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
-			wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
-		}
 	}
 	if baselineRef != "" {
 		wfExec.SetVar(tamperBaselineVar(step.ID), baselineRef)

@@ -56,27 +56,6 @@ func (r Role) IsKnown() bool {
 // (e.g. "triage:My Task Title").
 func (r Role) AgentName(title string) string { return string(r) + ":" + title }
 
-// JudgesWithoutWriting reports whether the role inspects a worktree it must
-// not modify. These roles reuse the *same* per-task worktree as the
-// implementer, so a writable tree lets a reviewer quietly fix what it was
-// asked to judge — and a tool allowlist cannot express the restriction,
-// because every role has Bash and `sed -i`, a shell redirect or `git checkout`
-// reach the same files. The restriction is therefore enforced at the OS level
-// via RunConfig.ReadOnlyDir, which also covers grandchildren.
-//
-// test-runner is deliberately excluded: building and running tests legitimately
-// writes into the tree, so it stays governed by the diff-based tamper gate.
-// human-review is excluded too — despite its name it authors code, commits and
-// pushes, which is its own unresolved question (see #2791).
-func (r Role) JudgesWithoutWriting() bool {
-	switch r {
-	case RoleReview, RolePlan, RolePlanCritic, RoleEval:
-		return true
-	default:
-		return false
-	}
-}
-
 // AuthorsCode reports whether the role produces code commits and may therefore
 // be primed with the task's NOTES.md working memory. Only these roles inherit
 // the scratchpad: independent verifier roles (review, test-runner, eval) must
