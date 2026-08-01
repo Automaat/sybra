@@ -427,6 +427,7 @@ func (a *App) initLimits() {
 func (a *App) initSandboxes() {
 	mgr := sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
 	mgr.SetRetentionWindow(sandboxRetentionWindow(a.cfg))
+	mgr.SetProtectedFindings(a.cleanupProtected)
 	a.sandboxes = mgr
 }
 
@@ -1535,6 +1536,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 		Logger:             a.logger,
 		Throttle:           a.restartStaleErr,
 		WG:                 &a.wg,
+		ProtectedFindings:  a.cleanupProtected,
 		LogDir:             a.logDir,
 		LogRetention:       retention,
 		LogGzipAfter:       gzipAfter,
