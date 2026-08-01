@@ -1012,11 +1012,17 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		// A forked subagent's assistant turns carry parent_tool_use_id and must
 		// not inflate the top-level turn count: a single Task-tool fan-out can
 		// emit hundreds of subagent turns that have nothing to do with the
-		// top-level conversation the guardrail is meant to bound.
+		// top-level conversation the guardrail is meant to bound. They are
+		// bounded by their own separate ceiling instead (checkSubagentTurnsGuardrail).
 		if event.parentToolUseID == "" {
+			if stop := m.maybeEnforceLiveCostCeiling(a, event); stop {
+				return true
+			}
 			if keepGoing := m.checkTurnsGuardrail(ctx, a); !keepGoing {
 				return true
 			}
+		} else if keepGoing := m.checkSubagentTurnsGuardrail(a); !keepGoing {
+			return true
 		}
 	}
 
@@ -1198,6 +1204,10 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	// Must follow AddCacheStats: cached input dominates a codex run and prices at a tenth of standard. EXC:FILE011:load-bearing-invariant
 	costNow := a.BankEstimatedCost()
 	costSource := a.CostSource()
+	// The terminal result's totals now cover everything the live estimate was
+	// tracking for the in-flight turn; reset so the next turn's estimate isn't
+	// double-counted on top of the freshly banked totals.
+	a.ResetLiveUsage()
 	// Codex NDJSON never reports session_id/cost on the result event, so
 	// those alone read as an empty/crashed run (this misled diagnosis of
 	// the 2026-07-05 stalled-workflow incident, #1559). Omit the
@@ -1221,7 +1231,7 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	maxCost := m.guardrails.MaxCostUSD
 	m.mu.RUnlock()
 	if maxCost > 0 && costNow > maxCost {
-		if keepGoing := m.checkCostGuardrail(a, costNow, maxCost, costSource); !keepGoing {
+		if keepGoing := m.checkCostGuardrail(a, costNow, maxCost, costSource, true, "post_result_usd"); !keepGoing {
 			return false
 		}
 	}
@@ -1367,22 +1377,86 @@ func (m *Manager) warnIfResultHasLiveBackgroundTasks(a *Agent) {
 // any sidecar it already wrote) gets discarded as a hard failure purely
 // because the kill happened to land after the cost ceiling (see task
 // 6ee7ee8d).
-func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64, costSource string) bool {
-	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost, "source", costSource)
+func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64, costSource string, completedByResult bool, measurement string) bool {
+	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost, "source", costSource, "measurement", measurement)
 	a.MarkStopped()
 	// Stamping "cost" over a checkpoint discards a handoff whose work is already committed. EXC:FILE011:load-bearing-invariant
 	if !IsCheckpointEscalation(a.GetEscalationReason()) {
 		a.SetEscalationReason(EscalationReasonCost)
 	}
-	a.setCompletedByResult(true)
+	a.setCompletedByResult(completedByResult)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 		Reason:        "cost",
 		Guardrail:     "execution.agent.post_result_cost_usd",
-		Measurement:   "post_result_usd",
+		Measurement:   measurement,
 		CostSource:    costSource,
 		CostUSD:       costNow,
 		MeasuredValue: costNow,
 		Limit:         maxCost,
+	})
+	m.emit(events.AgentState(a.ID), a)
+	return false
+}
+
+// maybeEnforceLiveCostCeiling banks a top-level assistant event's own token
+// usage into the run's in-flight live estimate and, once it breaches
+// MaxCostUSD, hard-stops the stream before the terminal result event would
+// have reported a cost that is already fully incurred (see the doc on
+// LiveCostEstimateUSD/BankEstimatedCost for why providers can't do this
+// themselves). Below the ceiling but at or above TurnCostFraction of it, it
+// nudges the run with a one-shot steer message asking it to converge, giving
+// it a chance to land cleanly rather than being cut off mid-turn. Returns true
+// when the caller should stop the stream.
+func (m *Manager) maybeEnforceLiveCostCeiling(a *Agent, event StreamEvent) bool {
+	a.AddLiveUsage(event.InputTokens, event.OutputTokens, event.CacheCreationInputTokens, event.CacheReadInputTokens)
+	m.mu.RLock()
+	maxCost := m.guardrails.MaxCostUSD
+	fraction := m.guardrails.TurnCostFraction
+	m.mu.RUnlock()
+	if maxCost <= 0 {
+		return false
+	}
+	costNow := a.LiveCostEstimateUSD()
+	if costNow > maxCost {
+		m.checkCostGuardrail(a, costNow, maxCost, "estimated", false, "live_estimate_usd")
+		return true
+	}
+	if fraction <= 0 {
+		fraction = 0.8
+	}
+	if costNow >= fraction*maxCost && a.computeCanSteer() && !a.MarkBudgetSteerSent() {
+		msg := fmt.Sprintf(
+			"You are approaching the run's cost ceiling (estimated $%.2f of a $%.2f limit). "+
+				"Please wrap up your current work and converge to a stopping point soon — the run will be stopped once the ceiling is reached.",
+			costNow, maxCost)
+		if err := m.sendHeadlessSteerMessage(a, msg); err != nil {
+			m.logger.Warn("agent.guardrail.cost.steer_failed", "id", a.ID, "err", err)
+		}
+	}
+	return false
+}
+
+// checkSubagentTurnsGuardrail increments the forked-subagent turn counter
+// and, on a breach of effectiveMaxSubagentEvents, hard-stops the run.
+// Unlike checkTurnsGuardrail there is no auto-continue or human-escalation
+// path: a runaway subagent fan-out is stopped outright. Returns false when
+// the caller should stop the stream.
+func (m *Manager) checkSubagentTurnsGuardrail(a *Agent) bool {
+	count := a.IncSubagentTurnCount()
+	maxEvents := m.effectiveMaxSubagentEvents()
+	if maxEvents <= 0 || count < maxEvents {
+		return true
+	}
+	m.logger.Warn("agent.guardrail.subagent_turns", "id", a.ID, "count", count, "limit", maxEvents)
+	a.MarkStopped()
+	a.SetEscalationReason(EscalationReasonSubagentTurns)
+	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
+		Reason:        "subagent_turns",
+		Guardrail:     "execution.agent.max_subagent_events",
+		Measurement:   "subagent_events",
+		TurnCount:     count,
+		MeasuredValue: float64(count),
+		Limit:         float64(maxEvents),
 	})
 	m.emit(events.AgentState(a.ID), a)
 	return false

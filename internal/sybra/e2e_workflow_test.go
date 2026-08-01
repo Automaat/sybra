@@ -972,6 +972,41 @@ func TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath(t *testing.T) {
 	})
 }
 
+// TestE2E_HeadlessAgent_CostHardStopPreemptsMidStream verifies the mid-stream
+// live-cost ceiling: the fake claude "high_cost_mid_stream" scenario reports
+// no total_cost_usd anywhere and emits a single assistant event whose own
+// usage block alone prices well over MaxCostUSD, followed by a result line
+// that must never be reached. Only the pre-emptive live estimate (not the
+// terminal-result cost check) can stop a run like this.
+func TestE2E_HeadlessAgent_CostHardStopPreemptsMidStream(t *testing.T) {
+	env := setupE2EMulti(t, []string{"high_cost_mid_stream", "triage"})
+	env.agents.SetGuardrails(agent.Guardrails{MaxCostUSD: 1.0})
+
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(t),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
+	env.onAgentComplete = h.OnComplete
+
+	created, err := env.tasks.Create("cost mid-stream pre-empt task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "mid-stream cost-preempted triage retries through failed-completion path", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.CurrentStep != "triage"
+	})
+}
+
 // TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow verifies that
 // when the watchdog reaps a finished-but-alive agent via StopCompletedAgent
 // (clean terminal result emitted, process never exited), the workflow still

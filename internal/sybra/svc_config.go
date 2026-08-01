@@ -437,6 +437,7 @@ func (s *ConfigService) applyAgentGuardrails(cfg config.Config) {
 			TurnCostFraction:        cfg.Agent.TurnCostFraction,
 			TurnMultiplier:          cfg.Agent.TurnMultiplier,
 			CheckpointOnTurnCeiling: cfg.CheckpointOnTurnCeilingEnabled(),
+			MaxSubagentEvents:       cfg.Agent.MaxSubagentEvents,
 		})
 	}
 	s.applyWorkflowGuardrails(cfg)

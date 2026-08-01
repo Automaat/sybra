@@ -55,6 +55,11 @@ type Guardrails struct {
 	// CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
 	// a checkpoint-and-handoff on eligible code-author headless runs.
 	CheckpointOnTurnCeiling bool
+	// MaxSubagentEvents caps forked-subagent assistant events (parent_tool_use_id
+	// non-empty) per run, independent of MaxTurns which only counts top-level
+	// turns. 0 disables the ceiling. A breach hard-stops the run outright —
+	// there is no auto-continue/human-escalation path, unlike MaxTurns.
+	MaxSubagentEvents int
 }
 
 type Manager struct {
@@ -951,7 +956,15 @@ func (m *Manager) canAutoContinueTurns(a *Agent) bool {
 	if fraction <= 0 {
 		fraction = 0.8
 	}
-	return a.GetCostUSD() < maxCost*fraction
+	return a.LiveCostEstimateUSD() < maxCost*fraction
+}
+
+// effectiveMaxSubagentEvents returns the configured forked-subagent turn
+// ceiling (0 disables it).
+func (m *Manager) effectiveMaxSubagentEvents() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.guardrails.MaxSubagentEvents
 }
 
 func (m *Manager) canCheckpointOnTurnCeiling(a *Agent) bool {
