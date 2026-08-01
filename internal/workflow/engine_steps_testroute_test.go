@@ -1904,8 +1904,11 @@ func TestAdvanceStep_StructuredFailureMarkdownIsAppendedAtomically(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.Body, "## Test Failures") || !strings.Contains(got.Body, "Observed output:") {
-		t.Fatalf("task body missing structured failure report:\n%s", got.Body)
+	if got.Body != initialBody {
+		t.Fatalf("task body should stay unchanged; got:\n%s", got.Body)
+	}
+	if !strings.Contains(got.CurrentTestFailures, "## Test Failures") || !strings.Contains(got.CurrentTestFailures, "Observed output:") {
+		t.Fatalf("current_test_failures sidecar missing structured failure report:\n%s", got.CurrentTestFailures)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
 		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
@@ -1962,11 +1965,11 @@ func TestAdvanceStep_StructuredFailureAppendsAfterUnrelatedBodyDelta(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.Body, "## Test Failures are stale") || !strings.Contains(got.Body, "## Test Failures") {
-		t.Fatalf("body should preserve unrelated delta and append test report:\n%s", got.Body)
+	if got.Body != currentBody {
+		t.Fatalf("body should preserve unrelated delta without appending a new report:\n%s", got.Body)
 	}
-	if strings.Count(got.Body, "\n\n## Test Failures\n") != 1 {
-		t.Fatalf("body should append exactly one test report section:\n%s", got.Body)
+	if !strings.Contains(got.CurrentTestFailures, "## Test Failures") || !strings.Contains(got.CurrentTestFailures, "HTTP/1.1 500 Internal Server Error") {
+		t.Fatalf("current_test_failures sidecar missing latest structured report:\n%s", got.CurrentTestFailures)
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress", got.Status)
@@ -2016,14 +2019,17 @@ func TestAdvanceStep_PlainTextFailureMarkdownIsAppendedAtomically(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.Body, "## Test Failures") || !strings.Contains(got.Body, "Observed output:") {
-		t.Fatalf("task body missing plain-text failure report:\n%s", got.Body)
+	if got.Body != initialBody {
+		t.Fatalf("task body should stay unchanged; got:\n%s", got.Body)
 	}
-	if !strings.Contains(got.Body, testVerdictFail) {
-		t.Fatalf("task body should preserve verdict-shaped observed output:\n%s", got.Body)
+	if !strings.Contains(got.CurrentTestFailures, "## Test Failures") || !strings.Contains(got.CurrentTestFailures, "Observed output:") {
+		t.Fatalf("current_test_failures sidecar missing plain-text failure report:\n%s", got.CurrentTestFailures)
 	}
-	if count := strings.Count(got.Body, testVerdictFail); count != 1 {
-		t.Fatalf("task body should strip only the final verdict marker, count=%d:\n%s", count, got.Body)
+	if !strings.Contains(got.CurrentTestFailures, testVerdictFail) {
+		t.Fatalf("sidecar should preserve verdict-shaped observed output:\n%s", got.CurrentTestFailures)
+	}
+	if count := strings.Count(got.CurrentTestFailures, testVerdictFail); count != 1 {
+		t.Fatalf("sidecar should strip only the final verdict marker, count=%d:\n%s", count, got.CurrentTestFailures)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
 		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
@@ -2077,20 +2083,14 @@ func TestAdvanceStep_NewFailureReportArchivesPriorTestFailuresSection(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
-		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	if got.Body != initialBody {
+		t.Fatalf("body should stay unchanged when failures move to sidecars:\n%s", got.Body)
 	}
-	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
-		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
+	if !strings.Contains(got.CurrentTestFailures, "still-open defect") {
+		t.Fatalf("sidecar should contain the new failure report:\n%s", got.CurrentTestFailures)
 	}
-	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
-		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
-	}
-	if !strings.Contains(got.Body, "still-open defect") {
-		t.Fatalf("body should contain the new failure report:\n%s", got.Body)
-	}
-	if strings.Index(got.Body, "## Resolved Test Failures") > strings.Index(got.Body, "still-open defect") {
-		t.Fatalf("archived section should precede the current failure report:\n%s", got.Body)
+	if strings.Contains(got.CurrentTestFailures, "Old defect from cycle 1") {
+		t.Fatalf("sidecar should not inherit stale body failures:\n%s", got.CurrentTestFailures)
 	}
 }
 
@@ -2139,18 +2139,12 @@ func TestAdvanceStep_BodyDeltaFailureReportArchivesPriorTestFailuresSection(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
-		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	if got.Body != currentBody {
+		t.Fatalf("body should preserve the runner-written delta without rewrite:\n%s", got.Body)
 	}
-	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
-		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
-	}
-	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
-		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
-	}
-	if current := currentTestFailures(got.Body); !strings.Contains(current, "HTTP/1.1 500 Internal Server Error") ||
+	if current := currentTestFailures(got.CurrentTestFailures); !strings.Contains(current, "HTTP/1.1 500 Internal Server Error") ||
 		strings.Contains(current, "Old defect from cycle 1") {
-		t.Fatalf("currentTestFailures should return only the current delta report, got:\n%s\n\nbody:\n%s", current, got.Body)
+		t.Fatalf("currentTestFailures should return only the current sidecar report, got:\n%s\n\nbody:\n%s", current, got.Body)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
 		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
@@ -2203,15 +2197,14 @@ func TestAdvanceStep_ArchivedFailureRewriteResetsBodyDeltaStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	delta, ok := testFailureBodyDelta(got.Body, got.Workflow, testVerdictSourceStep)
-	if !ok {
-		t.Fatal("testFailureBodyDelta should remain available after archiving prior failures")
+	if got.Body != initialBody {
+		t.Fatalf("body should stay unchanged when the live report moves to a sidecar:\n%s", got.Body)
 	}
-	if current := currentTestFailures(delta); !strings.Contains(current, "still-open defect") {
-		t.Fatalf("delta should start at the live rewritten failure report, got:\n%s\n\nbody:\n%s", delta, got.Body)
+	if current := currentTestFailures(got.CurrentTestFailures); !strings.Contains(current, "still-open defect") {
+		t.Fatalf("sidecar should carry the live rewritten failure report, got:\n%s\n\nbody:\n%s", current, got.Body)
 	}
-	if strings.Contains(delta, "Old defect from cycle 1") {
-		t.Fatalf("delta should not include archived historical failures, got:\n%s", delta)
+	if strings.Contains(got.CurrentTestFailures, "Old defect from cycle 1") {
+		t.Fatalf("sidecar should not include archived historical failures, got:\n%s", got.CurrentTestFailures)
 	}
 }
 
@@ -2920,9 +2913,10 @@ func TestExecRouteTestResult_ReimplementSeedsNote(t *testing.T) {
 
 	taskID := "t-reimplement-note"
 	tasks.Put(TaskInfo{
-		ID:     taskID,
-		Status: "testing",
-		Body:   report.String(),
+		ID:                  taskID,
+		Status:              "testing",
+		Body:                "## Problem\nInvestigate the failing feature.\n",
+		CurrentTestFailures: report.String(),
 		AgentRuns: []AgentRunInfo{
 			{AgentID: "run-1", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: "fp-1"},
 		},
@@ -3770,11 +3764,11 @@ func TestPrepareTestStepCompletionLedgerCoexistsWithTestFailures(t *testing.T) {
 	if current := currentTestFailures(taskInfo.CurrentTestFailures); current == "" || !strings.Contains(current, "every prior defect must stay fixed at once") {
 		t.Fatalf("currentTestFailures = %q, want latest live report preserved in sidecar", current)
 	}
-	if strings.Count(body, acceptanceLedgerHeading) != 1 {
-		t.Fatalf("body = %q, want one acceptance ledger section after wording-drift rerun", body)
+	if body != "## Problem\nKeep all prior product-bug acceptance criteria green." {
+		t.Fatalf("body should stay unchanged after wording-drift rerun: %q", body)
 	}
-	if strings.Count(body, ledgerEntryMarker(fp1)) != 1 {
-		t.Fatalf("body = %q, want deduped acceptance ledger entry for %s", body, fp1)
+	if strings.Count(taskInfo.AcceptanceLedger, ledgerEntryMarker(fp1)) != 1 {
+		t.Fatalf("acceptance ledger = %q, want deduped acceptance ledger entry for %s", taskInfo.AcceptanceLedger, fp1)
 	}
 }
 

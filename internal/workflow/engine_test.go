@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/watchdogreason"
@@ -8682,11 +8683,17 @@ func newVerifyCommitsStep() *Step {
 func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	t.Helper()
 	dir := t.TempDir()
+	remoteDir := filepath.Join(t.TempDir(), "origin.git")
+	gitEnv := slices.DeleteFunc(slices.Clone(os.Environ()), func(s string) bool {
+		return strings.HasPrefix(s, "GIT_OBJECT_DIRECTORY=") ||
+			strings.HasPrefix(s, "GIT_ALTERNATE_OBJECT_DIRECTORIES=")
+	})
 
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		cmd.Env = gitEnv
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -8704,10 +8711,23 @@ func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	run("add", "README.md")
 	run("commit", "-m", "init")
 
-	// Teach git about a local "remote" so origin/main resolves.
-	// We use the repo itself as its own origin (bare clone not needed for tests).
-	run("remote", "add", "origin", dir)
-	run("fetch", "origin")
+	// Use the same bare-clone helper the app/worktree tests use; local Git on
+	// this host rejects "repo points origin at itself" setups.
+	if err := project.CloneBare(context.Background(), dir, remoteDir); err != nil {
+		t.Fatalf("CloneBare: %v", err)
+	}
+	runBare := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "safe.bareRepository=all", "-C", remoteDir}, args...)...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runBare("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	runBare("fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+	run("remote", "add", "origin", remoteDir)
+	run("fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 
 	if withExtraCommit {
 		f2 := filepath.Join(dir, "change.txt")
