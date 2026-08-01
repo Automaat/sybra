@@ -104,6 +104,10 @@ func run() (int, error) {
 		return 1, fmt.Errorf("config: %w", err)
 	}
 
+	if err := requireExplicitSandboxMode(cfg); err != nil {
+		return 1, fmt.Errorf("config: %w", err)
+	}
+
 	logger, levelVar, cleanup, err := logging.New(cfg.Logging)
 	if err != nil {
 		return 1, fmt.Errorf("logger: %w", err)
@@ -196,6 +200,25 @@ func run() (int, error) {
 		return autoupdate.RestartExitCode, nil
 	}
 	return 0, nil
+}
+
+// requireExplicitSandboxMode refuses to start an unattended server whose
+// agent.sandbox_mode is unset. An empty value resolves to "report", which
+// validates the write allowlist and logs it but never wraps the spawn — so a
+// config that simply omits the key is indistinguishable from a contained one
+// until you grep the logs. That is exactly how the server ran unsandboxed for
+// months while the docs claimed otherwise. Any of off/report/enforce is
+// accepted; the requirement is that an operator chose it.
+//
+// Server-only on purpose: the desktop app and CLI keep the "report" default,
+// so this cannot break a local checkout.
+func requireExplicitSandboxMode(cfg *config.Config) error {
+	if strings.TrimSpace(cfg.Agent.SandboxMode) != "" {
+		return nil
+	}
+	return fmt.Errorf(
+		"agent.sandbox_mode is unset; set it explicitly to one of off, report, enforce " +
+			"(enforce is the contained posture — off and report leave agent writes unrestricted)")
 }
 
 const (

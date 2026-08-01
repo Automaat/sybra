@@ -1,7 +1,9 @@
 package agentorch
 
 import (
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -1100,4 +1103,117 @@ func TestAutoAssignProject(t *testing.T) {
 			t.Fatalf("stored ProjectID = %q, want empty after persist failure", stored.ProjectID)
 		}
 	})
+}
+
+// TestLogSandboxEscapeHatchRecordsReason pins the accountability half of the
+// escape hatch: disabling the sandbox hands a task's agents unrestricted
+// write access, so the audit event must carry the operator's stated reason —
+// and must flag its absence, so an unexplained bypass is greppable rather
+// than merely present.
+func TestLogSandboxEscapeHatchRecordsReason(t *testing.T) {
+	t.Parallel()
+	falseVal, trueVal := false, true
+	cases := []struct {
+		name        string
+		task        task.Task
+		wantEvents  int
+		wantReason  string
+		wantFlagged bool
+	}{
+		{
+			name:       "sandbox unset logs nothing",
+			task:       task.Task{},
+			wantEvents: 0,
+		},
+		{
+			name:       "sandbox true logs nothing",
+			task:       task.Task{Sandbox: &trueVal},
+			wantEvents: 0,
+		},
+		{
+			name:        "reason is recorded",
+			task:        task.Task{Sandbox: &falseVal, SandboxOffReason: "docker-in-docker e2e needs host mounts"},
+			wantEvents:  1,
+			wantReason:  "docker-in-docker e2e needs host mounts",
+			wantFlagged: true,
+		},
+		{
+			name:        "missing reason is flagged, not silently allowed",
+			task:        task.Task{Sandbox: &falseVal},
+			wantEvents:  1,
+			wantReason:  "",
+			wantFlagged: false,
+		},
+		{
+			name:        "whitespace-only reason counts as missing",
+			task:        task.Task{Sandbox: &falseVal, SandboxOffReason: "   "},
+			wantEvents:  1,
+			wantReason:  "",
+			wantFlagged: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			al, err := audit.NewLogger(dir)
+			if err != nil {
+				t.Fatalf("audit.NewLogger: %v", err)
+			}
+			o := New(nil, nil, nil, al, slog.New(slog.DiscardHandler), nil,
+				&config.Config{Agent: config.AgentDefaults{SandboxMode: "enforce"}})
+
+			o.logSandboxEscapeHatch("task-1", tc.task)
+
+			events := readAuditEvents(t, dir)
+			if len(events) != tc.wantEvents {
+				t.Fatalf("got %d audit events, want %d", len(events), tc.wantEvents)
+			}
+			if tc.wantEvents == 0 {
+				return
+			}
+			e := events[0]
+			if e.Type != audit.EventAgentSandboxDisabled {
+				t.Errorf("event type = %q, want %q", e.Type, audit.EventAgentSandboxDisabled)
+			}
+			if got, _ := e.Data["reason"].(string); got != tc.wantReason {
+				t.Errorf("reason = %q, want %q", got, tc.wantReason)
+			}
+			if got, _ := e.Data["reason_given"].(bool); got != tc.wantFlagged {
+				t.Errorf("reason_given = %v, want %v", got, tc.wantFlagged)
+			}
+			if got, _ := e.Data["configured_default"].(string); got != "enforce" {
+				t.Errorf("configured_default = %q, want %q", got, "enforce")
+			}
+		})
+	}
+}
+
+func readAuditEvents(t *testing.T, dir string) []audit.Event {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var events []audit.Event
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+			if line == "" {
+				continue
+			}
+			var e audit.Event
+			if err := json.Unmarshal([]byte(line), &e); err != nil {
+				t.Fatalf("unmarshal %q: %v", line, err)
+			}
+			events = append(events, e)
+		}
+	}
+	return events
 }

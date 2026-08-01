@@ -549,6 +549,14 @@ export class Task {
     "sandbox"?: boolean | null;
 
     /**
+     * SandboxOffReason explains why Sandbox is false. Disabling the sandbox
+     * hands a task's agents unrestricted write access to the host, so the
+     * audit trail needs to say why rather than only that it happened.
+     * Meaningful only alongside Sandbox=false; ignored otherwise.
+     */
+    "sandboxOffReason"?: string;
+
+    /**
      * ReasoningEffort sets the reasoning level for this task's agents
      * (low/medium/high/xhigh). Empty = model default. Applied across providers:
      * codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.
@@ -710,11 +718,11 @@ export class Task {
         const $$createField14_0 = $$createType1;
         const $$createField19_0 = $$createType0;
         const $$createField20_0 = $$createType3;
-        const $$createField41_0 = $$createType5;
-        const $$createField42_0 = $$createType7;
-        const $$createField43_0 = $$createType9;
-        const $$createField44_0 = $$createType11;
-        const $$createField61_0 = $$createType12;
+        const $$createField42_0 = $$createType5;
+        const $$createField43_0 = $$createType7;
+        const $$createField44_0 = $$createType9;
+        const $$createField45_0 = $$createType11;
+        const $$createField62_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -732,19 +740,19 @@ export class Task {
             $$parsedSource["dependsOnConditions"] = $$createField20_0($$parsedSource["dependsOnConditions"]);
         }
         if ("attachments" in $$parsedSource) {
-            $$parsedSource["attachments"] = $$createField41_0($$parsedSource["attachments"]);
+            $$parsedSource["attachments"] = $$createField42_0($$parsedSource["attachments"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField42_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField43_0($$parsedSource["agentRuns"]);
         }
         if ("effectLog" in $$parsedSource) {
-            $$parsedSource["effectLog"] = $$createField43_0($$parsedSource["effectLog"]);
+            $$parsedSource["effectLog"] = $$createField44_0($$parsedSource["effectLog"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField44_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField45_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField61_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField62_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

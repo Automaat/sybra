@@ -55,6 +55,7 @@ type taskFrontmatter struct {
 	HeadlessPermissionMode string                  `yaml:"headless_permission_mode,omitempty"`
 	ForkSubagent           bool                    `yaml:"fork_subagent,omitempty"`
 	Sandbox                *bool                   `yaml:"sandbox,omitempty"`
+	SandboxOffReason       string                  `yaml:"sandbox_off_reason,omitempty"`
 	ReasoningEffort        string                  `yaml:"reasoning_effort,omitempty"`
 	TestingCycleStartedAt  *time.Time              `yaml:"testing_cycle_started_at,omitempty"`
 	Attachments            []Attachment            `yaml:"attachments,omitempty"`
@@ -153,6 +154,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		HeadlessPermissionMode: fm.HeadlessPermissionMode,
 		ForkSubagent:           fm.ForkSubagent,
 		Sandbox:                fm.Sandbox,
+		SandboxOffReason:       fm.SandboxOffReason,
 		ReasoningEffort:        fm.ReasoningEffort,
 		TestingCycleStartedAt:  fm.TestingCycleStartedAt,
 		Attachments:            fm.Attachments,
@@ -227,6 +229,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		HeadlessPermissionMode: t.HeadlessPermissionMode,
 		ForkSubagent:           t.ForkSubagent,
 		Sandbox:                t.Sandbox,
+		SandboxOffReason:       t.SandboxOffReason,
 		ReasoningEffort:        t.ReasoningEffort,
 		TestingCycleStartedAt:  t.TestingCycleStartedAt,
 		Attachments:            t.Attachments,

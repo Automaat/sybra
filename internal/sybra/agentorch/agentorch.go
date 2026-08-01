@@ -493,9 +493,13 @@ func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
 	if t.Sandbox == nil || *t.Sandbox {
 		return
 	}
-	o.logger.Warn("agent.sandbox.escape_hatch", "task_id", taskID)
+	reason := strings.TrimSpace(t.SandboxOffReason)
+	o.logger.Warn("agent.sandbox.escape_hatch", "task_id", taskID, "reason", reason,
+		"reason_given", reason != "")
 	o.LogAudit(audit.EventAgentSandboxDisabled, taskID, "", map[string]any{
 		"configured_default": o.cfg.DefaultSandboxMode(),
+		"reason":             reason,
+		"reason_given":       reason != "",
 	})
 }
 
