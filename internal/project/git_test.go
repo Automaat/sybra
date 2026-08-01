@@ -1058,7 +1058,9 @@ func TestCheckpointCommit_IgnoresLeakedGitObjectDirectory(t *testing.T) {
 		t.Fatalf("checkpoint commit wrote objects into the leaked GIT_OBJECT_DIRECTORY: %v", entries)
 	}
 
-	out, err := exec.Command("git", "-C", repo, "log", "--format=%s", "-1").Output()
+	verify := exec.Command("git", "-C", repo, "log", "--format=%s", "-1")
+	verify.Env = cleanGitEnv()
+	out, err := verify.Output()
 	if err != nil {
 		t.Fatalf("git log: %v", err)
 	}

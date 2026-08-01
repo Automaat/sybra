@@ -631,7 +631,7 @@ func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bo
 	committed, err = checkpointCommitOnce(ctx, wtPath, message)
 	if err != nil && isObjectCorruptionError(err) {
 		if repairErr := repairWorktreeObjectStore(ctx, wtPath); repairErr != nil {
-			return false, fmt.Errorf("%w (object-store repair also failed: %s)", err, repairErr)
+			return false, fmt.Errorf("%w (object-store repair also failed: %w)", err, repairErr)
 		}
 		committed, err = checkpointCommitOnce(ctx, wtPath, message)
 	}
