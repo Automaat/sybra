@@ -268,7 +268,7 @@ steps:
                 that section into acceptance_criteria verbatim (wrapped lines
                 joined). Do not silently drop, narrow, defer, or mark any
                 source criterion out of scope; if a source criterion needs a
-                human scope decision, record that in {{sidecardir .Vars}}/.sybra-plan-decisions and
+                human scope decision, record that in {{sidecardir .Vars}}/.sybra-plan-decisions-{{.Task.ID}}.md and
                 keep it in the contract.
 
                 Always set schema_version to "2" and objective is required.

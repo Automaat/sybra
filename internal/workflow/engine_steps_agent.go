@@ -196,6 +196,18 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) error {
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
+	// Seed the sidecar dir before anything renders a template. Setting it only
+	// after dispatch would leave the first run of a verifier role resolving
+	// {{sidecardir .Vars}} to the worktree — which that role cannot write —
+	// and the sandbox denial surfaces as an empty sidecar rather than an
+	// error. ctx carries its own copy of the vars, so both must be updated.
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
+		if ctx.Vars == nil {
+			ctx.Vars = map[string]string{}
+		}
+		ctx.Vars[WorkflowVarSidecarDir] = sidecar
+	}
 	routeMu := e.taskRouteMutex(taskID)
 	routeMu.Lock()
 	defer routeMu.Unlock()
