@@ -243,6 +243,22 @@ func TestReclaimerTryRunStartsWhenIdleAndCooldownElapsed(t *testing.T) {
 	if !r.TryRun() {
 		t.Fatal("TryRun should start a pass when idle and the cooldown has elapsed")
 	}
+	waitForReclaimerIdle(t, r)
+}
+
+func waitForReclaimerIdle(t *testing.T, r *Reclaimer) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		running := r.running
+		r.mu.Unlock()
+		if !running {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("reclaimer did not finish")
 }
 
 // TestReclaimerWaitDrainsInFlightPass pins the guarantee the cleanup above
