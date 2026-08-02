@@ -866,13 +866,26 @@ var toolchainReadSubdirs = []string{
 }
 
 // homeRootReadFiles sit directly in the operator home rather than under a
-// grantable directory, so denying the home root alone silently breaks them.
-// Both were measured failing on the server before they were added here:
-// without .claude.json the CLI reports "Not logged in · Please run /login",
-// and without .gitconfig git loses user.email and cannot author a commit.
+// grantable directory, so granting only directories silently breaks them.
+// .claude.json holds the claude CLI's account state; without it the CLI
+// reports "Not logged in · Please run /login". .gitconfig carries the
+// credential helper that authenticates pushes.
 var homeRootReadFiles = []string{
 	".claude.json",
 	".gitconfig",
+}
+
+// homeStateLinks are the provider state dirs as spelled in the home
+// directory. They are added *uncanonicalized*, in addition to their resolved
+// targets, because on the server ~/.claude is a symlink to /data/sybra/claude:
+// granting only the resolved target leaves the symlink itself absent from the
+// mount namespace, so every tilde-relative lookup the CLI makes still fails.
+// That failure is silent and authentication-shaped rather than an EROFS.
+var homeStateLinks = []string{
+	".claude",
+	".codex",
+	".copilot",
+	filepath.Join(".local", "share", "opencode"),
 }
 
 // resolveSandboxReadRoots returns the additional read-only roots for a run,
@@ -907,6 +920,13 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 		}
 		for _, f := range homeRootReadFiles {
 			add(filepath.Join(home, f))
+		}
+		for _, l := range homeStateLinks {
+			p := filepath.Join(home, l)
+			if _, err := os.Lstat(p); err == nil {
+				roots = append(roots, p)
+			}
+			add(p)
 		}
 	}
 	add(cfg.sandbox.readOnlyDir)
