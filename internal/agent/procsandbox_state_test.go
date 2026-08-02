@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,19 +90,58 @@ func TestEnforceSpec_DeniesDurableClaudeConfig(t *testing.T) {
 	}
 }
 
-// TestEnforceSpec_SkipsAbsentDurableConfig guards the spawn: binding a path
-// that does not exist fails the run, and a missing settings.json is nothing to
-// protect in the first place.
-func TestEnforceSpec_SkipsAbsentDurableConfig(t *testing.T) {
+// TestEnforceSpec_MaterializesAbsentDurableConfig closes the bypass that
+// skipping absent paths would leave: the enclosing state dir is writable, so
+// a run could create settings.json itself and persist hooks that way — the
+// exact channel this protection exists to remove. The paths must exist so
+// they can be denied.
+func TestEnforceSpec_MaterializesAbsentDurableConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+	claude := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claude, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	spec := enforceSpec("/wt", nil, t.TempDir(), "/tmp", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
 
-	if len(spec.stateDenied) != 0 {
-		t.Fatalf("stateDenied = %v, want empty when no durable config exists", spec.stateDenied)
+	for _, want := range []string{"settings.json", "hooks"} {
+		found := false
+		for _, got := range spec.stateDenied {
+			if strings.HasSuffix(got, want) {
+				found = true
+				if _, err := os.Stat(got); err != nil {
+					t.Errorf("%s is denied but does not exist (%v); the bind would fail the spawn", want, err)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s missing from stateDenied %v — a run could create it and persist hooks", want, spec.stateDenied)
+		}
+	}
+}
+
+// TestEnforceSpec_KeepsExistingDurableConfig guards against the protection
+// clobbering real operator config on the way to protecting it.
+func TestEnforceSpec_KeepsExistingDurableConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	claude := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claude, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := []byte(`{"hooks":{"PreToolUse":[]}}`)
+	if err := os.WriteFile(filepath.Join(claude, "settings.json"), existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	enforceSpec("/wt", nil, t.TempDir(), "/tmp", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
+
+	got, err := os.ReadFile(filepath.Join(claude, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, existing) {
+		t.Fatalf("settings.json = %q, want it left untouched", got)
 	}
 }

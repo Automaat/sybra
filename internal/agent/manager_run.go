@@ -1393,18 +1393,48 @@ var safeArgRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 // session-env/ and shell-snapshots/. Narrowing to an allowlist instead broke
 // runs outright (#2779).
 //
-// Absent paths are skipped: binding a path that does not exist fails the
-// spawn, and a missing settings.json is nothing to protect.
+// Absent paths are materialized rather than skipped. Skipping them looks
+// harmless — there is nothing there to protect — but the enclosing directory
+// is writable, so a run could simply create settings.json and persist hooks
+// that way. An empty settings file and an empty hooks dir are both no-ops to
+// the CLI, and both are then bindable.
 func claudeDurableConfigPaths(stateRoot string) []string {
 	if strings.TrimSpace(stateRoot) == "" {
 		return nil
 	}
 	var out []string
-	for _, name := range []string{"settings.json", "settings.local.json", "hooks"} {
-		p := filepath.Join(stateRoot, name)
-		if _, err := os.Stat(p); err == nil {
-			out = append(out, p)
+	for _, f := range []struct {
+		name string
+		dir  bool
+		seed string
+	}{
+		{name: "settings.json", seed: "{}\n"},
+		{name: "settings.local.json", seed: "{}\n"},
+		{name: "hooks", dir: true},
+	} {
+		p := filepath.Join(stateRoot, f.name)
+		if err := materializeDenyTarget(p, f.dir, f.seed); err != nil {
+			// Only skip what cannot be created: binding a nonexistent path
+			// fails the spawn, and failing the run closed over a config file
+			// is worse than leaving that one path writable.
+			continue
 		}
+		out = append(out, p)
 	}
 	return out
+}
+
+// materializeDenyTarget makes path exist so it can be bound read-only,
+// leaving any existing content untouched.
+func materializeDenyTarget(path string, dir bool, seed string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	if dir {
+		return os.MkdirAll(path, 0o700)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(seed), 0o600)
 }
