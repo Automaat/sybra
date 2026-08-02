@@ -1141,3 +1141,16 @@ func (m *Manager) SetToolLedger(l *toolledger.Logger) {
 	m.toolLedger = l
 	m.mu.Unlock()
 }
+
+// ToolLedger reports the bound ledger. Exported because a nil ledger is
+// otherwise invisible: Logger.Log guards its own nil receiver, so an unwired
+// manager drops every record without erroring, and only a direct read of the
+// binding can tell a live ledger from a silent one.
+func (m *Manager) ToolLedger() *toolledger.Logger {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.toolLedger
+}
