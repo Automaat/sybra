@@ -62,6 +62,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -126,6 +127,7 @@ type App struct {
 	workflowStore     *workflow.Store
 	pressureGate      *pressure.Gate
 	diskReclaimer     *diskreclaim.Reclaimer
+	toolLedger        *toolledger.Logger
 	renovate          *renovateCoordinator
 	promptLab         *promptLabCoordinator
 	triage            *triageCoordinator
@@ -403,6 +405,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.logger.Info("app.starting")
 
 	a.initAudit()
+	a.initToolLedger()
 	a.initStats()
 
 	store, err := task.NewStore(a.tasksDir)

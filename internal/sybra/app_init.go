@@ -42,6 +42,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -1066,6 +1067,21 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 		a.dispatchPlanningWorkflow(id)
 	default:
 		a.dispatchTaskCreatedWorkflow(id)
+	}
+}
+
+// initToolLedger opens the always-on tool-call ledger. A failure degrades to
+// no recording rather than blocking startup: the ledger informs future policy,
+// it does not gate anything running now.
+func (a *App) initToolLedger() {
+	l, err := toolledger.New(a.cfg.ToolLedgerDir())
+	if err != nil {
+		a.logger.Warn("tool_ledger.init.degraded", "err", err)
+		return
+	}
+	a.toolLedger = l
+	if a.agents != nil {
+		a.agents.SetToolLedger(l)
 	}
 }
 

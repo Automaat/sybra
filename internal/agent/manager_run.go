@@ -22,6 +22,7 @@ import (
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/google/uuid"
 )
 
@@ -64,6 +65,7 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(ctx)
 	a := newRunningAgent(id, cfg, prov, cancel)
+	a.SetToolCallRecorder(m.recordToolCall)
 	cfg = injectProcessOwnerEnv(cfg, processOwnerForAgent(a))
 	if m.survives() && willDetach(cfg) {
 		a.setDetached(true)
@@ -1400,3 +1402,18 @@ func (m *Manager) providerForRun(name string) (string, error) {
 // safeArgRe matches only characters safe to embed in a shell command
 // without quoting: alphanumerics, dot, underscore, hyphen, forward-slash.
 var safeArgRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
+
+// recordToolCall writes one ledger record, best-effort. A ledger write must
+// never disturb a run: this sits on the stream path, and losing an
+// observation is strictly preferable to failing the agent that made it.
+func (m *Manager) recordToolCall(r toolledger.Record) {
+	if m == nil {
+		return
+	}
+	m.mu.RLock()
+	ledger := m.toolLedger
+	m.mu.RUnlock()
+	if err := ledger.Log(r); err != nil {
+		m.logger.Warn("agent.tool_ledger.write_failed", "agent_id", r.AgentID, "tool", r.Tool, "err", err)
+	}
+}

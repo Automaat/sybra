@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/toolledger"
 )
 
 type EmitFunc func(event string, data any)
@@ -152,6 +153,9 @@ type Manager struct {
 
 	taskStatus func(taskID string) (string, bool)
 
+	// toolLedger records every tool call every agent makes, whatever the
+	// permission posture. Nil disables recording; Logger.Log tolerates it.
+	toolLedger *toolledger.Logger
 	// sandboxHome resolves the per-task sandbox SYBRA_HOME for a task-scoped
 	// run. Required (non-nil) for any Run/StartAgent call with a non-empty
 	// TaskID — see prepareRunConfig. nil is only valid when every caller is a
@@ -1124,4 +1128,16 @@ func (m *Manager) signalQueueNudge() {
 // buffer-1 coalescing contract.
 func (m *Manager) QueueNudge() <-chan struct{} {
 	return m.queueNudge
+}
+
+// SetToolLedger late-binds the tool-call ledger. Separate from construction
+// because the ledger's directory is resolved from config the Manager does not
+// own.
+func (m *Manager) SetToolLedger(l *toolledger.Logger) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.toolLedger = l
+	m.mu.Unlock()
 }
