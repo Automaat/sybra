@@ -681,11 +681,18 @@ func enforceSpec(
 		gitOverlayRemoteLogDir: gitOverlay.remoteLogDir,
 		gitOverlayTagRefDir:    gitOverlay.tagRefDir,
 		gitOverlayTagLogDir:    gitOverlay.tagLogDir,
-		claudeState:            agentStateRoot(".claude", sandboxHome),
-		codexState:             agentStateRoot(".codex", sandboxHome),
-		copilotState:           agentStateRoot(".copilot", sandboxHome),
-		opencodeState:          agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
-		toolCache:              agentStateRoot(".cache", sandboxHome),
+		// Only projects/ — not the whole state dir. Sealing the root closes
+		// settings.json, whose PreToolUse hooks would otherwise execute in
+		// every later run, including verifier roles, and survive worktree
+		// cleanup. projects/ has to stay writable because --resume reads the
+		// session transcript from there: measured on the server, a fully
+		// read-only ~/.claude still completes a run but fails resume with
+		// "No conversation found with session ID" (#2779).
+		claudeState:   agentStateRootEnsure(filepath.Join(".claude", "projects"), sandboxHome),
+		codexState:    agentStateRoot(".codex", sandboxHome),
+		copilotState:  agentStateRoot(".copilot", sandboxHome),
+		opencodeState: agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
+		toolCache:     agentStateRoot(".cache", sandboxHome),
 	}
 }
 
@@ -788,6 +795,26 @@ func dedupeGitRoots(roots []string) []string {
 		out = append(out, root)
 	}
 	return out
+}
+
+// agentStateRootEnsure is agentStateRoot for a subdirectory that may not
+// exist yet. canonicalizeRoot fails on a missing path, and the caller would
+// then fall back to the sandbox home — an allowlist that looks fine while
+// silently denying the CLI its real state dir. For claude that costs
+// --resume, and nothing errors at the point of failure.
+//
+// Separate from agentStateRoot on purpose: the other providers' roots are
+// whole dotfile directories, and creating those in the operator's home as a
+// side effect of sandbox setup is more than this needs to do.
+func agentStateRootEnsure(sub, fallback string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return fallback
+	}
+	if err := os.MkdirAll(filepath.Join(home, sub), 0o700); err != nil {
+		return fallback
+	}
+	return agentStateRoot(sub, fallback)
 }
 
 func agentStateRoot(sub, fallback string) string {
