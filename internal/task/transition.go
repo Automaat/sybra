@@ -55,6 +55,14 @@ type TransitionIntent struct {
 	// funneling an existing scattered caller through Apply for the first
 	// time without changing its replay semantics).
 	IdempotencyKey string
+
+	// OperatorOverride bypasses the allowed-transition table (see
+	// transitions.go): set this only at a human-initiated entry point (a
+	// button click or CLI command a person invoked directly), never at an
+	// automated call site. It exists for the narrow set of moves that are
+	// legitimate only as a deliberate human action — e.g. reopening a
+	// terminal task — and must never happen automatically.
+	OperatorOverride bool
 }
 
 // TransitionResult is the outcome of a successful Apply call.
@@ -239,6 +247,15 @@ func (m *Manager) applyLocked(cur Task, intent TransitionIntent) (applyOutcome, 
 			TaskID:         cur.ID,
 			ExpectedStatus: intent.ExpectedStatus,
 			ActualStatus:   cur.Status,
+		}
+	}
+
+	if !intent.OperatorOverride && !IsTransitionAllowed(cur.Status, intent.ToStatus) {
+		return applyOutcome{}, &IllegalTransitionError{
+			TaskID: cur.ID,
+			From:   cur.Status,
+			To:     intent.ToStatus,
+			Actor:  actor,
 		}
 	}
 
