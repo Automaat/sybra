@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
@@ -110,6 +112,51 @@ func TestGithubAppTokenRequiresAppAuth(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "github.app is not enabled") {
 		t.Fatalf("stderr = %q, want github.app disabled error", stderr)
+	}
+}
+
+func TestGithubAppTokenPlainAndJSONOutput(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.GitHub.App.Enabled = true
+	cfg.GitHub.App.AppID = 42
+	cfg.GitHub.App.InstallationID = 7
+	cfg.GitHub.App.PrivateKeyPath = "/tmp/app.pem"
+
+	origEnable := enableCLIAppAuth
+	origRefresh := refreshCLIAppToken
+	origCurrent := currentCLIAppToken
+	t.Cleanup(func() {
+		enableCLIAppAuth = origEnable
+		refreshCLIAppToken = origRefresh
+		currentCLIAppToken = origCurrent
+	})
+	enableCLIAppAuth = func(creds github.AppCredentials) error {
+		if creds.AppID != 42 || creds.InstallationID != 7 || creds.PrivateKeyPath != "/tmp/app.pem" {
+			t.Fatalf("credentials = %+v, want configured app credentials", creds)
+		}
+		return nil
+	}
+	refreshCLIAppToken = func(context.Context) error { return nil }
+	currentCLIAppToken = func() string { return "installation-token" }
+
+	code, plain := captureStdout(t, func() int { return cmdGithubAppToken(cfg, false) })
+	if code != 0 {
+		t.Fatalf("plain cmdGithubAppToken exit = %d output=%q", code, plain)
+	}
+	if plain != "installation-token\n" {
+		t.Fatalf("plain output = %q", plain)
+	}
+
+	code, rawJSON := captureStdout(t, func() int { return cmdGithubAppToken(cfg, true) })
+	if code != 0 {
+		t.Fatalf("json cmdGithubAppToken exit = %d output=%q", code, rawJSON)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(rawJSON), &payload); err != nil {
+		t.Fatalf("unmarshal json output %q: %v", rawJSON, err)
+	}
+	if payload["token"] != "installation-token" {
+		t.Fatalf("json token = %q", payload["token"])
 	}
 }
 

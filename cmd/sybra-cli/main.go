@@ -50,6 +50,9 @@ var hookTaskIDRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 var (
 	loadCLIConfig          = config.Load
 	loadCLIConfigNoPersist = config.LoadNoPersist
+	enableCLIAppAuth       = github.EnableAppAuth
+	refreshCLIAppToken     = github.RefreshAppToken
+	currentCLIAppToken     = github.CurrentAppToken
 )
 
 func main() {
@@ -367,7 +370,7 @@ func cmdGithubAppToken(cfg *config.Config, jsonOut bool) int {
 	if !app.Enabled {
 		return fatal(jsonOut, "github.app is not enabled")
 	}
-	if err := github.EnableAppAuth(github.AppCredentials{
+	if err := enableCLIAppAuth(github.AppCredentials{
 		AppID:          app.AppID,
 		InstallationID: app.InstallationID,
 		PrivateKeyPath: app.PrivateKeyPath,
@@ -376,12 +379,18 @@ func cmdGithubAppToken(cfg *config.Config, jsonOut bool) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := github.RefreshAppToken(ctx); err != nil {
+	if err := refreshCLIAppToken(ctx); err != nil {
 		return fatal(jsonOut, "refresh github app token: %v", err)
 	}
-	token := github.CurrentAppToken()
+	token := currentCLIAppToken()
 	if token == "" {
 		return fatal(jsonOut, "github app token is unavailable")
+	}
+	if jsonOut {
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"token": token}); err != nil {
+			return fatal(jsonOut, "write github app token json: %v", err)
+		}
+		return 0
 	}
 	fmt.Fprintln(os.Stdout, token)
 	return 0

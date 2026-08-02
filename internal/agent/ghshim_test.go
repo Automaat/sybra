@@ -111,6 +111,50 @@ func TestGhShim_MintsFreshAppTokenPerGhInvocation(t *testing.T) {
 	}
 }
 
+func TestGhShim_DoesNotMintAppTokenForBlockedInvocation(t *testing.T) {
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'REAL-GH\\n'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(realGh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nprintf minted > '" + marker + "'\nprintf 'token\\n'\n"
+	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatalf("writeGhShim: %v", err)
+	}
+
+	stdout, stderr, code := runShim(t, shimDir, "pr", "review", "--approve", "1")
+	if code == 0 {
+		t.Fatal("blocked invocation unexpectedly succeeded")
+	}
+	if strings.Contains(stdout, "REAL-GH") {
+		t.Fatalf("blocked invocation reached real gh: %q", stdout)
+	}
+	if !strings.Contains(stderr, GhShimReason) {
+		t.Fatalf("stderr = %q, want gh shim reason", stderr)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("blocked invocation minted a GitHub App token")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat marker: %v", err)
+	}
+}
+
 // The shim sees real argv, so every shell shape that defeated string-parsing —
 // trailing separators, subshells, command substitution, quoted flags — reduces
 // to the same argv here. These are the reproductions that broke the previous

@@ -293,16 +293,22 @@ func TestPrepareRunConfig_GitHubAppTokenNotSnapshottedIntoAgentEnv(t *testing.T)
 	}
 
 	var ghToken, githubToken string
+	var ghTokenHits, githubTokenHits int
 	for _, kv := range cfg.ExtraEnv {
 		switch {
 		case strings.HasPrefix(kv, "GH_TOKEN="):
+			ghTokenHits++
 			ghToken = strings.TrimPrefix(kv, "GH_TOKEN=")
 		case strings.HasPrefix(kv, "GITHUB_TOKEN="):
+			githubTokenHits++
 			githubToken = strings.TrimPrefix(kv, "GITHUB_TOKEN=")
 		}
 		if strings.Contains(kv, "fresh-but-short-lived-token") || strings.Contains(kv, "stale-caller-token") {
 			t.Fatalf("agent env leaked a raw GitHub token in %q (full env: %v)", kv, cfg.ExtraEnv)
 		}
+	}
+	if ghTokenHits != 1 || githubTokenHits != 1 {
+		t.Fatalf("GH_TOKEN/GITHUB_TOKEN overrides count = %d/%d, want exactly one each (env=%v)", ghTokenHits, githubTokenHits, cfg.ExtraEnv)
 	}
 	if ghToken != "" || githubToken != "" {
 		t.Fatalf("GH_TOKEN/GITHUB_TOKEN = %q/%q, want empty overrides (env=%v)", ghToken, githubToken, cfg.ExtraEnv)
