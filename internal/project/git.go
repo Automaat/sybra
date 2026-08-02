@@ -424,6 +424,14 @@ func TrackedFilesAtDefaultBranch(ctx context.Context, barePath string) ([]string
 // pays for exactly one fetch.
 func FetchOrigin(ctx context.Context, barePath string) error {
 	return withBareRepoLock(barePath, func() error {
+		if err := CheckBareCloneHealth(ctx, barePath); err != nil {
+			if _, repairErr := repairBareCloneLocked(ctx, barePath, ""); repairErr != nil {
+				return fmt.Errorf("%w; repair bare clone: %w", err, repairErr)
+			}
+			if retryHealthErr := CheckBareCloneHealth(ctx, barePath); retryHealthErr != nil {
+				return retryHealthErr
+			}
+		}
 		if fetchIsFresh(barePath) {
 			return nil
 		}

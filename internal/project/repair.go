@@ -4,15 +4,17 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
 type RepairReport struct {
-	QuarantinedRefs   []string
-	PrunedWorktrees   bool
-	RefetchedBranches []string
+	QuarantinedRefs        []string
+	PrunedWorktrees        bool
+	RebuiltWorktreeIndexes []string
+	RefetchedBranches      []string
 }
 
 var QuarantineDir string
@@ -45,6 +47,32 @@ func IsBadRefError(err error) bool {
 	return false
 }
 
+func CheckBareCloneHealth(ctx context.Context, barePath string) error {
+	if err := runBare(ctx, barePath, "fsck", "--no-dangling"); err != nil {
+		return fmt.Errorf("bare clone health check failed: %w", err)
+	}
+	return nil
+}
+
+func EnsureBareCloneHealthy(ctx context.Context, barePath, taskBranch string) (RepairReport, error) {
+	var report RepairReport
+	err := withBareRepoLock(barePath, func() error {
+		if err := CheckBareCloneHealth(ctx, barePath); err == nil {
+			return nil
+		}
+		var repairErr error
+		report, repairErr = repairBareCloneLocked(ctx, barePath, taskBranch)
+		if repairErr != nil {
+			return repairErr
+		}
+		if healthErr := CheckBareCloneHealth(ctx, barePath); healthErr != nil {
+			return healthErr
+		}
+		return nil
+	})
+	return report, err
+}
+
 func CommonDir(ctx context.Context, worktreePath string) (string, error) {
 	return gitCommonDir(ctx, worktreePath)
 }
@@ -63,6 +91,7 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 	var report RepairReport
 
 	releaseDeadWorktreeRefs(ctx, barePath, &report)
+	rebuildWorktreeIndexes(ctx, barePath, &report)
 
 	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)", "refs/heads")
 	if err != nil {
@@ -100,6 +129,65 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 	}
 
 	return report, nil
+}
+
+func rebuildWorktreeIndexes(ctx context.Context, barePath string, report *RepairReport) {
+	if healthErr := CheckBareCloneHealth(ctx, barePath); healthErr == nil || !isWorktreeIndexHealthError(healthErr) {
+		return
+	}
+	worktreesDir := filepath.Join(barePath, "worktrees")
+	entries, _ := os.ReadDir(worktreesDir)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		wtAdminDir := filepath.Join(worktreesDir, entry.Name())
+		checkoutPath := worktreeCheckoutPath(wtAdminDir)
+		if checkoutPath == "" {
+			continue
+		}
+		if _, err := os.Stat(checkoutPath); err != nil {
+			continue
+		}
+		headBytes, err := os.ReadFile(filepath.Join(wtAdminDir, "HEAD"))
+		if err != nil {
+			continue
+		}
+		head := strings.TrimSpace(string(headBytes))
+		target := head
+		if trimmed, ok := strings.CutPrefix(head, "ref: "); ok {
+			target = strings.TrimSpace(trimmed)
+		}
+		if checkErr := runBare(ctx, barePath, "rev-parse", "--verify", target+"^{commit}"); checkErr != nil {
+			continue
+		}
+		indexPath := filepath.Join(wtAdminDir, "index")
+		if _, err := os.Stat(indexPath); err != nil {
+			continue
+		}
+		quarantined := indexPath + ".sybra-quarantine-" + time.Now().UTC().Format("20060102T150405.000000000")
+		if err := os.Rename(indexPath, quarantined); err != nil {
+			continue
+		}
+		QuarantineRef(barePath, "worktrees/"+entry.Name()+"/index", quarantined)
+		cmd := exec.CommandContext(ctx, "git", "-C", checkoutPath, "reset", "--mixed", "HEAD")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			_ = os.Rename(quarantined, indexPath)
+			_ = out
+			continue
+		}
+		report.RebuiltWorktreeIndexes = append(report.RebuiltWorktreeIndexes, "worktrees/"+entry.Name()+"/index")
+	}
+}
+
+func isWorktreeIndexHealthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "/index") ||
+		strings.Contains(msg, "cache-tree") ||
+		strings.Contains(msg, "index file")
 }
 
 func releaseDeadWorktreeRefs(ctx context.Context, barePath string, report *RepairReport) {
