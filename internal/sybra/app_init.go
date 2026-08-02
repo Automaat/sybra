@@ -42,6 +42,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -480,6 +481,12 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		return fmt.Errorf("agent manager: %w", err)
 	}
 	a.agents.SetGHAppToken(github.CurrentAppToken)
+	// initToolLedger runs before this function, when a.agents is still nil, so
+	// its own SetToolLedger call is skipped. Without re-binding here the
+	// manager's ledger stays nil and Logger.Log's nil guard drops every record
+	// silently — the ledger creates its directory, never writes a line, and
+	// looks healthy while collecting nothing (#2788).
+	a.agents.SetToolLedger(a.toolLedger)
 	if agentCfg.SurviveRestartDir != "" {
 		a.logger.Info("agent.survive-restart.enabled", "dir", agentCfg.SurviveRestartDir)
 	}
@@ -508,6 +515,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
 		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
 		SandboxMode:            cfg.DefaultSandboxMode(),
+		SandboxReadMode:        cfg.DefaultSandboxReadMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
@@ -790,7 +798,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 	}
 	filtered := make([]*agent.Agent, 0, len(targets))
 	for _, ag := range targets {
-		if ag.EffectiveRole() == agent.RoleHumanReview {
+		if ag.EffectiveRole().DiagnosesBlockedTask() {
 			continue
 		}
 		filtered = append(filtered, ag)
@@ -1006,8 +1014,9 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 		// owner before that owner starts implementation.
 		if t.Status == task.StatusTodo && hasApprovedPlanContract(t) {
 			if _, err := a.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
-				Source:   "workflow.legacy-approved-plan",
-				ToStatus: task.StatusInProgress,
+				Source:         "workflow.legacy-approved-plan",
+				ToStatus:       task.StatusInProgress,
+				ExpectedStatus: t.Status,
 			}); err != nil {
 				a.logger.Error("workflow.approved-plan.promote", "task_id", taskID, "err", err)
 			}
@@ -1065,6 +1074,21 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 		a.dispatchPlanningWorkflow(id)
 	default:
 		a.dispatchTaskCreatedWorkflow(id)
+	}
+}
+
+// initToolLedger opens the always-on tool-call ledger. A failure degrades to
+// no recording rather than blocking startup: the ledger informs future policy,
+// it does not gate anything running now.
+func (a *App) initToolLedger() {
+	l, err := toolledger.New(a.cfg.ToolLedgerDir())
+	if err != nil {
+		a.logger.Warn("tool_ledger.init.degraded", "err", err)
+		return
+	}
+	a.toolLedger = l
+	if a.agents != nil {
+		a.agents.SetToolLedger(l)
 	}
 }
 
@@ -1218,7 +1242,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
 	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
-	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
+	a.wireWorktreeAccess()
 	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetCheckConfigGetter(&checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
@@ -1587,4 +1611,26 @@ func (a *App) syncSkillsBundle() {
 		UserHomeDir:          userHome,
 		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
 	})
+}
+
+// wireWorktreeAccess gives the engine both halves of a task's filesystem: the
+// worktree it operates in, and the writable scratch dir used when that
+// worktree is read-only.
+func (a *App) wireWorktreeAccess() {
+	if a == nil || a.workflowEngine == nil {
+		return
+	}
+	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
+	a.wireSidecarDir()
+}
+
+// wireSidecarDir points workflow scratch output at the per-task sandbox home.
+// Verifier roles run against a read-only worktree, so their own output has to
+// land somewhere still writable; that home is already an allowed write root
+// under the OS sandbox, so this needs no new hole.
+func (a *App) wireSidecarDir() {
+	if a == nil || a.workflowEngine == nil || a.sandboxes == nil {
+		return
+	}
+	a.workflowEngine.SetSidecarDirResolver(a.sandboxes.SybraHomeDir)
 }

@@ -25,6 +25,14 @@ type StatusEffect struct {
 	Source   string
 	ToStatus Status
 	Extra    Update
+	// ExpectedStatus, given, is a precondition on the task's current status —
+	// plumbed straight through to TransitionIntent.ExpectedStatus. The zero
+	// value (empty string) skips the check, matching the pre-existing default
+	// for every caller that predates this field. Set it to the status the
+	// caller already observed on the task it read, so a concurrent write
+	// between that read and this call surfaces as a conflict instead of
+	// silently overwriting it.
+	ExpectedStatus Status
 }
 
 // ApplyStatusEffect applies a poller/watchdog/recovery-owned status mutation
@@ -48,11 +56,16 @@ func (m *Manager) ApplyStatusEffect(id string, eff StatusEffect) (Task, error) {
 		return Task{}, fmt.Errorf("apply status effect: extra.status must be nil; set to_status instead")
 	}
 
+	var expectedStatus *Status
+	if eff.ExpectedStatus != "" {
+		expectedStatus = &eff.ExpectedStatus
+	}
 	result, err := m.Apply(TransitionIntent{
 		TaskID:         id,
 		ToStatus:       eff.ToStatus,
 		Actor:          "effect:" + source,
 		Extra:          eff.Extra,
+		ExpectedStatus: expectedStatus,
 		IdempotencyKey: statusEffectStepID(source, eff.ToStatus, eff.Extra),
 	})
 	if err != nil {

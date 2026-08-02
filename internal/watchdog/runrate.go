@@ -55,6 +55,7 @@ func (w *Watchdog) checkRunRate(now time.Time) {
 			// restart/reattach recovery from immediately re-dispatching the same
 			// storm again.
 			task.StatusBlocked,
+			t.Status,
 			reason,
 		); err != nil {
 			w.logger.Error("watchdog.runrate.update", "task_id", t.ID, "err", err)

@@ -276,6 +276,108 @@ func TestFetchOriginNoRemote(t *testing.T) {
 	}
 }
 
+func TestFetchRemoteBranchTimesOutNetworkGit(t *testing.T) {
+	oldTimeout := networkGitTimeout
+	networkGitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { networkGitTimeout = oldTimeout })
+
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	started := time.Now()
+	err := FetchRemoteBranch(context.Background(), t.TempDir(), "fork", "main")
+	if err == nil {
+		t.Fatal("FetchRemoteBranch succeeded with a hung git process")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("FetchRemoteBranch returned after %s, want bounded network timeout", elapsed)
+	}
+}
+
+func TestRemoteGitOperationsTimeOut(t *testing.T) {
+	oldTimeout := networkGitTimeout
+	networkGitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { networkGitTimeout = oldTimeout })
+
+	pushWorktree := initRepoWithCommit(t)
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("locate git: %v", err)
+	}
+	// pushLocked resolves the shared git dir before it starts the remote
+	// transport. Preserve only that local rev-parse call, then hang every
+	// remote operation the test exercises.
+	fakeGit := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = rev-parse ]; then exec %q \"$@\"; fi\nexec sleep 1\n", realGit)
+	if err := os.WriteFile(git, []byte(fakeGit), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "ls-remote",
+			run: func() error {
+				_, err := RemoteBranchHead(context.Background(), t.TempDir(), "origin", "main")
+				return err
+			},
+		},
+		{
+			name: "linked-worktree-fetch",
+			run: func() error {
+				return refreshTrackingRef(context.Background(), t.TempDir(), "origin", "main")
+			},
+		},
+		{
+			name: "push",
+			run: func() error {
+				return pushLocked(context.Background(), pushWorktree, "push", "origin", "main")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			started := time.Now()
+			if err := tt.run(); err == nil {
+				t.Fatal("remote git operation succeeded with a hung git process")
+			}
+			if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+				t.Fatalf("remote git operation returned after %s, want bounded network timeout", elapsed)
+			}
+		})
+	}
+}
+
+func TestExecGitPushProbeTimesOut(t *testing.T) {
+	oldTimeout := networkGitTimeout
+	networkGitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { networkGitTimeout = oldTimeout })
+
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	started := time.Now()
+	_, err := execGitPushProbe(context.Background(), t.TempDir(), nil, "push", "--dry-run", "origin", "HEAD")
+	if err == nil {
+		t.Fatal("push credential probe succeeded with a hung git process")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("push credential probe returned after %s, want bounded network timeout", elapsed)
+	}
+}
+
 // TestFetchOriginTTLSkipsRepeatFetch proves the FetchTTL cache added for
 // issue #1527: within TTL, a second FetchOrigin call against the same bare
 // clone must not see a commit pushed to origin after the first call — the
@@ -1962,6 +2064,37 @@ func TestPushUpstream_UsesPushEnv(t *testing.T) {
 
 	if err := PushUpstream(context.Background(), wtPath, "synapse/test"); err != nil {
 		t.Fatalf("PushUpstream should succeed with pushEnv's GH_TOKEN visible to the pre-push hook: %v", err)
+	}
+}
+
+func TestPushUpstream_RefreshesAppTokenBeforePushEnvSnapshot(t *testing.T) {
+	_, wtPath := initWorktree(t)
+
+	if err := InstallHooks(context.Background(), wtPath, &ChecksConfig{
+		PrePush: []string{`test "$GH_TOKEN" = "installation-token-after-refresh"`},
+	}); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	refreshed := false
+	origRefresh := forceRefreshAppToken
+	forceRefreshAppToken = func(context.Context) error {
+		refreshed = true
+		return nil
+	}
+	t.Cleanup(func() { forceRefreshAppToken = origRefresh })
+
+	origPushEnv := pushEnv
+	pushEnv = func() []string {
+		if !refreshed {
+			t.Fatal("pushEnv was snapshotted before ForceRefreshAppToken")
+		}
+		return append(os.Environ(), "GH_TOKEN=installation-token-after-refresh")
+	}
+	t.Cleanup(func() { pushEnv = origPushEnv })
+
+	if err := PushUpstream(context.Background(), wtPath, "synapse/test"); err != nil {
+		t.Fatalf("PushUpstream should refresh before reading pushEnv: %v", err)
 	}
 }
 

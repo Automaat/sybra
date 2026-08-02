@@ -180,8 +180,9 @@ func (r *remediator) refreshHumanRequiredStuck(a Anomaly) (string, error) {
 func (r *remediator) retryKnownLostAgentStuck(a Anomaly, t task.Task) (string, error) {
 	tags := append(slices.Clone(t.Tags), monitorAutoRetriedTag)
 	if _, err := r.tasks.ApplyStatusEffect(a.TaskID, task.StatusEffect{
-		Source:   "monitor.stuck-human-blocked.retry-known-lost-agent",
-		ToStatus: task.StatusInProgress,
+		Source:         "monitor.stuck-human-blocked.retry-known-lost-agent",
+		ToStatus:       task.StatusInProgress,
+		ExpectedStatus: t.Status,
 		Extra: task.Update{
 			StatusReason: task.Ptr("monitor: stall matches an already-tracked lost_agent investigation; auto-retrying"),
 			Tags:         &tags,

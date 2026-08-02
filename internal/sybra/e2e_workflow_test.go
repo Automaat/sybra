@@ -2475,6 +2475,9 @@ func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
 
 	wfID, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
 		map[string]string{"task.status": string(task.StatusTesting)},
@@ -2515,6 +2518,9 @@ func TestE2E_TestingTaskWorkflow_LongPassVerdictSurvivesTruncation(t *testing.T)
 
 	created, err := env.tasks.Create("manual test long pass", "", "headless")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2714,6 +2720,9 @@ func TestE2E_TestingTaskWorkflow_InfraFailureOpensPRAtCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
 		map[string]string{"task.status": string(task.StatusTesting)},
@@ -2909,6 +2918,9 @@ func TestE2E_Codex_TestVerdict_Pass_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
 		map[string]string{"task.status": string(task.StatusTesting)},
@@ -2947,6 +2959,9 @@ func TestE2E_Codex_TestVerdict_Pass_JSON_WithTrailingEmptyItem(t *testing.T) {
 
 	created, err := env.tasks.Create("codex json verdict pass with trailing item", "", "headless")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3044,6 +3059,9 @@ func TestE2E_Codex_TestVerdict_Pass_JSON_WithMandatorySkillReceiptPreamble(t *te
 
 	created, err := env.tasks.Create("codex json verdict pass with skill receipt", "", "headless")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -5265,7 +5283,7 @@ steps:
     name: Review Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:
@@ -5321,7 +5339,7 @@ steps:
     name: Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
         - reject
@@ -5902,7 +5920,7 @@ steps:
     name: Loop Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
         - reject
@@ -5917,7 +5935,7 @@ steps:
     name: Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:
@@ -5938,7 +5956,7 @@ steps:
     name: Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:

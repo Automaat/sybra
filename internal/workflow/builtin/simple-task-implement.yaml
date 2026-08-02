@@ -44,7 +44,7 @@ steps:
     config:
       role: implementation
       mode: "{{.Task.AgentMode}}"
-      model: sonnet
+      model: '{{if getvar .Vars "verify_retry_model"}}{{getvar .Vars "verify_retry_model"}}{{else}}cheap{{end}}'
       max_retries: 2
       prompt: >-
         Implement this task. When done, commit your work and push the branch to
