@@ -613,11 +613,30 @@ func looksLikeGitDir(dir string) bool {
 	return true
 }
 
+var checkpointRunRecoveryCommit = runRecoveryCommit
+
 // CheckpointCommit stages and commits the current worktree state with message.
 // Returns committed=false when the tree is already clean. Unlike
 // AutoCommitUncommitted this is strict: any git failure is returned so callers
 // never assume durable state exists when the checkpoint commit did not land.
+//
+// Linked worktrees share one bare clone object store. When a stale worktree
+// admin ref or missing object poisons that shared store, `git add`/`commit` can
+// fail with "invalid object" even though the task's edits are otherwise
+// recoverable. Repair the shared clone and retry once before surfacing the
+// failure to the workflow.
 func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bool, err error) {
+	committed, err = checkpointCommitOnce(ctx, wtPath, message)
+	if err == nil || !IsBadRefError(err) {
+		return committed, err
+	}
+	if repairErr := repairCheckpointWorktree(ctx, wtPath); repairErr != nil {
+		return false, err
+	}
+	return checkpointCommitOnce(ctx, wtPath, message)
+}
+
+func checkpointCommitOnce(ctx context.Context, wtPath, message string) (committed bool, err error) {
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = wtPath
 	statusOut, err := statusCmd.CombinedOutput()
@@ -634,10 +653,20 @@ func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bo
 		return false, fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	if err := runRecoveryCommit(ctx, wtPath, message); err != nil {
+	if err := checkpointRunRecoveryCommit(ctx, wtPath, message); err != nil {
 		return false, fmt.Errorf("checkpoint: %w", err)
 	}
 	return true, nil
+}
+
+func repairCheckpointWorktree(ctx context.Context, wtPath string) error {
+	commonDir, err := gitCommonDir(ctx, wtPath)
+	if err != nil {
+		return err
+	}
+	branchOut, _ := exec.CommandContext(ctx, "git", "-C", wtPath, "branch", "--show-current").Output()
+	_, err = RepairBareClone(ctx, commonDir, strings.TrimSpace(string(branchOut)))
+	return err
 }
 
 // SanitizeWorktree cleans up worktree state that would confuse agents:
@@ -1574,20 +1603,35 @@ func pushPreflightRefspec(ctx context.Context, worktreePath string) (string, err
 	return "HEAD:refs/heads/sybra-preflight/" + head, nil
 }
 
+// runGitPushProbe executes a single git invocation for the push-credential
+// preflight probe, returning its combined stdout+stderr output and the
+// resulting error. Indirected (default: execGitPushProbe) so tests can
+// substitute a fake command double instead of intercepting the real `git`
+// binary through a PATH-installed wrapper script — that approach
+// reproducibly failed to intercept the probe on Darwin (#2744), so those
+// tests silently exercised the real ambient git/credential state instead of
+// the fixture.
+var runGitPushProbe = execGitPushProbe
+
+func execGitPushProbe(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 func gitPushDryRunAuthMessage(ctx context.Context, worktreePath, remote, refspec string, env []string) (string, error) {
 	// --no-verify skips the project's pre-push hook. The hook (e.g. `go test
 	// ./...` + frontend check) has nothing to do with the credential path this
 	// probe validates; without this it runs the whole test suite per attempt —
 	// up to len(pushPreflightRetryBackoffs)+1 times — defeating the "cheap
 	// credential check" contract and burying the real error under hook output.
-	cmd := exec.CommandContext(ctx, "git", "push", "--dry-run", "--no-verify", remote, refspec)
-	cmd.Dir = worktreePath
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	out, err := runGitPushProbe(ctx, worktreePath, env, "push", "--dry-run", "--no-verify", remote, refspec)
 	if err == nil {
 		return "", nil
 	}
-	msg := strings.TrimSpace(string(out))
+	msg := strings.TrimSpace(out)
 	if msg == "" {
 		msg = err.Error()
 	}

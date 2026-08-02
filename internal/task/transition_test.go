@@ -367,6 +367,9 @@ func TestApplyStatusEffect_RoutesThroughApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusInReview)}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
 
 	updated, err := m.ApplyStatusEffect(created.ID, StatusEffect{
 		Source:   "review.pr-monitor.closed-pr",

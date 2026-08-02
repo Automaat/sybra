@@ -137,16 +137,16 @@ func TestExecVerifyChecks_AutoFixRewindsToImplement(t *testing.T) {
 	}
 }
 
-func TestExecVerifyChecks_AutoFixReasksPastOldCap(t *testing.T) {
+func TestExecVerifyChecks_AutoFixReasksBelowCeiling(t *testing.T) {
 	t.Parallel()
 	wt := makeLintVerifyRepo(t)
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{lintVerifyCommand("internal/foo/foo.go")})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	// Past the old cap of 2, a code-fixable lint failure keeps being re-asked
-	// rather than escalating; it escalates only at verifyChecksAutoFixCeiling.
+	// A code-fixable lint failure below the generic ceiling keeps being
+	// re-asked rather than escalating.
 	wf := implementedExec()
-	wf.Variables["step.verify_checks.auto_fix"] = "9"
+	wf.Variables["step.verify_checks.auto_fix"] = "2"
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if !errors.Is(err, errStepParked) {
 		t.Fatalf("err = %v, want errStepParked (keep re-asking, never escalate)", err)
@@ -157,11 +157,66 @@ func TestExecVerifyChecks_AutoFixReasksPastOldCap(t *testing.T) {
 	if wf.CurrentStep != verifyChecksImplStepID || wf.State != ExecWaiting {
 		t.Fatalf("workflow after rewind = %+v, want implement/ExecWaiting", wf)
 	}
-	if got := wf.Variables["step.verify_checks.auto_fix"]; got != "10" {
-		t.Errorf("auto_fix counter = %q, want 10", got)
+	if got := wf.Variables["step.verify_checks.auto_fix"]; got != "3" {
+		t.Errorf("auto_fix counter = %q, want 3", got)
 	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want in-progress (never escalated to human)", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_AutoFixIdenticalFingerprintEscalatesEarly(t *testing.T) {
+	t.Parallel()
+	wt := makeLintVerifyRepo(t)
+	cmd := lintVerifyCommand("internal/foo/foo.go")
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("first attempt err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("first parked output should be zero, got %+v", out)
+	}
+	now := time.Now().UTC()
+	wf.RecordStep(StepRecord{StepID: verifyChecksImplStepID, Status: "completed", StartedAt: now, EndedAt: now})
+
+	out, err = engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("second attempt err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("second parked output should be zero, got %+v", out)
+	}
+	now = time.Now().UTC()
+	wf.RecordStep(StepRecord{StepID: verifyChecksImplStepID, Status: "completed", StartedAt: now, EndedAt: now})
+
+	out, err = engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "repeated identical auto-fix failures") {
+		t.Fatalf("reason = %q, want identical-failure exhaustion", ti.StatusReason)
+	}
+}
+
+func TestAutoFixFailureFingerprintFallsBackToOutputTail(t *testing.T) {
+	t.Parallel()
+	const cmd = "mise exec -- go test ./internal/workflow"
+
+	first := autoFixFailureFingerprint(cmd, "$ "+cmd+"\n--- FAIL: TestAlpha\n    alpha_test.go:12: got false\nFAIL\n")
+	second := autoFixFailureFingerprint(cmd, "$ "+cmd+"\n--- FAIL: TestBeta\n    beta_test.go:34: got 0\nFAIL\n")
+	if first == second {
+		t.Fatal("fingerprints matched for distinct non-frontend failures under the same command")
 	}
 }
 
@@ -366,7 +421,7 @@ func TestExecVerifyChecks_DeterministicFrontendFailureRewindsToImplement(t *test
 	}
 }
 
-func TestExecVerifyChecks_DeterministicFrontendFailureKeepsReasking(t *testing.T) {
+func TestExecVerifyChecks_DeterministicFrontendFailureReasksBelowCeiling(t *testing.T) {
 	t.Parallel()
 	wt := makeFrontendVerifyRepo(t)
 	binDir := writeFrontendVerifyMise(t)
@@ -375,7 +430,7 @@ func TestExecVerifyChecks_DeterministicFrontendFailureKeepsReasking(t *testing.T
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
 	wf := implementedExec()
-	wf.Variables["step.verify_checks.auto_fix"] = "9"
+	wf.Variables["step.verify_checks.auto_fix"] = "2"
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if !errors.Is(err, errStepParked) {
 		t.Fatalf("err = %v, want errStepParked (keep re-asking, never escalate)", err)

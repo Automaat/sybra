@@ -310,6 +310,9 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 	if err := config.ValidateResolvedConfig(&next); err != nil {
 		return validationError(err.Error())
 	}
+	if err := config.ValidateUnattendedPosture(&next); err != nil {
+		return validationError(err.Error())
+	}
 	return nil
 }
 

@@ -115,7 +115,7 @@ func (e *Engine) withHumanActionLock(taskID string, fn func() error) error {
 	e.mu.Lock()
 	if _, busy := e.humanAction[taskID]; busy {
 		e.mu.Unlock()
-		return fmt.Errorf("task %s human action already in progress", taskID)
+		return conflictError(fmt.Sprintf("task %s human action already in progress", taskID))
 	}
 	e.humanAction[taskID] = struct{}{}
 	e.mu.Unlock()
@@ -146,7 +146,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		}
 	}
 	if t.Workflow == nil || t.Workflow.State != ExecWaiting {
-		return fmt.Errorf("task %s is not waiting for human action", taskID)
+		return conflictError(fmt.Sprintf("task %s is not waiting for human action", taskID))
 	}
 	def, err := e.store.Get(t.Workflow.WorkflowID)
 	if err != nil {
@@ -167,7 +167,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 				return err
 			}
 			if t.Workflow == nil {
-				return fmt.Errorf("task %s is not waiting for human action", taskID)
+				return conflictError(fmt.Sprintf("task %s is not waiting for human action", taskID))
 			}
 			def, err = e.store.Get(t.Workflow.WorkflowID)
 			if err != nil {
@@ -180,7 +180,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		}
 	}
 	if currentStep.Type != StepWaitHuman {
-		return fmt.Errorf("task %s is not at a wait_human step", taskID)
+		return conflictError(fmt.Sprintf("task %s is not at a wait_human step", taskID))
 	}
 	if err := validateHumanAction(currentStep, action); err != nil {
 		return err
@@ -239,7 +239,7 @@ func (e *Engine) recoverMissedWaitForStatusHumanGate(taskID string, t TaskInfo, 
 
 func validateHumanAction(step *Step, action string) error {
 	if len(step.Config.HumanActions) > 0 && !slices.Contains(step.Config.HumanActions, action) {
-		return fmt.Errorf("invalid human action %q for step %q", action, step.ID)
+		return validationError(fmt.Sprintf("invalid human action %q for step %q", action, step.ID))
 	}
 	return nil
 }
@@ -335,6 +335,10 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 // found" error loop that followed workflow completion in older versions —
 // but that legitimacy still needs to be visible when diagnosing a stall.
 func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
+	// Held past the final clearAgentStep so pruneStaleAgentRoutes cannot mistake
+	// this task's still-needed routes for orphans while the advance is underway.
+	defer e.enterCompletion(taskID)()
+
 	routeMu := e.taskRouteMutex(taskID)
 	routeMu.Lock()
 	e.mu.Lock()
@@ -1101,6 +1105,15 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 		mu.Unlock()
 	}
 
+	// Routes below stand in for "an agent is still working on this step", but
+	// nothing except an agent-completion path ever clears one. Retire the ones
+	// whose agent is gone first, or this task is skipped forever (#2824). Not
+	// while advancing: the route table is mid-rewrite and the skip is decided
+	// anyway.
+	if !advancing {
+		e.pruneStaleAgentRoutes(taskID, step)
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1108,7 +1121,7 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	hasOutstandingAgent := false
 	if fresh, err := e.tasks.GetTask(taskID); err == nil && fresh.Workflow != nil {
 		for _, stepID := range fresh.Workflow.AgentRoutes {
-			if stepID == step.ID || parallelHasChild(step, stepID) || bestOfNStepMatches(step, stepID) {
+			if routeMatchesStep(step, stepID) {
 				hasOutstandingAgent = true
 				break
 			}

@@ -12,15 +12,20 @@ func TestManagerApplyStatusEffect_RecordsEffectAndFiresHookOnce(t *testing.T) {
 	t.Parallel()
 	m, emitter := newTestManager(t)
 
-	var transitions []string
-	m.SetStatusChangeHook(func(_ string, from, to string) {
-		transitions = append(transitions, from+"->"+to)
-	})
-
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	inReview, err := m.Update(created.ID, Update{Status: Ptr(StatusInReview)})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	var transitions []string
+	m.SetStatusChangeHook(func(_ string, from, to string) {
+		transitions = append(transitions, from+"->"+to)
+	})
+	baseline := emitter.names()
 
 	updated, err := m.ApplyStatusEffect(created.ID, StatusEffect{
 		Source:   "review.pr-monitor.closed-pr",
@@ -45,16 +50,16 @@ func TestManagerApplyStatusEffect_RecordsEffectAndFiresHookOnce(t *testing.T) {
 	if updated.EffectLog[0].CompletedAt == nil {
 		t.Fatal("completed_at not recorded")
 	}
-	if updated.EffectLog[0].ID.Generation != created.Generation {
-		t.Fatalf("effect generation = %d, want %d", updated.EffectLog[0].ID.Generation, created.Generation)
+	if updated.EffectLog[0].ID.Generation != inReview.Generation {
+		t.Fatalf("effect generation = %d, want %d", updated.EffectLog[0].ID.Generation, inReview.Generation)
 	}
-	if len(transitions) != 1 || transitions[0] != "todo->done" {
-		t.Fatalf("transitions = %v, want [todo->done]", transitions)
+	if len(transitions) != 1 || transitions[0] != "in-review->done" {
+		t.Fatalf("transitions = %v, want [in-review->done]", transitions)
 	}
 
 	names := emitter.names()
-	if len(names) != 2 || names[1] != events.TaskUpdated {
-		t.Fatalf("events = %v, want create+update", names)
+	if len(names) != len(baseline)+1 || names[len(names)-1] != events.TaskUpdated {
+		t.Fatalf("events = %v, want baseline+update", names)
 	}
 }
 
@@ -65,6 +70,9 @@ func TestManagerApplyStatusEffect_DedupesCompletedEffect(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusInReview)}); err != nil {
+		t.Fatalf("Update: %v", err)
 	}
 
 	eff := StatusEffect{
@@ -91,8 +99,8 @@ func TestManagerApplyStatusEffect_DedupesCompletedEffect(t *testing.T) {
 	}
 
 	names := emitter.names()
-	if len(names) != 2 {
-		t.Fatalf("events = %v, want only create+first update", names)
+	if len(names) != 3 {
+		t.Fatalf("events = %v, want only create+in-review update+first done update", names)
 	}
 }
 

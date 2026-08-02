@@ -157,6 +157,9 @@ func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Ste
 		vars = map[string]string{}
 	}
 	vars[WorkflowVarDir] = wtPath
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		vars[WorkflowVarSidecarDir] = sidecar
+	}
 	recoveredPath, rErr := RenderTemplate(cfg.From, TemplateContext{
 		Task:     info,
 		Step:     *step,
@@ -171,6 +174,9 @@ func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Ste
 		return "", nil, false
 	}
 	info.Workflow.SetVar(WorkflowVarDir, wtPath)
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		info.Workflow.SetVar(WorkflowVarSidecarDir, sidecar)
+	}
 	if setErr := e.tasks.SetWorkflow(taskID, info.Workflow); setErr != nil {
 		e.logger.Warn("workflow.import-sidecar.recover.persist", "task_id", taskID, "step", stepID, "err", setErr)
 	}
@@ -190,6 +196,18 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) error {
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
+	// Seed the sidecar dir before anything renders a template. Setting it only
+	// after dispatch would leave the first run of a verifier role resolving
+	// {{sidecardir .Vars}} to the worktree — which that role cannot write —
+	// and the sandbox denial surfaces as an empty sidecar rather than an
+	// error. ctx carries its own copy of the vars, so both must be updated.
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
+		if ctx.Vars == nil {
+			ctx.Vars = map[string]string{}
+		}
+		ctx.Vars[WorkflowVarSidecarDir] = sidecar
+	}
 	routeMu := e.taskRouteMutex(taskID)
 	routeMu.Lock()
 	defer routeMu.Unlock()
@@ -322,6 +340,9 @@ func resolveRunAgentModel(model string, ctx TemplateContext) string {
 func (e *Engine) persistStartedAgent(taskID string, step *Step, wfExec *Execution, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir string) error {
 	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
 		wfExec.SetVar(WorkflowVarDir, startedDir)
+		if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+			wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
+		}
 	}
 	if baselineRef != "" {
 		wfExec.SetVar(tamperBaselineVar(step.ID), baselineRef)
