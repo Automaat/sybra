@@ -15,6 +15,7 @@ import (
 // received.
 func fakeGhOnPath(t *testing.T) string {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	script := "#!/bin/sh\nprintf 'REAL-GH:'\nfor a in \"$@\"; do printf ' [%s]' \"$a\"; done\nprintf '\\n'\n"
 	path := filepath.Join(dir, "gh")
@@ -86,6 +87,7 @@ func runCredentialShim(t *testing.T, shimDir, input string, args ...string) (std
 }
 
 func TestGhShim_MintsFreshAppTokenPerGhInvocation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	ghDir := t.TempDir()
 	realGh := filepath.Join(ghDir, "gh")
 	ghScript := "#!/bin/sh\nprintf 'REAL-GH GH_TOKEN=%s GITHUB_TOKEN=%s:' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\nfor a in \"$@\"; do printf ' [%s]' \"$a\"; done\nprintf '\\n'\n"
@@ -131,6 +133,7 @@ func TestGhShim_MintsFreshAppTokenPerGhInvocation(t *testing.T) {
 }
 
 func TestGhShim_UsesResolvedSybraCLIWhenInvocationPathOmitsIt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	ghDir := t.TempDir()
 	realGh := filepath.Join(ghDir, "gh")
 	ghScript := "#!/bin/sh\nprintf 'REAL-GH GH_TOKEN=%s GITHUB_TOKEN=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"
@@ -198,6 +201,48 @@ func TestLookRealSybraCLI_ReturnsAbsolutePath(t *testing.T) {
 	}
 	if !os.SameFile(gotInfo, wantInfo) {
 		t.Fatalf("lookRealSybraCLI() = %q, not same file as %q", got, fakeCLI)
+	}
+}
+
+func TestLookRealSybraCLI_PrefersStableHomeInstallOverStalePathEntry(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	staleDir := filepath.Join(root, "mise", "installs", "go", "old", "bin")
+	stableDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stableDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staleCLI := filepath.Join(staleDir, "sybra-cli")
+	stableCLI := filepath.Join(stableDir, "sybra-cli")
+	if err := os.WriteFile(staleCLI, []byte("#!/bin/sh\nexit 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(staleCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stableCLI, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stableCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", staleDir+string(os.PathListSeparator)+stableDir)
+
+	got := lookRealSybraCLI()
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat resolved path %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(stableCLI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("lookRealSybraCLI() = %q, want stable home install %q over stale PATH entry %q", got, stableCLI, staleCLI)
 	}
 }
 
@@ -282,6 +327,7 @@ func TestGitCredentialShim_IgnoresNonGitHubAndStoreErase(t *testing.T) {
 }
 
 func TestGhShim_DoesNotMintAppTokenForBlockedInvocation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	ghDir := t.TempDir()
 	realGh := filepath.Join(ghDir, "gh")
 	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'REAL-GH\\n'\n"), 0o600); err != nil {
@@ -488,6 +534,7 @@ func TestWriteGhShim_RewriteIsAtomicAndIdempotent(t *testing.T) {
 }
 
 func TestWriteGhShim_NoGhInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
 	dir, err := writeGhShim(t.TempDir())
 	if err != nil {
