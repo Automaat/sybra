@@ -176,7 +176,44 @@ func effortArgs(effort string) []string {
 // wakeup and then ends its turn strands itself — zero commits, clean exit —
 // which verify_commits cannot tell apart from a task with nothing to do.
 func claudePermissionArgs(allowed []string, requirePerms bool, mode string) []string {
-	return append(claudePermissionModeArgs(allowed, requirePerms, mode), "--disallowedTools", "ScheduleWakeup")
+	return append(claudePermissionModeArgs(allowed, requirePerms, mode),
+		"--disallowedTools", strings.Join(headlessDeniedTools, ","))
+}
+
+// headlessDeniedTools names tools a Sybra headless run has no legitimate use
+// for. Denial rather than an allowlist is deliberate: a non-empty
+// --allowedTools outranks agent.require_permissions entirely (see the
+// precedence in claudePermissionModeArgs), so an allowlist would silently
+// switch the permission layer off as a side effect of shrinking the surface.
+//
+// Each entry is denied because the capability is either meaningless for a
+// single-shot process or already owned by Sybra itself, not merely because a
+// log sample happened not to exercise it. Tools that are plausibly useful but
+// unused — WebFetch, WebSearch, Workflow — are deliberately left available:
+// absence of use over one window is not evidence a capability is unwanted,
+// and the sample is dominated by the orchestrator role.
+var headlessDeniedTools = []string{
+	// A headless run is one `claude -p` process that reads a stream and
+	// exits, so nothing re-invokes it later. A run that schedules a wakeup
+	// and ends its turn strands itself — zero commits, clean exit — which
+	// verify_commits cannot tell apart from a task with nothing to do.
+	"ScheduleWakeup",
+	// Scheduling belongs to the operator's own cron, outside Sybra entirely
+	// (see the orchestrator brain in CLAUDE.md). An agent creating cron
+	// entries would outlive the task that spawned it.
+	"CronCreate", "CronDelete", "CronList",
+	// Sybra owns worktree lifecycle: it prepares one per task before the
+	// agent starts and cleans it up after. An agent moving itself between
+	// worktrees would invalidate the tamper baseline its review is diffed
+	// against.
+	"EnterWorktree", "ExitWorktree",
+	// Task state is mutated through sybra-cli, which applies the same
+	// validation the GUI does. These bypass it.
+	"TaskGet", "TaskList",
+	// No notebooks in any project Sybra drives.
+	"NotebookEdit",
+	// Outward-facing side effects with no task-scoped meaning.
+	"PushNotification", "RemoteTrigger", "DesignSync",
 }
 
 func claudePermissionModeArgs(allowed []string, requirePerms bool, mode string) []string {
