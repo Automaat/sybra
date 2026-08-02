@@ -1641,7 +1641,7 @@ func (a *Agent) applyStreamEventState(ev StreamEvent) {
 	}
 	for i := range ev.toolUses {
 		a.RememberToolUse(ev.toolUses[i].ID, ev.toolUses[i].Name, ev.toolUses[i].Input)
-		a.ledgerToolCall(ev.toolUses[i].Name, ev.toolUses[i].Input, ev.Timestamp)
+		a.ledgerToolCall(ev.toolUses[i].ID, ev.toolUses[i].Name, ev.toolUses[i].Input, ev.Timestamp)
 		if ev.toolUses[i].Name != "Bash" {
 			continue
 		}
@@ -1997,7 +1997,7 @@ func (a *Agent) SetToolCallRecorder(fn func(toolledger.Record)) {
 // ledgerToolCall records one observed tool call. Reads the identity fields
 // under the same lock the rest of the stream path uses, so a concurrent
 // role/provider update cannot tear the record.
-func (a *Agent) ledgerToolCall(name string, input map[string]any, ts time.Time) {
+func (a *Agent) ledgerToolCall(toolUseID, name string, input map[string]any, ts time.Time) {
 	if a == nil {
 		return
 	}
@@ -2010,11 +2010,19 @@ func (a *Agent) ledgerToolCall(name string, input map[string]any, ts time.Time) 
 		Role:      string(a.Role),
 		Provider:  a.Provider,
 		Tool:      name,
+		ToolUseID: toolUseID,
 		Input:     input,
 	}
 	a.mu.RUnlock()
 	if fn == nil {
 		return
+	}
+	// Resolve the role only after unlocking: EffectiveRole takes the same
+	// lock, and a legacy agent carries no Role field — it is derived from the
+	// agent name — so reading the field alone silently drops the role from
+	// exactly the records where it is least obvious.
+	if rec.Role == "" {
+		rec.Role = string(a.EffectiveRole())
 	}
 	fn(rec)
 }

@@ -24,12 +24,17 @@ import (
 
 // Record is one tool call as it was requested.
 type Record struct {
-	Timestamp time.Time      `json:"ts"`
-	AgentID   string         `json:"agentId"`
-	TaskID    string         `json:"taskId,omitempty"`
-	Role      string         `json:"role,omitempty"`
-	Provider  string         `json:"provider,omitempty"`
-	Tool      string         `json:"tool"`
+	Timestamp time.Time `json:"ts"`
+	AgentID   string    `json:"agentId"`
+	TaskID    string    `json:"taskId,omitempty"`
+	Role      string    `json:"role,omitempty"`
+	Provider  string    `json:"provider,omitempty"`
+	Tool      string    `json:"tool"`
+	// ToolUseID joins the two records one call can produce: an observation
+	// from the provider stream, and a decision from the PreToolUse hook.
+	// Without it, mining an approval-posture window double-counts every
+	// allowed call.
+	ToolUseID string         `json:"toolUseId,omitempty"`
 	Input     map[string]any `json:"input,omitempty"`
 	// Decision is empty for an observation, or the verdict a permission layer
 	// reached ("allow"/"deny"). Approvals matter as much as refusals: a corpus

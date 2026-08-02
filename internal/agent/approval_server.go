@@ -131,7 +131,10 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 
 	// Auto-approve safe read-only tools regardless of session.
 	if isSafeTool(input.ToolName) {
-		s.recordDecision("", input, "allow", "safe-tool")
+		// Resolve best-effort only: safe tools are allowed even when the
+		// session is unknown, but recording them without an agent would strip
+		// task/role/provider from the most common approvals in the ledger.
+		s.recordDecision(s.findAgentBySession(input.SessionID), input, "allow", "safe-tool")
 		s.respondAllow(w, input.ToolInput)
 		return
 	}
@@ -250,6 +253,7 @@ func (s *ApprovalServer) recordDecision(agentID string, input hookInput, decisio
 	rec := toolledger.Record{
 		AgentID:   agentID,
 		Tool:      input.ToolName,
+		ToolUseID: input.ToolUseID,
 		Input:     input.ToolInput,
 		Decision:  decision,
 		DecidedBy: by,

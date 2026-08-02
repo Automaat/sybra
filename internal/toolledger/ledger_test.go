@@ -24,7 +24,7 @@ func TestLogRecordsRegardlessOfDecision(t *testing.T) {
 
 	ts := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	records := []Record{
-		{Timestamp: ts, AgentID: "a1", Tool: "Bash", Input: map[string]any{"command": "go test ./..."}},
+		{Timestamp: ts, AgentID: "a1", Tool: "Bash", ToolUseID: "tu-1", Input: map[string]any{"command": "go test ./..."}},
 		{Timestamp: ts, AgentID: "a1", Tool: "Write", Decision: "allow", DecidedBy: "human"},
 		{Timestamp: ts, AgentID: "a1", Tool: "Bash", Decision: "deny", DecidedBy: "human"},
 		{Timestamp: ts, AgentID: "a1", Tool: "Read", Decision: "allow", DecidedBy: "safe-tool"},
@@ -50,6 +50,12 @@ func TestLogRecordsRegardlessOfDecision(t *testing.T) {
 	}
 	if got[3].DecidedBy != "safe-tool" {
 		t.Errorf("automatic approval attributed to %q, want safe-tool", got[3].DecidedBy)
+	}
+	// The join key is what keeps an approval-posture window from
+	// double-counting: one allowed call writes both an observation and a
+	// decision, and only ToolUseID relates them.
+	if got[0].ToolUseID != "tu-1" {
+		t.Errorf("ToolUseID = %q, want tu-1", got[0].ToolUseID)
 	}
 }
 

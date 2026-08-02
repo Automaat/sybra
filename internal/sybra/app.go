@@ -654,6 +654,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.audit != nil {
 		_ = a.audit.Close()
 	}
+	if a.toolLedger != nil {
+		_ = a.toolLedger.Close()
+	}
 	if a.homeUnlock != nil {
 		if err := a.homeUnlock(); err != nil {
 			a.logger.Warn("app.home_unlock.failed", "err", err)
