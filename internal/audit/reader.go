@@ -47,8 +47,14 @@ func auditFiles(dir string, since, until time.Time) ([]string, error) {
 		return nil, err
 	}
 
-	sinceDay := since.Format(time.DateOnly)
-	untilDay := until.Format(time.DateOnly)
+	// Compare in UTC: Logger.file names each file from the event's UTC
+	// timestamp, while callers pass a window built from time.Now(), which
+	// carries the local zone. Formatting the bounds in local time makes the
+	// filename window disagree with the writer for the hours where the two
+	// dates differ — every query in that window silently returns nothing
+	// rather than erroring.
+	sinceDay := since.UTC().Format(time.DateOnly)
+	untilDay := until.UTC().Format(time.DateOnly)
 
 	var paths []string
 	for _, e := range entries {
