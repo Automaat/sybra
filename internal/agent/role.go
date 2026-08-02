@@ -77,6 +77,24 @@ func (r Role) JudgesWithoutWriting() bool {
 	}
 }
 
+// DiagnosesBlockedTask reports whether the role is dispatched *because* a
+// task is in a state that otherwise means "no agent should be running" —
+// human-required, or terminal.
+//
+// Both status reapers (watchdog.reapTaskAgentForStatus and
+// App.releaseTaskAgents) stop agents whose task reaches such a status. These
+// roles are the exception: killing them for the very condition they were sent
+// to resolve leaves the task stuck and the detector re-dispatching on its next
+// cycle, which is a livelock that costs a full agent run each pass.
+func (r Role) DiagnosesBlockedTask() bool {
+	switch r {
+	case RoleHumanReview, RoleMonitor:
+		return true
+	default:
+		return false
+	}
+}
+
 // AuthorsCode reports whether the role produces code commits and may therefore
 // be primed with the task's NOTES.md working memory. Only these roles inherit
 // the scratchpad: independent verifier roles (review, test-runner, eval) must
