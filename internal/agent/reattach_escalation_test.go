@@ -53,3 +53,13 @@ func TestTailHeadlessFile_ShutdownDuringTurnsEscalationDetaches(t *testing.T) {
 		t.Fatal("tailer did not exit after shutdown")
 	}
 }
+
+func TestResultBeforeOnlyForkOutput(t *testing.T) {
+	events := []StreamEvent{{Type: "result"}, {Type: "assistant", parentToolUseID: "fork"}, {Type: "result", Subtype: "error", parentToolUseID: "fork"}, {Type: "system", Subtype: "background_tasks_changed"}}
+	if found, isError := resultBeforeOnlyForkOutput(events); !found || isError {
+		t.Fatalf("resultBeforeOnlyForkOutput = (%v, %v), want clean result", found, isError)
+	}
+	if found, _ := resultBeforeOnlyForkOutput([]StreamEvent{{Type: "result"}, {Type: "init"}}); found {
+		t.Fatal("top-level retry event must hide prior result")
+	}
+}
