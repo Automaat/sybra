@@ -6879,13 +6879,7 @@ steps:
 	}
 }
 
-// TestHandleAgentComplete_ExhaustedSkillConsumesImportedSidecar pins the
-// imported-sidecar guard: when skill-receipt recovery is exhausted but the
-// mandatory sidecar the skill exists to produce (here code_review) was
-// actually imported onto the task, the workflow must consume that valid
-// artifact and advance rather than escalate to human-required on the missing
-// conformance receipt alone.
-func TestHandleAgentComplete_ExhaustedSkillConsumesImportedSidecar(t *testing.T) {
+func TestHandleAgentComplete_UnverifiedSkillAfterRetryContinuesWithImportedSidecar(t *testing.T) {
 	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
 name: Skill Receipt
 trigger:
@@ -6895,7 +6889,7 @@ steps:
     name: Run
     type: run_agent
     config:
-      role: plan-critic
+      role: review
       mode: headless
       provider: codex
       prompt: "Run /adversarial-review now."
@@ -6903,6 +6897,13 @@ steps:
         from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
         kind: code_review
         required: true
+    next:
+      - goto: require_review
+  - id: require_review
+    name: Require Review
+    type: require_sidecar
+    config:
+      sidecar: code_review
     next:
       - goto: done
   - id: done
@@ -6916,10 +6917,9 @@ steps:
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".sybra-review-t1.md"), []byte("## Review\n\nLGTM\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".sybra-review-t1.md"), []byte("Review Verdict: CLEAN\n\nNo findings.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
 	tasks.Put(TaskInfo{
 		ID:        "t1",
 		Status:    "in-progress",
@@ -6935,7 +6935,7 @@ steps:
 		},
 		AgentRuns: []AgentRunInfo{{
 			AgentID:            "agent-2",
-			Role:               "plan-critic",
+			Role:               "review",
 			Provider:           "codex",
 			RequestedSkill:     "adversarial-review",
 			SkillExecutionMode: "injected",
@@ -6943,23 +6943,27 @@ steps:
 		}},
 	})
 
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-2", Result: "done", Success: true})
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "agent-2",
+		Result:  "review complete without receipt",
+		Success: true,
+	})
 
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ti.Status == "human-required" {
-		t.Fatalf("Status = %q, want the imported code_review sidecar to be consumed rather than escalated", ti.Status)
-	}
 	if ti.Status != "done" {
-		t.Fatalf("Status = %q, want done (workflow advanced past the exhausted skill step)", ti.Status)
+		t.Fatalf("Status = %q, want done", ti.Status)
+	}
+	if !strings.Contains(ti.CodeReview, "Review Verdict: CLEAN") {
+		t.Fatalf("CodeReview = %q, want imported review sidecar", ti.CodeReview)
 	}
 	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
-		t.Fatalf("skill receipt retry var = %q, want cleared after consuming the sidecar", got)
+		t.Fatalf("skill receipt retry var = %q, want cleared after sidecar continuation", got)
 	}
 	if len(agents.calls) != 0 {
-		t.Fatalf("StartAgent calls = %d, want no further retry", len(agents.calls))
+		t.Fatalf("StartAgent calls = %d, want no third attempt", len(agents.calls))
 	}
 }
 
@@ -9999,6 +10003,54 @@ func TestExecVerifyCommits_AutoCommitAdoptsEquivalentRemoteCommitAfterRetry(t *t
 	}
 	if status := strings.TrimSpace(runGitAt(t, wtDir, "status", "--porcelain")); status != "" {
 		t.Fatalf("worktree dirty after reconcile: %q", status)
+	}
+}
+
+// TestExecVerifyCommits_EmptyRemoteBranchFlipsHumanRequired covers the
+// equivalent-tree remote-adopt bug: a task branch is pushed to origin but is
+// byte-identical to base (zero commits ahead), e.g. because the
+// implementation agent handed off to a background subagent and exited
+// without producing any work. verify_commits must not treat the pushed,
+// empty branch as completed work just because its tree matches the local
+// (also-empty) worktree tree.
+func TestExecVerifyCommits_EmptyRemoteBranchFlipsHumanRequired(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+
+	wtDir := t.TempDir()
+	runGitAt(t, wtDir, "init", "-b", "main")
+	runGitAt(t, wtDir, "config", "user.email", "test@test.com")
+	runGitAt(t, wtDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtDir, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtDir, "add", "README.md")
+	runGitAt(t, wtDir, "commit", "-m", "init")
+	runGitAt(t, wtDir, "remote", "add", "origin", remote)
+	runGitAt(t, wtDir, "push", "-u", "origin", "main")
+
+	// Task branch pushed to origin with no extra commits — byte-identical to
+	// base on both ends.
+	const branch = "feat/verify-commits-empty-remote"
+	runGitAt(t, wtDir, "checkout", "-b", branch)
+	runGitAt(t, wtDir, "push", "-u", "origin", branch)
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "no commits") {
+		t.Fatalf("Output = %q, want 'no commits' (empty pushed branch must not be adopted)", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("task status = %q, want human-required", ti.Status)
 	}
 }
 
