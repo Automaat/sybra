@@ -55,6 +55,12 @@ type sandboxSpec struct {
 	gitShared   []string
 	gitReadonly []string
 	sandboxHome string
+	// stateDenied are paths re-locked read-only *after* the writable roots,
+	// so one run cannot change how later runs behave. claude's state dir has
+	// to stay writable — a real run writes plugins/, sessions/, session-env/,
+	// shell-snapshots/ and projects/ — so the durable-config files are
+	// carved back out rather than the directory being narrowed (#2779).
+	stateDenied []string
 	tmp         string
 	sharedCache string
 	// readOnlyDir, when non-empty, is re-locked read-only after every writable

@@ -690,7 +690,8 @@ func enforceSpec(
 		// session transcript from there: measured on the server, a fully
 		// read-only ~/.claude still completes a run but fails resume with
 		// "No conversation found with session ID" (#2779).
-		claudeState:   agentStateRootEnsure(filepath.Join(".claude", "projects"), sandboxHome),
+		claudeState:   agentStateRoot(".claude", sandboxHome),
+		stateDenied:   claudeDurableConfigPaths(agentStateRoot(".claude", sandboxHome)),
 		codexState:    agentStateRoot(".codex", sandboxHome),
 		copilotState:  agentStateRoot(".copilot", sandboxHome),
 		opencodeState: agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
@@ -797,26 +798,6 @@ func dedupeGitRoots(roots []string) []string {
 		out = append(out, root)
 	}
 	return out
-}
-
-// agentStateRootEnsure is agentStateRoot for a subdirectory that may not
-// exist yet. canonicalizeRoot fails on a missing path, and the caller would
-// then fall back to the sandbox home — an allowlist that looks fine while
-// silently denying the CLI its real state dir. For claude that costs
-// --resume, and nothing errors at the point of failure.
-//
-// Separate from agentStateRoot on purpose: the other providers' roots are
-// whole dotfile directories, and creating those in the operator's home as a
-// side effect of sandbox setup is more than this needs to do.
-func agentStateRootEnsure(sub, fallback string) string {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return fallback
-	}
-	if err := os.MkdirAll(filepath.Join(home, sub), 0o700); err != nil {
-		return fallback
-	}
-	return agentStateRoot(sub, fallback)
 }
 
 func agentStateRoot(sub, fallback string) string {
@@ -1402,6 +1383,63 @@ func (m *Manager) providerForRun(name string) (string, error) {
 // safeArgRe matches only characters safe to embed in a shell command
 // without quoting: alphanumerics, dot, underscore, hyphen, forward-slash.
 var safeArgRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
+
+// claudeDurableConfigPaths lists the parts of claude's state dir that decide
+// how *future* runs behave: settings.json carries PreToolUse hooks, and
+// hooks/ holds their scripts. A run that edits either changes every later
+// run, including independent verifier roles, and survives worktree cleanup —
+// the one thing a per-task sandbox is supposed to prevent.
+//
+// Everything else in the dir stays writable because the CLI genuinely uses
+// it: a single multi-turn run writes plugins/, projects/, sessions/,
+// session-env/ and shell-snapshots/. Narrowing to an allowlist instead broke
+// runs outright (#2779).
+//
+// Absent paths are materialized rather than skipped. Skipping them looks
+// harmless — there is nothing there to protect — but the enclosing directory
+// is writable, so a run could simply create settings.json and persist hooks
+// that way. An empty settings file and an empty hooks dir are both no-ops to
+// the CLI, and both are then bindable.
+func claudeDurableConfigPaths(stateRoot string) []string {
+	if strings.TrimSpace(stateRoot) == "" {
+		return nil
+	}
+	var out []string
+	for _, f := range []struct {
+		name string
+		dir  bool
+		seed string
+	}{
+		{name: "settings.json", seed: "{}\n"},
+		{name: "settings.local.json", seed: "{}\n"},
+		{name: "hooks", dir: true},
+	} {
+		p := filepath.Join(stateRoot, f.name)
+		if err := materializeDenyTarget(p, f.dir, f.seed); err != nil {
+			// Only skip what cannot be created: binding a nonexistent path
+			// fails the spawn, and failing the run closed over a config file
+			// is worse than leaving that one path writable.
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// materializeDenyTarget makes path exist so it can be bound read-only,
+// leaving any existing content untouched.
+func materializeDenyTarget(path string, dir bool, seed string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	if dir {
+		return os.MkdirAll(path, 0o700)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(seed), 0o600)
+}
 
 // recordToolCall writes one ledger record, best-effort. A ledger write must
 // never disturb a run: this sits on the stream path, and losing an

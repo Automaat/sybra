@@ -105,6 +105,12 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	if cfg.sandbox.gitOverlayTagLogDir != "" && cfg.sandbox.gitTagLogDir != "" {
 		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayTagLogDir, cfg.sandbox.gitTagLogDir)
 	}
+	// Re-lock the durable-config paths after every writable bind above:
+	// bwrap resolves overlapping entries in argument order, so these must
+	// come last to win over the state dir that contains them.
+	for _, p := range dedupeRoots(cfg.sandbox.stateDenied...) {
+		wrapped = append(wrapped, "--ro-bind", p, p)
+	}
 	// Re-lock readOnlyDir last: bwrap resolves overlapping bind entries in
 	// argument order, so this must come after every writable --bind above to
 	// win even when readOnlyDir sits inside a writable root (e.g. nested
