@@ -85,6 +85,10 @@ type TaskService struct {
 	// Initial async enrichment is not gated; this only prevents a permanently
 	// broken stub from spending GitHub calls on every reconcile tick.
 	enrichRetryCooldown sync.Map
+	// followerStatusMu serializes each follower RPC with the corresponding
+	// leader mirror write, preventing concurrent UI transitions from applying
+	// remote and local statuses in opposite orders.
+	followerStatusMu sync.Mutex
 }
 
 func (s *TaskService) config() *config.Config {
@@ -430,16 +434,36 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 	// the leader mirror, so the board cannot claim the task resumed when the
 	// worker rejected or never received the transition.
 	if s.assigner != nil {
+		s.followerStatusMu.Lock()
+		defer s.followerStatusMu.Unlock()
 		current, err := s.tasks.Get(taskID)
 		if err != nil {
 			return task.Task{}, err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), fieldPushTimeout)
+		ctx, cancel := context.WithTimeout(s.recoveryCtx(), fieldPushTimeout)
 		defer cancel()
-		if _, forwarded, err := s.assigner.BlessTampering(ctx, current); err != nil {
+		remote, forwarded, err := s.assigner.BlessTampering(ctx, current)
+		if err != nil {
 			return task.Task{}, err
 		} else if forwarded {
+			result, _, putErr := s.tasks.PutFn(taskID, func(local task.Task) (task.Task, error) {
+				if local.AssignedNode != current.AssignedNode || local.AssignmentRev != current.AssignmentRev {
+					return task.Task{}, conflictError("task ownership changed while follower tamper blessing was in flight")
+				}
+				merged, ok := clusterlead.Merge(local, remote)
+				if !ok {
+					return local, nil
+				}
+				if !slices.Contains(merged.Tags, workflow.TamperBlessedTag) {
+					merged.Tags = append(merged.Tags, workflow.TamperBlessedTag)
+				}
+				return merged, nil
+			})
+			if putErr != nil {
+				return task.Task{}, putErr
+			}
 			s.logger.Info("cluster.task.tamper_bless.forwarded", "task_id", taskID, "node", current.AssignedNode)
+			return result, nil
 		}
 	}
 	var (
@@ -894,6 +918,8 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 
 	if status, ok := updates["status"].(string); ok {
+		s.followerStatusMu.Lock()
+		defer s.followerStatusMu.Unlock()
 		// Reject status regressions while an agent is running on this task.
 		// Moving back to todo/new/done/cancelled while an agent is active loses in-flight work.
 		agentBlockedStatuses := map[string]bool{
@@ -912,6 +938,41 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 				cur.Workflow.State != workflow.ExecFailed {
 				return cur, conflictError(fmt.Sprintf("cannot move to testing: task has active workflow %q (state=%s)",
 					cur.Workflow.WorkflowID, cur.Workflow.State))
+			}
+		}
+		// A follower owns its task's live agents and workflow. Validate this
+		// local request first, then forward before changing the leader mirror so
+		// a rejected remote transition cannot silently revert a success response.
+		if s.assigner != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), fieldPushTimeout)
+			defer cancel()
+			remoteUpdates := map[string]any{"status": status}
+			if statusReason, hasReason := updates["status_reason"]; hasReason {
+				remoteUpdates["status_reason"] = statusReason
+			}
+			remote, forwarded, forwardErr := s.assigner.UpdateTaskStatus(ctx, cur, remoteUpdates)
+			if forwardErr != nil {
+				return cur, forwardErr
+			} else if forwarded {
+				// Merge the follower's returned execution snapshot, including its
+				// clock watermark, instead of rebuilding just status locally. A
+				// delayed mirror poll from before this RPC is then stale by
+				// construction and cannot undo the accepted transition.
+				t, _, putErr := s.tasks.PutFn(id, func(local task.Task) (task.Task, error) {
+					if local.AssignedNode != cur.AssignedNode || local.AssignmentRev != cur.AssignmentRev {
+						return task.Task{}, conflictError("task ownership changed while follower status update was in flight")
+					}
+					merged, ok := clusterlead.Merge(local, remote)
+					if !ok {
+						return local, nil
+					}
+					return merged, nil
+				})
+				if putErr != nil {
+					return cur, putErr
+				}
+				s.logger.Info("cluster.task.status_update.forwarded", "task_id", id, "node", cur.AssignedNode, "status", status)
+				return t, nil
 			}
 		}
 	}
@@ -1117,6 +1178,35 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 	spec := dispatchTargets[target]
 	if spec.requiresPR && cur.PRNumber == 0 {
 		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch to %q: task has no linked PR", target))
+	}
+	if s.assigner != nil {
+		s.followerStatusMu.Lock()
+		ctx, cancel := context.WithTimeout(s.recoveryCtx(), fieldPushTimeout)
+		remote, forwarded, forwardErr := s.assigner.DispatchFromHumanRequired(ctx, cur, target, reason)
+		cancel()
+		if forwardErr != nil {
+			s.followerStatusMu.Unlock()
+			return task.Task{}, forwardErr
+		}
+		if forwarded {
+			local, _, localErr := s.tasks.PutFn(id, func(current task.Task) (task.Task, error) {
+				if current.AssignedNode != cur.AssignedNode || current.AssignmentRev != cur.AssignmentRev {
+					return task.Task{}, conflictError("task ownership changed while follower dispatch was in flight")
+				}
+				merged, ok := clusterlead.Merge(current, remote)
+				if !ok {
+					return current, nil
+				}
+				return merged, nil
+			})
+			s.followerStatusMu.Unlock()
+			if localErr != nil {
+				return task.Task{}, localErr
+			}
+			s.logDispatchAudit(id, target, string(cur.Status), reason, "forwarded")
+			return local, nil
+		}
+		s.followerStatusMu.Unlock()
 	}
 	hasRunning := s.agents.HasRunningAgentForTask(id)
 	if exceptAgentID != "" {

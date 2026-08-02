@@ -221,10 +221,27 @@ func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *clus
 				// permanently gating downstream rollup logic (like
 				// trackerRollup's cancelled-child check) on a ghost task the
 				// follower will never offer again.
+				// A move can race the old node's delayed 404. Take the same
+				// ownership lock as Reassign and confirm this is still the exact
+				// canonical generation we checked before deleting it.
+				unlock := lockTaskOwnership(t.ID)
+				current, cerr := m.tasks.Get(t.ID)
+				if cerr != nil {
+					unlock()
+					m.logger.Warn("cluster.mirror.reconcile_missing.refresh_failed", "node", node, "task", t.ID, "err", cerr)
+					continue
+				}
+				if current.AssignedNode != node || current.AssignmentRev != t.AssignmentRev {
+					unlock()
+					m.clearMissingStreak(node, t.ID)
+					continue
+				}
 				if derr := m.tasks.Delete(t.ID); derr != nil {
+					unlock()
 					m.logger.Warn("cluster.mirror.reconcile_missing.trash_failed", "node", node, "task", t.ID, "err", derr)
 					continue
 				}
+				unlock()
 				m.clearMissingStreak(node, t.ID)
 				m.logger.Info("cluster.mirror.reconcile_missing.trashed", "node", node, "task", t.ID, "confirmations", streak)
 				continue
@@ -432,6 +449,20 @@ const driftRepairTimeout = 5 * time.Second
 // driftRepairTimeout first. Every failure path logs its own Warn; a failed
 // repair simply retries on the next reconcile tick.
 func (m *Mirror) repairDrift(ctx context.Context, node string, canonical task.Task) {
+	// Serialize against ownership transfer before contacting the follower. A
+	// stale repair of the former owner must never resurrect its task after a
+	// reassignment has completed.
+	unlock := lockTaskOwnership(canonical.ID)
+	defer unlock()
+	current, err := m.tasks.Get(canonical.ID)
+	if err != nil {
+		m.logger.Warn("cluster.mirror.drift_repair.refresh_failed", "task", canonical.ID, "node", node, "err", err)
+		return
+	}
+	if current.AssignedNode != node || current.AssignmentRev != canonical.AssignmentRev {
+		return
+	}
+	canonical = current
 	client, ok := m.roster.Client(node)
 	if !ok || client == nil {
 		m.logger.Warn("cluster.mirror.drift_repair.no_client", "task", canonical.ID, "node", node)
