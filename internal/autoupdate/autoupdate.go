@@ -498,6 +498,9 @@ func validateRepoState(ctx context.Context, cfg Config) error {
 	if _, err := git(ctx, cfg.RepoDir, "rev-parse", "--is-inside-work-tree"); err != nil {
 		return fmt.Errorf("not a git worktree: %w", err)
 	}
+	if err := ensureGitObjectDatabaseWritable(ctx, cfg.RepoDir); err != nil {
+		return err
+	}
 	branch, err := git(ctx, cfg.RepoDir, "branch", "--show-current")
 	if err != nil {
 		return fmt.Errorf("current branch: %w", err)
@@ -516,6 +519,67 @@ func validateRepoState(ctx context.Context, cfg Config) error {
 		return errors.New("worktree is dirty")
 	}
 	return nil
+}
+
+func ensureGitObjectDatabaseWritable(ctx context.Context, repoDir string) error {
+	objectsRel, err := git(ctx, repoDir, "rev-parse", "--git-path", "objects")
+	if err != nil {
+		return fmt.Errorf("git object database path: %w", err)
+	}
+	objectsDir := objectsRel
+	if !filepath.IsAbs(objectsDir) {
+		objectsDir = filepath.Join(repoDir, objectsRel)
+	}
+	if info, err := os.Stat(objectsDir); err != nil {
+		return fmt.Errorf("git object database is unavailable: %w", err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("git object database is not a directory: %s", objectsDir)
+	}
+	if err := probeWritableDir(objectsDir); err != nil {
+		return fmt.Errorf("git object database is not writable; repair repo ownership/permissions for %s: %w", objectsDir, err)
+	}
+	entries, err := os.ReadDir(objectsDir)
+	if err != nil {
+		return fmt.Errorf("read git object database: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() || !shouldProbeObjectSubdir(name) {
+			continue
+		}
+		dir := filepath.Join(objectsDir, name)
+		if err := probeWritableDir(dir); err != nil {
+			return fmt.Errorf("git object fanout directory is not writable; repair repo ownership/permissions for %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func shouldProbeObjectSubdir(name string) bool {
+	return (len(name) == 2 && isHexByte(name)) || name == "pack" || name == "info"
+}
+
+func probeWritableDir(dir string) error {
+	f, err := os.CreateTemp(dir, ".sybra-write-check-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	closeErr := f.Close()
+	removeErr := os.Remove(name)
+	if closeErr != nil {
+		return closeErr
+	}
+	return removeErr
+}
+
+func isHexByte(s string) bool {
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func repoBlockReason(ctx context.Context, cfg Config) string {

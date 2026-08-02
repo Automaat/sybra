@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func plantBadRef(t *testing.T, bare, ref string) {
@@ -107,6 +108,101 @@ func TestRepairBareClone_NoOpOnCleanClone(t *testing.T) {
 	}
 	if report.PrunedWorktrees {
 		t.Fatal("PrunedWorktrees should be false when nothing was broken")
+	}
+}
+
+func TestEnsureBareCloneHealthy_RepairsBeforeFetch(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+
+	plantBadRef(t, bare, "refs/heads/dead-sibling")
+	if err := CheckBareCloneHealth(context.Background(), bare); err == nil {
+		t.Fatal("CheckBareCloneHealth succeeded on a clone with a poisoned ref")
+	}
+
+	report, err := EnsureBareCloneHealthy(context.Background(), bare, "")
+	if err != nil {
+		t.Fatalf("EnsureBareCloneHealthy: %v", err)
+	}
+	if len(report.QuarantinedRefs) == 0 {
+		t.Fatalf("QuarantinedRefs = %v, want the poisoned ref recorded", report.QuarantinedRefs)
+	}
+	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
+		t.Fatalf("clone is still unhealthy after repair: %v", err)
+	}
+}
+
+func TestFetchOrigin_ChecksHealthBeforeFreshTTLSkip(t *testing.T) {
+	origTTL := FetchTTL
+	FetchTTL = time.Hour
+	t.Cleanup(func() { FetchTTL = origTTL })
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("initial FetchOrigin: %v", err)
+	}
+	plantBadRef(t, bare, "refs/heads/dead-after-fetch")
+
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("FetchOrigin should repair even while fetch TTL is fresh: %v", err)
+	}
+	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/heads/dead-after-fetch"); err == nil {
+		t.Fatal("dead-after-fetch ref should have been removed despite fresh fetch TTL")
+	}
+}
+
+func TestEnsureBareCloneHealthy_RebuildsCorruptWorktreeIndex(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("fetch origin: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "index-task", "origin/"+branch); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	indexOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "--git-path", "index").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexPath := strings.TrimSpace(string(indexOut))
+	if !filepath.IsAbs(indexPath) {
+		indexPath = filepath.Join(wtPath, indexPath)
+	}
+	if err := os.WriteFile(indexPath, []byte("not a git index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckBareCloneHealth(context.Background(), bare); err == nil {
+		t.Fatal("CheckBareCloneHealth succeeded with a corrupt worktree index")
+	}
+
+	report, err := EnsureBareCloneHealthy(context.Background(), bare, "")
+	if err != nil {
+		t.Fatalf("EnsureBareCloneHealthy: %v", err)
+	}
+	if len(report.RebuiltWorktreeIndexes) == 0 {
+		t.Fatalf("RebuiltWorktreeIndexes = %v, want the corrupt index recorded", report.RebuiltWorktreeIndexes)
+	}
+	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
+		t.Fatalf("clone is still unhealthy after index rebuild: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput(); err != nil {
+		t.Fatalf("worktree still cannot read rebuilt index: %v: %s", err, out)
 	}
 }
 
