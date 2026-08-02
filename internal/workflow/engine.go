@@ -119,6 +119,10 @@ type TaskProvider interface {
 	GetTask(id string) (TaskInfo, error)
 	ListTasks() ([]TaskInfo, error)
 	UpdateTaskStatus(id, status, reason string) error
+	// ClearTaskStatusReasonIf atomically clears a status reason only when the
+	// task still has the exact status and reason the caller observed. It keeps a
+	// stale retry cleanup from erasing a newer failure or operator decision.
+	ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error)
 	UpdateTaskBlocker(id, status, reason string, state blocker.State) error
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error

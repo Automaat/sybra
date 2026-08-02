@@ -561,6 +561,7 @@ type memTasks struct {
 	steers           map[string]string
 	gets             map[string]int
 	onGet            func(id string, t *TaskInfo, count int)
+	onSetWorkflow    func(id string)
 	appendErr        error
 	failGet          bool
 	failSetWorkflow  bool
@@ -672,6 +673,21 @@ func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
 	t.StatusReason = reason
 	m.reasons[id] = reason
 	return nil
+}
+
+func (m *memTasks) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return false, fmt.Errorf("task %s not found", id)
+	}
+	if t.Status != expectedStatus || t.StatusReason != expectedReason {
+		return false, nil
+	}
+	t.StatusReason = ""
+	m.reasons[id] = ""
+	return true, nil
 }
 
 func (m *memTasks) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
@@ -803,18 +819,24 @@ func (m *memTasks) ReplaceTaskBody(id, body string) error {
 
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
 		if m.failSetWorkflowN > 0 {
 			m.failSetWorkflowN--
 		}
+		m.mu.Unlock()
 		return fmt.Errorf("simulated write failure for task %s", id)
 	}
 	t, ok := m.tasks[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("task %s not found", id)
 	}
 	t.Workflow = wf.Clone()
+	hook := m.onSetWorkflow
+	m.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
 	return nil
 }
 
@@ -4150,7 +4172,7 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 			name:       "first watchdog rate limit reruns",
 			wantStarts: 1,
 			wantStatus: "in-progress",
-			wantReason: "watchdog: rate limit: org-level quota exhausted",
+			wantReason: "",
 			wantRetry:  "1",
 		},
 		{
@@ -4230,7 +4252,7 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			retries:    "1",
 			wantStarts: 1,
 			wantStatus: "in-progress",
-			wantReason: watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+			wantReason: "",
 			wantRetry:  "2",
 		},
 		{
@@ -4376,6 +4398,86 @@ func TestResumeStalled_WatchdogZeroOutputFreshRoundDispatches(t *testing.T) {
 	}
 	if final.Status == "blocked" {
 		t.Fatalf("task latched blocked despite a fresh-session recovery being available")
+	}
+}
+
+func TestResumeStalled_WatchdogRateLimitPoolBusyDoesNotBurnRetryBudget(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetFailSpawn(ErrAgentPoolBusy)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: rate limit: org-level quota exhausted",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	// The first retry is armed then hits a benign capacity park. A later tick
+	// must retry dispatch normally instead of re-arming the rate-limit policy.
+	for range maxWatchdogRateLimitRetries + 1 {
+		engine.ResumeStalled()
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared after arming retry", got.StatusReason)
+	}
+	if retry := got.Workflow.Variables[watchdogRateLimitRetryKey("implement")]; retry != "1" {
+		t.Fatalf("rate-limit retry var = %q, want 1 after repeated pool-busy parks", retry)
+	}
+	if got.Workflow.State == ExecFailed {
+		t.Fatal("pool-busy parks must not exhaust the watchdog retry budget")
+	}
+}
+
+func TestResumeStalled_WatchdogRateLimitDoesNotClearConcurrentFailure(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: rate limit: org-level quota exhausted",
+		AgentMode:    "headless",
+		Workflow:     &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecWaiting, Variables: map[string]string{}},
+	})
+	var once sync.Once
+	tasks.onSetWorkflow = func(id string) {
+		once.Do(func() {
+			if err := tasks.UpdateTaskStatus(id, "human-required", "concurrent permanent failure"); err != nil {
+				t.Errorf("set concurrent failure: %v", err)
+			}
+		})
+	}
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" || got.StatusReason != "concurrent permanent failure" {
+		t.Fatalf("concurrent failure was overwritten: status=%q reason=%q", got.Status, got.StatusReason)
+	}
+	if starts := agents.CallCount(); starts != 0 {
+		t.Fatalf("concurrent failure must fence dispatch, started %d agents", starts)
 	}
 }
 
@@ -4912,7 +5014,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t 
 			name:       "first watchdog rate limit reruns child",
 			wantStarts: 1,
 			wantStatus: "in-progress",
-			wantReason: "watchdog: rate limit: org-level quota exhausted",
+			wantReason: "",
 			wantRetry:  "1",
 		},
 		{
