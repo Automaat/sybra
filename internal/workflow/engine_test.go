@@ -5869,6 +5869,30 @@ func TestExecRunAgent_DefaultModeAndModel(t *testing.T) {
 	}
 }
 
+func TestResolveRunAgentModel(t *testing.T) {
+	t.Parallel()
+
+	ctx := TemplateContext{
+		Task: TaskInfo{ID: "t1"},
+		Vars: map[string]string{},
+	}
+
+	if got := resolveRunAgentModel("", ctx); got != "sonnet" {
+		t.Fatalf("resolveRunAgentModel(empty) = %q, want sonnet", got)
+	}
+
+	ctx.Vars[verifyRetryModelVar] = "expensive"
+	model := `  {{if getvar .Vars "verify_retry_model"}}{{getvar .Vars "verify_retry_model"}}{{else}}cheap{{end}}  `
+	if got := resolveRunAgentModel(model, ctx); got != "expensive" {
+		t.Fatalf("resolveRunAgentModel(template with %s) = %q, want expensive", verifyRetryModelVar, got)
+	}
+
+	delete(ctx.Vars, verifyRetryModelVar)
+	if got := resolveRunAgentModel(model, ctx); got != "cheap" {
+		t.Fatalf("resolveRunAgentModel(template without %s) = %q, want cheap", verifyRetryModelVar, got)
+	}
+}
+
 func TestExecRunAgent_PersistsPreparedWorktreeDir(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
