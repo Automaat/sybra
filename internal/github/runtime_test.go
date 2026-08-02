@@ -205,10 +205,23 @@ func TestGHRequestGateExecute_WaitHonorsContext(t *testing.T) {
 	g := newGHRequestGate()
 	g.lastRun = time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ran := make(chan struct{}, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := g.execute(ctx, func() ([]byte, error) { ran <- struct{}{}; return nil, nil })
+		errCh <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
 	cancel()
-	_, err := g.execute(ctx, func() ([]byte, error) { t.Fatal("run must not start"); return nil, nil })
+	err := <-errCh
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context canceled", err)
+	}
+	select {
+	case <-ran:
+		t.Fatal("run must not start")
+	default:
 	}
 }
 

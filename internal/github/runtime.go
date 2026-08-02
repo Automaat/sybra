@@ -292,13 +292,13 @@ func (g *ghRequestGate) runGated(ctx context.Context, run func() ([]byte, error)
 }
 
 func (g *ghRequestGate) lockContext(ctx context.Context) error {
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
 	for !g.mu.TryLock() {
-		timer := time.NewTimer(time.Millisecond)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return ctx.Err()
-		case <-timer.C:
+		case <-ticker.C:
 		}
 	}
 	return nil
