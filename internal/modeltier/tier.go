@@ -84,8 +84,7 @@ func InferTier(model string) (Tier, bool) {
 	if tier, ok := aliasToTier[trimmed]; ok {
 		return tier, true
 	}
-	switch trimmed {
-	case "gpt-5.6":
+	if trimmed == "gpt-5.6" {
 		// Codex's bare generation alias resolves to Sol. Matched exactly here
 		// rather than by Contains below, where it would also swallow the
 		// -terra and -luna slugs and misclassify them as Expensive.
