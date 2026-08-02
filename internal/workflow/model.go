@@ -400,7 +400,8 @@ func (d *Definition) Validate() error {
 }
 
 // validateParallelStep enforces that a `parallel` step has at least two
-// run_agent children, no nested parallels, and globally-unique child IDs.
+// run_agent children without worktree preparation or nested parallels, and
+// globally-unique child IDs.
 // The constraints exist because the engine's step bookkeeping (persisted agent
 // routes, ImportSidecar lookup, retry counter) is keyed by step ID —
 // duplicates would cause cross-step state to clobber each other.
@@ -422,6 +423,14 @@ func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 		}
 		if len(c.Parallel) > 0 {
 			return fmt.Errorf("step %q: parallel child %q nests another parallel block (not supported)", s.ID, c.ID)
+		}
+		// Parallel children share the parent workflow directory. Preparing a
+		// worktree here can block StartAgent for minutes and, unlike a regular
+		// run_agent step, dispatch must keep the child route durable while the
+		// parent is still being established. Reject this unsupported shape rather
+		// than letting a user-authored workflow stall the engine.
+		if c.Config.NeedsWorktree {
+			return fmt.Errorf("step %q: parallel child %q cannot set needs_worktree", s.ID, c.ID)
 		}
 		if c.Config.MaxRetries > maxRetries {
 			return fmt.Errorf("step %q: child %q max_retries %d exceeds limit %d", s.ID, c.ID, c.Config.MaxRetries, maxRetries)
