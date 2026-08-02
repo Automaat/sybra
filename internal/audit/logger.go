@@ -24,9 +24,15 @@ func NewLogger(dir string) (*Logger, error) {
 }
 
 func (l *Logger) Log(e Event) error {
+	// Normalize unconditionally, not just when unset. File names are derived
+	// from this timestamp's date, and Read selects files by UTC date, so a
+	// caller supplying a non-UTC Timestamp would file the event under a date
+	// no reader looks for — the same silent mismatch #2826 fixed on the read
+	// side, reintroduced from the write side.
 	if e.Timestamp.IsZero() {
-		e.Timestamp = time.Now().UTC()
+		e.Timestamp = time.Now()
 	}
+	e.Timestamp = e.Timestamp.UTC()
 
 	data, err := json.Marshal(e)
 	if err != nil {
