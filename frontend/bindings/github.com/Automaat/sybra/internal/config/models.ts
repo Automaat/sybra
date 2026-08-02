@@ -704,9 +704,9 @@ export class GitHubConfig {
 
     /**
      * App configures GitHub App installation-token auth. When enabled, Sybra
-     * mints a short-lived installation token and injects it into the gh
-     * subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall
-     * back to gh's own auth.
+     * mints short-lived installation tokens for GitHub subprocesses and the
+     * agent gh shim, raising the REST ceiling to 15k/hr without parking stale
+     * tokens in long-lived agent environments. Unset = fall back to gh's own auth.
      */
     "app": GitHubAppConfig;
 
