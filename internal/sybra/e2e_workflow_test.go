@@ -1005,6 +1005,29 @@ func TestE2E_HeadlessAgent_CostHardStopPreemptsMidStream(t *testing.T) {
 		}
 		return tk.Workflow.CurrentStep != "triage"
 	})
+
+	// Step movement alone does not prove the live pre-emption fired: the
+	// high_cost_mid_stream scenario's trailing result reports a trivial cost, so
+	// a run that ignored the mid-stream usage would complete triage *successfully*
+	// and advance the step identically. Assert the discriminating signal — that a
+	// triage run was hard-stopped with the cost escalation reason, forcing the
+	// bounded failed-completion retry that dispatched the second ("triage")
+	// scenario. Only the mid-stream live estimate can set this here.
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var costStopped bool
+	for _, run := range tk.AgentRuns {
+		if run.EscalationReason == agent.EscalationReasonCost {
+			costStopped = true
+			break
+		}
+	}
+	if !costStopped {
+		t.Fatalf("no AgentRun recorded EscalationReason=%q — mid-stream live-cost pre-emption never fired; runs=%+v",
+			agent.EscalationReasonCost, tk.AgentRuns)
+	}
 }
 
 // TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow verifies that

@@ -565,13 +565,16 @@ func classifyStall(ag *agent.Agent, exitErr error) stallDisposition {
 		ToolUseAborted:  isToolUseAbortedRun(ag),
 		UserInterrupted: isUserInterruptedRun(ag),
 	}
-	// Cost guardrails intentionally hard-stop the subprocess, but they are a
-	// budget failure, not an infra stall. Let them flow through the bounded
-	// failed-completion path instead of ClearAgentStep/ResumeStalled.
+	// Cost and forked-subagent-turn guardrails intentionally hard-stop the
+	// subprocess, but they are a budget/runaway failure, not an infra stall.
+	// Let them flow through the bounded failed-completion path instead of
+	// ClearAgentStep/ResumeStalled — otherwise the runaway workflow step is
+	// silently re-dispatched on the next sweep, defeating the ceiling.
 	costStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCost
+	subagentTurnsStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonSubagentTurns
 	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpointFailed
 	out.CheckpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
-	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !checkpointFailed && !out.CheckpointStopped
+	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !subagentTurnsStopped && !checkpointFailed && !out.CheckpointStopped
 	out.Stalled = isSignalKill(exitErr) || out.StopStalled || out.RateLimited || out.MalformedTool || out.ToolUseAborted || out.UserInterrupted || out.CheckpointStopped
 	return out
 }
