@@ -481,6 +481,12 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		return fmt.Errorf("agent manager: %w", err)
 	}
 	a.agents.SetGHAppToken(github.CurrentAppToken)
+	// initToolLedger runs before this function, when a.agents is still nil, so
+	// its own SetToolLedger call is skipped. Without re-binding here the
+	// manager's ledger stays nil and Logger.Log's nil guard drops every record
+	// silently — the ledger creates its directory, never writes a line, and
+	// looks healthy while collecting nothing (#2788).
+	a.agents.SetToolLedger(a.toolLedger)
 	if agentCfg.SurviveRestartDir != "" {
 		a.logger.Info("agent.survive-restart.enabled", "dir", agentCfg.SurviveRestartDir)
 	}
