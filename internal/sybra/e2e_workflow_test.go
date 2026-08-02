@@ -308,6 +308,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 	t.Setenv("FAKE_CLAUDE_SCENARIO", scenario)
 	t.Setenv("FAKE_CODEX_SCENARIO", scenario)
+	unsetGitFixtureEnv(t)
 
 	// Use os.MkdirTemp instead of t.TempDir to avoid cleanup races with
 	// background goroutines (agent processes, sybra-cli writes).
@@ -457,6 +458,30 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	})
 
 	return env
+}
+
+func unsetGitFixtureEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	} {
+		value, had := os.LookupEnv(key)
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
+		t.Cleanup(func() {
+			if !had {
+				_ = os.Unsetenv(key)
+				return
+			}
+			_ = os.Setenv(key, value)
+		})
+	}
 }
 
 // waitFor polls a condition with timeout. The timeout is scaled by
@@ -4329,6 +4354,7 @@ func runCmd(t *testing.T, dir, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	scrubGitFixtureEnv(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
 	}
@@ -4338,11 +4364,46 @@ func readCommandOutput(t *testing.T, dir, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	scrubGitFixtureEnv(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
 	}
 	return string(out)
+}
+
+func scrubGitFixtureEnv(cmd *exec.Cmd) {
+	if filepath.Base(cmd.Path) != "git" {
+		return
+	}
+	cmd.Env = os.Environ()
+	cmd.Env = withoutEnvKeys(cmd.Env,
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	)
+}
+
+func withoutEnvKeys(env []string, keys ...string) []string {
+	if len(env) == 0 || len(keys) == 0 {
+		return env
+	}
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	filtered := env[:0]
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, skip := blocked[name]; skip {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
 }
 
 func initRepoWithOriginMain(t *testing.T, dir string) {
