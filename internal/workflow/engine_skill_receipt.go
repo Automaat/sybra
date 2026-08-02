@@ -3,6 +3,7 @@ package workflow
 import (
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -67,6 +68,20 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		return false
 	}
 	if retries >= maxSkillReceiptRecoveryAttempts {
+		if e.importedSidecarSatisfiesReceipt(fresh, spawnedStep, stepForSpawned(currentStep, spawnedStep)) {
+			// Recovery is exhausted, but the mandatory sidecar this skill
+			// exists to produce (e.g. adversarial-review's code_review) was
+			// already imported onto the task. Consume that valid artifact
+			// instead of escalating on the missing conformance receipt alone:
+			// clear the retry counter and return false so the normal advance
+			// path proceeds.
+			delete(fresh.Workflow.Variables, retryKey)
+			if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
+				e.logger.Warn("workflow.skill-receipt.clear", "task_id", taskID, "step", spawnedStep, "err", err)
+			}
+			e.logger.Info("workflow.skill-receipt.sidecar-satisfied", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill)
+			return false
+		}
 		delete(fresh.Workflow.Variables, retryKey)
 		// Finalize the Execution like finishTerminalStepOutput does for every
 		// other human-required escalation (e.g. checkpoint_failed). Left
@@ -171,22 +186,93 @@ func (e *Engine) rescheduleSkillReceiptParallelChild(taskID string, parent, chil
 	}
 }
 
+// stepForSpawned resolves the concrete run_agent step (currentStep itself, or
+// the matching parallel child) that spawnedStep refers to. Returns nil when
+// spawnedStep does not name currentStep or one of its children.
+func stepForSpawned(currentStep *Step, spawnedStep string) *Step {
+	if currentStep == nil {
+		return nil
+	}
+	switch {
+	case currentStep.Type == StepRunAgent && currentStep.ID == spawnedStep:
+		return currentStep
+	case currentStep.Type == StepParallel && parallelHasChild(currentStep, spawnedStep):
+		for i := range currentStep.Parallel {
+			if currentStep.Parallel[i].ID == spawnedStep {
+				return &currentStep.Parallel[i]
+			}
+		}
+	}
+	return nil
+}
+
+// importedSidecarSatisfiesReceipt reports whether every sidecar the step that
+// produced this run declares was actually produced *by this run* — i.e. its
+// source file exists and is non-empty in the worktree the run used. When it is,
+// a missing conformance receipt is not fatal: the mandatory artifact the skill
+// exists to produce is present, so the workflow can consume it rather than
+// escalate to human-required on the receipt alone.
+//
+// It deliberately checks the on-disk sidecar file (cfg.From) rather than the
+// persisted task field (e.g. t.CodeReview). That field is flat and unscoped: it
+// survives across review rounds and is only overwritten on a *successful*
+// import. The review-fix loop's clear_review_sidecar deletes the worktree file
+// between rounds but never clears t.CodeReview, so a round-2 reviewer that fails
+// to invoke the skill would otherwise be treated as satisfied by round 1's
+// stale verdict — silently shipping the round-2 diff unreviewed and skipping the
+// human escalation this exhaustion path exists to trigger. Keying on the file
+// this run produced ties satisfaction to the actual run.
+func (e *Engine) importedSidecarSatisfiesReceipt(t TaskInfo, spawnedStep string, step *Step) bool {
+	if step == nil || t.Workflow == nil {
+		return false
+	}
+	imports := step.Config.sidecarImports()
+	if len(imports) == 0 {
+		return false
+	}
+	for _, cfg := range imports {
+		if !e.sidecarFilePresentForRun(t, spawnedStep, step, cfg) {
+			return false
+		}
+	}
+	return true
+}
+
+// sidecarFilePresentForRun reports whether cfg.From (rendered against the
+// worktree this run used) exists and is non-empty right now. Mirrors
+// importOneSidecar's read path — including the lost-_dir recovery via
+// recoverSidecarFromTaskWorktree — so the presence check agrees with what a
+// fresh import would actually find.
+func (e *Engine) sidecarFilePresentForRun(t TaskInfo, stepID string, step *Step, cfg ImportSidecar) bool {
+	path, err := RenderTemplate(cfg.From, TemplateContext{
+		Task:     t,
+		Step:     *step,
+		Vars:     t.Workflow.Variables,
+		Workflow: t.Workflow,
+	})
+	if err != nil {
+		return false
+	}
+	content, readErr := os.ReadFile(path)
+	if readErr != nil {
+		dirVarUnresolved := worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(t.Workflow.Variables[WorkflowVarDir]) == ""
+		if dirVarUnresolved {
+			if _, recoveredContent, ok := e.recoverSidecarFromTaskWorktree(t.ID, stepID, step, t, cfg); ok {
+				content, readErr = recoveredContent, nil
+			}
+		}
+		if readErr != nil {
+			return false
+		}
+	}
+	return strings.TrimSpace(string(content)) != ""
+}
+
 func (e *Engine) captureSkillReceiptDiagnostics(taskID, spawnedStep string, currentStep *Step, t TaskInfo) {
 	if e.recorder == nil || currentStep == nil {
 		return
 	}
-	var step *Step
-	switch {
-	case currentStep.Type == StepRunAgent && currentStep.ID == spawnedStep:
-		step = currentStep
-	case currentStep.Type == StepParallel && parallelHasChild(currentStep, spawnedStep):
-		for i := range currentStep.Parallel {
-			if currentStep.Parallel[i].ID == spawnedStep {
-				step = &currentStep.Parallel[i]
-				break
-			}
-		}
-	}
+	step := stepForSpawned(currentStep, spawnedStep)
 	if step == nil {
 		return
 	}

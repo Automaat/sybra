@@ -25,6 +25,17 @@ var ErrRebaseFailed = worktreeerr.ErrRebaseFailed
 // reason as ErrRebaseFailed above.
 var ErrTransientFetch = worktreeerr.ErrTransientFetch
 
+// wrapPRHeadFetchErr wraps a FetchPRHead failure, tagging ErrTransientFetch when
+// the underlying cause is a DNS/transport blip rather than a genuine start
+// failure — so callers retry on connectivity recovery instead of burning the
+// workflow breaker budget.
+func wrapPRHeadFetchErr(err error) error {
+	if project.IsTransientNetworkError(err) {
+		return fmt.Errorf("%w: fetch pr head: %w", ErrTransientFetch, err)
+	}
+	return fmt.Errorf("fetch pr head: %w", err)
+}
+
 // ErrAgentRunning indicates PrepareForTask refused to reuse (and rebase) a
 // worktree that a tracked agent is still live in. Alias of
 // worktreeerr.ErrAgentRunning for the same import-cycle reason as
@@ -261,7 +272,7 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 // interrupted dispatch — so the whole pipeline below is skipped in favor of
 // reuse rather than redone from scratch (issue #2765).
 func (m *Manager) reuseExistingTaskWorktree(ctx context.Context, t task.Task, wtPath, wtBranch, baseRef string, proj project.Project, onPhase func(string)) (string, error) {
-	if prepCacheFresh(ctx, wtPath) {
+	if prepCacheFresh(ctx, wtPath, wtBranch) {
 		m.logger.Info("worktree.prep-cache-hit", "task_id", t.ID, "path", wtPath)
 		return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
 	}
@@ -635,7 +646,7 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 	// origin, so the latter fails with "invalid reference".
 	ref, err := project.FetchPRHead(ctx, proj.ClonePath, t.PRNumber)
 	if err != nil {
-		return "", fmt.Errorf("fetch pr head: %w", err)
+		return "", wrapPRHeadFetchErr(err)
 	}
 	if err := project.CreateWorktreeDetached(ctx, proj.ClonePath, wtPath, ref); err != nil {
 		return "", fmt.Errorf("create review worktree: %w", err)
@@ -946,7 +957,7 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		if !project.RefExists(ctx, proj.ClonePath, originRef) {
 			prHeadRef, err := project.FetchPRHead(ctx, proj.ClonePath, prNumber)
 			if err != nil {
-				return "", fmt.Errorf("fetch pr head: %w", err)
+				return "", wrapPRHeadFetchErr(err)
 			}
 			reconcileTarget = freshFixReconcileTarget{ref: prHeadRef}
 		}
@@ -961,7 +972,7 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		// so the fix agent still gets a real local branch to push.
 		prHeadRef, err := project.FetchPRHead(ctx, proj.ClonePath, prNumber)
 		if err != nil {
-			return "", fmt.Errorf("fetch pr head: %w", err)
+			return "", wrapPRHeadFetchErr(err)
 		}
 		if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, branch, prHeadRef); err != nil {
 			return "", fmt.Errorf("create fix worktree: %w", err)

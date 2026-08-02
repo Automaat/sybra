@@ -1544,11 +1544,7 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 // the worktree back to the resumed dispatch by marking its HEAD fresh
 // (MarkPrepFresh) once it has confirmed the fix agent's commits are pushed.
 // The resumed dispatch's PrepareForTask call must trust that marker and skip
-// its own fetch/heal/sanitize/reconcile+rebase/push/setup pipeline entirely —
-// proven here by diverging upstream in a way that would otherwise fail the
-// reused-worktree path closed with ErrRebaseFailed (same setup as
-// TestPrepareForTask_RebaseConflictFailsClosed), yet the second call still
-// succeeds because the cache hit never reaches the rebase.
+// its own sanitize/reconcile+rebase/push/setup pipeline entirely.
 func TestPrepareForTask_PrepCacheSkipsPipelineOnMatchingHead(t *testing.T) {
 	h := prepareHarness(t, nil, 30*time.Second)
 
@@ -1568,34 +1564,123 @@ func TestPrepareForTask_PrepCacheSkipsPipelineOnMatchingHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
 	}
-	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
-	mustRunInDir(t, wtPath, "git", "push", "origin", "--delete", branch)
-	mustRunInDir(t, wtPath, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
-
-	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
-	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mustRunInDir(t, wtPath, "git", "add", "README.md")
-	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
-
-	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mustRunInDir(t, h.src, "git", "add", "README.md")
-	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
 
 	// Simulate the branch-conflict-fix handoff: mark this exact HEAD fresh,
 	// as if a recovery run had already reconciled and pushed it.
 	h.m.MarkPrepFresh(tk.ID, wtPath)
 
-	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	var phases []string
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, func(phase string) {
+		phases = append(phases, phase)
+	})
 	if err != nil {
-		t.Fatalf("PrepareForTask with fresh prep-cache marker: %v (want cache hit to skip the pipeline that would otherwise fail closed)", err)
+		t.Fatalf("PrepareForTask with fresh prep-cache marker: %v", err)
 	}
 	if gotPath != wtPath {
 		t.Fatalf("PrepareForTask path = %q, want reused worktree %q", gotPath, wtPath)
+	}
+	for _, phase := range phases {
+		if phase == "Syncing upstream…" || phase == "Running setup…" {
+			t.Fatalf("phase %q observed on prep-cache hit; phases=%v", phase, phases)
+		}
+	}
+}
+
+func TestPrepareForTask_PrepCacheStaleWhenWorktreeDirty(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("dirty prep-cache task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	h.m.MarkPrepFresh(tk.ID, wtPath)
+	markedHead, err := project.CurrentCommit(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("CurrentCommit before dirty edit: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "dirty.txt"), []byte("leftover agent edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask with dirty prep-cache marker: %v", err)
+	}
+	if gotPath != wtPath {
+		t.Fatalf("PrepareForTask path = %q, want reused worktree %q", gotPath, wtPath)
+	}
+	dirty, err := project.IsWorktreeDirty(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("IsWorktreeDirty: %v", err)
+	}
+	if dirty {
+		t.Fatalf("worktree is still dirty after re-prepare; dirty marker was treated as fresh")
+	}
+	head, err := project.CurrentCommit(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("CurrentCommit after re-prepare: %v", err)
+	}
+	if head == markedHead {
+		t.Fatalf("HEAD stayed at marked SHA %s; dirty state was not sanitized and preserved", head)
+	}
+}
+
+func TestPrepareForTask_PrepCacheStaleWhenTrackingRefMissing(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("missing tracking prep-cache task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	h.m.writePrepCacheSHA(context.Background(), tk.ID, wtPath)
+	mustRunInDir(t, wtPath, "git", "push", "origin", "--delete", branch)
+	mustRunInDir(t, wtPath, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
+	if _, ok := project.RemoteTrackingSHA(context.Background(), wtPath, "origin", branch); ok {
+		t.Fatalf("tracking ref refs/remotes/origin/%s still exists before re-prepare", branch)
+	}
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask with missing tracking ref: %v", err)
+	}
+	if gotPath != wtPath {
+		t.Fatalf("PrepareForTask path = %q, want reused worktree %q", gotPath, wtPath)
+	}
+	head, err := project.CurrentCommit(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("CurrentCommit: %v", err)
+	}
+	tracking, ok := project.RemoteTrackingSHA(context.Background(), wtPath, "origin", branch)
+	if !ok {
+		t.Fatalf("tracking ref refs/remotes/origin/%s was not recreated", branch)
+	}
+	if tracking != head {
+		t.Fatalf("tracking ref = %s, want HEAD %s", tracking, head)
 	}
 }
 
@@ -1649,6 +1734,77 @@ func TestPrepareForTask_PrepCacheStaleOnHeadChange(t *testing.T) {
 	}
 	if gotPath != "" {
 		t.Fatalf("PrepareForTask path = %q, want empty path on rebase failure", gotPath)
+	}
+}
+
+// TestPrepareForTask_PrepCacheStaleWhenForkTrackingRefAdvanced pins the
+// fork-remote gap: PrepareForTask's FetchOrigin only refreshes origin, never a
+// fork remote, so the push-remote tracking ref can trail an out-of-band push to
+// the fork branch forever. prepCacheFresh must refresh the push-remote's
+// tracking ref itself before trusting it — otherwise a matching (but stale)
+// tracking ref would serve the reused worktree as fresh even though it is behind
+// the real fork head, starting the agent from stale code. The reused pipeline
+// must instead run and fast-forward HEAD onto the advanced commit.
+func TestPrepareForTask_PrepCacheStaleWhenForkTrackingRefAdvanced(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("fork prep-cache task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+
+	// Stand up a fork remote (a bare clone of origin) and route pushes to it, so
+	// PushRemote resolves to "fork" and FetchOrigin no longer covers the branch.
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	mustRunInDir(t, "", "git", "clone", "--bare", h.proj.ClonePath, forkBare)
+	mustRunInDir(t, wtPath, "git", "remote", "add", "fork", forkBare)
+	mustRunInDir(t, wtPath, "git", "push", "fork", branch)
+	c0 := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "rev-parse", "HEAD"))
+
+	// Mark this exact HEAD fresh, as the branch-conflict-fix handoff would.
+	h.m.MarkPrepFresh(tk.ID, wtPath)
+
+	// Advance the fork branch out-of-band (another clone/machine/CI) so the
+	// worktree's refs/remotes/fork/<branch> is now stale relative to the fork.
+	otherClone := filepath.Join(t.TempDir(), "other")
+	mustRunInDir(t, "", "git", "clone", forkBare, otherClone)
+	mustRunInDir(t, otherClone, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, otherClone, "git", "config", "user.name", "Test")
+	mustRunInDir(t, otherClone, "git", "checkout", branch)
+	if err := os.WriteFile(filepath.Join(otherClone, "fork-edit.txt"), []byte("out-of-band fork push\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, otherClone, "git", "add", "fork-edit.txt")
+	mustRunInDir(t, otherClone, "git", "commit", "-m", "out-of-band fork push")
+	mustRunInDir(t, otherClone, "git", "push", "origin", branch)
+	c1 := strings.TrimSpace(mustOutputInDir(t, otherClone, "git", "rev-parse", "HEAD"))
+	if c0 == c1 {
+		t.Fatal("test setup: fork head did not advance")
+	}
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask with advanced fork tracking ref: %v", err)
+	}
+	if gotPath != wtPath {
+		t.Fatalf("PrepareForTask path = %q, want reused worktree %q", gotPath, wtPath)
+	}
+	head := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "rev-parse", "HEAD"))
+	if head != c1 {
+		t.Fatalf("HEAD = %s, want fast-forward to out-of-band fork commit %s (stale tracking ref was trusted as fresh)", head, c1)
 	}
 }
 
@@ -1920,6 +2076,18 @@ func TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed(t *testing.T) {
 	}
 	if gotPath != "" {
 		t.Fatalf("PrepareForTask path = %q, want empty path on transient fetch failure", gotPath)
+	}
+}
+
+func TestWrapPRHeadFetchErrMarksNetworkFailuresTransient(t *testing.T) {
+	err := wrapPRHeadFetchErr(errors.New("ssh: connect to host github.com port 22: Connection refused"))
+	if !errors.Is(err, ErrTransientFetch) {
+		t.Fatalf("wrapPRHeadFetchErr error = %v, want ErrTransientFetch", err)
+	}
+
+	err = wrapPRHeadFetchErr(errors.New("fatal: couldn't find remote ref refs/pull/42/head"))
+	if errors.Is(err, ErrTransientFetch) {
+		t.Fatalf("wrapPRHeadFetchErr error = %v, must not wrap ErrTransientFetch for missing PR refs", err)
 	}
 }
 

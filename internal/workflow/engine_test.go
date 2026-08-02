@@ -6879,6 +6879,166 @@ steps:
 	}
 }
 
+// TestHandleAgentComplete_ExhaustedSkillConsumesImportedSidecar pins the
+// imported-sidecar guard: when skill-receipt recovery is exhausted but the
+// mandatory sidecar the skill exists to produce (here code_review) was
+// actually imported onto the task, the workflow must consume that valid
+// artifact and advance rather than escalate to human-required on the missing
+// conformance receipt alone.
+func TestHandleAgentComplete_ExhaustedSkillConsumesImportedSidecar(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /adversarial-review now."
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        kind: code_review
+        required: true
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".sybra-review-t1.md"), []byte("## Review\n\nLGTM\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir:                 dir,
+				skillReceiptRecoveryKey("run"): "1",
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-2",
+			Role:               "plan-critic",
+			Provider:           "codex",
+			RequestedSkill:     "adversarial-review",
+			SkillExecutionMode: "injected",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-2", Result: "done", Success: true})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status == "human-required" {
+		t.Fatalf("Status = %q, want the imported code_review sidecar to be consumed rather than escalated", ti.Status)
+	}
+	if ti.Status != "done" {
+		t.Fatalf("Status = %q, want done (workflow advanced past the exhausted skill step)", ti.Status)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("skill receipt retry var = %q, want cleared after consuming the sidecar", got)
+	}
+	if len(agents.calls) != 0 {
+		t.Fatalf("StartAgent calls = %d, want no further retry", len(agents.calls))
+	}
+}
+
+// TestHandleAgentComplete_ExhaustedSkillEscalatesWhenSidecarFileCleared pins
+// the run-scoping of the imported-sidecar escape hatch: a stale, persisted
+// task.code_review from an earlier review round must NOT satisfy the receipt
+// for a later round whose reviewer never re-produced the sidecar file (the
+// review-fix loop's clear_review_sidecar deletes the file between rounds but
+// never clears task.code_review). Absent this run's file, exhaustion must
+// escalate to human-required rather than silently consume round 1's verdict.
+func TestHandleAgentComplete_ExhaustedSkillEscalatesWhenSidecarFileCleared(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /adversarial-review now."
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        kind: code_review
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// The worktree exists but this round's reviewer never wrote the file —
+	// clear_review_sidecar deleted round 1's copy and the dead reviewer left no
+	// replacement. task.code_review still holds round 1's stale verdict.
+	dir := t.TempDir()
+
+	tasks.Put(TaskInfo{
+		ID:         "t1",
+		Status:     "in-progress",
+		AgentMode:  "headless",
+		CodeReview: "Review Verdict: CLEAN\n\nround 1 stale verdict",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir:                 dir,
+				skillReceiptRecoveryKey("run"): "1",
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-2",
+			Role:               "plan-critic",
+			Provider:           "codex",
+			RequestedSkill:     "adversarial-review",
+			SkillExecutionMode: "injected",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-2", Result: "done", Success: true})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required (stale task.code_review must not satisfy this run's receipt)", ti.Status)
+	}
+}
+
 // TestHandleAgentComplete_UnverifiedSkillExhaustionAllowsFreshWorkflowStart
 // covers the human-review recovery handoff: once skill-receipt exhaustion
 // marks a task human-required, a subsequent recovery attempt must be able to

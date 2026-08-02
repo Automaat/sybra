@@ -36,18 +36,53 @@ func readPrepCacheSHA(wtPath string) (string, bool) {
 	return sha, sha != ""
 }
 
-// prepCacheFresh reports whether wtPath's current HEAD matches the SHA
-// recorded by the last known-good prep pass.
-func prepCacheFresh(ctx context.Context, wtPath string) bool {
+// prepCacheFresh reports whether wtPath's current HEAD matches the SHA recorded
+// by the last known-good prep pass AND is known to be published on the push
+// remote.
+// The remote-tracking ref is the staleness signal, but a bare read of it is not
+// enough: PrepareForTask's earlier FetchOrigin only refreshes origin's wildcard
+// and only outside its debounce window, and never touches a fork remote at all.
+// So this refreshes the push-remote's tracking ref from the live remote before
+// comparing — otherwise an out-of-band push to the task branch (from a human,
+// another Sybra clone/machine, CI, or the web UI) landing after the marker was
+// written would be invisible, and the cache hit would skip the reconcile/rebase
+// step that adopts those commits, starting the agent from stale code that later
+// conflicts on push. Fails closed on a refresh error: redo the full prep rather
+// than reuse against a possibly-stale ref. A HEAD that still matches the marker
+// but trails its own (now-refreshed) tracking ref is stale. A missing tracking
+// ref is stale too: it can mean the prior best-effort push failed after the
+// marker was written, and a cache hit would skip the push that should
+// publish/recover it.
+//
+// The marker only pins HEAD, so a prior run could have left staged/uncommitted
+// edits after writing it. Reusing such a worktree would skip sanitize,
+// reconcile, and push with that dirty state intact — so a non-clean worktree is
+// treated as a stale marker too. Fails closed: any error reading dirtiness
+// redoes the full prep rather than risk a dirty reuse.
+func prepCacheFresh(ctx context.Context, wtPath, wtBranch string) bool {
 	key, ok := readPrepCacheSHA(wtPath)
 	if !ok {
 		return false
 	}
 	head, err := project.CurrentCommit(ctx, wtPath)
-	if err != nil {
+	if err != nil || head != key {
 		return false
 	}
-	return head == key
+	if dirty, err := project.IsWorktreeDirty(ctx, wtPath); err != nil || dirty {
+		return false
+	}
+	if wtBranch == "" {
+		return true
+	}
+	remote := project.PushRemote(ctx, wtPath)
+	if err := project.RefreshTrackingRef(ctx, wtPath, remote, wtBranch); err != nil {
+		return false
+	}
+	tracking, ok := project.RemoteTrackingSHA(ctx, wtPath, remote, wtBranch)
+	if !ok || tracking != head {
+		return false
+	}
+	return true
 }
 
 // writePrepCacheSHA records wtPath's current HEAD as freshly prepped.

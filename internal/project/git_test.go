@@ -968,6 +968,42 @@ func TestCheckpointCommit(t *testing.T) {
 			t.Fatal("CheckpointCommit reported committed=true on git failure")
 		}
 	})
+
+	t.Run("bad object commit failure repairs and retries once", func(t *testing.T) {
+		repo := initRepoWithCommit(t)
+		if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		origCommit := checkpointRunRecoveryCommit
+		calls := 0
+		checkpointRunRecoveryCommit = func(ctx context.Context, wtPath, message string) error {
+			calls++
+			if calls == 1 {
+				return errors.New("checkpoint: recovery commit: invalid object 100644 deadbeef for 'main.go'")
+			}
+			return origCommit(ctx, wtPath, message)
+		}
+		t.Cleanup(func() { checkpointRunRecoveryCommit = origCommit })
+
+		committed, err := CheckpointCommit(context.Background(), repo, "chore(checkpoint): save progress")
+		if err != nil {
+			t.Fatalf("CheckpointCommit: %v", err)
+		}
+		if !committed {
+			t.Fatal("CheckpointCommit reported committed=false on a dirty tree")
+		}
+		if calls != 2 {
+			t.Fatalf("checkpoint commit attempts = %d, want 2", calls)
+		}
+		statusOut, err := exec.Command("git", "-C", repo, "status", "--porcelain").Output()
+		if err != nil {
+			t.Fatalf("git status: %v", err)
+		}
+		if got := strings.TrimSpace(string(statusOut)); got != "" {
+			t.Fatalf("worktree not clean after retry: %s", got)
+		}
+	})
 }
 
 func TestResetWorktreeForRetry_DiscardsPartialWorkAndKeepsIgnoredNotes(t *testing.T) {

@@ -613,11 +613,33 @@ func looksLikeGitDir(dir string) bool {
 	return true
 }
 
+// checkpointRunRecoveryCommit indirects runRecoveryCommit so tests can inject a
+// one-shot bad-object failure and assert the bad-ref repair-and-retry path in
+// CheckpointCommit actually recovers.
+var checkpointRunRecoveryCommit = runRecoveryCommit
+
 // CheckpointCommit stages and commits the current worktree state with message.
 // Returns committed=false when the tree is already clean. Unlike
 // AutoCommitUncommitted this is strict: any git failure is returned so callers
 // never assume durable state exists when the checkpoint commit did not land.
+//
+// Linked worktrees share one bare clone object store. When a stale worktree
+// admin ref or missing object poisons that shared store, `git add`/`commit` can
+// fail with "invalid object" even though the task's edits are otherwise
+// recoverable. Repair the shared clone and retry once before surfacing the
+// failure to the workflow.
 func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bool, err error) {
+	committed, err = checkpointCommitOnce(ctx, wtPath, message)
+	if err == nil || !IsBadRefError(err) {
+		return committed, err
+	}
+	if repairErr := repairCheckpointWorktree(ctx, wtPath); repairErr != nil {
+		return false, err
+	}
+	return checkpointCommitOnce(ctx, wtPath, message)
+}
+
+func checkpointCommitOnce(ctx context.Context, wtPath, message string) (committed bool, err error) {
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = wtPath
 	statusOut, err := statusCmd.CombinedOutput()
@@ -634,10 +656,20 @@ func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bo
 		return false, fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	if err := runRecoveryCommit(ctx, wtPath, message); err != nil {
+	if err := checkpointRunRecoveryCommit(ctx, wtPath, message); err != nil {
 		return false, fmt.Errorf("checkpoint: %w", err)
 	}
 	return true, nil
+}
+
+func repairCheckpointWorktree(ctx context.Context, wtPath string) error {
+	commonDir, err := gitCommonDir(ctx, wtPath)
+	if err != nil {
+		return err
+	}
+	branchOut, _ := exec.CommandContext(ctx, "git", "-C", wtPath, "branch", "--show-current").Output()
+	_, err = RepairBareClone(ctx, commonDir, strings.TrimSpace(string(branchOut)))
+	return err
 }
 
 // SanitizeWorktree cleans up worktree state that would confuse agents:
@@ -1233,6 +1265,16 @@ func remoteTrackingRef(ctx context.Context, worktreePath, remote, branch string)
 	return sha, err == nil
 }
 
+// RemoteTrackingSHA returns the SHA of the worktree's local remote-tracking ref
+// (refs/remotes/<remote>/<branch>) and whether it exists. Unlike
+// RemoteBranchHead it reads the local ref last advanced by a fetch, making no
+// network call — callers use it to detect that a fetch pulled in commits pushed
+// from another clone since a cached prep pass recorded HEAD.
+func RemoteTrackingSHA(ctx context.Context, worktreePath, remote, branch string) (string, bool) {
+	sha, ok := remoteTrackingRef(ctx, worktreePath, remote, branch)
+	return strings.TrimSpace(sha), ok
+}
+
 // BranchPushed reports whether branch exists on the worktree's push remote —
 // i.e. it has been pushed at least once (an open PR). Reads the remote-tracking
 // ref, so callers must ReconcileWithRemote (or otherwise fetch the branch)
@@ -1243,6 +1285,19 @@ func remoteTrackingRef(ctx context.Context, worktreePath, remote, branch string)
 func BranchPushed(ctx context.Context, worktreePath, branch string) bool {
 	_, ok := remoteTrackingRef(ctx, worktreePath, PushRemote(ctx, worktreePath), branch)
 	return ok
+}
+
+// RefreshTrackingRef fetches branch from remote into refs/remotes/<remote>/<branch>
+// so a subsequent RemoteTrackingSHA read reflects the live remote head rather
+// than whatever the last wildcard/debounced FetchOrigin happened to leave
+// behind. Needed on paths that trust the tracking ref as a staleness signal:
+// FetchOrigin only refreshes origin (and only outside its debounce window), so
+// a fork remote — or an origin push that landed within the debounce window — is
+// otherwise invisible. A first-push branch has no remote head yet, so a
+// "couldn't find remote ref" is treated as success (the ref simply stays
+// absent); any other failure propagates so callers can fail closed.
+func RefreshTrackingRef(ctx context.Context, worktreePath, remote, branch string) error {
+	return refreshTrackingRef(ctx, worktreePath, remote, branch)
 }
 
 func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string) error {
