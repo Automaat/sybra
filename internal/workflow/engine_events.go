@@ -1935,7 +1935,6 @@ func (e *Engine) canRetryWatchdogStop(t *TaskInfo, step *Step) bool {
 		step != nil &&
 		step.Type == StepRunAgent &&
 		t.Status == "human-required" &&
-		step.Config.Role == "implementation" &&
 		watchdogreason.IsRetryableStop(t.StatusReason)
 }
 
@@ -1955,7 +1954,7 @@ func (e *Engine) handleWatchdogStopRetry(t *TaskInfo, step *Step) bool {
 				cleanRef = "HEAD"
 			}
 			t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
-			t.Workflow.SetVar(watchdogReaskNoteVar, buildWatchdogStopReaskNote(t.StatusReason, attempt))
+			t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogStopReaskNote(t.StatusReason, attempt))
 		},
 		onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
 			if err := e.tasks.UpdateTaskStatus(t.ID, "in-progress", ""); err != nil {
@@ -2034,7 +2033,7 @@ func (e *Engine) handleWorktreeRepairRetry(t *TaskInfo, step *Step) bool {
 
 func buildWatchdogStopReaskNote(reason string, attempt int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "⚠️ Your previous implementation run was STOPPED by the watchdog for loop-like behavior — attempt %d of %d.\n\n",
+	fmt.Fprintf(&b, "⚠️ Your previous agent run was STOPPED by the watchdog for loop-like behavior — attempt %d of %d.\n\n",
 		attempt, maxWatchdogStopRetries)
 	if reason = strings.TrimSpace(reason); reason != "" {
 		b.WriteString("Previous watchdog reason: ")

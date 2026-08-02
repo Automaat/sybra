@@ -233,3 +233,34 @@ func TestSchedulerStopWaitsForGoroutines(t *testing.T) {
 		t.Fatal("RunningIDs should be empty after Stop")
 	}
 }
+
+func TestSchedulerStopPreventsLaterSyncFromStartingFetchers(t *testing.T) {
+	sched, store, _ := newSched(t)
+	defer sched.Stop()
+
+	la, err := store.Create(LoopAgent{Name: "late", Prompt: "/late", IntervalSec: 60, Enabled: true})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	sched.Stop()
+	sched.Sync()
+	if got := sched.RunningIDs(); len(got) != 0 {
+		t.Fatalf("Sync started fetchers after Stop: %v", got)
+	}
+	_ = la
+}
+
+func TestSchedulerStopPreventsRunNow(t *testing.T) {
+	sched, store, runner := newSched(t)
+	la, err := store.Create(LoopAgent{Name: "late", Prompt: "/late", IntervalSec: 60, Enabled: true})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	sched.Stop()
+	if _, err := sched.RunNow(la.ID); err == nil {
+		t.Fatal("RunNow after Stop succeeded")
+	}
+	if got := runner.Calls(); len(got) != 0 {
+		t.Fatalf("RunNow after Stop started agent: %+v", got)
+	}
+}
