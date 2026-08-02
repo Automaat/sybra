@@ -678,8 +678,12 @@ func (a *App) initStatusHook() {
 
 		// Advance workflows whose current run_agent step declares a
 		// matching wait_for_status. This is how interactive agents (which
-		// never exit between turns) signal step completion.
-		if local && a.workflowEngine != nil {
+		// never exit between turns) signal step completion. Gated on
+		// startupRecoveryDone: a step's completion can itself fire a
+		// dispatch (e.g. maybeRecoverHumanRequiredAlreadyFixedOnMain), and
+		// HasRunningAgentForTask reads an empty registry until reattach
+		// finishes — see startupRecoveryPending's doc comment (#2752).
+		if local && a.workflowEngine != nil && a.startupRecoveryDone() {
 			a.workflowEngine.HandleStatusChange(taskID, to)
 		}
 		// HandleStatusChange may reroute a human-required self-escalation back
@@ -729,7 +733,7 @@ func (a *App) initStatusHook() {
 			if a.notifier != nil {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
-			if local && a.runsScheduler() && a.humanReview != nil {
+			if local && a.runsScheduler() && a.startupRecoveryDone() && a.humanReview != nil {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):

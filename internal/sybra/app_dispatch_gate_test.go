@@ -113,6 +113,92 @@ steps:
 	}
 }
 
+// TestStatusHook_WaitForStatus_RefusesDuringStartupRecovery pins the
+// remaining gap in #2752: initStatusHook called workflowEngine.HandleStatusChange
+// unconditionally (only dispatchTaskCreatedWorkflow/dispatchStatusWorkflow/
+// dispatchPlanningWorkflow were gated), so a parked run_agent step's
+// wait_for_status could still advance — and step completion can itself
+// trigger a dispatch (e.g. the next run_agent step) — while
+// RunStartupCleanup has not yet reattached survivor agents. Reuses the
+// waitForStatusWorkflowYAML fixture (parks on step "plan" until status
+// becomes plan-review) driven through the real status-change hook, not a
+// direct engine call, so it covers the App-level gate.
+func TestStatusHook_WaitForStatus_RefusesDuringStartupRecovery(t *testing.T) {
+	app := setupApp(t)
+
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine := workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: app.tasks},
+		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},
+		app.logger,
+	)
+	app.workflowEngine = engine
+	app.initStatusHook()
+
+	parkOnPlanStep := func(id string) {
+		t.Helper()
+		if _, err := app.tasks.UpdateMap(id, map[string]any{
+			"status": "planning",
+			"workflow": &workflow.Execution{
+				WorkflowID:  "test-status-hook",
+				CurrentStep: "plan",
+				State:       workflow.ExecWaiting,
+				Variables:   map[string]string{},
+			},
+		}); err != nil {
+			t.Fatalf("UpdateMap: %v", err)
+		}
+	}
+
+	// Blocked: startup recovery still pending, the status flip into
+	// plan-review must not advance the parked step.
+	blocked, err := app.tasks.Create("status hook gate test (blocked)", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	parkOnPlanStep(blocked.ID)
+
+	app.startupRecoveryPending.Store(true)
+	if _, err := app.tasks.Update(blocked.ID, task.Update{Status: task.Ptr(task.StatusPlanReview)}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := app.tasks.Get(blocked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.CurrentStep != "plan" {
+		t.Fatalf("workflow = %+v after status-hook event while startup recovery was pending, want unchanged at step 'plan'", got.Workflow)
+	}
+
+	// Allowed: once startup recovery clears, the identical transition on a
+	// fresh task advances past the parked step as before.
+	allowed, err := app.tasks.Create("status hook gate test (allowed)", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	parkOnPlanStep(allowed.ID)
+
+	app.startupRecoveryPending.Store(false)
+	if _, err := app.tasks.Update(allowed.ID, task.Update{Status: task.Ptr(task.StatusPlanReview)}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err = app.tasks.Get(allowed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.CurrentStep == "plan" {
+		t.Fatalf("workflow = %+v after status-hook event once recovery cleared, want advanced past step 'plan'", got.Workflow)
+	}
+}
+
 // TestAppStartup_ClearsStartupRecoveryPending pins the wiring: Startup arms
 // dispatch (startupRecoveryPending -> false) only after RunStartupCleanup
 // returns, not before.
