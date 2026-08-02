@@ -74,12 +74,9 @@ func ProbeCodex(ctx context.Context) (Status, error) {
 		// Reuse cctx so the login and version probes share one probeTimeout
 		// budget rather than allowing ProbeCodex to run for up to 2× of it.
 		if v := probeCodexVersion(cctx); v != "" && !codexVersionAtLeast(v, minCodexVersion) {
-			warning := fmt.Sprintf("codex %s is older than %s; the gpt-5.6 models require %s+ — upgrade codex or pin an older model", v, minCodexVersion, minCodexVersion)
-			if st.Detail != "" {
-				st.Detail += " — " + warning
-			} else {
-				st.Detail = warning
-			}
+			st.Healthy = false
+			st.Reason = "cli_too_old"
+			st.Detail = fmt.Sprintf("codex %s is older than %s; the gpt-5.6 models require %s+ — upgrade codex or disable the provider", v, minCodexVersion, minCodexVersion)
 		}
 	}
 	return st, perr

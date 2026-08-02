@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/roleeffort"
 )
 
 // Role identifies the purpose of an agent run.
@@ -30,15 +32,24 @@ const (
 	RoleTestFix Role = "test-fix"
 )
 
+// allRoles is the single source of truth for the role set. Package-level so
+// IsKnown — called on every dispatch through ResolveRunRole — stays
+// allocation-free; AllRoles hands out a copy so no caller can mutate it.
+var allRoles = []Role{
+	RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor,
+	RoleOrchestrator, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner,
+	RoleImplementation, RoleHumanReview, RoleTestFix,
+}
+
+// AllRoles lists every known Role. IsKnown is derived from the same list, so
+// adding a Role constant to it is what makes the role dispatchable — and what
+// makes the reasoning-effort coverage test notice it.
+func AllRoles() []Role {
+	return slices.Clone(allRoles)
+}
+
 func (r Role) IsKnown() bool {
-	switch r {
-	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor, RoleOrchestrator,
-		RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation,
-		RoleHumanReview, RoleTestFix:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(allRoles, r)
 }
 
 // AgentName returns the prefixed name used when launching an agent
@@ -242,19 +253,14 @@ func errUnknownRolePrefix(name string) error {
 }
 
 // DefaultReasoningEffort returns the built-in per-role reasoning-effort
-// baseline used when neither an experiment assignment nor the task itself
-// pins a level (see RunConfig.ReasoningEffort). System/verifier roles that
-// mostly classify or check pre-existing work default to "low"; the
-// code-authoring roles that most benefit from deeper reasoning default to
-// "high". Everything else falls back to DefaultReasoningEffort ("medium")
-// via the empty return.
+// baseline used when neither an experiment assignment, the operator's
+// agent.role_effort map, nor the task itself pins a level (see
+// RunConfig.ReasoningEffort). Roles with no opinion return "" and fall back to
+// DefaultReasoningEffort ("medium").
+//
+// The table lives in internal/roleeffort so internal/abtest can share it
+// without importing this package (that direction cycles through
+// internal/config).
 func (r Role) DefaultReasoningEffort() string {
-	switch r {
-	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview, RoleMonitor:
-		return "low"
-	case RoleImplementation, RoleFixReview, RolePRFix, RoleTestFix:
-		return "high"
-	default:
-		return ""
-	}
+	return roleeffort.ForRole(string(r))
 }

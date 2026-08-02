@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/autoupdate"
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
 	"github.com/Automaat/sybra/internal/evaluation"
@@ -422,11 +423,20 @@ func (lm *LifecycleManager) prune() {
 	if mb := a.cfg.DefaultLogRetentionMaxSizeMB(); mb > 0 {
 		maxTotalBytes = int64(mb) * 1024 * 1024
 	}
+	var protectedLogs map[string]bool
+	if a.cleanupProtected != nil && a.tasks != nil {
+		if findings, err := a.cleanupProtected.List(); err == nil {
+			if tasks, listErr := a.tasks.List(); listErr == nil {
+				protectedLogs = cleanup.ProtectedEvidenceLogPaths(a.logDir, tasks, findings)
+			}
+		}
+	}
 	r := logging.EnforceAgentLogRetention(a.logDir, logging.RetentionOptions{
-		MaxAge:         maxAge,
-		GzipAfter:      gzipAfter,
-		MaxTotalBytes:  maxTotalBytes,
-		ActiveLogPaths: a.agents.ActiveLogPaths(),
+		MaxAge:            maxAge,
+		GzipAfter:         gzipAfter,
+		MaxTotalBytes:     maxTotalBytes,
+		ActiveLogPaths:    a.agents.ActiveLogPaths(),
+		ProtectedLogPaths: protectedLogs,
 	}, time.Now())
 	logging.LogPruneReport(a.logger, r)
 }
@@ -491,6 +501,7 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 		}
 		return out
 	})
+	lm.registerCleanupMetricsObservers()
 	metrics.RegisterGHAuthState(func() map[string]int64 {
 		state := github.AuthHealthSnapshot().State
 		out := map[string]int64{
@@ -508,6 +519,53 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 	})
 	metrics.RegisterGHAuthSuppressedCalls(func() int64 {
 		return github.AuthHealthSnapshot().SuppressedCalls
+	})
+}
+
+// registerCleanupMetricsObservers wires the protected-resource cleanup
+// findings/blocked-bytes observable gauges. Split out of
+// registerMetricsObservers to keep that function under the funlen limit.
+func (lm *LifecycleManager) registerCleanupMetricsObservers() {
+	a := lm.app
+	metrics.RegisterCleanupProtectedFindings(func() map[string]int64 {
+		if a.cleanupProtected == nil {
+			return nil
+		}
+		findings, err := a.cleanupProtected.List()
+		if err != nil {
+			return nil
+		}
+		out := map[string]int64{
+			string(cleanup.ResourceWorktree): 0,
+			string(cleanup.ResourceSandbox):  0,
+		}
+		for i := range findings {
+			if findings[i].State != cleanup.FindingOpen {
+				continue
+			}
+			out[string(findings[i].Kind)]++
+		}
+		return out
+	})
+	metrics.RegisterCleanupProtectedBytes(func() map[string]int64 {
+		if a.cleanupProtected == nil {
+			return nil
+		}
+		findings, err := a.cleanupProtected.List()
+		if err != nil {
+			return nil
+		}
+		out := map[string]int64{
+			string(cleanup.ResourceWorktree): 0,
+			string(cleanup.ResourceSandbox):  0,
+		}
+		for i := range findings {
+			if findings[i].State != cleanup.FindingOpen {
+				continue
+			}
+			out[string(findings[i].Kind)] += findings[i].BytesRetained
+		}
+		return out
 	})
 }
 

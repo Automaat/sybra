@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -61,6 +62,7 @@ type Manager struct {
 	// to dockerChownNormalizer and fsutil.RemoveAllForce respectively.
 	normalizeOwnership ownershipNormalizer
 	removeAll          func(string) error
+	protected          *cleanup.ProtectedStore
 }
 
 // NewManager creates a Manager that stores per-task files under dataDir.
@@ -86,6 +88,12 @@ func (m *Manager) SetRetentionWindow(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.retention = d
+}
+
+func (m *Manager) SetProtectedFindings(store *cleanup.ProtectedStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.protected = store
 }
 
 // Get returns the running instance for a task, or nil if none exists.
@@ -349,7 +357,9 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 
 	m.mu.Lock()
 	retention := m.retention
+	protected := m.protected
 	m.mu.Unlock()
+	observedProtected := make(map[string]bool)
 
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -368,7 +378,33 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 			// unlinked from the (possibly stale) task list.
 			continue
 		case hasUnpushedCommits != nil && hasUnpushedCommits(taskID):
-			m.logger.Warn("sandbox.cleanup.unpushed-commits", "task_id", taskID)
+			if protected == nil {
+				m.logger.Warn("sandbox.cleanup.protected", "event", "legacy", "task_id", taskID)
+				continue
+			}
+			taskDir := filepath.Join(m.dataDir, taskID)
+			size, _ := dirSize(taskDir)
+			finding, event, err := protected.Observe(cleanup.Observation{
+				Kind:          cleanup.ResourceSandbox,
+				TaskID:        taskID,
+				Path:          taskDir,
+				Reason:        cleanup.ReasonUnpushedCommits,
+				ObservedState: fmt.Sprintf("bytes=%d", size),
+				BytesRetained: size,
+			})
+			if err != nil {
+				m.logger.Warn("sandbox.cleanup.protected.observe", "task_id", taskID, "err", err)
+				continue
+			}
+			observedProtected[finding.ID] = true
+			if event.ShouldLog() {
+				m.logger.Warn("sandbox.cleanup.protected",
+					"event", event,
+					"task_id", taskID,
+					"path", taskDir,
+					"state", finding.ObservedState,
+					"bytes_retained", finding.BytesRetained)
+			}
 			continue
 		case !exists:
 			// Deleted task — remove regardless of age, and regardless of any
@@ -399,6 +435,11 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 			}
 		}
 		m.RemoveContext(ctx, taskID)
+	}
+	if protected != nil {
+		if err := protected.ResolveMissing(cleanup.ResourceSandbox, observedProtected); err != nil {
+			m.logger.Warn("sandbox.cleanup.protected.resolve", "err", err)
+		}
 	}
 }
 

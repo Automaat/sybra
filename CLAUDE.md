@@ -266,10 +266,28 @@ into an unexported `RunConfig.sandbox` spec:
   explicit `enforce` posture, never the default rollout posture. This is
   why `report` is safe to ship as the default.
 - `enforce`: wraps the spawn and fails the run closed if the host sandbox
-  mechanism or profile/setup is unavailable. The server runs this posture now
-  (`agent.sandbox_mode: enforce` via Linux `bwrap`), so the real operator
-  board under `~/.sybra` and deploy checkout `/opt/sybra/src` stay read-only
-  to agents.
+  mechanism or profile/setup is unavailable. It is **never** reached by
+  leaving the key unset — the built-in default is `report`, so every
+  deployment that wants containment must set `agent.sandbox_mode: enforce`
+  explicitly. Under it the real operator board under `~/.sybra` and the
+  deploy checkout `/opt/sybra/src` stay read-only to agents.
+
+Do not record which posture a given deployment runs here — that claim drifts
+silently and this section already carried a false one for months. Read it from
+the host instead. The postures are distinguishable only by their log line and
+by whether setup failures abort the run, never by observable agent behaviour on
+a healthy host, so a config that quietly resolves to `report` looks exactly
+like a contained one. Grep the app log (`~/.sybra/logs/sybra.log`, or
+`/data/sybra/home/logs/sybra.log` on the server) — **not** the systemd journal,
+which carries only build and start output:
+
+- `agent.sandbox.enforce` — spawn wrapped.
+- `agent.sandbox.report` — spawn **not** wrapped; allowlist logged only.
+- `agent.sandbox.report.unavailable` — `report` that fell back to unwrapped
+  because `bwrap`/`sandbox-exec` was missing.
+- *neither line for a run* — resolved `off`, via config or the per-task
+  `sandbox: false` escape hatch; `injectProcessSandbox` returns before it logs
+  anything. Absence of both is the widest-blast-radius case, not the quiet one.
 
 The escape hatch's use is operator-visible: `agentorch.logSandboxEscapeHatch`
 logs a warning and records `audit.EventAgentSandboxDisabled`.

@@ -28,7 +28,6 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/testutil/loadscale"
 	"github.com/Automaat/sybra/internal/triage"
 
 	"github.com/Automaat/sybra/internal/workflow"
@@ -466,17 +465,53 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 // defended against per-test.
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
-	scale := e2eTimeoutScale()
-	scaled := clampToReportingDeadline(time.Duration(int64(timeout) * scale))
-	deadline := time.After(scaled)
+	waitForWithScale(t, timeout, desc, fn, e2eTimeoutScale)
+}
+
+// waitForWithScale is waitFor with the deadline scaler injected, so the
+// adaptive behaviour can be tested without mutating SYBRA_E2E_TIMEOUT_SCALE —
+// that variable is process-global and every concurrently running test's budget
+// reads it, so a test that sets it starves its neighbours.
+func waitForWithScale(t *testing.T, timeout time.Duration, desc string, fn func() bool, scaleFn func() int64) {
+	t.Helper()
+	if budget, scale, ok := awaitCondition(timeout, fn, scaleFn); !ok {
+		t.Fatalf("timeout waiting for: %s (after %s, scale=%d)\n%s", desc, budget, scale, e2eGoroutineDump())
+	}
+}
+
+// awaitCondition polls fn until it holds or its budget is exhausted,
+// reporting the budget and scale so the caller can describe the failure.
+//
+// The budget is spent in *intended* time — the time this loop asked to sleep
+// — not wall-clock. That is the fix for #2811: the load-average scaler is a
+// lagging and, on darwin, frequently blind signal, because a suite that
+// oversubscribes the host through process spawning and I/O leaves
+// load-per-CPU under 1 while wall-clock waits inflate several-fold. Counting
+// intended time makes the deadline mean "this many polls' worth of chances",
+// which is what the test actually cares about, and immune to how slow the
+// host is while it takes them.
+//
+// A wall-clock backstop still applies so a pathologically slow host cannot let
+// one wait consume the whole binary timeout.
+func awaitCondition(timeout time.Duration, fn func() bool, scaleFn func() int64) (time.Duration, int64, bool) {
+	const pollInterval = 50 * time.Millisecond
+	scale := scaleFn()
+	budget := time.Duration(int64(timeout) * scale)
+	maxWall := clampToReportingDeadline(time.Duration(int64(timeout) * e2eTimeoutScaleCeiling))
+	start := time.Now()
+	var slept time.Duration
 	for {
-		select {
-		case <-deadline:
-			t.Fatalf("timeout waiting for: %s (after %s, scale=%d)\n%s", desc, scaled, scale, e2eGoroutineDump())
-		case <-time.After(50 * time.Millisecond):
-			if fn() {
-				return
-			}
+		// Sleep before the first check, matching the original select-based
+		// loop. Polling immediately on entry would let a condition that is
+		// only transiently true at t=0 report success before the behaviour
+		// under test has happened at all.
+		time.Sleep(pollInterval)
+		slept += pollInterval
+		if fn() {
+			return budget, scale, true
+		}
+		if slept >= budget || time.Since(start) >= maxWall {
+			return budget, scale, false
 		}
 	}
 }
@@ -590,40 +625,6 @@ func dropParkedTestGoroutines(dump string) string {
 		out += fmt.Sprintf("\n\n(%d goroutines parked in t.Parallel omitted — they hold nothing)\n", parked)
 	}
 	return out
-}
-
-func e2eTimeoutScale() int64 {
-	return e2eTimeoutScaleResolve()
-}
-
-const (
-	e2eTimeoutScaleCeiling = 20
-	e2eCITimeoutScaleFloor = 12
-)
-
-func e2eTimeoutScaleResolve() int64 {
-	if v := strings.TrimSpace(os.Getenv("SYBRA_E2E_TIMEOUT_SCALE")); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			return n
-		}
-	}
-	factor := loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
-	// CI runners carry a known-bad baseline (slow fork/exec, container I/O
-	// variance) even when the load average looks idle, so they get a fixed
-	// floor on top of the measured factor. Local/dev runs (including a fleet
-	// of concurrent agents on darwin/linux) have no such baseline — they
-	// scale purely off measured host load, same as CI does above the floor.
-	if os.Getenv("CI") == "" && os.Getenv("GITHUB_ACTIONS") == "" {
-		return factor
-	}
-	scaled := e2eCITimeoutScaleFloor * factor
-	if scaled < e2eCITimeoutScaleFloor {
-		return e2eCITimeoutScaleFloor
-	}
-	if scaled > e2eTimeoutScaleCeiling {
-		return e2eTimeoutScaleCeiling
-	}
-	return scaled
 }
 
 func TestE2E_HeadlessAgent_Success(t *testing.T) {
@@ -3078,7 +3079,21 @@ func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
 
 	before, _ := env.tasks.Get(created.ID)
 	historyBefore := len(before.Workflow.StepHistory)
-	updatedBefore := before.UpdatedAt
+	stepBefore := before.Workflow.CurrentStep
+	stateBefore := before.Workflow.State
+
+	// An unrelated write, standing in for the lease renewals and effect-log
+	// appends the engine performs on its own schedule. It bumps UpdatedAt
+	// without touching the state machine, which is exactly the interleaving
+	// that used to fail this test: the rejection was correct, but a timestamp
+	// comparison cannot tell "the bogus action mutated the task" apart from
+	// "something else wrote while we were looking". Doing it deliberately
+	// makes the distinction part of what the test pins.
+	if _, err := env.tasks.Update(created.ID, task.Update{
+		StatusReason: task.Ptr("concurrent write during invalid-action handling"),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	err = env.engine.HandleHumanAction(created.ID, "bogus", nil)
 	if err == nil {
@@ -3098,8 +3113,9 @@ func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
 	if got := len(after.Workflow.StepHistory); got != historyBefore {
 		t.Errorf("step_history len = %d, want %d", got, historyBefore)
 	}
-	if !after.UpdatedAt.Equal(updatedBefore) {
-		t.Errorf("UpdatedAt changed from %v to %v", updatedBefore, after.UpdatedAt)
+	if after.Workflow.CurrentStep != stepBefore || after.Workflow.State != stateBefore {
+		t.Errorf("workflow moved from %s/%s to %s/%s",
+			stepBefore, stateBefore, after.Workflow.CurrentStep, after.Workflow.State)
 	}
 	if _, set := after.Workflow.Variables["human_action"]; set {
 		t.Errorf("human_action unexpectedly set: %q", after.Workflow.Variables["human_action"])
@@ -4877,7 +4893,7 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 	// so only "success" (implement) remains in the queue. The default
 	// classifier verdict (env.classifier) already routes to status=todo,
 	// matching the old "triage" fake-claude scenario.
-	env := setupE2EMultiProvider(t, "claude", []string{"success"})
+	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 	loadBuiltinWorkflow(t, env, "simple-task-implement")
 
@@ -4899,14 +4915,34 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	waitFor(t, 30*time.Second, "verify_commits parks one no-commit retry", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil &&
+			tk.Workflow.WorkflowID == "simple-task-implement" &&
+			tk.Workflow.CurrentStep == "implement" &&
+			tk.Workflow.State == workflow.ExecWaiting &&
+			tk.Workflow.Variables["step.verify_commits.no_commit_retry"] == "1"
+	})
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk.Workflow.SetVar("workflow.retry_after", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	wf := tk.Workflow
+	if _, err := env.tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	env.engine.ResumeStalled()
+
 	waitFor(t, 30*time.Second, "implement workflow completes after verify_commits", func() bool {
+		env.engine.ResumeStalled()
 		tk, gErr := env.tasks.Get(created.ID)
 		return gErr == nil && tk.Workflow != nil &&
 			tk.Workflow.WorkflowID == "simple-task-implement" &&
 			tk.Workflow.State == workflow.ExecCompleted
 	})
 
-	tk, _ := env.tasks.Get(created.ID)
+	tk, _ = env.tasks.Get(created.ID)
 	if tk.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", tk.Status)
 	}

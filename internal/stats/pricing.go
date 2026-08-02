@@ -161,7 +161,7 @@ func EstimateAgentCost(u AgentUsage) float64 {
 	switch u.Provider {
 	case "copilot":
 		return EstimateCopilotCost(u.PremiumRequests)
-	case "codex":
+	case "codex", "claude":
 		return EstimateCostDetailed(u.Model, u.InputTokens, u.OutputTokens,
 			u.CacheCreate, u.CacheRead, u.ReasoningTokens, u.StartedAt)
 	default:

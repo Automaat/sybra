@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/enrichment"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
@@ -15,8 +16,11 @@ import (
 // must survive a wholesale tag-replacement in Apply because dropping them
 // would silently break routing the task depends on: escape-hatch opt-outs
 // (see escapeHatchTags), the umbrella dependency gate marker, and local
-// Sybra-bug tracker routing markers.
+// Sybra-bug tracker routing markers. Pending enrichment must survive too:
+// dropping it strands URL stubs outside ReconcilePendingEnrichment and can
+// let umbrella issues be implemented as flat tasks.
 var preservedTags = append(append([]string{}, escapeHatchTags...),
+	enrichment.PendingTag,
 	umbrella.GatedTag,
 	string(task.FlagSybraBug),
 	string(task.FlagScrubbed),

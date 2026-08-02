@@ -310,6 +310,9 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 	if err := config.ValidateResolvedConfig(&next); err != nil {
 		return validationError(err.Error())
 	}
+	if err := config.ValidateUnattendedPosture(&next); err != nil {
+		return validationError(err.Error())
+	}
 	return nil
 }
 
@@ -491,6 +494,7 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
 		K8sJobs:                k8sJobRunnerConfigFromConfig(cfg.Agent.K8sJobs),
+		RoleEffort:             cfg.Agent.RoleEffort,
 		ClassReservations:      agent.ParseClassReservations(cfg.Agent.ClassReservations),
 	}
 }

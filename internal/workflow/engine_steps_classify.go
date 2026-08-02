@@ -65,11 +65,13 @@ func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) 
 		}
 		e.logger.Warn("workflow.classify-task.retry", "task_id", taskID, "step", step.ID,
 			"attempt", attempt+1, "max", len(classifyTaskRetryBackoffs), "err", err)
-		// Interruptible backoff on e.ctx (not the now-canceled attemptCtx): an
-		// engine shutdown wakes the wait immediately, so the retry loop never
-		// blocks teardown. The next iteration's e.ctx check then routes a
+		// Interruptible backoff on the drain context (not the now-canceled
+		// attemptCtx, and not e.ctx): the app starts draining well before the
+		// hard stop that cancels e.ctx, and the drain waits for this goroutine
+		// to finish first — so waiting on e.ctx here deadlocked teardown for
+		// the whole grace. The next iteration's e.ctx check then routes a
 		// shutdown to the resume-on-next-boot path above.
-		classifyTaskWait(e.ctx, classifyTaskRetryBackoffs[attempt])
+		classifyTaskWait(e.drainContext(), classifyTaskRetryBackoffs[attempt])
 	}
 
 	return e.humanRequiredClassify(taskID, step, "triage classify failed: "+err.Error())

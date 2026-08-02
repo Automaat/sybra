@@ -5422,6 +5422,13 @@ func TestHandleHumanAction_NotWaiting(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-waiting task")
 	}
+	var ce *ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *ClientError so httpapi surfaces it as a 4xx instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusConflict)
+	}
 }
 
 func TestHandleHumanAction_InvalidActionAlreadyWaitingDoesNotMutate(t *testing.T) {
@@ -5445,6 +5452,13 @@ func TestHandleHumanAction_InvalidActionAlreadyWaitingDoesNotMutate(t *testing.T
 	err := engine.HandleHumanAction("t1", "bogus", nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid human action") {
 		t.Fatalf("HandleHumanAction error = %v, want invalid human action", err)
+	}
+	var ce *ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *ClientError so httpapi surfaces it as a 4xx instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusBadRequest)
 	}
 
 	got, err := tasks.GetTask("t1")
@@ -6862,6 +6876,94 @@ steps:
 	}
 	if got := completed[0].Variables[skillReceiptRecoveryKey("run")]; got != "" {
 		t.Fatalf("completion retry var = %q, want cleared before downstream recovery sees completion", got)
+	}
+}
+
+func TestHandleAgentComplete_UnverifiedSkillAfterRetryContinuesWithImportedSidecar(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: codex
+      prompt: "Run /adversarial-review now."
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        kind: code_review
+        required: true
+    next:
+      - goto: require_review
+  - id: require_review
+    name: Require Review
+    type: require_sidecar
+    config:
+      sidecar: code_review
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".sybra-review-t1.md"), []byte("Review Verdict: CLEAN\n\nNo findings.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir:                 dir,
+				skillReceiptRecoveryKey("run"): "1",
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-2",
+			Role:               "review",
+			Provider:           "codex",
+			RequestedSkill:     "adversarial-review",
+			SkillExecutionMode: "injected",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "agent-2",
+		Result:  "review complete without receipt",
+		Success: true,
+	})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "done" {
+		t.Fatalf("Status = %q, want done", ti.Status)
+	}
+	if !strings.Contains(ti.CodeReview, "Review Verdict: CLEAN") {
+		t.Fatalf("CodeReview = %q, want imported review sidecar", ti.CodeReview)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("skill receipt retry var = %q, want cleared after sidecar continuation", got)
+	}
+	if len(agents.calls) != 0 {
+		t.Fatalf("StartAgent calls = %d, want no third attempt", len(agents.calls))
 	}
 }
 
@@ -9390,6 +9492,69 @@ func TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired(t *testing.T) {
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "no commits") {
 		t.Errorf("status reason = %q, want 'no commits'", reason)
+	}
+}
+
+func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnce(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	_, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if wfExec.CurrentStep != "implement" || wfExec.State != ExecWaiting {
+		t.Fatalf("workflow = %+v, want rearmed implement/ExecWaiting", wfExec)
+	}
+	if got := wfExec.Variables["step.verify_commits.no_commit_retry"]; got != "1" {
+		t.Fatalf("no_commit_retry = %q, want 1", got)
+	}
+	if got := wfExec.Variables[verifyReaskNoteVar]; !strings.Contains(got, "without producing commits") {
+		t.Fatalf("verify reask note = %q, want no-commit guidance", got)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress retry", ti.Status)
+	}
+}
+
+func TestExecVerifyCommits_NoCommitAuthorRunEscalatesAfterRetry(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{"step.verify_commits.no_commit_retry": "1"}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.Output, "no commits") {
+		t.Fatalf("Output = %q, want no commits", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required after one retry", ti.Status)
 	}
 }
 
