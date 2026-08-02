@@ -152,6 +152,24 @@ func TestHandleWatchdogHangRetry_RunTestPrioritizesManualTestSurface(t *testing.
 	}
 }
 
+func TestHandleWatchdogStopRetry_TestRunnerUsesTestingGuidance(t *testing.T) {
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(newTestStore(t), tasks, agents, discardLogger())
+	wf := &Execution{WorkflowID: "testing-task", CurrentStep: "run_test", State: ExecWaiting, Variables: map[string]string{}, StartedAt: time.Now().UTC()}
+	tasks.Put(TaskInfo{ID: "t1", Status: "human-required", StatusReason: "watchdog: loop stop: repeated test", AgentMode: "headless", Workflow: wf})
+	ti := TaskInfo{ID: "t1", Status: "human-required", StatusReason: "watchdog: loop stop: repeated test", AgentMode: "headless", Workflow: wf}
+	if engine.handleWatchdogStopRetry(&ti, &Step{ID: "run_test", Type: StepRunAgent, Config: StepConfig{Role: testRunnerRole}}) {
+		t.Fatal("armed retry should continue to normal dispatch")
+	}
+	if agents.CallCount() != 0 || wf.Variables[watchdogStopRetryKey("run_test")] != "1" {
+		t.Fatalf("retry did not arm correctly: calls=%d vars=%v", agents.CallCount(), wf.Variables)
+	}
+	if wf.Variables[testingReaskNoteVar] == "" || wf.Variables[watchdogReaskNoteVar] != "" {
+		t.Fatalf("guidance routing = %v, want testing-only note", wf.Variables)
+	}
+}
+
 func TestHandleWatchdogHangRetry_NonReadyPRStillRetries(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
