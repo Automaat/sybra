@@ -45,14 +45,14 @@ var tierAliases = map[Tier]string{
 }
 
 var aliasToTier = map[string]Tier{
-	"":             Cheap,
-	"cheap":        Cheap,
-	"expensive":    Expensive,
-	"haiku":        SuperCheap,
-	"opus":         Expensive,
-	"sonnet":       Cheap,
-	"super_cheap":  SuperCheap,
-	"supercheap":   SuperCheap,
+	"":            Cheap,
+	"cheap":       Cheap,
+	"expensive":   Expensive,
+	"haiku":       SuperCheap,
+	"opus":        Expensive,
+	"sonnet":      Cheap,
+	"super_cheap": SuperCheap,
+	"supercheap":  SuperCheap,
 }
 
 // Models returns a defensive copy of the provider model map for tier.
