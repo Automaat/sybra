@@ -1458,6 +1458,27 @@ func bufferedResultEvent(events []StreamEvent) (found, isError bool) {
 	return found, isError
 }
 
+// resultBeforeOnlyForkOutput accepts a terminal result followed only by forked
+// child events or background-task bookkeeping. Top-level events after a result
+// otherwise delimit a new retry attempt and must not let reattach finalize the
+// prior attempt.
+func resultBeforeOnlyForkOutput(events []StreamEvent) (found, isError bool) {
+	for i := range slices.Backward(events) {
+		e := events[i]
+		if e.parentToolUseID != "" {
+			continue
+		}
+		if e.Type == "system" && e.Subtype == "background_tasks_changed" {
+			continue
+		}
+		if e.Type == "result" {
+			return true, resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0
+		}
+		return false, false
+	}
+	return false, false
+}
+
 // backgroundTaskGrace is the extra idle time granted to a post-result-hang
 // guard (runner_headless.go's postResultGrace, watchdog's completedHangGrace)
 // while the agent has outstanding CLI background bash tasks. Bounded rather
