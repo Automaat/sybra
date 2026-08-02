@@ -11,9 +11,9 @@ import (
 const renovateSearchChunkSize = 20
 
 // renovatePRQuery includes individual check run contexts for rerun support.
-const renovatePRQuery = `query($q: String!) {
+const renovatePRQuery = `query($q: String!, $after: String) {
   viewer { login }
-  search(query: $q, type: ISSUE, first: 100) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
     pageInfo {
       hasNextPage
       endCursor
@@ -124,22 +124,38 @@ func fetchRenovatePRsWith(ctx context.Context, e execer, author string, repos []
 }
 
 func searchRenovatePRsWith(ctx context.Context, e execer, query string) ([]RenovatePR, error) {
-	resp, err := runGHAPICtxWith(ctx, e, "", "graphql",
-		"-f", "query="+renovatePRQuery,
-		"-f", "q="+query)
-	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
-	}
+	var all []RenovatePR
+	var after, viewer string
+	for range maxSearchPages {
+		args := []string{"-f", "query=" + renovatePRQuery, "-f", "q=" + query}
+		if after != "" {
+			args = append(args, "-F", "after="+after)
+		}
+		resp, err := runGHAPICtxWith(ctx, e, "", append([]string{"graphql"}, args...)...)
+		if err != nil {
+			return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
+		}
 
-	var gqlResp gqlResponse
-	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
-		return nil, fmt.Errorf("parse graphql response: %w", err)
+		var gqlResp gqlResponse
+		if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
+			return nil, fmt.Errorf("parse graphql response: %w", err)
+		}
+		if len(gqlResp.Errors) > 0 {
+			return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+		}
+		if viewer == "" {
+			viewer = gqlResp.Data.Viewer.Login
+		}
+		all = append(all, convertRenovatePRs(gqlResp.Data.Search.Nodes, viewer)...)
+		if !gqlResp.Data.Search.PageInfo.HasNextPage {
+			return all, nil
+		}
+		after = gqlResp.Data.Search.PageInfo.EndCursor
+		if after == "" {
+			return nil, fmt.Errorf("graphql: search has next page without cursor")
+		}
 	}
-	if len(gqlResp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
-	}
-
-	return convertRenovatePRs(gqlResp.Data.Search.Nodes, gqlResp.Data.Viewer.Login), nil
+	return nil, fmt.Errorf("graphql: search exceeded %d pages", maxSearchPages)
 }
 
 // buildRenovateSearchQuery composes a GitHub issue-search query string.

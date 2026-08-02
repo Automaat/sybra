@@ -208,9 +208,13 @@ func sanitizeGHOutput(out []byte) string {
 	return "GitHub returned an HTML error page"
 }
 
-const prQuery = `query($q: String!) {
+// maxSearchPages bounds each GraphQL search so a pathological result set cannot
+// consume an unbounded share of the GitHub API budget.
+const maxSearchPages = 5
+
+const prQuery = `query($q: String!, $after: String) {
   viewer { login }
-  search(query: $q, type: ISSUE, first: 100) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
     pageInfo {
       hasNextPage
       endCursor
@@ -428,22 +432,38 @@ type gqlPR struct {
 }
 
 func searchPRsWith(e execer, query string) ([]PullRequest, error) {
-	resp, err := runGHAPIWith(e, "", "graphql",
-		"-f", "query="+prQuery,
-		"-f", "q="+query)
-	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
-	}
+	var all []PullRequest
+	var after, viewer string
+	for range maxSearchPages {
+		args := []string{"-f", "query=" + prQuery, "-f", "q=" + query}
+		if after != "" {
+			args = append(args, "-F", "after="+after)
+		}
+		resp, err := runGHAPIWith(e, "", append([]string{"graphql"}, args...)...)
+		if err != nil {
+			return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
+		}
 
-	var gqlResp gqlResponse
-	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
-		return nil, fmt.Errorf("parse graphql response: %w", err)
+		var gqlResp gqlResponse
+		if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
+			return nil, fmt.Errorf("parse graphql response: %w", err)
+		}
+		if len(gqlResp.Errors) > 0 {
+			return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+		}
+		if viewer == "" {
+			viewer = gqlResp.Data.Viewer.Login
+		}
+		all = append(all, convertPRs(gqlResp.Data.Search.Nodes, viewer)...)
+		if !gqlResp.Data.Search.PageInfo.HasNextPage {
+			return all, nil
+		}
+		after = gqlResp.Data.Search.PageInfo.EndCursor
+		if after == "" {
+			return nil, fmt.Errorf("graphql: search has next page without cursor")
+		}
 	}
-	if len(gqlResp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
-	}
-
-	return convertPRs(gqlResp.Data.Search.Nodes, gqlResp.Data.Viewer.Login), nil
+	return nil, fmt.Errorf("graphql: search exceeded %d pages", maxSearchPages)
 }
 
 // convertCommonPR converts shared gqlPR fields into a PullRequest.
