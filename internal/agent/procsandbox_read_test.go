@@ -2,6 +2,8 @@ package agent
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -162,5 +164,34 @@ func TestSandboxSpecWriteRoots_CoversGitOverlay(t *testing.T) {
 		if !slices.Contains(got, want) {
 			t.Errorf("writeRoots() missing %q: %v", want, got)
 		}
+	}
+}
+
+func TestResolveSandboxReadRoots_KeepsSymlinkSpellingAndTarget(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	m := newReadModeManager("enforce")
+	spec := specWithWriteRoots(t)
+	spec.readOnlyDir = link
+	roots := m.resolveSandboxReadRoots(&RunConfig{Role: RoleImplementation, sandbox: spec})
+
+	canonLink, err := canonicalizeRoot(link)
+	if err != nil {
+		t.Fatalf("canonicalizeRoot: %v", err)
+	}
+	// Granting only the resolved target leaves the link itself out of the mount namespace; on the deploy host /bin is such a link and every "#!/bin/sh" shebang then fails with ENOENT.
+	if !slices.Contains(roots, link) {
+		t.Errorf("symlink path %q dropped from read allowlist: %v", link, roots)
+	}
+	if !slices.Contains(roots, canonLink) {
+		t.Errorf("symlink target %q dropped from read allowlist: %v", canonLink, roots)
 	}
 }

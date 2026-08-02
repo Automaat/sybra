@@ -30,6 +30,6 @@ func wrapInvocation(name string, args []string, _ *RunConfig) (wrappedName strin
 
 // buildReadProfile is unreachable on non-darwin/non-linux: enforce mode fails
 // closed at sandboxExecAvailable long before a read allowlist is resolved.
-func buildReadProfile(base string, _ []string) (string, error) {
+func buildReadProfile(base string, _ []string, _ string) (string, error) {
 	return base, nil
 }

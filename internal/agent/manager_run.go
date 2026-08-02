@@ -832,7 +832,7 @@ func (m *Manager) applySandboxReadMode(cfg *RunConfig) error {
 		m.logger.Info("agent.sandbox.read.report", "task_id", cfg.TaskID, "role", string(cfg.Role), "read_roots", roots)
 		return nil
 	}
-	profilePath, err := buildReadProfile(cfg.sandbox.profilePath, roots)
+	profilePath, err := buildReadProfile(cfg.sandbox.profilePath, roots, cfg.sandbox.sandboxHome)
 	if err != nil {
 		m.logger.Error("agent.sandbox.read.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox read profile: %w", err)
@@ -905,6 +905,12 @@ var homeStateLinks = []string{
 // ~/.claude, already a write root.
 func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 	var roots []string
+	// Both the pre-resolution spelling and the resolved target are granted
+	// whenever they differ. Granting only the target is a hard break: /bin,
+	// /sbin, /lib and /lib64 are symlinks into /usr on the deploy host, so a
+	// canonicalized-only allowlist leaves /bin absent from the mount
+	// namespace and every "#!/bin/sh" shebang fails with ENOENT. The same
+	// applies to ~/.claude, a symlink to /data/sybra/claude there.
 	add := func(p string) {
 		if strings.TrimSpace(p) == "" {
 			return
@@ -912,6 +918,9 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 		canon, err := canonicalizeRoot(p)
 		if err != nil {
 			return
+		}
+		if canon != p {
+			roots = append(roots, p)
 		}
 		roots = append(roots, canon)
 	}
@@ -926,11 +935,7 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 			add(filepath.Join(home, f))
 		}
 		for _, l := range homeStateLinks {
-			p := filepath.Join(home, l)
-			if _, err := os.Lstat(p); err == nil {
-				roots = append(roots, p)
-			}
-			add(p)
+			add(filepath.Join(home, l))
 		}
 	}
 	add(cfg.sandbox.readOnlyDir)

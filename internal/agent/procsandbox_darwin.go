@@ -136,7 +136,7 @@ func sbplQuote(p string) string {
 // Seatbelt resolves the most specific applicable rule rather than the last
 // declared one, so appending after the embedded base leaves the base's
 // write rules untouched.
-func buildReadProfile(base string, roots []string) (string, error) {
+func buildReadProfile(base string, roots []string, dir string) (string, error) {
 	if len(roots) == 0 {
 		return base, nil
 	}
@@ -152,15 +152,18 @@ func buildReadProfile(base string, roots []string) (string, error) {
 		b.WriteString("  (literal " + sbplQuote(r) + ")\n")
 	}
 	b.WriteString(")\n")
-	f, err := os.CreateTemp("", "sybra-agent-sandbox-read-*.sb")
-	if err != nil {
+	// Fixed name inside the per-task sandbox home rather than a fresh
+	// os.CreateTemp file. This runs on every enforce spawn, so a long-lived
+	// daemon would otherwise leak one profile per spawn into the system temp
+	// dir forever. One file per task, removed with the sandbox home.
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("read sandbox profile: no sandbox home to write into")
+	}
+	path := filepath.Join(dir, "agent-sandbox-read.sb")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return "", fmt.Errorf("write read sandbox profile: %w", err)
 	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.WriteString(b.String()); err != nil {
-		return "", fmt.Errorf("write read sandbox profile: %w", err)
-	}
-	return f.Name(), nil
+	return path, nil
 }
 
 func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName string, wrappedArgs []string) {

@@ -183,6 +183,6 @@ func shellQuote(s string) string {
 // buildReadProfile is a no-op on Linux: bwrap expresses the read allowlist as
 // mount arguments (see wrapInvocation) rather than a profile file, so there is
 // nothing to materialize.
-func buildReadProfile(base string, _ []string) (string, error) {
+func buildReadProfile(base string, _ []string, _ string) (string, error) {
 	return base, nil
 }

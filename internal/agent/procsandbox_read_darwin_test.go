@@ -4,12 +4,13 @@ package agent
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestBuildReadProfile_EmptyRootsKeepsBaseProfile(t *testing.T) {
-	got, err := buildReadProfile("/tmp/base.sb", nil)
+	got, err := buildReadProfile("/tmp/base.sb", nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("buildReadProfile: %v", err)
 	}
@@ -20,11 +21,10 @@ func TestBuildReadProfile_EmptyRootsKeepsBaseProfile(t *testing.T) {
 }
 
 func TestBuildReadProfile_DeniesReadsOutsideAllowlist(t *testing.T) {
-	path, err := buildReadProfile("/tmp/base.sb", []string{"/usr", "/data/wt"})
+	path, err := buildReadProfile("/tmp/base.sb", []string{"/usr", "/data/wt"}, t.TempDir())
 	if err != nil {
 		t.Fatalf("buildReadProfile: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(path) })
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -66,5 +66,33 @@ func TestSbplQuote_EscapesProfileTerminators(t *testing.T) {
 				t.Fatalf("sbplQuote(%q) = %s, want %s", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildReadProfile_WritesIntoSandboxHome(t *testing.T) {
+	home := t.TempDir()
+
+	first, err := buildReadProfile("/tmp/base.sb", []string{"/usr"}, home)
+	if err != nil {
+		t.Fatalf("buildReadProfile: %v", err)
+	}
+	second, err := buildReadProfile("/tmp/base.sb", []string{"/usr", "/etc"}, home)
+	if err != nil {
+		t.Fatalf("buildReadProfile: %v", err)
+	}
+
+	// A fresh temp file per spawn would leak one profile per run forever in a long-lived daemon, so repeated builds must reuse one path under the per-task sandbox home.
+	if first != second {
+		t.Fatalf("profile path changed between runs: %q then %q", first, second)
+	}
+	if filepath.Dir(first) != home {
+		t.Fatalf("profile written to %q, want it inside the sandbox home %q", first, home)
+	}
+}
+
+func TestBuildReadProfile_RequiresSandboxHome(t *testing.T) {
+	// Falling back to the system temp dir is what leaks; an empty home must fail the run closed instead.
+	if _, err := buildReadProfile("/tmp/base.sb", []string{"/usr"}, ""); err == nil {
+		t.Fatal("buildReadProfile accepted an empty sandbox home")
 	}
 }
