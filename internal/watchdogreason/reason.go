@@ -6,6 +6,7 @@ type Kind string
 
 const (
 	hangPrefix                 = "watchdog hang"
+	legacyStopReason           = "watchdog stop"
 	loopStopPrefix             = "watchdog: loop stop"
 	budgetStopPrefix           = "watchdog: budget stop"
 	rateLimitPrefix            = "watchdog: rate limit"
@@ -43,6 +44,8 @@ func Parse(reason string) Parsed {
 		return Parsed{Kind: KindHang}
 	case strings.HasPrefix(reason, hangPrefix+":"):
 		return Parsed{Kind: KindHang, Detail: strings.TrimSpace(strings.TrimPrefix(reason, hangPrefix+":"))}
+	case reason == legacyStopReason:
+		return Parsed{Kind: KindLoopStop}
 	case reason == loopStopPrefix:
 		return Parsed{Kind: KindLoopStop}
 	case strings.HasPrefix(reason, loopStopPrefix+":"):
@@ -67,6 +70,8 @@ func Parse(reason string) Parsed {
 		return Parsed{Kind: KindVerifyFailed, Detail: strings.TrimSpace(strings.TrimPrefix(reason, verifyFailedPrefix))}
 	case strings.HasPrefix(reason, verifyUnconfirmedPrefix):
 		return Parsed{Kind: KindVerifyUnconfirmed, Detail: strings.TrimSpace(strings.TrimPrefix(reason, verifyUnconfirmedPrefix))}
+	case isLegacyRetryableStop(reason):
+		return Parsed{Kind: KindLoopStop, Detail: strings.TrimSpace(strings.TrimPrefix(reason, "watchdog:"))}
 	default:
 		return Parsed{Detail: reason}
 	}
@@ -118,17 +123,11 @@ func RateLimit(reason string) string {
 // class ResumeStalled may safely re-dispatch for workflow-owned implementation
 // work, and umbrella rollup should treat as still in progress.
 func IsRetryableStop(reason string) bool {
-	reason = strings.TrimSpace(reason)
-	if reason == "watchdog stop" {
-		return true
-	}
-	if strings.Contains(reason, retryBudgetExhaustedPhrase) {
+	parsed := Parse(reason)
+	if strings.Contains(strings.TrimSpace(reason), retryBudgetExhaustedPhrase) {
 		return false
 	}
-	if reason == loopStopPrefix || strings.HasPrefix(reason, loopStopPrefix+":") {
-		return true
-	}
-	return isLegacyRetryableStop(reason)
+	return parsed.Kind == KindLoopStop
 }
 
 func isLegacyRetryableStop(reason string) bool {

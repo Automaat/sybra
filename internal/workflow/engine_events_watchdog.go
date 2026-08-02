@@ -25,6 +25,26 @@ type watchdogRecoverySpec struct {
 	policy    boundedRetryPolicy
 }
 
+type watchdogRecoverySpecBuilder func(*Engine, *TaskInfo, *Step) (watchdogRecoverySpec, bool)
+
+var watchdogRecoverySpecBuilders = map[watchdogRecoveryKind]watchdogRecoverySpecBuilder{
+	watchdogRecoveryHang: func(e *Engine, _ *TaskInfo, _ *Step) (watchdogRecoverySpec, bool) {
+		return e.watchdogHangRecoverySpec(), true
+	},
+	watchdogRecoveryRewardHacking: func(e *Engine, t *TaskInfo, step *Step) (watchdogRecoverySpec, bool) {
+		return e.watchdogRewardHackingRecoverySpec(t, step)
+	},
+	watchdogRecoveryRateLimit: func(e *Engine, _ *TaskInfo, _ *Step) (watchdogRecoverySpec, bool) {
+		return e.watchdogRateLimitRecoverySpec(), true
+	},
+	watchdogRecoveryStop: func(e *Engine, _ *TaskInfo, _ *Step) (watchdogRecoverySpec, bool) {
+		return e.watchdogStopRecoverySpec(), true
+	},
+	watchdogRecoveryWorktreeRepair: func(e *Engine, _ *TaskInfo, _ *Step) (watchdogRecoverySpec, bool) {
+		return e.worktreeRepairRecoverySpec(), true
+	},
+}
+
 func (e *Engine) handleWatchdogRetries(t *TaskInfo, step *Step) bool {
 	if e.handleWatchdogHangRetry(t, step) {
 		return true
@@ -34,10 +54,6 @@ func (e *Engine) handleWatchdogRetries(t *TaskInfo, step *Step) bool {
 
 func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 	return e.handleWatchdogRecoveryRetry(watchdogRecoveryHang, t, step)
-}
-
-func watchdogHangApplies(_ *Engine, t *TaskInfo, step *Step) bool {
-	return t != nil && t.Workflow != nil && step != nil && step.Type == StepRunAgent && isWatchdogHangReason(t.StatusReason)
 }
 
 func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
@@ -299,19 +315,20 @@ func (e *Engine) handleWatchdogRecoveryRetry(kind watchdogRecoveryKind, t *TaskI
 }
 
 func (e *Engine) watchdogRecoverySpec(kind watchdogRecoveryKind, t *TaskInfo, step *Step) (watchdogRecoverySpec, bool) {
-	switch kind {
-	case watchdogRecoveryHang:
-		return e.watchdogHangRecoverySpec(), true
-	case watchdogRecoveryRewardHacking:
-		return e.watchdogRewardHackingRecoverySpec(t, step)
-	case watchdogRecoveryRateLimit:
-		return e.watchdogRateLimitRecoverySpec(), true
-	case watchdogRecoveryStop:
-		return e.watchdogStopRecoverySpec(), true
-	case watchdogRecoveryWorktreeRepair:
-		return e.worktreeRepairRecoverySpec(), true
-	default:
+	builder, ok := watchdogRecoverySpecBuilders[kind]
+	if !ok {
 		return watchdogRecoverySpec{}, false
+	}
+	return builder(e, t, step)
+}
+
+func watchdogRunAgentStatusApplies(match func(string) bool) func(*Engine, *TaskInfo, *Step) bool {
+	return func(_ *Engine, t *TaskInfo, step *Step) bool {
+		return t != nil &&
+			t.Workflow != nil &&
+			step != nil &&
+			step.Type == StepRunAgent &&
+			match(t.StatusReason)
 	}
 }
 
@@ -322,7 +339,7 @@ func (e *Engine) watchdogHangRecoverySpec() watchdogRecoverySpec {
 		},
 		policy: boundedRetryPolicy{
 			name:       "watchdog-hang",
-			applies:    watchdogHangApplies,
+			applies:    watchdogRunAgentStatusApplies(isWatchdogHangReason),
 			busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
 			counterKey: watchdogHangRetryKey,
 			max:        maxWatchdogHangRetries,
@@ -364,10 +381,8 @@ func (e *Engine) watchdogRewardHackingRecoverySpec(t *TaskInfo, step *Step) (wat
 	}
 	return watchdogRecoverySpec{
 		policy: boundedRetryPolicy{
-			name: "watchdog-reward-hacking",
-			applies: func(_ *Engine, t *TaskInfo, step *Step) bool {
-				return t != nil && t.Workflow != nil && step != nil && step.Type == StepRunAgent && isWatchdogRewardHackingReason(t.StatusReason)
-			},
+			name:       "watchdog-reward-hacking",
+			applies:    watchdogRunAgentStatusApplies(isWatchdogRewardHackingReason),
 			busy:       func(e *Engine, t *TaskInfo, step *Step) bool { return e.hasTrackedAgentForTaskStep(t.ID, step.ID) },
 			counterKey: watchdogRewardHackingRetryKey,
 			max:        profile.max,
@@ -397,10 +412,8 @@ func (e *Engine) watchdogRewardHackingRecoverySpec(t *TaskInfo, step *Step) (wat
 func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 	return watchdogRecoverySpec{
 		policy: boundedRetryPolicy{
-			name: "watchdog-rate-limit",
-			applies: func(_ *Engine, t *TaskInfo, step *Step) bool {
-				return t != nil && t.Workflow != nil && step != nil && step.Type == StepRunAgent && isWatchdogRateLimitReason(t.StatusReason)
-			},
+			name:       "watchdog-rate-limit",
+			applies:    watchdogRunAgentStatusApplies(isWatchdogRateLimitReason),
 			counterKey: watchdogRateLimitRetryKey,
 			max:        maxWatchdogRateLimitRetries,
 			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {

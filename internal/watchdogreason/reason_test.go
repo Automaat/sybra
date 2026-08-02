@@ -48,6 +48,8 @@ func TestParse(t *testing.T) {
 		want   Parsed
 	}{
 		{"hang", Hang("no stream activity"), Parsed{Kind: KindHang, Detail: "no stream activity"}},
+		{"legacy stop", "watchdog: looping on toolchain setup", Parsed{Kind: KindLoopStop, Detail: "looping on toolchain setup"}},
+		{"bare legacy stop", "watchdog stop", Parsed{Kind: KindLoopStop}},
 		{"rate limit", RateLimit("quota exhausted"), Parsed{Kind: KindRateLimit, Detail: "quota exhausted"}},
 		{"reward hacking retry", RewardHackingRetry("still looping"), Parsed{Kind: KindRewardHackingRetry, Detail: "still looping"}},
 		{"verify failed", "watchdog: verify suite still fails after loop stop: go test ./...", Parsed{Kind: KindVerifyFailed, Detail: "go test ./..."}},
