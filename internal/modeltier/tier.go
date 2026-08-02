@@ -44,6 +44,17 @@ var tierAliases = map[Tier]string{
 	Expensive:  "opus",
 }
 
+var aliasToTier = map[string]Tier{
+	"":             Cheap,
+	"cheap":        Cheap,
+	"expensive":    Expensive,
+	"haiku":        SuperCheap,
+	"opus":         Expensive,
+	"sonnet":       Cheap,
+	"super_cheap":  SuperCheap,
+	"supercheap":   SuperCheap,
+}
+
 // Models returns a defensive copy of the provider model map for tier.
 func Models(tier Tier) map[string]string {
 	row, ok := models[tier]
@@ -70,13 +81,10 @@ func Alias(tier Tier) string {
 // provider model IDs back to its neutral capability tier.
 func InferTier(model string) (Tier, bool) {
 	trimmed := strings.ToLower(strings.TrimSpace(model))
+	if tier, ok := aliasToTier[trimmed]; ok {
+		return tier, true
+	}
 	switch trimmed {
-	case "", "sonnet":
-		return Cheap, true
-	case "haiku":
-		return SuperCheap, true
-	case "opus":
-		return Expensive, true
 	case "gpt-5.6":
 		// Codex's bare generation alias resolves to Sol. Matched exactly here
 		// rather than by Contains below, where it would also swallow the
@@ -118,15 +126,8 @@ func InferTier(model string) (Tier, bool) {
 // provider model. The boolean is false when model is already provider-specific
 // and should pass through unchanged.
 func NormalizeAlias(provider, model string) (string, bool) {
-	var tier Tier
-	switch strings.TrimSpace(model) {
-	case "", "sonnet":
-		tier = Cheap
-	case "haiku":
-		tier = SuperCheap
-	case "opus":
-		tier = Expensive
-	default:
+	tier, ok := aliasToTier[strings.ToLower(strings.TrimSpace(model))]
+	if !ok {
 		return model, false
 	}
 	resolved := Model(tier, provider)

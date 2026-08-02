@@ -435,7 +435,7 @@ steps:
     config:
       role: plan-critic
       mode: headless
-      model: sonnet
+      model: supercheap
       provider: cross
       needs_worktree: true
       max_retries: 2

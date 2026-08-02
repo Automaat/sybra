@@ -206,10 +206,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.tasks.SetWorkflow(taskID, wfExec)
 	}
 
-	model := step.Config.Model
-	if model == "" {
-		model = "sonnet"
-	}
+	model := resolveRunAgentModel(step.Config.Model, ctx)
 
 	provider, model, assignment, err := e.resolveAgentVariant(ctx.Task, step, wfExec, model, "workflow.cross-provider.fallback")
 	if err != nil {
@@ -306,6 +303,20 @@ func resolveRunAgentMode(mode string, ctx TemplateContext) string {
 		return "headless"
 	}
 	return mode
+}
+
+func resolveRunAgentModel(model string, ctx TemplateContext) string {
+	if strings.Contains(model, "{{") {
+		rendered, err := RenderTemplate(model, ctx)
+		if err == nil {
+			model = rendered
+		}
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "sonnet"
+	}
+	return model
 }
 
 func (e *Engine) persistStartedAgent(taskID string, step *Step, wfExec *Execution, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir string) error {
