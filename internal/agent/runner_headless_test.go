@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -2313,14 +2314,32 @@ func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 		}
 	})
 
-	t.Run("claude_empty_mcp_config_is_noop", func(t *testing.T) {
+	// A run that attaches no server of its own is exactly the run that must
+	// still be pinned: without --strict-mcp-config, Claude loads whatever the
+	// host account has connected, which is how an operator's Gmail/Drive
+	// connectors reached headless agents (#2790). "No config" has to mean
+	// "no servers", not "inherit the host's".
+	t.Run("claude_pins_empty_surface_when_no_config", func(t *testing.T) {
 		a := &Agent{ID: "a", Provider: "claude"}
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test"})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
 		}
-		if slices.Contains(args, "--mcp-config") || slices.Contains(args, "--strict-mcp-config") {
-			t.Fatalf("mcp flags must be absent when MCPConfigJSON empty; got %v", args)
+		if !slices.Contains(args, "--strict-mcp-config") {
+			t.Fatalf("--strict-mcp-config must be present even with no per-run config; got %v", args)
+		}
+		i := slices.Index(args, "--mcp-config")
+		if i < 0 || i+1 >= len(args) {
+			t.Fatalf("--mcp-config must accompany --strict-mcp-config; got %v", args)
+		}
+		var doc struct {
+			MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		}
+		if err := json.Unmarshal([]byte(args[i+1]), &doc); err != nil {
+			t.Fatalf("mcp config is not valid JSON (%v): %s", err, args[i+1])
+		}
+		if len(doc.MCPServers) != 0 {
+			t.Fatalf("declared %d servers, want none: %s", len(doc.MCPServers), args[i+1])
 		}
 	})
 
