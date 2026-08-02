@@ -1028,6 +1028,11 @@ func pushLocked(ctx context.Context, worktreePath string, args ...string) error 
 		return err
 	}
 	return withBareRepoPushLock(gitDir, func() error {
+		// A real push may spend most of an installation token's lifetime inside
+		// the repository's pre-push hook. Refresh immediately before spawning
+		// git so the credential helper sees the longest possible validity
+		// window; no-op when GitHub App auth is disabled.
+		_ = forceRefreshAppToken(ctx)
 		attempts := credentialAttempts(pushEnv())
 		var injectedErr error
 		for idx, attempt := range attempts {

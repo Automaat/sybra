@@ -5869,6 +5869,30 @@ func TestExecRunAgent_DefaultModeAndModel(t *testing.T) {
 	}
 }
 
+func TestResolveRunAgentModel(t *testing.T) {
+	t.Parallel()
+
+	ctx := TemplateContext{
+		Task: TaskInfo{ID: "t1"},
+		Vars: map[string]string{},
+	}
+
+	if got := resolveRunAgentModel("", ctx); got != "sonnet" {
+		t.Fatalf("resolveRunAgentModel(empty) = %q, want sonnet", got)
+	}
+
+	ctx.Vars[verifyRetryModelVar] = "expensive"
+	model := `  {{if getvar .Vars "verify_retry_model"}}{{getvar .Vars "verify_retry_model"}}{{else}}cheap{{end}}  `
+	if got := resolveRunAgentModel(model, ctx); got != "expensive" {
+		t.Fatalf("resolveRunAgentModel(template with %s) = %q, want expensive", verifyRetryModelVar, got)
+	}
+
+	delete(ctx.Vars, verifyRetryModelVar)
+	if got := resolveRunAgentModel(model, ctx); got != "cheap" {
+		t.Fatalf("resolveRunAgentModel(template without %s) = %q, want cheap", verifyRetryModelVar, got)
+	}
+}
+
 func TestExecRunAgent_PersistsPreparedWorktreeDir(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -9821,6 +9845,54 @@ func TestExecVerifyCommits_AutoCommitAdoptsEquivalentRemoteCommitAfterRetry(t *t
 	}
 	if status := strings.TrimSpace(runGitAt(t, wtDir, "status", "--porcelain")); status != "" {
 		t.Fatalf("worktree dirty after reconcile: %q", status)
+	}
+}
+
+// TestExecVerifyCommits_EmptyRemoteBranchFlipsHumanRequired covers the
+// equivalent-tree remote-adopt bug: a task branch is pushed to origin but is
+// byte-identical to base (zero commits ahead), e.g. because the
+// implementation agent handed off to a background subagent and exited
+// without producing any work. verify_commits must not treat the pushed,
+// empty branch as completed work just because its tree matches the local
+// (also-empty) worktree tree.
+func TestExecVerifyCommits_EmptyRemoteBranchFlipsHumanRequired(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+
+	wtDir := t.TempDir()
+	runGitAt(t, wtDir, "init", "-b", "main")
+	runGitAt(t, wtDir, "config", "user.email", "test@test.com")
+	runGitAt(t, wtDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtDir, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtDir, "add", "README.md")
+	runGitAt(t, wtDir, "commit", "-m", "init")
+	runGitAt(t, wtDir, "remote", "add", "origin", remote)
+	runGitAt(t, wtDir, "push", "-u", "origin", "main")
+
+	// Task branch pushed to origin with no extra commits — byte-identical to
+	// base on both ends.
+	const branch = "feat/verify-commits-empty-remote"
+	runGitAt(t, wtDir, "checkout", "-b", branch)
+	runGitAt(t, wtDir, "push", "-u", "origin", branch)
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "no commits") {
+		t.Fatalf("Output = %q, want 'no commits' (empty pushed branch must not be adopted)", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("task status = %q, want human-required", ti.Status)
 	}
 }
 

@@ -24,6 +24,13 @@ func fakeGhOnPath(t *testing.T) string {
 	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	cli := filepath.Join(dir, "sybra-cli")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\nexit 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(cli, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return dir
 }
@@ -57,6 +64,95 @@ func runShim(t *testing.T, shimDir string, args ...string) (stdout, stderr strin
 		t.Fatalf("run shim: %v", err)
 	}
 	return out.String(), errBuf.String(), code
+}
+
+func TestGhShim_MintsFreshAppTokenPerGhInvocation(t *testing.T) {
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	ghScript := "#!/bin/sh\nprintf 'REAL-GH GH_TOKEN=%s GITHUB_TOKEN=%s:' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\nfor a in \"$@\"; do printf ' [%s]' \"$a\"; done\nprintf '\\n'\n"
+	if err := os.WriteFile(realGh, []byte(ghScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(realGh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cliDir := t.TempDir()
+	counter := filepath.Join(cliDir, "counter")
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nn=$(cat '" + counter + "' 2>/dev/null || echo 0)\nn=$((n + 1))\nprintf '%s\\n' \"$n\" > '" + counter + "'\nprintf 'token-%s\\n' \"$n\"\n"
+	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatalf("writeGhShim: %v", err)
+	}
+
+	stdout, stderr, code := runShim(t, shimDir, "api", "rate_limit")
+	if code != 0 {
+		t.Fatalf("first shim call failed: exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "GH_TOKEN=token-1 GITHUB_TOKEN=token-1") {
+		t.Fatalf("first call did not use freshly minted token: %q", stdout)
+	}
+
+	stdout, stderr, code = runShim(t, shimDir, "api", "rate_limit")
+	if code != 0 {
+		t.Fatalf("second shim call failed: exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "GH_TOKEN=token-2 GITHUB_TOKEN=token-2") {
+		t.Fatalf("second call reused stale token or missed the helper: %q", stdout)
+	}
+}
+
+func TestGhShim_DoesNotMintAppTokenForBlockedInvocation(t *testing.T) {
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'REAL-GH\\n'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(realGh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nprintf minted > '" + marker + "'\nprintf 'token\\n'\n"
+	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatalf("writeGhShim: %v", err)
+	}
+
+	stdout, stderr, code := runShim(t, shimDir, "pr", "review", "--approve", "1")
+	if code == 0 {
+		t.Fatal("blocked invocation unexpectedly succeeded")
+	}
+	if strings.Contains(stdout, "REAL-GH") {
+		t.Fatalf("blocked invocation reached real gh: %q", stdout)
+	}
+	if !strings.Contains(stderr, GhShimReason) {
+		t.Fatalf("stderr = %q, want gh shim reason", stderr)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("blocked invocation minted a GitHub App token")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat marker: %v", err)
+	}
 }
 
 // The shim sees real argv, so every shell shape that defeated string-parsing —

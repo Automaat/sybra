@@ -357,7 +357,12 @@ func (m *Manager) injectGitHubToken(cfg *RunConfig) {
 		return
 	}
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GH_TOKEN", "GITHUB_TOKEN")
-	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN="+token, "GITHUB_TOKEN="+token)
+	// Do not snapshot the short-lived App token into the provider process env:
+	// agents can run longer than GitHub installation tokens live, and a stale
+	// GH_TOKEN wins over the credential helper even after Sybra refreshes its
+	// cache. Override any ambient token to empty here; the PATH-level gh shim
+	// mints a fresh token for each short-lived gh child process instead.
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN=", "GITHUB_TOKEN=")
 }
 
 func (m *Manager) injectGolangciCache(cfg *RunConfig) error {

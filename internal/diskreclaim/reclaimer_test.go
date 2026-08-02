@@ -236,6 +236,10 @@ func TestReclaimerTryRunRespectsCooldown(t *testing.T) {
 
 func TestReclaimerTryRunStartsWhenIdleAndCooldownElapsed(t *testing.T) {
 	r := New(testConfig(t), &fakeLister{}, time.Millisecond, nil)
+	// testConfig registered the temp home's cleanup first, and t.Cleanup runs
+	// LIFO, so this drains the pass before RemoveAll touches the directories
+	// it is still writing into.
+	t.Cleanup(r.Wait)
 	if !r.TryRun() {
 		t.Fatal("TryRun should start a pass when idle and the cooldown has elapsed")
 	}
@@ -255,6 +259,33 @@ func waitForReclaimerIdle(t *testing.T, r *Reclaimer) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("reclaimer did not finish")
+}
+
+// TestReclaimerWaitDrainsInFlightPass pins the guarantee the cleanup above
+// depends on: after Wait returns, no pass is still writing. Without it the
+// package's temp home is torn down under a live writer, which surfaced as an
+// unrelated-looking "directory not empty" cleanup failure.
+func TestReclaimerWaitDrainsInFlightPass(t *testing.T) {
+	r := New(testConfig(t), &fakeLister{}, time.Millisecond, nil)
+	if !r.TryRun() {
+		t.Fatal("TryRun should start a pass")
+	}
+	r.Wait()
+
+	r.mu.Lock()
+	running := r.running
+	r.mu.Unlock()
+	if running {
+		t.Fatal("a pass is still running after Wait returned")
+	}
+}
+
+// TestReclaimerWaitNilIsSafe mirrors TryRun's nil-receiver contract: callers
+// hold a possibly-nil Reclaimer (App.getDiskReclaimer returns nil when the
+// app is not fully wired), so Wait must not panic on one.
+func TestReclaimerWaitNilIsSafe(t *testing.T) {
+	var r *Reclaimer
+	r.Wait()
 }
 
 func TestReclaimerTryRunNilReclaimerIsSafe(t *testing.T) {

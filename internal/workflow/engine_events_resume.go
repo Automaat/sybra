@@ -45,6 +45,12 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 		mu.Unlock()
 	}
 
+	// Retire orphaned routes before interpreting them as "agent still pending"
+	// or this task wedges forever on a dead completion path.
+	if !advancing {
+		e.pruneStaleAgentRoutes(taskID, step)
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -52,7 +58,7 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	hasOutstandingAgent := false
 	if fresh, err := e.tasks.GetTask(taskID); err == nil && fresh.Workflow != nil {
 		for _, stepID := range fresh.Workflow.AgentRoutes {
-			if stepID == step.ID || parallelHasChild(step, stepID) || bestOfNStepMatches(step, stepID) {
+			if routeMatchesStep(step, stepID) {
 				hasOutstandingAgent = true
 				break
 			}

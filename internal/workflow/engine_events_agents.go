@@ -8,6 +8,10 @@ import (
 )
 
 func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
+	// Held through routing + advance so stale-route pruning cannot retire this
+	// task's still-legitimate routes mid-completion.
+	defer e.enterCompletion(taskID)()
+
 	routeMu := e.taskRouteMutex(taskID)
 	routeMu.Lock()
 	e.mu.Lock()
