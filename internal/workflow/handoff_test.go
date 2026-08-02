@@ -1,6 +1,9 @@
 package workflow
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func hasCondition(conds []Condition, field, op, value string) bool {
 	for _, c := range conds {
@@ -24,6 +27,27 @@ func defByID(t *testing.T, id string) *Definition {
 	}
 	t.Fatalf("%s builtin definition not found", id)
 	return nil
+}
+
+func TestBuiltinHandoff_UsesSingleTemplateFile(t *testing.T) {
+	t.Parallel()
+
+	entries, err := builtinFS.ReadDir("builtin")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), "simple-task-handoff") && strings.HasSuffix(entry.Name(), ".yaml") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("handoff builtin files = %d, want exactly 1 template", count)
+	}
 }
 
 // TestBuiltinHandoff_SkipsPlanningToImplement locks the handoff contract: a
