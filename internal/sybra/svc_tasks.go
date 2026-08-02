@@ -47,6 +47,7 @@ type TaskService struct {
 	logger         *slog.Logger
 	audit          *audit.Logger
 	cfg            *config.Config
+	currentConfig  func() *config.Config
 	// projects and intervention back recordInterventionOnUnblock only; nil in
 	// tests that don't exercise the human-required unblock path (the method
 	// guards on both being non-nil before doing anything).
@@ -84,6 +85,13 @@ type TaskService struct {
 	// Initial async enrichment is not gated; this only prevents a permanently
 	// broken stub from spending GitHub calls on every reconcile tick.
 	enrichRetryCooldown sync.Map
+}
+
+func (s *TaskService) config() *config.Config {
+	if s.currentConfig != nil {
+		return s.currentConfig()
+	}
+	return s.cfg
 }
 
 const enrichPendingRetryCooldown = time.Hour
@@ -299,11 +307,12 @@ func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error
 
 func (s *TaskService) GetTaskSetupLog(taskID string) (TaskSetupLogDTO, error) {
 	dto := TaskSetupLogDTO{TaskID: taskID}
-	if s.cfg == nil || s.cfg.Logging.Dir == "" {
+	cfg := s.config()
+	if cfg == nil || cfg.Logging.Dir == "" {
 		return dto, nil
 	}
-	path := filepath.Join(s.cfg.Logging.Dir, "worktrees", taskID+"-setup.log")
-	root := filepath.Join(s.cfg.Logging.Dir, "worktrees")
+	path := filepath.Join(cfg.Logging.Dir, "worktrees", taskID+"-setup.log")
+	root := filepath.Join(cfg.Logging.Dir, "worktrees")
 	cleanRoot := filepath.Clean(root) + string(filepath.Separator)
 	cleanPath := filepath.Clean(path)
 	if !strings.HasPrefix(cleanPath, cleanRoot) {
@@ -327,7 +336,8 @@ func (s *TaskService) GetTaskSetupLog(taskID string) (TaskSetupLogDTO, error) {
 }
 
 func (s *TaskService) ListTaskAuditEvents(taskID string, days int) ([]TaskAuditEventDTO, error) {
-	if s.cfg == nil || s.cfg.Logging.Dir == "" {
+	cfg := s.config()
+	if cfg == nil || cfg.Logging.Dir == "" {
 		return []TaskAuditEventDTO{}, nil
 	}
 	if days <= 0 || days > 90 {
@@ -335,7 +345,7 @@ func (s *TaskService) ListTaskAuditEvents(taskID string, days int) ([]TaskAuditE
 	}
 	until := time.Now().UTC().Add(time.Minute)
 	since := until.AddDate(0, 0, -days)
-	events, err := audit.Read(s.cfg.AuditDir(), audit.Query{
+	events, err := audit.Read(cfg.AuditDir(), audit.Query{
 		Since:  since,
 		Until:  until,
 		TaskID: taskID,
@@ -840,7 +850,7 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if s.workflowEngine == nil || t.Status != task.StatusTodo {
 		return
 	}
-	if s.cfg != nil && !s.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local {
+	if cfg := s.config(); cfg != nil && !cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local {
 		return
 	}
 	// pr-fix / ordinary existing-PR tasks are driven outside task.created.
@@ -1223,7 +1233,7 @@ func (s *TaskService) recordInterventionOnUnblock(cur task.Task, target, reason,
 	if exceptAgentID != "" {
 		class = intervention.OperatorActionAutoRecovery
 	}
-	intervention.Capture(s.intervention, s.cfg, s.projects, s.audit, s.logger, cur, target, reason, class)
+	intervention.Capture(s.intervention, s.config(), s.projects, s.audit, s.logger, cur, target, reason, class)
 }
 
 // logDispatchAudit records a human-required dispatch attempt and its outcome
@@ -1522,7 +1532,8 @@ func (s *TaskService) enrichPendingRetryCoolingDown(taskID string) bool {
 // auto-expanded on the manual-create path. Read live (not wired-once) so a
 // config reload toggling umbrella.enabled takes effect without re-wiring.
 func (s *TaskService) umbrellaExpansionEnabled() bool {
-	return s.cfg != nil && s.cfg.Umbrella.Enabled && s.umbrellaExpand != nil
+	cfg := s.config()
+	return cfg != nil && cfg.Umbrella.Enabled && s.umbrellaExpand != nil
 }
 
 // expandUmbrellaStub expands a manually-created stub whose URL resolved to a

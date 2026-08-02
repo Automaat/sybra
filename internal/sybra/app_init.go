@@ -833,7 +833,8 @@ func (a *App) releaseTaskAgents(taskID string) {
 }
 
 func (a *App) runsTaskLocally(t task.Task) bool {
-	return a.cfg == nil || a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
+	cfg := a.currentConfig()
+	return cfg == nil || cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
 }
 
 func (a *App) isWorkProject(projectID string) bool {
@@ -857,7 +858,8 @@ func (a *App) auditClusterBlock(taskID, node, reason string) {
 func (a *App) initCluster() {
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetDispatchGate(func(ti workflow.TaskInfo) bool {
-			return a.cfg == nil || a.cfg.HomeNodeForTask(ti.ProjectID, ti.NodeOverride).Local
+			cfg := a.currentConfig()
+			return cfg == nil || cfg.HomeNodeForTask(ti.ProjectID, ti.NodeOverride).Local
 		})
 	}
 	if a.cfg == nil || !a.cfg.IsLeader() {

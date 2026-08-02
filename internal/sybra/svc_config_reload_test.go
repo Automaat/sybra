@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -776,6 +777,48 @@ func TestReloadFromDisk_ReadersSeeWholePersistedSnapshots(t *testing.T) {
 	case err := <-errCh:
 		t.Fatal(err)
 	default:
+	}
+}
+
+func TestMutateLocked_PublishesImmutableAppSnapshot(t *testing.T) {
+	initial := config.DefaultConfig()
+	app := NewApp(slog.New(slog.DiscardHandler), new(slog.LevelVar), initial)
+	svc := &ConfigService{
+		cfg:       initial,
+		persisted: cloneConfig(initial),
+		publishConfig: func(next *config.Config) {
+			app.activeCfg.Store(next)
+		},
+	}
+
+	var readers sync.WaitGroup
+	done := make(chan struct{})
+	readers.Go(func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = app.currentConfig().Cluster.Followers
+			}
+		}
+	})
+
+	next := cloneConfig(initial)
+	next.Logging.Level = "debug"
+	svc.mu.Lock()
+	_, err := svc.mutateLocked(next, nil)
+	svc.mu.Unlock()
+	close(done)
+	readers.Wait()
+	if err != nil {
+		t.Fatalf("mutateLocked: %v", err)
+	}
+	if got := app.currentConfig(); got != svc.cfg {
+		t.Fatal("App did not receive the published config snapshot")
+	}
+	if app.cfg == svc.cfg {
+		t.Fatal("hot reload mutated the construction-time config snapshot")
 	}
 }
 
