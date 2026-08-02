@@ -74,16 +74,26 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 	if cfg.OutputSchema != "" {
 		args = append(args, "--json-schema", cfg.OutputSchema)
 	}
-	if cfg.MCPConfigJSON != "" {
-		mcpJSON, err := wrapMCPConfigWithOwnership(cfg.MCPConfigJSON, mcpOwnerForAgent(a))
-		if err != nil {
-			return headlessInvocation{}, err
-		}
-		// --strict-mcp-config always pairs with --mcp-config: without it Claude
-		// also loads any project/user-level MCP servers, which would leak an
-		// operator's unrelated MCP tools into an unattended test-runner run.
-		args = append(args, "--mcp-config", mcpJSON, "--strict-mcp-config")
+	// Pin the MCP surface on every run, not only the ones that attach a server
+	// of their own. Without --strict-mcp-config Claude also loads whatever
+	// project/user-level MCP servers the host account happens to have
+	// connected, so an unattended agent inherits the operator's tools — a
+	// window where Gmail, Calendar and Drive connectors were offered to
+	// headless runs is what prompted this (#2790). Attaching it only alongside
+	// a per-run config left every other run open.
+	//
+	// The empty document is what makes the flag usable standalone:
+	// --strict-mcp-config means "use exactly these servers", so with no
+	// servers declared it means "none".
+	mcpJSON := cfg.MCPConfigJSON
+	if strings.TrimSpace(mcpJSON) == "" {
+		mcpJSON = emptyMCPConfigJSON
 	}
+	wrapped, err := wrapMCPConfigWithOwnership(mcpJSON, mcpOwnerForAgent(a))
+	if err != nil {
+		return headlessInvocation{}, err
+	}
+	args = append(args, "--mcp-config", wrapped, "--strict-mcp-config")
 	// Wire the same PreToolUse approval hook the conversational runner uses
 	// whenever this run requires permission gating. Without this, a headless
 	// agent under require_permissions:true has no path to approve a tool
