@@ -40,6 +40,10 @@ func TestBuildReadProfile_DeniesReadsOutsideAllowlist(t *testing.T) {
 			t.Errorf("profile missing read allow %s:\n%s", root, profile)
 		}
 	}
+	// A plain file such as ~/.claude.json needs literal; subpath alone leaves the provider CLI unauthenticated.
+	if !strings.Contains(profile, `(literal "/usr")`) {
+		t.Errorf("profile has no literal rules, so file allowlist entries never match:\n%s", profile)
+	}
 	if !strings.Contains(profile, "(deny file-write*)") {
 		t.Errorf("read block clobbered the base write rules:\n%s", profile)
 	}

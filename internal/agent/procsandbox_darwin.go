@@ -145,7 +145,11 @@ func buildReadProfile(base string, roots []string) (string, error) {
 	b.WriteString("\n;; Deny-by-default reads (#2781), generated per run.\n")
 	b.WriteString("(deny file-read*)\n(allow file-read*\n")
 	for _, r := range roots {
+		// subpath covers directories; literal covers the plain files in the
+		// allowlist (~/.claude.json, ~/.gitconfig), which subpath does not
+		// match on its own.
 		b.WriteString("  (subpath " + sbplQuote(r) + ")\n")
+		b.WriteString("  (literal " + sbplQuote(r) + ")\n")
 	}
 	b.WriteString(")\n")
 	f, err := os.CreateTemp("", "sybra-agent-sandbox-read-*.sb")

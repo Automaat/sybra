@@ -862,6 +862,17 @@ var toolchainReadSubdirs = []string{
 	filepath.Join(".local", "bin"),
 	filepath.Join(".config", "mise"),
 	filepath.Join(".config", "go"),
+	filepath.Join(".config", "gh"),
+}
+
+// homeRootReadFiles sit directly in the operator home rather than under a
+// grantable directory, so denying the home root alone silently breaks them.
+// Both were measured failing on the server before they were added here:
+// without .claude.json the CLI reports "Not logged in · Please run /login",
+// and without .gitconfig git loses user.email and cannot author a commit.
+var homeRootReadFiles = []string{
+	".claude.json",
+	".gitconfig",
 }
 
 // resolveSandboxReadRoots returns the additional read-only roots for a run,
@@ -893,6 +904,9 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		for _, sub := range toolchainReadSubdirs {
 			add(filepath.Join(home, sub))
+		}
+		for _, f := range homeRootReadFiles {
+			add(filepath.Join(home, f))
 		}
 	}
 	add(cfg.sandbox.readOnlyDir)
