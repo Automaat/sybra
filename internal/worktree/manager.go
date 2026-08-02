@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -48,6 +49,9 @@ type Config struct {
 	// MisePath is the path to the mise binary. Defaults to "mise" (PATH lookup).
 	// Tests inject a concrete path so parallel tests don't race on os.Setenv(PATH).
 	MisePath string
+	// ProtectedFindings persists protected-resource cleanup blockers so
+	// repeated sweeps do not re-log the same unchanged finding forever.
+	ProtectedFindings *cleanup.ProtectedStore
 }
 
 type Manager struct {
@@ -61,6 +65,7 @@ type Manager struct {
 	hasAgent         AgentChecker
 	hasLiveAgentOnly AgentChecker
 	misePath         string
+	protected        *cleanup.ProtectedStore
 }
 
 func New(cfg Config) *Manager {
@@ -88,6 +93,7 @@ func New(cfg Config) *Manager {
 		hasAgent:         cfg.AgentChecker,
 		hasLiveAgentOnly: liveAgentChecker,
 		misePath:         mp,
+		protected:        cfg.ProtectedFindings,
 	}
 }
 

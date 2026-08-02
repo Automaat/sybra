@@ -287,6 +287,37 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// WithoutInvalidExperiments returns a copy with every experiment that would
+// fail selection-time validation removed, calling report once per drop.
+// Selection validates each experiment as it matches (see selectFromExperiment)
+// and propagates the error to the dispatcher, so one malformed experiment
+// otherwise wedges every role it targets — the workflow step fails to start an
+// agent, indefinitely, with nothing logged at startup.
+//
+// Dropping at load turns that into a warning plus unrouted (default-provider)
+// dispatch, which is recoverable. It matters for edits made outside Sybra and
+// for configs a code change retroactively invalidates: the per-role
+// reasoning-effort baseline decides what an omitted variant effort resolves to,
+// so retuning a role can invalidate an operator's prompt/skill experiment.
+func (c Config) WithoutInvalidExperiments(report func(id string, err error)) Config {
+	if len(c.Experiments) == 0 {
+		return c
+	}
+	kept := make([]Experiment, 0, len(c.Experiments))
+	for i := range c.Experiments {
+		exp := c.Experiments[i]
+		if err := validateExperiment(exp, nil); err != nil {
+			if report != nil {
+				report(exp.ID, err)
+			}
+			continue
+		}
+		kept = append(kept, exp)
+	}
+	c.Experiments = kept
+	return c
+}
+
 // EnabledValue reports whether A/B assignment should run.
 func (c Config) EnabledValue() bool {
 	return c.Enabled != nil && *c.Enabled

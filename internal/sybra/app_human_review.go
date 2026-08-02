@@ -319,14 +319,18 @@ func (h *humanReviewHandler) spawnReviewConfig(t task.Task, taskID, prompt, dir 
 		model = opts.Model
 	}
 	cfg := agent.RunConfig{
-		TaskID:                 taskID,
-		Name:                   agent.RoleHumanReview.AgentName(t.Title),
-		Role:                   agent.RoleHumanReview,
-		Mode:                   "headless",
-		Provider:               strings.TrimSpace(opts.Provider),
-		Model:                  model,
-		Prompt:                 prompt,
-		Dir:                    dir,
+		TaskID:   taskID,
+		Name:     agent.RoleHumanReview.AgentName(t.Title),
+		Role:     agent.RoleHumanReview,
+		Mode:     "headless",
+		Provider: strings.TrimSpace(opts.Provider),
+		Model:    model,
+		Prompt:   prompt,
+		Dir:      dir,
+		// An effort the operator pinned on the task outranks the role
+		// baseline the Manager would otherwise resolve; empty stays empty so
+		// the Manager applies agent.role_effort and then the baseline.
+		ReasoningEffort:        t.ReasoningEffort,
 		ReadOnlyDir:            readOnlyDir,
 		RequirePermissions:     false,
 		OneShot:                true,

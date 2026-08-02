@@ -837,6 +837,12 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 		}
 
 		if drain() {
+			// A turns escalation may be waiting when shutdown cancels ctx. The
+			// guardrail reports stop in that case, but the detached child was not
+			// intentionally stopped and must survive for reattach.
+			if ctx.Err() != nil && !a.WasStopped() {
+				return false, end()
+			}
 			// Guardrail kill: force the child to stop, wait for it, finalize.
 			m.signalKill(a)
 			waitExit()
@@ -1437,6 +1443,7 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 			// Caller terminates the subprocess: streamHeadlessOutput cancels
 			// the context (pipe-backed); tailHeadlessFile signal-kills the
 			// detached child by PID.
+			a.MarkStopped()
 			return false
 		}
 		a.SetEscalationReason("")

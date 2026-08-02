@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -273,6 +273,108 @@ func TestFetchOriginNoRemote(t *testing.T) {
 	err := FetchOrigin(context.Background(), bare)
 	if err == nil {
 		t.Fatal("expected error fetching from repo with no origin")
+	}
+}
+
+func TestFetchRemoteBranchTimesOutNetworkGit(t *testing.T) {
+	oldTimeout := networkGitTimeout
+	networkGitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { networkGitTimeout = oldTimeout })
+
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	started := time.Now()
+	err := FetchRemoteBranch(context.Background(), t.TempDir(), "fork", "main")
+	if err == nil {
+		t.Fatal("FetchRemoteBranch succeeded with a hung git process")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("FetchRemoteBranch returned after %s, want bounded network timeout", elapsed)
+	}
+}
+
+func TestRemoteGitOperationsTimeOut(t *testing.T) {
+	oldTimeout := networkGitTimeout
+	networkGitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { networkGitTimeout = oldTimeout })
+
+	pushWorktree := initRepoWithCommit(t)
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("locate git: %v", err)
+	}
+	// pushLocked resolves the shared git dir before it starts the remote
+	// transport. Preserve only that local rev-parse call, then hang every
+	// remote operation the test exercises.
+	fakeGit := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = rev-parse ]; then exec %q \"$@\"; fi\nexec sleep 1\n", realGit)
+	if err := os.WriteFile(git, []byte(fakeGit), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "ls-remote",
+			run: func() error {
+				_, err := RemoteBranchHead(context.Background(), t.TempDir(), "origin", "main")
+				return err
+			},
+		},
+		{
+			name: "linked-worktree-fetch",
+			run: func() error {
+				return refreshTrackingRef(context.Background(), t.TempDir(), "origin", "main")
+			},
+		},
+		{
+			name: "push",
+			run: func() error {
+				return pushLocked(context.Background(), pushWorktree, "push", "origin", "main")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			started := time.Now()
+			if err := tt.run(); err == nil {
+				t.Fatal("remote git operation succeeded with a hung git process")
+			}
+			if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+				t.Fatalf("remote git operation returned after %s, want bounded network timeout", elapsed)
+			}
+		})
+	}
+}
+
+func TestExecGitPushProbeTimesOut(t *testing.T) {
+	oldTimeout := networkGitTimeout
+	networkGitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { networkGitTimeout = oldTimeout })
+
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	started := time.Now()
+	_, err := execGitPushProbe(context.Background(), t.TempDir(), nil, "push", "--dry-run", "origin", "HEAD")
+	if err == nil {
+		t.Fatal("push credential probe succeeded with a hung git process")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("push credential probe returned after %s, want bounded network timeout", elapsed)
 	}
 }
 
@@ -858,8 +960,6 @@ func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 }
 
 func TestCheckpointCommit(t *testing.T) {
-	t.Parallel()
-
 	t.Run("dirty tree commits", func(t *testing.T) {
 		t.Parallel()
 		repo := initRepoWithCommit(t)
@@ -966,6 +1066,42 @@ func TestCheckpointCommit(t *testing.T) {
 		}
 		if committed {
 			t.Fatal("CheckpointCommit reported committed=true on git failure")
+		}
+	})
+
+	t.Run("bad object commit failure repairs and retries once", func(t *testing.T) {
+		repo := initRepoWithCommit(t)
+		if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		origCommit := checkpointRunRecoveryCommit
+		calls := 0
+		checkpointRunRecoveryCommit = func(ctx context.Context, wtPath, message string) error {
+			calls++
+			if calls == 1 {
+				return errors.New("checkpoint: recovery commit: invalid object 100644 deadbeef for 'main.go'")
+			}
+			return origCommit(ctx, wtPath, message)
+		}
+		t.Cleanup(func() { checkpointRunRecoveryCommit = origCommit })
+
+		committed, err := CheckpointCommit(context.Background(), repo, "chore(checkpoint): save progress")
+		if err != nil {
+			t.Fatalf("CheckpointCommit: %v", err)
+		}
+		if !committed {
+			t.Fatal("CheckpointCommit reported committed=false on a dirty tree")
+		}
+		if calls != 2 {
+			t.Fatalf("checkpoint commit attempts = %d, want 2", calls)
+		}
+		statusOut, err := exec.Command("git", "-C", repo, "status", "--porcelain").Output()
+		if err != nil {
+			t.Fatalf("git status: %v", err)
+		}
+		if got := strings.TrimSpace(string(statusOut)); got != "" {
+			t.Fatalf("worktree not clean after retry: %s", got)
 		}
 	})
 }
@@ -1928,6 +2064,37 @@ func TestPushUpstream_UsesPushEnv(t *testing.T) {
 
 	if err := PushUpstream(context.Background(), wtPath, "synapse/test"); err != nil {
 		t.Fatalf("PushUpstream should succeed with pushEnv's GH_TOKEN visible to the pre-push hook: %v", err)
+	}
+}
+
+func TestPushUpstream_RefreshesAppTokenBeforePushEnvSnapshot(t *testing.T) {
+	_, wtPath := initWorktree(t)
+
+	if err := InstallHooks(context.Background(), wtPath, &ChecksConfig{
+		PrePush: []string{`test "$GH_TOKEN" = "installation-token-after-refresh"`},
+	}); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	refreshed := false
+	origRefresh := forceRefreshAppToken
+	forceRefreshAppToken = func(context.Context) error {
+		refreshed = true
+		return nil
+	}
+	t.Cleanup(func() { forceRefreshAppToken = origRefresh })
+
+	origPushEnv := pushEnv
+	pushEnv = func() []string {
+		if !refreshed {
+			t.Fatal("pushEnv was snapshotted before ForceRefreshAppToken")
+		}
+		return append(os.Environ(), "GH_TOKEN=installation-token-after-refresh")
+	}
+	t.Cleanup(func() { pushEnv = origPushEnv })
+
+	if err := PushUpstream(context.Background(), wtPath, "synapse/test"); err != nil {
+		t.Fatalf("PushUpstream should refresh before reading pushEnv: %v", err)
 	}
 }
 
@@ -3601,80 +3768,62 @@ func setGitHubOriginPushURL(t *testing.T, wtPath string) {
 	}
 }
 
-// writeGitLSRemoteFailingNTimes installs a `git` wrapper on dir that fails its
-// first failCount `ls-remote` invocations (as a bad/rotating credential would)
-// and succeeds on every call after that. Call count persists in a sibling file
-// since each invocation is a separate process.
-func writeGitPushDryRunFailingNTimes(t *testing.T, dir, realGit string, failCount int) {
-	t.Helper()
-	counterFile := filepath.Join(dir, "git-push-dry-run-calls")
-	if err := os.WriteFile(counterFile, []byte("0"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	script := fmt.Sprintf(`#!/bin/sh
-if [ "$1" = "push" ] && [ "$2" = "--dry-run" ]; then
-  n=$(cat %s)
-  n=$((n+1))
-  echo "$n" > %s
-  if [ "$n" -le %d ]; then
-    echo 'remote: Bad credentials' >&2
-    exit 1
-  fi
-  exit 0
-fi
-exec %q "$@"
-`, counterFile, counterFile, failCount, realGit)
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+// pushProbeCall records a single invocation observed by a fake runGitPushProbe.
+type pushProbeCall struct {
+	dir  string
+	env  []string
+	args []string
 }
 
-func writeGitPushDryRunWrapperRejectingInjectedToken(t *testing.T, dir, realGit, badToken string) string {
-	t.Helper()
-	logFile := filepath.Join(dir, "git-push-dry-run-token-log")
-	script := fmt.Sprintf(`#!/bin/sh
-if [ "$1" = "push" ] && [ "$2" = "--dry-run" ]; then
-  printf '%%s\n' "${GH_TOKEN:-<empty>}" >> %s
-  if [ "${GH_TOKEN:-}" = %q ]; then
-    echo 'remote: Bad credentials' >&2
-    exit 1
-  fi
-  exit 0
-fi
-exec %q "$@"
-`, logFile, badToken, realGit)
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return logFile
+// pushProbeResult is one fake outcome for a stubbed runGitPushProbe call.
+type pushProbeResult struct {
+	output string
+	err    error
 }
 
-func writeGitPreflightFalsePassRegressionWrapper(t *testing.T, dir, realGit string) (pushLog, lsRemoteLog string) {
+// stubGitPushProbe replaces runGitPushProbe with a Go test double driven by
+// results (one per expected call; the last result repeats for any calls
+// beyond len(results)) and restores the original on cleanup. It exists so the
+// push-credential preflight tests below can exercise checkGitPushAuth's retry,
+// fallback, and hook logic deterministically without spawning a real `git`
+// process — the previous approach intercepted `git` by prepending a
+// shell-script wrapper to PATH, which reproducibly failed to intercept the
+// probe on Darwin (#2744), silently letting those tests exercise the real
+// ambient git/credential state instead of the fixture. See
+// TestGitPushDryRunProbe_RealGitDryRunSkipsHookAndDoesNotMutateRemote for the
+// one integration test that still exercises the real `git push --dry-run
+// --no-verify` invocation end to end.
+func stubGitPushProbe(t *testing.T, results ...pushProbeResult) *[]pushProbeCall {
 	t.Helper()
-	pushLog = filepath.Join(dir, "git-push-dry-run-log")
-	lsRemoteLog = filepath.Join(dir, "git-ls-remote-log")
-	for _, path := range []string{pushLog, lsRemoteLog} {
-		if err := os.WriteFile(path, nil, 0o600); err != nil {
-			t.Fatal(err)
+	calls := &[]pushProbeCall{}
+	orig := runGitPushProbe
+	runGitPushProbe = func(_ context.Context, dir string, env []string, args ...string) (string, error) {
+		*calls = append(*calls, pushProbeCall{
+			dir:  dir,
+			env:  append([]string(nil), env...),
+			args: append([]string(nil), args...),
+		})
+		idx := len(*calls) - 1
+		if idx >= len(results) {
+			idx = len(results) - 1
 		}
+		r := results[idx]
+		return r.output, r.err
 	}
-	script := fmt.Sprintf(`#!/bin/sh
-if [ "$1" = "ls-remote" ]; then
-  printf 'ls-remote\n' >> %s
-  printf 'deadbeef\tHEAD\n'
-  exit 0
-fi
-if [ "$1" = "push" ] && [ "$2" = "--dry-run" ]; then
-  printf 'push --dry-run\n' >> %s
-  echo 'remote: write access to repository not granted' >&2
-  exit 1
-fi
-exec %q "$@"
-`, lsRemoteLog, pushLog, realGit)
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return pushLog, lsRemoteLog
+	t.Cleanup(func() { runGitPushProbe = orig })
+	return calls
+}
+
+func authFailureResult() pushProbeResult {
+	return pushProbeResult{output: "remote: Bad credentials\n", err: errors.New("exit status 1")}
+}
+
+func successResult() pushProbeResult {
+	return pushProbeResult{}
+}
+
+func containsEnvVar(env []string, want string) bool {
+	return slices.Contains(env, want)
 }
 
 func writeGitPushWrapperRejectingInjectedToken(t *testing.T, dir, realGit, badToken string) string {
@@ -3709,19 +3858,6 @@ func readLogLines(t *testing.T, path string) []string {
 	return strings.Split(trimmed, "\n")
 }
 
-func readGitPushDryRunCallCount(t *testing.T, dir string) int {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, "git-push-dry-run-calls"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
 // stubPushPreflightRetry replaces the retry-loop's sleep and force-refresh
 // hooks with fast, counting fakes and restores the originals on cleanup.
 func stubPushPreflightRetry(t *testing.T) (refreshCalls *int) {
@@ -3750,21 +3886,14 @@ func TestPreflightPushCredentials_NonGitHubRemoteSkipsAuthCheck(t *testing.T) {
 func TestPreflightPushCredentials_RetriesTransientFailureThenSucceeds(t *testing.T) {
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
-
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("LookPath(git): %v", err)
-	}
-	dir := t.TempDir()
-	writeGitPushDryRunFailingNTimes(t, dir, realGit, 1)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	refreshCalls := stubPushPreflightRetry(t)
+	calls := stubGitPushProbe(t, authFailureResult(), successResult())
 
 	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
 		t.Fatalf("PreflightPushCredentials = %v, want nil after retry succeeds", err)
 	}
-	if got := readGitPushDryRunCallCount(t, dir); got != 2 {
-		t.Fatalf("git push --dry-run invoked %d times, want 2 (1 failure + 1 retry)", got)
+	if got := len(*calls); got != 2 {
+		t.Fatalf("git push --dry-run probe invoked %d times, want 2 (1 failure + 1 retry)", got)
 	}
 	if *refreshCalls != 1 {
 		t.Fatalf("forceRefreshAppToken called %d times, want 1", *refreshCalls)
@@ -3774,19 +3903,13 @@ func TestPreflightPushCredentials_RetriesTransientFailureThenSucceeds(t *testing
 func TestPreflightPushCredentials_FallsBackToAmbientAuthWhenInjectedTokenIsBad(t *testing.T) {
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
-
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("LookPath(git): %v", err)
-	}
-	dir := t.TempDir()
-	logFile := writeGitPushDryRunWrapperRejectingInjectedToken(t, dir, realGit, "bad-token")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	refreshCalls := stubPushPreflightRetry(t)
 
 	origEnv := pushEnv
 	pushEnv = func() []string { return append(os.Environ(), "GH_TOKEN=bad-token") }
 	t.Cleanup(func() { pushEnv = origEnv })
+
+	calls := stubGitPushProbe(t, authFailureResult(), successResult())
 
 	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
 		t.Fatalf("PreflightPushCredentials = %v, want ambient fallback success", err)
@@ -3794,59 +3917,62 @@ func TestPreflightPushCredentials_FallsBackToAmbientAuthWhenInjectedTokenIsBad(t
 	if *refreshCalls != 0 {
 		t.Fatalf("forceRefreshAppToken called %d times, want 0 when ambient fallback succeeds immediately", *refreshCalls)
 	}
-	if got := readLogLines(t, logFile); len(got) != 2 || got[0] != "bad-token" || got[1] == "bad-token" {
-		t.Fatalf("git push --dry-run GH_TOKEN log = %v, want injected bad token then ambient/non-bad token", got)
+	if got := len(*calls); got != 2 {
+		t.Fatalf("git push --dry-run probe invoked %d times, want 2 (injected token attempt + ambient fallback)", got)
+	}
+	if firstEnv := (*calls)[0].env; !containsEnvVar(firstEnv, "GH_TOKEN=bad-token") {
+		t.Fatalf("first probe env = %v, want injected GH_TOKEN=bad-token", firstEnv)
+	}
+	if secondEnv := (*calls)[1].env; secondEnv != nil {
+		t.Fatalf("second probe env = %v, want nil (ambient env, no explicit override)", secondEnv)
 	}
 }
 
 func TestPreflightPushCredentials_ExhaustsRetriesReturnsError(t *testing.T) {
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
-
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("LookPath(git): %v", err)
-	}
-	dir := t.TempDir()
-	writeGitPushDryRunFailingNTimes(t, dir, realGit, 100)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	refreshCalls := stubPushPreflightRetry(t)
+	calls := stubGitPushProbe(t, authFailureResult())
 
 	preflightErr := PreflightPushCredentials(context.Background(), wtPath)
 	if !errors.Is(preflightErr, ErrPushAuthPreflight) {
 		t.Fatalf("PreflightPushCredentials error = %v, want ErrPushAuthPreflight", preflightErr)
 	}
 	wantCalls := len(pushPreflightRetryBackoffs) + 1
-	if got := readGitPushDryRunCallCount(t, dir); got != wantCalls {
-		t.Fatalf("git push --dry-run invoked %d times, want %d (1 initial + %d retries)", got, wantCalls, len(pushPreflightRetryBackoffs))
+	if got := len(*calls); got != wantCalls {
+		t.Fatalf("git push --dry-run probe invoked %d times, want %d (1 initial + %d retries)", got, wantCalls, len(pushPreflightRetryBackoffs))
 	}
 	if *refreshCalls != len(pushPreflightRetryBackoffs) {
 		t.Fatalf("forceRefreshAppToken called %d times, want %d", *refreshCalls, len(pushPreflightRetryBackoffs))
 	}
 }
 
+// TestPreflightPushCredentials_DoesNotFalsePassOnReadOnlyProbe guards against
+// a regression from the write-shaped `git push --dry-run` probe to a
+// read-shaped check (e.g. `git ls-remote`) — a public GitHub repo can let
+// anonymous ls-remote succeed while the real push is rejected, which would
+// make the preflight false-pass on exactly the credential problem it exists
+// to catch.
 func TestPreflightPushCredentials_DoesNotFalsePassOnReadOnlyProbe(t *testing.T) {
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
-
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("LookPath(git): %v", err)
-	}
-	dir := t.TempDir()
-	pushLog, lsRemoteLog := writeGitPreflightFalsePassRegressionWrapper(t, dir, realGit)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubPushPreflightRetry(t)
+	calls := stubGitPushProbe(t, pushProbeResult{
+		output: "remote: write access to repository not granted\n",
+		err:    errors.New("exit status 1"),
+	})
 
-	err = PreflightPushCredentials(context.Background(), wtPath)
+	err := PreflightPushCredentials(context.Background(), wtPath)
 	if !errors.Is(err, ErrPushAuthPreflight) {
 		t.Fatalf("PreflightPushCredentials error = %v, want ErrPushAuthPreflight", err)
 	}
-	if got := readLogLines(t, pushLog); len(got) == 0 {
-		t.Fatalf("git push --dry-run log = %v, want at least one probe", got)
+	if got := len(*calls); got == 0 {
+		t.Fatalf("git push probe invoked %d times, want at least 1", got)
 	}
-	if got := readLogLines(t, lsRemoteLog); len(got) != 0 {
-		t.Fatalf("git ls-remote log = %v, want no read-only probes", got)
+	for _, call := range *calls {
+		if args := call.args; len(args) < 2 || args[0] != "push" || args[1] != "--dry-run" {
+			t.Fatalf("probe args = %v, want a write-shaped `git push --dry-run` invocation, not a read-only check", args)
+		}
 	}
 }
 
@@ -3857,47 +3983,18 @@ func TestPreflightPushCredentials_DoesNotFalsePassOnReadOnlyProbe(t *testing.T) 
 func TestPreflightPushCredentials_SkipsPrePushHook(t *testing.T) {
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
-
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("LookPath(git): %v", err)
-	}
-	dir := t.TempDir()
-	argsLog := filepath.Join(dir, "git-push-args-log")
-	if err := os.WriteFile(argsLog, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// Fail any non-dry-run push so a regression away from the dry-run probe is
-	// caught here instead of silently passing. Log path quoted for TMPDIRs with
-	// spaces.
-	script := fmt.Sprintf(`#!/bin/sh
-if [ "$1" = "push" ]; then
-  if [ "$2" != "--dry-run" ]; then
-    echo "unexpected non-dry-run push: $*" >&2
-    exit 1
-  fi
-  printf '%%s\n' "$*" >> "%s"
-  exit 0
-fi
-exec %q "$@"
-`, argsLog, realGit)
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubPushPreflightRetry(t)
+	calls := stubGitPushProbe(t, successResult())
 
 	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
 		t.Fatalf("PreflightPushCredentials error = %v, want nil", err)
 	}
-	lines := readLogLines(t, argsLog)
-	if len(lines) == 0 {
-		t.Fatalf("git push args log = %v, want at least one probe", lines)
+	if got := len(*calls); got != 1 {
+		t.Fatalf("git push probe invoked %d times, want 1", got)
 	}
-	for _, line := range lines {
-		if !strings.Contains(line, "--no-verify") {
-			t.Fatalf("git push args = %q, want --no-verify to skip the pre-push hook", line)
-		}
+	args := (*calls)[0].args
+	if !slices.Contains(args, "--no-verify") {
+		t.Fatalf("probe args = %v, want --no-verify to skip the pre-push hook", args)
 	}
 }
 
@@ -3923,16 +4020,9 @@ func stubPushAuthFailureHook(t *testing.T) *pushAuthFailureHookCalls {
 func TestPreflightPushCredentials_HookFiresOnExhaustedRetries(t *testing.T) {
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
-
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("LookPath(git): %v", err)
-	}
-	dir := t.TempDir()
-	writeGitPushDryRunFailingNTimes(t, dir, realGit, 100)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubPushPreflightRetry(t)
 	hook := stubPushAuthFailureHook(t)
+	stubGitPushProbe(t, authFailureResult())
 
 	if err := PreflightPushCredentials(context.Background(), wtPath); !errors.Is(err, ErrPushAuthPreflight) {
 		t.Fatalf("PreflightPushCredentials error = %v, want ErrPushAuthPreflight", err)
@@ -3948,22 +4038,68 @@ func TestPreflightPushCredentials_HookFiresOnExhaustedRetries(t *testing.T) {
 func TestPreflightPushCredentials_HookNotCalledOnSuccess(t *testing.T) {
 	_, wtPath := initWorktree(t)
 	setGitHubOriginPushURL(t, wtPath)
-
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("LookPath(git): %v", err)
-	}
-	dir := t.TempDir()
-	writeGitPushDryRunFailingNTimes(t, dir, realGit, 0)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubPushPreflightRetry(t)
 	hook := stubPushAuthFailureHook(t)
+	stubGitPushProbe(t, successResult())
 
 	if err := PreflightPushCredentials(context.Background(), wtPath); err != nil {
 		t.Fatalf("PreflightPushCredentials = %v, want nil", err)
 	}
 	if hook.count != 0 {
 		t.Fatalf("pushAuthFailureHook called %d times, want 0", hook.count)
+	}
+}
+
+// TestGitPushDryRunProbe_RealGitDryRunSkipsHookAndDoesNotMutateRemote is the
+// one integration test in this file that exercises runGitPushProbe's real
+// implementation against an actual `git` binary and a local (non-GitHub)
+// bare repo — every other push-credential preflight test above substitutes a
+// fake runGitPushProbe instead. It pushes to the worktree's own bare repo
+// (already a shared ancestor, so no network access is needed) and confirms
+// the probe is genuinely a --dry-run --no-verify push: the client-side
+// pre-push hook never fires and the bare repo's refs are unchanged.
+func TestGitPushDryRunProbe_RealGitDryRunSkipsHookAndDoesNotMutateRemote(t *testing.T) {
+	bare, wtPath := initWorktree(t)
+	ctx := context.Background()
+
+	commonDir, err := gitCommonDir(ctx, wtPath)
+	if err != nil {
+		t.Fatalf("gitCommonDir: %v", err)
+	}
+	hooksDir := filepath.Join(commonDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hookMarker := filepath.Join(t.TempDir(), "pre-push-fired")
+	hookScript := fmt.Sprintf("#!/bin/sh\ntouch %q\nexit 1\n", hookMarker)
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-push"), []byte(hookScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	refspec, err := pushPreflightRefspec(ctx, wtPath)
+	if err != nil {
+		t.Fatalf("pushPreflightRefspec: %v", err)
+	}
+
+	before, err := exec.Command("git", "-C", bare, "for-each-ref").CombinedOutput()
+	if err != nil {
+		t.Fatalf("for-each-ref: %v: %s", err, before)
+	}
+
+	if msg, err := gitPushDryRunAuthMessage(ctx, wtPath, bare, refspec, nil); err != nil {
+		t.Fatalf("gitPushDryRunAuthMessage = %q, %v, want success", msg, err)
+	}
+
+	if _, statErr := os.Stat(hookMarker); !os.IsNotExist(statErr) {
+		t.Fatalf("pre-push hook fired, want --no-verify to skip it")
+	}
+
+	after, err := exec.Command("git", "-C", bare, "for-each-ref").CombinedOutput()
+	if err != nil {
+		t.Fatalf("for-each-ref: %v: %s", err, after)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("bare repo refs changed after --dry-run push:\nbefore: %s\nafter:  %s", before, after)
 	}
 }
 

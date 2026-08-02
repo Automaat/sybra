@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/issueref"
 	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
@@ -49,6 +50,9 @@ var hookTaskIDRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 var (
 	loadCLIConfig          = config.Load
 	loadCLIConfigNoPersist = config.LoadNoPersist
+	enableCLIAppAuth       = github.EnableAppAuth
+	refreshCLIAppToken     = github.RefreshAppToken
+	currentCLIAppToken     = github.CurrentAppToken
 )
 
 func main() {
@@ -158,6 +162,10 @@ func run(args []string) int {
 	// per-event by codex and must complete quickly).
 	if isHook {
 		return cmdHook(cfg, filtered[1:])
+	}
+
+	if cmd == "github-app-token" {
+		return cmdGithubAppToken(cfg, jsonOut)
 	}
 
 	store, projStore, err := openStores(cfg)
@@ -355,6 +363,37 @@ func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
 		return nil, nil, fmt.Errorf("open project store: %w", err)
 	}
 	return task.NewManager(rawStore, nil), projStore, nil
+}
+
+func cmdGithubAppToken(cfg *config.Config, jsonOut bool) int {
+	app := cfg.GitHub.App
+	if !app.Enabled {
+		return fatal(jsonOut, "github.app is not enabled")
+	}
+	if err := enableCLIAppAuth(github.AppCredentials{
+		AppID:          app.AppID,
+		InstallationID: app.InstallationID,
+		PrivateKeyPath: app.PrivateKeyPath,
+	}); err != nil {
+		return fatal(jsonOut, "enable github app auth: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := refreshCLIAppToken(ctx); err != nil {
+		return fatal(jsonOut, "refresh github app token: %v", err)
+	}
+	token := currentCLIAppToken()
+	if token == "" {
+		return fatal(jsonOut, "github app token is unavailable")
+	}
+	if jsonOut {
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"token": token}); err != nil {
+			return fatal(jsonOut, "write github app token json: %v", err)
+		}
+		return 0
+	}
+	fmt.Fprintln(os.Stdout, token)
+	return 0
 }
 
 func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr error) (code int, handled bool) {
@@ -1597,10 +1636,11 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 			extra.ProjectID = task.Ptr(*projectID)
 		}
 		result, err := s.Apply(task.TransitionIntent{
-			TaskID:   id,
-			ToStatus: task.StatusTodo,
-			Actor:    "cli.reopen",
-			Extra:    extra,
+			TaskID:           id,
+			ToStatus:         task.StatusTodo,
+			Actor:            "cli.reopen",
+			Extra:            extra,
+			OperatorOverride: true,
 		})
 		if err != nil {
 			return fatal(jsonOut, "%v", err)
@@ -2516,6 +2556,9 @@ Commands:
            Open a PR for an already-pushed branch and link it, in one step. Runs
            gh in --dir (default cwd), so it must sit inside the repo clone. Lets
            a Kubernetes agent Job open its own PR instead of the server doing it.
+  github-app-token
+           Print a freshly minted GitHub App installation token for Sybra's
+           configured github.app block. Intended for Sybra's agent gh shim.
   delete   <id>
            Soft-deletes: moves the task file and its sidecars into the trash
            dir instead of unlinking them. See trash list / trash restore.

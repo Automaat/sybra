@@ -293,6 +293,38 @@ func NormalizeSandboxMode(s string) (string, error) {
 	}
 }
 
+// NormalizeSandboxReadMode canonicalizes a read-visibility posture value.
+// Empty maps to "off" — unlike sandbox_mode, whose empty default is "report"
+// — because an unset read posture must leave existing deployments exactly as
+// they were rather than opting them into the highest-breakage tier.
+func NormalizeSandboxReadMode(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "off":
+		return "off", nil
+	case "report":
+		return "report", nil
+	case "enforce":
+		return "enforce", nil
+	default:
+		return "", fmt.Errorf("invalid sandbox_read_mode %q (valid: off, report, enforce)", s)
+	}
+}
+
+// DefaultSandboxReadMode returns the configured read-visibility posture, or
+// "off" if unset. An invalid value is logged and treated as "off" so a typo
+// can never fail every agent run closed on a missing read path.
+func (c *Config) DefaultSandboxReadMode() string {
+	if c == nil || c.Agent.SandboxReadMode == "" {
+		return "off"
+	}
+	mode, err := NormalizeSandboxReadMode(c.Agent.SandboxReadMode)
+	if err != nil {
+		slog.Warn("config: invalid agent.sandbox_read_mode; falling back to off", "value", c.Agent.SandboxReadMode)
+		return "off"
+	}
+	return mode
+}
+
 // DefaultSandboxMode returns the configured default OS-level process-sandbox
 // posture, or "report" if unset. An invalid config value is logged and
 // treated as "report" so a misconfigured server never silently drops to
@@ -770,6 +802,14 @@ func defaultSeedConfig() *Config {
 	return cfg
 }
 
+// ToolLedgerDir is where the per-tool-call ledger lives. Separate from the
+// audit dir because the volumes differ by orders of magnitude — mixing tool
+// calls into the audit log would swamp the events operators actually read —
+// and because the two want independent retention.
+func (c *Config) ToolLedgerDir() string {
+	return filepath.Join(c.Logging.Dir, "tool-ledger")
+}
+
 func (c *Config) AuditDir() string {
 	return filepath.Join(c.Logging.Dir, "audit")
 }
@@ -920,6 +960,9 @@ func load(opts loadOptions) (*ResolvedConfig, error) {
 		ExistingFile:    existingFile,
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := ValidateUnattendedPosture(resolved.Config); err != nil {
 		return nil, err
 	}
 	ensureServerAuthToken(resolved.Config, opts.persistLoadReconciles)
@@ -1289,6 +1332,9 @@ func applyABTestingDefaults(cfg *Config) {
 		return
 	}
 	reconcileBuiltinExperiments(cfg, def)
+	cfg.ABTesting = cfg.ABTesting.WithoutInvalidExperiments(func(id string, err error) {
+		slog.Warn("config: dropping invalid ab_testing experiment", "experiment", id, "err", err)
+	})
 }
 
 // reconcileBuiltinExperiments refreshes a persisted config's built-in A/B

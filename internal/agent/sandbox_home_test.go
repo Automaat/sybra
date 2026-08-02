@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -274,6 +275,105 @@ func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
 	if len(cfg.ExtraEnv) != len(want) || cfg.ExtraEnv[0] != want[0] || cfg.ExtraEnv[1] != want[1] {
 		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
 	}
+}
+
+func TestPrepareRunConfig_GitHubAppTokenNotSnapshottedIntoAgentEnv(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return t.TempDir(), nil },
+	})
+	m.SetGHAppToken(func() string { return "fresh-but-short-lived-token" })
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:   "task-1",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+		ExtraEnv: []string{"GH_TOKEN=stale-caller-token", "GITHUB_TOKEN=stale-caller-token"},
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+
+	var ghToken, githubToken string
+	var ghTokenHits, githubTokenHits int
+	for _, kv := range cfg.ExtraEnv {
+		switch {
+		case strings.HasPrefix(kv, "GH_TOKEN="):
+			ghTokenHits++
+			ghToken = strings.TrimPrefix(kv, "GH_TOKEN=")
+		case strings.HasPrefix(kv, "GITHUB_TOKEN="):
+			githubTokenHits++
+			githubToken = strings.TrimPrefix(kv, "GITHUB_TOKEN=")
+		}
+		if strings.Contains(kv, "fresh-but-short-lived-token") || strings.Contains(kv, "stale-caller-token") {
+			t.Fatalf("agent env leaked a raw GitHub token in %q (full env: %v)", kv, cfg.ExtraEnv)
+		}
+	}
+	if ghTokenHits != 1 || githubTokenHits != 1 {
+		t.Fatalf("GH_TOKEN/GITHUB_TOKEN overrides count = %d/%d, want exactly one each (env=%v)", ghTokenHits, githubTokenHits, cfg.ExtraEnv)
+	}
+	if ghToken != "" || githubToken != "" {
+		t.Fatalf("GH_TOKEN/GITHUB_TOKEN = %q/%q, want empty overrides (env=%v)", ghToken, githubToken, cfg.ExtraEnv)
+	}
+}
+
+func TestPrepareRunConfig_GitHubAppTokenForcesGitCredentialHelper(t *testing.T) {
+	fakeGhOnPath(t)
+	shimDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return t.TempDir(), nil },
+		GhShimDir:   shimDir,
+	})
+	m.SetGHAppToken(func() string { return "fresh-but-short-lived-token" })
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID: "task-1",
+		Mode:   "headless",
+		Dir:    t.TempDir(),
+		ExtraEnv: []string{
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
+			"GIT_CONFIG_VALUE_0=!gh auth git-credential",
+			"GIT_CONFIG_PARAMETERS=credential.helper=store",
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+
+	want := []string{
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
+		"GIT_CONFIG_VALUE_0=sybra",
+		"GIT_CONFIG_KEY_1=credential.https://github.com.useHttpPath",
+		"GIT_CONFIG_VALUE_1=false",
+	}
+	for _, kv := range want {
+		if !slices.Contains(cfg.ExtraEnv, kv) {
+			t.Fatalf("ExtraEnv missing %q: %v", kv, cfg.ExtraEnv)
+		}
+	}
+	for _, kv := range cfg.ExtraEnv {
+		if strings.Contains(kv, "!gh auth git-credential") ||
+			strings.HasPrefix(kv, "GIT_CONFIG_PARAMETERS=") {
+			t.Fatalf("stale git credential config survived in %q (env=%v)", kv, cfg.ExtraEnv)
+		}
+		if strings.Contains(kv, "fresh-but-short-lived-token") {
+			t.Fatalf("agent env leaked raw token in %q (env=%v)", kv, cfg.ExtraEnv)
+		}
+	}
+	path := sandboxTestEnvValue(cfg.ExtraEnv, "PATH")
+	if !strings.HasPrefix(path, shimDir+string(os.PathListSeparator)) {
+		t.Fatalf("PATH = %q, want shim dir first", path)
+	}
+}
+
+func sandboxTestEnvValue(env []string, key string) string {
+	for _, kv := range env {
+		if value, ok := strings.CutPrefix(kv, key+"="); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 func TestPrepareRunConfig_GolangciCache_PerWorktreeAndStripsCaller(t *testing.T) {

@@ -28,6 +28,7 @@ import (
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
@@ -61,6 +62,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -93,6 +95,7 @@ type App struct {
 	evidenceStore     *evidence.Store
 	experience        *experience.Store
 	intervention      *intervention.Store
+	cleanupProtected  *cleanup.ProtectedStore
 	learning          *learning.Store
 	agentQueue        *agentqueue.Queue
 	stats             *stats.Store
@@ -124,6 +127,7 @@ type App struct {
 	workflowStore     *workflow.Store
 	pressureGate      *pressure.Gate
 	diskReclaimer     *diskreclaim.Reclaimer
+	toolLedger        *toolledger.Logger
 	renovate          *renovateCoordinator
 	promptLab         *promptLabCoordinator
 	triage            *triageCoordinator
@@ -166,9 +170,13 @@ type App struct {
 	// board-wide reconcileRunnableBoardTasks sweep instead of waiting for
 	// the next dispatch tick.
 	startupRecoveryPending atomic.Bool
-	recovery               *recovery.Recovery
-	snapshotter            *tasksnapshot.Snapshotter
-	agentCompletion        *completion.Handler
+	// maintenanceCleanupRunning prevents slow git cleanup from stacking across
+	// maintenance ticks. Cleanup itself runs outside the orchestrator loop.
+	maintenanceCleanupRunning atomic.Bool
+	worktreeCleanupFn         func(context.Context) // test seam; nil uses worktrees
+	recovery                  *recovery.Recovery
+	snapshotter               *tasksnapshot.Snapshotter
+	agentCompletion           *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
@@ -424,6 +432,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.logger.Info("app.starting")
 
 	a.initAudit()
+	a.initToolLedger()
 	a.initStats()
 
 	store, err := task.NewStore(a.tasksDir)
@@ -473,6 +482,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.startupRecoveryPending.Store(true)
 	a.initStatusHook() //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
 	a.initLocalStores()
+	a.cleanupProtected = cleanup.DefaultProtectedStore()
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.initLimits() //nolint:contextcheck // backfill derives from a.ctx directly, see Startup's contextcheck note
@@ -489,14 +499,15 @@ func (a *App) Startup(ctx context.Context) error {
 	configureProjectGitDefaults()
 	// Initialize domain services (dependency order: worktrees → agentOrch → reviewer, workflow)
 	a.worktrees = worktree.New(worktree.Config{
-		WorktreesDir:     a.worktreesDir,
-		Projects:         a.projects,
-		Tasks:            a.tasks,
-		Logger:           a.logger,
-		LogsDir:          a.logDir,
-		PRBranchResolver: github.FetchPRBranch,
-		AgentChecker:     a.agents.HasRunningAgentForTask,
-		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
+		WorktreesDir:      a.worktreesDir,
+		Projects:          a.projects,
+		Tasks:             a.tasks,
+		Logger:            a.logger,
+		LogsDir:           a.logDir,
+		PRBranchResolver:  github.FetchPRBranch,
+		AgentChecker:      a.agents.HasRunningAgentForTask,
+		LiveAgentChecker:  a.agents.HasLiveRegisteredAgentForTask,
+		ProtectedFindings: a.cleanupProtected,
 	})
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.agentOrch.SetContext(appCtx)
@@ -678,6 +689,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.stopFileWatcher()
 	if a.audit != nil {
 		_ = a.audit.Close()
+	}
+	if a.toolLedger != nil {
+		_ = a.toolLedger.Close()
 	}
 	if a.homeUnlock != nil {
 		if err := a.homeUnlock(); err != nil {

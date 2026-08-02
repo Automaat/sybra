@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -2313,14 +2314,32 @@ func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 		}
 	})
 
-	t.Run("claude_empty_mcp_config_is_noop", func(t *testing.T) {
+	// A run that attaches no server of its own is exactly the run that must
+	// still be pinned: without --strict-mcp-config, Claude loads whatever the
+	// host account has connected, which is how an operator's Gmail/Drive
+	// connectors reached headless agents (#2790). "No config" has to mean
+	// "no servers", not "inherit the host's".
+	t.Run("claude_pins_empty_surface_when_no_config", func(t *testing.T) {
 		a := &Agent{ID: "a", Provider: "claude"}
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test"})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
 		}
-		if slices.Contains(args, "--mcp-config") || slices.Contains(args, "--strict-mcp-config") {
-			t.Fatalf("mcp flags must be absent when MCPConfigJSON empty; got %v", args)
+		if !slices.Contains(args, "--strict-mcp-config") {
+			t.Fatalf("--strict-mcp-config must be present even with no per-run config; got %v", args)
+		}
+		i := slices.Index(args, "--mcp-config")
+		if i < 0 || i+1 >= len(args) {
+			t.Fatalf("--mcp-config must accompany --strict-mcp-config; got %v", args)
+		}
+		var doc struct {
+			MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		}
+		if err := json.Unmarshal([]byte(args[i+1]), &doc); err != nil {
+			t.Fatalf("mcp config is not valid JSON (%v): %s", err, args[i+1])
+		}
+		if len(doc.MCPServers) != 0 {
+			t.Fatalf("declared %d servers, want none: %s", len(doc.MCPServers), args[i+1])
 		}
 	})
 
@@ -3224,6 +3243,37 @@ func TestProcessHeadlessLine_CostGuardrailFiresOnCodexRun(t *testing.T) {
 	}
 	if got := a.GetCostUSD(); got < 0.5 || got > 0.6 {
 		t.Fatalf("banked cost = %.4f, want ~0.5153 derived from the run's tokens", got)
+	}
+	if got := a.GetEscalationReason(); got != EscalationReasonCost {
+		t.Fatalf("escalation reason = %q, want %q", got, EscalationReasonCost)
+	}
+}
+
+// Claude's result event can omit total_cost_usd (crashed/killed runs are
+// exactly the overspend-prone case), and EstimateAgentCost used to hard-code
+// $0 for any provider other than codex/copilot. Drive the real parser and
+// assert the guardrail now stops the stream on a claude run that blows the
+// ceiling instead of reading it as free.
+func TestProcessHeadlessLine_CostGuardrailFiresOnClaudeRun(t *testing.T) {
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	m.SetGuardrails(Guardrails{MaxCostUSD: 0.10})
+
+	a := &Agent{
+		ID: "claude-cost", TaskID: "t", Mode: "headless",
+		Provider: "claude", Model: "claude-sonnet-5",
+		StartedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC),
+		done:      make(chan struct{}),
+	}
+	lastEmit := time.Now().Add(-time.Minute)
+	line := []byte(`{"type":"result","session_id":"sess-1","usage":{"input_tokens":1000000,"output_tokens":0}}`)
+
+	stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, providerByName("claude"))
+
+	if !stop {
+		t.Fatal("stream not stopped: a claude run past the cost ceiling must trip the guardrail, not read as free")
+	}
+	if got := a.GetCostUSD(); got < 1.9 || got > 2.1 {
+		t.Fatalf("banked cost = %.4f, want ~2.00 derived from the run's tokens", got)
 	}
 	if got := a.GetEscalationReason(); got != EscalationReasonCost {
 		t.Fatalf("escalation reason = %q, want %q", got, EscalationReasonCost)
