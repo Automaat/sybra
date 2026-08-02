@@ -77,15 +77,16 @@ func (r Role) JudgesWithoutWriting() bool {
 	}
 }
 
-// DiagnosesBlockedTask reports whether the role is dispatched *because* a
-// task is in a state that otherwise means "no agent should be running" —
-// human-required, or terminal.
+// DiagnosesBlockedTask reports whether the role must survive the status-based
+// reapers — watchdog.reapTaskAgentForStatus and App.releaseTaskAgents — which
+// stop agents whose task has reached human-required or a terminal status.
 //
-// Both status reapers (watchdog.reapTaskAgentForStatus and
-// App.releaseTaskAgents) stop agents whose task reaches such a status. These
-// roles are the exception: killing them for the very condition they were sent
-// to resolve leaves the task stuck and the detector re-dispatching on its next
-// cycle, which is a livelock that costs a full agent run each pass.
+// It is not a claim about why the role is dispatched in general: monitor also
+// runs for board-wide anomalies with no task at all. It says only that when
+// such an agent *is* attached to a blocked task, it was sent there to resolve
+// that blockage, so killing it for the very condition it came to fix leaves
+// the task stuck and the detector re-dispatching next cycle — a livelock
+// costing a full agent run each pass.
 func (r Role) DiagnosesBlockedTask() bool {
 	switch r {
 	case RoleHumanReview, RoleMonitor:
