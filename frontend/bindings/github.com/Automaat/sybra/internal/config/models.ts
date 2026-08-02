@@ -208,6 +208,17 @@ export class AgentDefaults {
     "sandboxMode": string;
 
     /**
+     * SandboxReadMode layers read-visibility on top of SandboxMode: "off"
+     * (default) leaves reads unrestricted, "report" logs the resolved read
+     * allowlist without restricting the spawn, "enforce" denies reads outside
+     * it. Kept separate from sandbox_mode so upgrading a write-enforcing
+     * deployment cannot silently escalate it into the highest-breakage tier,
+     * where one missing read path fails the run closed. Consulted only when
+     * SandboxMode is "enforce". Empty treated as "off".
+     */
+    "sandboxReadMode": string;
+
+    /**
      * HeadlessSteerable controls whether headless claude runs launch with the
      * stdin/stream-json shape that accepts mid-run steer messages (instead of
      * the legacy one-shot `-p <prompt>` invocation). nil means not configured
@@ -354,6 +365,9 @@ export class AgentDefaults {
         if (!("sandboxMode" in $$source)) {
             this["sandboxMode"] = "";
         }
+        if (!("sandboxReadMode" in $$source)) {
+            this["sandboxReadMode"] = "";
+        }
         if (!("headlessSteerable" in $$source)) {
             this["headlessSteerable"] = null;
         }
@@ -386,30 +400,30 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField28_0 = $$createType0;
-        const $$createField29_0 = $$createType1;
-        const $$createField30_0 = $$createType2;
-        const $$createField31_0 = $$createType3;
-        const $$createField32_0 = $$createType4;
-        const $$createField33_0 = $$createType5;
+        const $$createField29_0 = $$createType0;
+        const $$createField30_0 = $$createType1;
+        const $$createField31_0 = $$createType2;
+        const $$createField32_0 = $$createType3;
+        const $$createField33_0 = $$createType4;
+        const $$createField34_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField28_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField29_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField29_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField30_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField30_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField31_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField31_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField32_0($$parsedSource["queue"]);
         }
         if ("classReservations" in $$parsedSource) {
-            $$parsedSource["classReservations"] = $$createField32_0($$parsedSource["classReservations"]);
+            $$parsedSource["classReservations"] = $$createField33_0($$parsedSource["classReservations"]);
         }
         if ("evidence" in $$parsedSource) {
-            $$parsedSource["evidence"] = $$createField33_0($$parsedSource["evidence"]);
+            $$parsedSource["evidence"] = $$createField34_0($$parsedSource["evidence"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }

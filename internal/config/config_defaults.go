@@ -293,6 +293,38 @@ func NormalizeSandboxMode(s string) (string, error) {
 	}
 }
 
+// NormalizeSandboxReadMode canonicalizes a read-visibility posture value.
+// Empty maps to "off" — unlike sandbox_mode, whose empty default is "report"
+// — because an unset read posture must leave existing deployments exactly as
+// they were rather than opting them into the highest-breakage tier.
+func NormalizeSandboxReadMode(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "off":
+		return "off", nil
+	case "report":
+		return "report", nil
+	case "enforce":
+		return "enforce", nil
+	default:
+		return "", fmt.Errorf("invalid sandbox_read_mode %q (valid: off, report, enforce)", s)
+	}
+}
+
+// DefaultSandboxReadMode returns the configured read-visibility posture, or
+// "off" if unset. An invalid value is logged and treated as "off" so a typo
+// can never fail every agent run closed on a missing read path.
+func (c *Config) DefaultSandboxReadMode() string {
+	if c == nil || c.Agent.SandboxReadMode == "" {
+		return "off"
+	}
+	mode, err := NormalizeSandboxReadMode(c.Agent.SandboxReadMode)
+	if err != nil {
+		slog.Warn("config: invalid agent.sandbox_read_mode; falling back to off", "value", c.Agent.SandboxReadMode)
+		return "off"
+	}
+	return mode
+}
+
 // DefaultSandboxMode returns the configured default OS-level process-sandbox
 // posture, or "report" if unset. An invalid config value is logged and
 // treated as "report" so a misconfigured server never silently drops to

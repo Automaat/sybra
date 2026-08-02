@@ -59,10 +59,24 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		// the new namespace's pid 1 automatically (see bwrap(1)), so no
 		// additional init flag is needed.
 		"--unshare-pid",
-		"--ro-bind", "/", "/",
+	}
+	if len(cfg.sandbox.readRoots) == 0 {
+		wrapped = append(wrapped, "--ro-bind", "/", "/")
+	} else {
+		// Deny-by-default reads (#2781): bind only the allowlisted roots
+		// instead of the whole filesystem, so nothing else is even visible.
+		// --ro-bind-try, not --ro-bind: the list spans two platforms and
+		// several optional toolchains, and bwrap aborts the whole spawn on a
+		// single missing source. A root that does not exist here contributes
+		// nothing to read, so skipping it is safe; failing is not.
+		for _, root := range cfg.sandbox.readRoots {
+			wrapped = append(wrapped, "--ro-bind-try", root, root)
+		}
+	}
+	wrapped = append(wrapped,
 		"--dev", "/dev",
 		"--proc", "/proc",
-	}
+	)
 	roots := dedupeRoots(
 		cfg.sandbox.worktree,
 		cfg.sandbox.sandboxHome,
@@ -164,4 +178,11 @@ func sandboxSyncShell(bwrapArgs []string, cfg *RunConfig) (wrappedName string, w
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+// buildReadProfile is a no-op on Linux: bwrap expresses the read allowlist as
+// mount arguments (see wrapInvocation) rather than a profile file, so there is
+// nothing to materialize.
+func buildReadProfile(base string, _ []string, _ string) (string, error) {
+	return base, nil
 }

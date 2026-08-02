@@ -518,6 +518,9 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
 	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, canonSharedCache, profilePath, "", gitRoots, gitOverlay)
+	if err := m.applySandboxReadMode(cfg); err != nil {
+		return err
+	}
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
 		"git_metadata", cfg.sandbox.gitMetadata,
@@ -798,6 +801,159 @@ func dedupeGitRoots(roots []string) []string {
 		out = append(out, root)
 	}
 	return out
+}
+
+// applySandboxReadMode resolves the read-visibility posture onto an
+// already-built enforce spec. It mirrors the write sandbox's report/enforce
+// split for the same reason: "report" resolves and logs the allowlist but
+// leaves cfg.sandbox.readRoots empty, so a defective read allowlist can only
+// ever affect a deployment that explicitly asked for read enforcement.
+//
+// An invalid value degrades to "off" rather than erroring. Failing the run
+// closed on a typo would take down every agent at once, which is a strictly
+// worse outcome than leaving reads at today's posture.
+func (m *Manager) applySandboxReadMode(cfg *RunConfig) error {
+	requested := cfg.SandboxReadMode
+	if strings.TrimSpace(requested) == "" {
+		m.mu.RLock()
+		requested = m.defaultSandboxReadMode
+		m.mu.RUnlock()
+	}
+	mode, err := config.NormalizeSandboxReadMode(requested)
+	if err != nil {
+		m.logger.Warn("agent.sandbox.read.invalid", "task_id", cfg.TaskID, "value", requested, "err", err)
+		return nil
+	}
+	if mode == "off" {
+		return nil
+	}
+	roots := m.resolveSandboxReadRoots(cfg)
+	if mode != "enforce" {
+		m.logger.Info("agent.sandbox.read.report", "task_id", cfg.TaskID, "role", string(cfg.Role), "read_roots", roots)
+		return nil
+	}
+	profilePath, err := buildReadProfile(cfg.sandbox.profilePath, roots, cfg.sandbox.sandboxHome)
+	if err != nil {
+		m.logger.Error("agent.sandbox.read.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox read profile: %w", err)
+	}
+	cfg.sandbox.profilePath = profilePath
+	cfg.sandbox.readRoots = roots
+	m.logger.Info("agent.sandbox.read.enforce", "task_id", cfg.TaskID, "role", string(cfg.Role), "read_roots", roots)
+	return nil
+}
+
+// systemReadRoots are the OS roots every provider CLI and toolchain needs to
+// exec at all. /opt is deliberately absent: on the server it holds the live
+// deploy checkout (/opt/sybra/src), which the #2780 trace measured as read by
+// exactly zero toolchain steps, so granting it would re-open the one root
+// this restriction exists to close.
+var systemReadRoots = []string{
+	"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/var/lib", "/private/var/db",
+}
+
+// toolchainReadSubdirs are home-relative roots that hold the language
+// toolchains themselves. mise's install tree is the load-bearing one: it
+// carries the Go stdlib source that every compile reads, and it never appears
+// on a command line, so it is absent from any log-derived allowlist (#2780).
+var toolchainReadSubdirs = []string{
+	filepath.Join(".local", "share", "mise"),
+	filepath.Join(".local", "state", "mise"),
+	filepath.Join(".local", "bin"),
+	filepath.Join(".config", "mise"),
+	filepath.Join(".config", "go"),
+	filepath.Join(".config", "gh"),
+}
+
+// homeRootReadFiles sit directly in the operator home rather than under a
+// grantable directory, so granting only directories silently breaks them.
+// .claude.json holds the claude CLI's account state; without it the CLI
+// reports "Not logged in · Please run /login". .gitconfig carries the
+// credential helper that authenticates pushes.
+var homeRootReadFiles = []string{
+	".claude.json",
+	".gitconfig",
+}
+
+// homeStateLinks are the provider state dirs as spelled in the home
+// directory. They are added *uncanonicalized*, in addition to their resolved
+// targets, because on the server ~/.claude is a symlink to /data/sybra/claude:
+// granting only the resolved target leaves the symlink itself absent from the
+// mount namespace, so every tilde-relative lookup the CLI makes still fails.
+// That failure is silent and authentication-shaped rather than an EROFS.
+//
+// .agents is not a provider state dir but codex's skills tree (~/.agents/skills,
+// 37 reads in a single traced codex run); without it codex loses every skill.
+var homeStateLinks = []string{
+	".claude",
+	".codex",
+	".copilot",
+	".agents",
+	filepath.Join(".local", "share", "opencode"),
+}
+
+// resolveSandboxReadRoots returns the additional read-only roots for a run,
+// on top of the write roots (which are always readable). Roots that do not
+// exist on this host are skipped rather than failing the run: the list spans
+// two platforms and several optional toolchains, and a fail-closed miss here
+// would break every agent rather than deny one path.
+//
+// Roles are carved out only where the #2780 audit measured a structural need:
+// monitor reads the Sybra board by design (213 reads), and a read-only Dir
+// (human-review's deploy-checkout fallback) must stay readable to be
+// reviewable. The orchestrator's own memory needs no entry — it lives under
+// ~/.claude, already a write root.
+func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
+	var roots []string
+	// Both the pre-resolution spelling and the resolved target are granted
+	// whenever they differ. Granting only the target is a hard break: /bin,
+	// /sbin, /lib and /lib64 are symlinks into /usr on the deploy host, so a
+	// canonicalized-only allowlist leaves /bin absent from the mount
+	// namespace and every "#!/bin/sh" shebang fails with ENOENT. The same
+	// applies to ~/.claude, a symlink to /data/sybra/claude there.
+	add := func(p string) {
+		if strings.TrimSpace(p) == "" {
+			return
+		}
+		canon, err := canonicalizeRoot(p)
+		if err != nil {
+			return
+		}
+		if canon != p {
+			roots = append(roots, p)
+		}
+		roots = append(roots, canon)
+	}
+	for _, p := range systemReadRoots {
+		add(p)
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		for _, sub := range toolchainReadSubdirs {
+			add(filepath.Join(home, sub))
+		}
+		for _, f := range homeRootReadFiles {
+			add(filepath.Join(home, f))
+		}
+		for _, l := range homeStateLinks {
+			add(filepath.Join(home, l))
+		}
+	}
+	add(cfg.sandbox.readOnlyDir)
+	if cfg.Role == RoleMonitor {
+		add(config.HomeDir())
+	}
+	// Every write root must also be readable. On Linux a later rw bind would
+	// cover this anyway, but darwin's seatbelt evaluates file-read* and
+	// file-write* independently, so the set has to be explicit to work on
+	// both platforms from one resolved list.
+	//
+	// Routed through add() rather than appended raw: seatbelt matches
+	// subpaths literally, so an unresolved /var/... root would not match the
+	// /private/var/... path the process actually opens on darwin.
+	for _, p := range cfg.sandbox.writeRoots() {
+		add(p)
+	}
+	return dedupeRoots(roots...)
 }
 
 func agentStateRoot(sub, fallback string) string {

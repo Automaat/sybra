@@ -120,6 +120,52 @@ func stateDenyAt(paths []string, i int) string {
 	return ""
 }
 
+// sbplQuote renders p as an SBPL string literal. A path containing a quote or
+// backslash would otherwise terminate the literal early and change which
+// rules the profile expresses, so both are escaped rather than assumed absent.
+func sbplQuote(p string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(p) + `"`
+}
+
+// buildReadProfile materializes a profile that denies reads outside roots,
+// returning base unchanged when roots is empty. SBPL parameters are
+// fixed-arity and cannot iterate, so a variable-length allowlist has to be
+// generated into the profile text and written per run rather than passed
+// as -D values like the write roots are.
+//
+// Seatbelt resolves the most specific applicable rule rather than the last
+// declared one, so appending after the embedded base leaves the base's
+// write rules untouched.
+func buildReadProfile(base string, roots []string, dir string) (string, error) {
+	if len(roots) == 0 {
+		return base, nil
+	}
+	var b strings.Builder
+	b.Write(agentSandboxProfile)
+	b.WriteString("\n;; Deny-by-default reads (#2781), generated per run.\n")
+	b.WriteString("(deny file-read*)\n(allow file-read*\n")
+	for _, r := range roots {
+		// subpath covers directories; literal covers the plain files in the
+		// allowlist (~/.claude.json, ~/.gitconfig), which subpath does not
+		// match on its own.
+		b.WriteString("  (subpath " + sbplQuote(r) + ")\n")
+		b.WriteString("  (literal " + sbplQuote(r) + ")\n")
+	}
+	b.WriteString(")\n")
+	// Fixed name inside the per-task sandbox home rather than a fresh
+	// os.CreateTemp file. This runs on every enforce spawn, so a long-lived
+	// daemon would otherwise leak one profile per spawn into the system temp
+	// dir forever. One file per task, removed with the sandbox home.
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("read sandbox profile: no sandbox home to write into")
+	}
+	path := filepath.Join(dir, "agent-sandbox-read.sb")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return "", fmt.Errorf("write read sandbox profile: %w", err)
+	}
+	return path, nil
+}
+
 func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName string, wrappedArgs []string) {
 	if cfg == nil || cfg.sandbox.mode != "enforce" {
 		return name, args
