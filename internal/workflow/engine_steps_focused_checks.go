@@ -390,6 +390,7 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 		backoff:    autoFixBackoff,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
+			wfExec.SetVar(verifyRetryModelVar, "expensive")
 		},
 		reason: func(int) string { return reason },
 	})

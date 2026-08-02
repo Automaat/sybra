@@ -315,6 +315,9 @@ func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
 	if wf.Variables["step.focused_checks.auto_fix"] != "1" {
 		t.Fatalf("auto_fix counter = %q, want 1", wf.Variables["step.focused_checks.auto_fix"])
 	}
+	if got := wf.Variables[verifyRetryModelVar]; got != "expensive" {
+		t.Fatalf("%s = %q, want expensive", verifyRetryModelVar, got)
+	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress", ti.Status)
 	}
