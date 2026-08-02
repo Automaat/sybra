@@ -881,10 +881,14 @@ var homeRootReadFiles = []string{
 // granting only the resolved target leaves the symlink itself absent from the
 // mount namespace, so every tilde-relative lookup the CLI makes still fails.
 // That failure is silent and authentication-shaped rather than an EROFS.
+//
+// .agents is not a provider state dir but codex's skills tree (~/.agents/skills,
+// 37 reads in a single traced codex run); without it codex loses every skill.
 var homeStateLinks = []string{
 	".claude",
 	".codex",
 	".copilot",
+	".agents",
 	filepath.Join(".local", "share", "opencode"),
 }
 
