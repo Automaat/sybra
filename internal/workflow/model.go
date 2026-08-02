@@ -240,7 +240,7 @@ type stepSpec struct {
 	resumable bool
 }
 
-var stepRegistry map[StepType]stepSpec
+var stepRegistry = map[StepType]stepSpec{}
 
 func init() {
 	stepRegistry = map[StepType]stepSpec{
