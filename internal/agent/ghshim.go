@@ -194,22 +194,32 @@ func lookRealGh() string {
 }
 
 func lookRealSybraCLI() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		if abs := executableAbsolute(filepath.Join(home, ".local", "bin", "sybra-cli")); abs != "" {
+			return abs
+		}
+	}
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if dir == "" {
 			dir = "."
 		}
-		candidate := filepath.Join(dir, "sybra-cli")
-		info, err := os.Stat(candidate)
-		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
-			continue
+		if abs := executableAbsolute(filepath.Join(dir, "sybra-cli")); abs != "" {
+			return abs
 		}
-		abs, err := filepath.Abs(candidate)
-		if err != nil {
-			return ""
-		}
-		return abs
 	}
 	return ""
+}
+
+func executableAbsolute(path string) string {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	return abs
 }
 
 func writeGhShim(dir string) (string, error) {
