@@ -3,13 +3,12 @@ package project
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/Automaat/sybra/internal/executil"
 )
 
 type RepairReport struct {
@@ -109,7 +108,15 @@ func CheckBareCloneHealth(ctx context.Context, barePath string) error {
 // index without stat-ing the working tree, which matters when this runs
 // across dozens of live worktrees on every dispatch.
 func CheckWorktreeIndexes(ctx context.Context, barePath string) error {
-	entries, _ := os.ReadDir(filepath.Join(barePath, "worktrees"))
+	entries, err := os.ReadDir(filepath.Join(barePath, "worktrees"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			// A clone with no linked worktrees has no indexes to check.
+			return nil
+		}
+		// Any other read failure (permissions, IO) is not evidence of health.
+		return fmt.Errorf("read worktrees dir: %w", err)
+	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -125,9 +132,27 @@ func CheckWorktreeIndexes(ctx context.Context, barePath string) error {
 		if _, err := os.Stat(filepath.Join(adminDir, "index")); err != nil {
 			continue
 		}
-		if err := executil.Run(ctx, checkoutPath, "git", "ls-files"); err != nil {
+		if err := indexReadable(ctx, checkoutPath); err != nil {
 			return fmt.Errorf("worktrees/%s/index file is unreadable: %w", entry.Name(), err)
 		}
+	}
+	return nil
+}
+
+// indexReadable reports whether git can parse the worktree's index.
+//
+// Discards stdout rather than using executil.Run: this runs per worktree on
+// the dispatch path, and ls-files on a large repo emits thousands of paths
+// that would otherwise be buffered in full only to be thrown away. Only
+// stderr is kept, since that is what explains a parse failure.
+func indexReadable(ctx context.Context, checkoutPath string) error {
+	cmd := exec.CommandContext(ctx, "git", "ls-files")
+	cmd.Dir = checkoutPath
+	cmd.Stdout = io.Discard
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
@@ -148,9 +173,16 @@ func bareRefTips(ctx context.Context, barePath string) ([]string, error) {
 	return refs, nil
 }
 
-// bareCloneAndWorktreesHealthy is the repair trigger: it covers both the
-// object database and the linked worktree indexes, so EnsureBareCloneHealthy
-// still repairs an unreadable index even though that no longer gates dispatch.
+// bareCloneAndWorktreesHealthy covers both the object database and the linked
+// worktree indexes, for callers that want the union rather than the dispatch
+// gate alone.
+//
+// Production index repair does not run through here: FetchOrigin calls
+// CheckBareCloneHealth and, on failure, repairBareCloneLocked, which reaches
+// rebuildWorktreeIndexes -> CheckWorktreeIndexes. repairCheckpointWorktree is
+// the other live entry point. EnsureBareCloneHealthy below has no non-test
+// callers today — that predates this change and is left alone rather than
+// deleted as unrelated scope.
 func bareCloneAndWorktreesHealthy(ctx context.Context, barePath string) error {
 	if err := CheckBareCloneHealth(ctx, barePath); err != nil {
 		return err
