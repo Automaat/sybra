@@ -142,6 +142,45 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 	}
 }
 
+func importedSidecarPresentForStep(step *Step, t TaskInfo) (present bool, kind string) {
+	if step == nil {
+		return false, ""
+	}
+	for _, cfg := range step.Config.sidecarImports() {
+		sidecarKind := cfg.Kind
+		if sidecarKind == "plan_draft" {
+			sidecarKind = "plan_draft." + step.ID
+		}
+		if strings.TrimSpace(taskSidecarContent(t, sidecarKind)) != "" {
+			return true, sidecarKind
+		}
+	}
+	return false, ""
+}
+
+func taskSidecarContent(t TaskInfo, kind string) string {
+	switch {
+	case kind == "plan":
+		return t.Plan
+	case kind == "plan_contract":
+		return t.PlanContract
+	case kind == "plan_critique":
+		return t.PlanCritique
+	case kind == "plan_research":
+		return t.PlanResearch
+	case kind == "plan_decisions":
+		return t.PlanDecisions
+	case kind == "plan_brief":
+		return t.PlanBrief
+	case kind == "code_review":
+		return t.CodeReview
+	case strings.HasPrefix(kind, "plan_draft."):
+		return t.PlanDrafts[strings.TrimPrefix(kind, "plan_draft.")]
+	default:
+		return ""
+	}
+}
+
 func (e *Engine) rescheduleSkillReceiptParallelChild(taskID string, parent, child *Step) {
 	e.acquireInflight(taskID)
 	defer e.releaseInflight(taskID)

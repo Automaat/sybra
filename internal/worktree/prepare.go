@@ -644,6 +644,14 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 	// Check out the PR head via refs/pull/<N>/head rather than
 	// refs/remotes/origin/<branch>: a fork PR's head branch never lands under
 	// origin, so the latter fails with "invalid reference".
+	//
+	// Like reconcileAndRebase's remote fetch, a transient connectivity blip
+	// here (SSH/DNS/timeout) looks identical to a genuine failure unless
+	// distinguished — wrap it as ErrTransientFetch so ClassifyAgentStartFailure
+	// treats it as retryable instead of feeding the circuit breaker (the raw
+	// error used to fall into ClassifyAgentStartFailure's default case, which
+	// counts toward the breaker and can trip a review dispatch to
+	// human-required after a few DNS blips even though nothing needs a human).
 	ref, err := project.FetchPRHead(ctx, proj.ClonePath, t.PRNumber)
 	if err != nil {
 		return "", wrapPRHeadFetchErr(err)
