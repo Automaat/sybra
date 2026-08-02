@@ -30,6 +30,48 @@ func TestBuiltinSimpleTaskPlan_ApprovalStartsImplementation(t *testing.T) {
 	}
 }
 
+func TestBuiltinWorkflowModelRouting(t *testing.T) {
+	t.Parallel()
+
+	plan := mustBuiltinDefinition(t, "simple-task-plan")
+	critique := plan.StepByID("critique_plan")
+	if critique == nil {
+		t.Fatal("critique_plan step not found in simple-task-plan")
+	}
+	if got := critique.Config.Model; got != "supercheap" {
+		t.Fatalf("critique_plan model = %q, want supercheap", got)
+	}
+
+	testingDef := mustBuiltinDefinition(t, "testing-task")
+	runTest := testingDef.StepByID("run_test")
+	if runTest == nil {
+		t.Fatal("run_test step not found in testing-task")
+	}
+	if got := runTest.Config.Model; got != "supercheap" {
+		t.Fatalf("run_test model = %q, want supercheap", got)
+	}
+
+	implement := mustBuiltinDefinition(t, "simple-task-implement").StepByID("implement")
+	if implement == nil {
+		t.Fatal("implement step not found in simple-task-implement")
+	}
+	wantTemplate := `{{if getvar .Vars "verify_retry_model"}}{{getvar .Vars "verify_retry_model"}}{{else}}cheap{{end}}`
+	if got := strings.TrimSpace(implement.Config.Model); got != wantTemplate {
+		t.Fatalf("implement model = %q, want %q", got, wantTemplate)
+	}
+	if !strings.Contains(implement.Config.Model, verifyRetryModelVar) {
+		t.Fatalf("implement model = %q, want %q reference", implement.Config.Model, verifyRetryModelVar)
+	}
+
+	bestOfN := mustBuiltinDefinition(t, "simple-task-best-of-n-implement").StepByID("attempts")
+	if bestOfN == nil {
+		t.Fatal("attempts step not found in simple-task-best-of-n-implement")
+	}
+	if got := bestOfN.Config.Model; got != "cheap" {
+		t.Fatalf("attempts model = %q, want cheap", got)
+	}
+}
+
 // TestBuiltinSimpleTask_MaybeCritiqueReplanSkip locks the behavior that
 // critique_plan runs only on the first plan pass. On replan (after a human
 // reject), `vars.step.review_plan.output` exists, so maybe_critique must

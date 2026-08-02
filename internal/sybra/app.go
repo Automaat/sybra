@@ -62,6 +62,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -126,6 +127,7 @@ type App struct {
 	workflowStore     *workflow.Store
 	pressureGate      *pressure.Gate
 	diskReclaimer     *diskreclaim.Reclaimer
+	toolLedger        *toolledger.Logger
 	renovate          *renovateCoordinator
 	promptLab         *promptLabCoordinator
 	triage            *triageCoordinator
@@ -151,9 +153,13 @@ type App struct {
 	// rather than silently refusing to dispatch.
 	schedulerDisabled atomic.Bool
 	brainDisabled     atomic.Bool
-	recovery          *recovery.Recovery
-	snapshotter       *tasksnapshot.Snapshotter
-	agentCompletion   *completion.Handler
+	// maintenanceCleanupRunning prevents slow git cleanup from stacking across
+	// maintenance ticks. Cleanup itself runs outside the orchestrator loop.
+	maintenanceCleanupRunning atomic.Bool
+	worktreeCleanupFn         func(context.Context) // test seam; nil uses worktrees
+	recovery                  *recovery.Recovery
+	snapshotter               *tasksnapshot.Snapshotter
+	agentCompletion           *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
@@ -403,6 +409,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.logger.Info("app.starting")
 
 	a.initAudit()
+	a.initToolLedger()
 	a.initStats()
 
 	store, err := task.NewStore(a.tasksDir)
@@ -650,6 +657,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.stopFileWatcher()
 	if a.audit != nil {
 		_ = a.audit.Close()
+	}
+	if a.toolLedger != nil {
+		_ = a.toolLedger.Close()
 	}
 	if a.homeUnlock != nil {
 		if err := a.homeUnlock(); err != nil {

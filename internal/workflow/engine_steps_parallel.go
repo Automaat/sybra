@@ -111,26 +111,11 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	childCtx := parentCtx
 	childCtx.Step = *child
 
-	mode := child.Config.Mode
-	if strings.Contains(mode, "{{") {
-		if rendered, rErr := RenderTemplate(mode, childCtx); rErr == nil {
-			mode = rendered
-		}
-	}
-	// Parallel children must run as headless one-shot so the parent can
-	// advance. Interactive dispatch no longer exists — coerce empty and any
-	// legacy interactive value to headless before AdmitDispatch so the
-	// resource-pressure gate sees the real mode (matches spawnBestOfNAttempt).
-	if mode == "" || mode == "interactive" {
-		mode = "headless"
-	}
+	mode := resolveRunAgentMode(child.Config.Mode, childCtx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, child.Config.Role, mode); !admit {
 		return fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 	}
-	model := child.Config.Model
-	if model == "" {
-		model = "sonnet"
-	}
+	model := resolveRunAgentModel(child.Config.Model, childCtx)
 
 	provider, model, assignment, err := e.resolveAgentVariant(childCtx.Task, child, wfExec, model, "workflow.parallel.cross-provider.fallback")
 	if err != nil {
