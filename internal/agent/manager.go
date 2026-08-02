@@ -86,12 +86,15 @@ type Manager struct {
 	roleEffort map[string]string
 
 	defaultSandboxMode string
-	gate               provider.HealthGate
-	limitGate          LimitGate
-	limitPolicy        limits.Policy
-	limitSink          func(limits.Snapshot)
-	evalPassed         abtest.EvalPassed
-	cohortObserved     abtest.CohortObserved
+	// defaultSandboxReadMode is the read-visibility posture layered on top of
+	// defaultSandboxMode; "off" unless an operator opts in (#2781).
+	defaultSandboxReadMode string
+	gate                   provider.HealthGate
+	limitGate              LimitGate
+	limitPolicy            limits.Policy
+	limitSink              func(limits.Snapshot)
+	evalPassed             abtest.EvalPassed
+	cohortObserved         abtest.CohortObserved
 
 	// liveByProvider tracks in-flight agent counts per provider, incremented
 	// and decremented in lockstep with liveCount (registerRunningAgent,
@@ -251,6 +254,7 @@ type ManagerRuntimeConfig struct {
 	LimitGate       LimitGate
 	LimitPolicy     limits.Policy
 	SandboxMode     string
+	SandboxReadMode string
 	// MaxInFlightPerProvider caps concurrent in-flight agents per provider.
 	// 0 disables the cap.
 	MaxInFlightPerProvider int
@@ -320,6 +324,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
 		roleEffort:             maps.Clone(cfg.Runtime.RoleEffort),
 		defaultSandboxMode:     cfg.Runtime.SandboxMode,
+		defaultSandboxReadMode: cfg.Runtime.SandboxReadMode,
 		sandboxHome:            cfg.SandboxHome,
 		controlHome:            cfg.ControlHome,
 		deadAgentRetention:     defaultDeadAgentRetention,
@@ -570,6 +575,7 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.headlessSteerable = cfg.HeadlessSteerable
 	m.roleEffort = maps.Clone(cfg.RoleEffort)
 	m.defaultSandboxMode = cfg.SandboxMode
+	m.defaultSandboxReadMode = cfg.SandboxReadMode
 	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
 	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
 	m.classFloors = cloneClassFloors(cfg.ClassReservations)

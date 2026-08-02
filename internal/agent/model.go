@@ -1890,7 +1890,12 @@ type RunConfig struct {
 	// (agentorch.ResolveSandboxMode) from the task's Sandbox toggle merged
 	// with config.DefaultSandboxMode(). Empty is treated as "report" by
 	// Manager.injectProcessSandbox.
-	SandboxMode           string
+	SandboxMode string
+	// SandboxReadMode overrides the read-visibility posture for this run.
+	// Empty falls back to the manager default, which is "off" unless an
+	// operator opted in. Honoured only when SandboxMode resolves to
+	// "enforce" — an unwrapped spawn has nothing to restrict reads on.
+	SandboxReadMode       string
 	PlaywrightMCPEligible bool
 	// PlaywrightMCPOutputDir is the per-task directory the Playwright MCP
 	// server writes screenshots/console logs to. Set by the workflow

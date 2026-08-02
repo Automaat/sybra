@@ -509,6 +509,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
 		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
 		SandboxMode:            cfg.DefaultSandboxMode(),
+		SandboxReadMode:        cfg.DefaultSandboxReadMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
