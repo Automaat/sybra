@@ -586,6 +586,40 @@ func (s *Store) Put(t Task) (Task, error) {
 		return Task{}, err
 	}
 	defer unlock()
+	return s.putLocked(t)
+}
+
+// PutFn reads an existing task and writes the fully-formed replacement
+// returned by fn while holding the task's cross-process write lock. It is for
+// callers that need to merge a long-running operation's result with the most
+// recent canonical task without a read-modify-write gap.
+func (s *Store) PutFn(id string, fn func(cur Task) (Task, error)) (saved, previous Task, err error) {
+	if err := ValidateID(id); err != nil {
+		return Task{}, Task{}, err
+	}
+	unlock, err := s.lockTask(id)
+	if err != nil {
+		return Task{}, Task{}, err
+	}
+	defer unlock()
+
+	cur, err := s.read(id)
+	if err != nil {
+		return Task{}, cur, err
+	}
+	next, err := fn(cur)
+	if err != nil {
+		return Task{}, cur, err
+	}
+	if next.ID != id {
+		return Task{}, cur, fmt.Errorf("task: put-fn: callback changed task ID from %q to %q", id, next.ID)
+	}
+	saved, err = s.putLocked(next)
+	return saved, cur, err
+}
+
+// putLocked is Put after the caller has acquired lockTask(t.ID).
+func (s *Store) putLocked(t Task) (Task, error) {
 	now := time.Now().UTC()
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
