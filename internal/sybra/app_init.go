@@ -790,7 +790,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 	}
 	filtered := make([]*agent.Agent, 0, len(targets))
 	for _, ag := range targets {
-		if ag.EffectiveRole() == agent.RoleHumanReview {
+		if ag.EffectiveRole().DiagnosesBlockedTask() {
 			continue
 		}
 		filtered = append(filtered, ag)
