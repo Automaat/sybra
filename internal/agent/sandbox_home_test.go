@@ -276,6 +276,39 @@ func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
 	}
 }
 
+func TestPrepareRunConfig_GitHubAppTokenNotSnapshottedIntoAgentEnv(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return t.TempDir(), nil },
+	})
+	m.SetGHAppToken(func() string { return "fresh-but-short-lived-token" })
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:   "task-1",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+		ExtraEnv: []string{"GH_TOKEN=stale-caller-token", "GITHUB_TOKEN=stale-caller-token"},
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+
+	var ghToken, githubToken string
+	for _, kv := range cfg.ExtraEnv {
+		switch {
+		case strings.HasPrefix(kv, "GH_TOKEN="):
+			ghToken = strings.TrimPrefix(kv, "GH_TOKEN=")
+		case strings.HasPrefix(kv, "GITHUB_TOKEN="):
+			githubToken = strings.TrimPrefix(kv, "GITHUB_TOKEN=")
+		}
+		if strings.Contains(kv, "fresh-but-short-lived-token") || strings.Contains(kv, "stale-caller-token") {
+			t.Fatalf("agent env leaked a raw GitHub token in %q (full env: %v)", kv, cfg.ExtraEnv)
+		}
+	}
+	if ghToken != "" || githubToken != "" {
+		t.Fatalf("GH_TOKEN/GITHUB_TOKEN = %q/%q, want empty overrides (env=%v)", ghToken, githubToken, cfg.ExtraEnv)
+	}
+}
+
 func TestPrepareRunConfig_GolangciCache_PerWorktreeAndStripsCaller(t *testing.T) {
 	sandboxDir := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{

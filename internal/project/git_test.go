@@ -1965,6 +1965,37 @@ func TestPushUpstream_UsesPushEnv(t *testing.T) {
 	}
 }
 
+func TestPushUpstream_RefreshesAppTokenBeforePushEnvSnapshot(t *testing.T) {
+	_, wtPath := initWorktree(t)
+
+	if err := InstallHooks(context.Background(), wtPath, &ChecksConfig{
+		PrePush: []string{`test "$GH_TOKEN" = "installation-token-after-refresh"`},
+	}); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	refreshed := false
+	origRefresh := forceRefreshAppToken
+	forceRefreshAppToken = func(context.Context) error {
+		refreshed = true
+		return nil
+	}
+	t.Cleanup(func() { forceRefreshAppToken = origRefresh })
+
+	origPushEnv := pushEnv
+	pushEnv = func() []string {
+		if !refreshed {
+			t.Fatal("pushEnv was snapshotted before ForceRefreshAppToken")
+		}
+		return append(os.Environ(), "GH_TOKEN=installation-token-after-refresh")
+	}
+	t.Cleanup(func() { pushEnv = origPushEnv })
+
+	if err := PushUpstream(context.Background(), wtPath, "synapse/test"); err != nil {
+		t.Fatalf("PushUpstream should refresh before reading pushEnv: %v", err)
+	}
+}
+
 // TestPushUpstream_PushEnvNilInheritsAmbient proves the default (no App auth
 // configured) behavior is unchanged: pushEnv's nil return means `git push`
 // inherits the process environment, same as before this env seam existed.

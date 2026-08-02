@@ -21,6 +21,13 @@ const GhShimReason = "Blocked by Sybra: APPROVE is a human decision. " +
 	"or gh api without an event to leave the review pending for a human to approve."
 
 const ghShimScript = `#!/bin/sh
+if command -v sybra-cli >/dev/null 2>&1; then
+	token="$(sybra-cli github-app-token 2>/dev/null || true)"
+	if [ -n "$token" ]; then
+		export GH_TOKEN="$token"
+		export GITHUB_TOKEN="$token"
+	fi
+fi
 if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
 	sawapprove=0
 	sawverdict=0

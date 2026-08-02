@@ -98,6 +98,21 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
+func TestGithubAppTokenRequiresAppAuth(t *testing.T) {
+	setupStore(t)
+
+	code, stdout, stderr := runCLIWithStderr(t, "github-app-token")
+	if code == 0 {
+		t.Fatalf("github-app-token succeeded with github.app disabled; stdout=%q stderr=%q", stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("github-app-token wrote stdout despite failing: %q", stdout)
+	}
+	if !strings.Contains(stderr, "github.app is not enabled") {
+		t.Fatalf("stderr = %q, want github.app disabled error", stderr)
+	}
+}
+
 func TestListEmpty(t *testing.T) {
 	setupStore(t)
 	code, out := runCLI(t, "--json", "list")
