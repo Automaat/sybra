@@ -1,6 +1,14 @@
 package workflow
 
-import "strconv"
+import (
+	"errors"
+	"strconv"
+)
+
+// errRetryArmingSuperseded tells boundedRetry that a concurrent state change
+// won after the counter was persisted but before the retry could dispatch.
+// It is a normal fence, not a persistence failure.
+var errRetryArmingSuperseded = errors.New("retry arming superseded by concurrent task update")
 
 // boundedRetryPolicy is the shape shared by every capped auto-retry the
 // engine runs against a stalled run_agent step: read a per-step attempt
@@ -92,6 +100,10 @@ func (e *Engine) boundedRetry(t *TaskInfo, step *Step, p boundedRetryPolicy) boo
 	}
 	if p.onArmed != nil {
 		if err := p.onArmed(e, t, step, attempt); err != nil {
+			if errors.Is(err, errRetryArmingSuperseded) {
+				e.logger.Debug("workflow."+p.name+".superseded", "task_id", t.ID, "step", step.ID)
+				return true
+			}
 			e.logger.Error("workflow."+p.name+".clear", "task_id", t.ID, "step", step.ID, "err", err)
 			return true
 		}

@@ -41,6 +41,7 @@ const verifyBlessedTag = "verify-blessed"
 const (
 	verifyChecksImplStepID = "implement"
 	verifyReaskNoteVar     = "verify_reask_note"
+	verifyRetryModelVar    = "verify_retry_model"
 	// verifyChecksAutoFixBackoff is the base re-dispatch delay before the next
 	// auto-fix attempt; autoFixBackoff grows it with the attempt count up to
 	// autoFixBackoffMax.
@@ -851,6 +852,7 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 		maxSameFingerprintRuns: 2,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
+			wfExec.SetVar(verifyRetryModelVar, "expensive")
 		},
 		reason: func(attempt int) string {
 			return fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s", attempt, trimDiffLine(failedCmd))

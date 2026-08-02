@@ -2450,6 +2450,9 @@ func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
 
 	wfID, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
 		map[string]string{"task.status": string(task.StatusTesting)},
@@ -2490,6 +2493,9 @@ func TestE2E_TestingTaskWorkflow_LongPassVerdictSurvivesTruncation(t *testing.T)
 
 	created, err := env.tasks.Create("manual test long pass", "", "headless")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2689,6 +2695,9 @@ func TestE2E_TestingTaskWorkflow_InfraFailureOpensPRAtCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
 		map[string]string{"task.status": string(task.StatusTesting)},
@@ -2884,6 +2893,9 @@ func TestE2E_Codex_TestVerdict_Pass_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
 		map[string]string{"task.status": string(task.StatusTesting)},
@@ -2922,6 +2934,9 @@ func TestE2E_Codex_TestVerdict_Pass_JSON_WithTrailingEmptyItem(t *testing.T) {
 
 	created, err := env.tasks.Create("codex json verdict pass with trailing item", "", "headless")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3019,6 +3034,9 @@ func TestE2E_Codex_TestVerdict_Pass_JSON_WithMandatorySkillReceiptPreamble(t *te
 
 	created, err := env.tasks.Create("codex json verdict pass with skill receipt", "", "headless")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -4915,21 +4933,29 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Wait for AgentRoutes to drain, not just for the rearm to land.
+	// rearm_no_commit_author persists the workflow while the finished agent's
+	// route is still on the record, and clearAgentStep removes it in a second,
+	// separate write. Proceeding between those two writes leaves an engine
+	// writer live for this task while the mutation below runs.
 	waitFor(t, 30*time.Second, "verify_commits parks one no-commit retry", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
 		return gErr == nil && tk.Workflow != nil &&
 			tk.Workflow.WorkflowID == "simple-task-implement" &&
 			tk.Workflow.CurrentStep == "implement" &&
 			tk.Workflow.State == workflow.ExecWaiting &&
+			len(tk.Workflow.AgentRoutes) == 0 &&
 			tk.Workflow.Variables["step.verify_commits.no_commit_retry"] == "1"
 	})
-	tk, err := env.tasks.Get(created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tk.Workflow.SetVar("workflow.retry_after", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
-	wf := tk.Workflow
-	if _, err := env.tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+	// Mutate under the per-task lock. A Get followed by a whole-Execution
+	// Update is a lost update against any concurrent engine writer, and the
+	// field most likely to be clobbered back is AgentRoutes — a route to an
+	// agent that will never complete wedges ResumeStalled permanently.
+	if _, err := env.tasks.UpdateFn(created.ID, func(cur task.Task) (task.Update, error) {
+		wf := cur.Workflow
+		wf.SetVar("workflow.retry_after", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+		return task.Update{Workflow: &wf}, nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	env.engine.ResumeStalled()
@@ -4942,7 +4968,7 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 			tk.Workflow.State == workflow.ExecCompleted
 	})
 
-	tk, _ = env.tasks.Get(created.ID)
+	tk, _ := env.tasks.Get(created.ID)
 	if tk.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", tk.Status)
 	}
@@ -5196,7 +5222,7 @@ steps:
     name: Review Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:
@@ -5252,7 +5278,7 @@ steps:
     name: Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
         - reject
@@ -5833,7 +5859,7 @@ steps:
     name: Loop Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
         - reject
@@ -5848,7 +5874,7 @@ steps:
     name: Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:
@@ -5869,7 +5895,7 @@ steps:
     name: Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:

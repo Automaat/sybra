@@ -61,6 +61,10 @@ func mcpOwnerForAgent(a *Agent) mcpOwner {
 	}
 }
 
+// emptyMCPConfigJSON declares no servers. Paired with --strict-mcp-config it
+// is how a run says "exactly none" rather than "whatever the host has".
+const emptyMCPConfigJSON = `{"mcpServers":{}}`
+
 func wrapMCPConfigWithOwnership(mcpJSON string, owner mcpOwner) (string, error) {
 	if strings.TrimSpace(mcpJSON) == "" {
 		return "", nil

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,6 +221,105 @@ func TestCheckAndApplyBlocksDirtyWorktree(t *testing.T) {
 	}
 	if res.Reason != "worktree is dirty" {
 		t.Fatalf("reason = %q, want dirty worktree", res.Reason)
+	}
+}
+
+func TestCheckAndApplyBlocksUnwritableGitObjectDatabase(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write through permission bits")
+	}
+	_, work := seedRepos(t)
+	objectsRel := gitTestOutput(t, work, "rev-parse", "--git-path", "objects")
+	objectsDir := filepath.Join(work, objectsRel)
+	if err := os.Chmod(objectsDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(objectsDir, 0o755)
+	})
+
+	r := New(Config{Enabled: true, RepoDir: work, Remote: "origin", Branch: "main"}, nil)
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", res.Status)
+	}
+	if !strings.Contains(res.Reason, "git object database is not writable") {
+		t.Fatalf("reason = %q, want object database repair guidance", res.Reason)
+	}
+}
+
+func TestCheckAndApplyBlocksUnwritableGitObjectFanoutDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write through permission bits")
+	}
+	_, work := seedRepos(t)
+	objectsRel := gitTestOutput(t, work, "rev-parse", "--git-path", "objects")
+	objectsDir := filepath.Join(work, objectsRel)
+	var fanoutDir string
+	entries, err := os.ReadDir(objectsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && len(entry.Name()) == 2 {
+			fanoutDir = filepath.Join(objectsDir, entry.Name())
+			break
+		}
+	}
+	if fanoutDir == "" {
+		t.Fatal("seed repo has no loose object fanout directory")
+	}
+	if err := os.Chmod(fanoutDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(fanoutDir, 0o755)
+	})
+
+	r := New(Config{Enabled: true, RepoDir: work, Remote: "origin", Branch: "main"}, nil)
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", res.Status)
+	}
+	if !strings.Contains(res.Reason, "git object fanout directory is not writable") {
+		t.Fatalf("reason = %q, want fanout directory repair guidance", res.Reason)
+	}
+}
+
+func TestCheckAndApplyBlocksUnwritableGitObjectPackDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write through permission bits")
+	}
+	_, work := seedRepos(t)
+	objectsRel := gitTestOutput(t, work, "rev-parse", "--git-path", "objects")
+	packDir := filepath.Join(work, objectsRel, "pack")
+	if err := os.MkdirAll(packDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(packDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(packDir, 0o755)
+	})
+
+	r := New(Config{Enabled: true, RepoDir: work, Remote: "origin", Branch: "main"}, nil)
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", res.Status)
+	}
+	if !strings.Contains(res.Reason, "git object fanout directory is not writable") ||
+		!strings.Contains(res.Reason, string(filepath.Separator)+"pack") {
+		t.Fatalf("reason = %q, want pack directory repair guidance", res.Reason)
 	}
 }
 
@@ -881,7 +981,7 @@ func writeFile(t *testing.T, dir, name, body string) {
 
 func gitTest(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
@@ -893,6 +993,24 @@ func gitTest(t *testing.T, dir string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
+}
+
+func gitTestOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-c", "commit.gpgsign=false"}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_AUTHOR_NAME=Sybra Test",
+		"GIT_AUTHOR_EMAIL=sybra-test@example.invalid",
+		"GIT_COMMITTER_NAME=Sybra Test",
+		"GIT_COMMITTER_EMAIL=sybra-test@example.invalid",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func seedRepos(t *testing.T) (upstream, work string) {

@@ -82,7 +82,7 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		w.logger.Info("watchdog.dwell.escalate",
 			"task_id", t.ID, "status", string(t.Status),
 			"dwell_h", now.Sub(t.UpdatedAt).Hours(), "budget_h", budget.Hours())
-		if err := w.applyStatusEffect(t.ID, "watchdog.dwell", task.StatusHumanRequired, reason); err != nil {
+		if err := w.applyStatusEffect(t.ID, "watchdog.dwell", task.StatusHumanRequired, t.Status, reason); err != nil {
 			w.logger.Error("watchdog.dwell.update", "task_id", t.ID, "err", err)
 		}
 	}

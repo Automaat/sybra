@@ -549,6 +549,19 @@ func (e *Engine) adoptEquivalentRemoteCommit(taskID, wtPath string, t TaskInfo) 
 	}
 
 	if worktreeTree == remoteTree {
+		baseRef := resolveOriginBase(ctx, wtPath)
+		hasWork, err := remoteBranchCarriesWork(ctx, wtPath, baseRef, remoteRef, remoteTree)
+		if err != nil {
+			return "", false, err
+		}
+		if !hasWork {
+			// The remote branch is byte-identical to base with nothing ahead
+			// of it — adopting it would silently mark a no-op as done (an
+			// implementation agent that hands off to a background subagent
+			// and exits can leave a branch pushed but empty). Fall through
+			// to the no-commits handling instead.
+			return "", false, nil
+		}
 		if err := resetHardToRef(ctx, wtPath, remoteRef); err != nil {
 			return "", false, err
 		}
@@ -577,6 +590,24 @@ func (e *Engine) adoptEquivalentRemoteCommit(taskID, wtPath string, t TaskInfo) 
 	}
 	e.logger.Info("workflow.verify-commits.remote-adopted", "task_id", taskID, "branch", branch, "reason", "fast_forward")
 	return finalCommitSourceAgent, true, nil
+}
+
+// remoteBranchCarriesWork reports whether remoteRef represents real work
+// relative to baseRef: either its tree differs from base's, or it has
+// commits base does not (a merge/revert lineage that nets out to base's
+// tree but still carries history). Guards equivalent-tree remote adoption so
+// a branch pushed byte-identical to base with zero commits ahead is never
+// mistaken for completed work.
+func remoteBranchCarriesWork(ctx context.Context, wtPath, baseRef, remoteRef, remoteTree string) (bool, error) {
+	baseTree := revParseTree(ctx, wtPath, baseRef)
+	if baseTree == "" || baseTree != remoteTree {
+		return true, nil
+	}
+	ahead, err := gitCombinedOutput(ctx, wtPath, "log", baseRef+".."+remoteRef, "--oneline")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(ahead)) != "", nil
 }
 
 func (e *Engine) gitLogAheadOfBaseWithRetry(taskID, wtPath string, t TaskInfo) ([]byte, error) {

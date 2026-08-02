@@ -3,6 +3,7 @@ package clusterlead
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -55,6 +56,11 @@ const reconcileFailureEscalateThreshold = 5
 // its own copy — while a genuinely deleted task, which will 404 forever,
 // still gets cleaned up in bounded time instead of staying a ghost.
 const missingConfirmThreshold = 3
+
+// errFollowerUpdateStale stops an apply after its preliminary work when a
+// newer follower update already reached the canonical task before the final
+// lock-protected merge.
+var errFollowerUpdateStale = errors.New("cluster follower update is stale")
 
 // Mirror keeps the leader's canonical store in sync with follower execution
 // state via a reconcile ticker, applying every update through one authority
@@ -299,20 +305,44 @@ func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, 
 	if !ok {
 		return false
 	}
-	merged, ok := Merge(canonical, follower)
+	_, ok = Merge(canonical, follower)
 	if !ok {
 		return false
 	}
-	if err := m.writeSidecars(merged); err != nil {
-		m.logger.Warn("cluster.mirror.sidecar.failed", "node", node, "task", follower.ID, "err", err)
-		return false
-	}
-	if _, _, err := m.tasks.Put(merged); err != nil {
+	saved, _, err := m.tasks.PutFn(follower.ID, func(cur task.Task) (task.Task, error) {
+		latest, err := mergeFollowerForNode(cur, node, follower)
+		if err != nil {
+			return task.Task{}, err
+		}
+		if err := m.writeSidecars(latest); err != nil {
+			return task.Task{}, fmt.Errorf("write follower sidecars: %w", err)
+		}
+		return latest, nil
+	})
+	if err != nil {
+		if errors.Is(err, errFollowerUpdateStale) {
+			return false
+		}
 		m.logger.Warn("cluster.mirror.apply.failed", "node", node, "task", follower.ID, "err", err)
 		return false
 	}
-	m.logger.Debug("cluster.mirror.applied", "node", node, "task", follower.ID, "status", string(merged.Status), "rev", merged.MirrorRev)
+	m.logger.Debug("cluster.mirror.applied", "node", node, "task", follower.ID, "status", string(saved.Status), "rev", saved.MirrorRev)
 	return true
+}
+
+// mergeFollowerForNode makes the final, lock-protected acceptance decision.
+// A reassign can stamp a new owner while the old follower's RPCs are in
+// flight, so the reporting node must still own the freshly-read task here,
+// not only at the beginning of applyFollowerTaskWithContext.
+func mergeFollowerForNode(cur task.Task, node string, follower task.Task) (task.Task, error) {
+	if cur.AssignedNode != node {
+		return task.Task{}, errFollowerUpdateStale
+	}
+	latest, ok := Merge(cur, follower)
+	if !ok {
+		return task.Task{}, errFollowerUpdateStale
+	}
+	return latest, nil
 }
 
 // adoptFollowerTask creates the leader's first canonical record for a task

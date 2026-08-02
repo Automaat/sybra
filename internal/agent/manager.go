@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/toolledger"
 )
 
 type EmitFunc func(event string, data any)
@@ -85,12 +86,15 @@ type Manager struct {
 	roleEffort map[string]string
 
 	defaultSandboxMode string
-	gate               provider.HealthGate
-	limitGate          LimitGate
-	limitPolicy        limits.Policy
-	limitSink          func(limits.Snapshot)
-	evalPassed         abtest.EvalPassed
-	cohortObserved     abtest.CohortObserved
+	// defaultSandboxReadMode is the read-visibility posture layered on top of
+	// defaultSandboxMode; "off" unless an operator opts in (#2781).
+	defaultSandboxReadMode string
+	gate                   provider.HealthGate
+	limitGate              LimitGate
+	limitPolicy            limits.Policy
+	limitSink              func(limits.Snapshot)
+	evalPassed             abtest.EvalPassed
+	cohortObserved         abtest.CohortObserved
 
 	// liveByProvider tracks in-flight agent counts per provider, incremented
 	// and decremented in lockstep with liveCount (registerRunningAgent,
@@ -152,6 +156,9 @@ type Manager struct {
 
 	taskStatus func(taskID string) (string, bool)
 
+	// toolLedger records every tool call every agent makes, whatever the
+	// permission posture. Nil disables recording; Logger.Log tolerates it.
+	toolLedger *toolledger.Logger
 	// sandboxHome resolves the per-task sandbox SYBRA_HOME for a task-scoped
 	// run. Required (non-nil) for any Run/StartAgent call with a non-empty
 	// TaskID — see prepareRunConfig. nil is only valid when every caller is a
@@ -247,6 +254,7 @@ type ManagerRuntimeConfig struct {
 	LimitGate       LimitGate
 	LimitPolicy     limits.Policy
 	SandboxMode     string
+	SandboxReadMode string
 	// MaxInFlightPerProvider caps concurrent in-flight agents per provider.
 	// 0 disables the cap.
 	MaxInFlightPerProvider int
@@ -316,6 +324,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
 		roleEffort:             maps.Clone(cfg.Runtime.RoleEffort),
 		defaultSandboxMode:     cfg.Runtime.SandboxMode,
+		defaultSandboxReadMode: cfg.Runtime.SandboxReadMode,
 		sandboxHome:            cfg.SandboxHome,
 		controlHome:            cfg.ControlHome,
 		deadAgentRetention:     defaultDeadAgentRetention,
@@ -566,6 +575,7 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.headlessSteerable = cfg.HeadlessSteerable
 	m.roleEffort = maps.Clone(cfg.RoleEffort)
 	m.defaultSandboxMode = cfg.SandboxMode
+	m.defaultSandboxReadMode = cfg.SandboxReadMode
 	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
 	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
 	m.classFloors = cloneClassFloors(cfg.ClassReservations)
@@ -1124,4 +1134,29 @@ func (m *Manager) signalQueueNudge() {
 // buffer-1 coalescing contract.
 func (m *Manager) QueueNudge() <-chan struct{} {
 	return m.queueNudge
+}
+
+// SetToolLedger late-binds the tool-call ledger. Separate from construction
+// because the ledger's directory is resolved from config the Manager does not
+// own.
+func (m *Manager) SetToolLedger(l *toolledger.Logger) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.toolLedger = l
+	m.mu.Unlock()
+}
+
+// ToolLedger reports the bound ledger. Exported because a nil ledger is
+// otherwise invisible: Logger.Log guards its own nil receiver, so an unwired
+// manager drops every record without erroring, and only a direct read of the
+// binding can tell a live ledger from a silent one.
+func (m *Manager) ToolLedger() *toolledger.Logger {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.toolLedger
 }

@@ -155,7 +155,7 @@ func (a *App) maintenancePass(ctx context.Context) {
 	if a.taskSvc != nil {
 		a.taskSvc.ReconcilePendingEnrichment()
 	}
-	a.worktrees.CleanupOrphaned(ctx)
+	a.startWorktreeCleanup(ctx)
 	if a.sandboxes != nil && a.tasks != nil {
 		if tasks, err := a.tasks.List(); err == nil {
 			var hasAgent func(string) bool
@@ -171,6 +171,26 @@ func (a *App) maintenancePass(ctx context.Context) {
 			a.sandboxes.CleanupOrphaned(ctx, tasks, hasAgent, hasUnpushedCommits)
 		}
 	}
+}
+
+// startWorktreeCleanup keeps slow bare-repo pruning out of the orchestrator's
+// select loop. A hung remote operation can still delay this best-effort
+// maintenance work, but it can no longer stop dispatch or queue nudges.
+func (a *App) startWorktreeCleanup(ctx context.Context) {
+	if a.worktrees == nil && a.worktreeCleanupFn == nil {
+		return
+	}
+	if !a.maintenanceCleanupRunning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer a.maintenanceCleanupRunning.Store(false)
+		if a.worktreeCleanupFn != nil {
+			a.worktreeCleanupFn(ctx)
+			return
+		}
+		a.worktrees.CleanupOrphaned(ctx)
+	}()
 }
 
 func (a *App) queueDrainPass(ctx context.Context) {
