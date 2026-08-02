@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/roleeffort"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/toolledger"
 )
 
 // NOTE on concurrency: Agent has distinct mutexes.
@@ -281,6 +282,11 @@ type Agent struct {
 	// permissionDenials accumulates auto-mode classifier denial records
 	// observed during the run. Flushed to audit in OnComplete.
 	permissionDenials []PermissionDenial
+	// recordToolCall receives every tool call this agent makes, whatever the
+	// permission posture. Late-bound by the Manager; nil in tests and on
+	// agents constructed without a ledger, which the nil-receiver Log
+	// tolerates.
+	recordToolCall func(toolledger.Record)
 	// toolUsesByID keeps recent tool_use metadata long enough to correlate a
 	// malformed tool_result back to the original tool name + input.
 	toolUsesByID map[string]trackedToolUse
@@ -1635,6 +1641,7 @@ func (a *Agent) applyStreamEventState(ev StreamEvent) {
 	}
 	for i := range ev.toolUses {
 		a.RememberToolUse(ev.toolUses[i].ID, ev.toolUses[i].Name, ev.toolUses[i].Input)
+		a.ledgerToolCall(ev.toolUses[i].ID, ev.toolUses[i].Name, ev.toolUses[i].Input, ev.Timestamp)
 		if ev.toolUses[i].Name != "Bash" {
 			continue
 		}
@@ -1974,4 +1981,48 @@ func (a *Agent) GetError() (kind, msg string) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.ErrorKind, a.ErrorMsg
+}
+
+// SetToolCallRecorder late-binds the ledger sink. Called by the Manager once
+// per agent; a nil sink leaves recording off.
+func (a *Agent) SetToolCallRecorder(fn func(toolledger.Record)) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.recordToolCall = fn
+	a.mu.Unlock()
+}
+
+// ledgerToolCall records one observed tool call. Reads the identity fields
+// under the same lock the rest of the stream path uses, so a concurrent
+// role/provider update cannot tear the record.
+func (a *Agent) ledgerToolCall(toolUseID, name string, input map[string]any, ts time.Time) {
+	if a == nil {
+		return
+	}
+	a.mu.RLock()
+	fn := a.recordToolCall
+	rec := toolledger.Record{
+		Timestamp: ts,
+		AgentID:   a.ID,
+		TaskID:    a.TaskID,
+		Role:      string(a.Role),
+		Provider:  a.Provider,
+		Tool:      name,
+		ToolUseID: toolUseID,
+		Input:     input,
+	}
+	a.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	// Resolve the role only after unlocking: EffectiveRole takes the same
+	// lock, and a legacy agent carries no Role field — it is derived from the
+	// agent name — so reading the field alone silently drops the role from
+	// exactly the records where it is least obvious.
+	if rec.Role == "" {
+		rec.Role = string(a.EffectiveRole())
+	}
+	fn(rec)
 }

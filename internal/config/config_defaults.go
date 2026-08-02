@@ -770,6 +770,14 @@ func defaultSeedConfig() *Config {
 	return cfg
 }
 
+// ToolLedgerDir is where the per-tool-call ledger lives. Separate from the
+// audit dir because the volumes differ by orders of magnitude — mixing tool
+// calls into the audit log would swamp the events operators actually read —
+// and because the two want independent retention.
+func (c *Config) ToolLedgerDir() string {
+	return filepath.Join(c.Logging.Dir, "tool-ledger")
+}
+
 func (c *Config) AuditDir() string {
 	return filepath.Join(c.Logging.Dir, "audit")
 }
