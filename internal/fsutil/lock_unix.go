@@ -36,16 +36,17 @@ var (
 // write) or a concurrent writer can still interleave between another
 // process's read and write.
 func LockFile(path string) (func() error, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), LockAcquireTimeout)
-	unlock, err := LockFileContext(ctx, path)
+	lockPath := path + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		cancel()
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	unlock, err := acquireLockUntil(f, lockPath, time.Now().Add(LockAcquireTimeout), true)
+	if err != nil {
+		_ = f.Close()
 		return nil, err
 	}
-	return func() error {
-		defer cancel()
-		return unlock()
-	}, nil
+	return unlock, nil
 }
 
 // LockFileContext is LockFile with a caller-supplied cancellation/deadline.
@@ -82,14 +83,27 @@ var ErrLocked = errors.New("fsutil: already locked by another process")
 // second launch can name the holder. The returned unlock releases the flock,
 // closes the file descriptor, and must be called exactly once.
 func TryLockPath(path string) (func() error, error) {
+	return TryLockPathContext(context.Background(), path)
+}
+
+// TryLockPathContext is TryLockPath with caller-supplied cancellation/deadline
+// support while waiting for parent-dir creation or file open. Lock acquisition
+// itself stays non-blocking: a held lock still returns ErrLocked immediately.
+func TryLockPathContext(ctx context.Context, path string) (func() error, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("lock %s: %w", path, err)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create lock dir: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
-	unlock, err := acquireLock(context.Background(), f, path, false)
+	unlock, err := acquireLock(ctx, f, path, false)
 	if err != nil {
 		_ = f.Close()
 		return nil, err
@@ -134,6 +148,35 @@ func acquireLock(ctx context.Context, f *os.File, path string, retry bool) (func
 	}
 }
 
+func acquireLockUntil(f *os.File, path string, deadline time.Time, retry bool) (func() error, error) {
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			if err := writeLockHolderPID(f); err != nil {
+				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				return nil, err
+			}
+			return func() error {
+				unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				if closeErr := f.Close(); unlockErr == nil {
+					unlockErr = closeErr
+				}
+				return unlockErr
+			}, nil
+		}
+		holder := readLockHolderPID(f)
+		if !wouldBlock(err) {
+			return nil, fmt.Errorf("flock: %w", err)
+		}
+		if !retry {
+			return nil, lockedError(holder)
+		}
+		if waitErr := waitForLockRetryUntil(path, holder, deadline); waitErr != nil {
+			return nil, waitErr
+		}
+	}
+}
+
 func waitForLockRetry(ctx context.Context, path string, holderPID int) error {
 	wait := LockAcquireRetryBackoff
 	if deadline, ok := ctx.Deadline(); ok {
@@ -156,6 +199,22 @@ func waitForLockRetry(ctx context.Context, path string, holderPID int) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func waitForLockRetryUntil(path string, holderPID int, deadline time.Time) error {
+	wait := LockAcquireRetryBackoff
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return &LockTimeoutError{Path: path, HolderPID: holderPID, Cause: context.DeadlineExceeded}
+	}
+	if remaining < wait {
+		wait = remaining
+	}
+	time.Sleep(wait)
+	if time.Now().After(deadline) {
+		return &LockTimeoutError{Path: path, HolderPID: holderPID, Cause: context.DeadlineExceeded}
+	}
+	return nil
 }
 
 func writeLockHolderPID(f *os.File) error {

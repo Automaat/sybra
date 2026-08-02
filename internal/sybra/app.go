@@ -292,8 +292,8 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 // bookkeeping. The unlock is released in Shutdown; if Shutdown is never
 // called (process killed, os.Exit on a Startup error), the OS releases the
 // flock when the process's file descriptors close.
-func (a *App) acquireHomeLock() error {
-	unlock, err := fsutil.TryLockPath(filepath.Join(config.HomeDir(), "sybra.lock"))
+func (a *App) acquireHomeLock(ctx context.Context) error {
+	unlock, err := fsutil.TryLockPathContext(ctx, filepath.Join(config.HomeDir(), "sybra.lock"))
 	if err != nil {
 		if errors.Is(err, fsutil.ErrLocked) {
 			return fmt.Errorf("another Sybra instance is already running against %s (%w) — stop it first, or point this run at a different SYBRA_HOME", config.HomeDir(), err)
@@ -386,7 +386,7 @@ func (a *App) cleanupFailedStartup() {
 // pass through is out of scope for this pass — nolint annotations below
 // point back to this comment.
 func (a *App) Startup(ctx context.Context) error {
-	if err := a.acquireHomeLock(); err != nil {
+	if err := a.acquireHomeLock(ctx); err != nil {
 		return err
 	}
 	started := false

@@ -554,22 +554,25 @@ func setTaskLockTimingForTest(timeout, backoff time.Duration) func() {
 	}
 }
 
-func startTaskLockHolder(t *testing.T, path string) (*exec.Cmd, func()) {
+func startTaskLockHolder(t *testing.T, path string) (cmd *exec.Cmd, release func()) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestTaskLockHelperProcess$")
+	var err error
+	var stdout, stderr io.ReadCloser
+	var stdin io.WriteCloser
+	cmd = exec.Command(os.Args[0], "-test.run=^TestTaskLockHelperProcess$")
 	cmd.Env = append(os.Environ(),
 		taskLockHelperEnv+"=1",
 		taskLockHelperPathEnv+"="+path,
 	)
-	stdout, err := cmd.StdoutPipe()
+	stdout, err = cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("StdoutPipe: %v", err)
 	}
-	stderr, err := cmd.StderrPipe()
+	stderr, err = cmd.StderrPipe()
 	if err != nil {
 		t.Fatalf("StderrPipe: %v", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err = cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("StdinPipe: %v", err)
 	}

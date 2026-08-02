@@ -31,3 +31,8 @@ var ErrLocked = errors.New("fsutil: already locked by another process")
 func TryLockPath(_ string) (func() error, error) {
 	return nil, fmt.Errorf("%w", ErrLockUnsupported)
 }
+
+// TryLockPathContext is unimplemented on non-unix platforms; see TryLockPath.
+func TryLockPathContext(_ context.Context, _ string) (func() error, error) {
+	return nil, fmt.Errorf("%w", ErrLockUnsupported)
+}
