@@ -2,6 +2,7 @@ package watchdog
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -250,6 +251,9 @@ type Watchdog struct {
 // which already list-scanned and filtered the task, pass the status they
 // observed there.
 func (w *Watchdog) applyStatusEffect(taskID, source string, status, expectedStatus task.Status, reason string) error {
+	if expectedStatus == "" {
+		return fmt.Errorf("watchdog apply status effect: expected status is required")
+	}
 	_, err := w.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
 		Source:         source,
 		ToStatus:       status,

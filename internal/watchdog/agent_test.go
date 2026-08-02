@@ -1846,6 +1846,50 @@ func TestHardStop_NoTaskStillFreesSlot(t *testing.T) {
 	}
 }
 
+func TestApplyStatusEffectRequiresExpectedStatus(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	w := &Watchdog{tasks: tasks, logger: slog.New(slog.DiscardHandler)}
+
+	err := w.applyStatusEffect(tk.ID, "watchdog.test", task.StatusInProgress, "", "missing precondition")
+	if err == nil {
+		t.Fatal("applyStatusEffect succeeded without expected status")
+	}
+	if !strings.Contains(err.Error(), "expected status is required") {
+		t.Fatalf("error = %v, want expected-status validation", err)
+	}
+
+	current, getErr := tasks.Get(tk.ID)
+	if getErr != nil {
+		t.Fatalf("Get: %v", getErr)
+	}
+	if current.Status != tk.Status {
+		t.Fatalf("Status = %q after rejected update, want %q", current.Status, tk.Status)
+	}
+}
+
+func TestApplyStatusEffectAppliesWithExpectedStatus(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	w := &Watchdog{tasks: tasks, logger: slog.New(slog.DiscardHandler)}
+
+	err := w.applyStatusEffect(tk.ID, "watchdog.test", task.StatusInProgress, tk.Status, "retry")
+	if err != nil {
+		t.Fatalf("applyStatusEffect: %v", err)
+	}
+
+	current, getErr := tasks.Get(tk.ID)
+	if getErr != nil {
+		t.Fatalf("Get: %v", getErr)
+	}
+	if current.Status != task.StatusInProgress {
+		t.Fatalf("Status = %q, want %q", current.Status, task.StatusInProgress)
+	}
+	if current.StatusReason != "retry" {
+		t.Fatalf("StatusReason = %q, want %q", current.StatusReason, "retry")
+	}
+}
+
 func newTestTasks(t *testing.T) (*task.Manager, task.Task) {
 	t.Helper()
 
