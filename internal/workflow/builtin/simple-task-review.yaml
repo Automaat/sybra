@@ -89,7 +89,7 @@ steps:
     name: Clear Stale Review Sidecar
     type: shell
     config:
-      command: rm -f .sybra-review-{{.Task.ID}}.md
+      command: rm -f {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md
       dir: '{{getvar .Vars "_dir"}}'
     next:
       - goto: pick_review_method
@@ -140,11 +140,11 @@ steps:
         The PR has not been created yet — review the local diff.
 
         Steps:
-          1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
+          1. git diff origin/main..HEAD > {{sidecardir .Vars}}/.sybra-diff-{{.Task.ID}}.patch
           2. Run /adversarial-review against that patch and the worktree source
-          3. Save the full review to .sybra-review-{{.Task.ID}}.md
+          3. Save the full review to {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md
 
-        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly the
+        The FIRST line of {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md MUST be exactly the
         verdict line /adversarial-review emits, copied verbatim:
           - `Review Verdict: CLEAN` when no surviving finding requires a code
             change before PR creation. Style-only comments, simplification
@@ -155,13 +155,13 @@ steps:
         This line gates whether a fix-review agent runs next — get it right.
 
         Do NOT submit anything to GitHub. Sybra will ingest
-        .sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md as the code_review sidecar
         after you exit — you do not need to call sybra-cli yourself.
         The review file is git-excluded and remains for the next step (fix_review) to
         read directly.
       import_sidecar:
         kind: code_review
-        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        from: '{{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md'
     next:
       - goto: require_code_review
 
@@ -192,11 +192,11 @@ steps:
         The PR has not been created yet — review the local diff.
 
         Steps:
-          1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
+          1. git diff origin/main..HEAD > {{sidecardir .Vars}}/.sybra-diff-{{.Task.ID}}.patch
           2. Run /staff-code-review against that patch and the worktree source
-          3. Save the full review to .sybra-review-{{.Task.ID}}.md
+          3. Save the full review to {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md
 
-        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly one
+        The FIRST line of {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md MUST be exactly one
         verdict marker, mapped from /staff-code-review's native verdict:
           - `Review Verdict: CLEAN` for APPROVE, and for
             APPROVE_WITH_COMMENTS only when every comment is low-severity,
@@ -207,19 +207,19 @@ steps:
         This line gates whether a fix-review agent runs next — get it right.
 
         Do NOT submit anything to GitHub. Sybra will ingest
-        .sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md as the code_review sidecar
         after you exit — you do not need to call sybra-cli yourself.
         The review file is git-excluded and remains for the next step (fix_review) to
         read directly.
       import_sidecar:
         kind: code_review
-        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        from: '{{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md'
     next:
       - goto: require_code_review
 
   # Guard: mirrors require_plan_critique in simple-task-plan. Flips task
   # to human-required when the review sidecar is empty (e.g. agent never
-  # wrote .sybra-review-…md, or its sandbox blocked the path).
+  # wrote {{sidecardir .Vars}}/.sybra-review-…md, or its sandbox blocked the path).
   # Without this, fix_review reads the sidecar file and the GUI never sees what
   # the reviewer wrote.
   - id: require_code_review
@@ -269,7 +269,7 @@ steps:
       needs_worktree: true
       max_retries: 2
       prompt: >-
-        Read the code review at .sybra-review-{{.Task.ID}}.md
+        Read the code review at {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md
 
         For each actionable finding (critical/high/medium severity), fix the code.
         Skip low-severity nitpicks and style-only comments.

@@ -1219,7 +1219,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
 	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
-	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
+	a.wireWorktreeAccess()
 	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetCheckConfigGetter(&checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
@@ -1588,4 +1588,26 @@ func (a *App) syncSkillsBundle() {
 		UserHomeDir:          userHome,
 		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
 	})
+}
+
+// wireWorktreeAccess gives the engine both halves of a task's filesystem: the
+// worktree it operates in, and the writable scratch dir used when that
+// worktree is read-only.
+func (a *App) wireWorktreeAccess() {
+	if a == nil || a.workflowEngine == nil {
+		return
+	}
+	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
+	a.wireSidecarDir()
+}
+
+// wireSidecarDir points workflow scratch output at the per-task sandbox home.
+// Verifier roles run against a read-only worktree, so their own output has to
+// land somewhere still writable; that home is already an allowed write root
+// under the OS sandbox, so this needs no new hole.
+func (a *App) wireSidecarDir() {
+	if a == nil || a.workflowEngine == nil || a.sandboxes == nil {
+		return
+	}
+	a.workflowEngine.SetSidecarDirResolver(a.sandboxes.SybraHomeDir)
 }
