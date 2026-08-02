@@ -499,7 +499,7 @@ func fromRecord(r Record) *Agent {
 	if requestedModel == "" {
 		requestedModel = r.Model
 	}
-	return &Agent{
+	a := &Agent{
 		ID:                      r.ID,
 		TaskID:                  r.TaskID,
 		Name:                    r.Name,
@@ -544,6 +544,10 @@ func fromRecord(r Record) *Agent {
 		unrenderedSkills:        slices.Clone(r.UnrenderedSkills),
 		detached:                true,
 	}
+	if r.Mode == "headless" {
+		a.escalationCh = make(chan bool, 1)
+	}
+	return a
 }
 
 // SetState atomically updates the agent state.
