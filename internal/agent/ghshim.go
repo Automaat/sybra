@@ -115,17 +115,21 @@ if [ "$1" = "api" ]; then
 	# Refuse a review payload we cannot inspect rather than assume it is benign.
 	[ "$sawhidden$sawreviews" = "11" ] && printf '%%s\n' '%[1]s' >&2 && exit 1
 fi
-if command -v sybra-cli >/dev/null 2>&1; then
+if [ -n '%[3]s' ] && [ -x '%[3]s' ]; then
+	token="$('%[3]s' github-app-token 2>/dev/null || true)"
+elif command -v sybra-cli >/dev/null 2>&1; then
 	token="$(sybra-cli github-app-token 2>/dev/null || true)"
-	[ -z "$token" ] || {
-		export GH_TOKEN="$token"
-		export GITHUB_TOKEN="$token"
-	}
+else
+	token=
 fi
+[ -z "$token" ] || {
+	export GH_TOKEN="$token"
+	export GITHUB_TOKEN="$token"
+}
 exec '%[2]s' "$@"
 `
 
-const gitCredentialShimScript = `#!/bin/sh
+const gitCredentialShimTemplate = `#!/bin/sh
 case "$1" in
 get)
 	protocol=
@@ -139,13 +143,17 @@ get)
 	done
 	case "$protocol:$host" in
 	https:github.com)
-		if command -v sybra-cli >/dev/null 2>&1; then
+		if [ -n '%[1]s' ] && [ -x '%[1]s' ]; then
+			token="$('%[1]s' github-app-token 2>/dev/null || true)"
+		elif command -v sybra-cli >/dev/null 2>&1; then
 			token="$(sybra-cli github-app-token 2>/dev/null || true)"
-			[ -z "$token" ] || {
-				printf 'username=x-access-token\n'
-				printf '` + "pass" + `word=%s\n' "$token"
-			}
+		else
+			token=
 		fi
+	[ -z "$token" ] || {
+			printf 'username=x-access-token\n'
+			printf '` + "pass" + `word=%%s\n' "$token"
+		}
 		;;
 	esac
 	;;
@@ -185,6 +193,25 @@ func lookRealGh() string {
 	return path
 }
 
+func lookRealSybraCLI() string {
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, "sybra-cli")
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			continue
+		}
+		abs, err := filepath.Abs(candidate)
+		if err != nil {
+			return ""
+		}
+		return abs
+	}
+	return ""
+}
+
 func writeGhShim(dir string) (string, error) {
 	found := lookRealGh()
 	if !shellSingleQuoteSafe(GhShimReason) {
@@ -194,7 +221,13 @@ func writeGhShim(dir string) (string, error) {
 		return "", fmt.Errorf("create gh shim dir: %w", err)
 	}
 
-	if err := writeExecutableAtomic(filepath.Join(dir, "git-credential-sybra"), gitCredentialShimScript); err != nil {
+	sybraCLI := lookRealSybraCLI()
+	if strings.ContainsAny(sybraCLI, "'\n") {
+		return "", fmt.Errorf("sybra-cli path %q is not shell-safe", sybraCLI)
+	}
+
+	credentialScript := fmt.Sprintf(gitCredentialShimTemplate, sybraCLI)
+	if err := writeExecutableAtomic(filepath.Join(dir, "git-credential-sybra"), credentialScript); err != nil {
 		return "", err
 	}
 	if found != "" {
@@ -205,7 +238,7 @@ func writeGhShim(dir string) (string, error) {
 		if strings.ContainsAny(realGh, "'\n") {
 			return "", fmt.Errorf("gh path %q is not shell-safe", realGh)
 		}
-		script := fmt.Sprintf(ghShimScript, GhShimReason, realGh)
+		script := fmt.Sprintf(ghShimScript, GhShimReason, realGh, sybraCLI)
 		if err := writeExecutableAtomic(filepath.Join(dir, "gh"), script); err != nil {
 			return "", err
 		}

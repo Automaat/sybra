@@ -130,6 +130,77 @@ func TestGhShim_MintsFreshAppTokenPerGhInvocation(t *testing.T) {
 	}
 }
 
+func TestGhShim_UsesResolvedSybraCLIWhenInvocationPathOmitsIt(t *testing.T) {
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	ghScript := "#!/bin/sh\nprintf 'REAL-GH GH_TOKEN=%s GITHUB_TOKEN=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"
+	if err := os.WriteFile(realGh, []byte(ghScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(realGh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cliDir := t.TempDir()
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nprintf 'resolved-token\\n'\n"
+	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatalf("writeGhShim: %v", err)
+	}
+
+	t.Setenv("PATH", ghDir)
+	stdout, stderr, code := runShim(t, shimDir, "api", "rate_limit")
+	if code != 0 {
+		t.Fatalf("shim call failed without sybra-cli on PATH: exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "GH_TOKEN=resolved-token GITHUB_TOKEN=resolved-token") {
+		t.Fatalf("shim did not use resolved sybra-cli path: %q", stdout)
+	}
+}
+
+func TestLookRealSybraCLI_ReturnsAbsolutePath(t *testing.T) {
+	fakeGhOnPath(t)
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeCLI := filepath.Join(binDir, "sybra-cli")
+	if err := os.WriteFile(fakeCLI, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	t.Setenv("PATH", "bin")
+
+	got := lookRealSybraCLI()
+	if !filepath.IsAbs(got) {
+		t.Fatalf("lookRealSybraCLI() = %q, want absolute path", got)
+	}
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat resolved path %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(fakeCLI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("lookRealSybraCLI() = %q, not same file as %q", got, fakeCLI)
+	}
+}
+
 func TestGitCredentialShim_MintsFreshAppTokenPerLookup(t *testing.T) {
 	fakeGhOnPath(t)
 	cliDir := t.TempDir()
