@@ -221,50 +221,8 @@ const (
 	stepReducerCondition
 )
 
-type stepAsyncHandler uint8
-
-const (
-	stepAsyncNone stepAsyncHandler = iota
-	stepAsyncRunAgent
-	stepAsyncParallel
-	stepAsyncBestOfN
-	stepAsyncWaitHuman
-)
-
-type stepSyncHandler uint8
-
-const (
-	stepSyncNone stepSyncHandler = iota
-	stepSyncSetStatus
-	stepSyncCondition
-	stepSyncShell
-	stepSyncEnsurePRClosesIssue
-	stepSyncStampPRAttribution
-	stepSyncRerequestReview
-	stepSyncVerifyCommits
-	stepSyncLinkPRAndReview
-	stepSyncEvaluate
-	stepSyncRequireSidecar
-	stepSyncClearPlanArtifacts
-	stepSyncValidatePlan
-	stepSyncValidatePlanContract
-	stepSyncTriageReview
-	stepSyncFlagPlanCritique
-	stepSyncDetectTampering
-	stepSyncVerifyChecks
-	stepSyncFocusedChecks
-	stepSyncRoutePRFixResult
-	stepSyncRouteTestResult
-	stepSyncSyncBranch
-	stepSyncCodegenGate
-	stepSyncResumeWorkflow
-	stepSyncPromoteBestOfN
-	stepSyncPushBranch
-	stepSyncCreatePR
-	stepSyncClassifyTask
-	stepSyncAdmissionPreflight
-	stepSyncRequireEvidence
-)
+type stepAsyncHandler func(*Engine, string, *Definition, *Step, *Execution, TemplateContext, EffectID) (bool, *CompletionInfo, error)
+type stepSyncHandler func(*Engine, string, *Step, *Execution, TemplateContext, TaskInfo) (StepOutput, error)
 
 type stepBoundaryKind uint8
 
@@ -282,40 +240,80 @@ type stepSpec struct {
 	resumable bool
 }
 
-var stepRegistry = map[StepType]stepSpec{
-	StepRunAgent:             {async: stepAsyncRunAgent, reducer: stepReducerDispatch, resumable: true},
-	StepWaitHuman:            {async: stepAsyncWaitHuman, reducer: stepReducerWaitHuman},
-	StepSetStatus:            {sync: stepSyncSetStatus, reducer: stepReducerSetStatus},
-	StepCondition:            {sync: stepSyncCondition, reducer: stepReducerCondition},
-	StepShell:                {sync: stepSyncShell, reducer: stepReducerDispatch},
-	StepEnsurePRClosesIssue:  {sync: stepSyncEnsurePRClosesIssue, reducer: stepReducerDispatch},
-	StepStampPRAttribution:   {sync: stepSyncStampPRAttribution, reducer: stepReducerDispatch},
-	StepRerequestReview:      {sync: stepSyncRerequestReview, reducer: stepReducerDispatch},
-	StepVerifyCommits:        {sync: stepSyncVerifyCommits, reducer: stepReducerDispatch},
-	StepLinkPRAndReview:      {sync: stepSyncLinkPRAndReview, reducer: stepReducerDispatch},
-	StepEvaluate:             {sync: stepSyncEvaluate, reducer: stepReducerDispatch},
-	StepRequireSidecar:       {sync: stepSyncRequireSidecar, reducer: stepReducerDispatch},
-	StepClearPlanArtifacts:   {sync: stepSyncClearPlanArtifacts, reducer: stepReducerDispatch},
-	StepValidatePlan:         {sync: stepSyncValidatePlan, reducer: stepReducerDispatch},
-	StepValidatePlanContract: {sync: stepSyncValidatePlanContract, reducer: stepReducerDispatch},
-	StepTriageReview:         {sync: stepSyncTriageReview, reducer: stepReducerDispatch},
-	StepFlagPlanCritique:     {sync: stepSyncFlagPlanCritique, reducer: stepReducerDispatch},
-	StepDetectTampering:      {sync: stepSyncDetectTampering, reducer: stepReducerDispatch},
-	StepVerifyChecks:         {sync: stepSyncVerifyChecks, reducer: stepReducerDispatch, resumable: true},
-	StepFocusedChecks:        {sync: stepSyncFocusedChecks, reducer: stepReducerDispatch},
-	StepRoutePRFixResult:     {sync: stepSyncRoutePRFixResult, reducer: stepReducerDispatch},
-	StepRouteTestResult:      {sync: stepSyncRouteTestResult, reducer: stepReducerDispatch},
-	StepParallel:             {async: stepAsyncParallel, reducer: stepReducerDispatch, boundary: stepBoundaryParallel, resumable: true},
-	StepSyncBranch:           {sync: stepSyncSyncBranch, reducer: stepReducerDispatch},
-	StepCodegenGate:          {sync: stepSyncCodegenGate, reducer: stepReducerDispatch},
-	StepResumeWorkflow:       {sync: stepSyncResumeWorkflow, reducer: stepReducerDispatch},
-	StepBestOfN:              {async: stepAsyncBestOfN, reducer: stepReducerDispatch, boundary: stepBoundaryBestOfN, resumable: true},
-	StepPromoteBestOfN:       {sync: stepSyncPromoteBestOfN, reducer: stepReducerDispatch, resumable: true},
-	StepPushBranch:           {sync: stepSyncPushBranch, reducer: stepReducerDispatch, resumable: true},
-	StepCreatePR:             {sync: stepSyncCreatePR, reducer: stepReducerDispatch, resumable: true},
-	StepClassifyTask:         {sync: stepSyncClassifyTask, reducer: stepReducerDispatch, resumable: true},
-	StepAdmissionPreflight:   {sync: stepSyncAdmissionPreflight, reducer: stepReducerDispatch, resumable: true},
-	StepRequireEvidence:      {sync: stepSyncRequireEvidence, reducer: stepReducerDispatch},
+var stepRegistry map[StepType]stepSpec
+
+func init() {
+	stepRegistry = map[StepType]stepSpec{
+		StepRunAgent:             {async: execAsyncRunAgentStep, reducer: stepReducerDispatch, resumable: true},
+		StepWaitHuman:            {async: execAsyncWaitHumanStep, reducer: stepReducerWaitHuman},
+		StepSetStatus:            {sync: bindSyncTaskStep((*Engine).execSetStatus), reducer: stepReducerSetStatus},
+		StepCondition:            {sync: bindSyncExecTaskStep((*Engine).execCondition), reducer: stepReducerCondition},
+		StepShell:                {sync: bindSyncTemplateStep((*Engine).execShell), reducer: stepReducerDispatch},
+		StepEnsurePRClosesIssue:  {sync: bindSyncTaskInfoStep((*Engine).execEnsurePRClosesIssue), reducer: stepReducerDispatch},
+		StepStampPRAttribution:   {sync: bindSyncTaskInfoStep((*Engine).execStampPRAttribution), reducer: stepReducerDispatch},
+		StepRerequestReview:      {sync: bindSyncTaskInfoStep((*Engine).execRerequestReview), reducer: stepReducerDispatch},
+		StepVerifyCommits:        {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyCommits), reducer: stepReducerDispatch},
+		StepLinkPRAndReview:      {sync: bindSyncExecTaskInfoStep((*Engine).execLinkPRAndReview), reducer: stepReducerDispatch},
+		StepEvaluate:             {sync: bindSyncExecTaskInfoStep((*Engine).execEvaluate), reducer: stepReducerDispatch},
+		StepRequireSidecar:       {sync: bindSyncTaskInfoStep((*Engine).execRequireSidecar), reducer: stepReducerDispatch},
+		StepClearPlanArtifacts:   {sync: bindSyncTaskInfoStep((*Engine).execClearPlanArtifacts), reducer: stepReducerDispatch},
+		StepValidatePlan:         {sync: bindSyncTaskInfoStep((*Engine).execValidatePlan), reducer: stepReducerDispatch},
+		StepValidatePlanContract: {sync: bindSyncTaskInfoStep((*Engine).execValidatePlanContract), reducer: stepReducerDispatch},
+		StepTriageReview:         {sync: bindSyncTaskInfoStep((*Engine).execTriageReview), reducer: stepReducerDispatch},
+		StepFlagPlanCritique:     {sync: bindSyncTaskInfoStep((*Engine).execFlagPlanCritique), reducer: stepReducerDispatch},
+		StepDetectTampering:      {sync: bindSyncTaskInfoStep((*Engine).execDetectTampering), reducer: stepReducerDispatch},
+		StepVerifyChecks:         {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyChecks), reducer: stepReducerDispatch, resumable: true},
+		StepFocusedChecks:        {sync: bindSyncExecTaskInfoStep((*Engine).execFocusedChecks), reducer: stepReducerDispatch},
+		StepRoutePRFixResult:     {sync: bindSyncExecTaskInfoStep((*Engine).execRoutePRFixResult), reducer: stepReducerDispatch},
+		StepRouteTestResult:      {sync: bindSyncExecTaskInfoStep((*Engine).execRouteTestResult), reducer: stepReducerDispatch},
+		StepParallel:             {async: execAsyncParallelStep, reducer: stepReducerDispatch, boundary: stepBoundaryParallel, resumable: true},
+		StepSyncBranch:           {sync: bindSyncTaskStep((*Engine).execSyncBranch), reducer: stepReducerDispatch},
+		StepCodegenGate:          {sync: bindSyncTaskStep((*Engine).execCodegenGate), reducer: stepReducerDispatch},
+		StepResumeWorkflow:       {sync: bindSyncExecStep((*Engine).execResumeWorkflow), reducer: stepReducerDispatch},
+		StepBestOfN:              {async: execAsyncBestOfNStep, reducer: stepReducerDispatch, boundary: stepBoundaryBestOfN, resumable: true},
+		StepPromoteBestOfN:       {sync: bindSyncTaskStep((*Engine).execPromoteBestOfN), reducer: stepReducerDispatch, resumable: true},
+		StepPushBranch:           {sync: bindSyncExecTaskInfoStep((*Engine).execPushBranch), reducer: stepReducerDispatch, resumable: true},
+		StepCreatePR:             {sync: bindSyncExecTaskInfoStep((*Engine).execCreatePR), reducer: stepReducerDispatch, resumable: true},
+		StepClassifyTask:         {sync: bindSyncExecStep((*Engine).execClassifyTask), reducer: stepReducerDispatch, resumable: true},
+		StepAdmissionPreflight:   {sync: bindSyncExecTaskInfoStep((*Engine).execAdmissionPreflight), reducer: stepReducerDispatch, resumable: true},
+		StepRequireEvidence:      {sync: bindSyncTaskInfoStep((*Engine).execRequireEvidence), reducer: stepReducerDispatch},
+	}
+}
+
+func bindSyncTaskStep(fn func(*Engine, string, *Step) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, _ *Execution, _ TemplateContext, _ TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step)
+	}
+}
+
+func bindSyncTaskInfoStep(fn func(*Engine, string, *Step, TaskInfo) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, _ *Execution, _ TemplateContext, t TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step, t)
+	}
+}
+
+func bindSyncTemplateStep(fn func(*Engine, *Step, TemplateContext) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, _ string, step *Step, _ *Execution, ctx TemplateContext, _ TaskInfo) (StepOutput, error) {
+		return fn(e, step, ctx)
+	}
+}
+
+func bindSyncExecStep(fn func(*Engine, string, *Step, *Execution) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, wfExec *Execution, _ TemplateContext, _ TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step, wfExec)
+	}
+}
+
+func bindSyncExecTaskStep(fn func(*Engine, *Step, *Execution, TaskInfo) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, _ string, step *Step, wfExec *Execution, _ TemplateContext, t TaskInfo) (StepOutput, error) {
+		return fn(e, step, wfExec, t)
+	}
+}
+
+func bindSyncExecTaskInfoStep(fn func(*Engine, string, *Step, *Execution, TaskInfo) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, wfExec *Execution, _ TemplateContext, t TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step, wfExec, t)
+	}
 }
 
 func lookupStepSpec(stepType StepType) (stepSpec, bool) {
@@ -333,7 +331,7 @@ func requireStepSpec(stepType StepType) (stepSpec, error) {
 
 func stepIsAsync(stepType StepType) bool {
 	spec, ok := lookupStepSpec(stepType)
-	return ok && spec.async != stepAsyncNone
+	return ok && spec.async != nil
 }
 
 func stepIsResumable(stepType StepType) bool {
