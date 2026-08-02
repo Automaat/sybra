@@ -109,6 +109,17 @@ func sandboxRootOr(root, fallback string) string {
 // its subpath can never shadow a legitimate write.
 const unusedReadOnlyDirSentinel = "/private/var/empty/sybra-sandbox-readonly-unused"
 
+// stateDenyAt returns the i-th durable-config path, or "" past the end. SBPL
+// takes fixed parameters and cannot iterate, so the slots are filled
+// positionally and unused ones fall back to the sentinel — a path nothing
+// writes, so an unused slot denies nothing.
+func stateDenyAt(paths []string, i int) string {
+	if i < len(paths) {
+		return paths[i]
+	}
+	return ""
+}
+
 func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName string, wrappedArgs []string) {
 	if cfg == nil || cfg.sandbox.mode != "enforce" {
 		return name, args
@@ -127,6 +138,9 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		"-D", "OPENCODE_STATE="+sandboxRootOr(cfg.sandbox.opencodeState, home),
 		"-D", "TOOL_CACHE="+sandboxRootOr(cfg.sandbox.toolCache, home),
 		"-D", "READONLY_DIR="+sandboxRootOr(cfg.sandbox.readOnlyDir, unusedReadOnlyDirSentinel),
+		"-D", "STATE_DENY_1="+sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 0), unusedReadOnlyDirSentinel),
+		"-D", "STATE_DENY_2="+sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 1), unusedReadOnlyDirSentinel),
+		"-D", "STATE_DENY_3="+sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 2), unusedReadOnlyDirSentinel),
 		name,
 	)
 	wrapped = append(wrapped, args...)
