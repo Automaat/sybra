@@ -69,12 +69,33 @@ var ErrDivergedNeedsResolve = errors.New("branch diverged from remote; needs age
 // auth isn't configured, matching the prior ambient-only behavior exactly.
 var fetchEnv = github.GHEnv
 
+// networkGitTimeout bounds a remote Git operation while it holds a repository
+// lock. A black-holed connection must eventually release that lock; otherwise
+// every worktree operation for the project remains blocked indefinitely.
+const defaultNetworkGitTimeout = 10 * time.Minute
+
+var networkGitTimeout = defaultNetworkGitTimeout
+
 // runBare is used by both local-only bare-repo ops (git config, branch -f,
 // ...) and the network-touching fetches in this file (FetchOrigin,
 // FetchRemoteBranch, FetchPRHead). Injecting fetchEnv() unconditionally is
 // harmless for the local ops — it only ever appends GH_TOKEN/GITHUB_TOKEN.
 func runBare(ctx context.Context, barePath string, args ...string) error {
 	return executil.RunEnv(ctx, barePath, fetchEnv(), "git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
+}
+
+func networkGitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, networkGitTimeout)
+}
+
+func runNetworkGit(ctx context.Context, dir string, env []string, args ...string) error {
+	networkCtx, cancel := networkGitContext(ctx)
+	defer cancel()
+	return executil.RunEnv(networkCtx, dir, env, "git", args...)
+}
+
+func runBareFetch(ctx context.Context, barePath string, args ...string) error {
+	return runNetworkGit(ctx, barePath, fetchEnv(), append([]string{"-c", "safe.bareRepository=all"}, args...)...)
 }
 
 func outputBare(ctx context.Context, barePath string, args ...string) (string, error) {
@@ -326,7 +347,7 @@ func splitOwnerRepo(path string) (owner, repo string, err error) {
 // `git fetch origin` calls actually update refs/remotes/origin/* (a bare
 // clone otherwise leaves it empty).
 func CloneBare(ctx context.Context, repoURL, destPath string) error {
-	if err := executil.RunEnv(ctx, "", fetchEnv(), "git", "clone", "--bare", repoURL, destPath); err != nil {
+	if err := runNetworkGit(ctx, "", fetchEnv(), "clone", "--bare", repoURL, destPath); err != nil {
 		return err
 	}
 	if err := InstallSignoffHook(ctx, destPath); err != nil {
@@ -439,12 +460,12 @@ func FetchOrigin(ctx context.Context, barePath string) error {
 			// Explicit refspec heals bare repos cloned before remote.origin.fetch
 			// was configured, where `git fetch origin` silently skipped updating
 			// refs/remotes/origin/*.
-			return runBare(ctx, barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+			return runBareFetch(ctx, barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 		})
 		if err != nil && IsBadRefError(err) {
 			if _, repairErr := repairBareCloneLocked(ctx, barePath, ""); repairErr == nil {
 				retryErr := withLockRetry(func() error {
-					return runBare(ctx, barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+					return runBareFetch(ctx, barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 				})
 				if retryErr == nil {
 					markFetched(barePath)
@@ -471,7 +492,7 @@ func FetchRemoteBranch(ctx context.Context, barePath, remote, branch string) err
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
 	return withBareRepoLock(barePath, func() error {
 		return withLockRetry(func() error {
-			return runBare(ctx, barePath, "fetch", remote, refspec)
+			return runBareFetch(ctx, barePath, "fetch", remote, refspec)
 		})
 	})
 }
@@ -489,7 +510,7 @@ func FetchPRHead(ctx context.Context, barePath string, prNumber int) (string, er
 	refspec := fmt.Sprintf("+refs/pull/%d/head:%s", prNumber, localRef)
 	err := withBareRepoLock(barePath, func() error {
 		return withLockRetry(func() error {
-			return runBare(ctx, barePath, "fetch", "origin", refspec)
+			return runBareFetch(ctx, barePath, "fetch", "origin", refspec)
 		})
 	})
 	if err != nil {
@@ -1044,7 +1065,7 @@ func pushLocked(ctx context.Context, worktreePath string, args ...string) error 
 		attempts := credentialAttempts(pushEnv())
 		var injectedErr error
 		for idx, attempt := range attempts {
-			err := executil.RunEnv(ctx, worktreePath, attempt.env, "git", args...)
+			err := runNetworkGit(ctx, worktreePath, attempt.env, args...)
 			if err == nil {
 				return nil
 			}
@@ -1250,7 +1271,9 @@ func isAncestor(ctx context.Context, worktreePath, ancestor, descendant string) 
 func remoteBranchHead(ctx context.Context, worktreePath, remote, branch string) (string, error) {
 	var out string
 	err := withNetworkRetry(ctx, func() error {
-		cmd := exec.CommandContext(ctx, "git", "ls-remote", remote, "refs/heads/"+branch)
+		networkCtx, cancel := networkGitContext(ctx)
+		defer cancel()
+		cmd := exec.CommandContext(networkCtx, "git", "ls-remote", remote, "refs/heads/"+branch)
 		cmd.Dir = worktreePath
 		cmd.Env = fetchEnv()
 		raw, runErr := cmd.CombinedOutput()
@@ -1291,7 +1314,7 @@ func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
 	fetchErr := withNetworkRetry(ctx, func() error {
 		return withLockRetry(func() error {
-			return executil.RunEnv(ctx, worktreePath, fetchEnv(), "git", "fetch", remote, refspec)
+			return runNetworkGit(ctx, worktreePath, fetchEnv(), "fetch", remote, refspec)
 		})
 	})
 	if fetchErr != nil && !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
@@ -1627,7 +1650,9 @@ func pushPreflightRefspec(ctx context.Context, worktreePath string) (string, err
 var runGitPushProbe = execGitPushProbe
 
 func execGitPushProbe(ctx context.Context, dir string, env []string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	networkCtx, cancel := networkGitContext(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(networkCtx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()

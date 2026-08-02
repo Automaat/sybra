@@ -153,9 +153,13 @@ type App struct {
 	// rather than silently refusing to dispatch.
 	schedulerDisabled atomic.Bool
 	brainDisabled     atomic.Bool
-	recovery          *recovery.Recovery
-	snapshotter       *tasksnapshot.Snapshotter
-	agentCompletion   *completion.Handler
+	// maintenanceCleanupRunning prevents slow git cleanup from stacking across
+	// maintenance ticks. Cleanup itself runs outside the orchestrator loop.
+	maintenanceCleanupRunning atomic.Bool
+	worktreeCleanupFn         func(context.Context) // test seam; nil uses worktrees
+	recovery                  *recovery.Recovery
+	snapshotter               *tasksnapshot.Snapshotter
+	agentCompletion           *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
