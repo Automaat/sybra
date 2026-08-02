@@ -1838,6 +1838,22 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 		},
 		counterKey: watchdogRateLimitRetryKey,
 		max:        maxWatchdogRateLimitRetries,
+		onArmed: func(e *Engine, t *TaskInfo, _ *Step, _ int) error {
+			// The counter now represents a real retry attempt. Clear the watchdog
+			// marker before dispatch so a benign capacity park cannot make the
+			// next ResumeStalled tick re-arm and burn this budget again. The
+			// compare is atomic: a concurrent terminal failure must win rather
+			// than being reopened from this stale retry snapshot.
+			cleared, err := e.tasks.ClearTaskStatusReasonIf(t.ID, t.Status, t.StatusReason)
+			if err != nil {
+				return err
+			}
+			if !cleared {
+				return errRetryArmingSuperseded
+			}
+			t.StatusReason = ""
+			return nil
+		},
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			retryKey := watchdogRateLimitRetryKey(step.ID)
 			freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
