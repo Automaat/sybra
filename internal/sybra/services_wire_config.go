@@ -1,10 +1,15 @@
 package sybra
 
-import "github.com/Automaat/sybra/internal/abtest"
+import (
+	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/config"
+)
 
 func (a *App) wireConfigService() {
-	a.configSvc.cfg = a.cfg
-	a.configSvc.persisted = cloneConfig(a.cfg)
+	cfg := a.currentConfig()
+	a.configSvc.cfg = cfg
+	a.configSvc.persisted = cloneConfig(cfg)
+	a.configSvc.publishConfig = func(next *config.Config) { a.activeCfg.Store(next) }
 	a.configSvc.logLevel = a.logLevel
 	a.configSvc.notifier = a.notifier
 	a.configSvc.agents = a.agents
