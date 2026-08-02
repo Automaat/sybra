@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,7 +49,8 @@ var ghRetrySleep = func(attempt int) {
 // via notBefore backoff, and retrying them immediately would only make things
 // worse.
 func isTransientGHError(out []byte, err error) bool {
-	if err == nil || isRateLimitedMessage(string(out)) {
+	resp := parseGHHTTPResponse(out)
+	if err == nil || isRateLimitedResponse(resp) {
 		return false
 	}
 	msg := strings.ToLower(string(out))
@@ -283,7 +285,7 @@ func (g *ghRequestGate) runGated(ctx context.Context, run func() ([]byte, error)
 
 		out, err = run()
 		g.lastRun = time.Now()
-		if err != nil && isRateLimitedMessage(string(out)) {
+		if err != nil && isRateLimitedResponse(parseGHHTTPResponse(out)) {
 			g.bumpLocked(g.lastRun.Add(ghFallbackRateBackoff))
 		}
 		g.mu.Unlock()
@@ -351,7 +353,7 @@ func (g *ghRequestGate) observe(resp ghHTTPResponse, err error) {
 		}
 	}
 
-	if (err != nil || isGraphQLRateLimitBody(resp.body)) && isRateLimitedMessage(string(resp.body)) {
+	if isGraphQLRateLimitBody(resp.body) {
 		g.bumpLocked(now.Add(ghFallbackRateBackoff))
 	}
 }
@@ -433,14 +435,48 @@ func isRateLimitedMessage(msg string) bool {
 	return strings.Contains(lower, rateLimitWallMarker) ||
 		strings.Contains(lower, "secondary rate limit") ||
 		strings.Contains(lower, "api rate limit exceeded") ||
-		strings.Contains(lower, "rate limit exceeded") ||
-		strings.Contains(lower, "rate_limit") ||
-		strings.Contains(lower, "retry after")
+		strings.Contains(lower, "rate limit exceeded")
 }
 
 func isGraphQLRateLimitBody(body []byte) bool {
-	lower := strings.ToLower(string(body))
-	return strings.Contains(lower, `"errors"`) && strings.Contains(lower, "rate")
+	var response struct {
+		Errors []struct {
+			Type string `json:"type"`
+		} `json:"errors"`
+	}
+	if json.Unmarshal(body, &response) != nil {
+		return false
+	}
+	for _, graphqlErr := range response.Errors {
+		if strings.EqualFold(graphqlErr.Type, "RATE_LIMITED") {
+			return true
+		}
+	}
+	return false
+}
+
+func isRateLimitedResponse(resp ghHTTPResponse) bool {
+	if resp.statusCode == 429 {
+		return true
+	}
+	if resp.statusCode != 403 {
+		return isGraphQLRateLimitBody(resp.body)
+	}
+	if strings.TrimSpace(resp.headers["retry-after"]) != "" {
+		return true
+	}
+	remaining, err := strconv.Atoi(strings.TrimSpace(resp.headers["x-ratelimit-remaining"]))
+	if err == nil && remaining == 0 {
+		return true
+	}
+	var envelope struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(resp.body, &envelope) != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(envelope.Message), "secondary rate limit") ||
+		strings.Contains(strings.ToLower(envelope.Message), "api rate limit exceeded")
 }
 
 func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, error) {
