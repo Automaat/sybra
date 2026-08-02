@@ -124,7 +124,7 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 		refspecs = append(refspecs, "+refs/heads/"+taskBranch+":refs/remotes/origin/"+taskBranch)
 	}
 	fetchArgs := append([]string{"fetch", "origin"}, refspecs...)
-	if fetchErr := runBare(ctx, barePath, fetchArgs...); fetchErr == nil {
+	if fetchErr := runBareFetch(ctx, barePath, fetchArgs...); fetchErr == nil {
 		report.RefetchedBranches = refspecs
 	}
 
