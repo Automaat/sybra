@@ -561,6 +561,7 @@ type memTasks struct {
 	steers           map[string]string
 	gets             map[string]int
 	onGet            func(id string, t *TaskInfo, count int)
+	onSetWorkflow    func(id string)
 	appendErr        error
 	failGet          bool
 	failSetWorkflow  bool
@@ -672,6 +673,21 @@ func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
 	t.StatusReason = reason
 	m.reasons[id] = reason
 	return nil
+}
+
+func (m *memTasks) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return false, fmt.Errorf("task %s not found", id)
+	}
+	if t.Status != expectedStatus || t.StatusReason != expectedReason {
+		return false, nil
+	}
+	t.StatusReason = ""
+	m.reasons[id] = ""
+	return true, nil
 }
 
 func (m *memTasks) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
@@ -803,18 +819,24 @@ func (m *memTasks) ReplaceTaskBody(id, body string) error {
 
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
 		if m.failSetWorkflowN > 0 {
 			m.failSetWorkflowN--
 		}
+		m.mu.Unlock()
 		return fmt.Errorf("simulated write failure for task %s", id)
 	}
 	t, ok := m.tasks[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("task %s not found", id)
 	}
 	t.Workflow = wf.Clone()
+	hook := m.onSetWorkflow
+	m.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
 	return nil
 }
 
@@ -4150,7 +4172,7 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 			name:       "first watchdog rate limit reruns",
 			wantStarts: 1,
 			wantStatus: "in-progress",
-			wantReason: "watchdog: rate limit: org-level quota exhausted",
+			wantReason: "",
 			wantRetry:  "1",
 		},
 		{
@@ -4230,7 +4252,7 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			retries:    "1",
 			wantStarts: 1,
 			wantStatus: "in-progress",
-			wantReason: watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+			wantReason: "",
 			wantRetry:  "2",
 		},
 		{
@@ -4376,6 +4398,86 @@ func TestResumeStalled_WatchdogZeroOutputFreshRoundDispatches(t *testing.T) {
 	}
 	if final.Status == "blocked" {
 		t.Fatalf("task latched blocked despite a fresh-session recovery being available")
+	}
+}
+
+func TestResumeStalled_WatchdogRateLimitPoolBusyDoesNotBurnRetryBudget(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetFailSpawn(ErrAgentPoolBusy)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: rate limit: org-level quota exhausted",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	// The first retry is armed then hits a benign capacity park. A later tick
+	// must retry dispatch normally instead of re-arming the rate-limit policy.
+	for range maxWatchdogRateLimitRetries + 1 {
+		engine.ResumeStalled()
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared after arming retry", got.StatusReason)
+	}
+	if retry := got.Workflow.Variables[watchdogRateLimitRetryKey("implement")]; retry != "1" {
+		t.Fatalf("rate-limit retry var = %q, want 1 after repeated pool-busy parks", retry)
+	}
+	if got.Workflow.State == ExecFailed {
+		t.Fatal("pool-busy parks must not exhaust the watchdog retry budget")
+	}
+}
+
+func TestResumeStalled_WatchdogRateLimitDoesNotClearConcurrentFailure(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: rate limit: org-level quota exhausted",
+		AgentMode:    "headless",
+		Workflow:     &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecWaiting, Variables: map[string]string{}},
+	})
+	var once sync.Once
+	tasks.onSetWorkflow = func(id string) {
+		once.Do(func() {
+			if err := tasks.UpdateTaskStatus(id, "human-required", "concurrent permanent failure"); err != nil {
+				t.Errorf("set concurrent failure: %v", err)
+			}
+		})
+	}
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" || got.StatusReason != "concurrent permanent failure" {
+		t.Fatalf("concurrent failure was overwritten: status=%q reason=%q", got.Status, got.StatusReason)
+	}
+	if starts := agents.CallCount(); starts != 0 {
+		t.Fatalf("concurrent failure must fence dispatch, started %d agents", starts)
 	}
 }
 
@@ -4912,7 +5014,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t 
 			name:       "first watchdog rate limit reruns child",
 			wantStarts: 1,
 			wantStatus: "in-progress",
-			wantReason: "watchdog: rate limit: org-level quota exhausted",
+			wantReason: "",
 			wantRetry:  "1",
 		},
 		{
@@ -5422,6 +5524,13 @@ func TestHandleHumanAction_NotWaiting(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-waiting task")
 	}
+	var ce *ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *ClientError so httpapi surfaces it as a 4xx instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusConflict)
+	}
 }
 
 func TestHandleHumanAction_InvalidActionAlreadyWaitingDoesNotMutate(t *testing.T) {
@@ -5445,6 +5554,13 @@ func TestHandleHumanAction_InvalidActionAlreadyWaitingDoesNotMutate(t *testing.T
 	err := engine.HandleHumanAction("t1", "bogus", nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid human action") {
 		t.Fatalf("HandleHumanAction error = %v, want invalid human action", err)
+	}
+	var ce *ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *ClientError so httpapi surfaces it as a 4xx instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusBadRequest)
 	}
 
 	got, err := tasks.GetTask("t1")
@@ -5852,6 +5968,30 @@ func TestExecRunAgent_DefaultModeAndModel(t *testing.T) {
 	}
 	if call.Model != "sonnet" {
 		t.Errorf("expected default model 'sonnet', got %q", call.Model)
+	}
+}
+
+func TestResolveRunAgentModel(t *testing.T) {
+	t.Parallel()
+
+	ctx := TemplateContext{
+		Task: TaskInfo{ID: "t1"},
+		Vars: map[string]string{},
+	}
+
+	if got := resolveRunAgentModel("", ctx); got != "sonnet" {
+		t.Fatalf("resolveRunAgentModel(empty) = %q, want sonnet", got)
+	}
+
+	ctx.Vars[verifyRetryModelVar] = "expensive"
+	model := `  {{if getvar .Vars "verify_retry_model"}}{{getvar .Vars "verify_retry_model"}}{{else}}cheap{{end}}  `
+	if got := resolveRunAgentModel(model, ctx); got != "expensive" {
+		t.Fatalf("resolveRunAgentModel(template with %s) = %q, want expensive", verifyRetryModelVar, got)
+	}
+
+	delete(ctx.Vars, verifyRetryModelVar)
+	if got := resolveRunAgentModel(model, ctx); got != "cheap" {
+		t.Fatalf("resolveRunAgentModel(template without %s) = %q, want cheap", verifyRetryModelVar, got)
 	}
 }
 
@@ -6862,6 +7002,94 @@ steps:
 	}
 	if got := completed[0].Variables[skillReceiptRecoveryKey("run")]; got != "" {
 		t.Fatalf("completion retry var = %q, want cleared before downstream recovery sees completion", got)
+	}
+}
+
+func TestHandleAgentComplete_UnverifiedSkillAfterRetryContinuesWithImportedSidecar(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: codex
+      prompt: "Run /adversarial-review now."
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        kind: code_review
+        required: true
+    next:
+      - goto: require_review
+  - id: require_review
+    name: Require Review
+    type: require_sidecar
+    config:
+      sidecar: code_review
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".sybra-review-t1.md"), []byte("Review Verdict: CLEAN\n\nNo findings.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir:                 dir,
+				skillReceiptRecoveryKey("run"): "1",
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-2",
+			Role:               "review",
+			Provider:           "codex",
+			RequestedSkill:     "adversarial-review",
+			SkillExecutionMode: "injected",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "agent-2",
+		Result:  "review complete without receipt",
+		Success: true,
+	})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "done" {
+		t.Fatalf("Status = %q, want done", ti.Status)
+	}
+	if !strings.Contains(ti.CodeReview, "Review Verdict: CLEAN") {
+		t.Fatalf("CodeReview = %q, want imported review sidecar", ti.CodeReview)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("skill receipt retry var = %q, want cleared after sidecar continuation", got)
+	}
+	if len(agents.calls) != 0 {
+		t.Fatalf("StartAgent calls = %d, want no third attempt", len(agents.calls))
 	}
 }
 
@@ -9393,6 +9621,69 @@ func TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired(t *testing.T) {
 	}
 }
 
+func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnce(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	_, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if wfExec.CurrentStep != "implement" || wfExec.State != ExecWaiting {
+		t.Fatalf("workflow = %+v, want rearmed implement/ExecWaiting", wfExec)
+	}
+	if got := wfExec.Variables["step.verify_commits.no_commit_retry"]; got != "1" {
+		t.Fatalf("no_commit_retry = %q, want 1", got)
+	}
+	if got := wfExec.Variables[verifyReaskNoteVar]; !strings.Contains(got, "without producing commits") {
+		t.Fatalf("verify reask note = %q, want no-commit guidance", got)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress retry", ti.Status)
+	}
+}
+
+func TestExecVerifyCommits_NoCommitAuthorRunEscalatesAfterRetry(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{"step.verify_commits.no_commit_retry": "1"}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.Output, "no commits") {
+		t.Fatalf("Output = %q, want no commits", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required after one retry", ti.Status)
+	}
+}
+
 // TestExecVerifyCommits_BranchAncestorOfBaseFlipsHumanRequired covers the
 // regression from issue #670: HEAD is an ancestor of origin/main (branch tip
 // equals an older commit on main, with newer commits on top — typical of
@@ -9656,6 +9947,54 @@ func TestExecVerifyCommits_AutoCommitAdoptsEquivalentRemoteCommitAfterRetry(t *t
 	}
 	if status := strings.TrimSpace(runGitAt(t, wtDir, "status", "--porcelain")); status != "" {
 		t.Fatalf("worktree dirty after reconcile: %q", status)
+	}
+}
+
+// TestExecVerifyCommits_EmptyRemoteBranchFlipsHumanRequired covers the
+// equivalent-tree remote-adopt bug: a task branch is pushed to origin but is
+// byte-identical to base (zero commits ahead), e.g. because the
+// implementation agent handed off to a background subagent and exited
+// without producing any work. verify_commits must not treat the pushed,
+// empty branch as completed work just because its tree matches the local
+// (also-empty) worktree tree.
+func TestExecVerifyCommits_EmptyRemoteBranchFlipsHumanRequired(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+
+	wtDir := t.TempDir()
+	runGitAt(t, wtDir, "init", "-b", "main")
+	runGitAt(t, wtDir, "config", "user.email", "test@test.com")
+	runGitAt(t, wtDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtDir, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtDir, "add", "README.md")
+	runGitAt(t, wtDir, "commit", "-m", "init")
+	runGitAt(t, wtDir, "remote", "add", "origin", remote)
+	runGitAt(t, wtDir, "push", "-u", "origin", "main")
+
+	// Task branch pushed to origin with no extra commits — byte-identical to
+	// base on both ends.
+	const branch = "feat/verify-commits-empty-remote"
+	runGitAt(t, wtDir, "checkout", "-b", branch)
+	runGitAt(t, wtDir, "push", "-u", "origin", branch)
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "no commits") {
+		t.Fatalf("Output = %q, want 'no commits' (empty pushed branch must not be adopted)", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("task status = %q, want human-required", ti.Status)
 	}
 }
 

@@ -495,6 +495,9 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	// Apply initial field overrides before the first disk write so that any
 	// watcher reading the file sees the complete task from the start.
 	applyCreateInit(&t, init, now)
+	if err := normalizeSandboxEscapeHatch(&t); err != nil {
+		return Task{}, err
+	}
 	if err := s.writeSidecars(t.ID, init, &t); err != nil {
 		return Task{}, err
 	}
@@ -550,6 +553,9 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 	if init.ForkSubagent != nil {
 		t.ForkSubagent = *init.ForkSubagent
 	}
+	if init.SandboxOffReason != nil {
+		t.SandboxOffReason = *init.SandboxOffReason
+	}
 	if init.Sandbox != nil {
 		t.Sandbox = init.Sandbox
 	}
@@ -580,6 +586,40 @@ func (s *Store) Put(t Task) (Task, error) {
 		return Task{}, err
 	}
 	defer unlock()
+	return s.putLocked(t)
+}
+
+// PutFn reads an existing task and writes the fully-formed replacement
+// returned by fn while holding the task's cross-process write lock. It is for
+// callers that need to merge a long-running operation's result with the most
+// recent canonical task without a read-modify-write gap.
+func (s *Store) PutFn(id string, fn func(cur Task) (Task, error)) (saved, previous Task, err error) {
+	if err := ValidateID(id); err != nil {
+		return Task{}, Task{}, err
+	}
+	unlock, err := s.lockTask(id)
+	if err != nil {
+		return Task{}, Task{}, err
+	}
+	defer unlock()
+
+	cur, err := s.read(id)
+	if err != nil {
+		return Task{}, cur, err
+	}
+	next, err := fn(cur)
+	if err != nil {
+		return Task{}, cur, err
+	}
+	if next.ID != id {
+		return Task{}, cur, fmt.Errorf("task: put-fn: callback changed task ID from %q to %q", id, next.ID)
+	}
+	saved, err = s.putLocked(next)
+	return saved, cur, err
+}
+
+// putLocked is Put after the caller has acquired lockTask(t.ID).
+func (s *Store) putLocked(t Task) (Task, error) {
 	now := time.Now().UTC()
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
@@ -796,6 +836,28 @@ func applyLinkFields(t *Task, u Update) {
 	}
 }
 
+// normalizeSandboxEscapeHatch keeps the escape hatch and its justification in
+// one consistent state. Disabling the sandbox hands a task's agents
+// unrestricted write access to the host, so it must be justified at the point
+// an operator asks for it — an unexplained bypass is not something to discover
+// later in the audit log.
+//
+// The reason is only meaningful while the hatch is actually off, so it is
+// dropped otherwise rather than left behind as stale frontmatter. That makes
+// the flip and its reason a single call: setting sandbox=false in one request
+// and the reason in a later one is refused, not silently accepted half-done.
+func normalizeSandboxEscapeHatch(t *Task) error {
+	if t.Sandbox != nil && !*t.Sandbox {
+		if strings.TrimSpace(t.SandboxOffReason) == "" {
+			return errors.New("sandbox: disabling the sandbox requires sandbox_off_reason explaining why")
+		}
+		t.SandboxOffReason = strings.TrimSpace(t.SandboxOffReason)
+		return nil
+	}
+	t.SandboxOffReason = ""
+	return nil
+}
+
 func applyUpdateFields(t *Task, u Update) error {
 	if u.Title != nil {
 		t.Title = *u.Title
@@ -880,6 +942,9 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.ForkSubagent != nil {
 		t.ForkSubagent = *u.ForkSubagent
 	}
+	if u.SandboxOffReason != nil {
+		t.SandboxOffReason = *u.SandboxOffReason
+	}
 	if u.Sandbox != nil {
 		t.Sandbox = u.Sandbox
 	}
@@ -895,7 +960,7 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.EffectLog != nil {
 		t.EffectLog = slices.Clone(*u.EffectLog)
 	}
-	return nil
+	return normalizeSandboxEscapeHatch(t)
 }
 
 // UpdateWithPrev applies u under the per-task write lock and returns both

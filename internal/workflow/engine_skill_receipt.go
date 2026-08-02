@@ -67,6 +67,15 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		return false
 	}
 	if retries >= maxSkillReceiptRecoveryAttempts {
+		if present, kind := importedSidecarPresentForStep(currentStep, fresh); present {
+			delete(fresh.Workflow.Variables, retryKey)
+			if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
+				e.logger.Warn("workflow.skill-receipt.sidecar-present.persist", "task_id", taskID, "step", spawnedStep, "err", err)
+			}
+			e.logger.Warn("workflow.skill-receipt.sidecar-present",
+				"task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill, "sidecar", kind)
+			return false
+		}
 		delete(fresh.Workflow.Variables, retryKey)
 		// Finalize the Execution like finishTerminalStepOutput does for every
 		// other human-required escalation (e.g. checkpoint_failed). Left
@@ -124,6 +133,45 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		return true
 	default:
 		return false
+	}
+}
+
+func importedSidecarPresentForStep(step *Step, t TaskInfo) (present bool, kind string) {
+	if step == nil {
+		return false, ""
+	}
+	for _, cfg := range step.Config.sidecarImports() {
+		sidecarKind := cfg.Kind
+		if sidecarKind == "plan_draft" {
+			sidecarKind = "plan_draft." + step.ID
+		}
+		if strings.TrimSpace(taskSidecarContent(t, sidecarKind)) != "" {
+			return true, sidecarKind
+		}
+	}
+	return false, ""
+}
+
+func taskSidecarContent(t TaskInfo, kind string) string {
+	switch {
+	case kind == "plan":
+		return t.Plan
+	case kind == "plan_contract":
+		return t.PlanContract
+	case kind == "plan_critique":
+		return t.PlanCritique
+	case kind == "plan_research":
+		return t.PlanResearch
+	case kind == "plan_decisions":
+		return t.PlanDecisions
+	case kind == "plan_brief":
+		return t.PlanBrief
+	case kind == "code_review":
+		return t.CodeReview
+	case strings.HasPrefix(kind, "plan_draft."):
+		return t.PlanDrafts[strings.TrimPrefix(kind, "plan_draft.")]
+	default:
+		return ""
 	}
 }
 

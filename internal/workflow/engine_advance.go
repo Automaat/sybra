@@ -74,6 +74,22 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		StartedAt: now,
 		EndedAt:   now,
 	})
+
+	if ctx.Task.Status == "done" || ctx.Task.Status == "cancelled" {
+		// The task itself already landed a terminal status out-of-band (e.g.
+		// an agent's own tool call, or a merged/closed PR) independently of
+		// this Execution ever reaching ExecCompleted/ExecFailed. Persist the
+		// step record above (real work happened and must stay visible in
+		// history) but stop here: any further transition logic below would
+		// attempt an illegal move out of done/cancelled (see internal/task's
+		// allowed-transition table) and fail on every retry instead of
+		// quietly no-op'ing like the workflow_terminal case in
+		// loadAdvanceContext.
+		e.logger.Debug("workflow.advance.skip",
+			"task_id", taskID, "reason", "task_terminal",
+			"status", ctx.Task.Status, "step_id", output.StepID)
+		return e.tasks.SetWorkflow(taskID, wfExec)
+	}
 	if output.Status == "completed" {
 		// A clean completion means this fix_review round is done — the
 		// review-finding the retry pointed at got fixed. Drop the retry

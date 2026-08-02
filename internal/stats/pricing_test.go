@@ -215,8 +215,26 @@ func TestEstimateAgentCost(t *testing.T) {
 			delta: 0.0001,
 		},
 		{
-			name:  "claude reports its own cost so it is never estimated",
-			usage: AgentUsage{Provider: "claude", Model: "sonnet-5", InputTokens: 999999, StartedAt: at},
+			name: "provider-reported cost wins for claude too",
+			usage: AgentUsage{
+				Provider: "claude", Model: "claude-sonnet-5", CostUSD: 0.42,
+				InputTokens: 999999, StartedAt: at,
+			},
+			want:  0.42,
+			delta: 0.0001,
+		},
+		{
+			name: "claude run with cost-less result event is estimated from tokens",
+			usage: AgentUsage{
+				Provider: "claude", Model: "claude-sonnet-5",
+				InputTokens: 999999, StartedAt: at,
+			},
+			want:  1.999998,
+			delta: 0.0001,
+		},
+		{
+			name:  "unknown claude model yields no estimate rather than a wrong one",
+			usage: AgentUsage{Provider: "claude", Model: "not-a-real-model", InputTokens: 1_000_000, StartedAt: at},
 			want:  0,
 			delta: 0.0001,
 		},

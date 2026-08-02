@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +41,7 @@ const verifyBlessedTag = "verify-blessed"
 const (
 	verifyChecksImplStepID = "implement"
 	verifyReaskNoteVar     = "verify_reask_note"
+	verifyRetryModelVar    = "verify_retry_model"
 	// verifyChecksAutoFixBackoff is the base re-dispatch delay before the next
 	// auto-fix attempt; autoFixBackoff grows it with the attempt count up to
 	// autoFixBackoffMax.
@@ -46,7 +49,7 @@ const (
 	autoFixBackoffMax          = 15 * time.Minute
 	// verifyChecksAutoFixCeiling bounds auto-fix re-asks so a deterministic
 	// failure no agent can fix reaches a human instead of looping forever.
-	verifyChecksAutoFixCeiling = 20
+	verifyChecksAutoFixCeiling = 5
 	// Full verify suites are CPU-heavy and already serialized by workflow
 	// retries; a single local slot prevents one saturated host from piling
 	// multiple suites on top of each other and timing them all out.
@@ -839,13 +842,17 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
 		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
 	}
+	fingerprint := autoFixFailureFingerprint(failedCmd, output)
 	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
-		counterKey: "step." + step.ID + ".auto_fix",
-		max:        verifyChecksAutoFixCeiling,
-		rewindStep: verifyChecksImplStepID,
-		backoff:    autoFixBackoff,
+		counterKey:             "step." + step.ID + ".auto_fix",
+		max:                    verifyChecksAutoFixCeiling,
+		rewindStep:             verifyChecksImplStepID,
+		backoff:                autoFixBackoff,
+		fingerprint:            fingerprint,
+		maxSameFingerprintRuns: 2,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
+			wfExec.SetVar(verifyRetryModelVar, "expensive")
 		},
 		reason: func(attempt int) string {
 			return fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s", attempt, trimDiffLine(failedCmd))
@@ -855,13 +862,22 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 		return StepOutput{}, fmt.Errorf("verify-checks: rewind to implement: %w", err)
 	}
 	if !armed {
-		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
+		exhausted := fmt.Sprintf("%s — escalating after repeated identical auto-fix failures or %d attempts without passing",
 			reason, verifyChecksAutoFixCeiling)
 		return e.flagVerifyChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
 	e.logger.Info("workflow.verify-checks.auto-fix",
 		"task_id", taskID, "attempt", attempt, "cmd", trimDiffLine(failedCmd))
 	return StepOutput{}, errStepParked
+}
+
+func autoFixFailureFingerprint(failedCmd, output string) string {
+	excerpt := highestSignalVerifyFailureExcerpt(failedCmd, output)
+	if excerpt == "" {
+		excerpt = tailString(strings.TrimSpace(output), 1200)
+	}
+	h := sha256.Sum256([]byte(strings.TrimSpace(failedCmd) + "\n" + excerpt))
+	return hex.EncodeToString(h[:])
 }
 
 func buildVerifyReaskNote(failedCmd, output string) string {

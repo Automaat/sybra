@@ -94,9 +94,10 @@ func (s *PromptLabService) approveProposal(id, progressNote string) (task.Task, 
 			update.ProjectID = &projectID
 		}
 		return task.TransitionIntent{
-			ToStatus: task.StatusInProgress,
-			Actor:    "svc.promptlab.approve",
-			Extra:    update,
+			ToStatus:         task.StatusInProgress,
+			Actor:            "svc.promptlab.approve",
+			Extra:            update,
+			OperatorOverride: true,
 		}, nil
 	})
 	if err != nil {
@@ -125,6 +126,7 @@ func (s *PromptLabService) approveProposal(id, progressNote string) (task.Task, 
 				StatusReason: &revertReason,
 				Tags:         tags,
 			},
+			OperatorOverride: true,
 		})
 		if revertErr != nil {
 			return task.Task{}, fmt.Errorf("%s; additionally failed to restore human-required: %w", revertReason, revertErr)
@@ -185,6 +187,7 @@ func (s *PromptLabService) RejectProposal(id, feedback string) (task.Task, error
 				StatusReason: &reason,
 				Tags:         &tags,
 			},
+			OperatorOverride: true,
 		}, nil
 	})
 	if err != nil {

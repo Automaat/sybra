@@ -383,13 +383,17 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
 		return e.flagFocusedChecks(taskID, step, reason, failedCmd)
 	}
+	fingerprint := autoFixFailureFingerprint(failedCmd, output)
 	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
-		counterKey: "step." + step.ID + ".auto_fix",
-		max:        verifyChecksAutoFixCeiling,
-		rewindStep: verifyChecksImplStepID,
-		backoff:    autoFixBackoff,
+		counterKey:             "step." + step.ID + ".auto_fix",
+		max:                    verifyChecksAutoFixCeiling,
+		rewindStep:             verifyChecksImplStepID,
+		backoff:                autoFixBackoff,
+		fingerprint:            fingerprint,
+		maxSameFingerprintRuns: 2,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
+			wfExec.SetVar(verifyRetryModelVar, "expensive")
 		},
 		reason: func(int) string { return reason },
 	})
@@ -397,7 +401,7 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 		return StepOutput{}, fmt.Errorf("focused-checks: rewind to implement: %w", err)
 	}
 	if !armed {
-		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
+		exhausted := fmt.Sprintf("%s — escalating after repeated identical auto-fix failures or %d attempts without passing",
 			reason, verifyChecksAutoFixCeiling)
 		return e.flagFocusedChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}

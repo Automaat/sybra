@@ -142,7 +142,7 @@ func (m *Manager) finalizeIfCompleted(r Record) bool {
 	if mt, ok := logActivityTime(r.LogPath); ok {
 		a.SetLastEventAt(mt)
 	}
-	found, isError := a.lastHeadlessResult()
+	found, isError := resultBeforeOnlyForkOutput(a.Output())
 	if !found {
 		return false
 	}
@@ -217,7 +217,7 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 	// closes stdin so the child sees EOF and exits like an unsteered one-shot,
 	// instead of hanging (or accepting a post-reattach steer that would queue
 	// forever with no further result to flush it).
-	if found, _ := a.lastHeadlessResult(); found {
+	if found, _ := resultBeforeOnlyForkOutput(a.Output()); found {
 		m.drainOrCloseHeadlessSteer(a)
 	}
 	procDone := make(chan struct{})
@@ -232,7 +232,7 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 	}
 
 	outputs := a.Output()
-	if found, isError := lastHeadlessResultEvent(outputs); !found {
+	if found, isError := resultBeforeOnlyForkOutput(outputs); !found {
 		a.SetExitErr(errReattachedGone)
 	} else if isError {
 		if err := resultStreamError(outputs); err != nil {

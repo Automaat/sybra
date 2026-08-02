@@ -688,6 +688,9 @@ func TestExecVerifyChecks_DependentGoPackageFailureStillAutoFixes(t *testing.T) 
 	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
 		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
 	}
+	if got := wf.Variables[verifyRetryModelVar]; got != "expensive" {
+		t.Fatalf("%s = %q, want expensive", verifyRetryModelVar, got)
+	}
 }
 
 func TestExecVerifyChecks_FlakeRetryPasses(t *testing.T) {
