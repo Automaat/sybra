@@ -77,6 +77,7 @@ type App struct {
 	watcherCtx      context.Context
 	watcherCancel   context.CancelFunc
 	lifecycle       atomic.Uint32
+	backgroundMu    sync.Mutex // serializes tracked background work with drain
 	wg              sync.WaitGroup
 	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
 	fetchPRHeadSHA    func(ctx context.Context, repo string, number int) (string, error)
@@ -132,15 +133,19 @@ type App struct {
 	promptLab         *promptLabCoordinator
 	triage            *triageCoordinator
 	humanReview       *humanReviewHandler
-	cfg               *config.Config
-	baseABTesting     atomic.Value
-	liveABTesting     atomic.Value
-	logLevel          *slog.LevelVar
-	emit              func(string, any)
-	emitFactory       func(context.Context) func(string, any)
-	openBrowser       func(string)
-	requestRestart    func()
-	restartStaleErr   *logging.ErrorThrottle
+	// activeCfg is the immutable configuration snapshot used by concurrent
+	// runtime readers. cfg remains the construction-time snapshot for legacy
+	// startup wiring and tests; hot reloads must never mutate it in place.
+	activeCfg       atomic.Pointer[config.Config]
+	cfg             *config.Config
+	baseABTesting   atomic.Value
+	liveABTesting   atomic.Value
+	logLevel        *slog.LevelVar
+	emit            func(string, any)
+	emitFactory     func(context.Context) func(string, any)
+	openBrowser     func(string)
+	requestRestart  func()
+	restartStaleErr *logging.ErrorThrottle
 	// dispatchNudge wakes the orchestrator dispatch pass on demand (e.g. on a
 	// status change) so a freshly-ready task isn't left idle until the next
 	// fast tick. Buffered, size 1, coalescing — see nudgeDispatch.
@@ -212,6 +217,26 @@ type App struct {
 	queueSvc *QueueService
 }
 
+// goWhileRunning adds tracked background work only while shutdown has not
+// begun. BeginDrain holds the same lock before it transitions lifecycle state,
+// closing the WaitGroup Add-vs-Wait window during Shutdown.
+func (a *App) goWhileRunning(fn func()) bool {
+	if a == nil || fn == nil {
+		return false
+	}
+	a.backgroundMu.Lock()
+	defer a.backgroundMu.Unlock()
+	switch a.lifecycleState() {
+	case lifecycleStateIdle, lifecycleStateRunning:
+		// Tests and startup code may schedule work before the running marker is
+		// installed; both states are safe until BeginDrain takes backgroundMu.
+	case lifecycleStateDraining, lifecycleStateStopping, lifecycleStateStopped:
+		return false
+	}
+	a.wg.Go(fn)
+	return true
+}
+
 // Option configures App behaviour at construction time.
 type Option func(*App)
 
@@ -264,6 +289,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 		dispatchNudge:            make(chan struct{}, 1),
 		umbrellaRecoveryInFlight: make(map[string]bool),
 	}
+	a.activeCfg.Store(cfg)
 	// Pre-allocate service structs so Wails can bind them before startup().
 	// Fields are populated in startup() once dependencies are initialized.
 	a.taskSvc = &TaskService{}
@@ -288,6 +314,19 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	}
 	a.initializeABTesting(cfg.ABTesting)
 	return a
+}
+
+// currentConfig returns one immutable configuration snapshot for the caller's
+// whole operation. A reload publishes a replacement snapshot atomically, so a
+// reader can never observe a torn struct or a mixture of two configurations.
+func (a *App) currentConfig() *config.Config {
+	if a == nil {
+		return nil
+	}
+	if cfg := a.activeCfg.Load(); cfg != nil {
+		return cfg
+	}
+	return a.cfg
 }
 
 // acquireHomeLock takes an exclusive, non-blocking flock on

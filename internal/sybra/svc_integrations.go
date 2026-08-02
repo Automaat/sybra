@@ -28,11 +28,19 @@ type IntegrationService struct {
 	worktrees      *worktree.Manager
 	audit          *audit.Logger
 	cfg            *config.Config
+	currentConfig  func() *config.Config
 	logger         *slog.Logger
 	renovate       *renovateCoordinator
 	workflowEngine *workflow.Engine
 	providerHealth *provider.Checker
 	saveConfig     func() error
+}
+
+func (s *IntegrationService) config() *config.Config {
+	if s.currentConfig != nil {
+		return s.currentConfig()
+	}
+	return s.cfg
 }
 
 // FetchRenovatePRs returns Renovate PRs for manual refresh.
@@ -41,7 +49,7 @@ func (s *IntegrationService) FetchRenovatePRs() ([]github.RenovatePR, error) {
 	if len(repos) == 0 {
 		return nil, nil
 	}
-	return github.FetchRenovatePRs(context.Background(), s.cfg.Renovate.Author, repos)
+	return github.FetchRenovatePRs(context.Background(), s.config().Renovate.Author, repos)
 }
 
 // MergeRenovatePR merges a Renovate PR.

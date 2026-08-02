@@ -597,7 +597,7 @@ func (a *App) taskStatusForAgent(taskID string) (string, bool) {
 }
 
 func (a *App) startLiveLimitPolling(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
-	a.wg.Go(func() {
+	a.goWhileRunning(func() {
 		state := newLiveLimitPollState(time.Now().UTC())
 		for {
 			if ctx.Err() != nil {
@@ -817,7 +817,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 	// Tracking it here only needs to guarantee the signal is sent — once
 	// StopAgent's SIGINT/SIGKILL reaches the OS, delivery no longer depends
 	// on this process staying alive.
-	a.wg.Go(func() {
+	a.goWhileRunning(func() {
 		for _, ag := range filtered {
 			var err error
 			if ag.Mode == "headless" && ag.CompletedSuccessfully() {
@@ -833,7 +833,8 @@ func (a *App) releaseTaskAgents(taskID string) {
 }
 
 func (a *App) runsTaskLocally(t task.Task) bool {
-	return a.cfg == nil || a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
+	cfg := a.currentConfig()
+	return cfg == nil || cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
 }
 
 func (a *App) isWorkProject(projectID string) bool {
@@ -857,7 +858,8 @@ func (a *App) auditClusterBlock(taskID, node, reason string) {
 func (a *App) initCluster() {
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetDispatchGate(func(ti workflow.TaskInfo) bool {
-			return a.cfg == nil || a.cfg.HomeNodeForTask(ti.ProjectID, ti.NodeOverride).Local
+			cfg := a.currentConfig()
+			return cfg == nil || cfg.HomeNodeForTask(ti.ProjectID, ti.NodeOverride).Local
 		})
 	}
 	if a.cfg == nil || !a.cfg.IsLeader() {
@@ -982,7 +984,7 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 	if taskID == "" {
 		return
 	}
-	a.wg.Go(func() {
+	a.goWhileRunning(func() {
 		t, err := a.tasks.Get(taskID)
 		if err != nil {
 			return
