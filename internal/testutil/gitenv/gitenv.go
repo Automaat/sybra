@@ -46,5 +46,18 @@ func Isolate() (cleanup func(), err error) {
 			return nil, fmt.Errorf("set %s: %w", k, err)
 		}
 	}
+	for _, key := range []string{
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	} {
+		if err := os.Unsetenv(key); err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, fmt.Errorf("unset %s: %w", key, err)
+		}
+	}
 	return func() { _ = os.RemoveAll(dir) }, nil
 }
