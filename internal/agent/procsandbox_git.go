@@ -133,19 +133,25 @@ func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (gitSha
 			paths.objectDir = paths.readonly[len(paths.readonly)-1]
 		}
 	}
-	branchRefDir, err := ensureGitPathDir(ctx, worktree, filepath.Dir(branchRef))
-	if err != nil {
-		return gitSharedPaths{}, fmt.Errorf("resolve current branch dir: %w", err)
-	}
-	paths.branchRefDir = branchRefDir
+	// Detached HEAD (branchRef == "") has no branch ref or reflog to make
+	// writable, so there is nothing to resolve. prepareGitSandboxOverlay
+	// already skips its branch-overlay work on an empty branchRef, so the
+	// spec stays coherent — the run simply gets no branch-scoped grant.
+	if branchRef != "" {
+		branchRefDir, err := ensureGitPathDir(ctx, worktree, filepath.Dir(branchRef))
+		if err != nil {
+			return gitSharedPaths{}, fmt.Errorf("resolve current branch dir: %w", err)
+		}
+		paths.branchRefDir = branchRefDir
 
-	branchLogDir, err := ensureGitPathDir(ctx, worktree, filepath.Dir(filepath.Join("logs", branchRef)))
-	if err != nil {
-		return gitSharedPaths{}, fmt.Errorf("resolve current branch log dir: %w", err)
-	}
-	paths.branchLogDir = branchLogDir
-	if _, err := ensureGitPathFile(ctx, worktree, filepath.Join("logs", branchRef)); err != nil {
-		return gitSharedPaths{}, fmt.Errorf("resolve current branch log: %w", err)
+		branchLogDir, err := ensureGitPathDir(ctx, worktree, filepath.Dir(filepath.Join("logs", branchRef)))
+		if err != nil {
+			return gitSharedPaths{}, fmt.Errorf("resolve current branch log dir: %w", err)
+		}
+		paths.branchLogDir = branchLogDir
+		if _, err := ensureGitPathFile(ctx, worktree, filepath.Join("logs", branchRef)); err != nil {
+			return gitSharedPaths{}, fmt.Errorf("resolve current branch log: %w", err)
+		}
 	}
 	for _, spec := range []struct {
 		label string
@@ -378,21 +384,49 @@ func gitPathRaw(ctx context.Context, worktree string, args ...string) (string, e
 	return path, nil
 }
 
+// gitExitCode reports a git process exit code, or -1 when err is not an exit
+// failure (spawn error, context cancellation).
+func gitExitCode(err error) int {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
 func gitRevParsePath(ctx context.Context, worktree, arg string) (string, error) {
 	return gitPath(ctx, worktree, arg)
 }
 
+// gitSymbolicRef returns the branch ref HEAD points at, or "" when HEAD is
+// detached.
+//
+// A detached HEAD is a normal state here, not a failure: a review worktree
+// checked out at a pull-request head has no branch. Treating it as an error
+// failed the whole run closed under sandbox enforce with a bare
+// "git symbolic-ref -q HEAD: exit status 1", which reads like a broken repo
+// rather than "this checkout has no branch".
+//
+// `-q` is what makes the two distinguishable: it suppresses the
+// "ref HEAD is not a symbolic ref" message, so a detached HEAD exits 1 with
+// empty output, while a real failure (not a repository, unreadable HEAD)
+// exits 128 and prints. Only the first is swallowed.
 func gitSymbolicRef(ctx context.Context, worktree string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "-q", "HEAD")
 	cmd.Dir = worktree
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
+		if msg == "" && gitExitCode(err) == 1 {
+			return "", nil
+		}
 		if msg == "" {
 			return "", fmt.Errorf("git symbolic-ref -q HEAD: %w", err)
 		}
 		return "", fmt.Errorf("git symbolic-ref -q HEAD: %w: %s", err, msg)
 	}
+	// Exit 0 with no ref is not a state git produces; treat it as a real fault
+	// rather than silently reporting "detached".
 	ref := strings.TrimSpace(string(out))
 	if ref == "" {
 		return "", fmt.Errorf("git symbolic-ref -q HEAD: empty ref")
