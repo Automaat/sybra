@@ -301,10 +301,10 @@ func TestFetchRemoteBranchTimesOutNetworkGit(t *testing.T) {
 // hungGitReturnCeiling bounds how long a remote git call may take to return
 // once its network timeout has fired. It is deliberately far below the fake
 // git's sleep and far above the timeout itself: the assertion's power comes
-// from that gap (5s ceiling vs a 10s sleep), not from a tight wall-clock
-// bound. The previous 500ms ceiling
-// against a 1s sleep left too little room, and returning under load took
-// seconds — so a correctly-bounded timeout still failed the test (#2896).
+// from that gap (5s ceiling vs a 10s sleep), not from a tight wall-clock bound.
+// The previous 500ms ceiling against a 1s sleep left too little room: returning
+// under suite load took seconds, so a correctly-bounded timeout still failed
+// the test (#2896).
 const hungGitReturnCeiling = 5 * time.Second
 
 func TestRemoteGitOperationsTimeOut(t *testing.T) {

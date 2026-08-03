@@ -98,13 +98,17 @@ func CheckBareCloneHealth(ctx context.Context, barePath string) error {
 // cannot use.
 //
 // Split out of CheckBareCloneHealth because the two answer different
-// questions and only one of them should gate dispatch. An index git cannot
-// parse makes that one worktree unusable and is worth repairing; an index
-// that parses but whose cache-tree names pruned blobs is inert. Deriving both
-// from a single unscoped `git fsck` exit code conflated them, so ordinary
-// worktree churn read as clone corruption.
+// questions and only one of them should gate dispatch. A damaged index makes
+// its own worktree unusable and is worth repairing, but it says nothing about
+// whether the shared clone is fit for every other task. Deriving both from a
+// single unscoped `git fsck` exit code conflated them, so ordinary worktree
+// churn read as clone corruption.
 //
-// See indexUsable for what "cannot read" covers and why it is two probes.
+// Note the reflog case stays out of scope on purpose: a worktree reflog naming
+// a pruned object is genuinely inert, and folding it in is what made the old
+// gate fail permanently. An index naming a missing object is not inert — it
+// breaks the next commit — so indexUsable treats it as repair-worthy. See
+// indexUsable for both probes.
 func CheckWorktreeIndexes(ctx context.Context, barePath string) error {
 	entries, err := os.ReadDir(filepath.Join(barePath, "worktrees"))
 	if err != nil {
