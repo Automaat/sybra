@@ -2,6 +2,8 @@ package project
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -33,6 +35,7 @@ type Store struct {
 	dir       string
 	clonesDir string
 	locker    *fsutil.KeyedLocker
+	cloneBare func(context.Context, string, string) error
 }
 
 // NewStore creates dir and clonesDir if they do not exist and returns a
@@ -43,7 +46,12 @@ func NewStore(dir, clonesDir string) (*Store, error) {
 			return nil, fmt.Errorf("create dir %s: %w", d, err)
 		}
 	}
-	return &Store{dir: dir, clonesDir: clonesDir, locker: fsutil.NewKeyedLocker()}, nil
+	return &Store{
+		dir:       dir,
+		clonesDir: clonesDir,
+		locker:    fsutil.NewKeyedLocker(),
+		cloneBare: CloneBare,
+	}, nil
 }
 
 // lock acquires the per-project write lock for id's Get-modify-writeFile
@@ -101,60 +109,37 @@ func (s *Store) RawType(id string) (ProjectType, error) {
 	return raw.Type, nil
 }
 
-// Create parses rawURL into an owner/repo ID, clones it as a bare repo
-// under clonesDir, and persists a ready Project record. Fails if a project
-// with the same ID is already registered. See CreateMeta for the
-// register-then-clone-async variant used by the GUI's non-blocking add flow.
+// Create parses rawURL into an owner/repo ID, registers it as cloning, clones
+// it as a bare repo under clonesDir, and then persists a ready Project record.
+// The clone deliberately happens outside the per-project metadata lock: a
+// stalled network clone must not block edits or deletion of the project.
+// Fails if a project with the same ID is already registered. See CreateMeta
+// for the register-then-clone-async variant used by the GUI's non-blocking add
+// flow.
 func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
-	owner, repo, err := ParseGitHubURL(rawURL)
+	p, err := s.CreateMeta(rawURL, ptype)
 	if err != nil {
 		return Project{}, err
 	}
 
-	if ptype == "" {
-		ptype = ProjectTypePet
-	}
-	if ptype != ProjectTypePet && ptype != ProjectTypeWork {
-		return Project{}, fmt.Errorf("invalid project type: %s (must be pet or work)", ptype)
-	}
-
-	id := owner + "/" + repo
-	unlock, err := s.lock(id)
-	if err != nil {
-		return Project{}, err
-	}
-	defer unlock()
-
-	if _, err := s.Get(id); err == nil {
-		return Project{}, fmt.Errorf("project %s already exists", id)
-	}
-
-	clonePath := filepath.Join(s.clonesDir, owner, repo+".git")
-	// context.Background(): Create is a synchronous CLI/Wails-bound entry
-	// point (cmd/sybra-cli and ProjectService.CreateProject) with no ctx to
-	// thread through.
-	if err := CloneBare(context.Background(), rawURL, clonePath); err != nil {
+	// Create is a synchronous CLI/Wails-bound entry point with no caller
+	// context to thread through. Bound the entire clone setup, not just the
+	// network subprocess inside CloneBare.
+	ctx, cancel := context.WithTimeout(context.Background(), networkGitTimeout)
+	defer cancel()
+	clonePath := p.ClonePath + ".clone-" + p.CloneGeneration
+	if err := s.cloneBare(ctx, p.URL, clonePath); err != nil {
+		_ = os.RemoveAll(clonePath)
+		if markErr := s.markCloneError(p); markErr != nil {
+			return Project{}, fmt.Errorf("clone: %w (mark error: %v)", err, markErr)
+		}
 		return Project{}, fmt.Errorf("clone: %w", err)
 	}
-
-	now := time.Now().UTC()
-	p := Project{
-		ID:        id,
-		Name:      repo,
-		Owner:     owner,
-		Repo:      repo,
-		URL:       rawURL,
-		ClonePath: clonePath,
-		Type:      ptype,
-		Status:    ProjectStatusReady,
-		CreatedAt: now,
-		UpdatedAt: now,
+	if err := s.publishClone(p, clonePath); err != nil {
+		_ = os.RemoveAll(clonePath)
+		return Project{}, fmt.Errorf("mark ready: %w", err)
 	}
-
-	if err := s.writeFile(p); err != nil {
-		return Project{}, err
-	}
-	return p, nil
+	return s.Get(p.ID)
 }
 
 // CreateMeta writes project metadata with Status=cloning without starting the
@@ -181,23 +166,85 @@ func (s *Store) CreateMeta(rawURL string, ptype ProjectType) (Project, error) {
 		return Project{}, fmt.Errorf("project %s already exists", id)
 	}
 	clonePath := filepath.Join(s.clonesDir, owner, repo+".git")
+	cloneGeneration, err := newCloneGeneration()
+	if err != nil {
+		return Project{}, err
+	}
 	now := time.Now().UTC()
 	p := Project{
-		ID:        id,
-		Name:      repo,
-		Owner:     owner,
-		Repo:      repo,
-		URL:       rawURL,
-		ClonePath: clonePath,
-		Type:      ptype,
-		Status:    ProjectStatusCloning,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:              id,
+		Name:            repo,
+		Owner:           owner,
+		Repo:            repo,
+		URL:             rawURL,
+		ClonePath:       clonePath,
+		Type:            ptype,
+		Status:          ProjectStatusCloning,
+		CloneGeneration: cloneGeneration,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if err := s.writeFile(p); err != nil {
 		return Project{}, err
 	}
 	return p, nil
+}
+
+// publishClone atomically makes a completed temporary clone visible only if
+// the same metadata record that started it still exists. Delete and a later
+// re-create therefore cannot be undone by an older clone completing late.
+func (s *Store) publishClone(started Project, tempPath string) error {
+	unlock, err := s.lock(started.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	p, err := s.Get(started.ID)
+	if err != nil {
+		return err
+	}
+	if p.CloneGeneration != started.CloneGeneration {
+		return errors.New("clone superseded by a newer project record")
+	}
+	if err := os.Rename(tempPath, p.ClonePath); err != nil {
+		return fmt.Errorf("publish clone: %w", err)
+	}
+	p.Status = ProjectStatusReady
+	p.CloneGeneration = ""
+	p.UpdatedAt = time.Now().UTC()
+	return s.writeFile(p)
+}
+
+// markCloneError records a failed clone only while it still belongs to the
+// same project generation. An older clone must not mark a re-created project
+// as errored.
+func (s *Store) markCloneError(started Project) error {
+	unlock, err := s.lock(started.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	p, err := s.Get(started.ID)
+	if err != nil {
+		return err
+	}
+	if p.CloneGeneration != started.CloneGeneration {
+		return errors.New("clone superseded by a newer project record")
+	}
+	p.Status = ProjectStatusError
+	p.CloneGeneration = ""
+	p.UpdatedAt = time.Now().UTC()
+	return s.writeFile(p)
+}
+
+func newCloneGeneration() (string, error) {
+	data := make([]byte, 16)
+	if _, err := rand.Read(data); err != nil {
+		return "", fmt.Errorf("generate clone generation: %w", err)
+	}
+	return hex.EncodeToString(data), nil
 }
 
 // MarkReady transitions a project from cloning to ready after a successful clone.
@@ -213,6 +260,7 @@ func (s *Store) MarkReady(id string) error {
 		return err
 	}
 	p.Status = ProjectStatusReady
+	p.CloneGeneration = ""
 	p.UpdatedAt = time.Now().UTC()
 	return s.writeFile(p)
 }
@@ -230,6 +278,7 @@ func (s *Store) MarkError(id string) error {
 		return err
 	}
 	p.Status = ProjectStatusError
+	p.CloneGeneration = ""
 	p.UpdatedAt = time.Now().UTC()
 	return s.writeFile(p)
 }

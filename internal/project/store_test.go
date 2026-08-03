@@ -1,11 +1,13 @@
 package project
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestNewStore(t *testing.T) {
@@ -197,6 +199,98 @@ func TestStoreCreateDuplicate(t *testing.T) {
 	_, err = store.Create("https://github.com/owner/repo", ProjectTypePet)
 	if err == nil {
 		t.Fatal("expected error for duplicate project")
+	}
+}
+
+// TestStoreCreateDoesNotHoldMetadataLockDuringClone proves synchronous Create
+// uses the same register-clone-complete lifecycle as the asynchronous path.
+// A blocked clone must not prevent a user from editing the pending project.
+func TestStoreCreateDoesNotHoldMetadataLockDuringClone(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cloneStarted := make(chan struct{})
+	releaseClone := make(chan struct{})
+	store.cloneBare = func(_ context.Context, _ string, dest string) error {
+		close(cloneStarted)
+		<-releaseClone
+		return os.MkdirAll(dest, 0o755)
+	}
+
+	created := make(chan error, 1)
+	go func() {
+		_, err := store.Create("https://github.com/owner/repo", ProjectTypePet)
+		created <- err
+	}()
+	<-cloneStarted
+
+	updated := make(chan error, 1)
+	go func() {
+		_, err := store.SetSetupCommands("owner/repo", []string{"npm ci"})
+		updated <- err
+	}()
+	select {
+	case err := <-updated:
+		if err != nil {
+			t.Fatalf("update while cloning: %v", err)
+		}
+	case <-time.After(time.Second):
+		close(releaseClone)
+		t.Fatal("metadata update was blocked by the clone")
+	}
+
+	close(releaseClone)
+	if err := <-created; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := store.Get("owner/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != ProjectStatusReady {
+		t.Errorf("Status = %q, want %q", got.Status, ProjectStatusReady)
+	}
+	if len(got.SetupCommands) != 1 || got.SetupCommands[0] != "npm ci" {
+		t.Errorf("SetupCommands = %v, want [npm ci]", got.SetupCommands)
+	}
+}
+
+func TestStoreCreateDeleteDuringCloneLeavesNoClone(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloneStarted := make(chan struct{})
+	releaseClone := make(chan struct{})
+	store.cloneBare = func(_ context.Context, _ string, dest string) error {
+		close(cloneStarted)
+		<-releaseClone
+		return os.MkdirAll(dest, 0o755)
+	}
+
+	created := make(chan error, 1)
+	go func() {
+		_, err := store.Create("https://github.com/owner/repo", ProjectTypePet)
+		created <- err
+	}()
+	<-cloneStarted
+	if err := store.Delete("owner/repo"); err != nil {
+		t.Fatalf("delete while cloning: %v", err)
+	}
+	close(releaseClone)
+	if err := <-created; err == nil {
+		t.Fatal("Create succeeded after its project was deleted")
+	}
+	if _, err := store.Get("owner/repo"); !errors.Is(err, ErrProjectNotRegistered) {
+		t.Fatalf("deleted metadata = %v, want ErrProjectNotRegistered", err)
+	}
+	clonePath := filepath.Join(store.clonesDir, "owner", "repo.git")
+	if _, err := os.Stat(clonePath); !os.IsNotExist(err) {
+		t.Fatalf("clone path remains after delete: %v", err)
 	}
 }
 
