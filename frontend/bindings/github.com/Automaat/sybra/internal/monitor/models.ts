@@ -69,6 +69,7 @@ export enum AnomalyKind {
     KindLostAgent = "lost_agent",
     KindFailureSpike = "failure_spike",
     KindBottleneck = "bottleneck",
+    KindBoardStalled = "board_stalled",
 
     /**
      * KindClusterDrift is filed by clusterlead.Mirror, not Detect — a leader
