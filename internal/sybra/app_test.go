@@ -268,6 +268,12 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	t.Helper()
 	a := setupApp(t)
 	var wg sync.WaitGroup
+	// t.Cleanup runs last-added-first: placing this before any t.TempDir()
+	// below joins CreateTask's background workflow goroutine before those
+	// dirs are removed, closing a race where a goroutine still mid-write
+	// when the context cancels loses to RemoveAll ("directory not empty") —
+	// reproduced live under the OS sandbox's added scheduling latency.
+	t.Cleanup(wg.Wait)
 
 	wfDir := t.TempDir()
 	wfStore, err := workflow.NewStore(wfDir)
