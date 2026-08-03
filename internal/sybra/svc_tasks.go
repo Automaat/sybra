@@ -22,6 +22,7 @@ import (
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
@@ -670,8 +671,8 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	t.MirrorUpdatedAt = nil
 	saved, created, err := s.tasks.Put(t)
 	if err != nil {
-		if lt := mapLockTimeout(err); lt != err {
-			return lt
+		if errors.Is(err, fsutil.ErrLockTimeout) {
+			return mapLockTimeout(err)
 		}
 		return fmt.Errorf("assign task: %w", err)
 	}
@@ -1156,8 +1157,8 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 				}); revertErr != nil {
 					s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
 					s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
-					if lt := mapLockTimeout(revertErr); lt != revertErr {
-						return task.Task{}, lt
+					if errors.Is(revertErr, fsutil.ErrLockTimeout) {
+						return task.Task{}, mapLockTimeout(revertErr)
 					}
 					return task.Task{}, fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr)
 				}
