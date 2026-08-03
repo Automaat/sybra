@@ -796,9 +796,36 @@ func (a *App) releaseTaskAgents(taskID string) {
 	if len(targets) == 0 {
 		return
 	}
+	// Agents started after the park are deliberate new dispatches, not
+	// leftovers from before it, so they are not this release's to reap.
+	//
+	// The status hook fires with prev == "" the first time this process
+	// observes a task, which happens on every restart. For an
+	// already-parked task that fabricates a fresh transition into
+	// human-required and reaps whatever is running — including a review
+	// agent dispatched seconds earlier. Measured: a task parked at 08:08
+	// had its review agent killed 1.6ms after start at 08:47, and since
+	// human-required is what the review phase asserts to mean "needs you",
+	// the only agent that could clear it was the one being killed.
+	// Scoped to human-required only. releaseTaskAgents also runs for terminal
+	// statuses, and a done/cancelled task must reap every agent regardless of
+	// when it started — otherwise a restart can leave work running against a
+	// task that is already finished.
+	parkedAt := time.Time{}
+	if t, err := a.tasks.Get(taskID); err == nil && t.Status == task.StatusHumanRequired {
+		parkedAt = t.StatusChangedAt
+	}
 	filtered := make([]*agent.Agent, 0, len(targets))
 	for _, ag := range targets {
 		if ag.EffectiveRole().DiagnosesBlockedTask() {
+			continue
+		}
+		// !Before, not After: a tie means the agent started in the same instant
+		// the park was recorded, which is the dispatch that triggered it.
+		if !parkedAt.IsZero() && !ag.StartedAt.Before(parkedAt) {
+			a.logger.Info("task.status.release-agent.skip-newer",
+				"task_id", taskID, "agent_id", ag.ID,
+				"started_at", ag.StartedAt, "status_changed_at", parkedAt)
 			continue
 		}
 		filtered = append(filtered, ag)
