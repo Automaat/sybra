@@ -208,6 +208,10 @@ func TestWrapInvocation_GrantsAllGitRoots(t *testing.T) {
 		gitBranchRefLockFile:  "/data/clones/repo.git/refs/heads/fix/task-branch.lock",
 		gitBranchLogFile:      "/data/clones/repo.git/logs/refs/heads/fix/task-branch",
 		gitBranchLogLockFile:  "/data/clones/repo.git/logs/refs/heads/fix/task-branch.lock",
+		gitStashRefFile:       "/data/clones/repo.git/refs/stash",
+		gitStashRefLockFile:   "/data/clones/repo.git/refs/stash.lock",
+		gitStashLogFile:       "/data/clones/repo.git/logs/refs/stash",
+		gitStashLogLockFile:   "/data/clones/repo.git/logs/refs/stash.lock",
 		gitPackedRefsFile:     "/data/clones/repo.git/packed-refs",
 		gitPackedRefsNewFile:  "/data/clones/repo.git/packed-refs.new",
 		gitPackedRefsLockFile: "/data/clones/repo.git/packed-refs.lock",
@@ -222,6 +226,8 @@ func TestWrapInvocation_GrantsAllGitRoots(t *testing.T) {
 		gitRemoteLogDir:       "/data/clones/repo.git/logs/refs/remotes",
 		gitTagRefDir:          "/data/clones/repo.git/refs/tags",
 		gitTagLogDir:          "/data/clones/repo.git/logs/refs/tags",
+		gitNotesRefDir:        "/data/clones/repo.git/refs/notes",
+		gitNotesLogDir:        "/data/clones/repo.git/logs/refs/notes",
 	}
 	cfg := &RunConfig{sandbox: spec}
 
@@ -234,6 +240,10 @@ func TestWrapInvocation_GrantsAllGitRoots(t *testing.T) {
 		"GIT_BRANCH_REF_LOCK_FILE":  spec.gitBranchRefLockFile,
 		"GIT_BRANCH_LOG_FILE":       spec.gitBranchLogFile,
 		"GIT_BRANCH_LOG_LOCK_FILE":  spec.gitBranchLogLockFile,
+		"GIT_STASH_REF_FILE":        spec.gitStashRefFile,
+		"GIT_STASH_REF_LOCK_FILE":   spec.gitStashRefLockFile,
+		"GIT_STASH_LOG_FILE":        spec.gitStashLogFile,
+		"GIT_STASH_LOG_LOCK_FILE":   spec.gitStashLogLockFile,
 		"GIT_PACKED_REFS_FILE":      spec.gitPackedRefsFile,
 		"GIT_PACKED_REFS_NEW_FILE":  spec.gitPackedRefsNewFile,
 		"GIT_PACKED_REFS_LOCK_FILE": spec.gitPackedRefsLockFile,
@@ -248,6 +258,8 @@ func TestWrapInvocation_GrantsAllGitRoots(t *testing.T) {
 		"GIT_REMOTE_LOG_DIR":        spec.gitRemoteLogDir,
 		"GIT_TAG_REF_DIR":           spec.gitTagRefDir,
 		"GIT_TAG_LOG_DIR":           spec.gitTagLogDir,
+		"GIT_NOTES_REF_DIR":         spec.gitNotesRefDir,
+		"GIT_NOTES_LOG_DIR":         spec.gitNotesLogDir,
 	}
 	got := map[string]string{}
 	for i := range len(args) - 1 {
@@ -276,6 +288,10 @@ func TestSandboxProfile_ReferencesAllGitRoots(t *testing.T) {
 		`(literal (param "GIT_BRANCH_REF_LOCK_FILE"))`,
 		`(literal (param "GIT_BRANCH_LOG_FILE"))`,
 		`(literal (param "GIT_BRANCH_LOG_LOCK_FILE"))`,
+		`(literal (param "GIT_STASH_REF_FILE"))`,
+		`(literal (param "GIT_STASH_REF_LOCK_FILE"))`,
+		`(literal (param "GIT_STASH_LOG_FILE"))`,
+		`(literal (param "GIT_STASH_LOG_LOCK_FILE"))`,
 		`(literal (param "GIT_PACKED_REFS_FILE"))`,
 		`(literal (param "GIT_PACKED_REFS_NEW_FILE"))`,
 		`(literal (param "GIT_PACKED_REFS_LOCK_FILE"))`,
@@ -290,6 +306,8 @@ func TestSandboxProfile_ReferencesAllGitRoots(t *testing.T) {
 		`(subpath (param "GIT_REMOTE_LOG_DIR"))`,
 		`(subpath (param "GIT_TAG_REF_DIR"))`,
 		`(subpath (param "GIT_TAG_LOG_DIR"))`,
+		`(subpath (param "GIT_NOTES_REF_DIR"))`,
+		`(subpath (param "GIT_NOTES_LOG_DIR"))`,
 	} {
 		if !strings.Contains(profile, rule) {
 			t.Errorf("profile missing %s; the resolved root grants nothing", rule)

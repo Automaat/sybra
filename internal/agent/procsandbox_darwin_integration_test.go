@@ -291,3 +291,56 @@ func TestSandboxEnforce_ShallowFetchSucceeds(t *testing.T) {
 		t.Errorf("shallow fetch did not exit cleanly: %s", got)
 	}
 }
+
+// TestSandboxEnforce_GitStashSucceeds reproduces a gap found by an
+// independent adversarial manual-test pass: refs/stash is a single,
+// fixed-name ref directly under refs/, outside every ref-dir/tag-dir/
+// remote-dir grant above and outside the branch's own literal grant (which
+// only covers that branch's own ref, not a repo-wide stash stack) — a very
+// plausible mid-task operation (stash local edits before a rebase/pull)
+// that failed with "Cannot save the current status" before this grant.
+func TestSandboxEnforce_GitStashSucceeds(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+
+	script := "cd " + wt + " && echo base > f.txt && git add f.txt && git commit -q -m tracked && " +
+		"echo modified >> f.txt && git stash push -m mystash 2>&1 && git stash pop 2>&1; echo EXIT=$?"
+	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+
+	if strings.Contains(got, "Operation not permitted") {
+		t.Errorf("git stash hit EPERM under sandbox: %s", got)
+	}
+	if !strings.Contains(got, "EXIT=0") {
+		t.Errorf("git stash did not exit cleanly: %s", got)
+	}
+}
+
+// TestSandboxEnforce_GitNotesSucceeds reproduces a second gap found by the
+// same adversarial pass: refs/notes/* is a repo-wide annotation namespace
+// (like remotes/tags, not a task's own exclusive branch work), outside
+// every grant above — `git notes add` failed with "cannot lock ref
+// 'refs/notes/commits': unable to create directory" before this grant.
+func TestSandboxEnforce_GitNotesSucceeds(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+
+	script := "cd " + wt + " && git notes add -m 'note body' 2>&1; echo EXIT=$?"
+	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+
+	if strings.Contains(got, "Operation not permitted") {
+		t.Errorf("git notes hit EPERM under sandbox: %s", got)
+	}
+	if !strings.Contains(got, "EXIT=0") {
+		t.Errorf("git notes did not exit cleanly: %s", got)
+	}
+}

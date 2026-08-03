@@ -927,6 +927,10 @@ func TestGitCommonDirSingleFiles_DerivesAllHousekeepingPaths(t *testing.T) {
 		infoDir:            "/data/clones/repo.git/info",
 		infoDenyAttributes: "/data/clones/repo.git/info/attributes",
 		infoDenyExclude:    "/data/clones/repo.git/info/exclude",
+		stashRef:           "/data/clones/repo.git/refs/stash",
+		stashRefLock:       "/data/clones/repo.git/refs/stash.lock",
+		stashLog:           "/data/clones/repo.git/logs/refs/stash",
+		stashLogLock:       "/data/clones/repo.git/logs/refs/stash.lock",
 	}
 	if files != want {
 		t.Fatalf("gitCommonDirSingleFiles() = %+v, want %+v", files, want)

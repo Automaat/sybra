@@ -113,13 +113,25 @@ type sandboxSpec struct {
 	// info/exclude back out of that subpath: unlike info/refs, both are
 	// hand-authored config shared with every sibling task on the clone, not
 	// idempotent regenerated output.
-	gitInfoDir             string
-	gitInfoDenyAttributes  string
-	gitInfoDenyExclude     string
-	gitRemoteRefDir        string
-	gitRemoteLogDir        string
-	gitTagRefDir           string
-	gitTagLogDir           string
+	gitInfoDir            string
+	gitInfoDenyAttributes string
+	gitInfoDenyExclude    string
+	// gitStashRefFile/_LockFile/gitStashLogFile/_LockFile: refs/stash is a
+	// single fixed-name ref directly under refs/, not per-branch — literal,
+	// like the branch ref grants, since it sits at a known, exact path.
+	gitStashRefFile     string
+	gitStashRefLockFile string
+	gitStashLogFile     string
+	gitStashLogLockFile string
+	gitRemoteRefDir     string
+	gitRemoteLogDir     string
+	gitTagRefDir        string
+	gitTagLogDir        string
+	// gitNotesRefDir/gitNotesLogDir (refs/notes, logs/refs/notes): granted
+	// as whole subpaths like remote/tag refs — repo-wide annotation truth,
+	// not a task's own exclusive work.
+	gitNotesRefDir         string
+	gitNotesLogDir         string
 	gitOverlayObjectDir    string
 	gitOverlayRefDir       string
 	gitOverlayLogDir       string
@@ -178,7 +190,9 @@ func (s sandboxSpec) writeRoots() []string {
 		s.gitOverlayTagRefDir, s.gitOverlayTagLogDir,
 		s.gitBranchRefDir, s.gitBranchLogDir, s.gitRemoteRefDir,
 		s.gitRemoteLogDir, s.gitTagRefDir, s.gitTagLogDir,
+		s.gitNotesRefDir, s.gitNotesLogDir,
 		s.gitBranchRefFile, s.gitBranchRefLockFile, s.gitBranchLogFile, s.gitBranchLogLockFile,
+		s.gitStashRefFile, s.gitStashRefLockFile, s.gitStashLogFile, s.gitStashLogLockFile,
 		s.gitPackedRefsFile, s.gitPackedRefsNewFile, s.gitPackedRefsLockFile,
 		s.gitGCPidFile, s.gitGCPidLockFile, s.gitShallowFile, s.gitShallowLockFile,
 	}

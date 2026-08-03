@@ -690,10 +690,16 @@ func enforceSpec(
 		gitInfoDir:             commonFiles.infoDir,
 		gitInfoDenyAttributes:  commonFiles.infoDenyAttributes,
 		gitInfoDenyExclude:     commonFiles.infoDenyExclude,
+		gitStashRefFile:        commonFiles.stashRef,
+		gitStashRefLockFile:    commonFiles.stashRefLock,
+		gitStashLogFile:        commonFiles.stashLog,
+		gitStashLogLockFile:    commonFiles.stashLogLock,
 		gitRemoteRefDir:        gitRoots.remoteRefDir,
 		gitRemoteLogDir:        gitRoots.remoteLogDir,
 		gitTagRefDir:           gitRoots.tagRefDir,
 		gitTagLogDir:           gitRoots.tagLogDir,
+		gitNotesRefDir:         gitRoots.notesRefDir,
+		gitNotesLogDir:         gitRoots.notesLogDir,
 		gitOverlayObjectDir:    gitOverlay.objectDir,
 		gitOverlayRefDir:       gitOverlay.branchRefDir,
 		gitOverlayLogDir:       gitOverlay.branchLogDir,
@@ -754,6 +760,12 @@ type gitCommonDirFiles struct {
 	shallow, shallowLock                      string
 	infoDir                                   string
 	infoDenyAttributes, infoDenyExclude       string
+	// stashRef/stashRefLock/stashLog/stashLogLock: refs/stash is a single,
+	// fixed-name ref directly under refs/ (like refs/heads/<name> but with
+	// no branch-name variability), repo-wide shared like remotes/tags
+	// rather than per-branch — `git stash` fails closed without these.
+	stashRef, stashRefLock string
+	stashLog, stashLogLock string
 }
 
 // gitCommonDirSingleFiles derives gitCommonDirFiles' paths from the bare
@@ -773,6 +785,8 @@ func gitCommonDirSingleFiles(roots gitSandboxRoots) gitCommonDirFiles {
 	gcPid := filepath.Join(roots.commonDir, "gc.pid")
 	shallow := filepath.Join(roots.commonDir, "shallow")
 	infoDir := filepath.Join(roots.commonDir, "info")
+	stashRef := filepath.Join(roots.commonDir, "refs", "stash")
+	stashLog := filepath.Join(roots.commonDir, "logs", "refs", "stash")
 	return gitCommonDirFiles{
 		packedRefs:         packedRefs,
 		packedRefsNew:      packedRefs + ".new",
@@ -784,6 +798,10 @@ func gitCommonDirSingleFiles(roots gitSandboxRoots) gitCommonDirFiles {
 		infoDir:            infoDir,
 		infoDenyAttributes: filepath.Join(infoDir, "attributes"),
 		infoDenyExclude:    filepath.Join(infoDir, "exclude"),
+		stashRef:           stashRef,
+		stashRefLock:       stashRef + ".lock",
+		stashLog:           stashLog,
+		stashLogLock:       stashLog + ".lock",
 	}
 }
 
