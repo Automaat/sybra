@@ -2811,6 +2811,54 @@ func TestStoreListInvalidatePathTargetedRefresh(t *testing.T) {
 	}
 }
 
+func TestInvalidatePathWaitsForTaskWriterBeforeRefreshingCache(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err := store.Create("Before", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, err := store.lockTask(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	store.refreshBeforeLock = func() { close(started) }
+	done := make(chan struct{})
+	go func() { store.InvalidatePath(tk.FilePath); close(done) }()
+	<-started
+	select {
+	case <-done:
+		t.Fatal("refresh ran while task writer lock was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	if _, err := store.Update(tk.ID, Update{Title: Ptr("After")}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete after writer lock release")
+	}
+	listed, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range listed {
+		if got.ID == tk.ID && got.Title != "After" {
+			t.Fatalf("cached title = %q, want After", got.Title)
+		}
+	}
+}
+
 func TestReasoningEffortRoundTrip(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
